@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::builds::{Builds, Run};
 use crate::releases::Level;
-use crate::table::{Row, Val, View};
+use crate::table::{Row, Summary, Val, View};
 
 /// How many runs of each repo the picker offers, newest first.
 pub const PICK_RUNS: usize = 30;
@@ -230,6 +230,38 @@ fn rank_of(result: &str) -> u8 {
     }
 }
 
+/// A suite's state chips and its tests' alike: a suite is in the state of its worst test.
+const RESULTS: &[&str] = &["all", "failed", "quarantined", "skipped", "passed"];
+
+impl Row for Case {
+    const COLUMNS: &'static [&'static str] = &["result", "name", "time"];
+    const STATES: &'static [&'static str] = RESULTS;
+    const FACETS: &'static [&'static str] = &[];
+    const LEAD: &'static str = "name";
+    const GLANCE: &'static [&'static str] = &["result", "time"];
+
+    fn val(&self, col: &str) -> Val {
+        match col {
+            "result" => Val::Text(self.result.clone()),
+            "name" => Val::Text(self.name.clone()),
+            "time" => Val::Num(self.time),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, state: &str) -> bool {
+        state == "all" || self.result == state
+    }
+
+    /// A bare word finds a test by its name, its NUnit full name or its failure's text.
+    fn text(&self) -> String {
+        [&self.name, &self.fullname, &self.message]
+            .map(|s| s.as_str())
+            .join("\n")
+            .to_lowercase()
+    }
+}
+
 impl Row for Suite {
     const COLUMNS: &'static [&'static str] = &[
         "state",
@@ -241,7 +273,7 @@ impl Row for Suite {
         "skipped",
         "time",
     ];
-    const STATES: &'static [&'static str] = &["all", "failed", "quarantined", "skipped", "passed"];
+    const STATES: &'static [&'static str] = RESULTS;
     const FACETS: &'static [&'static str] = &["tier"];
     const LEAD: &'static str = "suite";
     const GLANCE: &'static [&'static str] = &["state", "tier", "failed"];
@@ -374,18 +406,25 @@ impl Loaded {
         out
     }
 
-    /// The tests of one suite, worst first and then in the report's order, capped at
-    /// `CASE_ROWS`; the second value counts the ones the cap left out.
-    pub fn cases(&self, tier: &str, suite: &str) -> Option<(Vec<&Case>, usize)> {
+    /// The tests of one suite the view keeps, worst first and then in the report's order unless
+    /// it sorts, capped at `CASE_ROWS`; the summary counts every test, and the last value the
+    /// ones the cap left out.
+    pub fn cases(
+        &self,
+        tier: &str,
+        suite: &str,
+        view: &View,
+    ) -> Option<(Vec<&Case>, Summary, usize)> {
         let s = self
             .suites
             .iter()
             .find(|s| s.tier == tier && s.suite == suite)?;
-        let mut cases: Vec<&Case> = s.cases.iter().collect();
-        cases.sort_by_key(|c| rank_of(&c.result));
-        let more = cases.len().saturating_sub(CASE_ROWS);
-        cases.truncate(CASE_ROWS);
-        Some((cases, more))
+        let (mut cases, mut table) = view.summary(&s.cases);
+        if view.sort.is_empty() {
+            cases.sort_by_key(|c| rank_of(&c.result));
+        }
+        let more = crate::table::cap(&mut cases, &mut table, CASE_ROWS);
+        Some((cases, table, more))
     }
 }
 
@@ -1220,7 +1259,7 @@ at line nine
             t.says(),
             "4 tests in 2 suites: 1 failed, 2 quarantined, 0 skipped, 1 passed"
         );
-        let (cases, _) = q.cases("playmode", "B").unwrap();
+        let (cases, _, _) = q.cases("playmode", "B", &View::default()).unwrap();
         assert_eq!(cases[0].result, "failed");
         // a quarantined-only run does not fold to "All green"
         let only: Vec<Suite> = vec![a.clone()];
@@ -1279,6 +1318,38 @@ at line nine
         assert_eq!(failed[0].suite, "a.bats");
         // a bare word finds the suite holding that test
         assert_eq!(View::new::<Suite>("t1", "", "", "").apply(&rows).len(), 2);
+    }
+
+    #[test]
+    fn a_suites_result_tiles_count_every_test_past_the_cap() {
+        let mut results = vec!["failed"; CASE_ROWS + 10];
+        results.extend(["passed"; 5]);
+        let mut s = suite("unit", "big.bats", &results);
+        s.cases[3].message = "Timed out waiting".into();
+        s.cases[CASE_ROWS + 12].fullname = "Ns.Big.Slow".into();
+        let got = Loaded {
+            suites: vec![s],
+            ..Default::default()
+        };
+        let all = View::new::<Case>("", "", "", "");
+        let (cases, t, more) = got.cases("unit", "big.bats", &all).unwrap();
+        assert_eq!(
+            (cases.len(), more, t.total, t.shown),
+            (CASE_ROWS, 15, 315, 315)
+        );
+        let n = |name: &str| t.states.iter().find(|c| c.name == name).map(|c| c.n);
+        assert_eq!((n("failed"), n("passed")), (Some(CASE_ROWS + 10), Some(5)));
+        let passed = View::new::<Case>("", "passed", "", "");
+        let (cases, _, more) = got.cases("unit", "big.bats", &passed).unwrap();
+        assert_eq!((cases.len(), more), (5, 0));
+        // a word finds a test by its failure's text or its full name
+        let by = |q: &str| {
+            got.cases("unit", "big.bats", &View::new::<Case>(q, "", "", ""))
+                .unwrap()
+                .0
+        };
+        assert_eq!(by("timed out")[0].name, "t3");
+        assert_eq!(by("ns.big")[0].name, format!("t{}", CASE_ROWS + 12));
     }
 
     #[test]
@@ -1416,9 +1487,9 @@ at line nine
             vec![("ui", "u.bats"), ("unit", "a.bats"), ("unit", "z.bats")]
         );
         assert!(got.errors.is_empty() && got.note.is_none());
-        let (cases, more) = got.cases("unit", "a.bats").unwrap();
+        let (cases, _, more) = got.cases("unit", "a.bats", &View::default()).unwrap();
         assert_eq!((cases.len(), more), (1, 0));
-        assert!(got.cases("unit", "nope.bats").is_none());
+        assert!(got.cases("unit", "nope.bats", &View::default()).is_none());
         let _ = std::fs::remove_dir_all(&cache);
     }
 

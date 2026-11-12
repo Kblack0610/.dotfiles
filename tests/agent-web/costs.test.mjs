@@ -73,7 +73,8 @@ const board = (o = {}) => ({
   grafana: "https://grafana.example/d/kb-agents-overview", burn: burn(), ...o,
 });
 const show = (d) => { run("st.tab = 'costs'"); Object.assign(cost, { data: d, err: null }); run("cost.render()"); return box.innerHTML; };
-const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) || (sel === "[data-ssort]" && "ssort" in attrs) || (sel === "[data-csort]" && "csort" in attrs) ? { dataset: attrs } : null });
+// `tbl` is the section table the target sits in (its block's data-tbl), blank for the main one.
+const target = ({ tbl = "", ...attrs }) => ({ dataset: attrs, closest: (sel) => (sel === "[data-tbl]" ? (tbl ? { dataset: { tbl } } : null) : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) || (sel === "[data-cv]" && "cv" in attrs) ? { dataset: attrs } : null) });
 
 test("the model cut draws the server's columns, order and sort, with its evaluation", () => {
   const h = show(board());
@@ -142,13 +143,18 @@ test("Consumers start open after Burn, green or red, and the reader's fold stays
   assert.match(quiet, /<details class="csec" data-k="consumers" id="sec-consumers" open><summary><h2 class="sec">Consumers <span class="n">2<\/span><\/h2><\/summary>/, "green is open, its head a count");
   assert.doesNotMatch(quiet, /MISMATCH:/, "no mismatch, no line");
   assert.ok(quiet.indexOf("sec-burn") < quiet.indexOf("sec-consumers") && quiet.indexOf("sec-consumers") < quiet.indexOf('data-in="models"'), "after Burn, before Models");
-  for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-csort="[a-z_]+" data-cdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
+  for (const h of ["consumer", "pri", "runs on", "budget", "spent", "fallback", "status"]) assert.match(quiet, new RegExp(`data-tsort="[a-z_]+" data-tdir="desc" title="sort by ${h}">${h}</button>`), `header ${h}`);
+  assert.match(quiet, /<div data-tbl="c"><div id="costs-cons-tiles"><\/div><div class="tqbar"><input id="costs-cons-q" data-tsearch placeholder="search, or priority:low -status:ok"/, "its own search bar, flush on its rows");
+  assert.match(quiet, /<div id="costs-cons-body"><div class="panel scroll"><table class="tbl">/);
   assert.match(quiet, /<tr><td>version-summary<\/td><td>must<\/td><td>raw fast via gateway-fast<\/td><td>lazer-core \(key comms-triage\)<\/td><td>\$0\.02\/\$25\.00 30d<\/td><td>gemini-flash<\/td><td>ok<\/td><\/tr>/);
   assert.match(quiet, /<div>team low lazer-pool \$228\/\$50\.00 AT CAP per 1mo<\/div><div>aliases: fast -&gt; gpt-oss-120b; fallbacks: gpt-oss-120b -&gt; gemini-flash<\/div>/);
   assert.match(quiet, /pri: the priority its conf or key declares/);
   const red = consumers({ level: "bad", head: "1 MISMATCH | 2 consumers: must 2", rows: [consumer({ consumer: "nightly-thing", budget: "lazer-pool (key claude-reserve)", status: "MISMATCH: lazer-pool is low priority", mismatch: true, level: "bad" })] });
+  red.table = { ...red.table, total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "mismatch", n: 1, tone: "warn", means: "a runner on a budget of another priority" }] };
   const h = show(board({ consumers: red }));
-  assert.match(h, /data-k="consumers" id="sec-consumers" open><summary><h2 class="sec bad">Consumers <span class="n">1<\/span><\/h2><\/summary><div class="cline warn">1 MISMATCH: /);
+  assert.match(h, /data-k="consumers" id="sec-consumers" open><summary><h2 class="sec bad">Consumers <span class="n">1<\/span><\/h2><\/summary>/);
+  assert.match(h, /<button class="tile t-warn" data-ts="mismatch" title="a runner on a budget of another priority"><span class="tl">MISMATCH<\/span><span class="tv">1<\/span><\/button>/, "a mismatch is its table's amber tile");
+  assert.doesNotMatch(h, /MISMATCH: a runner/, "and no line beside it says it again");
   assert.match(h, /<td class="bad">nightly-thing<\/td>.*?<td class="bad">MISMATCH: lazer-pool is low priority<\/td>/);
   // negative control: the reader's fold wins over the open default, and a stale read says why
   cost.open.consumers = false;
@@ -157,18 +163,32 @@ test("Consumers start open after Burn, green or red, and the reader's fold stays
   assert.match(stale, /<div class="warn">stale: the gateway snapshot is 3h old/);
   delete cost.open.consumers;
   assert.doesNotMatch(show(board()), /sec-consumers/, "no Consumers data draws no section");
+  // negative control: a search that keeps nothing says so, and the bar stays to clear it
+  const none = consumers({ rows: [] });
+  none.table = { ...none.table, q: "zzz", shown: 0 };
+  assert.match(show(board({ consumers: none })), /id="costs-cons-q"[\s\S]*<div id="costs-cons-body"><div class="panel muted">No consumer matches\.<\/div>/);
 });
 
-test("a Consumers header click sorts it apart from the main table", async () => {
+test("a Consumers header, search or tile is its own view, apart from the main table", async () => {
   asked = [];
   body = board({ consumers: consumers() });
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
-  fire("click", { type: "click", target: target({ csort: "priority", cdir: "desc" }) });
+  fire("click", { type: "click", target: target({ tsort: "priority", tdir: "desc", tbl: "c" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority");
-  fire("click", { type: "click", target: target({ csort: "priority", cdir: "asc" }) });
+  fire("click", { type: "click", target: target({ tsort: "priority", tdir: "asc", tbl: "c" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&csort=priority&cdir=asc");
+  fire("input", { type: "input", target: { ...target({ tsearch: "", tbl: "c" }), value: "priority:low" } });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&cq=priority%3Alow&csort=priority&cdir=asc");
+  fire("click", { type: "click", target: target({ ts: "mismatch", tbl: "c" }) });
+  await tick();
+  assert.match(asked.at(-1), /&cs=mismatch/);
+  // negative control: the same header click in the main table is the main table's sort
+  fire("click", { type: "click", target: target({ tsort: "harness", tdir: "desc" }) });
+  await tick();
+  assert.match(asked.at(-1), /^\/api\/costs\?q=harness%3Acodex&sort=harness&cq=/);
 });
 
 test("a dollar source is a burn row with its kind, dollars and reserve, and no pace cells", () => {
@@ -293,10 +313,12 @@ const sections = (sort = null) => ({
 
 test("the Sections block starts open with its window, All PRs on top and both caveats", () => {
   const h = show(board({ sections: sections() }));
-  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections" open><summary><h2 class="sec">Sections <span class="n">2<\/span><\/h2><\/summary><div class="panel scroll"><div><b>window<\/b> last 7d<\/div>/, "open, a count on the head and the window in the body");
+  assert.match(h, /<details class="csec" data-k="sections" id="sec-sections" open><summary><h2 class="sec">Sections <span class="n">2<\/span><\/h2><\/summary><div data-tbl="s">/, "open, a count on the head");
+  assert.match(h, /<div class="tqbar"><input id="costs-sec-q" data-tsearch placeholder="search, or section:agent-web"/, "its own search bar");
+  assert.match(h, /<div id="costs-sec-body"><div class="panel scroll"><div><b>window<\/b> last 7d<\/div>/, "the window in the body");
   assert.match(h, /<tr class="allrow"><td class="">All PRs<\/td><td class="n">598<\/td><td class="n">52%<\/td><td class="n">0\.98<\/td><td class="n">145<\/td><td class="n">1109<\/td><td class="n">116<\/td>/, "the old headline's PRs, first try, gate min and greens lost are the All PRs row");
   for (const k of ["section", "PRs", "first try", "gate reds/PR", "gate min/PR", "gate h", "greens lost", "cost/PR", "tokens/PR", "work min/PR"]) assert.match(h, new RegExp(`title="sort by ${k.replace("/", "\\/")}"`), `header ${k}`);
-  assert.match(h, /data-ssort="prs" data-sdir="desc"/, "its headers sort apart from the main table's");
+  assert.match(h, /data-tbl="s">[\s\S]*data-tsort="prs" data-tdir="desc"/, "its headers sort in its own block, apart from the main table's");
   assert.ok(h.indexOf("All PRs</td>") < h.indexOf("Assets/Playground/Tests</td>"), "All PRs is first");
   assert.ok(h.indexOf("Assets/Playground/Tests</td>") < h.indexOf("docs</td>"), "the server's order is kept");
   assert.match(h, /tr class="allrow"/);
@@ -308,15 +330,28 @@ test("a header click sorts the Sections block both ways without touching the mai
   asked = [];
   body = board({ sections: sections() });
   run("st.tab = 'costs'; st.views.costs = 'q=harness%3Acodex&sort=cost'");
-  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ tsort: "gate_h", tdir: "desc", tbl: "s" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h");
-  fire("click", { type: "click", target: target({ ssort: "gate_h", sdir: "asc" }) });
+  fire("click", { type: "click", target: target({ tsort: "gate_h", tdir: "asc", tbl: "s" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost&ssort=gate_h&sdir=asc");
-  fire("click", { type: "click", target: target({ ssort: "", sdir: "desc" }) });
+  fire("click", { type: "click", target: target({ tsort: "", tdir: "desc", tbl: "s" }) });
   await tick();
   assert.equal(asked.at(-1), "/api/costs?q=harness%3Acodex&sort=cost", "the third click is the default order");
+});
+
+test("a poll while a section table's search has focus repaints only that table, so the typing stays", () => {
+  const d = board({ sections: sections() });
+  show(d);
+  box.innerHTML = "whole tab";
+  doc.activeElement = { id: "costs-sec-q" };
+  run("cost.render()");
+  assert.equal(box.innerHTML, "whole tab", "the tab is not redrawn around the search box");
+  // negative control: with focus elsewhere the poll redraws the tab
+  doc.activeElement = null;
+  run("cost.render()");
+  assert.match(box.innerHTML, /id="sec-sections"/);
 });
 
 test("no Sections data draws no block", () => {
@@ -541,7 +576,7 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   const p = (kind, period, total, days, per_day, per_session, vs_prev, est) => ({ kind, period, total, days, per_day, per_session, vs_prev, est });
   const bar = (key, usd, measured, estimated) => ({ key, label: key.slice(5), usd, measured, estimated, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` });
   const chart = [bar("2026-11-07", 30, 20, 10), bar("2026-11-08", null, 0, 0), bar("2026-11-09", 100, 60, 40)];
-  const history = { why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)",
+  const history = { why: null, month: "Nov $1,579/day vs Oct $1,102/day (+43%)", last_day: "11-09 $1,312 vs 7d median $1,120 (+17%)",
     rows: [p("year", "2026", "$61,300", 54, "$1,135", "$2.40", "-", "38%"), p("month", "2026-11", "$14,210", 9, "$1,579", "$2.51", "+43%", "21%"),
       p("day", "11-09", "$1,312", 1, "$1,312", "-", "+69%", "21%")],
     older: 3, missing: 2, stale: false, note: "est. is the share priced from tokens", chart, months: [bar("2026-11", 130, 80, 50)] };
@@ -567,7 +602,7 @@ test("spend: the 30-day chart and month bars, period rows with $/session, and bu
   assert.doesNotMatch(sess, /tfacet|<select/, "no dropdowns over the sessions");
   assert.ok(h.indexOf("big run") < h.indexOf('<tr data-sid="b"'), "the server's ranking is kept");
   assert.match(h, /<tr data-sid="b" class="sel">/, "the opened session's row is marked");
-  assert.match(h, /data-dsort="cost"/, "the day table sorts on its own keys");
+  assert.match(h, /data-tbl="d">[\s\S]*data-tsort="cost"/, "the day table sorts in its own block, on its own keys");
   assert.match(h, /shepherd <span class="muted">\$15 in the chart's 30 days/);
   assert.ok(h.indexOf("Year, month and day rows") < h.indexOf("Burn per session"), "the period rows come before the day's sessions");
   assert.match(h, /data-named title="what one session cost on an average day">\$\/session<\/th>/, "one $/session column");

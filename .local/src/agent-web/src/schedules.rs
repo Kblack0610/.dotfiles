@@ -70,25 +70,29 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::reading::JobState;
 
     #[test]
     fn the_body_is_the_rows_the_view_keeps_with_its_controls() {
         let blank = Schedule::default();
-        let row = |kind: &str, name: &str, streak| {
+        let row = |kind: &str, name: &str, state| {
             let mut r = blank.clone();
             r.kind = kind.into();
             r.name = name.into();
-            r.streak = streak;
+            r.state = state;
             r
         };
         let s = Schedules {
             at: 300,
             summary: "2 scheduled, 1 red".into(),
-            rows: vec![row("ci", "app / Tests", -3), row("timer", "dream", 9)],
+            rows: vec![
+                row("ci", "app / Tests", JobState::Failing),
+                row("timer", "dream", JobState::Ok),
+            ],
             errors: vec![],
         };
         let q = Query {
-            s: "red".into(),
+            s: JobState::Failing.word().into(),
             ..Default::default()
         };
         let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();

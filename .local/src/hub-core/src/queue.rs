@@ -1197,7 +1197,7 @@ impl crate::table::Row for QueueRow<'_> {
     }
 }
 
-/// How many candidates a view lists; its heading counts them all.
+/// How many candidates a view lists before "+N more"; its heading counts them all.
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
@@ -1205,6 +1205,9 @@ pub const CANDIDATES_SHOWN: usize = 30;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Candidate {
+    /// Its place in fleet-dispatch's ranking, from 1: the line it is on (`parse_candidates`).
+    #[serde(skip_deserializing)]
+    pub rank: usize,
     pub profile: String,
     pub project: String,
     /// `agent` or `human`.
@@ -1282,20 +1285,87 @@ impl Candidate {
     }
 }
 
-/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept,
-/// and every blocked reason counted over all of them.
+impl crate::table::Row for Candidate {
+    /// `blocked` is each reason as `Candidate::reasons` words it, one row holding several.
+    const COLUMNS: &'static [&'static str] =
+        &["rank", "project", "key", "task", "start", "why", "blocked"];
+    const STATES: &'static [&'static str] = &["all", "clear", "blocked"];
+    const FACETS: &'static [&'static str] = &["project", "blocked"];
+    const LEAD: &'static str = "task";
+    const GLANCE: &'static [&'static str] = &["project", "start"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            "clear",
+            "a worker takes it and no judge, size or held area stops it",
+        ),
+        ("blocked", "no worker would start it; BLOCKED says why"),
+    ];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: &str| match s {
+            "" => Val::None,
+            s => Val::Text(s.to_string()),
+        };
+        match col {
+            "rank" => Val::Num(self.rank as f64),
+            "project" => text(&self.project),
+            "key" => text(&self.key),
+            "task" => Val::Text(self.title()),
+            "start" => Val::Text(self.start_label()),
+            "why" => text(&self.why),
+            "blocked" => self.reasons().first().map_or(Val::None, |r| text(r)),
+            _ => Val::None,
+        }
+    }
+
+    fn vals(&self, col: &str) -> Vec<crate::table::Val> {
+        match col {
+            "blocked" => self
+                .reasons()
+                .into_iter()
+                .map(crate::table::Val::Text)
+                .collect(),
+            _ => vec![self.val(col)],
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "clear" => self.blocked.is_empty(),
+            "blocked" => !self.blocked.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// A bare word finds the title, project, key, why and each reason in full.
+    fn text(&self) -> String {
+        [
+            self.title(),
+            self.project.clone(),
+            self.key.clone(),
+            self.why.clone(),
+        ]
+        .into_iter()
+        .chain(self.blocked.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+    }
+
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "project" if !self.project.is_empty() => Some(Link::to(Kind::Project, &self.project)),
+            _ => None,
+        }
+    }
+}
+
+/// The ranked list, every row in rank order, with what its head says about all of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Candidates {
-    pub total: usize,
-    pub auto: usize,
     pub rows: Vec<Candidate>,
-    /// Rows past the first `CANDIDATES_SHOWN`, in rank order, kept so each reason chip lists up
-    /// to `CANDIDATES_SHOWN` of its own.
-    pub blocked_rows: Vec<Candidate>,
-    /// Rows nothing blocks: a worker takes each and no judge, size or held area stops it.
-    pub clear: usize,
-    /// Each chip reason (`Candidate::reasons`) and how many rows it blocks, most first.
-    pub reasons: Vec<(String, usize)>,
+    pub auto: usize,
     /// `#urgent` rows something blocks: a view opens its Candidates by itself while any are.
     pub urgent_blocked: usize,
     /// Projects worked on in the last day that have a row no worker covers, sorted.
@@ -1307,6 +1377,11 @@ pub struct Candidates {
 }
 
 impl Candidates {
+    /// The first `CANDIDATES_SHOWN`, what the TUI's fold lists.
+    pub fn shown(&self) -> &[Candidate] {
+        &self.rows[..self.rows.len().min(CANDIDATES_SHOWN)]
+    }
+
     /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
     /// when the rows came from no file.
     pub fn as_of(&self, now: chrono::DateTime<chrono::Local>) -> String {
@@ -1314,7 +1389,24 @@ impl Candidates {
     }
 
     pub fn more(&self) -> usize {
-        self.total - self.rows.len()
+        self.rows.len() - self.shown().len()
+    }
+
+    /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,
+    /// a row counted once per reason as the facet counts it, without scanning every other facet.
+    pub fn reasons(&self) -> Vec<(String, usize)> {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for r in &self.rows {
+            let mut seen = std::collections::BTreeSet::new();
+            for x in r.reasons() {
+                if !x.is_empty() && seen.insert(x.clone()) {
+                    *counts.entry(x).or_default() += 1;
+                }
+            }
+        }
+        let mut by: Vec<(String, usize)> = counts.into_iter().collect();
+        by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        by
     }
 }
 
@@ -1327,16 +1419,13 @@ fn uncovered_reason(r: &str) -> bool {
 /// there is no row; a line that does not parse is skipped.
 pub fn parse_candidates(jsonl: &str) -> Candidates {
     let mut c = Candidates::default();
-    let mut by: Vec<(String, usize)> = Vec::new();
-    for row in jsonl
+    for mut row in jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Candidate>(l).ok())
     {
-        c.total += 1;
+        row.rank = c.rows.len() + 1;
         c.auto += usize::from(row.auto);
-        let reasons = row.reasons();
-        c.clear += usize::from(reasons.is_empty());
-        if !reasons.is_empty() && row.prio == Some(0) {
+        if !row.blocked.is_empty() && row.prio == Some(0) {
             c.urgent_blocked += 1;
         }
         if row.active
@@ -1345,27 +1434,8 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
         {
             c.uncovered.push(row.project.clone());
         }
-        let mut wanted = false;
-        for r in &reasons {
-            match by.iter_mut().find(|(k, _)| k == r) {
-                Some((_, n)) => {
-                    wanted |= *n < CANDIDATES_SHOWN;
-                    *n += 1;
-                }
-                None => {
-                    wanted = true;
-                    by.push((r.clone(), 1));
-                }
-            }
-        }
-        if c.rows.len() < CANDIDATES_SHOWN {
-            c.rows.push(row);
-        } else if wanted {
-            c.blocked_rows.push(row);
-        }
+        c.rows.push(row);
     }
-    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    c.reasons = by;
     c.uncovered.sort();
     c
 }
@@ -1887,8 +1957,9 @@ mod tests {
             "worded when served, so a kept parse names the day once it is old: {}",
             c.as_of(day)
         );
-        assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
+        assert_eq!((c.rows.len(), c.auto, c.more()), (2, 1, 0));
         let c = c.rows;
+        assert_eq!((c[0].rank, c[1].rank), (1, 2), "a bad line takes no rank");
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["bar-17", "backtest report"], "a bad line is skipped");
         assert!(c[1].lane == "human");
@@ -1898,11 +1969,7 @@ mod tests {
         assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
         std::fs::write(&f, "").unwrap();
         let c = candidates(&f).unwrap();
-        assert_eq!(
-            (c.total, c.rows.len()),
-            (0, 0),
-            "an empty snapshot is no rows"
-        );
+        assert!(c.rows.is_empty(), "an empty snapshot is no rows");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1919,7 +1986,7 @@ mod tests {
     }
 
     #[test]
-    fn candidates_count_each_blocked_reason_over_every_row_and_keep_rows_for_each_chip() {
+    fn candidates_count_each_blocked_reason_over_every_row() {
         let row = |key: &str, prio: u8, blocked: &str, active: bool, project: &str| {
             let b: Vec<&str> = blocked.split('|').filter(|s| !s.is_empty()).collect();
             serde_json::json!({"key": key, "project": project, "prio": prio, "blocked": b,
@@ -1954,21 +2021,29 @@ mod tests {
         lines.push(row("taken", 0, "", false, "game"));
         let c = parse_candidates(&lines.join("\n"));
         assert_eq!(
-            (c.total, c.rows.len()),
-            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN)
-        );
-        let kept: Vec<&str> = c.blocked_rows.iter().map(|r| r.key.as_str()).collect();
-        assert_eq!(
-            kept,
-            ["skip-a", "skip-b", "gap", "gap-old"],
-            "an unblocked row past the cap is not kept"
+            (c.rows.len(), c.shown().len(), c.more()),
+            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN, 5),
+            "every row is kept; the TUI lists the first"
         );
         assert_eq!(
-            c.reasons[0],
+            c.reasons()[0],
             ("judge: skip".to_string(), 2),
             "a judge's reason is one chip"
         );
-        assert_eq!(c.reasons.len(), 4);
+        assert_eq!(c.reasons().len(), 4);
+        let mut facet: Vec<(String, usize)> = crate::table::View::default()
+            .facets(&c.rows)
+            .into_iter()
+            .filter(|f| f.key == "blocked")
+            .flat_map(|f| f.values)
+            .map(|v| (v.value, v.n))
+            .collect();
+        facet.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert_eq!(
+            c.reasons(),
+            facet,
+            "the TUI's chips count what the blocked facet counts"
+        );
         assert_eq!(
             c.urgent_blocked, 1,
             "an urgent row a worker takes is not counted"
@@ -1979,33 +2054,79 @@ mod tests {
             "a gap with no commit in a day is not a gap in cover"
         );
         assert_eq!(
-            c.blocked_rows[1].why_line(),
+            c.rows[CANDIDATES_SHOWN + 1].why_line(),
             "alpha; blocked: judge: skip, a dupe; size/l: too big for a pick"
         );
         assert_eq!(c.rows[0].why_line(), "alpha");
     }
 
     #[test]
-    fn a_reason_chip_keeps_at_most_the_shown_count_past_the_top() {
-        let line = r#"{"key":"k","blocked":["tier 3: past the unattended ceiling"]}"#;
-        let c = parse_candidates(&vec![line; 3 * CANDIDATES_SHOWN].join("\n"));
-        assert_eq!(c.rows.len() + c.blocked_rows.len(), CANDIDATES_SHOWN);
-        assert_eq!(
-            c.reasons,
-            [(
-                "tier 3: past the unattended ceiling".to_string(),
-                3 * CANDIDATES_SHOWN
-            )]
+    fn the_candidates_table_searches_every_row_and_facets_each_reason() {
+        use crate::table::View;
+        let mut lines: Vec<String> = (0..3 * CANDIDATES_SHOWN)
+            .map(|i| format!(r#"{{"key":"k-{i}","project":"game","text":"- [ ] row {i}"}}"#))
+            .collect();
+        lines.push(
+            r#"{"key":"deep","project":"trader","text":"- [ ] the far one","why":"alpha","blocked":["judge: skip, a dupe","size/l: too big"]}"#
+                .into(),
         );
-        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
+        let c = parse_candidates(&lines.join("\n"));
+        let keys = |q: &str, s: &str| -> Vec<String> {
+            View::new::<Candidate>(q, s, "", "")
+                .apply(&c.rows)
+                .iter()
+                .map(|r| r.key.clone())
+                .collect()
+        };
+        assert_eq!(
+            keys("far", ""),
+            ["deep"],
+            "a word finds a row past the first page"
+        );
+        assert_eq!(
+            keys("dupe", ""),
+            ["deep"],
+            "the search reads each reason in full"
+        );
+        assert_eq!(keys("project:trader", ""), ["deep"]);
+        assert_eq!(keys("", "blocked"), ["deep"]);
+        assert_eq!(keys("", "clear").len(), 3 * CANDIDATES_SHOWN);
+        assert_eq!(
+            keys(r#"blocked:"size/l: too big""#, ""),
+            ["deep"],
+            "a row is under each of its reasons"
+        );
+        assert_eq!(keys(r#"blocked:"judge: skip""#, ""), ["deep"]);
+        assert!(keys("-project:game", "clear").is_empty(), "the control");
+        let (_, s) = View::new::<Candidate>("", "", "", "").summary(&c.rows);
+        let reasons = s.facets.iter().find(|f| f.key == "blocked").unwrap();
+        let values: Vec<(&str, usize)> = reasons
+            .values
+            .iter()
+            .map(|v| (v.value.as_str(), v.n))
+            .collect();
+        assert_eq!(values, [("judge: skip", 1), ("size/l: too big", 1)]);
+        assert_eq!(
+            s.states.iter().map(|c| (c.name, c.n)).collect::<Vec<_>>(),
+            [("all", 91), ("clear", 90), ("blocked", 1)]
+        );
+        assert_eq!(s.links[90]["project"], "#projects/trader");
     }
 
     #[test]
-    fn candidates_count_every_row_and_keep_the_first_shown() {
-        let line = r#"{"key":"k","auto":true}"#;
+    fn candidates_count_every_row_and_list_the_first_shown() {
+        let line = r#"{"key":"k","auto":true,"blocked":["tier 3: past the ceiling"]}"#;
         let c = parse_candidates(&vec![line; CANDIDATES_SHOWN + 8].join("\n"));
-        assert_eq!((c.total, c.auto, c.rows.len()), (38, 38, CANDIDATES_SHOWN));
+        assert_eq!(
+            (c.rows.len(), c.auto, c.shown().len()),
+            (38, 38, CANDIDATES_SHOWN)
+        );
         assert_eq!(c.more(), 8);
+        assert_eq!(
+            c.reasons(),
+            [("tier 3: past the ceiling".to_string(), CANDIDATES_SHOWN + 8)]
+        );
+        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
     }
 
     #[test]

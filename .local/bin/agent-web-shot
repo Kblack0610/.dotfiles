@@ -6,8 +6,8 @@ usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
 as DIR/<hash>-<width>.png, the whole page. The cookie signs the browser in: `agent_web=dev` for the
 dev instance in .local/src/agent-web/README.md ("look at a change"). A page is shot once its tab
-element has drawn and says neither "Loading..." nor "reading..." (any case), and no element of it
-is only a placeholder sentence such as "Reading notes projects..." or "Loading.", watched by a MutationObserver.
+element has drawn and no visible element on the page is only a placeholder ("Loading.", "Reading the
+tabs.", "reading..."), watched by a MutationObserver.
 
 The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
 started is stopped, by its process group. Never point this at the live Firefox profile.
@@ -27,13 +27,16 @@ import time
 # The page has drawn when this holds; the observer re-checks it on every DOM change.
 READY = r"""
 const [tab, done] = [arguments[0], arguments[arguments.length - 1]];
-// Busy while the tab says "Loading..." or "reading..." anywhere, or one element's whole text is a
-// placeholder sentence ("Reading notes projects...", "Loading jobs...", "Loading."); a log line that merely
-// mentions reading is not one.
-const PLACEHOLDER = /^(loading|reading)(\b[^.]{0,80}\.\.\.|\.)$/i;
-const busy = (el) => /loading\.\.\.|reading\.\.\./i.test(el.textContent) ||
-  [...el.querySelectorAll("*")].some((e) => !e.children.length && PLACEHOLDER.test(e.textContent.trim()));
-const ok = () => { const el = document.getElementById(tab); return el && el.innerHTML.trim() && !busy(el); };
+// Busy while a visible element's whole text is a placeholder: "Loading.", "Reading the tabs.",
+// "reading...". A row that merely mentions reading, or a closed fold that reads on open, is not one.
+const PLACEHOLDER = /^(loading|reading)\b[^.]{0,80}(\.\.\.|\.)$/i;
+const busy = (el) => [...el.querySelectorAll("*")].some((e) =>
+  !e.children.length && PLACEHOLDER.test(e.textContent.trim()) && e.checkVisibility());
+// A tab draws into its own section (#home), except Sessions, which draws into #scroll; a hash
+// with neither is never ready, so the shot waits out the timeout and says so. The placeholder
+// scan covers all of #main, where a hidden tab is not visible.
+const DRAWS_INTO = { sessions: "scroll" };
+const ok = () => { const el = document.getElementById(DRAWS_INTO[tab] || tab); return el && el.innerHTML.trim() && !busy(document.getElementById("main")); };
 if (ok()) return done(true);
 const mo = new MutationObserver(() => { if (ok()) { mo.disconnect(); done(true); } });
 mo.observe(document.body, { childList: true, subtree: true, characterData: true });

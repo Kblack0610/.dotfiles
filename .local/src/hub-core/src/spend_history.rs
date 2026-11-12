@@ -98,7 +98,10 @@ pub struct Period {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct History {
     pub why: Option<String>,
-    pub head: String,
+    /// The headline's two clauses: this month's pace against the last, then the last day
+    /// against its median. Each surface draws them on lines of their own.
+    pub month: String,
+    pub last_day: String,
     pub rows: Vec<Period>,
     /// Priced days older than the day rows shown.
     pub older: usize,
@@ -194,9 +197,11 @@ pub fn build(all: &[Day], today: &str) -> History {
     let older = daily.len().saturating_sub(DAY_ROWS);
     daily.truncate(DAY_ROWS);
     rows.extend(daily);
+    let (month, last_day) = headline(days);
     History {
         why: None,
-        head: headline(days),
+        month,
+        last_day,
         rows,
         older,
         missing: (span as usize).saturating_sub(days.len()),
@@ -597,18 +602,19 @@ fn period(kind: &'static str, key: &str, s: Sums, prev_per_day: Option<f64>) -> 
     }
 }
 
-/// `Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)`.
-fn headline(days: &[Day]) -> String {
+/// The month clause and the last day clause: `Nov $1,579/day vs Oct $1,102/day (+43%)` and
+/// `11-09 $1,312 vs 7d median $1,120 (+17%)`; either is empty with nothing to say.
+fn headline(days: &[Day]) -> (String, String) {
     let months = rollup(days, "month", 7);
     let per_day = |p: &Period| format!("{} {}/day", month_name(&p.period), p.per_day);
-    let mut parts = vec![];
+    let mut month = String::new();
     if let Some(now) = months.first() {
-        let mut s = per_day(now);
+        month = per_day(now);
         if let Some(prev) = months.get(1).filter(|m| m.period == previous(&now.period)) {
-            s += &format!(" vs {} ({})", per_day(prev), now.vs_prev);
+            month += &format!(" vs {} ({})", per_day(prev), now.vs_prev);
         }
-        parts.push(s);
     }
+    let mut day = String::new();
     if let Some((last, before)) = days.split_last() {
         let mut s = format!(
             "{} {}",
@@ -635,9 +641,9 @@ fn headline(days: &[Day]) -> String {
                 change(last.usd, med)
             );
         }
-        parts.push(s);
+        day = s;
     }
-    parts.join("; ")
+    (month, day)
 }
 
 /// The period before `2026` or `2026-01`: `2025`, `2025-12`.
@@ -731,8 +737,11 @@ mod tests {
             ("year", "2026", "$350", 3)
         );
         assert_eq!(
-            h.head,
-            "Nov $150/day vs Oct $100/day (+50%); 11-01 $150 vs 2d median $100 (+50%)"
+            (h.month.as_str(), h.last_day.as_str()),
+            (
+                "Nov $150/day vs Oct $100/day (+50%)",
+                "11-01 $150 vs 2d median $100 (+50%)"
+            )
         );
         assert!(!h.stale);
     }
@@ -774,7 +783,8 @@ mod tests {
             ("-".into(), "+14%".into(), "+10%".into())
         );
         assert_eq!(
-            h.head, "Mar $75/day; 03-09 $60 vs 1d median $90 (-33%)",
+            (h.month.as_str(), h.last_day.as_str()),
+            ("Mar $75/day", "03-09 $60 vs 1d median $90 (-33%)"),
             "February is empty; 03-03 is the one day in the 7 before 03-09"
         );
     }

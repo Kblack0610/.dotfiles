@@ -3,8 +3,8 @@
 // /api/alerts (hub_core::alerts, which joins Prometheus, the watches' state files, fleet-bench
 // reds and the agent-notify ledger). The page is the layout's inner tabs (hub_core::layout, app.js
 // INNER_TABS): the strip, Health pinned under it, then Firing, Fixes, Watches and History, each
-// label counted by the reader (`strip`). The firing rows are the shared table (table.js), so the
-// server filters and sorts them; a row opens what the watch checks, where, what to do and its
+// label counted by the reader (`strip`). Firing, Watches and History are each the shared table
+// (table.js), so the server filters and sorts them; a firing row opens what the watch checks, where, what to do and its
 // last probe output, and a rule firing in many places opens its alerts. A source that could not
 // be read is an error line, never an empty section.
 
@@ -14,13 +14,39 @@ const ALERTS_REFRESH_MS = 60e3;
 const ALERT_COLS = { sev: ["sev"], what: ["what"], project: ["project"], source: ["source"], since: ["since", "n"], owner: ["owner"], state: ["state"] };
 // Each section's fold, kept across the redraw on every read; a section with no entry is open.
 const alertsOpen = {};
+// Three tables share the tab, so Watches' view keys carry this prefix (wq, ws, wsort, wdir) in the
+// URL and in /api/alerts, and History's `h`; Firing came first and keeps the plain ones, so links
+// to it stay valid.
+const WATCH_PRE = "w", HIST_PRE = "h";
+// One read draws all three: Firing's tblTab reads and paints the page, the other two draw after
+// Fixes inside it.
 const alst = tblTab({
   tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles source:sentinel state:no owner",
   open: () => alertsOpen,
   lead: () => innerStrip("alerts"),
+  params: (p) => { for (const pre of [WATCH_PRE, HIST_PRE]) for (const [k, v] of tblParams(st.views.alerts, pre)) p.set(k, v); },
   head: (t) => alertsHead(t.data), wrap: (html) => innerWrap("alerts", "firing", alertsFold("firing", "Firing", alst.data?.counts?.firing, ALERT_HUE[alst.data?.level], html)),
-  body: (t) => alertsBody(t.data), tail: (t) => alertsTail(t.data),
+  body: (t) => alertsBody(t.data), tail: (t) => alertsFixes(t.data),
+  draw: (html) => paint($("alerts"), html + watT.html() + hisT.html(), alertsOpen),
 });
+const watT = tblTab({
+  tab: "alerts", id: "al-w", el: "alerts", pre: WATCH_PRE, hint: "search, or project:dotfiles severity:high", open: () => alertsOpen,
+  refresh: () => alst.refresh(), render: () => alst.render(), table: () => alst.data?.watches_table,
+  wrap: (html) => alertsWatches(alst.data, html), body: () => watchesBody(alst.data),
+});
+const hisT = tblTab({
+  tab: "alerts", id: "al-h", el: "alerts", pre: HIST_PRE, hint: "search, or verb:tripped", open: () => alertsOpen,
+  refresh: () => alst.refresh(), render: () => alst.render(), table: () => alst.data?.history_table,
+  wrap: (html) => alertsHistory(alst.data, html), body: () => historyBody(alst.data),
+});
+// A search or dropdown in use in one table keeps its focus: only that table repaints around it,
+// and the other two redraw, so a search in one never leaves the others stale (Home's renderHome).
+const alertsPaint = alst.render;
+alst.render = () => {
+  const all = [alst, watT, hisT], busy = all.find((t) => t.repaint());
+  if (!busy) { alertsPaint(); return; }
+  for (const t of all) if (t !== busy) t.redraw();
+};
 
 // A section as a fold, open unless the human folded it. The id is the `#alerts/<id>` anchor;
 // title, its count n and its level make the head.
@@ -122,32 +148,34 @@ function alertsFixes(d) {
   return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : r.open.length, failed ? "bad" : "", open + settled + empty));
 }
 
-// History: Sentinel's pages of the window, newest first; every sender's are on Log's Actions.
-function alertsHistory(d) {
-  const c = d.counts, rows = d.history || [];
-  const body = rows.length ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">verb</th><th data-role="lead">text</th></tr>${rows.map((a) =>
-    `<tr><td class="n">${stamp(a.at)}</td><td class="muted">${esc(a.verb)}</td><td class="wrap">${esc(a.text)}</td></tr>`).join("")}</table></div>` +
-    (c.history_older ? `<div class="muted more">+${c.history_older} older on <a href="#log/actions">Log</a></div>` : "")
-    : `<div class="panel muted">No alert paged this week.</div>`;
-  return innerWrap("alerts", "history", alertsFold("history", "History", c.history + c.history_older, "", body));
+// History: Sentinel's pages of the window, newest first; every sender's are on Log's Actions. The
+// head counts the window, the table the pages the reader kept.
+const HIST_COLS = { when: ["when", "n"], verb: ["verb"], text: ["text"] };
+function historyBody(d) {
+  const t = d.history_table, rows = d.history || [], older = d.counts.history_older;
+  const more = older ? `<div class="muted more">+${older} older on <a href="#log/actions">Log</a></div>` : "";
+  return (rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(t, HIST_COLS)}${rows.map((a) =>
+    `<tr><td class="n">${stamp(a.at)}</td><td class="muted">${esc(a.verb)}</td><td class="wrap">${esc(a.text)}</td></tr>`).join("")}</table></div>`
+    : `<div class="panel muted">${t.total ? "No page matches." : "No alert paged this week."}</div>`) + more;
 }
+const alertsHistory = (d, html) => innerWrap("alerts", "history",
+  alertsFold("history", "History", d.counts.history + d.counts.history_older, "", `<div data-tbl="${HIST_PRE}">${html}</div>`));
 
-// Watches: every one, tripped and failing first.
-function alertsWatches(d) {
-  const c = d.counts, cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
-  const table = (ws) => `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">watch</th><th data-role="glance">state</th><th>severity</th><th>project</th><th class="n" data-role="glance">since</th><th class="n">last run</th><th>where</th></tr>` +
-    ws.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td>` +
-      `<td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="wrap muted">${esc(w.place || "-")}</td></tr>`).join("") + `</table></div>`;
-  // The watches needing a look are the table; the ok ones fold to their count, as settled fixes do.
-  const all = d.watches || [], look = all.filter((w) => w.state !== "OK"), ok = all.filter((w) => w.state === "OK");
-  const folded = ok.length ? `<details class="sec-d" data-k="watches-ok"${alertsOpen["watches-ok"] ? " open" : ""}><summary class="muted fold">+${ok.length} ok</summary>${table(ok)}</details>` : "";
-  const body = !all.length ? `<div class="panel muted">No watch defined.</div>` : (look.length ? table(look) : "") + folded;
-  const bad = [c.watches_tripped && `${c.watches_tripped} tripped`, c.watches_error && `${c.watches_error} error`].filter(Boolean).join(", ");
-  return innerWrap("alerts", "watches", alertsFold("watches", "Watches", c.watches, bad ? "warn" : "", (bad ? `<div class="cline warn">${bad}</div>` : "") + body));
+// Watches: every one, tripped and failing first (the reader's order). The state tiles say how many
+// tripped or failed and filter to them, so the head is its title and count alone.
+const WATCH_COLS = { name: ["watch"], state: ["state"], severity: ["severity"], project: ["project"], since: ["since", "n"], lastrun: ["last run", "n"], place: ["where"] };
+function watchesBody(d) {
+  const t = d.watches_table, rows = d.watches || [];
+  const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
+  return rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(t, WATCH_COLS)}` +
+    rows.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td>` +
+      `<td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="wrap muted">${esc(w.place || "-")}</td></tr>`).join("") + `</table></div>`
+    : `<div class="panel muted">${t.total ? "No watch matches." : "No watch defined."}</div>`;
 }
-
-// The inner tabs after Firing, in the layout's order.
-const alertsTail = (d) => alertsFixes(d) + alertsWatches(d) + alertsHistory(d);
+function alertsWatches(d, html) {
+  const c = d.counts;
+  return innerWrap("alerts", "watches", alertsFold("watches", "Watches", c.watches, c.watches_tripped || c.watches_error ? "warn" : "", `<div data-tbl="${WATCH_PRE}">${html}</div>`));
+}
 
 $("alerts").addEventListener("click", (e) => {
   const t = e.target;

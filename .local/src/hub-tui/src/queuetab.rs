@@ -622,7 +622,7 @@ fn candidates(
         None => (String::new(), "reading".to_string()),
         Some(Err(_)) => (String::new(), String::new()),
         Some(Ok(c)) => (
-            format!(" ({}, {} auto)", c.total, c.auto),
+            format!(" ({}, {} auto)", c.rows.len(), c.auto),
             match c.as_of(chrono::Local::now()).as_str() {
                 "" => hint.into(),
                 t => format!("as of {t}  {hint}"),
@@ -648,7 +648,7 @@ fn candidates(
         Some(Ok(c)) if v.cands_open => c,
         _ => return (out, None),
     };
-    let shown = v.shown_cands(&c.rows);
+    let shown = v.shown_cands(c.shown());
     if shown.is_empty() {
         out.push(Line::styled("No open board row to start.", p.dim()));
         return (out, None);
@@ -696,8 +696,9 @@ fn candidates(
     if c.more() > 0 {
         out.push(Line::styled(format!("+{} more", c.more()), p.dim()));
     }
-    if !c.reasons.is_empty() {
-        let by: Vec<String> = c.reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
+    let reasons = c.reasons();
+    if !reasons.is_empty() {
+        let by: Vec<String> = reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
         out.push(clip_line(
             Line::styled(format!("blocked: {}", by.join(", ")), p.dim()),
             w,

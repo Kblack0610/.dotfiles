@@ -61,12 +61,13 @@ const tblDrawn = new WeakMap();
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
-// One count chip, for the lists that filter themselves (the Sessions side list, Tests results,
-// the Fleet verdicts); a table draws its states as tiles (tblTiles).
-const chipBtn = (on, attr, val, label, n) =>
-  `<button class="${on ? "on" : ""}" ${attr}="${esc(val)}">${esc(label)} <span class="n">${n}</span></button>`;
-// The state chips with their counts; the first is the view the table opens on (hub-core `Row::in_default`).
-const tblChips = (t) => t.states.map((c, i) => chipBtn(i ? c.name === t.state : !t.state, "data-ts", i ? c.name : "", c.name, c.n)).join("");
+// The state chips with their counts, the first the view the table opens on (hub-core
+// `Row::in_default`): for the Sessions side list, too narrow for tiles. A table draws its states
+// as tiles (tblTiles).
+const tblChips = (t) => t.states.map((c, i) => {
+  const on = i ? c.name === t.state : !t.state;
+  return `<button class="${on ? "on" : ""}" data-ts="${i ? esc(c.name) : ""}">${esc(c.name)} <span class="n">${c.n}</span></button>`;
+}).join("");
 
 // The table's overview: each state but the first (the default view) as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
@@ -101,10 +102,9 @@ function tblBar(id, t, hint, tiles = "", days = "") {
 }
 
 // The header row. `labels` maps a column key to [text, class, named]; a column it leaves out is not
-// drawn, and a named one is worded with its label on a phone row ("pass 84%").
-// `pre` names the data attributes a click reads (`data-<pre>sort`, `data-<pre>dir`): a second table
-// on a tab sorts apart from the first by naming its own.
-function tblHead(t, labels, pre = "t") {
+// drawn, and a named one is worded with its label on a phone row ("pass 84%"). A second table on a
+// tab sorts apart from the first through its block's data-tbl (tblOf), not through these buttons.
+function tblHead(t, labels) {
   const cols = t.columns.filter((c) => labels[c.key]);
   const facet = new Map((t.facets || []).map((f) => [f.key, f]));
   const mine = cols.filter((c) => facet.has(c.key));
@@ -117,7 +117,7 @@ function tblHead(t, labels, pre = "t") {
     const [label, cls, named] = labels[c.key];
     const aria = c.sort ? ` aria-sort="${c.sort === "asc" ? "ascending" : "descending"}"` : "";
     const mark = c.sort ? (c.sort === "asc" ? " ^" : " v") : "";
-    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}><button class="thsort" data-${pre}sort="${esc(c.next_sort)}" data-${pre}dir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
+    return `<th${cls ? ` class="${cls}"` : ""}${aria} data-role="${c.role || ""}" data-label="${esc(label)}"${named ? " data-named" : ""}><button class="thsort" data-tsort="${esc(c.next_sort)}" data-tdir="${c.next_dir}" title="sort by ${esc(label)}">${esc(label)}${mark}</button></th>`;
   }).join("") + "</tr>" + filters;
 }
 
