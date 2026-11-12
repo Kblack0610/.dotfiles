@@ -875,10 +875,11 @@ cmd_target() {
 }
 
 # reopen_session <ask file> <claude session> [prompt]: start an ended conversation again, with the
-# prompt as its first message when one is given, and print its jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
-# it too); this picks only where: the directory the conversation started in, which `claude
-# --resume` needs to find it, and the world and session that directory routes to, as window
-# ask-<id>. A world session that is up gains the window; one that is not starts with it.
+# prompt as its first message when one is given, and print its jump target. fleet-dispatch start
+# --resume is the one path that opens sessions (restore uses it too); this picks only where: the
+# directory the conversation started in, which `claude --resume` needs to find it, and the world
+# and session that directory routes to, as window ask-<id>. A world session that is up gains the
+# window; one that is not starts with it.
 reopen_session() {
   local f="$1" sid="$2" prompt="${3:-}" cwd world sess win out
   # A running process outside tmux has no pane to go to, and a second resume would fork it.

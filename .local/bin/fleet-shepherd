@@ -223,8 +223,9 @@ tag_pane() {
 # manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
 # verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
 # question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
-# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several branches (shared) is owned by the queue item
-# shared_sample filed, and its sessions are told once; only one with no item escalates.
+# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
+# branches (shared) is owned by the queue item shared_sample filed, and its sessions are told
+# once; only one with no item escalates.
 # PARKED is fleet-pace's, below.
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
