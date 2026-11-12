@@ -239,7 +239,7 @@ const costs = {
   history: {
     why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-12 $1,312 vs 7d median $1,120 (+17%)", older: 0, missing: 1, stale: false,
     note: "est. is the share priced from tokens",
-    rows: [{ kind: "month", period: "2026-11", total: "$14,210", days: 12, per_day: "$1,579", vs_prev: "+43%", est: "21%" }, { kind: "day", period: "11-12", total: "$1,312", days: 1, per_day: "$1,312", vs_prev: "+69%", est: "21%" }],
+    rows: [{ kind: "month", period: "2026-11", total: "$14,210", days: 12, per_day: "$1,579", per_session: "$2.50", vs_prev: "+43%", est: "21%" }, { kind: "day", period: "11-12", total: "$1,312", days: 1, per_day: "$1,312", per_session: "$2.50", vs_prev: "+69%", est: "21%" }],
     chart: rows(7, (i) => {
       const key = `2026-11-${String(6 + i).padStart(2, "0")}`, usd = i === 2 ? null : 900 + i * 70;
       return { key, label: key.slice(5), usd, measured: usd && usd * 0.8, estimated: usd && usd * 0.2, tip: usd == null ? `${key}: no figure` : `${key}: $${usd}` };

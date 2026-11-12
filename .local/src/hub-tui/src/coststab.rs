@@ -933,6 +933,7 @@ fn history_rows(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'stat
                 &r.total,
                 &r.days.to_string(),
                 &r.per_day,
+                &r.per_session,
                 &r.vs_prev,
                 &r.est,
             ]
@@ -943,10 +944,18 @@ fn history_rows(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'stat
         .collect();
     out.extend(
         Table {
-            header: vec!["period", "total", "days", "$/day", "vs prev", "est."],
+            header: vec![
+                "period",
+                "total",
+                "days",
+                "$/day",
+                "$/session",
+                "vs prev",
+                "est.",
+            ],
             rows,
-            keep: vec![0, 1, 3, 4, 5, 2],
-            right: (1..6).collect(),
+            keep: vec![0, 1, 3, 4, 5, 6, 2],
+            right: (1..7).collect(),
             ..Default::default()
         }
         .fit(w, p.head()),
@@ -1109,7 +1118,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
     if past > 0 {
         out.push(Line::styled(
-            format!("+{past} more on the web table (#costs/spend), which takes a query"),
+            format!("+{past} cheaper sessions; the web table (#costs/spend) shows more"),
             p.dim(),
         ));
     }
@@ -1675,8 +1684,8 @@ mod tests {
             at("WHO SPENT THE 24H").unwrap(),
         );
         assert!(
-            fleet == 1 && fleet < sess && sess < who,
-            "the fleet figure heads Spend, burn per session under it, who spent it after: {spend}"
+            fleet == 1 && fleet < who && who < sess,
+            "the fleet figure heads Spend, who spent it next, burn per session last: {spend}"
         );
         assert!(spend.contains("window:") && !spend.contains("WHERE THE TOKENS GO"));
         assert!(v.key(KeyCode::Right));
@@ -1903,7 +1912,10 @@ mod tests {
         let open = page(&v);
         assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
         assert!(open.contains("- SPEND  "), "{open}");
-        assert!(open.contains("vs prev"), "{open}");
+        assert!(
+            open.contains("vs prev") && open.contains("$/session"),
+            "{open}"
+        );
         let row = |p: &str| {
             open.lines()
                 .find(|l| l.trim_start().starts_with(p))
@@ -1913,12 +1925,15 @@ mod tests {
         };
         assert_eq!(
             row("2026-11 "),
-            ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]
+            ["2026-11", "$1,579", "1", "$1,579", "-", "+43%", "25%"]
         );
-        assert_eq!(row("2026 "), ["2026", "$3,783", "3", "$1,261", "-", "25%"]);
+        assert_eq!(
+            row("2026 "),
+            ["2026", "$3,783", "3", "$1,261", "-", "-", "25%"]
+        );
         assert_eq!(
             row("10-31"),
-            ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]
+            ["10-31", "$1,102", "1", "$1,102", "-", "+0%", "25%"]
         );
     }
 
