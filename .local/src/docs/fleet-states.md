@@ -60,7 +60,7 @@ Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default
 
 ## Close verdict
 
-Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label), never by time since they were in it: a DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on time. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
+Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label). A DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on quiet. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
 
 | # | Facts | Verdict |
 |---|---|---|
@@ -79,7 +79,7 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 | 13 | an ask of its own is open | after: the human answers it |
 | 14 | anything else | keep: its first blocker |
 
-Dispatched is the `@dispatch` window flag or a queue item with an `origin`; anything else is hand-started. The world is not a sign: every worktree session is on lab, the human's own starts too. Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0 as in `fleet-shepherd`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
+Dispatched (rules 8 and 9) is the `@dispatch` window flag or a queue item with an `origin`; anything else is hand-started, and its own open ask waits for the answer (rule 13). The world is not a sign: every worktree session is on lab, the human's own starts too. Quiet (rule 12) is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0 as in `fleet-shepherd`. `pct` is `phases_done` of `phases_total` in percent, null with no checklist.
 
 ## Schema (version 1)
 

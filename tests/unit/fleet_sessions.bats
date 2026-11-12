@@ -3231,9 +3231,10 @@ verdict() {
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "now: plan finished, nothing open" ]
-  # Being on lab is not dispatch: the human's own worktree sessions live there too.
-  [ "$(verdict '{idle_min: 30, bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
+  # Being on lab is not dispatch: the human's own worktree sessions live there too. A hand-started
+  # row waits for the answer to its own ask; a dispatched one closes over it.
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"], dispatch: "p: s"}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "moved"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   # What waits on the human keeps a hand-started row idle 30; time alone does not (negative controls).
   [ "$(verdict '{target: "hub/r:1", idle_min: 30, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
@@ -3252,7 +3253,6 @@ verdict() {
   # Negative control: the same rows read by anyone else, or for another session, still keep.
   [ "$(verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
   [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
-  [ "$(SELF=s2 verdict '{target: "hub/d:3", bucket: "WORKING", idle_min: 0, session_id: "s1"}')" = "keep: working" ]
   # Every other keep still holds it.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]

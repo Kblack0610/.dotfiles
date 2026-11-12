@@ -66,8 +66,7 @@ set -uo pipefail
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 # The close verdict (close_verdict): a CHAT session closes once quiet this long (the human set 24h,
-# 2026-11-05). No other row closes on time: what waits on the human keeps it (an ask, a dialog, plan
-# mode, the manual label), and DONE's own FLEET_IDLE_MIN is the only idle gate (the human, 2026-11-12).
+# 2026-11-05). It is the only rule that reads quiet; DONE's own FLEET_IDLE_MIN is the idle gate.
 : "${FLEET_CHAT_CLOSE_H:=24}"
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -1718,7 +1717,7 @@ explain() {
 # .local/src/docs/fleet-states.md. Dispatched is the `@dispatch` window flag or a queue item with
 # an origin; the world is not a sign, since a human may still type in a lab window. Only a
 # dispatched session closes over its own open ask (the answer reopens it); a hand-started one waits
-# for it. No rule closes on time since the human was here: what waits on them keeps a window.
+# for it. What waits on the human (an ask, a dialog, plan mode, the manual label) keeps a window.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. Quiet is fleet-shepherd's: a null age_min reads
 # 0, so an unknown age never closes a CHAT row. The row of the session named by `--arg self`
