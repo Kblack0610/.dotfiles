@@ -82,7 +82,7 @@ impl Alert {
     /// The hue this row gives the tab (rule 5). A watch that cannot check is amber and any other
     /// red row is red, but an Alertmanager rule says its own: critical is broken, a warning
     /// needs a look and info is neither.
-    fn hue(&self) -> Level {
+    pub(crate) fn hue(&self) -> Level {
         if self.error() {
             return Level::Warn;
         }
