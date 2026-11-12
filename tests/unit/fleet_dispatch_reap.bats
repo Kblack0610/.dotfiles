@@ -704,10 +704,12 @@ OUT
   fj_item open success
   run cmd_reap
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
-  # a warning is a pass, as Forgejo's combined state reads it: still parked
+  # a warning is a pass, as Forgejo's combined state reads it: a lander, never fix-ci
   jq -c '.statuses[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   refute_output --partial 'fix-ci'
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 111111111111, try 1 of 2)'
+  agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null; agent-queue move fix-crash review >/dev/null
   jq -cn '{state: "failure", statuses: [{status: "failure"}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 111111111111, try 1 of 2)'
@@ -739,8 +741,8 @@ OUT
   pr_item OPEN
   run cmd_reap
   assert_output --partial 'review queue item fix-crash'
-  # checks still running or green: it stays parked, no owner
-  for ci in PENDING PASS NONE; do
+  # checks still running or none: it stays parked, no owner
+  for ci in PENDING NONE; do
     fix_ended "$h1" "$ci"
     run cmd_reap
     assert_success
@@ -781,6 +783,65 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+# 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
+@test "reap: a green PR parked in review gets a lander twice per head, then one human-sheet row; red and green keep their own counts" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash'
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_success
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries, .pr_owner, .mode, .fix_tries // ""] | join("|")')" "queued|1 $h1|land|oneshot|"
+  # its brief decides it: land through agent-land, close with a reason, or ask; never fix-ci
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 --partial 'Its PR o/game#12 is open and green at 111111111111'
+  assert_output --partial 'ingest-prs/SKILL.md'
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash'
+  assert_output --partial 'fleet-dispatch item-tier fix-crash'
+  assert_output --partial 'never deleting the branch'
+  refute_output --partial '/fix-ci'
+  # the lander pushed a base merge and it went red: fix-ci owns that head, on its own count
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h2:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr_owner, .land_tries] | join("|")')" "fix|1 $h1"
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 '/fix-ci o/game#12'
+  # green again and the lander ended without landing, twice: one human row, then quiet
+  fix_ended "$h2" PASS
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 222222222222, try 2 of 2)'
+  fix_ended "$h2" PASS
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries, on the game sheet)'
+  assert_called "notes --profile bnb ptask game add chore(review): PR o/game#12 is green at ${h2:0:12} after 2 land tries; land it"
+  run cmd_reap
+  refute_output --partial 'fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # the human pushed a red head: both counts start again, so its green after fix-ci gets a lander, not a second row
+  fix_ended 3333333333333333333333333333333333333333 FAIL
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 333333333333, try 1 of 2)'
+  fix_ended 4444444444444444444444444444444444444444 PASS
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 444444444444, try 1 of 2)'
+}
+
+@test "reap: a green tier-3 PR's lander runs on claude, and a green PR waits for admission like a red one" {
+  pr_item OPEN
+  run cmd_reap
+  agent-queue set fix-crash agent=codex tags=tier3 >/dev/null
+  fix_ended 1111111111111111111111111111111111111111 PASS
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries // ""] | join("|")')" "review|"
+  grep -q 'fix-crash: PR o/game#12 green at 111111111111; land held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "hold not logged"
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .agent)" claude
 }
 
 @test "reap: a red PR in review waits for admission, and an item with no session recorded never reads as gone" {
