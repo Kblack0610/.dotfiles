@@ -109,7 +109,7 @@ impl Strip {
                         state: "",
                     }),
                 ),
-                chip("queued", "up next", up_next, queue_to("up next")),
+                chip("queued", "up next", up_next, queue_to("ready")),
                 chip(
                     "running",
                     "running",
@@ -482,7 +482,7 @@ mod tests {
             vec![
                 None,
                 Some(("board", "")),
-                Some(("queue", "up next")),
+                Some(("queue", "ready")),
                 Some(("queue", "running")),
                 Some(("queue", "on a PR")),
                 Some(("queue", "needs you")),

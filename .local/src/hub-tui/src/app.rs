@@ -4986,11 +4986,11 @@ mod tests {
             s.contains("Pick a side") && !s.contains("Fix the menu"),
             "{s}"
         );
-        // Any other word is the query, from the table's own view.
+        // Any other word is the query, over every state.
         a.open_query(Some("project:dotfiles".into()));
         assert_eq!(
             (a.qv.table.view.state.as_str(), a.qv.table.view.q.as_str()),
-            ("", "project:dotfiles")
+            ("all", "project:dotfiles")
         );
         let s = screen(&mut a, 140, 30);
         assert!(s.contains("Next") && !s.contains("Pick a side"), "{s}");
@@ -5076,7 +5076,7 @@ mod tests {
         hub_core::queue::Queue {
             items: hub_core::queue::parse(&jsonl.join("\n")),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         }
     }
 
@@ -5921,7 +5921,9 @@ mod tests {
         assert_eq!(a.tab, Tab::Queue);
         let s = screen(&mut a, 140, 30);
         assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1"),
+            s.contains(
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+            ),
             "{s}"
         );
         assert!(
@@ -5994,7 +5996,7 @@ mod tests {
         );
         assert!(screen(&mut a, 160, 40).contains("- CANDIDATES (0, 0 auto)"));
         a.handle(Msg::Candidates(Ok(queuetab::tests::cands())));
-        for _ in 0..5 {
+        for _ in 0..4 {
             a.handle(key('j'));
         }
         let s = screen(&mut a, 160, 40);
@@ -6315,7 +6317,7 @@ mod tests {
         a.queue = Some(Queue {
             items: hub_core::queue::parse(jsonl),
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         a
     }
@@ -6446,7 +6448,7 @@ mod tests {
         a.queue = Some(Queue {
             items: vec![],
             stats: None,
-            errors: vec![],
+            ..Default::default()
         });
         assert!(!a.hints().starts_with("Running:"), "{}", a.hints());
         let before = a.scroll;

@@ -43,7 +43,7 @@ const node = (key, label, o = {}) => ({ key, label, count: "4", sub: "p90 2h", h
 const nodes = (over = {}) => [
   node("inbox", "inbox", { count: "1", sub: "ok" }),
   node("board", "board", { count: "312" }),
-  node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "up next" } }),
+  node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "ready" } }),
   node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running" } }),
   node("needs", "needs you", { count: "2", hot: true }),
   node("done", "done 24h", { count: "9" }),
@@ -95,13 +95,15 @@ test("a stale or ageless snapshot is red, a failed read says why, and no data ye
   assert.match(drawStrip(null), /class="flow muted">reading</);
 });
 
+// hub_core::queue's COLUMNS, title first; the web draws them all, in this order.
+const QCOLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"];
 const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort: next[0], next_dir: next[1] });
 // The shape hub_core::table::Summary serializes to for the Queue table: opened in its own order
 // (no sort key marked), chips from the states, every column sortable.
 const table = {
   q: "", state: "", sort: "", dir: "", total: 4, shown: 3,
-  states: [{ name: "all", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "up next", n: 1 }, { name: "done", n: 0 }],
-  columns: ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"].map((k) => col(k)),
+  states: [{ name: "active", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "on a PR", n: 0 }, { name: "ready", n: 1 }, { name: "held", n: 0 }, { name: "done", n: 0 }, { name: "all", n: 3 }],
+  columns: QCOLS.map((k) => col(k)),
   facets: [],
 };
 const item = (slug, o = {}) => ({ state: "queued", project: "dotfiles", slug, title: `title ${slug}`, priority: "high", ...o });
@@ -110,7 +112,7 @@ const items = [
   item("r1", { state: "running", pr: "o/r#7", pr_label: "r#7", pr_url: "https://github.com/o/r/pull/7", timing: { in_state: 42, wait: 3, run: 42 } }),
   item("q1", { timing: { in_state: 10 } }),
 ];
-const data = { at: 1793942700, items, table, needs_you: 1, open_rows: 200, section_aliases: { waiting: "needs you", running: "running", queued: "up next", done: "done" } };
+const data = { at: 1793942700, items, table, needs_you: 1, open_rows: 200, section_aliases: { waiting: "needs you", running: "running", queued: "ready", done: "done" } };
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''");
   Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, ...over });
@@ -162,10 +164,12 @@ const target = (attrs, row) => ({
 test("the Queue is one table with the server's chips and every header a sort button", () => {
   load();
   const h = draw();
-  assert.doesNotMatch(h, /data-ts="all"|>ALL</, "no tile is every row");
+  assert.doesNotMatch(h, /data-ts="active"|>ACTIVE</, "no tile is the default view");
   assert.match(h, /<button class="tile" data-ts="needs you"><span class="tl">NEEDS YOU<\/span><span class="tv">1<\/span><\/button>/);
-  assert.match(h, /<button class="tile" data-ts="up next"><span class="tl">UP NEXT<\/span><span class="tv">1<\/span><\/button>/);
-  for (const c of ["state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "plan", "title"]) {
+  assert.match(h, /<button class="tile" data-ts="ready"><span class="tl">READY<\/span><span class="tv">1<\/span><\/button>/);
+  assert.match(h, /<button class="tile zero" data-ts="done">/, "done is one tile away");
+  assert.match(h, /<button class="tile" data-ts="all"><span class="tl">ALL<\/span>/);
+  for (const c of QCOLS) {
     assert.match(h, new RegExp(`<th[^>]*><button class="thsort" data-tsort="${c}" data-tdir="desc" title="sort by ${c}">`), `${c} sorts`);
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
@@ -316,7 +320,7 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   load({ ...data, items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="11"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="17"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);
@@ -416,4 +420,24 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
   fire("click", { type: "click", target: target({}, "w1") });
   assert.doesNotMatch(parts["q-list"].innerHTML, /qlinks/, "an item that names nothing draws no line");
   fire("click", { type: "click", target: target({}, "w1") });
+});
+
+test("a row carries its start place, hold, source and board row, and the head says what dispatch is doing", () => {
+  const rows = [
+    item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
+    item("q2", { priority: "low", hold: "after q1", held_on: "after q1", source: "human" }),
+  ];
+  const links = [{ row: "#board/apo-120" }, {}];
+  load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
+  const h = draw();
+  assert.match(h, /<tr class="qr" data-slug="q1"><td class="n">1<\/td><td class="wrap">title q1<\/td>/, "# then the title");
+  assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
+  assert.match(h, /data-slug="q1">.*?<td>board<\/td>/);
+  assert.match(h, /<a class="tl" href="#board\/apo-120">apo-120<\/a>/, "the row links to the board");
+  // NEGATIVE CONTROL: a held item has no start place, and its hold links the item it waits on.
+  assert.match(h, /<tr class="qr" data-slug="q2"><td class="n"><\/td>/);
+  assert.match(h, /<td title="after q1">after <a class="tl" href="#queue\/q1">q1<\/a><\/td>/);
+  assert.match(h, /<div class="cline qdispatch warn">Dispatch held: load 31 is over the pace\. It could start 0 of 1 runnable\.<\/div>/);
+  load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
+  assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);
 });

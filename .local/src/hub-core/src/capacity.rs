@@ -194,6 +194,76 @@ pub fn headroom(path: &std::path::Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
+/// The last dispatch pass's verdict, the line above the Queue table: whether it may start work,
+/// why not, and how many ready items it could start of those it counts runnable.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Dispatch {
+    /// What holds it (`held` in `headroom.json`), only when the pass names a kind of hold:
+    /// "nothing runnable" is an empty queue, not a hold.
+    pub held: Option<String>,
+    pub could_start: u64,
+    pub runnable: u64,
+    /// Why there is no verdict: no file, a stale pass, or one that does not parse.
+    pub error: Option<String>,
+}
+
+impl Dispatch {
+    pub fn read(path: &std::path::Path) -> Dispatch {
+        match headroom(path) {
+            Ok(v) => {
+                let held = v["held_kind"]
+                    .as_str()
+                    .and(v["held"].as_str())
+                    .map(String::from);
+                // A pass with no counts is a changed schema, not an empty queue: no verdict,
+                // said so; its hold still holds.
+                match (v["could_start"].as_u64(), v["runnable"].as_u64()) {
+                    (Some(could_start), Some(runnable)) => Dispatch {
+                        held,
+                        could_start,
+                        runnable,
+                        error: None,
+                    },
+                    _ => Dispatch {
+                        held,
+                        error: Some("headroom.json: no could_start or runnable count".into()),
+                        ..Dispatch::default()
+                    },
+                }
+            }
+            Err(e) => Dispatch {
+                error: Some(format!("headroom.json: {e}")),
+                ..Dispatch::default()
+            },
+        }
+    }
+
+    /// The verdict in fleet-dispatch's own `headroom.json`.
+    pub fn now() -> Dispatch {
+        Dispatch::read(&crate::boards::dispatch_dir().join("headroom.json"))
+    }
+
+    /// `Dispatch held: <why>. It could start 0 of 192 runnable.`, or `Dispatch running: ...`.
+    pub fn line(&self) -> String {
+        if let Some(e) = &self.error {
+            return format!("Dispatch: no verdict ({e}).");
+        }
+        let n = format!(
+            "could start {} of {} runnable",
+            self.could_start, self.runnable
+        );
+        match &self.held {
+            Some(h) => format!("Dispatch held: {h}. It {n}."),
+            None => format!("Dispatch running: it {n}."),
+        }
+    }
+
+    /// Held, or no verdict to go on: the line is amber.
+    pub fn warn(&self) -> bool {
+        self.held.is_some() || self.error.is_some()
+    }
+}
+
 /// Read every source. The run units are the last dispatch pass's `headroom.json`, never a fresh
 /// `fleet-dispatch headroom`: that walks the live units and took over a minute on a loaded
 /// machine, and the header names the pass's timer beside it.
@@ -431,6 +501,48 @@ mod tests {
         assert!(c.parts[0].text.contains("run units unknown"));
         assert!(c.errors.iter().any(|e| e.starts_with("headroom.json: ")));
         assert!(c.errors.iter().any(|e| e.starts_with("fleet-shepherd: ")));
+    }
+
+    #[test]
+    fn the_queue_line_says_whether_dispatch_is_held_and_what_it_could_start() {
+        let d = std::env::temp_dir().join(format!("hub-dispatch-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let h = d.join("headroom.json");
+        let line = |body: &str| {
+            std::fs::write(&h, body).unwrap();
+            let v = Dispatch::read(&h);
+            (v.line(), v.warn())
+        };
+        assert_eq!(
+            line(r#"{"could_start":0,"runnable":192,"held":"load 31.31 on 24 cores is over the 0.9 pace","held_kind":"load"}"#),
+            ("Dispatch held: load 31.31 on 24 cores is over the 0.9 pace. It could start 0 of 192 runnable.".into(), true)
+        );
+        assert_eq!(
+            line(r#"{"could_start":3,"runnable":40,"held":"nothing runnable"}"#),
+            (
+                "Dispatch running: it could start 3 of 40 runnable.".into(),
+                false
+            ),
+            "a held line with no kind is no hold"
+        );
+        assert_eq!(
+            line(r#"{"can_start":3,"held":"load","held_kind":"load"}"#),
+            (
+                "Dispatch: no verdict (headroom.json: no could_start or runnable count).".into(),
+                true
+            ),
+            "a renamed key is no verdict, never `0 of 0`"
+        );
+        let none = Dispatch::read(&d.join("none.json"));
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(
+            none.warn()
+                && none
+                    .line()
+                    .starts_with("Dispatch: no verdict (headroom.json: "),
+            "{}",
+            none.line()
+        );
     }
 
     #[test]
