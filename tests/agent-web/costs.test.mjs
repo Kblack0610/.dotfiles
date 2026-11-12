@@ -714,3 +714,14 @@ test("the Budget inner tab is this month's cash: head, what needs a look, the bi
   assert.match(none, /id="sec-budget">Budget<\/h2><div class="panel"><span class="warn">no budget file/);
   run("st.arg = ''");
 });
+
+test("every Costs section is drawn in the layout's order, so each inner tab's group reads top to bottom", () => {
+  run("st.arg = ''; st.section = null; cost.open = {}");
+  const fleet_cost = { why: null, usd: "$9", measured: "$9", estimated: "$0", as_of: 1700000000, stale: false, coverage: "", rows: [], unpriced: [], foot: "" };
+  const h = show(board({ fleet_cost, tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) }));
+  const order = JSON.parse(run("JSON.stringify(INNER_TABS.costs.tabs.flatMap((t) => t[2]))"));
+  const drawn = order.filter((id) => h.includes(`id="sec-${id}"`));
+  assert.ok(drawn.length >= 6, `most sections drawn: ${drawn}`);
+  const at = drawn.map((id) => h.indexOf(`id="sec-${id}"`));
+  assert.deepEqual(at, [...at].sort((a, b) => a - b), `DOM order ${drawn} at ${at}`);
+});

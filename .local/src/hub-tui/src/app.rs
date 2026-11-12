@@ -2071,6 +2071,7 @@ impl App {
             }
             if self.cv.key(k.code) {
                 self.scroll = 0;
+                self.seek = crate::coststab::key_section(k.code);
                 return;
             }
         }
@@ -7197,6 +7198,23 @@ mod tests {
         assert_eq!(a.cv.consumers, Some(false));
         a.handle(k());
         assert_eq!(a.cv.consumers, Some(true));
+    }
+
+    #[test]
+    fn a_costs_table_key_seeks_the_table_under_spends_other_sections() {
+        let k = |c| Msg::Input(Event::Key(KeyEvent::from(KeyCode::Char(c))));
+        let mut a = costs_app(true);
+        a.handle(k('w'));
+        assert_eq!(
+            a.seek,
+            Some("table"),
+            "w changes the table, so the page shows it"
+        );
+        a.handle(k('t'));
+        assert_eq!((a.cv.inner, a.seek), ("models", Some("sections")));
+        // the control: a fold key seeks its own section, not the table
+        a.handle(k('y'));
+        assert_ne!(a.seek, Some("table"));
     }
 
     #[test]

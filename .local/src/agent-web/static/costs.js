@@ -329,7 +329,7 @@ const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLoca
 // What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
 // and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. It starts open (rule 4),
 // its head amber when the reader failed that night or the snapshot is stale. The
-// gateway's dollars are the gateway's alone; session cost is Fleet cost 24h, so none is summed here.
+// gateway's dollars are the gateway's alone; session cost is Spend's FLEET 24H, so none is summed here.
 function langfuseSection(d) {
   const t = d.tokens, lf = t?.langfuse;
   if (!t) return "";
@@ -348,7 +348,7 @@ function langfuseSection(d) {
     `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">slowest tools, by total time</th><th class="n" data-role="glance" data-named>calls</th><th class="n">p50</th><th class="n" data-role="glance" data-named>p95</th><th class="n" data-role="glance" data-named>total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs">Fleet cost 24h</a></div></div></details>`;
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/fleet">who spent the 24h</a> on Spend</div></div></details>`;
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of

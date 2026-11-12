@@ -129,6 +129,16 @@ pub fn header(col: &str) -> &'static str {
     }
 }
 
+/// The section a key acts on, which `key` brings up and the page seeks to: the table's keys the
+/// table, which sits under Spend's other sections, and `t`/`T` the Sections block.
+pub fn key_section(code: KeyCode) -> Option<&'static str> {
+    match code {
+        KeyCode::Char('/' | 'b' | 'B' | 'w' | 's' | 'S') => Some("table"),
+        KeyCode::Char('t' | 'T') => Some("sections"),
+        _ => None,
+    }
+}
+
 impl CostsView {
     pub fn is_default(&self) -> bool {
         self.typing.is_none()
@@ -198,12 +208,8 @@ impl CostsView {
             }
             return true;
         }
-        // The table's keys act on the table, so they bring it up first.
-        if matches!(code, KeyCode::Char('/' | 'b' | 'B' | 'w' | 's' | 'S')) {
-            self.reveal("table");
-        }
-        if matches!(code, KeyCode::Char('t' | 'T')) {
-            self.reveal("sections");
+        if let Some(sec) = key_section(code) {
+            self.reveal(sec);
         }
         match code {
             KeyCode::Left | KeyCode::Right => {
@@ -287,7 +293,10 @@ impl CostsView {
                 return Some(Some("sessions"));
             }
             KeyCode::Char('v') => {
-                self.reveal("sessions");
+                // A switch only shows the table: its row count is unknown until Spend draws.
+                if self.reveal("sessions") {
+                    return Some(Some("sessions"));
+                }
                 self.sess_at = (self.sess_at + 1) % (self.sess_n.get() + 1);
                 return Some(Some("sessions"));
             }
@@ -1614,6 +1623,26 @@ mod tests {
     }
 
     /// A view with one inner tab shown.
+    #[test]
+    fn v_from_another_inner_tab_only_switches_until_spend_has_drawn_its_rows() {
+        let mut v = on("limits");
+        assert_eq!(
+            v.fold(KeyCode::Char('v'), None, None),
+            Some(Some("sessions"))
+        );
+        assert_eq!(
+            (v.inner, v.sess_at),
+            ("spend", 0),
+            "the switch opens no session"
+        );
+        v.sess_n.set(3);
+        v.fold(KeyCode::Char('v'), None, None);
+        assert_eq!(v.sess_at, 1, "on Spend, v steps to the first session");
+        assert_eq!(key_section(KeyCode::Char('w')), Some("table"));
+        assert_eq!(key_section(KeyCode::Char('T')), Some("sections"));
+        assert_eq!(key_section(KeyCode::Left), None);
+    }
+
     fn on(inner: &'static str) -> CostsView {
         CostsView {
             inner,
