@@ -1438,10 +1438,15 @@ collect() {
     # carries the merge base instead: a push that leaves it unresolved is the same fact, and
     # only a branch that took the base in (was clean) and conflicts again is a new one.
     # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
-    fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
-    if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
-      fact="$fact base ${fork:0:12}"
-    elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
+    # A NEEDS fact is what the human owes, which a branch switch or push does not change (ar-233).
+    fact="${bucket%, carrying on}"
+    if [ "${bucket%% *}" = NEEDS ]; then :
+    elif [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
+      fact="$fact @$branch base ${fork:0:12}"
+    elif [ "$pr" != - ]; then
+      fact="$fact @$branch"
+      [ "$state" != OPEN ] || [ "$oid" = - ] || fact="$fact@${oid:0:12}"
+    fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \

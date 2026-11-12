@@ -1090,14 +1090,35 @@ SH
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
   [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s), carrying on' ]
-  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s) @feat/x' ]
-  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 'NEEDS 1 pending ask(s) @feat/x'
+  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s)' ]
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 'NEEDS 1 pending ask(s)'
 
   # its turn ends on the question: same fact, already escalated
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = '1 pending ask(s)' ]
-  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s) @feat/x' ]
+  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s)' ]
+  [ "$(jq -r .escalated <<<"$output")" = true ]
+}
+
+@test "end to end: a pending ask is one fact across a branch switch and a push, so it pages once (ar-233)" {
+  landed_fixture
+  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'ship it?' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = NEEDS ]
+  "$REPO_ROOT/.local/bin/fleet-sessions" escalate sid-9 "$(jq -r .fact <<<"$output")"
+
+  # the session carries on onto a new branch with an open PR, then pushes to it
+  git -C "$SANDBOX/wt" checkout -q -b feat/y
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  printf 'feat/y\t876\tOPEN\tPENDING\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.branch) \(.pr)"' <<<"$output")" = 'NEEDS feat/y 876' ]
+  [ "$(jq -r .fact <<<"$output")" = 'NEEDS 1 pending ask(s)' ]
+  [ "$(jq -r .escalated <<<"$output")" = true ]
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m push
+  printf 'feat/y\t876\tOPEN\tPENDING\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .escalated <<<"$output")" = true ]
 }
 
