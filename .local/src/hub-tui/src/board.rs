@@ -1,74 +1,26 @@
 //! The Prometheus pages of `hub` (Home's infra body, CI, Machines), laid out from one
-//! `hub_core::infra::Infra` answer. It judges nothing: statuses are `cc:*` rules and rows are
-//! runner-exporter series, so it cannot disagree with Grafana or agent-web's Infra tab.
+//! `hub_core::infra::Infra` answer. It judges nothing: statuses are `cc:*` rules and rows are the
+//! machines, pools and CI rows `hub_core` builds once for both surfaces (`infratables` draws
+//! them), so it cannot disagree with Grafana or agent-web's Infra tab.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use hub_core::infra::Infra;
-use hub_core::prom::Series;
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::{clock, dur, pct, Palette};
-
-/// A label as a cell shows it: - when the series has none.
-fn lab<'a>(s: &'a Series, k: &str) -> &'a str {
-    match s.label(k) {
-        "" => "-",
-        v => v,
-    }
-}
-
-/// One machine's CI slots (Board::machine_slots).
-#[derive(Default)]
-struct MachineSlots {
-    host: String,
-    cloud: bool,
-    busy: u32,
-    slots: u32,
-    /// `unity 2/2`, `unity withheld 0/1`, `unity-local 2/4+6` or `2 gates`.
-    pools: Vec<String>,
-}
-
-impl MachineSlots {
-    fn where_(&self) -> &'static str {
-        if self.cloud {
-            "cloud"
-        } else {
-            "local"
-        }
-    }
-    /// busy/slots, or - when nothing is up.
-    fn busy_cell(&self) -> String {
-        if self.busy == 0 && self.slots == 0 {
-            "-".into()
-        } else {
-            format!("{}/{}", self.busy, self.slots)
-        }
-    }
-    fn pools_cell(&self) -> String {
-        if self.pools.is_empty() {
-            "-".into()
-        } else {
-            self.pools.join("  ")
-        }
-    }
-}
+use crate::fit::{clip_line, wrap};
+use crate::fmt::{dur, Palette};
+use crate::infratables::InfraTables;
 
 pub struct Board<'a> {
     infra: &'a Infra,
     p: Palette,
-    now: i64,
     /// `cc:<name>` or `cc:<name>/<domain|host|pool|site>` -> value.
     v: HashMap<String, f64>,
-    runners: Vec<&'a Series>,
-    /// Machines listed even with no runner, first (`CC_HOSTS`).
-    extra_hosts: Vec<String>,
 }
 
 impl<'a> Board<'a> {
-    pub fn new(infra: &'a Infra, p: Palette, now: i64, extra_hosts: Vec<String>) -> Board<'a> {
+    pub fn new(infra: &'a Infra, p: Palette) -> Board<'a> {
         let mut v = HashMap::new();
         for s in infra.get("cc") {
             let name = s.label("__name__");
@@ -90,20 +42,7 @@ impl<'a> Board<'a> {
                 v.insert(key, x);
             }
         }
-        let mut runners: Vec<&Series> = infra.get("runners").iter().collect();
-        let order = |s: &Series| {
-            ["host", "state", "pool", "name", "repo", "pr", "branch"]
-                .map(|k| s.label(k).to_string())
-        };
-        runners.sort_by_key(|s| order(s));
-        Board {
-            infra,
-            p,
-            now,
-            v,
-            runners,
-            extra_hosts,
-        }
+        Board { infra, p, v }
     }
 
     fn get(&self, k: &str) -> Option<f64> {
@@ -112,10 +51,6 @@ impl<'a> Board<'a> {
     /// A count, or ? when the rule is absent.
     fn num(&self, k: &str) -> String {
         self.get(k).map_or("?".into(), |x| format!("{x:.0}"))
-    }
-    /// A whole number, or - when the series is absent (never a 0 it did not say).
-    fn int(&self, k: &str) -> String {
-        self.get(k).map_or("-".into(), |x| format!("{x:.0}"))
     }
     /// The sum of the per-pool or per-host values of these rules, or ? when none has any.
     fn sum(&self, rules: &[&str]) -> String {
@@ -130,61 +65,8 @@ impl<'a> Board<'a> {
         }
         t.map_or("?".into(), |x: f64| format!("{x:.0}"))
     }
-    fn heading(&self, title: &str, rest: String) -> Line<'static> {
-        Line::from(vec![
-            Span::styled(title.to_string(), self.p.head()),
-            Span::raw(rest),
-        ])
-    }
     fn dim(&self, s: String) -> Line<'static> {
         Line::styled(s, self.p.dim())
-    }
-
-    /// Every pool a `cc:pool_*` series names, the longest queue first.
-    fn pools_list(&self) -> Vec<String> {
-        let mut ps: Vec<String> = self
-            .v
-            .keys()
-            .filter_map(|k| {
-                k.strip_prefix("cc:pool_slots/")
-                    .or_else(|| k.strip_prefix("cc:pool_waiting/"))
-            })
-            .map(String::from)
-            .collect();
-        ps.sort();
-        ps.dedup();
-        ps.sort_by(|a, b| {
-            let w = |p: &str| self.get(&format!("cc:pool_waiting/{p}")).unwrap_or(0.0);
-            w(b).total_cmp(&w(a)).then_with(|| a.cmp(b))
-        });
-        ps
-    }
-    /// Every host whose local Unity slots are published.
-    fn local_hosts(&self) -> Vec<String> {
-        let mut h: Vec<String> = self
-            .v
-            .keys()
-            .filter_map(|k| k.strip_prefix("cc:host_local_slots/").map(String::from))
-            .collect();
-        h.sort();
-        h
-    }
-    /// busy/open+room. Open slots always run; room slots only while the machine has room.
-    fn local_cell(&self, h: &str) -> String {
-        let total = self.get(&format!("cc:host_local_slots/{h}")).unwrap_or(0.0);
-        let open = self
-            .get(&format!("cc:host_local_open_slots/{h}"))
-            .unwrap_or(0.0);
-        let room = (total - open).round() as i64;
-        let mut s = format!(
-            "{}/{}",
-            self.num(&format!("cc:host_local_busy/{h}")),
-            self.num(&format!("cc:host_local_open_slots/{h}"))
-        );
-        if room > 0 {
-            s += &format!("+{room}");
-        }
-        s
     }
 
     /// `ci local 13/22 cloud 4/4 +2 github-hosted, waiting 5`, from the cc:site_* rules (which
@@ -212,89 +94,6 @@ impl<'a> Board<'a> {
             ", waiting {}",
             self.sum(&["cc:pool_waiting", "cc:host_local_queued"])
         )
-    }
-
-    /// Each machine's CI slots, counted as cc:pool_slots counts them: a slot is a running
-    /// runner, or an idle one the governor does not withhold. A withheld runner shows as
-    /// `<pool> withheld` and is no slot. Local gate slots fold into the machine that runs them,
-    /// as cc:site_slots folds them into local. Machines in CC_HOSTS first, then by name.
-    fn machine_slots(&self) -> Vec<MachineSlots> {
-        let withheld: Vec<&str> = self
-            .infra
-            .get("withheld")
-            .iter()
-            .map(|s| s.label("name"))
-            .collect();
-        let mut hosts: Vec<MachineSlots> = vec![];
-        fn at<'m>(hosts: &'m mut Vec<MachineSlots>, h: &str) -> &'m mut MachineSlots {
-            match hosts.iter().position(|m| m.host == h) {
-                Some(i) => &mut hosts[i],
-                None => {
-                    hosts.push(MachineSlots {
-                        host: h.to_string(),
-                        ..Default::default()
-                    });
-                    hosts.last_mut().unwrap()
-                }
-            }
-        }
-        for h in &self.extra_hosts {
-            at(&mut hosts, h);
-        }
-        // (host, pool) -> (busy, registered), in the pools' order (longest queue first).
-        let mut per: BTreeMap<(String, usize, String), (u32, u32)> = BTreeMap::new();
-        let known = self.pools_list();
-        for s in &self.runners {
-            let m = at(&mut hosts, lab(s, "host"));
-            m.cloud |= s.label("site") == "cloud";
-            let state = s.label("state");
-            if !matches!(state, "running" | "idle") {
-                continue;
-            }
-            let held = withheld.contains(&s.label("name"));
-            let busy = state == "running";
-            if busy || !held {
-                m.slots += 1;
-            }
-            if busy {
-                m.busy += 1;
-            }
-            let mut pool = lab(s, "pool").to_string();
-            let rank = known.iter().position(|p| *p == pool).unwrap_or(known.len());
-            if held {
-                pool += " withheld";
-            }
-            let e = per.entry((lab(s, "host").into(), rank, pool)).or_default();
-            e.1 += 1;
-            if busy {
-                e.0 += 1;
-            }
-        }
-        for ((h, _, pool), (b, n)) in per {
-            at(&mut hosts, &h).pools.push(format!("{pool} {b}/{n}"));
-        }
-        let mut gates: BTreeMap<String, u32> = BTreeMap::new();
-        for g in self.infra.get("gates") {
-            *gates.entry(lab(g, "host").into()).or_default() += 1;
-        }
-        for (h, n) in &gates {
-            at(&mut hosts, h);
-            if self.get(&format!("cc:host_local_slots/{h}")).is_none() {
-                at(&mut hosts, h).pools.push(format!("{n} gates"));
-            }
-        }
-        for h in self.local_hosts() {
-            let busy = self.get(&format!("cc:host_local_busy/{h}")).unwrap_or(0.0) as u32;
-            let open = self
-                .get(&format!("cc:host_local_open_slots/{h}"))
-                .unwrap_or(0.0) as u32;
-            let cell = format!("unity-local {}", self.local_cell(&h));
-            let m = at(&mut hosts, &h);
-            m.busy += busy;
-            m.slots += open.max(busy);
-            m.pools.push(cell);
-        }
-        hosts
     }
 
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
@@ -332,115 +131,18 @@ impl<'a> Board<'a> {
             .collect()
     }
 
-    /// The queue per pool: waiting, the oldest wait, the last day's done and pass rate. Busy of
-    /// slots and the machines serving a pool are MACHINES' POOLS column. A machine's local
-    /// slots read as their own pool, `unity-local on <host>`.
-    pub fn queues(&self, w: usize) -> Vec<Line<'static>> {
-        let mut rows = vec![];
-        for p in self.pools_list() {
-            let ratio = self.get(&format!("cc:pool_pass_ratio_24h/{p}"));
-            rows.push(vec![
-                Cell::from(p.clone()),
-                self.num(&format!("cc:pool_waiting/{p}")).into(),
-                self.get(&format!("cc:pool_oldest_wait_seconds/{p}"))
-                    .map_or("-".into(), dur)
-                    .into(),
-                self.int(&format!("cc:pool_done_24h/{p}")).into(),
-                cell(pct(ratio), self.p.pass(ratio)),
-            ]);
-        }
-        for h in self.local_hosts() {
-            let ratio = self.get(&format!("cc:host_local_pass_ratio_24h/{h}"));
-            rows.push(vec![
-                format!("unity-local on {h}").into(),
-                self.num(&format!("cc:host_local_queued/{h}")).into(),
-                "-".into(),
-                self.int(&format!("cc:host_local_done_24h/{h}")).into(),
-                cell(pct(ratio), self.p.pass(ratio)),
-            ]);
-        }
-        let mut out = vec![self.heading("QUEUES", "  by pool, the last day".into())];
-        out.extend(
-            Table {
-                header: vec!["POOL", "WAITING", "OLDEST", "DONE", "PASS"],
-                rows,
-                keep: vec![0, 1, 4, 3, 2],
-                right: vec![1, 2, 3, 4],
-                ..Default::default()
-            }
-            .fit(w, self.p.head()),
-        );
-        out
-    }
-
-    /// The one machine table (Infra's Machines): one row per machine with where it is, busy of
-    /// its slots, its load and busy/slots per pool. Narrowing drops TEMP, MEM, 6H, WHERE, then
-    /// LOAD; BUSY, CPU and POOLS stay.
-    pub fn machines(&self, w: usize) -> Vec<Line<'static>> {
-        let ms = self.machine_slots();
-        let rows: Vec<Vec<Cell>> = ms
-            .iter()
-            .map(|m| {
-                let k = |r: &str| format!("{r}/{}", m.host);
-                vec![
-                    m.host.clone().into(),
-                    m.where_().into(),
-                    m.busy_cell().into(),
-                    pct(self.get(&k("cc:host_cpu_busy_ratio"))).into(),
-                    pct(self.get(&k("cc:host_cpu_busy_ratio:avg6h"))).into(),
-                    self.get(&k("cc:host_load1"))
-                        .map_or("-".into(), |l| {
-                            format!("{l:.1}/{}", self.num(&k("cc:host_cores")))
-                        })
-                        .into(),
-                    pct(self.get(&k("cc:host_mem_used_ratio"))).into(),
-                    self.get(&k("cc:host_temp_c"))
-                        .map_or("-".into(), |t| format!("{t:.0}C"))
-                        .into(),
-                    m.pools_cell().into(),
-                ]
-            })
-            .collect();
-        // POOLS asks for its widest row, but no more than room for two pools' counts, so the
-        // narrowing drops the other columns to keep it whole and never reaches BUSY or CPU.
-        let widest = rows
-            .iter()
-            .map(|r| r[8].text.chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(5);
-        Table {
-            header: vec![
-                "MACHINE", "WHERE", "BUSY", "CPU", "6H", "LOAD", "MEM", "TEMP", "POOLS",
-            ],
-            rows,
-            keep: vec![0, 2, 3, 5, 1, 4, 6, 7],
-            flex: Some(8),
-            flexmin: widest.min(24),
-            flexkeep: true,
-            right: vec![2, 3, 4, 5, 6, 7],
-            ..Default::default()
-        }
-        .fit(w, self.p.head())
-    }
-
-    /// The CI runners table: every machine's slots with the job each runs and how long against
-    /// its usual, then the queued jobs with what each needs and the hosts that can take it
-    /// (`hub_core::ci`). A job no online runner can take leads in red, naming the missing
-    /// label. Narrowing drops USUAL, SLOT, then the job, so host, state and time stay.
-    pub fn ci_runners(&self, w: usize) -> Vec<Line<'static>> {
+    /// The CI head: slots, busy and the queue (`hub_core::ci`), the last day's failures, and a
+    /// red line per kind of job no online runner can take, naming the missing label.
+    pub fn ci_head(&self, w: usize) -> Vec<Line<'static>> {
         let ci = &self.infra.ci;
         let secs = |v: i64| dur(v as f64);
-        let failed = self.failed_24h();
+        let failed = ci.done.bad;
         let mut head = vec![
             Span::styled("CI RUNNERS", self.p.head()),
             Span::raw(format!("  {}", ci.head(secs))),
         ];
-        if failed > 0.0 {
-            head.push(Span::styled(
-                format!("  failed 24h {failed:.0}"),
-                self.p.bad(),
-            ));
+        if failed > 0 {
+            head.push(Span::styled(format!("  failed 24h {failed}"), self.p.bad()));
         } else if ci.busy + ci.queued == 0 {
             head.push(Span::styled(
                 "  green: nothing queued or failed in 24h",
@@ -454,387 +156,28 @@ impl<'a> Board<'a> {
                 w,
             ));
         }
-        let refer = |repo: &str, pr: &str, branch: &str| match (pr, branch) {
-            ("", "") => repo.to_string(),
-            ("", b) => b.to_string(),
-            (p, _) => format!("{repo}#{p}"),
-        };
-        let mut rows = vec![];
-        for r in &ci.rows {
-            let (state, style) = match r.state.as_str() {
-                "idle" | "standby" => (r.state.clone(), self.p.dim()),
-                "withheld" => (r.state.clone(), self.p.warn()),
-                "off" => ("off".into(), self.p.bad()),
-                s => (s.to_string(), Style::default()),
-            };
-            let job = if r.state == "busy" {
-                format!("{}  {}", r.job, refer(&r.repo, &r.pr, &r.branch))
-            } else {
-                r.note.clone()
-            };
-            let ran = match (r.ran, r.late) {
-                (Some(t), true) => cell(format!("{}!", secs(t)), self.p.warn()),
-                (Some(t), false) => secs(t).into(),
-                _ => "-".into(),
-            };
-            rows.push(vec![
-                r.host.clone().into(),
-                r.slot.clone().into(),
-                cell(state, style),
-                ran,
-                r.usual.map_or("-".into(), secs).into(),
-                job.into(),
-            ]);
-        }
-        if !rows.is_empty() {
-            out.extend(
-                Table {
-                    header: vec!["HOST", "SLOT", "STATE", "RAN", "USUAL", "JOB"],
-                    rows,
-                    keep: vec![0, 2, 3, 5, 1, 4],
-                    flex: Some(5),
-                    flexmin: 12,
-                    right: vec![3, 4],
-                    ..Default::default()
-                }
-                .fit(w, self.p.head()),
-            );
-        }
-        if !ci.queue.is_empty() {
-            out.push(Line::raw(""));
-            let rows = ci
-                .queue
-                .iter()
-                .map(|q| {
-                    let s = if q.stuck {
-                        self.p.bad()
-                    } else {
-                        Style::default()
-                    };
-                    let mut name = refer(&q.repo, &q.pr, &q.branch);
-                    if q.n > 1 {
-                        name += &format!(" x{}", q.n);
-                    }
-                    let can = if q.can.is_empty() && q.needs.is_empty() {
-                        "-".to_string()
-                    } else if q.can.is_empty() {
-                        "nobody".to_string()
-                    } else {
-                        q.can
-                            .iter()
-                            .map(|f| format!("{} ({})", f.host, f.state))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    vec![
-                        cell(format!("{} {name}", q.job), s),
-                        cell(secs(q.wait), s),
-                        cell(q.needs.join(", "), s),
-                        cell(can, s),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["QUEUED", "WAIT", "NEEDS", "CAN RUN ON"],
-                    rows,
-                    keep: vec![0, 1, 3, 2],
-                    flex: Some(3),
-                    flexmin: 14,
-                    right: vec![1],
-                    cap: vec![(0, 44)],
-                    ..Default::default()
-                }
-                .fit(w, self.p.head()),
-            );
-        }
         out
     }
 
-    /// The last day of runs per repo and workflow, the worst pass rate first. Pass is success
-    /// of success + failure + timed out; cancelled is its own column, since gates for closed
-    /// PRs are cancelled on purpose. All-green workflows fold to a line.
-    pub fn finished(&self, w: usize) -> Vec<Line<'static>> {
-        let fin = self.infra.get("finished");
-        if fin.is_empty() {
-            return vec![self.heading(
-                "FINISHED 24H",
-                "  no finished-run series yet (runner exporter)".into(),
-            )];
-        }
-        // (repo, workflow) -> runs, ok, bad, cancelled
-        let mut agg: BTreeMap<(String, String), [u64; 4]> = BTreeMap::new();
-        for s in fin {
-            let n = s.value.unwrap_or(0.0) as u64;
-            let e = agg
-                .entry((lab(s, "repo").into(), lab(s, "workflow").into()))
-                .or_default();
-            e[0] += n;
-            match s.label("conclusion") {
-                "success" => e[1] += n,
-                "failure" | "timed_out" => e[2] += n,
-                "cancelled" => e[3] += n,
-                _ => {}
-            }
-        }
-        let t = agg.values().fold([0u64; 4], |mut t, a| {
-            (0..4).for_each(|i| t[i] += a[i]);
-            t
-        });
-        let ratio = |ok: u64, bad: u64| (ok + bad > 0).then(|| ok as f64 / (ok + bad) as f64);
-        let mut out = vec![self.heading(
-            "FINISHED 24H",
-            format!(
-                "  {} runs, {} pass, {} failed, {} cancelled",
-                t[0],
-                pct(ratio(t[1], t[2])),
-                t[2],
-                t[3]
-            ),
-        )];
-        let (mut bad, green): (Vec<_>, Vec<_>) =
-            agg.into_iter().partition(|(_, a)| a[2] + a[3] > 0);
-        let key = |a: &[u64; 4]| ratio(a[1], a[2]).map_or(-1, |r| (r * 100.0).round() as i64);
-        bad.sort_by(|(_, a), (_, b)| {
-            key(a)
-                .cmp(&key(b))
-                .then(b[2].cmp(&a[2]))
-                .then(b[3].cmp(&a[3]))
-        });
-        if !bad.is_empty() {
-            let rows = bad
-                .iter()
-                .map(|((repo, wf), a)| {
-                    let r = ratio(a[1], a[2]);
-                    vec![
-                        cell(pct(r), self.p.pass(r)),
-                        a[0].to_string().into(),
-                        a[2].to_string().into(),
-                        a[3].to_string().into(),
-                        repo.clone().into(),
-                        wf.clone().into(),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    mark: None,
-                    header: vec!["PASS", "RUNS", "FAIL", "CANCEL", "REPO", "WORKFLOW"],
-                    rows,
-                    keep: vec![0, 2, 5, 3, 1, 4],
-                    flex: Some(5),
-                    flexmin: 10,
-                    flexkeep: true,
-                    right: vec![0, 1, 2, 3],
-                    cap: vec![(4, 21)],
-                }
-                .fit(w, self.p.head()),
-            );
-        }
-        if !green.is_empty() {
-            let runs: u64 = green.iter().map(|(_, a)| a[0]).sum();
-            out.push(self.dim(format!("  +{} green workflows, {runs} runs", green.len())));
-        }
-        out
-    }
-
-    /// The governor's per-host series as name -> host -> (labels' key value, value).
-    fn by_host(&self, q: &str, prefix: &str) -> BTreeMap<String, HashMap<String, &Series>> {
-        let mut by: BTreeMap<String, HashMap<String, &Series>> = BTreeMap::new();
-        for s in self.infra.get(q) {
-            let host = s.label("host");
-            if host.is_empty() {
-                continue;
-            }
-            let k = s.label("__name__").trim_start_matches(prefix).to_string();
-            by.entry(host.into()).or_default().insert(k, s);
-        }
-        by
-    }
-
-    /// The cloud runners the governor powers: state and why, hours today of the cap, and a
-    /// button's override. Read-only: the buttons are on agent-web's Infra.
-    pub fn cloud(&self, w: usize) -> Vec<Line<'static>> {
-        let by = self.by_host("power", "ci_governor_power_");
-        if by.is_empty() {
-            return vec![self.heading("CLOUD RUNNERS", "  none powered by the governor".into())];
-        }
-        let v = |m: &HashMap<String, &Series>, k: &str| m.get(k).and_then(|s| s.value);
-        let rows = by
-            .iter()
-            .map(|(host, m)| {
-                let st = m.get("state");
-                let state = st.map_or("?", |s| s.label("state")).to_uppercase();
-                let style = match state.as_str() {
-                    "RUNNING" | "STARTING" => self.p.good(),
-                    "DRAINING" | "STOPPING" => self.p.warn(),
-                    _ => Default::default(),
-                };
-                let reason = st.map_or("", |s| s.label("reason"));
-                let hours = v(m, "hours_today").unwrap_or(0.0);
-                let today = match v(m, "max_hours_day") {
-                    Some(max) => format!("{hours:.1}/{max:.0} h"),
-                    None => format!("{hours:.1} h"),
-                };
-                let over = match m.get("override") {
-                    Some(o) if !matches!(o.label("action"), "" | "none") => format!(
-                        "{} until {}",
-                        o.label("action"),
-                        clock(o.value.unwrap_or(0.0) as i64, self.now)
-                    ),
-                    _ => "none".into(),
-                };
-                vec![
-                    host.clone().into(),
-                    cell(&state, style),
-                    today.into(),
-                    over.into(),
-                    match reason {
-                        "" | "none" => "-".into(),
-                        r => r.to_string().into(),
-                    },
-                ]
-            })
-            .collect();
-        let mut out = vec![self.heading(
-            "CLOUD RUNNERS",
-            "  the governor starts them for a deep queue; override on agent-web Infra".into(),
-        )];
-        out.extend(
-            Table {
-                header: vec!["HOST", "STATE", "TODAY", "OVERRIDE", "WHY"],
-                rows,
-                keep: vec![0, 1, 2, 3],
-                flex: Some(4),
-                flexmin: 10,
-                right: vec![2],
-                ..Default::default()
-            }
-            .fit(w, self.p.head()),
-        );
-        out
-    }
-
-    /// The governor (home-config apps/ci-runner-governor): up and OK, its queue, and per host
-    /// whether it acts for real, this cycle's verdict and action, and the slots it admits.
-    pub fn governor(&self, w: usize) -> Vec<Line<'static>> {
-        let global = |k: &str| {
-            self.infra
-                .get("governor")
-                .iter()
-                .find(|s| {
-                    s.label("__name__") == format!("ci_governor_{k}") && s.label("host").is_empty()
-                })
-                .and_then(|s| s.value)
-        };
-        let by = self.by_host("governor", "ci_governor_");
-        let up = global("up");
-        if up.is_none() && by.is_empty() {
-            return vec![self.heading("GOVERNOR", "  no governor series".into())];
-        }
-        let (word, style) = match (up, global("ok")) {
-            (Some(u), _) if u != 1.0 => ("DOWN", self.p.bad()),
-            (None, _) => ("DOWN", self.p.bad()),
-            (_, Some(1.0)) => ("OK", self.p.good()),
-            _ => (
-                "BLIND: a source did not answer, so it holds every host",
-                self.p.warn(),
-            ),
-        };
-        let queue = global("queue").map_or("?".into(), |q| format!("{q:.0}"));
-        let mut out = vec![clip_line(
-            Line::from(vec![
-                Span::styled("GOVERNOR", self.p.head()),
-                Span::raw("  "),
-                Span::styled(word.to_string(), style),
-                Span::styled(
-                    format!("  queue {queue}; a dry-run host is logged, never changed"),
-                    self.p.dim(),
-                ),
-            ]),
-            w,
-        )];
-        let rows = by
-            .iter()
-            .map(|(host, m)| {
-                let d = m.get("decision");
-                let action = d.map_or("-", |s| s.label("action")).to_uppercase();
-                let st = match action.as_str() {
-                    "WITHHOLD" | "STOP" => self.p.warn(),
-                    "ADMIT" | "START" => self.p.good(),
-                    _ => Default::default(),
-                };
-                vec![
-                    host.clone().into(),
-                    if m.get("live").and_then(|s| s.value) == Some(1.0) {
-                        "live"
-                    } else {
-                        "dry run"
-                    }
-                    .into(),
-                    lab_or(d.map_or("", |s| s.label("verdict"))).into(),
-                    cell(&action, st),
-                    m.get("admitted")
-                        .and_then(|s| s.value)
-                        .map_or("-".into(), |a| format!("{a:.0}"))
-                        .into(),
-                ]
-            })
-            .collect::<Vec<Vec<Cell>>>();
-        if !rows.is_empty() {
-            out.extend(
-                Table {
-                    header: vec!["HOST", "MODE", "VERDICT", "ACTION", "ADMITTED"],
-                    rows,
-                    keep: vec![0, 3, 1, 4],
-                    flex: Some(2),
-                    flexmin: 10,
-                    right: vec![4],
-                    ..Default::default()
-                }
-                .fit(w, self.p.head()),
-            );
-        }
-        out
-    }
-
-    /// Runs that failed or timed out in the last day.
-    fn failed_24h(&self) -> f64 {
-        self.infra
-            .get("finished")
-            .iter()
-            .filter(|s| matches!(s.label("conclusion"), "failure" | "timed_out"))
-            .filter_map(|s| s.value)
-            .sum()
-    }
-}
-
-fn lab_or(s: &str) -> String {
-    if s.is_empty() {
-        "-".into()
-    } else {
-        s.into()
-    }
-}
-
-/// Machines listed even with no runner (`CC_HOSTS`, default the workstation).
-pub fn extra_hosts() -> Vec<String> {
-    hub_core::prom::config("CC_HOSTS")
-        .unwrap_or_else(|| "workstation".into())
-        .split_whitespace()
-        .map(String::from)
-        .collect()
 }
 
 /// A section of the Infra page: its `hub_core::layout` name and its lines.
 pub type Section = (&'static str, Vec<Line<'static>>);
 
 /// The Infra page as named sections in `hub_core::layout` order, less `jobs`, which the app
-/// draws from its own read; the app shows them by inner tab. What is red is the Alerts tab's
-/// (`hub_core::alerts`); here the headline numbers lead the machines, then what runs, waits and
-/// failed; green workflows fold to a line. A failed read is one section with the error and
-/// nothing else: a board never leaves the last (maybe green) numbers up.
-pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) -> Vec<Section> {
+/// draws from its own read; the app shows them by inner tab, and `inner` is the one shown, whose
+/// table has the keys (`infratables`). What is red is the Alerts tab's (`hub_core::alerts`);
+/// here the headline numbers lead the machines, then what runs, waits and finished. A failed
+/// read is one section with the error and nothing else: a board never leaves the last (maybe
+/// green) numbers up.
+pub fn infra(
+    infra: &Infra,
+    p: Palette,
+    now: i64,
+    w: usize,
+    tables: &InfraTables,
+    inner: &str,
+) -> Vec<Section> {
     if !infra.ok {
         return vec![(
             "machines",
@@ -860,21 +203,21 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
             ],
         )];
     }
-    let b = Board::new(infra, p, now, hosts.to_vec());
+    let b = Board::new(infra, p);
     let blank = || Line::raw("");
+    let table = |name| tables.draw(infra, name, inner, p, now, w);
     let mut machines = b.numbers(w);
     machines.push(blank());
-    machines.extend(b.machines(w));
-    let mut ci = b.ci_runners(w);
-    ci.push(blank());
-    ci.extend(b.finished(w));
-    ci.push(blank());
-    ci.extend(b.queues(w));
+    machines.extend(table("machines"));
+    let mut ci = b.ci_head(w);
+    for name in ["runners", "queued", "finished"] {
+        ci.push(blank());
+        ci.extend(table(name));
+    }
     let sections = vec![
         ("machines", machines),
-        ("governor", b.governor(w)),
+        ("pools", table("pools")),
         ("ci", ci),
-        ("cloud", b.cloud(w)),
     ];
     sections
         .into_iter()
@@ -882,9 +225,15 @@ pub fn infra(infra: &Infra, p: Palette, now: i64, w: usize, hosts: &[String]) ->
         .collect()
 }
 
-/// The CI RUNNERS section alone, plain: what `hub ci` prints.
+/// The CI head and the runners and queued tables, plain: what `hub ci` prints.
 pub fn ci_runners(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
-    Board::new(infra, p, 0, vec![]).ci_runners(w)
+    let t = InfraTables::default();
+    let mut out = Board::new(infra, p).ci_head(w);
+    for name in ["runners", "queued"] {
+        out.push(Line::raw(""));
+        out.extend(t.draw(infra, name, "", p, 0, w));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -892,6 +241,7 @@ pub(crate) mod tests {
     //! The bash board's bats suite (command_center.bats), ported onto the same fixture data.
     use super::*;
     use crate::fit::plain;
+    use hub_core::prom::Series;
     use serde_json::{json, Value};
 
     fn series(rows: Vec<(Value, &str)>) -> Vec<Series> {
@@ -1123,20 +473,25 @@ pub(crate) mod tests {
     pub(crate) fn built(i: &Infra) -> Infra {
         let mut j = i.clone();
         j.ci = hub_core::ci::build(&j);
+        (j.machines, j.pools) = hub_core::machines::build(&j);
         j
     }
 
     /// The whole Infra page as plain text.
     fn text(i: &Infra, w: usize) -> String {
-        infra(&built(i), Palette { no_color: true }, 0, w, &hosts())
-            .into_iter()
-            .flat_map(|(_, ls)| ls)
-            .map(|l| plain(&l))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    fn hosts() -> Vec<String> {
-        vec!["workstation".into()]
+        infra(
+            &built(i),
+            Palette { no_color: true },
+            0,
+            w,
+            &InfraTables::default(),
+            "",
+        )
+        .into_iter()
+        .flat_map(|(_, ls)| ls)
+        .map(|l| plain(&l))
+        .collect::<Vec<_>>()
+        .join("\n")
     }
     fn squash(s: &str) -> String {
         s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -1154,18 +509,25 @@ pub(crate) mod tests {
 
     /// The whole Infra page's styled lines at 160 columns.
     fn all_lines(i: &Infra, p: Palette) -> Vec<Line<'static>> {
-        infra(&built(i), p, 0, 160, &hosts())
+        infra(&built(i), p, 0, 160, &InfraTables::default(), "")
             .into_iter()
             .flat_map(|s| s.1)
             .collect()
     }
     /// One Infra section (`hub_core::layout` name) as plain text.
     fn tab(i: &Infra, name: &str, w: usize) -> String {
-        infra(&built(i), Palette { no_color: true }, 0, w, &hosts())
-            .into_iter()
-            .find(|s| s.0 == name)
-            .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
-            .unwrap_or_default()
+        infra(
+            &built(i),
+            Palette { no_color: true },
+            0,
+            w,
+            &InfraTables::default(),
+            "",
+        )
+        .into_iter()
+        .find(|s| s.0 == name)
+        .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
     }
 
     /// aws-burst-1 in the cloud with one of two unity runners busy, and 3 jobs on GitHub's own.
@@ -1193,33 +555,40 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued (oldest 2h28m)  failed 24h 91\nHOST"),
+            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 queued (oldest 2h28m)  failed 24h 91\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
-        // A late job carries the bang; the machine row stands where it ran.
+        // A late job carries the bang; each slot names its pool, job and ref.
         assert_line(
             &ci,
-            "razer-laptop 4 busy 1h33m! - PlayMode 4 unity-core-playground#1110",
+            "razer-laptop 4 busy unity 1h33m! - PlayMode 4 unity-core-playground#1110",
         );
         assert_line(
             &ci,
-            "razer-laptop 1 busy 36m - PlayMode 2 unity-core-playground#412",
+            "razer-laptop 1 busy unity 36m - PlayMode 2 unity-core-playground#412",
         );
         // No PR shows the branch; an idle slot and an offline host say so.
-        assert_line(&ci, "razer-laptop 2 busy 5m - E2E develop");
-        assert_line(&ci, "razer-laptop 3 idle - -");
-        assert_line(&ci, "mac-mini 1 off - -");
+        assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
+        assert_line(&ci, "razer-laptop 3 idle unity - - - -");
+        assert_line(&ci, "mac-mini 1 off macos - - - -");
         // The queue names each job's wait, what it needs and who can take it.
-        assert_line(&ci, "QUEUED WAIT NEEDS CAN RUN ON");
+        assert_line(&ci, "JOB POOL REF N WAIT NEEDS CAN RUN ON");
     }
 
     #[test]
     fn infra_sections_come_in_layout_order_and_ci_runners_leads_with_its_counts() {
         let i = fixture();
-        let names: Vec<_> = infra(&i, Palette { no_color: true }, 0, 160, &hosts())
-            .into_iter()
-            .map(|s| s.0)
-            .collect();
+        let names: Vec<_> = infra(
+            &i,
+            Palette { no_color: true },
+            0,
+            160,
+            &InfraTables::default(),
+            "",
+        )
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
         // Jobs, Runs and Tests are the app's, drawn from their own reads.
         let want: Vec<_> = hub_core::layout::resolve("infra")
             .unwrap()
@@ -1235,10 +604,9 @@ pub(crate) mod tests {
             "{ci}"
         );
         assert!(has(&ci, "failed 24h"), "{ci}");
-        // Exceptions lead: the machines and the queue before the day's results and the pools.
+        // Exceptions lead: the slots and the queue before the day's results and the runs.
         let at = |w: &str| ci.find(w).unwrap_or_else(|| panic!("no {w} in {ci}"));
         assert!(at("HOST") < at("QUEUED") && at("QUEUED") < at("FINISHED 24H"));
-        assert!(at("FINISHED 24H") < at("QUEUES"));
     }
 
     #[test]
@@ -1252,12 +620,20 @@ pub(crate) mod tests {
             &ci,
             "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 queued green: nothing queued or failed in 24h",
         );
-        assert!(!ci.contains("HOST") && !ci.contains("QUEUED"), "{ci}");
+        // An empty table is its title and why, on one line, with no header or chips.
+        assert_line(&ci, "RUNNERS no runner reports");
+        assert_line(&ci, "QUEUED nothing queued");
+        assert_line(
+            &ci,
+            "FINISHED 24H no finished-run series yet (runner exporter)",
+        );
+        assert!(!ci.contains("HOST") && !ci.contains("all 0"), "{ci}");
     }
 
     #[test]
     fn cloud_runners_and_the_governor_read_from_their_series() {
         let mut i = fixture();
+        with_cloud(&mut i, "0");
         i.instant.insert(
             "power",
             series(vec![
@@ -1279,16 +655,27 @@ pub(crate) mod tests {
                 (json!({"__name__": "ci_governor_live", "host": "mac-mini"}), "0"),
             ]),
         );
-        let cloud = tab(&i, "cloud", 160);
-        assert_line(&cloud, "aws-burst-1 RUNNING 1.5/6 h none deep queue");
-        let gov = tab(&i, "governor", 160);
-        assert!(gov.starts_with("GOVERNOR  OK  queue 7"), "{gov}");
-        assert_line(&gov, "razer-laptop live busy ADMIT 4");
-        assert_line(&gov, "mac-mini dry run - - -");
-        // No series: one line each, not an empty table.
-        let none = fixture();
-        assert_eq!(tab(&none, "cloud", 160).lines().count(), 1);
-        assert_eq!(tab(&none, "governor", 160).lines().count(), 1);
+        // Governor and power are machine columns now; the cloud host is a machine row.
+        let m = tab(&i, "machines", 200);
+        assert!(
+            has(&m, "MACHINES all 3 busy 2 no reading 1 cloud 1 governed 3"),
+            "{m}"
+        );
+        assert!(has(&m, "aws-burst-1 cloud no reading 1/2"), "{m}");
+        assert!(
+            has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
+            "{m}"
+        );
+        assert!(has(&m, "live, admit - -"), "{m}");
+        assert!(has(&m, "- dry run - -"), "{m}");
+        // No series: the columns read -, and no Cloud or Governor section is drawn.
+        let none = tab(&fixture(), "machines", 200);
+        assert!(
+            !none.contains("live") && !none.contains("running 1"),
+            "{none}"
+        );
+        assert_eq!(tab(&i, "cloud", 160), "");
+        assert_eq!(tab(&i, "governor", 160), "");
     }
 
     #[test]
@@ -1331,10 +718,17 @@ pub(crate) mod tests {
                 "1",
             )]),
         );
-        let out = text(&i, 160);
+        let out = text(&i, 200);
+        assert!(
+            has(
+                &out,
+                "razer-laptop local up 3/3 91% 31% 9.8/16 60% 84C - unity 3/3 unity withheld 0/1"
+            ),
+            "{out}"
+        );
         assert_line(
             &out,
-            "razer-laptop local 3/3 91% 31% 9.8/16 60% 84C unity 3/3 unity withheld 0/1",
+            "razer-laptop 3 withheld unity - - the governor holds it back -",
         );
     }
 
@@ -1342,29 +736,42 @@ pub(crate) mod tests {
     fn a_machines_row_carries_where_busy_load_6h_cpu_and_busy_of_its_slots_per_pool() {
         let mut i = fixture();
         with_cloud(&mut i, "0");
-        let out = tab(&i, "machines", 160);
-        assert_line(&out, "MACHINE WHERE BUSY CPU 6H LOAD MEM TEMP POOLS");
+        let out = tab(&i, "machines", 200);
         assert_line(
             &out,
-            "razer-laptop local 3/4 91% 31% 9.8/16 60% 84C unity 3/4",
+            "MACHINE WHERE STATE BUSY CPU 6H LOAD MEM TEMP DISK POOLS RUNNING GOVERNOR POWER UP",
         );
-        assert_line(&out, "aws-burst-1 cloud 1/2 - - - - - unity 1/2");
-        // No exporter series reads - in every column, never 0.
-        assert_line(&out, "workstation local - - - - - - -");
-        assert_line(&out, "mac-mini local - 3% - - - - -");
+        assert!(
+            has(
+                &out,
+                "razer-laptop local up 3/4 91% 31% 9.8/16 60% 84C - unity 3/4 PlayMode 4"
+            ),
+            "{out}"
+        );
+        assert!(
+            has(
+                &out,
+                "aws-burst-1 cloud no reading 1/2 - - - - - - unity 1/2"
+            ),
+            "{out}"
+        );
+        // A host with one reading is up; its other columns read -, never 0.
+        assert_line(&out, "mac-mini local up - +1 off 3% - - - - - - - - - -");
     }
 
     #[test]
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
-        let out = tab(&fixture(), "ci", 160);
-        assert_line(&out, "unity 3 2h28m 72 24%");
-        assert_line(&out, "light 1 1m 40 80%");
-        assert_line(&out, "windows 0 - - -");
+        let out = tab(&fixture(), "pools", 160);
+        assert!(
+            out.starts_with("POOLS  all 3  waiting 2  busy 1  idle 2\n"),
+            "{out}"
+        );
+        assert_line(&out, "unity 4 3 - 3 2h28m 72 24% razer-laptop");
+        assert_line(&out, "light 2 0 - 1 1m 40 80% -");
+        assert_line(&out, "windows 1 0 - 0 - - - -");
         let order: Vec<&str> = out
             .lines()
-            .skip_while(|l| !l.starts_with("QUEUES"))
             .skip(2)
-            .take_while(|l| !l.trim().is_empty())
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
@@ -1376,7 +783,7 @@ pub(crate) mod tests {
         let out = text(&i, 160);
         assert_line(
             &out,
-            "razer-laptop 4 busy 1h33m! - PlayMode 4 unity-core-playground#1110",
+            "razer-laptop 4 busy unity 1h33m! - PlayMode 4 unity-core-playground#1110",
         );
         assert!(!out.contains("36m!"));
         let p = Palette::default();
@@ -1384,7 +791,7 @@ pub(crate) mod tests {
         let span = lines
             .iter()
             .flat_map(|l| &l.spans)
-            .find(|s| s.content == "1h33m!")
+            .find(|s| s.content.trim() == "1h33m!")
             .unwrap();
         assert_eq!(span.style, p.warn());
     }
@@ -1401,35 +808,33 @@ pub(crate) mod tests {
     fn the_queue_groups_by_pool_repo_pr_and_branch_with_count_and_oldest_wait() {
         let out = text(&fixture(), 160);
         // The queue rows carry the PR or branch, the count of identical jobs and the oldest wait.
-        assert_line(&out, "- unity-core-playground#412 x3 2h28m -");
-        assert_line(&out, "- develop 1m -");
+        assert_line(&out, "- unity unity-core-playground#412 3 2h28m - -");
+        assert_line(&out, "- light develop 1 1m - -");
     }
 
     #[test]
-    fn finished_lists_the_worst_pass_rate_first_cancels_apart_and_folds_the_green() {
-        let out = text(&fixture(), 160);
-        // Pass is success of success + failure: Tests 12 of 50 is 24%, its 22 cancels are not
-        // failures. Multi (0%, 14 failed) sorts above Tests (24%, 38 failed).
-        assert!(has(
-            &out,
-            "FINISHED 24H 171 runs, 38% pass, 91 failed, 25 cancelled"
-        ));
+    fn finished_lists_the_red_first_with_cancels_apart_and_the_green_after() {
+        let out = tab(&fixture(), "ci", 160);
+        // Pass is success of success + failure, so Tests' 22 cancels are not failures.
+        assert!(
+            has(
+                &out,
+                "FINISHED 24H 171 runs, 38% pass, 91 failed, 25 cancelled all 6 red 4 green 2"
+            ),
+            "{out}"
+        );
         let order: Vec<&str> = out
             .lines()
-            .skip_while(|l| !l.trim_start().starts_with("PASS "))
+            .skip_while(|l| !l.starts_with("REPO "))
             .skip(1)
-            .take_while(|l| {
-                l.trim_start()
-                    .starts_with(|c: char| c.is_ascii_digit() || c == '-')
-            })
-            .map(|l| l.split_whitespace().last().unwrap())
+            .take_while(|l| !l.trim().is_empty())
+            .map(|l| l.split_whitespace().nth(1).unwrap())
             .collect();
-        assert_eq!(order, ["catalog", "Multi", "Tests", "Docs"]);
-        assert_line(&out, "0% 39 39 0 unity-core-playground Game catalog");
-        assert_line(&out, "24% 72 38 22 unity-core-playground Tests");
-        assert_line(&out, "100% 8 0 3 unity-core-playground Docs");
-        assert!(has(&out, "+2 green workflows, 38 runs"));
-        assert!(!out.contains("Checks"));
+        assert_eq!(order, ["Game", "Multi", "Tests", "Docs", "Checks", "E2E"]);
+        assert_line(&out, "unity-core-playground Game catalog - - 39 39 0");
+        assert_line(&out, "unity-core-playground Tests - - 72 38 22");
+        assert_line(&out, "unity-core-playground Docs - - 8 0 3");
+        assert_line(&out, "platform Checks - - 30 0 0");
     }
 
     #[test]
@@ -1438,7 +843,7 @@ pub(crate) mod tests {
         i.instant.insert("finished", vec![]);
         assert!(has(
             &text(&i, 160),
-            "FINISHED 24H no finished-run series yet"
+            "FINISHED 24H no finished-run series yet (runner exporter)"
         ));
     }
 
@@ -1469,7 +874,7 @@ pub(crate) mod tests {
     #[test]
     fn narrow_numbers_wrap_instead_of_cutting() {
         let i = fixture();
-        let b = Board::new(&i, Palette { no_color: true }, 0, hosts());
+        let b = Board::new(&i, Palette { no_color: true });
         let wide: Vec<String> = b.numbers(200).iter().map(plain).collect();
         let narrow: Vec<String> = b.numbers(40).iter().map(plain).collect();
         assert!(narrow.len() > wide.len(), "{narrow:?}");
@@ -1486,29 +891,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn narrowing_the_machines_drops_temp_mem_6h_where_then_load() {
+    fn narrowing_the_machines_keeps_busy_cpu_pools_and_state_longest() {
         let i = fixture();
         let row = |w| tab(&i, "machines", w);
-        assert_line(
-            &row(60),
-            "razer-laptop local 3/4 91% 31% 9.8/16 60% unity 3/4",
-        );
-        assert_line(&row(54), "razer-laptop local 3/4 91% 31% 9.8/16 unity 3/4");
-        assert_line(&row(50), "razer-laptop local 3/4 91% 9.8/16 unity 3/4");
-        assert_line(&row(44), "razer-laptop 3/4 91% 9.8/16 unity 3/4");
+        assert!(has(
+            &row(200),
+            "razer-laptop local up 3/4 91% 31% 9.8/16 60% 84C - unity 3/4"
+        ));
+        assert_line(&row(60), "razer-laptop up 3/4 91% 9.8/16 unity 3/4");
+        assert_line(&row(50), "razer-laptop up 3/4 91% unity 3/4");
         // At its narrowest the machine keeps its busy/slots, CPU and pools.
+        assert_line(&row(44), "razer-laptop 3/4 91% unity 3/4");
         assert_line(&row(40), "razer-laptop 3/4 91% unity 3/4");
     }
 
     #[test]
-    fn a_narrow_terminal_keeps_each_runs_machine_repo_and_pr_and_nothing_wraps() {
+    fn a_narrow_terminal_keeps_each_slots_host_state_and_job_and_nothing_wraps() {
         let out = text(&fixture(), 60);
-        assert!(
-            out.lines().any(
-                |l| squash(l).starts_with("razer-laptop busy 1h33m! PlayMode 4 unity-core-pla")
-            ),
-            "{out}"
-        );
+        assert_line(&out, "razer-laptop busy 1h33m! PlayMode 4");
         let long: Vec<&str> = out.lines().filter(|l| l.chars().count() > 60).collect();
         assert!(long.is_empty(), "{long:#?}");
     }
@@ -1600,16 +1000,22 @@ pub(crate) mod tests {
     fn a_non_runner_lists_its_local_gates_with_the_repo_and_the_pr_of_its_branch() {
         let mut i = fixture();
         with_gates(&mut i);
-        let out = text(&i, 160);
+        let out = text(&i, 200);
         assert_line(
             &out,
-            "workstation - busy 36m - PlayMode (local) unity-core-playground#412",
+            "workstation - busy unity-local 36m - PlayMode (local) unity-core-playground#412",
         );
         // No repo label (an older fleet-assess): the branch stands in, and no PR is guessed.
-        assert_line(&out, "workstation - busy 45s - EditMode (local) fix/x");
+        assert_line(
+            &out,
+            "workstation - busy unity-local 45s - EditMode (local) fix/x",
+        );
         // Without published local slots the machine counts its gates and invents no capacity.
-        assert_line(&out, "workstation local - - - - - - 2 gates");
-        assert!(!out.lines().any(|l| l.starts_with("unity-local ")));
+        assert!(
+            has(&out, "workstation local no reading - - - - - - - 2 gates"),
+            "{out}"
+        );
+        assert!(!tab(&built(&i), "pools", 160).contains("unity-local"));
     }
 
     #[test]
@@ -1617,9 +1023,15 @@ pub(crate) mod tests {
         let mut i = fixture();
         with_gates(&mut i);
         with_local_slots(&mut i);
-        let out = text(&i, 160);
-        assert_line(&out, "workstation local 2/4 - - - - - unity-local 2/4+6");
-        assert_line(&out, "unity-local on workstation 1 - 14 50%");
+        let out = text(&i, 200);
+        assert!(
+            has(
+                &out,
+                "workstation local no reading 2/4 - - - - - - unity-local 2/4+6"
+            ),
+            "{out}"
+        );
+        assert_line(&out, "unity-local 4 2 - 1 - 14 50% workstation");
         assert!(has(&out, "waiting 5"));
     }
 

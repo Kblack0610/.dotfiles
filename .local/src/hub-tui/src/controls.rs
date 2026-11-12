@@ -423,14 +423,14 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first thirteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first fourteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
                     "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 4, 5, 6, 12, 2, 7, 8, 15, 14, 1, 13, 9, 10, 11],
-                flex: Some(16),
+                keep: vec![0, 3, 4, 5, 6, 13, 2, 7, 8, 16, 15, 1, 14, 9, 10, 11, 12],
+                flex: Some(17),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
                 right: vec![6, 7],
@@ -439,9 +439,9 @@ impl Controls {
                     (2, 16),
                     (3, 30),
                     (9, 16),
-                    (10, 22),
-                    (12, fleet::NAME_MAX),
-                    (13, 22),
+                    (11, 22),
+                    (13, fleet::NAME_MAX),
+                    (14, 22),
                 ],
             }
             .fit(w, p.head());
@@ -545,6 +545,7 @@ impl Controls {
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
             dash(&x.harness),
+            dash(&x.close),
             dash(&x.item),
             x.source.name().into(),
             session.into(),

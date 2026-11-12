@@ -468,6 +468,28 @@ mod tests {
     }
 
     #[test]
+    fn moved_chips_are_the_layout() {
+        // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
+        // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
+        for (tab, old, table, chip) in hub_core::layout::MOVED_CHIPS {
+            let to = hub_core::layout::MOVED
+                .iter()
+                .find(|m| m.0 == *tab && m.1 == *old)
+                .expect("a moved chip is a moved section");
+            let pre = crate::infra::TABLES
+                .iter()
+                .find(|t| t.0 == *table)
+                .expect("the chip's table is on the page")
+                .1;
+            let want = format!(
+                r#""{tab}/{old}": ["{}", "{}", "{pre}s={chip}"]"#,
+                to.2, to.3
+            );
+            assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
+    }
+
+    #[test]
     fn inner_tabs_are_the_layout() {
         // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
         let mut want = serde_json::Map::new();

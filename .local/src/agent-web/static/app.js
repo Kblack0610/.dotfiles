@@ -315,14 +315,16 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
 const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "fleet", "projects", "board", "releases", "alerts", "infra", "schedules", "costs"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
-// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
+// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
+// and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
 // And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"],
-  "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"], "projects/all": ["board", ""],
-  "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
+  "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
+  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
+  "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
 // `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","governor"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+const INNER_TABS = {"infra":{"pinned":[],"tabs":[["machines","Machines",["machines","pools"]],["ci","CI",["ci","runs","tests"]],["jobs","Jobs",["jobs"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["sessions","spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::links::PAGES: a record's page inside an inner tab, by its `#tab/<word>/<id>` word, and
 // the inner tab it opens on. assets.rs `entity_pages_are_the_links` fails when this line drifts.
 const ENTITY_PAGES = {"infra":{"machines":"machines","pools":"machines","ci":"ci","jobs":"jobs"}};
@@ -385,7 +387,7 @@ function route(hash) {
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
   const moved = MOVED[name + "/" + arg.toLowerCase()];
-  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query, section: moved[1] });
+  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query: query || moved[2] || "", section: moved[1] });
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);
   if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });

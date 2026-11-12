@@ -441,7 +441,8 @@ impl Read {
 pub struct App {
     pub tab: Tab,
     pub p: Palette,
-    pub hosts: Vec<String>,
+    /// The views over Infra's machines, pools and CI tables (`infratables`).
+    pub itab: crate::infratables::InfraTables,
     pub paths: Paths,
     pub infra: Option<Infra>,
     pub jobs: Option<Jobs>,
@@ -620,7 +621,7 @@ impl App {
         App {
             tab,
             p: Palette::from_env(),
-            hosts: board::extra_hosts(),
+            itab: Default::default(),
             paths: Paths::from_env(),
             infra: None,
             jobs: None,
@@ -2191,6 +2192,13 @@ impl App {
                     self.infra_jobs = false;
                     self.infra_runs = false;
                     self.scroll = 0;
+                } else if let Some((table, chip)) = hub_core::layout::moved_chip("infra", &q) {
+                    // `hub --tab 'infra governor'`: the table it moved into, under its chip.
+                    if let Some(t) = self.itab.view(table) {
+                        t.clear();
+                        t.view.state = chip.into();
+                    }
+                    self.open_section(table);
                 }
             }
             // Fleet's own section names (`workers`) scroll there; any other word is a runner. A
@@ -2881,9 +2889,10 @@ impl App {
     }
 
     /// Infra's own keys. The summary: Left/Right switch the inner tab, n/N jump between
-    /// sections; on the CI inner tab Enter and the table keys (/ s f) open the runs table and
-    /// `t` it with Run times, elsewhere Enter and the jobs keys (/ s f h) open the jobs table (on
-    /// the Jobs inner tab). A table: its keys, and Esc with nothing to clear goes back.
+    /// sections, the table keys (/ f s S x, Esc) go to the inner tab's table that has them and
+    /// `c` passes them on (`infratables`); on CI, Enter opens the runs table and `t` it with Run
+    /// times; elsewhere Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs
+    /// tables: their keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
         if self.infra_runs {
             let v = &self.ci;
@@ -2900,23 +2909,26 @@ impl App {
             }
             return self.builds_key(k);
         }
-        if !self.infra_jobs && self.infra_inner == "ci" {
-            match k.code {
-                KeyCode::Enter | KeyCode::Char('t') => {
-                    self.infra_runs = true;
-                    if k.code == KeyCode::Char('t') {
-                        self.ci.times = Some(0);
-                    }
+        if !self.infra_jobs {
+            if !crate::infratables::InfraTables::on(self.infra_inner).is_empty() {
+                // The table first: a `c` typed into its query is the query's.
+                if self.itab.key(self.infra.as_ref(), self.infra_inner, k.code) != Took::No {
                     return true;
                 }
-                c if DataTable::owns(c) => {
-                    self.infra_runs = true;
-                    return self.builds_key(k);
+                if k.code == KeyCode::Char('c') {
+                    self.itab.cycle(self.infra_inner);
+                    return true;
                 }
-                _ => {}
             }
-        }
-        if !self.infra_jobs {
+            // CI's runs table is one key away, as Jobs is from the rest: Enter opens it, `t`
+            // with Run times.
+            if self.infra_inner == "ci" && matches!(k.code, KeyCode::Enter | KeyCode::Char('t')) {
+                self.infra_runs = true;
+                if k.code == KeyCode::Char('t') {
+                    self.ci.times = Some(0);
+                }
+                return true;
+            }
             match k.code {
                 KeyCode::Left | KeyCode::Right => {
                     self.infra_inner = crate::innertabs::step(
@@ -3910,7 +3922,7 @@ impl App {
                     hub_core::layout::inner_tab(tab, Some(self.infra_inner))
                         .map_or(&[][..], |i| i.sections)
                 };
-                let mut secs = board::infra(i, self.p, now, w, &self.hosts);
+                let mut secs = board::infra(i, self.p, now, w, &self.itab, self.infra_inner);
                 // Jobs is read on its own, and built only on the inner tab that shows it: the
                 // jobs table walks every job in the window on each draw.
                 if shown.contains(&"jobs") {
@@ -4675,7 +4687,6 @@ mod tests {
     fn with_tx(tab: Tab, tx: Sender<Msg>) -> App {
         let mut a = App::new(tab, tx);
         a.p = Palette { no_color: true };
-        a.hosts = vec!["workstation".into()];
         a.runner = Arc::new(Fake::default());
         a.gather = no_sessions;
         // No test reaches Prometheus: a read in flight is never started again.
@@ -4739,7 +4750,7 @@ mod tests {
         // HARNESS gives way before YOU and ASK; a wide screen names each row's.
         let wide = screen(&mut a, 220, 30);
         let wl: Vec<&str> = wide.lines().collect();
-        assert!(wl[3].contains("ACCOUNT  HARNESS"), "{wide}");
+        assert!(wl[3].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
         assert!(wl[4].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
@@ -6882,17 +6893,14 @@ mod tests {
         assert_eq!(a.tab, Tab::Infra);
         assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
         // Machines the same way, its headline numbers first, and n/N step between the section
-        // headings from there (a short screen, so the governor is a scroll away).
+        // headings from there (a short screen, so the pools are a scroll away).
         let (t, q) = crate::tabreq::parse("machines").unwrap();
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 6);
         assert!(top(&s).starts_with("nodes "), "{s}");
         a.handle(key('n'));
         let s = screen(&mut a, 160, 6);
-        assert!(
-            s.contains("GOVERNOR") && !top(&s).starts_with("nodes "),
-            "{s}"
-        );
+        assert!(top(&s).starts_with("POOLS  all"), "{s}");
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 6)).starts_with("nodes "));
     }
@@ -6906,11 +6914,12 @@ mod tests {
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         for w in [
             "[Machines]",
-            "MACHINE ",
-            "GOVERNOR",
+            "MACHINES  all",
+            "POOLS  all",
             "CI RUNNERS",
+            "RUNNERS  all",
+            "FINISHED 24H  ",
             "Enter opens",
-            "CLOUD RUNNERS",
         ]
         .windows(2)
         {
@@ -6929,7 +6938,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            top(&s).starts_with("[Machines] CI  Jobs  Cloud   <- -> switch"),
+            top(&s).starts_with("[Machines] CI  Jobs   <- -> switch"),
             "the strip is the first line: {s}"
         );
         // What is red is Alerts' now: no health, red now or fixes here.
@@ -6937,33 +6946,30 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines and the governor, in that order; CI is its own.
+        // Machines holds the machines and the pools, in that order; CI is its own. The governor
+        // and cloud power are machine columns.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        assert!(at(&s, "MACHINE ") < at(&s, "GOVERNOR"), "{s}");
-        assert!(
-            !s.contains("CI RUNNERS") && !s.contains("CLOUD RUNNERS"),
-            "{s}"
-        );
+        assert!(at(&s, "MACHINES  all") < at(&s, "POOLS  all"), "{s}");
+        assert!(at(&s, "GOVERNOR") < at(&s, "POOLS  all"), "{s}");
+        assert!(!s.contains("CI RUNNERS"), "{s}");
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
         assert!(top(&s).starts_with(" Machines [CI]"), "{s}");
-        assert!(s.contains("CI RUNNERS") && !s.contains("GOVERNOR"), "{s}");
+        assert!(s.contains("CI RUNNERS") && !s.contains("POOLS  all"), "{s}");
         a.handle(right());
         let s = screen(&mut a, 160, 200);
         assert!(top(&s).starts_with(" Machines  CI [Jobs]"), "{s}");
         assert!(
-            s.contains("Enter opens the table") && !s.contains("GOVERNOR"),
+            s.contains("Enter opens the table") && !s.contains("POOLS  all"),
             "{s}"
         );
-        a.handle(right());
-        assert!(screen(&mut a, 160, 200).contains("CLOUD RUNNERS"));
         // Right from the last wraps to the first, Left back again.
         a.handle(right());
         assert_eq!(a.infra_inner, "machines");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Left))));
-        assert_eq!(a.infra_inner, "cloud");
+        assert_eq!(a.infra_inner, "jobs");
         // An inner tab's own name opens it; a name that moved goes to its new tab.
         let (t, q) = crate::tabreq::parse("infra machines").unwrap();
         a.handle(Msg::Tab(t, q));
@@ -6973,6 +6979,42 @@ mod tests {
         let (t, q) = crate::tabreq::parse("infra red").unwrap();
         a.handle(Msg::Tab(t, q));
         assert_eq!((a.tab, a.seek), (Tab::Alerts, Some("firing")));
+    }
+
+    #[test]
+    fn infra_table_keys_go_to_the_inner_tabs_table_and_c_passes_them_on() {
+        let mut a = infra_app();
+        a.handle(key('9'));
+        assert_eq!(a.infra_inner, "machines");
+        a.handle(key('f'));
+        assert_eq!(a.itab.views[0].view.state, "busy");
+        assert!(
+            !a.infra_jobs,
+            "f is the machines table's, not the jobs table's"
+        );
+        a.handle(key('c'));
+        a.handle(key('f'));
+        assert!(
+            !a.itab.views[1].view.is_default(),
+            "c gave the keys to the pools"
+        );
+        // A `c` typed into a query is the query's.
+        a.handle(key('/'));
+        a.handle(key('c'));
+        assert_eq!(a.itab.views[1].typing.as_deref(), Some("c"));
+        // Esc drops the draft, then clears the view, then is the page's again.
+        for _ in 0..2 {
+            a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        }
+        assert!(a.itab.views[1].is_default());
+        // The old Governor and Cloud names open Machines under their chips.
+        for (word, chip) in [("infra governor", "governed"), ("infra cloud", "cloud")] {
+            let (t, q) = crate::tabreq::parse(word).unwrap();
+            a.handle(Msg::Tab(t, q));
+            assert_eq!((a.tab, a.infra_inner), (Tab::Infra, "machines"), "{word}");
+            assert_eq!(a.itab.views[0].view.state, chip, "{word}");
+            assert_eq!(a.itab.focus("machines"), Some(0), "{word}");
+        }
     }
 
     #[test]

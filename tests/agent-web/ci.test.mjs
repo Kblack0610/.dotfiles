@@ -19,7 +19,7 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const boxOf = () => { const on = {}; return Object.assign(part(), { on, addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } }); };
 const runs = boxOf(), tests_ = boxOf();
 const fire = (box, ev, e) => (box.on[ev] || []).forEach((f) => f(e));
-const parts = { "ci-runs": runs, "ci-tests": tests_, "infra-main": part(), "infra-tail": part(), jobs: part() };
+const parts = { "ci-runs": runs, "ci-tests": tests_, "infra-main": part(), jobs: part() };
 const doc = { body: el(), getElementById: (id) => (parts[id] ||= part()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let builds = {};
@@ -43,7 +43,7 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js", "ci.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js", "ci.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const settled = () => new Promise((r) => setImmediate(r));
 const NOW = () => Math.round(Date.now() / 1e3);
