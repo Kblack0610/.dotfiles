@@ -602,7 +602,7 @@ load 'fleet_dispatch/common'
   harness_ready
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_success
-  assert_called "OPENCODE_CONFIG='$SANDBOX/eval-glm.json'"
+  assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-glm.json")"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
   assert_called 'claude-acct room --source glm'
   assert_not_called 'room --source eval'
