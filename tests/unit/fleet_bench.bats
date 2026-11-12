@@ -2582,10 +2582,25 @@ failed() {
   refute_output --partial 'fix(hold)'
 }
 
+# liveness_runner <name> <owner/repo> <command path>: a scheduled runner whose COMMAND is that path
+# in a checkout of the repo, run through a stow-style link under $HOME, and a fleet-liveness probe
+# line naming it FAILED
+liveness_runner() {
+  local src="$SANDBOX/src-${2//\//-}"
+  [ -d "$src/.git" ] || { git init -q "$src"; git -C "$src" remote add origin "git@github.com:$2.git"; }
+  mkdir -p "$(dirname "$src/$3")" "$HOME/.local/bin"; touch "$src/$3"
+  ln -sf "$src/$3" "$HOME/.local/bin/$1"
+  printf 'NAME=%s\nCOMMAND="$HOME/.local/bin/%s run"\nSCHEDULE=daily\n' "$1" "$1" > "$LEDGER_CONF_DIR/$1.conf"
+  printf '%s: FAILED\n' "$1" >> "$TRIAGE_WATCH_STATE/fleet-liveness.out"
+}
+
 @test "hold: fleet-liveness going red after cleanup merges is one row naming them, in place of the watch's" {
   hold_setup
+  liveness_runner tool o/r x
+  liveness_runner tool2 O/R y
   cleanup near -7200 5 aaa11111 x
   cleanup near2 -7100 6 bbb22222 y
+  cleanup miss -7000 9 eee55555 .local/bin/other
   cleanup after -600 7 ccc33333 z
   cleanup old -100000 8 ddd44444 w
   watch fleet-liveness TRIP -3600 urgent
@@ -2593,8 +2608,51 @@ failed() {
   assert_output "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merges near (PR 5 at aaa11111), near2 (PR 6 at bbb22222): fleet-liveness tripped, evidence: watch-companion-loop list --long fleet-liveness #high"
 }
 
+@test "hold: fleet-liveness names no cleanup merge that cannot reach the tripped runner (ar-1332)" {
+  hold_setup
+  # trader-research-sync runs from the private repo; six dotfiles cleanups landed before it failed
+  liveness_runner trader-research-sync o/p .local/bin/agentctl-trader-research-sync
+  printf 'fleet: paused for 2d (x), no scheduled runner starts: agentctl resume\n' >> "$TRIAGE_WATCH_STATE/fleet-liveness.out"
+  cleanup ledger-coverage -7200 1627 722523a2 .local/bin/day-log
+  cleanup board-orphan -7100 1633 bd2d640e .local/bin/agent-queue
+  cleanup merged-open-rows -7000 1619 00f8a763 .local/bin/notes-board
+  cleanup ar-1086 -6900 1626 47319a7f .claude/skills/fix-red/SKILL.md
+  cleanup ar-1086b -6800 689 00c84ae5 docs/x.md
+  cleanup ar-275 -6700 1625 bc7b9807 .local/bin/agentctl-trader-research-sync
+  watch fleet-liveness TRIP -3600 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'fix(hold)'
+  assert_output --partial 'check(watch): fleet-liveness tripped since'
+  # the same path in the runner's own repo is a suspect
+  liveness_runner tool o/r .local/bin/agentctl-trader-research-sync
+  run "$SUBJECT" triage --dry-run
+  assert_output "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge ar-275 (PR 1625 at bc7b9807): fleet-liveness tripped, evidence: watch-companion-loop list --long fleet-liveness #high"
+  cleanup unread -6600 1700 fff66666 .local/bin/agentctl-trader-research-sync
+  touch "$GHD/down"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'hold: cannot read the files of o/r fff66666'
+}
+
+@test "hold: fleet-liveness names a merge that deleted the runner's script or changed a ~ COMMAND, and an unread probe is unknown" {
+  hold_setup
+  liveness_runner gone o/r .local/bin/gone
+  rm "$SANDBOX/src-o-r/.local/bin/gone"
+  liveness_runner tilde o/r .local/bin/tilde
+  sed -i 's|\$HOME|~|' "$LEDGER_CONF_DIR/tilde.conf"
+  cleanup delete -7200 5 aaa11111 .local/bin/gone
+  cleanup edit -7100 6 bbb22222 .local/bin/tilde
+  watch fleet-liveness TRIP -3600 urgent
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merges delete (PR 5 at aaa11111), edit (PR 6 at bbb22222)"
+  rm "$TRIAGE_WATCH_STATE/fleet-liveness.out"
+  run "$SUBJECT" reds
+  assert_output --partial 'hold: cannot read the fleet-liveness probe output'
+}
+
 @test "hold: a fleet-liveness flap is no row, and a trip no merge precedes stays the watch's own" {
   hold_setup
+  liveness_runner tool o/r x
   cleanup near -7200 5 aaa11111 x
   watch fleet-liveness TRIP -60 urgent
   run "$SUBJECT" triage --dry-run
@@ -2608,6 +2666,7 @@ failed() {
 @test "hold: a routed hold row queues one red for the red, whatever the merges it names" {
   hold_setup
   printf '^fix\\(hold\\): ([a-z0-9-]+) went red\tagent\t-\trevert or fix it\t#size/s\n' > "$TRIAGE_ROUTES"
+  liveness_runner tool o/r x
   cleanup a -7200 5 aaa11111 x
   cleanup b -7100 6 bbb22222 y
   watch fleet-liveness TRIP -3600 urgent
@@ -2617,6 +2676,8 @@ failed() {
 
 @test "reds: a merged cleanup item records its hold, and only a real red counts as unfixed" {
   hold_setup
+  liveness_runner tool o/r x
+  liveness_runner tool2 o/r w
   cleanup holding -3600 5 aaa11111 x
   cleanup held -95000 6 bbb22222 y
   cleanup gone -200000 7 ccc33333 z
@@ -2640,6 +2701,7 @@ failed() {
 
 @test "reds: a hold red that is red now counts as its own red, by the row it filed" {
   hold_setup
+  liveness_runner tool o/r x
   cleanup a -7200 5 aaa11111 x
   watch fleet-liveness TRIP -3600 urgent
   red_item fixit done "fix(hold): liveness-$((T0 - 3600)) went red after cleanup merge a (PR 5 at aaa11111): x" -3000 -600 o/r#9 eee55555 ok 'red cause:h1'
