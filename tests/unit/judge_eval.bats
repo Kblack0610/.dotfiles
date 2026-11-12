@@ -19,6 +19,7 @@ setup() {
   echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
   echo 'SCORE=plan-dispatched' > "$AGENTCTL_CONF_DIR/inbox-plan.conf"
+  echo 'SCORE=priority-kept' > "$AGENTCTL_CONF_DIR/inbox-priority.conf"
   echo 'EFFECT=acts' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
   local ask_sha dispatch_sha
@@ -352,7 +353,7 @@ SH
   run "$JUDGE_EVAL" --json
   assert_success
   assert_equal "$(jq -c '[.agents[] | [.agent, .score]]' <<<"$output")" \
-    '[["ask-judge","ask-answers"],["ask-sweep","unrecorded"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-triage","triage-untouched"]]'
+    '[["ask-judge","ask-answers"],["ask-sweep","unrecorded"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-priority","priority-kept"],["inbox-triage","triage-untouched"]]'
   echo 'SCORE=no-such-source' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   run "$JUDGE_EVAL" shepherd
   assert_success
@@ -380,6 +381,34 @@ SH
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
   assert_line '[6,3,2,1,5,60]'
   assert_line '[["t-edited","edited by ab12cd34"],["t-moved","rehomed"]]'
+}
+
+@test "inbox-priority: a priority the pass set is right when nobody else changes it for 48h; a later pass supersedes; triage ignores it" {
+  {
+    ev tagged p-kept "$(ago '-3 days')" by=inbox-priority 'why=+#low'
+    ev tagged p-moved "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-moved "$(ago '-3 days +2 hours')" by=human 'why=+#urgent'
+    ev tagged p-size "$(ago '-3 days')" by=inbox-priority 'why=+#high'; ev tagged p-size "$(ago '-3 days +1 hour')" by=human 'why=+#size/s'
+    ev tagged p-legacy "$(ago '-4 days')" by=inbox-triage 'why=+#high'
+    ev tagged p-retag "$(ago '-5 days')" by=inbox-priority 'why=+#high'; ev tagged p-retag "$(ago '-5 days +1 hour')" by=inbox-priority 'why=+#low'
+    ev tagged p-young "$(ago '-1 hour')" by=inbox-priority 'why=+#urgent'
+    # a human change before the next pass still counts against the first; the same priority again is no change
+    ev tagged p-over "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-over "$(ago '-3 days +1 hour')" by=human 'why=+#urgent'
+    ev tagged p-over "$(ago '-3 days +2 hours')" by=inbox-priority 'why=+#low'
+    ev tagged p-same "$(ago '-3 days')" by=inbox-priority 'why=+#high'; ev tagged p-same "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#high +#size/m'
+    ev tagged p-other "$(ago '-3 days')" by=inbox-triage 'why=+#size/m'
+    # a triaged row the pass then prioritised stays untouched for the triager
+    ev filed t-prio "$(ago '-3 days')"; ev tagged t-prio "$(ago '-3 days +3 hours')" by=inbox-priority 'why=+#low'
+  } > "$INGEST"
+  run "$JUDGE_EVAL" inbox-priority --json
+  assert_success
+  # tp: p-kept, p-size, p-legacy, p-retag (its second tag), t-prio, p-over (its second), p-same; fp: p-moved, p-over (its first)
+  # pending: p-young; p-other is no priority
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort), (.rules | map([.rule, .tp, .fp]) | sort)' <<<"$output"
+  assert_line '[10,7,2,1]'
+  assert_line '[["p-moved","+#urgent by human"],["p-over","+#urgent by human"]]'
+  assert_line '[["high",3,0],["low",4,2],["urgent",0,0]]'
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].total | [.tp, .fp]' <<<"$output")" '[1,0]'
 }
 
 @test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at the bar" {
