@@ -11,6 +11,7 @@
 #                       question, options and --why use; post refuses a term it never names
 #     --session s       the asking session; default the caller's tmux session
 #   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
+#   agent-ask answer-names <id>         each option the human's answer names, one per line; none: free text
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
 #                                       options with meanings, recommendation, context, and
 #                                       last the judge line, a deferral included
@@ -1281,20 +1282,20 @@ story_telemetry() {
     ] | join(" . ")' <<<"$row"
 }
 
-# named_option <options> <text>: the one option of `a|b|c` that <text> names, case insensitive;
-# nothing when it names none or more than one. The text that is exactly an option names it. Else an
+# named_options <options> <text>: each option of `a|b|c` that <text> names, case insensitive, one per
+# line; nothing when it names none. The text that is exactly an option names it alone. Else an
 # option counts as a whole word, and one seen only inside a longer named one does not count:
 # approve-with-edits names one option, not approve as well. A one-letter option counts only as a
 # token of its own, followed by punctuation, the end, or a list word ("a", "b: ...", "a (note)",
 # "go with b", "a or b"), never by a word: "a new problem" is the article, which read
 # "in session: New problem found: a ..." as option a (2026-11-07, ar-65).
-named_option() {
+named_options() {
   local opt other hits=() kept=() t="${2,,}" o
   local list='(or|and|vs|nor)' tail
   t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
   local IFS='|'
   for opt in $1; do
-    [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { printf '%s' "$opt"; return 0; }
+    [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { printf '%s\n' "$opt"; return 0; }
   done
   for opt in $1; do
     o="${opt,,}"
@@ -1311,7 +1312,26 @@ named_option() {
     done
     kept+=("$opt")
   done
-  [ "${#kept[@]}" -eq 1 ] && printf '%s' "${kept[0]}"
+  [ "${#kept[@]}" -eq 0 ] || printf '%s\n' "${kept[@]}"
+}
+
+# named_option <options> <text>: the one option <text> names (named_options); nothing when it names
+# none or more than one.
+named_option() {
+  local names
+  names="$(named_options "$@")"
+  [[ -n "$names" && "$names" != *$'\n'* ]] && printf '%s' "$names"
+}
+
+# answer-names <id>: each option the human's answer to that ask names (named_options), one per line;
+# nothing when it names none, which agent-queue reads as a free-text answer that releases a gate.
+cmd_answer_names() {
+  local f; f="$(find_ask "${1:?usage: agent-ask answer-names <id>}")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$1'" >&2; return 1; }
+  load_ask "$f"
+  [ -n "${ASK[options]:-}" ] && [ -n "${ASK[answer]:-}" ] || return 0
+  named_options "${ASK[options]}" "${ASK[answer]}"
+  return 0
 }
 
 # answer_picks <ask json lines>: {ask id: option} for each answer to an ask with options that names
@@ -1808,6 +1828,7 @@ case "$sub" in
   show)   cmd_show "$@" ;;
   card)   cmd_card "$@" ;;
   decision) cmd_decision "$@" ;;
+  answer-names) cmd_answer_names "$@" ;;
   target) cmd_target "$@" ;;
   reopen-on-answer) cmd_reopen_on_answer "$@" ;;
   reopen) cmd_reopen "$@" ;;
