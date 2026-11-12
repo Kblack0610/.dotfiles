@@ -215,6 +215,74 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
     Ok(h)
 }
 
+/// One hour's samples: their sum, how many, and the largest.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Bucket {
+    pub sum: f64,
+    pub n: u32,
+    pub max: f64,
+}
+
+impl Default for Bucket {
+    fn default() -> Self {
+        Self {
+            sum: 0.0,
+            n: 0,
+            max: f64::MIN,
+        }
+    }
+}
+
+impl Bucket {
+    /// The mean of its samples; none when it had none.
+    pub fn mean(&self) -> Option<f64> {
+        (self.n > 0).then(|| self.sum / self.n as f64)
+    }
+    /// The largest of its samples; none when it had none.
+    pub fn most(&self) -> Option<f64> {
+        (self.n > 0).then_some(self.max)
+    }
+}
+
+/// A window cut into `BUCKET`s from `from`: every page's history folds its range samples by
+/// these hours (this module's, `pool_page`'s).
+#[derive(Debug, Clone, Copy)]
+pub struct Hours {
+    pub from: u64,
+    /// How many: at least one, the last holding a sample past its end.
+    pub n: usize,
+}
+
+impl Hours {
+    pub fn new(from: u64, to: u64) -> Self {
+        Self {
+            from,
+            n: to.saturating_sub(from).div_ceil(BUCKET).max(1) as usize,
+        }
+    }
+    /// Unix seconds hour `i` starts.
+    pub fn at(&self, i: usize) -> u64 {
+        self.from + i as u64 * BUCKET
+    }
+    /// The hour a sample at `t` falls in.
+    pub fn slot(&self, t: u64) -> usize {
+        ((t.saturating_sub(self.from) / BUCKET) as usize).min(self.n - 1)
+    }
+    /// Every sample of `series`, each in its hour.
+    pub fn fold(&self, series: &[Series]) -> Vec<Bucket> {
+        let mut by = vec![Bucket::default(); self.n];
+        for s in series {
+            for (t, v) in &s.points {
+                let b = &mut by[self.slot(*t as u64)];
+                b.sum += v;
+                b.n += 1;
+                b.max = b.max.max(*v);
+            }
+        }
+        by
+    }
+}
+
 /// The history from the CPU and pool series and the power history: pure, for the tests.
 pub fn history(
     host: &str,
@@ -224,36 +292,27 @@ pub fn history(
     from: u64,
     to: u64,
 ) -> HostHistory {
-    let n = to.saturating_sub(from).div_ceil(BUCKET).max(1);
-    let mut hours: Vec<Hour> = (0..n)
-        .map(|i| Hour {
-            at: from + i * BUCKET,
+    let span = Hours::new(from, to);
+    let mut hours: Vec<Hour> = span
+        .fold(cpu)
+        .iter()
+        .enumerate()
+        .map(|(i, b)| Hour {
+            at: span.at(i),
+            cpu: b.mean(),
             ..Default::default()
         })
         .collect();
-    let slot = |t: u64| ((t.saturating_sub(from)) / BUCKET).min(n - 1) as usize;
-    let mut times: Vec<u64> = vec![];
-    let mut sums: Vec<(f64, u32)> = vec![(0.0, 0); n as usize];
-    for s in cpu {
-        for (t, v) in &s.points {
-            let t = *t as u64;
-            times.push(t);
-            let e = &mut sums[slot(t)];
-            e.0 += v;
-            e.1 += 1;
-        }
-    }
+    let mut times: Vec<u64> = cpu
+        .iter()
+        .flat_map(|s| s.points.iter().map(|(t, _)| *t as u64))
+        .collect();
     times.sort();
     times.dedup();
     let per = (BUCKET / STEP) as f64;
-    for (h, (sum, k)) in hours.iter_mut().zip(&sums) {
-        if *k > 0 {
-            h.cpu = Some(sum / *k as f64);
-        }
-    }
-    let mut seen = vec![0u32; n as usize];
+    let mut seen = vec![0u32; span.n];
     for t in &times {
-        seen[slot(*t)] += 1;
+        seen[span.slot(*t)] += 1;
     }
     for (h, k) in hours.iter_mut().zip(seen) {
         h.seen = (k as f64 / per).min(1.0);
@@ -263,17 +322,12 @@ pub fn history(
         if pool.is_empty() {
             continue;
         }
-        let mut by: BTreeMap<usize, (f64, u32)> = BTreeMap::new();
-        for (t, v) in &s.points {
-            let e = by.entry(slot(*t as u64)).or_default();
-            e.0 += v;
-            e.1 += 1;
-        }
-        for (i, (sum, k)) in by {
+        for (h, b) in hours.iter_mut().zip(span.fold(std::slice::from_ref(s))) {
             // The mean over the hour's steps, a missing step counting as no cores used.
-            hours[i]
-                .pools
-                .insert(pool.to_string(), sum / per.max(k as f64));
+            if b.n > 0 {
+                h.pools
+                    .insert(pool.to_string(), b.sum / per.max(b.n as f64));
+            }
         }
     }
     let mut down = gaps(&times, from, to);
@@ -635,6 +689,30 @@ mod tests {
         assert_eq!(h.down.len(), 1);
         assert_eq!(h.down[0].why, POWERED_OFF);
         assert!(h.down[0].in_state("powered off"));
+    }
+
+    #[test]
+    fn hours_fold_each_sample_into_its_hour_and_a_late_one_into_the_last() {
+        let span = Hours::new(T, T + 2 * BUCKET);
+        assert_eq!((span.n, span.at(1)), (2, T + BUCKET));
+        let b = span.fold(&[pool(
+            "unity",
+            &[(T, 2.0), (T + 60, 4.0), (T + 9 * BUCKET, 7.0)],
+        )]);
+        assert_eq!(
+            (b[0].mean(), b[0].most(), b[0].n),
+            (Some(3.0), Some(4.0), 2)
+        );
+        assert_eq!(
+            (b[1].mean(), b[1].n),
+            (Some(7.0), 1),
+            "past the end lands in the last hour"
+        );
+        let none = Hours::new(T, T).fold(&[]);
+        assert_eq!(
+            (none.len(), none[0].mean(), none[0].most()),
+            (1, None, None)
+        );
     }
 
     #[test]

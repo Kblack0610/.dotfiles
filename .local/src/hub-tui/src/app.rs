@@ -35,6 +35,7 @@ use crate::datatable::{DataTable, Took};
 use crate::flowline;
 use crate::fmt::{clock, Palette};
 use crate::forecast::{self, Forecast};
+use crate::infrapage::InfraPage;
 use crate::jobs::{log_lines, row_id, JobsView, LogPane};
 use crate::projtab::{self, ProjView};
 use crate::proptab::ProposalsView;
@@ -390,10 +391,8 @@ pub enum Msg {
     Fleet(Box<hub_core::fleet::Fleet>),
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
     Runner(Box<(String, Result<hub_core::fleet::runner::Runner, String>)>),
-    /// One machine's page (hub_core::machine_page), for the host it was read for.
-    Machine(Box<(String, Result<hub_core::machine_page::MachinePage, String>)>),
-    /// One pool's page (hub_core::pool_page), for the pool it was read for.
-    Pool(Box<(String, Result<hub_core::pool_page::PoolPage, String>)>),
+    /// An Infra page's read (`infrapage`), for the page it was read for.
+    InfraPage(Box<InfraPage>),
     /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
     /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
@@ -501,17 +500,9 @@ pub struct App {
     pub fleet_page: Option<String>,
     /// That page's read; None until it comes back.
     pub fleet_runner: Option<Result<hub_core::fleet::runner::Runner, String>>,
-    /// The machine whose page is open in place of Infra's tables (Enter on its row, a link to
-    /// it, or `hub tab 'infra machines/<host>'`); None is the tab.
-    pub machine_page: Option<String>,
-    /// That page's read; None until it comes back.
-    pub machine: Option<Result<hub_core::machine_page::MachinePage, String>>,
-    /// The pool whose page is open in place of Infra's tables (Enter on its row, a link to it,
-    /// or `hub tab 'infra pools/<pool>'`); None is the tab. At most one of it and
-    /// `machine_page` is open.
-    pub pool_page: Option<String>,
-    /// That page's read; None until it comes back.
-    pub pool: Option<Result<hub_core::pool_page::PoolPage, String>>,
+    /// The page open in place of Infra's tables, a machine's or a pool's, with its read (Enter
+    /// on its row, a link to it, or `hub tab 'infra machines/<host>'`); None is the tab.
+    pub infra_page: Option<InfraPage>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -617,8 +608,7 @@ pub struct App {
     work_read: Read,
     fleet_read: Read,
     fleet_runner_read: Read,
-    machine_read: Read,
-    pool_read: Read,
+    infra_page_read: Read,
     pipeline_read: Read,
     focus_read: Read,
     outbox_read: Read,
@@ -677,10 +667,7 @@ impl App {
             fleet_folded: Default::default(),
             fleet_page: None,
             fleet_runner: None,
-            machine_page: None,
-            pool_page: None,
-            pool: None,
-            machine: None,
+            infra_page: None,
             outbox: None,
             outbox_said: None,
             focus_day: None,
@@ -747,8 +734,7 @@ impl App {
             work_read: Read::default(),
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
-            machine_read: Read::default(),
-            pool_read: Read::default(),
+            infra_page_read: Read::default(),
             pipeline_read: Read::default(),
             focus_read: Read::default(),
             outbox_read: Read::default(),
@@ -1061,88 +1047,55 @@ impl App {
         self.read_runner();
     }
 
-    /// The open machine page's read, from the Machines rows and firing alerts last read: it
-    /// waits for the first Prometheus read, and a later one (or the alerts) reads it again.
-    pub fn read_machine(&mut self) {
-        let (Some(host), Some(infra)) = (self.machine_page.clone(), self.infra.clone()) else {
+    /// The open page's read, from the Infra rows last read: it waits for the first Prometheus
+    /// read, and a later one reads it again.
+    pub fn read_infra_page(&mut self) {
+        let (Some(page), Some(infra)) = (self.infra_page.as_ref(), self.infra.clone()) else {
             return;
         };
         // Its history is three range queries, so a page left open behind another tab is not read,
-        // and the first read waits for the alerts (`Msg::Alerts` reads it) rather than run twice.
-        if self.tab == Tab::Infra && self.alerts.is_some() && self.machine_read.want() {
+        // and a page that reads the alerts waits for them (`Msg::Alerts` reads it) rather than
+        // run twice.
+        let ready = self.alerts.is_some() || !page.reads_alerts();
+        if self.tab == Tab::Infra && ready && self.infra_page_read.want() {
             let tx = self.tx.clone();
-            let firing = self.alerts.as_ref().map(|a| a.firing.clone());
+            let firing = (self.alerts.as_ref())
+                .filter(|_| page.reads_alerts())
+                .map(|a| a.firing.clone());
             let jobs = self.files.builds.jobs.clone();
+            let page = page.unread();
             std::thread::spawn(move || {
                 let now = jobs::now().max(0) as u64;
-                let alerts = firing.as_deref().ok_or_else(|| "not read yet".to_string());
-                let r = hub_core::machine_page::read(&infra, &host, alerts, &jobs, now);
-                let _ = tx.send(Msg::Machine(Box::new((host, r))));
+                let r = page.read(&infra, firing.as_deref(), &jobs, now);
+                let _ = tx.send(Msg::InfraPage(Box::new(r)));
             });
         }
     }
 
-    /// Open `host`'s page in place of Infra's Machines tab.
-    pub fn open_machine(&mut self, host: &str) {
-        if self.machine_page.as_deref() != Some(host) {
-            self.machine = None;
+    /// Open `page` in place of Infra's tables, on the inner tab its link names; the same page
+    /// already open keeps its last read while it reads again.
+    pub fn open_infra_page(&mut self, page: InfraPage) {
+        if !self.infra_page.as_ref().is_some_and(|p| p.is(&page)) {
+            self.infra_page = Some(page);
         }
-        self.close_pool();
-        self.go(Tab::Infra);
-        self.infra_inner = "machines";
-        if self.infra_open == Some(Opened::Runs) {
-            self.infra_open = None;
-        }
-        self.machine_page = Some(host.to_string());
-        self.read_reds();
-        self.read_alerts();
-        self.read_machine();
-    }
-
-    /// Back from a machine's page to the tab.
-    fn close_machine(&mut self) {
-        self.machine_page = None;
-        self.machine = None;
+        let Some(page) = &self.infra_page else { return };
+        let (inner, alerts) = (page.inner(), page.reads_alerts());
         self.scroll = 0;
-    }
-
-    /// The open pool page's read, from the Pools rows last read: it waits for the first
-    /// Prometheus read, and a later one reads it again.
-    pub fn read_pool(&mut self) {
-        let (Some(name), Some(infra)) = (self.pool_page.clone(), self.infra.clone()) else {
-            return;
-        };
-        // Its history is three range queries, so a page left open behind another tab is not read.
-        if self.tab == Tab::Infra && self.pool_read.want() {
-            let tx = self.tx.clone();
-            std::thread::spawn(move || {
-                let now = jobs::now().max(0) as u64;
-                let r = hub_core::pool_page::read(&infra, &name, now);
-                let _ = tx.send(Msg::Pool(Box::new((name, r))));
-            });
-        }
-    }
-
-    /// Open `name`'s page in place of Infra's Machines tab, where its Pools row is.
-    pub fn open_pool(&mut self, name: &str) {
-        if self.pool_page.as_deref() != Some(name) {
-            self.pool = None;
-        }
-        self.close_machine();
         self.go(Tab::Infra);
-        self.infra_inner = "machines";
+        self.infra_inner = inner;
         if self.infra_open == Some(Opened::Runs) {
             self.infra_open = None;
         }
-        self.pool_page = Some(name.to_string());
         self.read_reds();
-        self.read_pool();
+        if alerts {
+            self.read_alerts();
+        }
+        self.read_infra_page();
     }
 
-    /// Back from a pool's page to the tab.
-    fn close_pool(&mut self) {
-        self.pool_page = None;
-        self.pool = None;
+    /// Back from a page to the tab.
+    fn close_infra_page(&mut self) {
+        self.infra_page = None;
         self.scroll = 0;
     }
 
@@ -1736,8 +1689,12 @@ impl App {
                 if self.alerts_read.done() && self.tab == Tab::Alerts {
                     self.read_alerts();
                 }
-                if self.machine_page.is_some() {
-                    self.read_machine();
+                if self
+                    .infra_page
+                    .as_ref()
+                    .is_some_and(InfraPage::reads_alerts)
+                {
+                    self.read_infra_page();
                 }
             }
             Msg::WatchFiles => {
@@ -1811,22 +1768,13 @@ impl App {
                     self.read_runner();
                 }
             }
-            Msg::Machine(b) => {
-                let (host, r) = *b;
-                if self.machine_page.as_deref() == Some(host.as_str()) {
-                    self.machine = Some(r);
+            Msg::InfraPage(b) => {
+                // A late answer for another page does not land on this one.
+                if let Some(open) = self.infra_page.as_mut().filter(|p| p.is(&b)) {
+                    *open = *b;
                 }
-                if self.machine_read.done() {
-                    self.read_machine();
-                }
-            }
-            Msg::Pool(b) => {
-                let (name, r) = *b;
-                if self.pool_page.as_deref() == Some(name.as_str()) {
-                    self.pool = Some(r);
-                }
-                if self.pool_read.done() {
-                    self.read_pool();
+                if self.infra_page_read.done() {
+                    self.read_infra_page();
                 }
             }
             Msg::Pipeline(r) => {
@@ -1864,11 +1812,8 @@ impl App {
                 if self.infra_read.done() {
                     self.read_infra();
                 }
-                if self.machine_page.is_some() {
-                    self.read_machine();
-                }
-                if self.pool_page.is_some() {
-                    self.read_pool();
+                if self.infra_page.is_some() {
+                    self.read_infra_page();
                 }
                 if self.tab == Tab::Alerts {
                     self.read_alerts();
@@ -2212,6 +2157,9 @@ impl App {
     /// word it opens there, or a page outside the hub in the browser. A runner or a session opens
     /// by its id directly, so one named like a Fleet section (`workers`) or a moved tab still opens.
     pub fn follow(&mut self, l: &Link) {
+        if let Some(page) = InfraPage::from_link(l) {
+            return self.open_infra_page(page);
+        }
         match (l, l.tab_args()) {
             (Link::Url(u), _) => open(u),
             (Link::To(Kind::Runner, id), _) => {
@@ -2219,8 +2167,6 @@ impl App {
                 self.open_runner(id);
             }
             (Link::To(Kind::Session, id), _) => self.open_session(id),
-            (Link::To(Kind::Machine, id), _) => self.open_machine(id),
-            (Link::To(Kind::Pool, id), _) => self.open_pool(id),
             (_, Some((tab, arg))) => {
                 if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
@@ -2324,21 +2270,15 @@ impl App {
 
     /// A request's query: the outbox on Daily, a section on Infra and Log, else a project name.
     pub fn open_query(&mut self, q: Option<String>) {
+        // `hub tab 'infra machines/<host>'` or `pools/<pool>`: that page, as its link opens.
+        if let (Tab::Infra, Some(page)) = (self.tab, q.as_deref().and_then(InfraPage::parse)) {
+            return self.open_infra_page(page);
+        }
         match (self.tab, q) {
             (Tab::Daily, q) => {
                 if q.is_some_and(|q| q.trim().eq_ignore_ascii_case("outbox")) {
                     self.show_outbox(true);
                 }
-            }
-            // `hub tab 'infra machines/<host>'`: that machine's page, as its link opens.
-            (Tab::Infra, Some(q)) if q.trim().starts_with("machines/") => {
-                let host = q.trim().trim_start_matches("machines/").to_string();
-                self.open_machine(&host);
-            }
-            // `hub tab 'infra pools/<pool>'`: that pool's page, as its link opens.
-            (Tab::Infra, Some(q)) if q.trim().starts_with("pools/") => {
-                let name = q.trim().trim_start_matches("pools/").to_string();
-                self.open_pool(&name);
             }
             (Tab::Alerts | Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
@@ -3056,47 +2996,21 @@ impl App {
     /// times; elsewhere Enter and the jobs keys (/ s f h) open the jobs table. The runs and jobs
     /// tables: their keys, and Esc with nothing to clear goes back to the summary.
     fn infra_key(&mut self, k: KeyEvent) -> bool {
-        // A machine's page: Esc back to the tables, `o` its Grafana board, Left/Right another
-        // inner tab; the rest scroll it.
-        if self.machine_page.is_some() && self.infra_open != Some(Opened::Jobs) {
+        // A page: Esc back to the tables, `o` its Grafana board, Left/Right another inner tab;
+        // the rest scroll it.
+        if let Some(page) = self
+            .infra_page
+            .as_ref()
+            .filter(|_| self.infra_open != Some(Opened::Jobs))
+        {
             match k.code {
-                KeyCode::Esc | KeyCode::Backspace => self.close_machine(),
-                KeyCode::Char('o') => {
-                    let url = self
-                        .machine
-                        .as_ref()
-                        .and_then(|m| m.as_ref().ok())
-                        .and_then(crate::machinetab::grafana);
-                    match url {
-                        Some(u) => open(&u),
-                        None => return false,
-                    }
-                }
+                KeyCode::Esc | KeyCode::Backspace => self.close_infra_page(),
+                KeyCode::Char('o') => match page.grafana() {
+                    Some(u) => open(&u),
+                    None => return false,
+                },
                 KeyCode::Left | KeyCode::Right => {
-                    self.close_machine();
-                    return self.infra_key(k);
-                }
-                _ => return false,
-            }
-            return true;
-        }
-        // A pool's page: the same keys.
-        if self.pool_page.is_some() && self.infra_open != Some(Opened::Jobs) {
-            match k.code {
-                KeyCode::Esc | KeyCode::Backspace => self.close_pool(),
-                KeyCode::Char('o') => {
-                    let url = self
-                        .pool
-                        .as_ref()
-                        .and_then(|m| m.as_ref().ok())
-                        .and_then(crate::pooltab::grafana);
-                    match url {
-                        Some(u) => open(&u),
-                        None => return false,
-                    }
-                }
-                KeyCode::Left | KeyCode::Right => {
-                    self.close_pool();
+                    self.close_infra_page();
                     return self.infra_key(k);
                 }
                 _ => return false,
@@ -3755,11 +3669,9 @@ impl App {
             Tab::Alerts => format!(
                 "j/k move  Enter open  o fix PR  i its item  w watches  / query  f state  s sort  S asc/desc  x clear  n/N section  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Infra if self.machine_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
-                "Esc all machines  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Infra if self.pool_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
-                "Esc all pools  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
+            Tab::Infra if self.infra_page.is_some() && self.infra_open != Some(Opened::Jobs) => format!(
+                "Esc {}  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit",
+                self.infra_page.as_ref().map_or("", InfraPage::back)
             ),
             Tab::Infra if runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Infra if runs && self.ci.times.is_some() => {
@@ -4144,8 +4056,10 @@ impl App {
                 Some(a) => self.av.page(a, self.p, now, w),
                 None => reading("Prometheus and fleet-bench reds"),
             },
-            // A machine's page in place of the Machines tables, under the strip.
-            (Tab::Infra, ..) if self.machine_page.is_some() && self.infra_open != Some(Opened::Jobs) => {
+            // A machine's or a pool's page in place of the Machines tables, under the strip.
+            (Tab::Infra, ..)
+                if self.infra_page.is_some() && self.infra_open != Some(Opened::Jobs) =>
+            {
                 let strip = crate::innertabs::strip(
                     infra_tab(),
                     self.infra_inner,
@@ -4154,32 +4068,9 @@ impl App {
                     w,
                 );
                 let mut l = vec![strip];
-                l.extend(crate::machinetab::page(
-                    self.machine_page.as_deref().unwrap_or_default(),
-                    self.machine.as_ref(),
-                    self.p,
-                    now,
-                    w,
-                ));
-                (l, vec![])
-            }
-            // A pool's page, the same way.
-            (Tab::Infra, ..) if self.pool_page.is_some() && self.infra_open != Some(Opened::Jobs) => {
-                let strip = crate::innertabs::strip(
-                    infra_tab(),
-                    self.infra_inner,
-                    &self.infra_flagged(self.infra.as_ref()),
-                    self.p,
-                    w,
-                );
-                let mut l = vec![strip];
-                l.extend(crate::pooltab::page(
-                    self.pool_page.as_deref().unwrap_or_default(),
-                    self.pool.as_ref(),
-                    self.p,
-                    now,
-                    w,
-                ));
+                if let Some(page) = &self.infra_page {
+                    l.extend(page.lines(self.p, now, w));
+                }
                 (l, vec![])
             }
             // Infra: the strip first, while Prometheus is read too, then the pinned sections and
@@ -7129,13 +7020,18 @@ mod tests {
         assert!(!s.contains("MACHINE "), "the machines are Infra's: {s}");
     }
 
+    /// The open Infra page's kind and name.
+    fn open(a: &App) -> Option<(Kind, &str)> {
+        a.infra_page.as_ref().map(|p| (p.kind(), p.name()))
+    }
+
     #[test]
     fn enter_on_a_machines_row_opens_its_page_and_esc_comes_back() {
         let mut a = infra_app();
         a.go(Tab::Infra);
         a.infra_inner = "machines";
         // No Prometheus in a test: the page's read is held, and its answer handed in below.
-        a.machine_read.busy = true;
+        a.infra_page_read.busy = true;
         assert!(a.hints().contains("j/k pick  Enter open"), "{}", a.hints());
         let n = a.infra.as_ref().unwrap().machines.len();
         // G comes with SHIFT, as a terminal sends it: it still picks the last row.
@@ -7149,14 +7045,17 @@ mod tests {
         a.handle(key('j'));
         assert!(a.itab.follow, "a moved selection is kept in view");
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.machine_page.as_deref(), Some(want.as_str()));
+        assert_eq!(open(&a), Some((Kind::Machine, want.as_str())));
         assert!(screen(&mut a, 160, 30).contains(&format!("Reading {want}...")));
         let page = hub_core::machine_page::MachinePage {
             host: want.clone(),
             head: format!("{want}, local, up"),
             ..Default::default()
         };
-        a.handle(Msg::Machine(Box::new((want.clone(), Ok(page)))));
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Machine(
+            want.clone(),
+            Some(Ok(page)),
+        ))));
         let s = screen(&mut a, 160, 40);
         assert!(
             s.contains(&want.to_uppercase()) && s.contains("SHARE"),
@@ -7164,34 +7063,46 @@ mod tests {
         );
         assert!(a.hints().contains("Esc all machines"), "{}", a.hints());
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
-        assert!(a.machine_page.is_none() && a.machine.is_none());
+        assert!(a.infra_page.is_none());
         assert!(screen(&mut a, 160, 40).contains("MACHINES"));
     }
 
     #[test]
     fn a_link_to_a_machine_and_its_tab_request_open_its_page_and_a_wrong_name_says_so() {
         let mut a = infra_app();
-        a.machine_read.busy = true;
+        a.infra_page_read.busy = true;
         a.follow(&hub_core::links::Link::to(Kind::Machine, "workstation"));
         assert_eq!(
-            (a.tab, a.infra_inner, a.machine_page.as_deref()),
-            (Tab::Infra, "machines", Some("workstation"))
+            (a.tab, a.infra_inner, open(&a)),
+            (Tab::Infra, "machines", Some((Kind::Machine, "workstation")))
         );
-        a.close_machine();
+        a.close_infra_page();
         a.go(Tab::Home);
         a.handle(Msg::Tab(Tab::Infra, Some("machines/nope".into())));
-        assert_eq!(a.machine_page.as_deref(), Some("nope"));
-        a.handle(Msg::Machine(Box::new((
+        assert_eq!(open(&a), Some((Kind::Machine, "nope")));
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Machine(
             "nope".into(),
-            Err("no machine named nope".into()),
+            Some(Err("no machine named nope".into())),
         ))));
         assert!(screen(&mut a, 160, 30).contains("no machine named nope"));
         // A late answer for another host does not land on this page.
-        a.handle(Msg::Machine(Box::new((
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Machine(
             "other".into(),
-            Ok(Default::default()),
+            Some(Ok(Default::default())),
         ))));
-        assert!(matches!(a.machine, Some(Err(_))));
+        assert!(matches!(
+            a.infra_page,
+            Some(InfraPage::Machine(_, Some(Err(_))))
+        ));
+        // Nor does one for a pool of the same name.
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Pool(
+            "nope".into(),
+            Some(Ok(Default::default())),
+        ))));
+        assert!(matches!(
+            a.infra_page,
+            Some(InfraPage::Machine(_, Some(Err(_))))
+        ));
     }
 
     #[test]
@@ -7200,20 +7111,22 @@ mod tests {
         a.go(Tab::Infra);
         a.infra_inner = "machines";
         // No Prometheus in a test: the page's read is held, and its answer handed in below.
-        a.pool_read.busy = true;
-        a.machine_read.busy = true;
+        a.infra_page_read.busy = true;
         // c hands the table keys to Pools, the next table on Machines.
         a.handle(key('c'));
         let want = a.infra.as_ref().unwrap().pools[0].pool.clone();
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
-        assert_eq!(a.pool_page.as_deref(), Some(want.as_str()));
+        assert_eq!(open(&a), Some((Kind::Pool, want.as_str())));
         assert!(screen(&mut a, 160, 30).contains(&format!("Reading {want}...")));
         let page = hub_core::pool_page::PoolPage {
             pool: want.clone(),
             head: format!("{want}, 1/3 busy, 2 waiting"),
             ..Default::default()
         };
-        a.handle(Msg::Pool(Box::new((want.clone(), Ok(page)))));
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Pool(
+            want.clone(),
+            Some(Ok(page)),
+        ))));
         let s = screen(&mut a, 160, 40);
         assert!(
             s.contains(&want.to_uppercase()) && s.contains("QUEUED"),
@@ -7221,31 +7134,33 @@ mod tests {
         );
         assert!(a.hints().contains("Esc all pools"), "{}", a.hints());
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
-        assert!(a.pool_page.is_none() && a.pool.is_none());
+        assert!(a.infra_page.is_none());
         assert!(screen(&mut a, 160, 40).contains("POOLS"));
         // A link opens it, and a machine's page then closes it: one page at a time.
         a.follow(&hub_core::links::Link::to(Kind::Pool, "unity"));
         assert_eq!(
-            (a.tab, a.infra_inner, a.pool_page.as_deref()),
-            (Tab::Infra, "machines", Some("unity"))
+            (a.tab, a.infra_inner, open(&a)),
+            (Tab::Infra, "machines", Some((Kind::Pool, "unity")))
         );
         a.follow(&hub_core::links::Link::to(Kind::Machine, "workstation"));
-        assert!(a.pool_page.is_none() && a.machine_page.is_some());
+        assert_eq!(open(&a), Some((Kind::Machine, "workstation")));
         a.go(Tab::Home);
         a.handle(Msg::Tab(Tab::Infra, Some("pools/nope".into())));
-        assert!(a.machine_page.is_none());
-        assert_eq!(a.pool_page.as_deref(), Some("nope"));
-        a.handle(Msg::Pool(Box::new((
+        assert_eq!(open(&a), Some((Kind::Pool, "nope")));
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Pool(
             "nope".into(),
-            Err("no pool named nope".into()),
+            Some(Err("no pool named nope".into())),
         ))));
         assert!(screen(&mut a, 160, 30).contains("no pool named nope"));
         // A late answer for another pool does not land on this page.
-        a.handle(Msg::Pool(Box::new((
+        a.handle(Msg::InfraPage(Box::new(InfraPage::Pool(
             "other".into(),
-            Ok(Default::default()),
+            Some(Ok(Default::default())),
         ))));
-        assert!(matches!(a.pool, Some(Err(_))));
+        assert!(matches!(
+            a.infra_page,
+            Some(InfraPage::Pool(_, Some(Err(_))))
+        ));
     }
 
     #[test]

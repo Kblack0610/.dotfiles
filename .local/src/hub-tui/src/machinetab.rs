@@ -4,7 +4,6 @@
 //! alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
 use hub_core::host_history::{HostHistory, PowerHistory, DAYS};
-use hub_core::links::Link;
 use hub_core::machine_page::{MachinePage, RecentJob};
 use ratatui::text::{Line, Span};
 
@@ -28,14 +27,6 @@ pub(crate) const BLOCKS: [char; 9] = [
     ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
     '\u{2588}',
 ];
-
-/// The Grafana board the page links, for `o`.
-pub fn grafana(page: &MachinePage) -> Option<String> {
-    page.parts.iter().find_map(|p| match &p.link {
-        Some(Link::Url(u)) => Some(u.clone()),
-        _ => None,
-    })
-}
 
 /// The page for `host`: reading, why it could not be read, or each of its parts.
 pub fn page(
@@ -372,8 +363,10 @@ fn alerts(page: &MachinePage, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrapage::InfraPage;
     use hub_core::ci::Slot;
     use hub_core::host_history::{Change, Day, Down, Hour};
+    use hub_core::links::Link;
     use hub_core::machine_page::Share;
     use hub_core::session_page::Part;
 
@@ -499,7 +492,9 @@ mod tests {
             assert!(t.contains(want), "{want} in:\n{t}");
         }
         assert_eq!(
-            grafana(&page).as_deref(),
+            InfraPage::Machine(String::new(), Some(Ok(page)))
+                .grafana()
+                .as_deref(),
             Some("https://g/d/kb-fleet?var-host=workstation")
         );
     }

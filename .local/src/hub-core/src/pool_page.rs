@@ -10,7 +10,7 @@
 use serde::Serialize;
 
 use crate::ci::Queued;
-use crate::host_history::{self, BUCKET, DAYS, STEP};
+use crate::host_history::{self, Hours, BUCKET, DAYS, STEP};
 use crate::infra::Infra;
 use crate::links::Link;
 use crate::machines::{Machine, Pool, LOCAL_POOL};
@@ -240,29 +240,14 @@ pub fn fold(
     from: u64,
     to: u64,
 ) -> PoolHistory {
-    let n = to.saturating_sub(from).div_ceil(BUCKET).max(1);
-    let slot = |t: f64| ((t as u64).saturating_sub(from) / BUCKET).min(n - 1) as usize;
-    // Per hour: the sum and count of its samples, and the largest.
-    let per = |series: &[Series]| {
-        let mut by = vec![(0.0, 0u32, f64::MIN); n as usize];
-        for s in series {
-            for (t, v) in &s.points {
-                let e = &mut by[slot(*t)];
-                e.0 += v;
-                e.1 += 1;
-                e.2 = e.2.max(*v);
-            }
-        }
-        by
-    };
-    let (b, s, w) = (per(busy), per(slots), per(waiting));
-    let mean = |e: &(f64, u32, f64)| (e.1 > 0).then(|| e.0 / e.1 as f64);
-    let hours = (0..n as usize)
+    let span = Hours::new(from, to);
+    let (b, s, w) = (span.fold(busy), span.fold(slots), span.fold(waiting));
+    let hours = (0..span.n)
         .map(|i| PoolHour {
-            at: from + i as u64 * BUCKET,
-            busy: mean(&b[i]),
-            slots: mean(&s[i]),
-            waiting: (w[i].1 > 0).then_some(w[i].2),
+            at: span.at(i),
+            busy: b[i].mean(),
+            slots: s[i].mean(),
+            waiting: w[i].most(),
         })
         .collect();
     PoolHistory {
@@ -272,7 +257,7 @@ pub fn fold(
         step: STEP,
         bucket: BUCKET,
         hours,
-        readings: b.iter().map(|e| e.1 as usize).sum(),
+        readings: b.iter().map(|e| e.n as usize).sum(),
         errors: vec![],
     }
 }

@@ -19,6 +19,7 @@ mod fmt;
 mod focustab;
 mod forecast;
 mod hometab;
+mod infrapage;
 mod infratables;
 mod innertabs;
 mod jobs;
