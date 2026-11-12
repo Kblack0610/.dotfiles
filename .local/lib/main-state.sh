@@ -40,7 +40,7 @@ MAIN_LIVE='(map(.createdAt // empty) | max) as $newest
 # ledger (~/.local/state/ci/runs.jsonl), never actions/runs: schedules-sync is its one writer and
 # keeps it within 10 minutes. rc 1 when the ledger cannot answer for the repo (not synced in 30
 # minutes, or unreadable), so the caller reads unknown, never green; rc 3, and nothing, for a repo
-# the ledger does not sync (day-log-ci is the one list of watched repos), which the caller decides.
+# the ledger does not sync (`schedules-sync repos` is the one list of watched repos), which the caller decides.
 main_runs() {
   local runs rc=0
   runs="$("$SCHEDULES_SYNC" runs "$1" ${2:+--branch "$2"} 2>/dev/null)" || rc=$?
