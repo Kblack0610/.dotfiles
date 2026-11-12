@@ -60,7 +60,7 @@ unset _k _v
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_TARGET_PRESENT:=50}"   # live Claude sessions, hand starts included, a pass fills the fleet to while the human is here; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
-: "${DISPATCH_TARGET_AWAY:=25}"   # the most the same fills to while the human is away (fleet-presence); the target then is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries), never under DISPATCH_RUN_FLOOR, so a night does not spend the week ahead of its line
+: "${DISPATCH_TARGET_AWAY:=25}"   # the most the same fills to while the human is away (fleet-presence); the target then is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries), never under DISPATCH_RUN_FLOOR, which wins over this cap, so a night does not spend the week ahead of its line
 : "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
@@ -755,7 +755,8 @@ live_units() { live_runs | units_on ''; }
 # pace_target -- TARGET is the live sessions the fleet fills to now, TARGET_WHEN which one:
 # DISPATCH_TARGET_PRESENT while the human is here; while away, what the Claude accounts carry at
 # their weekly pace (claude-acct's fleet.carries, from ACCT_ROWS when the caller already read it), at
-# most DISPATCH_TARGET_AWAY and never under DISPATCH_RUN_FLOOR. An unread carry is
+# most DISPATCH_TARGET_AWAY and never under DISPATCH_RUN_FLOOR (the floor wins over the cap). A
+# pass reads its own (each start reads room again, so it shares none). An unread carry is
 # DISPATCH_TARGET_AWAY: room still refuses an account past its line. TOTAL_LIVE is every
 # Claude session in the fleet state document, hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
@@ -3425,9 +3426,9 @@ cmd_starved() {
   # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
   # session there, and a standing hold, board or low water still trips. On 11-11 this tripped 4h at
   # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
-  # Room is read first, so the away target's carry and gate share its one read (ACCT_ROWS).
+  # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
-  acct_room || room=$?
+  human_here || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
   local TARGET TARGET_WHEN TOTAL_LIVE
   pace_target
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
@@ -3439,6 +3440,7 @@ cmd_starved() {
   # and gate leaves that one out while another source has room, so room is read here from the verdict
   # gate reads too (ACCT_ROWS, asked once for both).
   # Idle is the last pass's sample, as old as the window this verdict reads: a reader never samples.
+  acct_room || room=$?
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
     [ "$room" = 0 ]; then
@@ -3519,6 +3521,8 @@ board_starved() {
 # here raises a limit.
 cmd_headroom() {
   local live hand slots load cores idle runnable why could=0 floor_live red_live red_watch starts pend
+  # One room read for the away target and the gate: headroom starts nothing, so it cannot go stale.
+  local ACCT_ROWS; ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
   pace_target
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
