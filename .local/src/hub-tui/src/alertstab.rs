@@ -10,7 +10,7 @@ use hub_core::layout::FOLD_ROWS;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::datatable::DataTable;
+use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
 use crate::fmt::{clock, Palette};
 
@@ -20,9 +20,6 @@ const HEADER: [&str; 7] = [
 ];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
-/// The selected firing row's line, a section only so the app can keep it in view; the app takes
-/// it out of the sections `n`/`N` step through.
-pub const ROW: &str = "row";
 
 #[derive(Default)]
 pub struct AlertsView {

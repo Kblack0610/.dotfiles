@@ -35,6 +35,8 @@ pub enum Kind {
     PrRuns,
     /// A Schedules row, by its name: the Schedules tab filtered to exactly that name.
     Schedule,
+    /// An app on the Releases tab, by its project name: its channels, releases, builds, changelog.
+    App,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -70,6 +72,12 @@ pub const PAGES: &[Page] = &[
         tab: "infra",
         word: "jobs",
         inner: "jobs",
+    },
+    Page {
+        kind: Kind::App,
+        tab: "releases",
+        word: "apps",
+        inner: "apps",
     },
 ];
 
@@ -138,7 +146,9 @@ impl Link {
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         }
     }
 
@@ -162,7 +172,9 @@ impl Link {
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
             Kind::Schedule => ("schedules", String::new()),
-            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job => unreachable!("in PAGES"),
+            Kind::Machine | Kind::Pool | Kind::CiRun | Kind::Job | Kind::App => {
+                unreachable!("in PAGES")
+            }
         })
     }
 }

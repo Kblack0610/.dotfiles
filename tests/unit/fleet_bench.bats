@@ -196,18 +196,13 @@ agent_bench_kpi_past{kpi="ci_red_per_pr"} 1
 agent_bench_kpi_past{kpi="runners_bad"} 0
 # HELP agent_bench_vital The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.
 # TYPE agent_bench_vital gauge
-agent_bench_vital{question="output",kpi="merged_prs"} 0
-agent_bench_vital{question="flow",kpi="queue_net_24h"} 1
-agent_bench_vital{question="flow",kpi="step_age_p90_queued"} 2
-agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 3
-agent_bench_vital{question="quality",kpi="first_pass_share"} 4
-agent_bench_vital{question="you",kpi="human_answered_per_day"} 5
-agent_bench_vital{question="you",kpi="buzzes_per_day"} 6
-agent_bench_vital{question="cost",kpi="points_per_pr"} 7
-agent_bench_vital{question="trust",kpi="ledger_coverage"} 8
-agent_bench_vital{question="trust",kpi="loop_dark_7d"} 9
-agent_bench_vital{question="outcome",kpi="requested_unstarted_h"} 10
-agent_bench_vital{question="outcome",kpi="landed_unverified"} 11
+agent_bench_vital{question="you",kpi="human_answered_per_day"} 0
+agent_bench_vital{question="you",kpi="buzzes_per_day"} 1
+agent_bench_vital{question="outcome",kpi="requested_unstarted_h"} 2
+agent_bench_vital{question="outcome",kpi="landed_unverified"} 3
+agent_bench_vital{question="quality",kpi="rework_candidate_7d"} 4
+agent_bench_vital{question="quality",kpi="first_pass_share"} 5
+agent_bench_vital{question="cost",kpi="cost_per_merged_item"} 6
 # HELP agent_bench_improve Improvement claims live now, and verdicts of each kind, from effect.jsonl.
 # TYPE agent_bench_improve gauge
 agent_bench_improve{state="live"} 0
@@ -1236,7 +1231,7 @@ kpi_fixture() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_false_defer_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1261,15 +1256,15 @@ kpi_fixture() {
 
 @test "kpi: the judge KPIs come from judge-eval kpi, and improve names the one past its threshold" {
   kpi_setup
-  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_answered_pct_min=50 ask_false_defer_pct_max=30 >> "$KPI_THRESHOLDS"
+  printf '%s\n' judge_errors_max=0 judge_precision_min=90 ask_answered_pct_min=50 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | - | - | max 0 | - |'
-  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_answered_pct":{"7d":52,"28d":0},"ask_false_defer_pct":{"7d":20,"28d":null},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
+  echo '{"judge_errors":{"7d":0,"28d":2},"judge_precision":{"7d":75,"28d":80},"ask_answered_pct":{"7d":52,"28d":0},"ask_unclear_pct":{"7d":null,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi
   assert_line '| judge_errors | 0 | 2 | max 0 | ok |'
   assert_line '| judge_precision | 75 | 80 | min 90 | past |'
   assert_line '| ask_answered_pct | 52 | 0 | min 50 | ok |'
-  assert_line '| ask_false_defer_pct | 20 | - | max 30 | ok |'
+  refute_line --partial ask_false_defer_pct
   assert_line '| ask_unclear_pct | - | - | - | - |'
   run "$SUBJECT" improve --json
   assert_success
@@ -1278,8 +1273,8 @@ kpi_fixture() {
 
 @test "kpi --check: exits 1 on a KPI past its threshold only when its scope names it, and a scope matching none is an error" {
   kpi_setup
-  printf '%s\n' judge_precision_min=90 ask_false_defer_pct_max=30 runner_score_inbox_plan_min=70 >> "$KPI_THRESHOLDS"
-  echo '{"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":20,"28d":null},"runner_score_inbox_plan":{"7d":80,"28d":null}}' > "$JUDGEKPI"
+  printf '%s\n' judge_precision_min=90 dispatch_false_defer_pct_max=30 runner_score_inbox_plan_min=70 >> "$KPI_THRESHOLDS"
+  echo '{"judge_precision":{"7d":75,"28d":80},"dispatch_false_defer_pct":{"7d":20,"28d":null},"runner_score_inbox_plan":{"7d":80,"28d":null}}' > "$JUDGEKPI"
   scope='^(runner_score_.*|.*_false_defer_pct)$'
   run "$SUBJECT" kpi --check "$scope"
   assert_success
@@ -1289,10 +1284,10 @@ kpi_fixture() {
   assert_failure 1
   assert_line 'judge_precision 75 (min 90)'
   # Negative control: push a scoped KPI past and the same scope trips on it alone.
-  echo '{"judge_precision":{"7d":75,"28d":80},"ask_false_defer_pct":{"7d":61,"28d":null},"runner_score_inbox_plan":{"7d":50,"28d":null}}' > "$JUDGEKPI"
+  echo '{"judge_precision":{"7d":75,"28d":80},"dispatch_false_defer_pct":{"7d":61,"28d":null},"runner_score_inbox_plan":{"7d":50,"28d":null}}' > "$JUDGEKPI"
   run "$SUBJECT" kpi --check "$scope"
   assert_failure 1
-  assert_line 'ask_false_defer_pct 61 (max 30)'
+  assert_line 'dispatch_false_defer_pct 61 (max 30)'
   assert_line 'runner_score_inbox_plan 50 (min 70)'
   refute_line --partial judge_precision
   run "$SUBJECT" kpi --check '^runner_scor$'
@@ -2853,13 +2848,13 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_failure 2
 }
 
-@test "kpi --vitals: the default list names only keys kpi_json carries, seven questions" {
+@test "kpi --vitals: the default list names only keys kpi_json carries, four questions" {
   kpi_setup; kpi_fixture
   run "$SUBJECT" kpi --json
   local all=$output
   run "$SUBJECT" kpi --vitals --json
   assert_success
-  assert_equal "$(jq -c 'map(.question) | unique | length' <<<"$output")" 7
+  assert_equal "$(jq -c 'map(.question) | unique | length' <<<"$output")" 4
   assert_equal "$(jq -c --argjson all "$all" 'map(select(.kpi as $k | $all | has($k) | not) | .kpi)' <<<"$output")" '[]'
 }
 
@@ -2871,7 +2866,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run grep -m2 '^## ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 0 '## Vitals'
   assert_line --index 1 '## KPIs'
-  run grep -c '^| output | merged_prs ' "$BENCH_SCORECARD_DIR/latest.md"
+  run grep -c '^| you | buzzes_per_day ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output 1
   source "$SUBJECT"
   BENCH_VITALS='q1=revert_rate q2=sessions,nope' run bench_prom "$T0" '{"steps": []}'

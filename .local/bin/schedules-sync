@@ -66,10 +66,12 @@ neither, a public repo still reads.
                           the shadow ledger against the run ledger, row for row, for the
                           exporter's repos the list syncs: each run's newest attempt, created
                           at or after T (default: runs_since), once one side has it finished
-                          for 30 minutes (three passes). JSON: since, settled_before, ok, and
-                          per repo agree, open, differ (id, then the fields that differ as
-                          [ledger, feed], or missing: ledger|feed). Exit 1 on any disagreement,
-                          3 when the feed has served no runs yet
+                          for 30 minutes (three passes). JSON: since, settled_before, ok,
+                          unproven (the repos with no agreed run yet), and per repo agree,
+                          open, differ (id, then the fields that differ as [ledger, feed], or
+                          missing: ledger|feed). ok needs no differ and every repo agreeing on
+                          at least one run, so an unproven repo holds the gate: exit 1 on either,
+                          3 when the feed has served no runs yet or no repo has a settled run
   schedules-sync runs <repo> [--branch B] [--since T] [--until T]
                           the ledger's runs of one repo (owner/name, or forgejo:owner/name),
                           as a JSON array in created_at order, one object per run: its newest
@@ -1516,10 +1518,13 @@ def compare_feed(argv, t):
         else:
             out["differ"].append({"id": k[1], "fields": {f: [old.get(f), new.get(f)] for f in sorted(set(old) | set(new))
                                                          if f != "repo" and old.get(f) != new.get(f)}})
-    ok = not any(r["differ"] for r in report.values())
-    doc = {"since": iso(since), "settled_before": iso(edge), "ok": ok, "repos": report}
-    if ok and not any(r["agree"] for r in report.values()):
+    differ = any(r["differ"] for r in report.values())
+    # A repo with no run both sides agree on proves nothing about its rows: it holds the gate.
+    unproven = [repo for repo, r in report.items() if not r["agree"]]
+    if not differ and len(unproven) == len(repos):
         return 3, f"compare-feed: no settled run to compare since {iso(since)}"
+    ok = not differ and not unproven
+    doc = {"since": iso(since), "settled_before": iso(edge), "ok": ok, "unproven": unproven, "repos": report}
     return (0 if ok else 1), json.dumps(doc, separators=(",", ":"))
 
 

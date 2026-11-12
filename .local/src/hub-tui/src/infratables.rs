@@ -20,10 +20,6 @@ use crate::fmt::{clock, dur, pct, Palette};
 /// The tables in `hub_core::layout` section order; an index here is a table's view.
 pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "local"];
 
-/// The page section that marks the selected row's line, so the page keeps it in view; no
-/// section for n/N.
-pub const ROW: &str = "row";
-
 /// Each table's view, and which one has the keys.
 #[derive(Debug, Default)]
 pub struct InfraTables {

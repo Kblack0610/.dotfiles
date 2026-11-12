@@ -36,14 +36,15 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD]
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
-# A plan item starts its session at once (fleet-dispatch start --item), and so does the next item
-# `after:` one that closes ok; AGENT_QUEUE_START=0 only queues.
+# An urgent or high plan item starts its session at once (fleet-dispatch start --item), and so does an
+# urgent or high item `after:` one that closes ok; a low one waits for a dispatch pass, which starts the
+# queue in priority order. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
-# with one of those options when named; see ask_pending) and hold:<resource> (while agent-hold holds it; see
+# with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
@@ -77,6 +78,7 @@ AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
+AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
 # only the first.
@@ -483,12 +485,16 @@ hold_pending() {
 }
 
 # ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
-# the human answered it (with one of those options as the answer's first word, when named). A phase gated on the
+# the human answered it: with one of those options when named (the answer's first word, else the one
+# option the answer names, agent-ask answer-names), or in free text, an answer that names no option,
+# which reaches the work through the item's brief (fleet-dispatch ask_decisions). A phase gated on the
 # human's decision (live money, a vendor) is queued behind its ask instead of held by an open
 # session: on 2026-11-06 trader-real-money-plan sat 6h+ refusing to queue phases that would have
-# started on their own. Pending, cancelled, another answer or no such ask all hold.
+# started on their own. Pending, cancelled, no such ask, an empty answer, an answer naming another
+# option or several, and any other answer to an ask that lists no options all hold. 2026-11-12: three
+# Shape City items failed on free-text answers to e76omL, xTxBqv and zIi8Xc.
 ask_pending() {
-  local id="${1%%=*}" want="" f st by ans
+  local id="${1%%=*}" want="" f st by ans names
   [[ "$1" == *=* ]] && want="${1#*=}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "not an ask id"; return; }
   f="$(compgen -G "$AQ_ASKS/*/$id.md" | head -1)"
@@ -500,7 +506,13 @@ ask_pending() {
   [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-  case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
+  case "+${want,,}+" in *"+${ans,,}+"*) return 0 ;; esac
+  if [ -n "$ans" ] && [ -n "$(ask_options "$id")" ]; then
+    names="$(AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" answer-names "$id" 2>/dev/null)" || names="unreadable"
+    [ -n "$names" ] || return 0
+    case "$names" in *$'\n'*) ;; *) case "+${want,,}+" in *"+${names,,}+"*) return 0 ;; esac ;; esac
+  fi
+  echo "answered ${ans:-nothing}, not $want"
 }
 
 # ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
@@ -1081,6 +1093,8 @@ cmd_add() {
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
+  ! waits_turn "$slug" "$priority" || return 0
+  ! dispatch_held "$slug" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
   fleet-dispatch start --item "$slug" ||
@@ -1890,11 +1904,29 @@ phases_ticked() {
     | ($n | length) > 0 and all($n[]; ($all[. - 1].state // "open") != "open")' >/dev/null
 }
 
-# start_next <slug> -- the items `after:` this one start the moment it closes ok, unless another slug
-# in their `after:` (or any other hold) still holds them. Each takes the
-# slot the closing session frees, so it waits for no dispatch pass and none of its load gates: a
-# plan's next phase never sits behind fresh work. A dispatch hold (agent-hold) still holds it. One
+# start_next <slug> -- the urgent and high items `after:` this one start the moment it closes ok, unless
+# another slug in their `after:` (or any other hold) still holds them. Each takes the slot the closing
+# session frees, so it waits for no dispatch pass and none of its load gates: an urgent or high plan's
+# next phase never sits behind fresh work. A low one waits its turn (waits_turn). A dispatch hold (agent-hold) still holds it. One
 # whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
+# waits_turn <slug> <priority> -- exit 0, and say so, when agent-queue must not start the item itself:
+# a low one waits for a dispatch pass, which starts the queue in priority order, so low work never
+# jumps it (the human, 2026-11-12). Urgent and high start at once. The one place this rule lives.
+waits_turn() {
+  [ "$2" = low ] || return 1
+  echo "agent-queue: $1 is low priority, so a dispatch pass starts it in its turn"
+}
+
+# dispatch_held <slugs> -- exit 0, and say so, when the dispatch hold (hold_pending, asked as no session)
+# keeps agent-queue from starting those items itself, at add or when the item they wait on closes; a
+# failing agent-hold holds. The one place both starts check it. 2026-11-12: an urgent plan item
+# started at add under the human's dispatch hold.
+dispatch_held() {
+  local why; why="$(hold_pending dispatch)"
+  [ -n "$why" ] || return 1
+  echo "agent-queue: dispatch is held ($why), so $1 stays queued for the next dispatch pass" >&2
+}
+
 start_next() {
   local f s h next=() landed=() self
   self="$(realpath "${BASH_SOURCE[0]}")"
@@ -1904,7 +1936,7 @@ start_next() {
     h="$(hold_reason "$f")"
     case "$h" in "after "*) continue ;; esac
     if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
-    elif [ -z "$h" ]; then next+=("$(fm_get "$f" slug)")
+    elif [ -z "$h" ] && ! waits_turn "$(fm_get "$f" slug)" "$(fm_get "$f" priority)"; then next+=("$(fm_get "$f" slug)")
     fi
   done < <(items_in "$AQ_DIR/queued")
   [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0
@@ -1916,10 +1948,7 @@ start_next() {
     "$self" move "$s" done --status ok
   done
   [ ${#next[@]} -gt 0 ] || return 0
-  if ! agent-hold check dispatch >/dev/null 2>&1; then
-    echo "agent-queue: dispatch is held, so ${next[*]} stays queued for the next dispatch pass" >&2
-    return 0
-  fi
+  ! dispatch_held "${next[*]}" || return 0
   for s in "${next[@]}"; do
     fleet-dispatch start --item "$s" ||
       echo "agent-queue: $s could not start now, so it stays queued for the next dispatch pass" >&2

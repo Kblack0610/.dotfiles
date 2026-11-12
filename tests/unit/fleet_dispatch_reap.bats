@@ -115,6 +115,7 @@ epics_fixture() {
 
 @test "reap queues one verify item per epic whose leaves have all landed, once per landing round" {
   project game beta "$SANDBOX/repos/game"
+  jq '.trackers.game += {code: "gm", lab: "bnb"}' "$DISPATCH_PROJECT_MAP" >"$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
   epics_fixture '[{"name": "game", "profile": "bnb", "epics": [
       {"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 3},
       {"id": "gm-6", "title": "still building", "system": "ui", "open": 1, "done": 2},
@@ -123,6 +124,8 @@ epics_fixture() {
   run reconcile_epics
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+  # its story row is filed under the epic it checks (the real notes: "end to end: the verify row ...")
+  grep -q -- '--agent add -- .*#of/gm-5' "$NOTES_FIXTURE/calls.log" || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
   it=$(agent-queue show verify-gm-5-3 --json)
   assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
   run jq -r .task <<<"$it"
@@ -138,6 +141,47 @@ epics_fixture() {
   epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
   reconcile_epics
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+}
+
+# real_epic_board -- the built notes, and a game project whose epic gm-1 has one landed leaf (gm-2):
+# sets $board. Skips with no NOTES_BIN, as agent_land.bats's end-to-end cases do.
+real_epic_board() {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  local dir="$HOME/.notes/lab/projects/current/game"
+  board="$dir/agent/README.md"
+  mkdir -p "$dir/agent" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' '- [ ] epic(menu): live menus #size/xl <!-- id:gm-1 -->' >"$dir/README.md"
+  printf '%s\n' '# game' '' '## Tasks' '' '- [x] feat(menu): the title screen #size/s #of/gm-1 <!-- id:gm-2 done:2026-11-12 pr:7 -->' >"$board"
+  export PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  unset NOTES_PROFILE
+  project game beta "$SANDBOX/repos/game"
+  jq '.trackers.game += {code: "gm", lab: "personal"}' "$DISPATCH_PROJECT_MAP" >"$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
+}
+
+@test "end to end: the verify row sits under its epic, and closing it queues no second verify" {
+  real_epic_board
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-1-1'
+  grep -qE -- '^- \[/\] check\(epics\): verify gm-1 live menus .*#of/gm-1 .*id:gm-3' "$board" ||
+    fail "the verify row does not link its epic: $(cat "$board")"
+  # its row closing adds no leaf: the next pass files nothing
+  notes --profile personal ptask game --agent done gm-3 --proof run:1 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-1-1'
+  # NEGATIVE CONTROL: a gap row under the epic is a leaf, so its landing keys the next verify
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s #of/gm-1' >/dev/null
+  notes --profile personal ptask game --agent done gm-4 --proof pr:8 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug | paste -sd,)" 'verify-gm-1-1,verify-gm-1-2'
+  # and an open verify row never holds its epic: the check closes it on its proof
+  grep -qE -- '^- \[/\] check\(epics\): verify gm-1 .*#of/gm-1 .*id:gm-5' "$board" ||
+    fail "no open verify row under gm-1: $(cat "$board")"
+  run notes --profile personal ptask game done gm-1 --proof run:2
+  assert_success
 }
 
 @test "reap queues no verify item when it is off or the epics or the queue cannot be read" {
@@ -710,14 +754,14 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries, .mode] | join("|")')" "queued|1 $h1|oneshot"
   # its brief is the fix, on the PR's own branch, and it never merges
   run item_brief "$(agent-queue show fix-crash --json)"
-  assert_line --index 0 '/my:fix-ci o/game#12'
+  assert_line --index 0 '/fix-ci o/game#12'
   assert_output --partial 'gh pr checkout 12 -R o/game'
   assert_output --partial 'fix-ci try 1 of 2'
   assert_output --partial 'run agent-queue move fix-crash review'
   refute_output --partial 'Run agent-land in the foreground'
   echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$(agent-queue show fix-crash --json)" opencode
-  assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
+  assert_line --index 0 'Read ~/.claude/skills/fix-ci/SKILL.md and follow it for PR o/game#12.'
   # the fix session pushed and it is red again: the second try
   fix_ended "$h2" FAIL
   run cmd_reap

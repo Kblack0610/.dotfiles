@@ -125,6 +125,8 @@ h2.sec { font-size: 12px; color: var(--muted); text-transform: uppercase; letter
 #q-list .card { max-width: none; }
 #b-root > *, #b-root h2.sec, #p-head > * { max-width: 760px; margin-left: auto; margin-right: auto; }
 #b-tbl .card, #b-tbl h2.sec, #p-cards .card { max-width: none; }
+/* The board's table takes the screen's width: a row's title and epic are what it is read for. */
+#b-root > #b-tbl { max-width: 1600px; }
 #b-root summary { cursor: pointer; }
 #b-root summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
 .badd #b-text { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
@@ -329,10 +331,17 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .cols { padding-bottom: 16px; }
 .tip { position: fixed; z-index: 50; pointer-events: none; white-space: pre; background: var(--ink); color: var(--panel); font: 12px/1.4 var(--mono); padding: 6px 8px; border-radius: 6px; max-width: min(420px, 90vw); overflow: hidden; }
 .tsort { display: none; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
-.tbl th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.tbl td { padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+/* The shared table: 13px rows with room to breathe, small caps headers over a firmer rule, faint
+   row lines, and every other record row tinted so a wide row is easy to follow across. The tint
+   counts record rows only: an opened row's detail, a channel's detail and the filter row are skipped. */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
+.tbl td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); white-space: nowrap; }
+.tbl tr:last-child > td { border-bottom: 0; }
+.tbl tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .tbl .n { text-align: right; font-family: var(--mono); }
+.tbl th.n { font-family: inherit; }
+.tbl td a:not(.btn) { color: var(--accent); text-decoration: none; } .tbl td a:not(.btn):hover { text-decoration: underline; }
 .tbl tr.allrow td { font-weight: 600; border-bottom: 1px solid var(--muted); }
 .thsort { all: unset; cursor: pointer; } .thsort:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
 /* A facet's dropdown (table.js tblFacet): a pill under its column's header, tinted while it filters,
@@ -401,12 +410,20 @@ span.warn { color: var(--b-stalled); }
 /* Jobs tab */
 .btn.sm, .btn.sm.primary { padding: 2px 8px; font: 12px var(--mono); margin: 0 2px 4px 0; }
 .tbl tr.jr, .tbl tr.wr, .tbl tr.prop, .tbl tr.qr { cursor: pointer; }
-.tbl .btext { max-width: 56ch; overflow: hidden; text-overflow: ellipsis; }
+/* Board cells wrap, breaking a long word or PR ref anywhere, so the table never outgrows the screen. */
+.tbl td.btitle, .tbl td.bepic, .tbl td.bwhen { white-space: normal; overflow-wrap: anywhere; }
+.tbl td.btitle { min-width: 28ch; }
+.tbl td.bepic { min-width: 12ch; max-width: 28ch; }
+.tbl td.bwhen { min-width: 9ch; max-width: 18ch; }
+.tbl .bt { font-weight: 600; font-size: 13px; }
+.tbl .bsum { font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 /* Projects: the opened row, under its line (board.js). The record stays in view when the table scrolls sideways. */
 .tbl tr.bopen > td { white-space: normal; padding: 0; }
 .bopen .card { position: sticky; left: 0; max-width: min(100%, calc(100vw - 32px)); box-sizing: border-box; }
-.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td { background: var(--bg); }
-.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.rc, .tbl tr.rh { cursor: pointer; }
+.tbl tr.jr:hover td, .tbl tr.wr:hover td, .tbl tr.prop:hover td, .tbl tr.qr:hover td, .tbl tr.rc:hover td, .tbl tr.rh:hover td, .tbl tr.click:hover td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.tbl tr.jr.sel td, .tbl tr.wr.sel td, .tbl tr.qr.sel td, .tbl tr.rc.sel td, .tbl tr.rh.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.tbl tr.sel > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* An expanded table row: Schedules and Proposals. */
 .tbl tr.wdet > td { white-space: normal; padding: 6px 10px 10px; }
 .tbl tr.wdet .tbl { margin-top: 6px; }
@@ -452,9 +469,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tfclear { display: flex; align-items: center; }
   .tbl.tphone > * > tr[data-phone=row] { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
   .tbl.tphone > * > tr[data-phone=row] > td { border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
-  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] { background: color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+  .tbl.tphone > * > tr.sel[data-phone=row] > td { background: none; box-shadow: none; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=lead] { flex: 0 0 100%; order: -1; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=glance] { color: var(--muted); font-size: 12px; }
+  .tbl.tphone > * > tr[data-phone=row] > td.warn { color: var(--b-stalled); } .tbl.tphone > * > tr[data-phone=row] > td.bad { color: var(--b-needs); }
   .tbl.tphone > * > tr[data-phone=row] > td[data-named]::before { content: attr(data-label) " "; }
   .tbl.tphone > * > tr[data-phone=row] > td[data-role=rest] { display: none; }
   .tbl.tphone > * > tr.tx[data-phone=row] > td[data-role=rest] { display: block; flex: 0 0 100%; font-size: 12px; }

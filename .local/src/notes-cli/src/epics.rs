@@ -49,6 +49,16 @@ pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
 }
 
+/// Is this row an epic's verify, `check(epics): verify <id> ...` (fleet-dispatch reconcile_epics).
+/// Its `#of/` links the epic for readers, but the tree gives it no parent: it is the check that
+/// the leaves landed, not one of them, so it neither holds the epic open nor raises its done
+/// count (which would queue another verify), and the check can close the epic while its own row
+/// is still open.
+pub(crate) fn is_epic_check(line: &str) -> bool {
+    line.contains("check(epics)")
+        && projects::row_type_area(line).is_some_and(|(t, a)| t == "check" && a == "epics")
+}
+
 /// Does a close stamp prove an epic's outcome: something beyond the PRs that landed it, and
 /// not `--unverified`. A merged PR says the work landed, never that the goal was reached.
 pub(crate) fn proves_outcome(stamp: &str) -> bool {
@@ -203,7 +213,7 @@ impl Index {
     /// from the live one.
     fn add(&mut self, line: &str, version: Option<V>, live: bool, at: String) {
         let id = md::row_id(line);
-        let parent = parent_of(line);
+        let parent = parent_of(line).filter(|_| !is_epic_check(line));
         match &id {
             Some(id) if self.by_id.contains_key(id) => return,
             None if parent.is_none() || !live => return,
@@ -559,6 +569,51 @@ Version: v1.4.0 #alpha
             "the epic is listed in every release it has work in"
         );
         assert_eq!(ids(Some((1, 6, 0))), Vec::<String>::new());
+    }
+
+    #[test]
+    fn an_epic_verify_row_links_its_epic_but_is_no_leaf_of_it() {
+        let sheet = "# demo\nVersion: v1.4.0\n\n## Tasks\n\
+                     - [ ] epic(rollup): one estimate per release #size/xl <!-- id:dm-1 -->\n";
+        let board = |row: &str| {
+            format!(
+                "# demo\n\n## Tasks\n\
+                 - [x] feat(rollup): the story #size/s #of/dm-1 <!-- id:dm-2 done:2026-11-05 pr:7 -->\n\
+                 {row}\n"
+            )
+        };
+        let verify =
+            "- [/] check(epics): verify dm-1 one estimate #size/s #high #of/dm-1 <!-- id:dm-3 -->";
+        let dir = project(
+            "verify",
+            &[("README.md", sheet), ("agent/README.md", &board(verify))],
+        );
+        let ix = Index::of(&dir, V14);
+        assert_eq!(
+            parent_of(verify).as_deref(),
+            Some("dm-1"),
+            "the row keeps its link"
+        );
+        let e = &ix.epics()[0];
+        assert_eq!(
+            (e.open, e.done),
+            (0, 1),
+            "landed: its verify does not hold it open"
+        );
+        assert!(
+            ix.open_children("dm-1").is_empty(),
+            "the check closes the epic it verifies"
+        );
+        // NEGATIVE CONTROL: the same row typed as a gap under the epic is one of its open leaves.
+        let gap =
+            "- [ ] fix(epics): verify dm-1 one estimate #size/s #high #of/dm-1 <!-- id:dm-3 -->";
+        let dir = project(
+            "verify-gap",
+            &[("README.md", sheet), ("agent/README.md", &board(gap))],
+        );
+        let ix = Index::of(&dir, V14);
+        assert_eq!((ix.epics()[0].open, ix.epics()[0].done), (1, 1));
+        assert_eq!(ix.open_children("dm-1"), vec!["dm-3 (agent board line 5)"]);
     }
 
     #[test]

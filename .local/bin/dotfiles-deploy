@@ -26,7 +26,7 @@
 # ----------------------------------
 # dotfiles-drift DETECTS. It reports MIRROR findings and is deliberately left alone (a
 # Sentinel watch calls `dotfiles-drift --quiet`). It only looks at .local/bin, .local/lib and
-# .config/systemd/user, so it misses e.g. .claude/commands/kb/workflow.md, and it only fires
+# .config/systemd/user, so it misses e.g. .claude/commands/dream.md, and it only fires
 # once the content has ALREADY diverged. It never repairs.
 #
 # This script is the converging half: after `--apply`, `--check` is clean.

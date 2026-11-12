@@ -281,9 +281,10 @@ load 'fleet_dispatch/common'
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
-  # the gate's ask finds room; the start's ask, a moment later, finds none
+  # the away target's and the gate's asks find room; the start's ask, a moment later, finds none
   acct alt:ok:/home/u/.claude-personal
   mv "$NOTES_FIXTURE/acct.json" "$NOTES_FIXTURE/acct.0.json"
+  cp "$NOTES_FIXTURE/acct.0.json" "$NOTES_FIXTURE/acct.1.json"
   acct "alt:pace:/home/u/.claude-personal:1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack)"
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -550,7 +551,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r '[.could_start, .runnable] | @tsv' "$FLEET_DISPATCH_DIR/headroom.json")" $'1\t1'
   run cmd_stats
   assert_equal "$(jq -r .could_start <<<"$output")" 1
-  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live]' <<<"$output")" '[0,50,0,0,0,0]'
+  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live]' <<<"$output")" '[0,25,0,0,0,0]'
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'

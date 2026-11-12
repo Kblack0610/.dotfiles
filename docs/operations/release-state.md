@@ -37,7 +37,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 
 A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from their store targets. `project-map-doctor` check 4c validates every target.
 
-`deployWorkflows` (on the tracker of the app repo, `trackers.<repo>.deployWorkflows`) maps each deploy workflow file to what it deploys: a full path (`.github/workflows/deploy-production.yml`, `.forgejo/workflows/<f>.yml`) to a list of target ids, or to a string giving the reason it deploys none (`"seeds the preview DB"`). `refresh` flags a file as a deploy by a word in its name (`DEPLOY_NAMES` in `release-state`: deploy, release, publish, promote, submit, steam, upload, rollout) or a deploy step in it (`DEPLOY_MARKERS`); `hub releases check` fails a flagged file the map does not name, a mapped path that is not a workflow on the default branch, and an id that is no target. A flagged file whose name holds a project of that repo below alpha reads `ahead of its stage` instead.
+`deployWorkflows` (on the tracker of the app repo, `trackers.<repo>.deployWorkflows`) maps each deploy workflow file to what it deploys: a full path (`.github/workflows/deploy-production.yml`, `.forgejo/workflows/<f>.yml`) to a list of target ids, or to a string giving the reason it deploys none (`"seeds the preview DB"`). `refresh` flags a file as a deploy by a word in its name (`DEPLOY_NAMES` in `release-state`: deploy, release, publish, promote, submit, steam, upload, rollout) or a deploy step in it (`DEPLOY_MARKERS`); `hub releases check` fails a flagged file the map does not name, a mapped path that is not a workflow on the default branch, and an id that is no target.
 
 ## Deploy history
 
@@ -72,12 +72,11 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 
 | Field | Meaning |
 |---|---|
-| `stage` | The lab stage, `null` when the sheet names none on the ladder (then `needs` and `ahead` are empty) |
+| `stage` | The lab stage, `null` when the sheet names none on the ladder (then `needs` is empty) |
 | `rungs` | The rungs its live (read, non-implicit) targets serve, low to high, through the `channels` map; a channel the map does not name serves none |
 | `needs` | The rungs from `alpha` up to the stage that no live target serves; empty for `infra`, which deploys by stow or Flux |
-| `ahead` | The target ids live on a rung above the stage: at `draft` and `dev`, every live target |
 
-When `notes` cannot answer, `stages` is `{}` and `stages_error` says why; the Releases tab shows that as an error, never as every app having no stage. The stage gate's deploy rows in `stages.md` read `rungs` against the stage being checked, so a project setting its first stage is judged too, and the Releases tab shows each app's stage with `needs` and `ahead` (`draft: CI only, no deploy expected`, `draft: live above it: bnb-studios-prod`).
+When `notes` cannot answer, `stages` is `{}` and `stages_error` says why; the Releases tab shows that as an error, never as every app having no stage. The stage gate's deploy rows in `stages.md` read `rungs` against the stage being checked, so a project setting its first stage is judged too, and the Releases tab shows each app's stage with `needs` (`draft: no deploy needed`, `alpha: no alpha target deployed`). A target above the stage is never flagged: a deploy is not the app being live.
 
 ## Relationships
 
@@ -120,7 +119,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
-| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's) with no board row |
+| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date) with no board row, read from the queue items done since the date |
 | versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
@@ -201,7 +200,7 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A row is `unknown` with `kubectl get failed` | The context is missing from `kubectl config get-contexts`, or the deployment name is wrong |
 | A prod row is `floating` and `release-drift` trips | Its manifest names `:latest` and no kustomization `images[]` entry pins a tag, so its deploy is a `rollout restart`. Find the tag that is live (the pod's `imageID` digest against the registry's tag digests), pin that tag in home-config, and make the deploy workflow bump the pin. Merging the pin rolls prod pods, so it is the human's call: binks-chat (2026-11-11, home-config#856, platform#1506) |
 | PREV and LAST DEPLOY say `not read` | `gh` is not logged in where the runner runs, or the API was down; the row's `deploys.error` says which call failed |
-| PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly |
+| PREV and LAST DEPLOY say `not recorded` on a target that deployed | Its workflow has not recorded under the target id yet: check `gh api "repos/<owner>/<repo>/deployments?environment=<id>"` and that the id matches the registry exactly. A release that shipped before its workflow recorded gets one Deployment backfilled by hand, with the body the record step posts (ref = the shipped tag, description = version, payload.build, a success status whose log_url is the run that shipped it); never pin the target `manual` when a pipeline records |
 | A store row is `unknown` with `rbw is locked` | The vault locked; run `rbw unlock`. The collector never unlocks it or raises pinentry |
 | A store row is `unknown` with `no rbw entry <name>` | The read-only credential is not made yet: see Store credentials |
 | A Steam row is `unknown` with `build <id> is not in the last 50 builds` | The branch has not moved in longer than `STEAM_BUILDS` covers. Raise that constant in `release-state` |
@@ -216,5 +215,4 @@ The platform repo has a second drift reader by design: `release-drift.yml` and `
 | A version shows the merged PRs list | The tag has no `CHANGELOG.md` section for it. Add one under a heading holding the version and it is used from the next tag on (the file is read at the tag, then at the branch tip) |
 | A release's ROWS says `not recorded` while PRS lists PRs | No queue item names those PRs: the work predates the queue, or its item recorded a bare `pr:N` in a project with several repos. `hub releases check` names the second |
 | A run's OWNER is `-` | No session sits on its branch and no item names its PR, or the PR store does not hold the PR yet (`schedules-sync` polls every 10 minutes; `hub releases check` names an item PR the store lacks) |
-| An app's stage says `live above it: <target>` | A target is live on a rung its lab stage has not reached (a draft site live in prod). Either raise the stage through its gate (`notes projects --stage <p> --set <s>`, which runs `project-stage-check`) or remove the target and its deploy pipeline. Stage moves are the human's |
-| An app's stage says `no alpha target live` | Its stage needs a rung nothing serves: no target on that channel, or the target's probe failed (`unknown` serves no rung). Declare the target, or fix the probe |
+| An app's stage says `no alpha target deployed` | Its stage needs a rung nothing serves: no target on that channel, or the target's probe failed (`unknown` serves no rung). Declare the target, or fix the probe |

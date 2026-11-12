@@ -395,7 +395,7 @@ outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev
 # 5 of 6 run units held by two heavy and one light live session, as the tests around it do.
 five_of_six_units() {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_TARGET_BURST=6
+  export DISPATCH_TARGET_AWAY=6
   local s
   for s in h1 h2 l1; do started_item "$s" "lab:game-agent-$s" run "area-$s"; done
   sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/running/*-h1.md "$AGENT_QUEUE_DIR"/running/*-h2.md

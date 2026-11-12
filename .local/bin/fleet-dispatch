@@ -59,8 +59,8 @@ unset _k _v
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
-: "${DISPATCH_TARGET_PRESENT:=25}"   # live Claude sessions, hand starts included, a pass fills the fleet to while the human is here; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). Human, 2026-11-11: 20-30 normally, a floor of 15 (DISPATCH_RUN_FLOOR)
-: "${DISPATCH_TARGET_BURST:=50}"   # the same while the human is away (fleet-presence): the burst when there is work
+: "${DISPATCH_TARGET_PRESENT:=50}"   # live Claude sessions, hand starts included, a pass fills the fleet to while the human is here; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
+: "${DISPATCH_TARGET_AWAY:=25}"   # the most the same fills to while the human is away (fleet-presence); the target then is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries), never under DISPATCH_RUN_FLOOR, which wins over this cap, so a night does not spend the week ahead of its line
 : "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
@@ -753,14 +753,24 @@ units_on() {
 live_units() { live_runs | units_on ''; }
 
 # pace_target -- TARGET is the live sessions the fleet fills to now, TARGET_WHEN which one:
-# DISPATCH_TARGET_BURST while the human is away, else DISPATCH_TARGET_PRESENT. TOTAL_LIVE is every
+# DISPATCH_TARGET_PRESENT while the human is here; while away, what the Claude accounts carry at
+# their weekly pace (claude-acct's fleet.carries, from ACCT_ROWS when the caller already read it), at
+# most DISPATCH_TARGET_AWAY and never under DISPATCH_RUN_FLOOR (the floor wins over the cap). A
+# pass reads its own (each start reads room again, so it shares none). An unread carry is
+# DISPATCH_TARGET_AWAY: room still refuses an account past its line. TOTAL_LIVE is every
 # Claude session in the fleet state document, hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
 # verdict winds down) and the shepherd pass, which its own .counts leaves out too. It is empty when
 # the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
 pace_target() {
   if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
-  else TARGET=$DISPATCH_TARGET_BURST TARGET_WHEN=away; fi
+  else
+    TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away
+    local carries
+    carries=$(jq -r '.fleet.carries // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
+    if [[ "$carries" =~ ^[0-9]+$ ]] && [ "$carries" -lt "$TARGET" ]; then TARGET=$carries; fi
+    [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
+  fi
   TOTAL_LIVE=$(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
     | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
@@ -1670,8 +1680,9 @@ resume_thread() {
 }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
-# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on
-# its server (the human reads [dispatch] as "an agent started this"), and a session doing work
+# agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
+# server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
+# own conversation (no item from a start, see the --resume branch), and a session doing work
 # has a queue item whose `session:` names it, which reap, fleet-sessions and agent-web read.
 # Before this, only `run` did either, and agents tagged their hand launches with set-option,
 # which the human had to ask about twice.
@@ -1697,7 +1708,7 @@ resume_thread() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human key='' server='' model='' brief_file='' \
+  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1814,6 +1825,11 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
+    # A resume is an agent's work only when its item came from a start (it has an origin). With no
+    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of
+    # a session they opened, so it gets no @dispatch label. Its item still records origin=resume:
+    # live_runs reads an empty origin with a session as a runner slot.
+    [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
       [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item runs on $rh, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
@@ -1895,7 +1911,7 @@ cmd_start() {
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
   # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
+  [ -n "$joined" ] || [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
     say "could not tag $session with @dispatch"
   logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
@@ -2221,18 +2237,18 @@ resume_brief() {
 }
 
 # fix_ci_brief <item json> <harness> -- the brief of an item fix_red_pr requeued: its work is already
-# its open PR, red at the head `fix_tries:` names, so the session owns that red through /my:fix-ci on
+# its open PR, red at the head `fix_tries:` names, so the session owns that red through the fix-ci skill on
 # the PR's own branch. It never merges: the PR goes back to where it was parked, and reap closes the
 # item once it merges.
 fix_ci_brief() {
   local slug pr n head repo=''
   IFS=$'\x1f' read -r slug pr n head < <(jq -r '(.fix_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // "")] | join("\u001f")' <<<"$1")
   [[ "$pr" != */*#* ]] || repo=" -R ${pr%#*}"
-  if headless "$2"; then printf 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR %s.\n' "$pr"
-  else printf '/my:fix-ci %s\n' "$pr"; fi
+  if headless "$2"; then printf 'Read ~/.claude/skills/fix-ci/SKILL.md and follow it for PR %s.\n' "$pr"
+  else printf '/fix-ci %s\n' "$pr"; fi
   echo
   echo "This is agent-queue item $slug. Its PR $pr is red${head:+ at ${head:0:12}} and the session that opened it has ended, so this session owns the red: fix-ci try $n of $DISPATCH_FIX_TRIES."
-  echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /my:fix-ci says, and push to that branch. Never open a second PR."
+  echo "Work on the PR's own branch, never a new one: gh pr checkout ${pr##*#}$repo here (when git says another worktree has the branch, work in that one: git worktree list), fix the red checks at their cause as /fix-ci says, and push to that branch. Never open a second PR."
   echo "Do not merge, and touch no board or sheet row: when the checks are green, or fix-ci stops on a red it cannot fix and files its row, run agent-queue move $slug review and end. The PR's merge closes the item (fleet-dispatch reap)."
   if headless "$2"; then no_human "$slug"; else ask_rule; fi
 }
@@ -2586,7 +2602,7 @@ settle_item() {
 # fix_red_pr <slug> <session> <item json> <head oid> <ci> -- a review item whose session is gone and
 # whose PR checks finished red (ci FAIL) gets an owner, since nothing else restarts a parked PR: 16
 # of 20 were red on 2026-11-09. It goes back to queued/ (--if review) as a oneshot stamped
-# `fix_tries: <n> <head>`, so item_brief starts it on /my:fix-ci and the next pass starts it behind every gate a queued item
+# `fix_tries: <n> <head>`, so item_brief starts it on /fix-ci and the next pass starts it behind every gate a queued item
 # waits on (agent-hold, the weekly pace, load, the run gate); while agent-queue admission holds
 # automated adds it waits in review/. DISPATCH_FIX_TRIES tries, then one human-sheet row and a page, as fleet-bench triage_human does once TRIAGE_FIX_TRIES are spent,
 # stamped `fix_human: <head>`; a head that moves after that row (the human pushed) starts the count
@@ -3416,6 +3432,9 @@ cmd_starved() {
   # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
   # session there, and a standing hold, board or low water still trips. On 11-11 this tripped 4h at
   # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
+  # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
+  human_here || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
   local TARGET TARGET_WHEN TOTAL_LIVE
   pace_target
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
@@ -3427,7 +3446,6 @@ cmd_starved() {
   # and gate leaves that one out while another source has room, so room is read here from the verdict
   # gate reads too (ACCT_ROWS, asked once for both).
   # Idle is the last pass's sample, as old as the window this verdict reads: a reader never samples.
-  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
   acct_room || room=$?
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
@@ -3509,6 +3527,8 @@ board_starved() {
 # here raises a limit.
 cmd_headroom() {
   local live hand slots load cores idle runnable why could=0 floor_live red_live red_watch starts pend
+  # One room read for the away target and the gate: headroom starts nothing, so it cannot go stale.
+  local ACCT_ROWS; ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
   pace_target
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
@@ -3529,7 +3549,7 @@ cmd_headroom() {
   [ -z "$FOCUS_ONLY" ] || focus_held=$(agent-queue list --json --state queued 2>/dev/null |
     jq -s '[.[] | select((.hold // "") | startswith("focus:"))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
-    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_burst "$DISPATCH_TARGET_BURST" \
+    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
@@ -3538,7 +3558,7 @@ cmd_headroom() {
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
-     target: $max_live, target_when: $target_when, target_present: $target_present, target_burst: $target_burst, total_live: ($total_live | num),
+     target: $max_live, target_when: $target_when, target_present: $target_present, target_away: $target_away, total_live: ($total_live | num),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
@@ -3558,7 +3578,7 @@ cmd_headroom() {
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  pace:      \(.total_live // "?") of \(.target) live sessions, the \(.target_when) target (present \(.target_present), away \(.target_burst)); hand starts count toward it and are never refused",
+        "  pace:      \(.total_live // "?") of \(.target) live sessions, the \(.target_when) target (present \(.target_present), away what the accounts carry, at most \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
@@ -3781,9 +3801,9 @@ reconcile_plans() {
 # the queue ever held is never queued again: a verify that failed or found gaps waits for a human or
 # for the gap rows to land, which raises the count and queues the next check. A profile with board
 # automation off gets none. Admission never holds its add (`from: auto:epics`, agent-queue admit),
-# however deep the queue: one item per landed epic. Its title's area, `epics`, names no
-# system, so the story row agent-queue files for it links under no standing epic: one that did would
-# be a leaf there, and its close would queue a verify of that epic in turn.
+# however deep the queue: one item per landed epic. Its story row carries `#of/<epic>` (--epic), so
+# the item links the epic it checks; notes reads a `check(epics)` row as no leaf (epics::is_epic_check),
+# so it neither holds the epic open nor raises the done count that would key a second verify.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
   local landed prof project id done_ title slug out rc
@@ -3795,7 +3815,7 @@ reconcile_epics() {
     slug="verify-$id-$done_"
     # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
     [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
-    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" \
+    out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       logline "queued $slug: every leaf of epic $id on $project has landed"
@@ -4051,7 +4071,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
-  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_BURST)"
+  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: present $DISPATCH_TARGET_PRESENT, away what the accounts carry, at most $DISPATCH_TARGET_AWAY)"
   unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")

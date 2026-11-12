@@ -1391,7 +1391,7 @@ async fn jobs_list(State(s): State<Shared>, Query(q): Query<jobs::JobsQuery>) ->
         .into_response()
 }
 
-async fn releases_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
+async fn releases_list(State(s): State<Shared>, Query(q): Query<releases::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
         releases::get(q, s.queue.items().await).await,

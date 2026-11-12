@@ -158,7 +158,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   feed summary_dispatch.room_held_slots=1
   run "$MODULE"
   run tip
-  assert_output --partial "paused by: <span color='$Y'>the fleet is at its pace target (DISPATCH_TARGET_PRESENT, DISPATCH_TARGET_BURST away)</span>"
+  assert_output --partial "paused by: <span color='$Y'>the fleet is at its pace target (DISPATCH_TARGET_PRESENT; away, what the accounts carry, at most DISPATCH_TARGET_AWAY)</span>"
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
@@ -362,11 +362,11 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
 }
 
 @test "the hover ends with the vitals line, and has none when hub cannot read them" {
-  printf '#!/usr/bin/env bash\necho "5 of 7 off target: Flow"\necho "Flow  !  a row"\n' > "$SANDBOX/bin/fake-hub"
+  printf '#!/usr/bin/env bash\necho "2 of 4 off target: You, Outcome"\necho "You  !  a row"\n' > "$SANDBOX/bin/fake-hub"
   chmod +x "$SANDBOX/bin/fake-hub"
   HUB="$SANDBOX/bin/fake-hub" run "$MODULE"
   run tip
-  assert_output --partial $'\n\nvitals: 5 of 7 off target: Flow'
+  assert_output --partial $'\n\nvitals: 2 of 4 off target: You, Outcome'
   refute_output --partial 'a row'
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fake-hub"
   HUB="$SANDBOX/bin/fake-hub" run "$MODULE"

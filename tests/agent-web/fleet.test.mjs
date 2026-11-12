@@ -47,7 +47,7 @@ const worker = (name, registry) => ({
     ...registry,
   },
 });
-const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d",
+const judge = { agree: 0, disagree: 0, deferred: 0, pending: 0, unscored: 0, precision: null, kappa: null, prompt: "3fa1c2d",
   week: { live_pct: 25, coverage: 40, precision: 91 },
   verdicts: [
     { id: "a", project: "ucp", question: "land it?", type: "ship_deploy", rule: "ship_deploy", said: "answered", judge: "a", reason: "merged, not live", evidence: "merged", you: "kept", score: "right", at: 1793942659 },

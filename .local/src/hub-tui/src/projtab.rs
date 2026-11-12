@@ -897,6 +897,7 @@ pub(crate) mod tests {
                     }],
                     closed: "+1 closed, 1 verified".into(),
                     wave: None,
+                    ..Default::default()
                 },
                 hub_core::page::System {
                     id: "ci".into(),
@@ -914,6 +915,7 @@ pub(crate) mod tests {
             }],
             shipped_says: "none yet".into(),
             shipped: vec![],
+            need_groups: vec![],
             timeline: Some(hub_core::timeline::Timeline {
                 says: "7d: 1 commit (1 red on CI)".into(),
                 lines: vec![hub_core::timeline::Line {

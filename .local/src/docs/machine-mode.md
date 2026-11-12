@@ -23,7 +23,7 @@ The level says how fast the fleet starts work. `mid` is the confs' own numbers. 
 | `CLAUDE_ACCT_PACE_SLACK_PCT`, points past pace | claude-acct room | 1 | 5 | 10 |
 | `CLAUDE_ACCT_RESERVE_PCT`, kept for you | claude-acct room | 13 | 10 | 7 |
 
-The numbers here are today's conf values. `DISPATCH_PER_PASS` is unset, and 0 is no cap at every level, so the scaled load limit is what bounds a pass; set it above 0 and the level scales it again (the two claude-acct rows come from `.config/claude-acct/pace.conf`; their names are the levels file's column keys, not env vars, so exporting one changes nothing). The conf is the baseline: change it there and every level follows. Nothing is written when you switch, so the next dispatch pass and the next `claude-acct room` read the new level. `cl`, `claude-acct pick` and hand starts are never refused by it: pick's rank ignores the level, and only its stderr hint about an automatic start follows it. The pace targets (`DISPATCH_TARGET_PRESENT`, `DISPATCH_TARGET_BURST`), budgets, and the thermal, memory and GitHub gates are not scaled. `fleet-dispatch headroom` prints the level next to the limits it is applying now.
+The numbers here are today's conf values. `DISPATCH_PER_PASS` is unset, and 0 is no cap at every level, so the scaled load limit is what bounds a pass; set it above 0 and the level scales it again (the two claude-acct rows come from `.config/claude-acct/pace.conf`; their names are the levels file's column keys, not env vars, so exporting one changes nothing). The conf is the baseline: change it there and every level follows. Nothing is written when you switch, so the next dispatch pass and the next `claude-acct room` read the new level. `cl`, `claude-acct pick` and hand starts are never refused by it: pick's rank ignores the level, and only its stderr hint about an automatic start follows it. The pace targets (`DISPATCH_TARGET_PRESENT`, `DISPATCH_TARGET_AWAY`), budgets, and the thermal, memory and GitHub gates are not scaled. `fleet-dispatch headroom` prints the level next to the limits it is applying now.
 
 ## Use
 
@@ -46,7 +46,7 @@ The waybar chip shows in every mode, `open` included, as the mode's initial (F, 
 | `Super+A m o` | open |
 | `Super+A m f` | full |
 
-The leaves call `machine-mode <mode>`, the only writer, as the command line does (`.config/hypr/conf.d/leader.conf`, submap `pinbar-mode`).
+The leaves call `machine-mode <mode>`, the only writer, as the command line does (`.config/hypr/conf/leader.lua`, submap `pinbar-mode`).
 
 ## Clock hours
 

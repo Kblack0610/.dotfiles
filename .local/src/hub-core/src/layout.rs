@@ -114,9 +114,9 @@ pub const TABS: [Tab; 13] = [
         id: "releases",
         group: "Projects",
         title: "Releases",
-        question: "What is live where, and which builds made it?",
+        question: "What is deployed where, and which builds made it?",
         sections: &["table", "detail", "runs"],
-        // Two questions: what is live where (the apps and an opened one), and the runs that
+        // Two questions: what is deployed where (the apps and an opened one), and the runs that
         // built and shipped a release.
         pinned: &[],
         inner: &[
@@ -334,6 +334,37 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
         .find(|m| m.0 == id && m.1 == sec)
         .map(|m| (m.2, m.3))
 }
+
+/// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
+/// human and the systems at a glance first, then the project's rows, its epics, the next stage's
+/// checklist, and what happened. Overview is the default; a section id opens the inner tab holding it.
+pub const PROJECT_PAGE: [Inner; 5] = [
+    Inner {
+        id: "overview",
+        title: "Overview",
+        sections: &["p-needs", "p-flight", "p-systems"],
+    },
+    Inner {
+        id: "rows",
+        title: "Rows",
+        sections: &["p-rows"],
+    },
+    Inner {
+        id: "build",
+        title: "Build",
+        sections: &["p-build"],
+    },
+    Inner {
+        id: "stage",
+        title: "Stage",
+        sections: &["p-stage"],
+    },
+    Inner {
+        id: "activity",
+        title: "Activity",
+        sections: &["p-shipped", "p-timeline", "p-note"],
+    },
+];
 
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
 /// Board, which is `a` on Projects there.

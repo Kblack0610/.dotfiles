@@ -225,15 +225,17 @@ ask_fixture() {
   assert_line '[["row three","done/failed"]]'
 }
 
-@test "kpi --json: the five fleet-bench KPIs over 7 and 28 days, every prompt" {
+@test "kpi --json: the judge KPIs over 7 and 28 days, every prompt, and no ask false-defer KPI" {
   ask_fixture
   printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run "$JUDGE_EVAL" kpi --json
   assert_success
-  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
-  # judge_precision needs 10 scored answers in a rule, and a false-defer percent 10 scored defers: 3
-  # here (the lane's own 33.3 is in the first test). 3 of 12 asks were answered live.
-  assert_output '[2,null,30.8,null,7.7]'
+  # Every answer-judge deferral is a hard stop, so ask_answered_pct is its over-deferral alarm and
+  # the lane has no false-defer KPI; the dispatch judge's skips keep theirs.
+  assert_equal "$(jq -c 'has("ask_false_defer_pct"), has("dispatch_false_defer_pct")' <<<"$output" | paste -sd,)" 'false,true'
+  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
+  # judge_precision needs 10 scored answers in a rule. 3 of 12 asks were answered live.
+  assert_output '[2,null,30.8,7.7]'
 }
 
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
