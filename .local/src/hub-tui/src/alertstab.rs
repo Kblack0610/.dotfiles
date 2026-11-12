@@ -7,7 +7,7 @@
 //! section.
 
 use hub_core::alerts::{Alert, Alerts};
-use hub_core::home::Level;
+use hub_core::home::{Chip, Level};
 use hub_core::layout::{self, Tab, FOLD_ROWS};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -425,9 +425,41 @@ fn pages(r: &Alert, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// HEALTH: every domain chip (`hometab::health_line`), then why: each component not green.
+/// The HEALTH line: green collapses to one line, and only the chips that
+/// are not green are drawn, then how many are green.
+fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
+    let mut strip = vec![Span::styled("HEALTH   ", p.head())];
+    let bad: Vec<&Chip> = chips.iter().filter(|c| c.level != Level::Ok).collect();
+    if chips.is_empty() {
+        strip.push(Span::styled("no data", p.dim()));
+    } else if bad.is_empty() {
+        strip.push(Span::styled(
+            format!("all green ({})", chips.len()),
+            p.good(),
+        ));
+    } else {
+        for c in &bad {
+            let v = match c.level {
+                Level::Ok => Some(0.0),
+                Level::Warn => Some(1.0),
+                Level::Red => Some(2.0),
+                Level::Nodata => None,
+            };
+            let (style, word) = p.status(v);
+            strip.push(Span::styled(format!(" {} {word} ", c.name), style));
+            strip.push(Span::raw(" "));
+        }
+        strip.push(Span::styled(
+            format!("{} green", chips.len() - bad.len()),
+            p.dim(),
+        ));
+    }
+    clip_line(Line::from(strip), w)
+}
+
+/// HEALTH: every domain chip (`health_line`), then why: each component not green.
 fn health(a: &Alerts, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![crate::hometab::health_line(&a.health, p, w)];
+    let mut out = vec![health_line(&a.health, p, w)];
     for c in &a.components {
         let (style, word) = p.status(status(c.level));
         out.push(clip_line(
