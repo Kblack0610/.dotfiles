@@ -1294,7 +1294,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
-@test "a plan item starts its session at once; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
+@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -1310,14 +1310,14 @@ notes --profile bnb ptask game --agent run gm-9"
   # A low plan item waits for a dispatch pass; an urgent one still starts.
   run "$AQ" add --project game --mode plan --priority low --slug lp "plan, low"
   assert_success
-  assert_output --partial 'lp is low priority, so it stays queued'
+  assert_output --partial 'lp is low priority, so a dispatch pass starts it in its turn'
   assert_not_called 'start --item lp'
   [ -f "$(item queued lp)" ]
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
 }
 
-@test "the next phase starts when its parent closes ok; not on failed, not past an open hold, not when dispatch is held" {
+@test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
   printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
   "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
@@ -1332,7 +1332,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" add --project game --slug l3 --after l1 --priority high "high next" >/dev/null
   run "$AQ" move l1 done --status ok
   assert_success
-  assert_output --partial 'l2 is low priority, so it stays queued'
+  assert_output --partial 'l2 is low priority, so a dispatch pass starts it in its turn'
   assert_not_called 'start --item l2'
   [ -f "$(item queued l2)" ]
   assert_called 'fleet-dispatch start --item l3'
