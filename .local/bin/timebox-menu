@@ -15,9 +15,9 @@ menu() {
     fi
 }
 
-alerts=$(timebox status | sed -n 's/^alerts: //p')
 action="${1:-}"
 if [ -z "$action" ]; then
+    alerts=$(timebox status | sed -n 's/^alerts: //p')
     action=$(printf '%s\n' start switch cycle pause resume "lap / next step" stop "stop all" \
         "toggle sound" "toggle flash" stats | menu "timebox (${alerts:-alerts})") || exit 0
 fi
@@ -44,7 +44,8 @@ case "$action" in
     pause)  timebox pause ;;
     resume) timebox resume ;;
     cycle)
-        pick=$(timebox cycle | menu "cycle") || exit 0
+        cycles=$(timebox cycle 2>&1) || { agent-notify -t "timebox" "$cycles"; exit 0; }
+        pick=$(printf '%s\n' "$cycles" | menu "cycle") || exit 0
         name="${pick%%:*}"
         [ -n "$name" ] && timebox cycle "$name"
         ;;

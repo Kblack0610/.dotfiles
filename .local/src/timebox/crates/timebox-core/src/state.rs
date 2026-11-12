@@ -288,6 +288,10 @@ impl Snapshot {
             sw.started_at = now;
             sw.state = RunState::Running;
             self.active_sw = Some(op.to_string());
+            // Resuming an op that is not the cycle's current step leaves the cycle.
+            if self.cycle.as_ref().is_some_and(|c| c.current().op != op) {
+                self.cycle = None;
+            }
             return vec![Event::new(now, EventKind::Resume, op)];
         }
         vec![]
@@ -296,7 +300,7 @@ impl Snapshot {
     /// Manually close the current lap window now and restart the cadence from here.
     /// Inside a cycle, a lap on the active op skips to the next step.
     pub fn lap(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
-        if self.cycle.is_some() && self.active_sw.as_deref() == Some(op) {
+        if self.cycle.as_ref().is_some_and(|c| c.current().op == op) {
             return self.advance_cycle(now);
         }
         let Some(sw) = self.stopwatches.get_mut(op) else {
@@ -483,7 +487,7 @@ mod tests {
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.state, RunState::Paused);
         assert_eq!(sw.elapsed_s(at(t, 999)), 100); // frozen at pause
-                                                   // resume and run 50 more -> 150 total
+        // resume and run 50 more -> 150 total
         s.resume(at(t, 200), "op");
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.elapsed_s(at(t, 250)), 150);
@@ -494,7 +498,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(5), None); // 5s laps
-                                         // at 12s, two boundaries (5,10) are due
+        // at 12s, two boundaries (5,10) are due
         let laps = s.catch_up(at(t, 12));
         assert_eq!(laps.len(), 2);
         assert_eq!(laps[0].lap_index, Some(1));
@@ -563,7 +567,7 @@ mod tests {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "op", Some(100), None); // boundary at 100
-                                           // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
+        // 40s in, re-arm with the same 100s lap -> fresh 100s from now (140 total)
         s.start(at(t, 40), "op", Some(100), None);
         let sw = &s.stopwatches["op"];
         assert_eq!(sw.next_lap_countdown_s(at(t, 40)), Some(100));
@@ -669,5 +673,20 @@ mod tests {
         s.stop(at(t, 30), "work");
         assert!(s.cycle.is_none());
         assert!(s.catch_up(at(t, 9999)).is_empty());
+    }
+
+    #[test]
+    fn resuming_another_op_ends_the_cycle() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.start(t, "email", Some(60), None);
+        s.stop(at(t, 10), "email");
+        s.start_cycle(at(t, 10), "practice", steps(), false);
+        s.resume(at(t, 20), "email");
+        assert!(s.cycle.is_none());
+        // email's own lap fires as a plain lap; work is not switched away by the cycle
+        let evs = s.catch_up(at(t, 80));
+        assert!(evs.iter().all(|e| e.kind == EventKind::Lap && e.op == "email"));
+        assert_eq!(s.stopwatches["work"].state, RunState::Running);
     }
 }

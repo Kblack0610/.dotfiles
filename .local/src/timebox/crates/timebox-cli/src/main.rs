@@ -397,6 +397,7 @@ fn single(
         }
         return Ok(1);
     };
+    let before = snap.active_sw.clone();
     let evs = f(snap, &t);
     if evs.is_empty() {
         eprintln!("{verb}: {t} not in a state to {verb}");
@@ -407,7 +408,7 @@ fn single(
     println!("{verb} {t}");
     print_one(snap, &t, now);
     // A lap inside a cycle moved to the next step: show where it went.
-    if let Some(next) = snap.active_sw.clone().filter(|a| *a != t) {
+    if let Some(next) = snap.active_sw.clone().filter(|_| snap.active_sw != before) {
         println!("now {next}");
         print_one(snap, &next, now);
     }
@@ -493,7 +494,10 @@ fn waybar_json(snap: &Snapshot, cfg: &config::Config, now: DateTime<Local>) -> S
                 Some(cd) => {
                     let cls = if !running {
                         "inactive"
-                    } else if cd <= FINAL_SECS && flash_on(cfg, snap) {
+                    } else if cd <= FINAL_SECS
+                        && sw.lap_len_s.unwrap_or(0) as i64 > FINAL_SECS
+                        && flash_on(cfg, snap)
+                    {
                         "final"
                     } else if cd <= 60 {
                         "urgent"
