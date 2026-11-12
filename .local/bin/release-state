@@ -46,6 +46,8 @@ CHANGELOG_LINES=100
 DEPLOY_HISTORY=10
 # How many tags a project's release history keeps, newest first.
 HISTORY_TAGS=20
+# How many PRs a tag in that history names at most: the first tag of a line spans all history before it.
+HISTORY_PRS=500
 # The read-only store credentials: one rbw entry per store, each a single line. Never the release
 # keys the upload workflows use. Formats: docs/operations/release-state.md, "Store credentials".
 RBW_STEAM=release_state_steam
@@ -403,19 +405,24 @@ deploys() {
   printf '%s' "$read_ok"
 }
 
-# history <project> -> {line, glob, error, tags}: the project's tags, newest first, at most
-# HISTORY_TAGS, each {tag, version, sha, at, prev}. line is `release` for its own release family
+# history <project> -> {line, glob, repo, error, tags}: the project's tags, newest first, at most
+# HISTORY_TAGS, each {tag, version, sha, at, prev, prs}. line is `release` for its own release family
 # (tagGlob or git-release.sh's ladder), `build` when it has none yet and the registry's
 # `buildTags` names its per-build tags, `none` when neither has a tag. at is git's creatordate
 # (a lightweight tag's commit date, a lower bound); prev is git_prev_tag, the same range the
-# changelog reads. Raw facts only: which channel shipped a tag is hub_core::release_graph's join.
+# changelog reads. repo is the checkout's origin as the PR store keys it (owner/repo, host/owner/repo
+# off GitHub); prs are the PR numbers in prev..tag, read from the squash subjects as the changelog
+# is. Raw facts only: which channel shipped a tag, and each PR's row, are hub_core::release_graph's joins.
 history() {
-  local proj="$1" repo glob line=release tags="" t sha_at out="[]"
+  local proj="$1" repo glob line=release tags="" t p sha_at out="[]" name host path
   if ! project_tag_scope "$proj"; then
-    jq -nc '{line: "none", glob: null, error: "no checkout", tags: []}'
+    jq -nc '{line: "none", glob: null, repo: null, error: "no checkout", tags: []}'
     return
   fi
   repo="$_PTS_REPO"
+  path="$(project_field "$proj" path)"
+  name="$(origin_repo "$repo" || true)"; host="$(origin_host "$repo" || true)"
+  [ -z "$name" ] || [ -z "$host" ] || [ "$host" = github.com ] || name="$host/$name"
   glob="$(_gr_glob "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
   [ -n "$glob" ] && tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
   if [ -z "$tags" ] && [ -n "$_PTS_BUILDS" ]; then
@@ -426,19 +433,23 @@ history() {
       grep -Fxf <(printf '%s\n' "$tags"))"
   fi
   if [ -z "$tags" ]; then
-    jq -nc --arg g "$glob" '{line: "none", glob: (if $g == "" then null else $g end), error: null, tags: []}'
+    jq -nc --arg g "$glob" --arg r "$name" '{line: "none", glob: (if $g == "" then null else $g end),
+      repo: (if $r == "" then null else $r end), error: null, tags: []}'
     return
   fi
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     sha_at="$(git_tag_at "$repo" "$t")"
-    out="$(jq -c --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sha_at" \
-      --arg p "$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$t")" '
+    p="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$t")"
+    out="$(jq -c --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sha_at" --arg p "$p" \
+      --arg prs "$(git_tag_changes "$repo" "$p" "$t" "$path" "$HISTORY_PRS")" '
       ($sa | split(" ")) as $f
       | . + [{tag: $t, version: $v, sha: ($f[0] // null), at: ($f[1] // "" | tonumber? // null),
-              prev: (if $p == "" then null else $p end)}]' <<<"$out")"
+              prev: (if $p == "" then null else $p end),
+              prs: [$prs | split("\n")[] | [scan("\\(#([0-9]+)\\)")] | last // empty | .[0] | tonumber]}]' <<<"$out")"
   done < <(head -n "$HISTORY_TAGS" <<<"$tags")
-  jq -nc --arg l "$line" --arg g "$glob" --argjson tags "$out" '{line: $l, glob: $g, error: null, tags: $tags}'
+  jq -nc --arg l "$line" --arg g "$glob" --arg r "$name" --argjson tags "$out" \
+    '{line: $l, glob: $g, repo: (if $r == "" then null else $r end), error: null, tags: $tags}'
 }
 
 # telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.

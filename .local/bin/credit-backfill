@@ -284,9 +284,10 @@ merged_on() {
   date -d "$ts" +%F 2>/dev/null || true
 }
 
-# proof_day <slug> <proof> -> the merge day of the PR a `pr:N ...` proof names, or nothing.
+# proof_day <slug> <proof> -> the merge day of the PR a `pr:N ...` or `pr:<owner>/<repo>#N ...`
+# proof names, or nothing.
 proof_day() {
-  local n; n="$(sed -nE 's/^pr:([0-9]+)( .*)?$/\1/p' <<<"$2")"
+  local n; n="$(sed -nE 's/^pr:([^ #]+#)?([0-9]+)( .*)?$/\2/p' <<<"$2")"
   [ -z "$n" ] || merged_on "$1" "$n"
 }
 

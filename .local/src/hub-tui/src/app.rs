@@ -858,12 +858,14 @@ impl App {
     }
 
     /// `release-state` replaces one file, so the tab reads on entering, on `r` and on that file's
-    /// event; the snapshot's age is worked out as it is drawn.
+    /// event; the snapshot's age is worked out as it is drawn. It joins the queue the hub holds
+    /// (read on start), so each release's ROWS cell names its PRs' rows.
     pub fn read_releases(&mut self) {
         if self.releases_read.want() {
             let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            let items = self.queue_items();
             std::thread::spawn(move || {
-                let s = hub_core::releases::read(runner.as_ref());
+                let s = hub_core::releases::read(runner.as_ref(), &items);
                 let _ = tx.send(Msg::Releases(Box::new(s)));
             });
         }
@@ -904,15 +906,30 @@ impl App {
     }
 
     /// The ledger is appended to by schedules-sync every ten minutes: read on entering the tab,
-    /// on `r` and on that file's event.
+    /// on `r` and on that file's event. Each run's PRs, owner and release are the graph's join
+    /// over the PR store, the queue the hub holds and the releases snapshot.
     pub fn read_builds(&mut self) {
         if self.builds_read.want() {
-            let tx = self.tx.clone();
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
             let paths = self.files.builds.clone();
+            let items = self.queue_items();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Builds(Box::new(builds::read(&paths, jobs::now()))));
+                let join = builds::Join {
+                    runner: runner.as_ref(),
+                    items: &items,
+                };
+                let b = builds::read(&paths, Some(join), jobs::now());
+                let _ = tx.send(Msg::Builds(Box::new(b)));
             });
         }
+    }
+
+    /// The queue's items as last read, none before the first read lands.
+    fn queue_items(&self) -> Vec<hub_core::queue::Item> {
+        self.queue
+            .as_ref()
+            .map(|q| q.items.clone())
+            .unwrap_or_default()
     }
 
     /// A read still going is not due: asking now would queue a second one behind it.
@@ -6156,7 +6173,7 @@ mod tests {
         let mut a = with_tx(Tab::Releases, tx);
         let rel = Arc::new(Rel::default());
         a.runner = rel.clone();
-        a.releases = Some(hub_core::releases::read(rel.as_ref()));
+        a.releases = Some(hub_core::releases::read(rel.as_ref(), &[]));
         rel.0.lock().unwrap().clear();
         (a, rel, rx)
     }

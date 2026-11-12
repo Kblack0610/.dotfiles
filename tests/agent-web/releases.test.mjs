@@ -76,8 +76,8 @@ const binks = {
   last_deploy_text: "11-06 15:00 fail", deploy_level: "warn", channels: [drift, unread], lead: 1, others_text: "beta 1 not read",
   stage: "draft", stage_text: "draft: live above it: binks-prod", stage_level: "warn",
   line: "release", released_text: "v2 11-05", history: [
-    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06" },
-    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded" },
+    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
+    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, reached: [], reached_text: "not recorded", prs: [], prs_text: "-", rows: [], rows_text: "-" },
   ],
 };
 const data = (o = {}) => ({
@@ -219,8 +219,8 @@ test("an opened app lists its releases newest first with when, the one before an
   await open();
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
-  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><\/tr>/);
-  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">-<\/td><td class="wrap muted">not recorded<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">-<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">-<\/td><td class="wrap muted">-<\/td><\/tr>/);
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
   // Clicking a release reads its changelog, and the app stays open.
   asked.length = 0;
@@ -343,7 +343,7 @@ const job = (i, o = {}) => ({
 const rdetail = (o = {}) => ({
   key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
   header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
-  coverage_text: "partial: the archive holds 2 of the run's jobs so far", tested_sha: "abc1234ff", workflow_sha: "def5678aa", attempts: [1, 2],
+  coverage_text: "partial: the archive holds 2 of the run's jobs so far", attempts: [1, 2],
   jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
 });
 
@@ -359,7 +359,6 @@ test("an opened run shows its header, every job with its price, the steps and th
   assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
   assert.match(b, /<b>Steps<\/b>/);
   assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
-  assert.match(b, /tested abc1234, workflow from def5678/);
   assert.match(b, /<b>Attempts<\/b> 1, 2/);
   fire("click", { type: "click", target: brow(BKEY) });
   detail = rdetail();

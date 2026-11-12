@@ -356,8 +356,6 @@ pub struct RunDetail {
     pub before_first_job: Option<i64>,
     /// Every job's run time added up.
     pub runner_time: i64,
-    pub tested_sha: String,
-    pub workflow_sha: String,
     /// `complete`, `partial`, `pending` or `unavailable`.
     pub coverage: String,
     pub coverage_text: String,
@@ -503,22 +501,9 @@ pub fn build(
         ),
     };
     let cost = RunCost::of(rows.iter().map(|r| &r.price));
-    let tested = if run.tested_sha.is_empty() {
-        &run.sha
-    } else {
-        &run.tested_sha
-    };
     let end_to_end = span(created, last);
     let before_first_job = span(created, first);
-    let sha = if tested == &run.sha {
-        format!("tested {}", short_sha(tested))
-    } else {
-        format!(
-            "tested {} (workflow {})",
-            short_sha(tested),
-            short_sha(&run.sha)
-        )
-    };
+    let sha = format!("tested {}", short_sha(&run.sha));
     let header = [
         format!("end to end {}", took_text(end_to_end)),
         format!("before first job {}", took_text(before_first_job)),
@@ -543,8 +528,6 @@ pub fn build(
         end_to_end,
         before_first_job,
         runner_time,
-        tested_sha: tested.clone(),
-        workflow_sha: run.sha.clone(),
         coverage: coverage.into(),
         coverage_text,
         cost,

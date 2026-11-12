@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::pipeline::stamp;
 
 use crate::layout;
-use crate::release_graph::{self, Line, Shipment};
+use crate::queue::Item;
+use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 
@@ -467,13 +468,14 @@ impl Releases {
     }
 }
 
+/// `release-state show --json`: the collector's raw facts, before any join.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct Snapshot {
-    generated_epoch: i64,
-    rows: Vec<Release>,
+pub struct Snapshot {
+    pub generated_epoch: i64,
+    pub rows: Vec<Release>,
     /// Each project's tag history, keyed by project (`release-state refresh`).
-    releases: HashMap<String, Line>,
+    pub releases: HashMap<String, Line>,
     /// What each lab project's stage asks of its deploys, keyed by project.
     stages: HashMap<String, StageFacts>,
     /// Why `stages` is empty: `notes` could not say.
@@ -518,14 +520,12 @@ fn staged(f: Option<&StageFacts>) -> (String, String, Level) {
 /// The rows this reader was handed, joined and ordered: exceptions first, the worst on top.
 fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     let now = chrono::Local::now().timestamp();
-    let mut pins: HashMap<String, String> = HashMap::new();
-    for prod in [true, false] {
-        for r in rows.iter().filter(|r| (r.channel == "prod") == prod) {
-            pins.entry(r.project.clone())
-                .or_insert_with(|| r.pinned.value.clone().unwrap_or_default());
-        }
-    }
-    for r in &mut rows {
+    let deps: Vec<String> = rows
+        .iter()
+        .map(|r| release_graph::deps_text(&r.deps, &rows))
+        .collect();
+    for (r, deps_text) in rows.iter_mut().zip(deps) {
+        r.deps_text = deps_text;
         for w in &mut r.telemetry {
             w.level = w.judged();
         }
@@ -554,18 +554,6 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             let ok = r.telemetry.iter().filter(|w| w.state == "OK").count();
             format!("{ok}/{}", r.telemetry.len())
         };
-        r.deps_text = if r.deps.is_empty() {
-            "-".into()
-        } else {
-            r.deps
-                .iter()
-                .map(|d| match pins.get(d) {
-                    Some(pin) if !pin.is_empty() => format!("{d} {pin}"),
-                    _ => d.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
     }
     rows.sort_by(|a, b| {
         let key = |r: &Release| (r.level, rank(&r.status));
@@ -579,6 +567,7 @@ fn app(
     project: &str,
     mut channels: Vec<Release>,
     line: Option<&Line>,
+    graph: Option<&Graph>,
     stage: Option<&StageFacts>,
 ) -> App {
     channels.sort_by(|a, b| {
@@ -642,9 +631,12 @@ fn app(
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
-    let history = line.map_or(vec![], |l| {
-        release_graph::history(l, &channels, chrono::Local::now().timestamp())
-    });
+    let now = chrono::Local::now().timestamp();
+    let history = match (graph, line) {
+        (Some(g), _) => g.history(project, &channels, now),
+        (None, Some(l)) => release_graph::history(l, &channels, now),
+        (None, None) => vec![],
+    };
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {
@@ -692,6 +684,7 @@ fn apps(
     rows: &[Release],
     lines: &HashMap<String, Line>,
     stages: &HashMap<String, StageFacts>,
+    graph: Option<&Graph>,
 ) -> Vec<App> {
     let mut names: Vec<&str> = rows.iter().map(|r| r.project.as_str()).collect();
     names.sort_unstable();
@@ -700,7 +693,7 @@ fn apps(
         .into_iter()
         .map(|p| {
             let channels = rows.iter().filter(|r| r.project == p).cloned().collect();
-            app(p, channels, lines.get(p), stages.get(p))
+            app(p, channels, lines.get(p), graph, stages.get(p))
         })
         .collect();
     out.sort_by(|a, b| {
@@ -761,6 +754,11 @@ fn says(apps: &[App]) -> String {
     }
 }
 
+/// Every channel's and every project's raw facts, unjoined: what the release graph reads.
+pub fn snapshot(runner: &dyn Runner) -> Result<Snapshot, String> {
+    show(runner, None)
+}
+
 fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> {
     let mut argv: Vec<String> = ["release-state", "show", "--json"]
         .map(String::from)
@@ -773,15 +771,26 @@ fn show(runner: &dyn Runner, project: Option<&str>) -> Result<Snapshot, String> 
 }
 
 /// The tab: every app, or what stopped the read. Nothing is carried over from an earlier read, so
-/// a failed probe is never shown as the last good value.
-pub fn read(runner: &dyn Runner) -> Releases {
+/// a failed probe is never shown as the last good value. `items` are the queue's, which join a
+/// release's PRs to their rows; none leaves the ROWS cell `-`.
+pub fn read(runner: &dyn Runner, items: &[Item]) -> Releases {
     let question = layout::resolve("releases")
         .map(|t| t.question.to_string())
         .unwrap_or_default();
     match show(runner, None) {
         Ok(s) => {
             let rows = settle(s.rows);
-            let apps = apps(&rows, &s.releases, &s.stages);
+            let registry = project_map::cached();
+            let none = HashMap::new();
+            let graph = Graph::new(Inputs {
+                lines: &s.releases,
+                channels: &rows,
+                items,
+                prs: &[],
+                live: &none,
+                registry: registry.as_deref(),
+            });
+            let apps = apps(&rows, &s.releases, &s.stages, Some(&graph));
             Releases {
                 at: s.generated_epoch,
                 question,
@@ -826,7 +835,7 @@ pub fn channels(runner: &dyn Runner, project: &str) -> Result<Vec<Release>, Stri
 /// The badge for a project's [`channels`], the same words as its row on the tab; None when it
 /// has none.
 pub fn badge(rows: &[Release]) -> Option<Badge> {
-    apps(rows, &HashMap::new(), &HashMap::new())
+    apps(rows, &HashMap::new(), &HashMap::new(), None)
         .into_iter()
         .next()
         .map(|a| {
@@ -905,6 +914,11 @@ pub fn changelog(
 mod tests {
     use super::*;
     use crate::table::View;
+
+    /// The tab with no queue items: the joins these tests pin need none.
+    fn read(runner: &dyn Runner) -> Releases {
+        super::read(runner, &[])
+    }
 
     struct Fake(Result<String, String>);
     impl Runner for Fake {

@@ -232,6 +232,37 @@ impl Registry {
         repo.is_some_and(|r| !r.is_empty()) || self.in_paths(name)
     }
 
+    /// The forge slugs a project's PRs and runs live under (`github`, then `forgejo`, each
+    /// `owner/repo`), following `repo` to the repo's own tracker when the project has none of its
+    /// own (a monorepo app is its monorepo's). Empty for a name no tracker knows.
+    pub fn repos(&self, name: &str) -> Vec<String> {
+        let slugs = |t: &Map<String, Value>| -> Vec<String> {
+            ["github", "forgejo"]
+                .iter()
+                .filter_map(|k| t.get(*k)?.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let Some(key) = self.lookup(name) else {
+            return vec![];
+        };
+        let Some(t) = self.tracker(key) else {
+            return vec![];
+        };
+        let own = slugs(t);
+        if !own.is_empty() {
+            return own;
+        }
+        t.get("repo")
+            .and_then(Value::as_str)
+            .and_then(|r| self.lookup(r))
+            .filter(|r| *r != key)
+            .and_then(|r| self.tracker(r))
+            .map(slugs)
+            .unwrap_or_default()
+    }
+
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
     /// (`ar` in `ar-142`), when it is set and well formed. `project-map-doctor` checks it is
     /// unique.
@@ -290,6 +321,24 @@ mod tests {
 
     fn fixture() -> Registry {
         Registry::from_path(Path::new(FIXTURE_JSON)).expect("fixture registry")
+    }
+
+    #[test]
+    fn a_project_has_its_own_slugs_or_its_monorepos() {
+        let r = fixture();
+        assert_eq!(r.repos("dotfiles"), ["Kblack0610/.dotfiles"]);
+        assert_eq!(
+            r.repos("monorepo"),
+            ["Studio/platform", "kblack0610/platform"]
+        );
+        // An app with no slug of its own is its monorepo's.
+        assert_eq!(
+            r.repos("shop-app"),
+            ["Studio/platform", "kblack0610/platform"]
+        );
+        // negative control: a tracker with neither, and a name no tracker knows.
+        assert!(r.repos("unity-core-playground").is_empty());
+        assert!(r.repos("nothing-here").is_empty());
     }
 
     /// The shared conformance fixture: tests/unit/project_names.bats reads the same rows

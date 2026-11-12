@@ -9,7 +9,8 @@
 //! |---------------------|----------------------------------------------------------------|
 //! | the runs            | `$SCHEDULES_RUNS_LEDGER`, else `<state>/ci/runs.jsonl`          |
 //! | when it last synced | `sync.json` beside it: its `generated_at` and a `error` per repo |
-//! | the owner session   | fleet-sessions' `state.json`: the live session on the branch    |
+//! | the owner session   | fleet-sessions' `state.json`: the live session on the branch, else its PR's item's |
+//! | a run's PRs and release | joined on read by `release_graph`, from the PR store, the queue and `release-state` |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 //! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
@@ -31,8 +32,6 @@ pub const KEEP_DAYS: i64 = 30;
 
 /// How far back a red run still colours the count line.
 pub const RECENT_SECS: i64 = 86400;
-/// Branches that belong to no session: a session sitting on one is not what ran it.
-const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 
 /// Where the files live. Each honours the variable its writer reads.
 #[derive(Clone, Debug)]
@@ -40,6 +39,8 @@ pub struct Paths {
     pub ledger: PathBuf,
     pub sync: PathBuf,
     pub fleet: PathBuf,
+    /// The PR store (`release_graph::prs_dir`): what a run's PRs are joined from.
+    pub prs: PathBuf,
     /// The job archive: every job of each run, keyed as the ledger is.
     pub jobs: PathBuf,
     /// Each repo's test quarantine and its last nightly's counts.
@@ -62,6 +63,7 @@ impl Paths {
                 .unwrap_or_else(|| ledger.with_file_name("quarantine.json")),
             ledger,
             fleet: crate::boards::fleet_state(),
+            prs: crate::release_graph::prs_dir(),
             jobs: env("SCHEDULES_JOBS_LEDGER").unwrap_or_else(|| state.join("ci/jobs.jsonl")),
         }
     }
@@ -88,19 +90,22 @@ pub struct Run {
     pub branch: String,
     pub event: String,
     pub sha: String,
-    /// The commit the jobs checked out, when the workflow records one apart from `sha`.
-    pub tested_sha: String,
     pub status: String,
     pub conclusion: Option<String>,
     pub created_at: String,
     pub started_at: Option<String>,
     pub ended_at: Option<String>,
-    pub prs: Vec<u64>,
     pub url: String,
-    /// The session working on the branch (several are joined with a comma); empty for a branch
-    /// no session owns, which is drawn `-`.
+    /// The PRs it ran for (`release_graph::Graph::run_prs`): joined on read, never stored.
+    #[serde(skip_deserializing)]
+    pub prs: Vec<u64>,
+    /// The session working on the branch, else the one whose item landed its PR (several are
+    /// joined with a comma); empty for a run no session owns, which is drawn `-`.
     #[serde(skip_deserializing)]
     pub owner: String,
+    /// The release it deployed or ran on its tag for (`release_graph::Graph::release`).
+    #[serde(skip_deserializing)]
+    pub release: Option<crate::release_graph::RunRelease>,
     /// `running`, `queued`, `green`, `red` or `other` (cancelled, skipped).
     #[serde(skip_deserializing)]
     pub state: String,
@@ -401,30 +406,6 @@ pub fn parse(text: &str, now: i64) -> (Vec<Run>, usize) {
     (rows, bad)
 }
 
-/// The sessions on each branch, from `state.json`'s live sessions. A branch every session shares
-/// (`main`) is no one's, and a branch no session sits on is absent, so a hand-pushed one shows `-`.
-pub fn owners(state: &Value) -> HashMap<String, String> {
-    let mut by_branch: HashMap<String, Vec<String>> = HashMap::new();
-    for s in state["sessions"].as_array().into_iter().flatten() {
-        let (branch, target) = (
-            s["branch"].as_str().unwrap_or_default(),
-            s["target"].as_str().unwrap_or_default(),
-        );
-        if branch.is_empty() || SHARED_BRANCHES.contains(&branch) || target.is_empty() {
-            continue;
-        }
-        let name = crate::fleet::who::name_of(target);
-        let names = by_branch.entry(branch.to_string()).or_default();
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    }
-    by_branch
-        .into_iter()
-        .map(|(b, n)| (b, n.join(", ")))
-        .collect()
-}
-
 /// `generated_at` of `sync.json` as unix seconds, and one line per distinct error the last pass
 /// hit: `<repo>: <error>` for one repo, `<error> (<n> repos: <names>)` when several share it, so
 /// a rate limit that stops every repo reads once rather than once per repo.
@@ -461,9 +442,17 @@ fn read_text(p: &Path) -> Result<String, String> {
     std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
+/// What a read joins its runs to beyond its own files: the queue's items (a run's PR -> item ->
+/// session) and the runner `release-state show` is asked through (run -> release).
+pub struct Join<'a> {
+    pub runner: &'a dyn crate::session_actions::Runner,
+    pub items: &'a [crate::queue::Item],
+}
+
 /// The section: every run in the window, or what stopped the read. The rows that did read are
-/// kept beside the errors, and nothing is carried over from an earlier read.
-pub fn read(paths: &Paths, now: i64) -> Builds {
+/// kept beside the errors, and nothing is carried over from an earlier read. With no `join` a
+/// run's owner is the live session on its branch only, and it has no release.
+pub fn read(paths: &Paths, join: Option<Join>, now: i64) -> Builds {
     let mut out = Builds::default();
     match read_text(&paths.ledger) {
         Ok(text) => {
@@ -483,19 +472,41 @@ pub fn read(paths: &Paths, now: i64) -> Builds {
         }
         Err(e) => out.errors.push(e),
     }
-    // The fleet's state is the owner column's only source; without it the column is `-`, and
-    // the section says so rather than claiming no run has an owner.
-    match read_text(&paths.fleet).and_then(|t| {
+    // The fleet's state is the owner column's first source; without it the section says so
+    // rather than claiming no run has an owner.
+    let live = match read_text(&paths.fleet).and_then(|t| {
         serde_json::from_str::<Value>(&t).map_err(|e| format!("{}: {e}", paths.fleet.display()))
     }) {
-        Ok(state) => {
-            let owner = owners(&state);
-            for r in &mut out.rows {
-                r.owner = owner.get(&r.branch).cloned().unwrap_or_default();
-            }
+        Ok(state) => crate::release_graph::live(&state),
+        Err(e) => {
+            out.errors.push(format!("owner session: {e}"));
+            HashMap::new()
         }
-        Err(e) => out.errors.push(format!("owner session: {e}")),
-    }
+    };
+    let (prs, errors) = crate::release_graph::read_prs(&paths.prs);
+    out.errors.extend(errors);
+    let (channels, lines) = match &join {
+        Some(j) => match crate::releases::snapshot(j.runner) {
+            Ok(s) => (s.rows, s.releases),
+            // No snapshot yet is a host release-state never refreshed on: no run has a release.
+            Err(e) if e.contains("no snapshot yet") => (vec![], HashMap::new()),
+            Err(e) => {
+                out.errors.push(format!("run release: {e}"));
+                (vec![], HashMap::new())
+            }
+        },
+        None => (vec![], HashMap::new()),
+    };
+    let registry = project_map::cached();
+    crate::release_graph::Graph::new(crate::release_graph::Inputs {
+        lines: &lines,
+        channels: &channels,
+        items: join.as_ref().map_or(&[], |j| j.items),
+        prs: &prs,
+        live: &live,
+        registry: registry.as_deref(),
+    })
+    .join(&mut out.rows);
     // The job archive is optional until schedules-sync writes it: runs then price as no record.
     if let Ok(text) = read_text(&paths.jobs) {
         let (records, bad) = run_detail::archive(&text, |_| true);
@@ -821,7 +832,7 @@ mod tests {
             {"target": "hub/dotfiles:2", "branch": "main"},
             {"target": "lab/x:1", "branch": ""},
         ]});
-        let o = owners(&state);
+        let o = crate::release_graph::live(&state);
         assert_eq!(o["feat/a"], "dotfiles-agent-32, dotfiles-agent-33");
         assert_eq!(o.len(), 1, "main and an empty branch are nobody's");
         let (rows, _) = parse(&line(1, "queued", None, 5, "by-hand"), NOW);
@@ -858,6 +869,13 @@ mod tests {
         );
     }
 
+    /// An empty PR store beside the ledger.
+    fn store(d: &Path) -> PathBuf {
+        let p = d.join("prs");
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn a_missing_ledger_is_an_error_and_the_rest_still_reads() {
         let d = std::env::temp_dir().join(format!("hub-builds-{}", std::process::id()));
@@ -871,10 +889,11 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
         };
-        let b = read(&p, NOW);
+        let b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
         assert!(b.rows.is_empty());
         assert!(b.errors[0].contains("runs.jsonl"), "{:?}", b.errors);
@@ -894,6 +913,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
         };
@@ -923,6 +943,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
         };
@@ -948,7 +969,7 @@ mod tests {
             p.is_ledger_file(&p.quarantine),
             "a new quarantine wakes the section"
         );
-        let none = read(&p, NOW);
+        let none = read(&p, None, NOW);
         assert!(none.quarantine.is_empty());
         assert!(
             !none.errors.iter().any(|e| e.contains("quarantine")),
@@ -960,9 +981,9 @@ mod tests {
             r#"{"repos":[{"repo":"Org/app","base":"main","report":{"entries":3,"rows":[]}}]}"#,
         )
         .unwrap();
-        let some = read(&p, NOW);
+        let some = read(&p, None, NOW);
         std::fs::write(&p.quarantine, "{").unwrap();
-        let bad = read(&p, NOW);
+        let bad = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
         assert_eq!(some.quarantine[0].repo, "Org/app");
         assert_eq!(some.quarantine[0].report.as_ref().unwrap().entries, 3);
@@ -984,6 +1005,7 @@ mod tests {
             ledger: d.join("runs.jsonl"),
             sync: d.join("sync.json"),
             fleet: d.join("state.json"),
+            prs: store(&d),
             jobs: d.join("jobs.jsonl"),
             quarantine: d.join("quarantine.json"),
         };
@@ -1133,7 +1155,7 @@ mod tests {
             })
             .collect();
         let (d, p) = opened("times", &runs, &archive.join("\n"));
-        let b = read(&p, NOW);
+        let b = read(&p, None, NOW);
         std::fs::remove_dir_all(&d).unwrap();
         let c = run_detail::costs(&b, &run_detail::tests::rates(), NOW);
         assert_eq!(c.times, ["$0.20 (3 priced)"]);

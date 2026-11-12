@@ -408,6 +408,15 @@ MD
   [ "$(h '.tags[0].version')" = '"1.1.0"' ]
   [ "$(h '.tags[0].sha' | tr -d '"')" = "$(git -C "$CLONE" rev-parse web-v1.1.0^{commit})" ]
   [[ "$(h '.tags[0].at')" =~ ^[0-9]+$ ]]
+  # Each tag names the PRs in its range, and the line names the repo the PR store keys them by.
+  [ "$(h '.tags | map(.prs)')" = '[[3,2],[2],[1]]' ]
+  git -C "$CLONE" remote set-url origin git@github.com:acme/infra.git
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(h .repo)" = '"acme/infra"' ]
+  git -C "$CLONE" remote set-url origin https://git.example.com/acme/infra.git
+  "$RS" refresh web >/dev/null 2>&1
+  [ "$(h .repo)" = '"git.example.com/acme/infra"' ]
+  git -C "$CLONE" remote set-url origin "$ORIGIN"
   # A subset refresh keeps the other projects' history.
   [ "$(jq -r '.releases | has("shop")' "$RELEASE_STATE_DIR/state.json")" = false ]
   "$RS" refresh >/dev/null 2>&1

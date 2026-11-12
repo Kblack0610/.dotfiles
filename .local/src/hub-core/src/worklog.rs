@@ -223,15 +223,6 @@ fn claimed(word: &str, project: &str, by_number: &HashMap<&str, Vec<&Pr>>) -> Op
     .or_else(|| only(found.iter().collect()))
 }
 
-fn pr_words(item: &Item) -> Vec<&str> {
-    item.pr
-        .as_deref()
-        .unwrap_or("")
-        .split(|c: char| c.is_whitespace() || c == ',')
-        .filter(|w| !w.is_empty())
-        .collect()
-}
-
 fn item_row<Tz: TimeZone>(i: &Item, keys: &[String], prs: &HashMap<&str, &Pr>, tz: &Tz) -> Work
 where
     Tz::Offset: std::fmt::Display,
@@ -256,7 +247,7 @@ where
         State::Running => ("active", at(&i.started)),
         State::Queued => ("queued", at(&i.queued)),
     };
-    let words = pr_words(i);
+    let words: Vec<&str> = i.pr_refs().collect();
     let first = keys.iter().find_map(|k| prs.get(k.as_str())).copied();
     let link = words.first().and_then(|w| queue::pr_link_of(w));
     let label = first
@@ -333,8 +324,8 @@ where
     let mut rows: Vec<Work> = items
         .iter()
         .map(|i| {
-            let keys: Vec<String> = pr_words(i)
-                .into_iter()
+            let keys: Vec<String> = i
+                .pr_refs()
                 .filter_map(|w| claimed(w, i.project.trim(), &by_number))
                 .collect();
             let row = item_row(i, &keys, &by_key, tz);

@@ -52,13 +52,27 @@ impl Cache {
         r.await.and_then(|s| (*s).clone())
     }
 
-    /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.
-    pub async fn queue(&self) -> hub_queue::Queue {
-        let all = self
+    /// Every item, the cached `agent-queue list all`.
+    async fn all(&self) -> Read<Vec<Item>> {
+        let r = self
             .all
             .get_if((), || hub_queue::list(&System, "all"), Result::is_ok);
-        let (all, stats) = tokio::join!(all, self.stats());
-        hub_queue::Queue::from_reads(all.and_then(|l| (*l).clone()), stats)
+        r.await.and_then(|l| (*l).clone())
+    }
+
+    /// The items the release graph joins on, with no stats read, and why there are none when
+    /// agent-queue failed (`hub_core::actions::queue_items`'s shape).
+    pub async fn items(&self) -> (Vec<Item>, Option<String>) {
+        match self.all().await {
+            Ok(items) => (items, None),
+            Err(e) => (vec![], Some(format!("agent-queue list: {e}"))),
+        }
+    }
+
+    /// `hub_queue::Queue::read`, as Home and the pipeline line draw it.
+    pub async fn queue(&self) -> hub_queue::Queue {
+        let (all, stats) = tokio::join!(self.all(), self.stats());
+        hub_queue::Queue::from_reads(all, stats)
     }
 
     /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
