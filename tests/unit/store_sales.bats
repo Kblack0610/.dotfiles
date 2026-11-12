@@ -2,7 +2,7 @@
 # store-sales: what each app store and Steam made on a day. rbw and curl are stubs; the curl stub
 # reads its stdin config (url, output, write-out) the way real curl does, writes the reply named by
 # the URL to the output file and prints the status, and logs argv apart so a test can prove a
-# credential reached curl only on stdin. A reply <r>@<n> answers the n-th call for <r> only.
+# credential reached curl only on stdin. The client is .local/lib/store-auth.sh. A reply <r>@<n> answers the n-th call for <r> only.
 
 setup() {
   load '../vendor/bats-support/load'
