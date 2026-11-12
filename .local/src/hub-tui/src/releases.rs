@@ -197,6 +197,9 @@ impl ReleasesView {
             out.push(Line::styled(s.gaps.clone(), p.warn()));
         }
         out.push(Line::from(spans));
+        if !s.coverage.is_empty() {
+            out.push(Line::styled(s.coverage.clone(), p.dim()));
+        }
         if !s.errors.is_empty() {
             out.push(Line::styled(
                 format!("unread: {}", s.errors.join("; ")),
@@ -352,9 +355,10 @@ pub fn detail(
     w: usize,
     cl: Option<&Result<Changelog, String>>,
 ) -> Vec<Line<'static>> {
-    let says = match a.live_text.as_str() {
-        "-" => a.status_text.clone(),
-        live => format!("{live}, {}", a.status_text),
+    let says = if hub_core::releases::blank(&a.live_text) {
+        a.status_text.clone()
+    } else {
+        format!("{}, {}", a.live_text, a.status_text)
     };
     let mut out = vec![
         clip_line(
@@ -379,6 +383,12 @@ pub fn detail(
             w,
         ),
     ];
+    if !a.coverage_text.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("  coverage {}", a.coverage_text), p.dim()),
+            w,
+        ));
+    }
     let (lead, rest) = a.channels.split_at(a.lead.min(a.channels.len()));
     for r in lead {
         out.extend(channel(r, p, now, w));
@@ -430,12 +440,7 @@ pub fn detail(
         for h in a.history.iter().take(HISTORY_LINES) {
             let line = format!(
                 "    {}  {}  prev {}  reached {}  prs {}  rows {}",
-                h.tag,
-                h.at_text,
-                h.prev.as_deref().unwrap_or("-"),
-                h.reached_text,
-                h.prs_text,
-                h.rows_text
+                h.tag, h.at_text, h.prev_text, h.reached_text, h.prs_text, h.rows_text
             );
             let style = if h.reached.is_empty() { p.dim() } else { plain };
             out.push(clip_line(Line::styled(line, style), w));
@@ -812,6 +817,11 @@ mod tests {
                 tag: format!("v0.5.0-binks{}", 10 - i),
                 at_text: "11-10".into(),
                 prev: (i < 9).then(|| format!("v0.5.0-binks{}", 9 - i)),
+                prev_text: if i < 9 {
+                    format!("v0.5.0-binks{}", 9 - i)
+                } else {
+                    "first tag".into()
+                },
                 reached_text: if i == 0 {
                     "binks-steam-beta 11-10".into()
                 } else {
