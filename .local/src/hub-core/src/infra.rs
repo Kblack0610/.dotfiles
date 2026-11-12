@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
+use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
 use crate::run_detail::Rates;
@@ -25,10 +26,9 @@ const LOCAL_FRESH: &str =
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
 
-/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
-/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
-pub const RATES_QUERY: &str =
-    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
+/// What CI time costs: each host's rate and basis and its registered slots, which
+/// `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -80,6 +80,12 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
         ("rates", RATES_QUERY.into()),
+        // Each node's hostname, keyed by host: a runner or the governor can name a machine by
+        // its hostname (`cachyos-x8664-main`) where node_exporter names it `workstation`, so
+        // `aliases` joins the two.
+        ("uname", "group by (host, nodename) (node_uname_info * on (instance) group_left (host) cc:host_instance)".into()),
+        // When each node last booted, for the machines table's UP column.
+        ("boot", "max by (host) (node_boot_time_seconds * on (instance) group_left (host) cc:host_instance)".into()),
     ]
 }
 pub const OPTIONAL: &[&str] = &[
@@ -95,6 +101,8 @@ pub const OPTIONAL: &[&str] = &[
     "governor",
     "job_usual",
     "rates",
+    "uname",
+    "boot",
 ];
 
 #[derive(Serialize, Default, Clone, Debug)]
@@ -113,6 +121,12 @@ pub struct Infra {
     pub down: Vec<Series>,
     /// The CI runners board, built once here for both surfaces (`ci::build`).
     pub ci: Ci,
+    /// Every machine and pool, built once here for both surfaces (`machines::build`). agent-web
+    /// sends them as their tables' rows, so the board's JSON leaves them out.
+    #[serde(skip)]
+    pub machines: Vec<Machine>,
+    #[serde(skip)]
+    pub pools: Vec<Pool>,
     /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
     /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
     /// leaves it out.
@@ -184,7 +198,13 @@ fn prometheus() -> Infra {
     judge(&mut out, errors);
     out.down = out.runners_down().into_iter().cloned().collect();
     out.ci = ci::build(&out);
+    (out.machines, out.pools) = machines::build(&out);
     out
+}
+
+/// A machine's one name: `host` as `Infra::aliases` maps it, else as it is.
+pub fn host(alias: &HashMap<String, String>, host: &str) -> String {
+    alias.get(host).cloned().unwrap_or_else(|| host.to_string())
 }
 
 /// Set `ok` and `error` from the failed required queries, and fail an answer with no
@@ -218,6 +238,26 @@ impl Infra {
                 ..Default::default()
             },
         }
+    }
+
+    /// Hostname -> node name, for a machine whose runners or governor series carry its
+    /// hostname while node_exporter's `host` is another name (this workstation is
+    /// `cachyos-x8664-main` to its runner and `workstation` to Prometheus). Only a hostname one
+    /// node alone has: several Pis are all `raspberrypi`, and none of them is the other.
+    pub fn aliases(&self) -> HashMap<String, String> {
+        let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+        for s in self.get("uname") {
+            let (host, name) = (s.label("host"), s.label("nodename"));
+            if !host.is_empty() && !name.is_empty() && host != name {
+                by.entry(name).or_default().push(host);
+            }
+        }
+        let hosts: std::collections::HashSet<&str> =
+            self.get("uname").iter().map(|s| s.label("host")).collect();
+        by.into_iter()
+            .filter(|(name, h)| h.len() == 1 && !hosts.contains(name))
+            .map(|(name, h)| (name.to_string(), h[0].to_string()))
+            .collect()
     }
 
     /// One query's series, or none.
@@ -403,14 +443,11 @@ mod tests {
         let mut i = Infra::default();
         i.instant.insert(
             "rates",
-            vec![
-                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
-                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
-            ],
+            vec![cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0)],
         );
         let r = i.rates();
         assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
-        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        assert_eq!(r.error, None);
         let none = Infra {
             error: Some("cannot read prom".into()),
             ..Default::default()
@@ -436,7 +473,9 @@ mod tests {
                 "disk",
                 "governor",
                 "job_usual",
-                "rates"
+                "rates",
+                "uname",
+                "boot"
             ]
         );
     }

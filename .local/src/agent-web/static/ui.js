@@ -64,6 +64,9 @@ function coalesce(fn) {
 
 // Epoch milliseconds as HH:MM local time.
 const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+// A hub level ("bad", "warn", other) as its CSS class, "" for none.
+const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
+
 // A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday otherwise.
 function when(t) {
   if (!t) return "-";
@@ -71,6 +74,13 @@ function when(t) {
   if (isNaN(d)) return esc(t);
   return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
     : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+}
+// One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
+// drawn as one: its link opens in place, or a URL outside the hub in a new tab.
+const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
+function pagePart(p) {
+  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
+  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
 }
 // A time (epoch seconds, or an ISO string) as epoch milliseconds, NaN when it is neither.
 const tms = (t) => new Date(typeof t === "number" ? t * 1e3 : t).getTime();

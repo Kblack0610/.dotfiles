@@ -33,7 +33,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body }; },
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 const run = (src) => vm.runInContext(src, ctx);
 const jst = run("jst");
 
@@ -75,11 +75,11 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
   assert.ok(h.indexOf("playground / Tests") < h.indexOf("platform / e2e"), "the server's order is kept");
 });
 
-test("CI runs are one count line that links to the Releases Builds section", () => {
+test("CI runs are one count line that links to Infra's CI runs", () => {
   run("st.tab = 'infra'");
   Object.assign(jst, { data: { ...data, ci: { says: "9 runs in 30 days: 1 running, 0 queued, 2 red", level: "bad" } }, err: null, hist: null, log: null, all: false });
   run("jst.render()");
-  assert.match(box.innerHTML, /CI: <a class="bad" href="#releases\/builds">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
+  assert.match(box.innerHTML, /CI: <a class="bad" href="#infra\/runs">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
   Object.assign(jst, { data });
   run("jst.render()");
   assert.doesNotMatch(box.innerHTML, /CI: <a/, "a list with no ledger read draws no line");

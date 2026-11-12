@@ -88,6 +88,7 @@ struct AppState {
     /// The paths agent-web could not watch, so changes there reach no page until a retry works.
     watch_off: WatchOff,
     infra: infra::Cache,
+    machines: infra::Pages,
     alerts: alerts::Cache,
     jobs: jobs::Cache,
     actions: feed::Cache,
@@ -128,6 +129,7 @@ async fn main() -> Result<()> {
         events,
         watch_off,
         infra: infra::Cache::default(),
+        machines: infra::Pages::default(),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
@@ -159,8 +161,8 @@ async fn main() -> Result<()> {
         .route("/api/proposals/accept", post(proposals::accept))
         .route("/api/proposals/reject", post(proposals::reject))
         .route("/api/infra", get(infra_board))
+        .route("/api/infra/machine", get(infra_machine))
         .route("/api/cloud-runner", post(cloud::set))
-        .route("/api/cloud-runner/history", get(cloud::history))
         .route("/api/fleet", get(fleet_board))
         .route("/api/fleet/runner", get(fleet_runner))
         .route("/api/flow", get(flow_strip))
@@ -1290,12 +1292,26 @@ async fn briefing_night(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-async fn infra_board(State(s): State<Shared>) -> Response {
+async fn infra_board(State(s): State<Shared>, Query(q): Query<infra::ViewQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.infra.get().await,
+        s.infra.get(q).await,
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct MachineQuery {
+    host: String,
+}
+
+/// One machine's page, read only when `#infra/machines/<host>` opens. An unknown name is a 404.
+async fn infra_machine(
+    State(s): State<Shared>,
+    Query(q): Query<MachineQuery>,
+) -> ApiResult<Response> {
+    let json = s.machines.get(&s.infra, &s.alerts, q.host).await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 /// The pipeline line (hub_core::flow::Rail) over the live queue and fleet-bench's snapshot.
@@ -1349,10 +1365,9 @@ async fn releases_list(State(s): State<Shared>, Query(q): Query<schedules::Query
 }
 
 async fn builds_list(State(s): State<Shared>, Query(q): Query<builds::Query>) -> Response {
-    let (rates, items) = tokio::join!(s.infra.rates(), s.queue.items());
     (
         [(header::CONTENT_TYPE, "application/json")],
-        builds::get(q, rates, items).await,
+        builds::get(q, s.queue.items().await).await,
     )
         .into_response()
 }

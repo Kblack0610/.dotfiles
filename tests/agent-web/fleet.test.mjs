@@ -32,7 +32,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "infra.js", "table.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
@@ -53,6 +53,10 @@ const judge = { agree: 0, disagree: 0, deferred: 0, false_defer: 0, pending: 0, 
     { id: "a", project: "ucp", question: "land it?", type: "ship_deploy", rule: "ship_deploy", said: "answered", judge: "a", reason: "merged, not live", evidence: "merged", you: "kept", score: "right", at: 1793942659 },
     { id: "b", project: "trader", question: "which login?", type: "human_fact", rule: "knowledge", said: "passed", judge: "", reason: "only you know", evidence: "your login", you: "pending", score: "pending", at: 1793942600 },
     { id: "c", project: "ucp", question: "quarantine it?", type: "ci_capacity_ops", rule: "ci_capacity_ops", said: "would answer", judge: "a", reason: "rule says so", evidence: "", you: "b", score: "wrong", at: 1793942500 },
+  ],
+  cells: [
+    { type: "ship_deploy", level: "repo", verdicts: 4, scored: 3, pending: 1, precision: 66.7, precision_lo: 20.8, precision_hi: 93.9, live: true, audited: 3, level_raised_pct: 25 },
+    { type: "", level: "", verdicts: 2, scored: 0, pending: 2, precision: null, precision_lo: null, precision_hi: null, live: false, audited: 0, level_raised_pct: 0 },
   ] };
 const data = {
   at: 1793942659, errors: [], judge,
@@ -318,6 +322,12 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   assert.match(j, /<h2 class="sec">Answer judge /);
   assert.match(j, /<span class="tl">AGREE<\/span>/);
   assert.match(j, /land it\?/);
+  // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
+  assert.match(j, /<td>ship_deploy<\/td><td>repo<\/td><td class="n">4<\/td><td class="n">3<\/td><td class="n">66.7% <span class="muted">\[20.8-93.9\]<\/span><\/td><td class="n">1<\/td><td class="">yes<\/td><td class="n">3<\/td><td class="n">25%<\/td>/);
+  assert.match(j, /<td>\(no type\)<\/td><td>-<\/td>/);
+  assert.ok(j.indexOf("AGREE") < j.indexOf("By type and level") && j.indexOf("By type and level") < j.indexOf("land it?"));
+  const none = await openPage("ask-judge", { "ask-judge": runnerPage("ask-judge", { extras: { kind: "ask-judge", judge: { ...judge, cells: [] } } }) });
+  assert.match(none, /no verdicts under prompt 3fa1c2d/);
   ctx.setTab("fleet", "", "");
 });
 

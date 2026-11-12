@@ -1,15 +1,17 @@
-//! The Releases tab's Builds section: CI runs of the last 30 days from hub-core's `builds`. The
-//! list is filtered and sorted here by `hub_core::table`, so the page only draws. Its view keys
-//! carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`) because the channels table above it keeps the
-//! plain ones. A new ledger line pushes the `builds` event; a run's log and its detail (jobs, steps,
-//! cost) are read when it is opened, priced with the rates the Infra tab's answer carries.
+//! Infra's CI runs section, and Releases' Release runs: CI runs of the last 30 days from hub-core's
+//! `builds`, `scope=release` cutting them to the runs the graph tied to a release
+//! (`Builds::releases`). The list is filtered and sorted here by `hub_core::table`, so the page
+//! only draws. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`) because the table
+//! beside it on either tab keeps the plain ones. A new ledger line pushes the `builds` event; a
+//! run's log and its detail (jobs, steps, cost) are read when it is opened, priced with the rates
+//! the Infra tab's answer carries.
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::quarantine::{Lane, OwnerRow};
 use hub_core::queue::Item;
 use hub_core::releases::Level;
-use hub_core::run_detail::{self, Rates, RunCosts};
+use hub_core::run_detail::Rates;
 use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use std::sync::Arc;
@@ -30,6 +32,8 @@ pub struct Query {
     pub bs: String,
     pub bsort: String,
     pub bdir: String,
+    /// `release`: only the runs tied to a release (Releases' Release runs).
+    pub scope: String,
 }
 
 /// The read with the view applied: the rows drawn, how many the cap left out, the controls.
@@ -42,13 +46,11 @@ struct Shown<'a> {
     more: usize,
     /// Each workflow's usual run time: the Run times fold, whatever the view.
     times: &'a [builds::RunTime],
-    /// The Run times fold's money: a cost per `times` row, the idle and month lines.
-    costs: RunCosts,
     errors: &'a [String],
     /// The Quarantine fold: a lane per repo whose base carries a quarantine, and its worst.
     quarantine: Vec<Quarantined<'a>>,
     quarantine_level: Level,
-    /// `Builds::needs_look`: the count on Releases' Builds inner tab.
+    /// `Builds::needs_look`: the count on the inner tab the runs are on.
     look: bool,
     table: Summary,
 }
@@ -92,7 +94,14 @@ fn quarantined(l: &Lane) -> Quarantined<'_> {
     }
 }
 
-fn render(b: &Builds, q: &Query, rates: &Rates) -> String {
+fn render(b: &Builds, q: &Query) -> String {
+    let scoped;
+    let b = if q.scope == "release" {
+        scoped = b.releases(now());
+        &scoped
+    } else {
+        b
+    };
     let view = View::new::<Run>(&q.bq, &q.bs, &q.bsort, &q.bdir);
     let (rows, table) = view.summary(&b.rows);
     let (rows, more) = builds::cap(rows);
@@ -103,7 +112,6 @@ fn render(b: &Builds, q: &Query, rates: &Rates) -> String {
         rows,
         more,
         times: &b.times,
-        costs: run_detail::costs(b, rates, now()),
         errors: &b.errors,
         quarantine: b.quarantine.iter().map(quarantined).collect(),
         quarantine_level: b
@@ -144,10 +152,8 @@ pub async fn current(
 }
 
 /// The view `q` asks for.
-pub async fn get(q: Query, rates: Rates, items: (Vec<Item>, Option<String>)) -> String {
-    current(items)
-        .await
-        .map_or_else(failed, |b| render(&b, &q, &rates))
+pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
+    current(items).await.map_or_else(failed, |b| render(&b, &q))
 }
 
 /// Drop the kept read, so the page's refetch after a ledger append sees the append.
@@ -207,7 +213,7 @@ mod tests {
     }
 
     fn body(q: Query) -> serde_json::Value {
-        serde_json::from_str(&render(&sample(), &q, &Rates::default())).unwrap()
+        serde_json::from_str(&render(&sample(), &q)).unwrap()
     }
 
     #[test]
@@ -225,10 +231,33 @@ mod tests {
             v["times"][0]["workflow"], "Tests",
             "the Run times fold rides the same read"
         );
-        assert_eq!(
-            v["costs"]["times"][0], "-",
-            "a workflow with no archived jobs has no price"
+        assert!(
+            v.get("costs").is_none(),
+            "the Run times fold carries no money"
         );
+    }
+
+    #[test]
+    fn the_release_scope_lists_only_the_runs_tied_to_a_release() {
+        let mut b = sample();
+        b.rows[2].release = Some(hub_core::release_graph::RunRelease {
+            project: "app".into(),
+            tag: "v1.0.0".into(),
+        });
+        let v: serde_json::Value = serde_json::from_str(&render(
+            &b,
+            &Query {
+                scope: "release".into(),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        assert_eq!(v["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(v["rows"][0]["release"]["tag"], "v1.0.0");
+        assert_eq!(v["summary"], "1 run in 30 days: 0 running, 0 queued, 0 red");
+        assert!(v["times"].as_array().unwrap().is_empty());
+        // negative control: the plain read keeps every run.
+        assert_eq!(body(Query::default())["rows"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -250,8 +279,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let v: serde_json::Value =
-            serde_json::from_str(&render(&b, &Query::default(), &Rates::default())).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&render(&b, &Query::default())).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), builds::LIST_ROWS);
         assert_eq!(v["more"], 5);
     }
@@ -282,8 +310,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let v: serde_json::Value =
-            serde_json::from_str(&render(&b, &Query::default(), &Rates::default())).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&render(&b, &Query::default())).unwrap();
         let q = &v["quarantine"][0];
         assert_eq!(q["level"], "warn");
         assert_eq!(q["url"], "https://x/runs/9");

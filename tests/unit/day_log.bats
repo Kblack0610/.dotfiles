@@ -62,6 +62,10 @@ EOF
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
   echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"base":[4,1],"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
   echo 'O/game trunk' > "$DAYLOG_CI"
+  # hub-stub: hub ci pass serves $SANDBOX/pass, logs its args, and exits $SANDBOX/pass-rc
+  export DAYLOG_HUB_CMD=hub-stub
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/hub-args" "$SANDBOX/pass" "$SANDBOX/pass-rc" > "$SANDBOX/bin/hub-stub"
+  echo '{"github:O/game":{"runs":9,"green":7,"pass":0.7778,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Lint":{"runs":1,"green":1,"pass":1.0}}},"github:O/other":{"runs":1,"green":0,"pass":0.0,"workflows":{}}}' > "$SANDBOX/pass"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
   sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
@@ -559,9 +563,10 @@ PROM
   mkdir -p "$PROM_TEXTFILE_DIR"
   run "$SUBJECT" nightly
   assert_success
-  run rec -c '.ci.repos["O/game"] | [.runs, .red, .red_rate, .main, .workflows.Tests, .workflows.Lint.pass_rate, .cost.hours.pool, .cost.quarantine.open]' 2026-10-27
-  assert_output '[10,2,0.2,{"runs":4,"red":1},{"runs":8,"red":2,"pass_rate":0.75},1.0,3.5,6]'
+  run rec -c '.ci.repos["O/game"] | [.runs, .red, .pass, .main, .workflows.Tests, .workflows.Lint.pass, .cost.hours.pool, .cost.quarantine.open]' 2026-10-27
+  assert_output '[10,2,{"runs":9,"green":7,"pass":0.7778},{"runs":4,"red":1},{"runs":8,"green":6,"pass":0.75},1.0,3.5,6]'
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
+  assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $(date -d '2026-10-27 00:00' +%s) --until $(date -d '2026-10-28 00:00' +%s)"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
   [ ! -e "$DAYLOG_CI_CACHE/2026-10-27" ]
@@ -570,6 +575,15 @@ PROM
   assert_output '10'
   run "$SUBJECT" show --date 2026-10-27
   assert_output --partial '- CI game: 2 red of 10 runs, 1 on main, gate wall p50 40 min, 3.5 runner-hours, 1 branches re-gated'
+}
+
+@test "nightly: a failed hub ci pass is named unreadable and leaves the pass out, the ci-failures counts stay" {
+  echo 1 > "$SANDBOX/pass-rc"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run "$SUBJECT" nightly
+  run rec -c '.ci | [.repos["O/game"] | .runs, has("pass"), has("workflows")], [.unreadable[] | select(startswith("hub ci pass"))]' 2026-10-27
+  assert_output '[10,false,false]
+["hub ci pass: exit 1"]'
 }
 
 @test "nightly: ci-cost runs from the base branch's scripts/ tree, so a file it loads beside it is there" {
@@ -595,9 +609,12 @@ EOF
   ci_clone
   mkdir -p "$PROM_TEXTFILE_DIR"
   echo '{"totals":{"context":900,"sessions":4},"cost_per_merged_pr":2.5,"by_kind":{"agent":{"sessions":3}},"by_account":{"bnb":{"sessions":4}}}' > "$SANDBOX/tokjson-2026-10-27"
+  # the ledger spells the repo in its own case; a workflow whose runs all cancelled has no pass
+  echo '{"github:o/GAME":{"runs":8,"green":6,"pass":0.75,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Docs":{"runs":0,"green":0,"pass":null}}}}' > "$SANDBOX/pass"
   "$SUBJECT" nightly
   run cat "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
   assert_line 'agent_ci_pass_rate{repo="O/game",workflow="Tests"} 0.75'
+  refute_line --partial 'workflow="Docs"'
   assert_line 'agent_ci_main_red{repo="O/game"} 1'
   assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
   assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
@@ -646,12 +663,12 @@ week_fixture() {
   mkdir -p "$DAYLOG_DIR"
   for d in 14 15 16 17 18 19 20; do
     day_record 2026-10-$d '.merged = [{}] | .agents.merged_prs = 1 | .work.queue = {done: 1, lead_minutes: {p50: 10}} | .work.board = {opened: 1, closed: 0, open_end: 3}
-      | .ci.repos["O/game"] = {runs: 10, red: 5, workflows: {Tests: {runs: 10, red: 5}}}'
+      | .ci.repos["O/game"] = {runs: 10, red: 5, pass: {runs: 10, green: 5}, workflows: {Tests: {runs: 10, green: 5}}}'
   done
   for d in 21 22 23 24 25 26 27; do
     day_record 2026-10-$d ".merged = [{}, {}] | .agents.merged_prs = 2 | .work.queue = {done: 2, lead_minutes: {p50: ($d - 20)}} | .work.board = {opened: 2, closed: 1, open_end: $d}
       | .work.stages = {stages: {\"NEEDS:ask\": {minutes: 10}}, prs: {open_to_merged: {p50: $d}}}
-      | .ci.repos[\"O/game\"] = {runs: 10, red: 1, workflows: {Tests: {runs: 10, red: 1}}}"
+      | .ci.repos[\"O/game\"] = {runs: 10, red: 1, pass: {runs: 10, green: 9}, workflows: {Tests: {runs: 10, green: 9}}}"
   done
   cat > "$SANDBOX/bin/usage-stub" <<EOF
 #!/usr/bin/env bash
@@ -673,12 +690,13 @@ EOF
   assert_equal "$(v '.metrics.merged | [.value, .prev, .delta, .pct]')" '[14,7,7,100.0]'
   assert_equal "$(v '.metrics["queue.lead_p50_min"] | [.value, .prev, .delta]')" '[4,10,-6]'
   assert_equal "$(v '.metrics["board.open"] | [.value, .prev]')" '[27,3]'
-  assert_equal "$(v '.metrics["ci.game.red_rate"] | [.value, .prev, .delta]')" '[0.1,0.5,-0.4]'
+  assert_equal "$(v '.metrics["ci.game.pass"] | [.value, .prev, .delta]')" '[0.9,0.5,0.4]'
   assert_equal "$(v '.metrics["ci.game.pass.Tests"] | [.value, .prev]')" '[0.9,0.5]'
   assert_equal "$(v '[.metrics["stages.ask_min"].value, .metrics["stages.pr_to_merge_p50_min"].value]')" '[70,24]'
-  day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1}'
+  day_record 2026-10-25 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 4}'   # gathered before hub ci pass: left out
+  day_record 2026-10-26 '.ci.repos["K/.dotfiles"] = {runs: 4, red: 1, pass: {runs: 4, green: 3}}'
   run "$SUBJECT" week --date 2026-10-27 --line
-  assert_output --partial 'dotfiles red 25%'
+  assert_output --partial 'dotfiles pass 75%'
 }
 
 @test "week: cost and sessions come from one read of the whole window, so a session is not counted once per day" {
@@ -713,7 +731,7 @@ EOF
 @test "week: the line and the table say what moved; with no date it reads the newest stored week" {
   week_fixture
   run "$SUBJECT" week --date 2026-10-27 --line
-  assert_output 'week to 2026-10-27 (7 of 7 days): 14 merged (+7), 14 queue items done (+7), board +14/-7, $70 (+$35), game red 10% (-40 pts)'
+  assert_output 'week to 2026-10-27 (7 of 7 days): 14 merged (+7), 14 queue items done (+7), board +14/-7, $70 (+$35), game pass 90% (+40 pts)'
   run "$SUBJECT" week --date 2026-10-27
   assert_line --index 0 '# What moved, 2026-10-21 to 2026-10-27'
   assert_output --partial '| merged | 14 | 7 | +7 (+100%) |'

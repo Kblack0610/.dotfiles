@@ -15,6 +15,11 @@
 #   agent-ask target [--reopen] <id>    where the asking session runs now, as an agent-panel
 #                                       jump target; fails saying why (ended, or no session).
 #                                       --reopen starts an ended one again first
+#   agent-ask reopen-on-answer <id>     set a pending ask's `resume` to reopen its session with the
+#                                       answer: the session may close before it comes (/wind-down auto)
+#   agent-ask reopen <id>               that resume: start the ended session again with the answer
+#                                       as its first message, unless it still runs or a queue item
+#                                       holds the ask (the queue restarts that one)
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
@@ -289,7 +294,7 @@ judge_line() {
     answer:*) if [ -n "$live" ]; then what="answered \"${j#answer:}\""; else what="${assumes:-would answer \"${j#answer:}\", type not proven}"; fi ;;
     *) what="$j" ;;
   esac
-  [ -n "$ov" ] && [ "$ov" != none ] && what+=", overridden: $ov"
+  case "$ov" in "" | none) ;; kept) what+=", kept by you" ;; *) what+=", overridden: $ov" ;; esac
   printf 'Judge: %s%s%s\n' "$what" "${rule:+ ($rule)}" "${reason:+ - $reason}"
 }
 
@@ -447,6 +452,14 @@ cmd_post() {
     done < <(grep -lx "claude_session: $owner" "$ASKS_ROOT"/*/*.md 2>/dev/null)
   fi
   case "$kind" in question|gate|approval) ;; *) kind="question" ;; esac
+  # An ask about the judge's own authority is the human's by rule: the judge never rules on its
+  # own reach (the policy's "Judge authority" list).
+  local authority
+  if [ "$kind" = question ] && authority="$(judge_floor_hit "$(judge_conf PROMPT "")" \
+       "$task $question $context $options $option_notes $why" "Judge authority")"; then
+    kind=approval
+    echo "agent-ask post: the ask names $authority, the judge's own authority, so it is an approval for the human" >&2
+  fi
   # a gate with no explicit options defaults to a yes/hold decision
   [ "$kind" != question ] && [ -z "$options" ] && options="approve|hold"
   # A recommendation that is not one of the offered options is a bug in the caller, and a
@@ -627,6 +640,22 @@ cmd_show() {
   cat "$f"
 }
 
+# answer_said <ask file> <answer> <by>: the answer as the asking session is told it; a judge's
+# names its rule and that the human can override it there.
+answer_said() {
+  if [ "$3" = judge ]; then
+    echo "$2 (the judge, $(field "$1" judge_rule): $(field "$1" judge_reason | sed 's/\.$//'); the human can override in this session)"
+  else echo "$2"; fi
+}
+
+# answer_row <ask file> <answer> <by> [note]: the board row for an answer no session or queue item
+# takes, the note appended. Boards list pending asks only, so a row for a judge answer says how to
+# disagree with it.
+answer_row() {
+  local how=""; [ "$3" = judge ] && how=" (the judge; to override: agent-ask answer $(field "$1" id) <option>)"
+  file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
+}
+
 cmd_answer() {
   local by=human
   if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
@@ -650,8 +679,7 @@ cmd_answer() {
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
 
-  local row said="$answer"; row="$(live_row "$(field "$f" claude_session)")"
-  [ "$by" = judge ] && said="$answer (the judge, $(field "$f" judge_rule): $(field "$f" judge_reason | sed 's/\.$//'); the human can override in this session)"
+  local row said; row="$(live_row "$(field "$f" claude_session)")"; said="$(answer_said "$f" "$answer" "$by")"
   # A human answer that releases queue items held on the ask is their restart (start_held), so it files
   # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
   # releases nothing and still files one. A judge's answer does not release them
@@ -660,9 +688,7 @@ cmd_answer() {
   if [ -n "$row" ]; then
     deliver_to_session "$f" "$said" "$row"
   elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
-    # Boards list pending asks only, so a row for a judge answer says how to disagree with it.
-    local how=""; [ "$by" = judge ] && how=" (the judge; to override: agent-ask answer $id <option>)"
-    file_board_row "$f" "$(field "$f" question) -> answered: $answer$how"
+    answer_row "$f" "$answer" "$by"
   fi
   [ -n "$beside" ] || start_resume "$id"
   [ -z "$held" ] || start_held
@@ -850,11 +876,12 @@ judge_demote_check() {
   local f="$1" rule id n over
   rule="$(field "$f" judge_rule)"; id="$(field "$f" id)"
   [ -n "$rule" ] && delay_of "$rule" >/dev/null || return 0
-  # The type's live answers as "<answered_at> <0|1 overridden>", newest last, then the window.
+  # The type's reviewed live answers (kept or overridden; silence is not a review, as in
+  # judge-eval) as "<answered_at> <0|1 overridden>", newest last, then the window.
   read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" '
     function out() {
       if (when == "") when = oat
-      if ((by == "judge" || ov != "") && r == rule && when != "") print when, (ov != "" && ov != "none")
+      if (ov != "" && ov != "none" && r == rule && when != "") print when, (ov != "kept")
     }
     FNR == 1 { if (NR > 1) out(); by = r = when = ov = oat = "" }
     /^answered_by: / && by == "" { by = substr($0, 14) }
@@ -896,13 +923,14 @@ cmd_target() {
   jq -r .target <<< "$row"
 }
 
-# reopen_session <ask file> <claude session>: start an ended conversation again and print its
-# jump target. fleet-dispatch start --resume is the one path that opens sessions (restore uses
-# it too); this picks only where: the directory the conversation started in, which `claude
-# --resume` needs to find it, and the world and session that directory routes to, as window
-# ask-<id>. A world session that is up gains the window; one that is not starts with it.
+# reopen_session <ask file> <claude session> [prompt]: start an ended conversation again, with the
+# prompt as its first message when one is given, and print its jump target. fleet-dispatch start
+# --resume is the one path that opens sessions (restore uses it too); this picks only where: the
+# directory the conversation started in, which `claude --resume` needs to find it, and the world
+# and session that directory routes to, as window ask-<id>. A world session that is up gains the
+# window; one that is not starts with it.
 reopen_session() {
-  local f="$1" sid="$2" cwd world sess win out
+  local f="$1" sid="$2" prompt="${3:-}" cwd world sess win out
   # A running process outside tmux has no pane to go to, and a second resume would fork it.
   session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
   cwd="$(session_cwd "$sid")"
@@ -914,9 +942,47 @@ reopen_session() {
   [ -n "$world" ] && [ -n "$sess" ] || { echo "no world to reopen $cwd in; resume with claude --resume $sid" >&2; return 1; }
   win="ask-$(field "$f" id)"
   out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
-    --window "$win" --cwd "$cwd" --resume "$sid" </dev/null 2>&1)" ||
+    --window "$win" --cwd "$cwd" --resume "$sid" ${prompt:+--prompt "$prompt"} </dev/null 2>&1)" ||
     { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
   echo "$world/$sess:$win"
+}
+
+# REOPEN_RESUME: the `resume` reopen-on-answer sets; ask-resume runs it as `agent-ask reopen <id>`.
+REOPEN_RESUME='run: agent-ask reopen'
+
+# cmd_reopen_on_answer <id>: a session closing over its own pending ask (close rule "only its own
+# ask is open") has the answer reopen it, so the answer carries on without the window. Refuses an
+# ask that is not pending, has no session, or already resumes some other way.
+cmd_reopen_on_answer() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen-on-answer <id>" >&2; return 2; }
+  local f r; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  load_ask "$f"
+  [ "${ASK[status]:-}" = pending ] || { echo "agent-ask: $id is ${ASK[status]:-}, not pending" >&2; return 1; }
+  [ -n "${ASK[claude_session]:-}" ] || { echo "agent-ask: $id names no session to reopen" >&2; return 1; }
+  r="${ASK[resume]:-}"
+  [ "$r" = "$REOPEN_RESUME" ] && return 0
+  [ -z "$r" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
+  set_field "$f" resume "$REOPEN_RESUME"
+  echo "$id reopens its session on the answer" >&2
+}
+
+# cmd_reopen <id>: the reopen-on-answer resume. A live session already had the answer typed in
+# (deliver_to_session), and a queue item tagged with the ask is restarted by the queue, so both
+# are left alone; otherwise the ended conversation starts again with the answer as its first
+# message. One that cannot be reopened gets the board row an answer nobody acts on gets.
+cmd_reopen() {
+  local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen <id>" >&2; return 2; }
+  local f sid answer by; f="$(find_ask "$id")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
+  load_ask "$f"
+  [ "${ASK[status]:-}" = answered ] || { echo "agent-ask: $id is not answered" >&2; return 1; }
+  sid="${ASK[claude_session]:-}" answer="${ASK[answer]:-}" by="${ASK[answered_by]:-}"
+  [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; return 0; }
+  [ -z "$(queue_holders "$id")" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
+  session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && return 0
+  answer_row "$f" "$answer" "$by" "its session ended and did not reopen: claude --resume $sid"
+  return 1
 }
 
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
@@ -1054,6 +1120,9 @@ answer_route() {
       on="${spec//+/ or }"
       echo "  answer releases: $items${on:+ (on $on)}"
     done < <(cut -f2 <<<"$held" | sort -u)
+  elif [ "${ASK[resume]:-}" = "$REOPEN_RESUME" ]; then
+    if [ -n "$alive" ]; then echo "  the answer goes to the asking session"
+    else echo "  ${who}the answer reopens the session with it"; fi
   elif [ -n "${ASK[resume]:-}" ]; then
     if [ -n "$alive" ]; then
       echo "  the answer goes to the asking session and starts \`${ASK[resume]:-}\`"
@@ -1282,11 +1351,13 @@ cmd_settle_session() {
 # review_judge_answer <file> <text> <where>: a human message read as the review of what the judge
 # answered, or is waiting to assume, on this ask. <where> is "in session" or "from a board". Naming
 # one other option records judge_override (the label judge-eval scores) and runs the demote check.
-# Naming the judge's own records `none`. On a pending ask, naming no option disarms it: the human
-# is here, so nothing is assumed, and `assume_answer` stays so a later pick still counts.
+# Naming the judge's own records `kept`, the only review judge-eval scores as agreement. On a
+# pending ask, naming no option disarms it: the human is here, so nothing is assumed, and
+# `assume_answer` stays so a later pick still counts.
 #
-# After an answer at post, the first message in the session closes the review with `none`, so
-# later ones about other things cannot read as an override. After an assumed answer the human may
+# After an answer at post, the first message in the session naming no option closes the review
+# with `none`, which is silence, not agreement, so later ones about other things cannot read as an
+# override. After an assumed answer the human may
 # not have seen the question yet, so a later pick still counts; so does a board answer on any
 # judge answer, which names its ask. Free text naming no option is never guessed at.
 review_judge_answer() {
@@ -1309,6 +1380,9 @@ review_judge_answer() {
     set_field "$f" judge_override "$pick" judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
     judge_demote_check "$f"
+  elif [ -n "$pick" ]; then
+    set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
+    queue_changed
   elif [ -n "$pending" ] && [ -z "$pick" ]; then
     # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
     if [ -z "${ASK[assume_disarmed]:-}" ]; then
@@ -1474,7 +1548,7 @@ cmd_precedents() {
     def note($o): . as $a | ($a.options | split("|") | index($o)) as $i
       | (($a.option_notes // "") | split("|")[$i // 99] // "") as $n | if $n == "" then $o else "\($o) (\($n))" end;
     map((.judge_override // "") as $over
-      | if $over != "" and $over != "none" then
+      | if $over != "" and $over != "none" and $over != "kept" then
           . + {said: (.assume_answer // .answer), chose: $over, at: .judge_override_at}
         elif .answered_by == "judge" then empty
         elif (.answered_by // "human") == "human" then
@@ -1500,12 +1574,18 @@ cmd_judge() {
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
-  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call
+  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised
   case "$(field "$f" kind)" in
     gate|approval)
       judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
       return 0 ;;
   esac
+  # A question posted before the authority floor, judged again, is held to it all the same.
+  local policy authority; policy="$(judge_conf PROMPT "")"
+  if authority="$(judge_floor_hit "$policy" "$(ask_text "$f")" "Judge authority")"; then
+    judge_record "$f" human gate "the ask names $authority, the judge's own authority; not sent to the judge" ""
+    return 0
+  fi
   local prompt precedents out wd rc verdict call rule answer cid
   precedents="$(cmd_precedents "$(field "$f" created)" 2>/dev/null)"
   # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
@@ -1566,7 +1646,21 @@ Return the verdict in the structured output."
   set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
   set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
   set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
+  # The level: what judge_derive makes of the rating, raised to fleet by a policy floor name.
+  # judge_level_raised says a floor raised it, which judge-eval counts per cell.
+  local level lev_ev floor raised=false
+  level=$(jq -r .level <<<"$verdict"); lev_ev=$(jq -r .level_evidence <<<"$verdict")
+  if [ "$level" = self ] || [ "$level" = repo ]; then
+    floor="$(judge_floor_hit "$policy" "$(ask_text "$f")" "Fleet floor")" &&
+      { level=fleet; lev_ev="the ask names $floor"; raised=true; }
+  fi
+  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised"
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
+}
+
+# ask_text <file>: the ask's words the judge reads, on one line, for the policy's floors.
+ask_text() {
+  local k; for k in task question context options option_notes recommend_why; do printf '%s ' "$(field "$1" "$k")"; done
 }
 
 # judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.
@@ -1615,12 +1709,14 @@ cmd_trace() {
      events: [
        ev($a.created; "posted"; ["by \([$a.session, $a.agent] | map(select(. // "" != "")) | first // "a headless run")",
                                  ($a.kind | select(. != "question"))] | map(select(. != null)) | join(", ")),
-       ev($a.judged_at; "judged"; $judge | sub("^Judge: "; "")),
+       ev($a.judged_at; "judged"; ($judge | sub("^Judge: "; ""))
+         + (if ($a.judge_level // "") == "" then "" else "; level \($a.judge_level)"
+              + (if $a.judge_level_raised == "true" then " (raised by a floor name)" else "" end) end)),
        ev($a.assume_at; "armed"; "\($a.assume_answer // "") goes out at this time unless the human replies"),
        ev($a.assume_disarmed; "disarmed"; "the human replied, so \($a.assume_answer // "the answer") is not assumed"),
        ev($a.answered_at; "answered"; "\($a.answer) by \(if ($a.answered_by // "") == "" then "human" else $a.answered_by end)"
                                       + (if ($a.answer_note // "") != "" then " (\($a.answer_note))" else "" end)),
-       ev($a.judge_override_at; "overridden"; ($a.judge_override // "") + (if ($a.judge_override_note // "") != "" then " (\($a.judge_override_note))" else "" end)),
+       ev($a.judge_override_at; (if $a.judge_override == "kept" then "kept" else "overridden" end); ($a.judge_override // "") + (if ($a.judge_override_note // "") != "" then " (\($a.judge_override_note))" else "" end)),
        ev($a.resumed_at; "resumed"; $a.resume // ""),
        ev($a.closed_at; "closed"; ($a.status // "") + (if ($a.closed_reason // "") != "" then ": \($a.closed_reason)" else "" end))
      ],
@@ -1676,6 +1772,8 @@ case "$sub" in
   card)   cmd_card "$@" ;;
   decision) cmd_decision "$@" ;;
   target) cmd_target "$@" ;;
+  reopen-on-answer) cmd_reopen_on_answer "$@" ;;
+  reopen) cmd_reopen "$@" ;;
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer "$@" ;;

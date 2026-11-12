@@ -48,8 +48,8 @@ impl Cache {
         Cache(EventCache::new(events, &KINDS))
     }
 
-    /// The tab as `q` views it. A failed fixes read is shown and not kept.
-    pub async fn get(&self, infra: &infra::Cache, q: Query) -> String {
+    /// The read, or why it panicked. A failed fixes read is shown and not kept.
+    async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
         let fixes = self
             .0
             .get_if((), || reds::read(&System), Result::is_ok)
@@ -57,10 +57,20 @@ impl Cache {
             .and_then(|r| (*r).clone());
         let infra = infra.infra().await;
         let now = chrono::Utc::now().timestamp();
-        match off(move || alerts::read(&infra, fixes, now)).await {
+        off(move || alerts::read(&infra, fixes, now)).await
+    }
+
+    /// The tab as `q` views it.
+    pub async fn get(&self, infra: &infra::Cache, q: Query) -> String {
+        match self.read(infra).await {
             Ok(a) => render(&a, &q),
             Err(e) => serde_json::json!({ "rows": [], "errors": [e] }).to_string(),
         }
+    }
+
+    /// What fires now, for a machine page's alerts.
+    pub async fn firing(&self, infra: &infra::Cache) -> Result<Vec<Alert>, String> {
+        self.read(infra).await.map(|a| a.firing)
     }
 }
 

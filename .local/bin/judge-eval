@@ -9,9 +9,15 @@
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
 #   SENTINEL_SINCE (an epoch, set by a Sentinel probe) starts every window no earlier than a watch's fix.
-#   judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]
+#   judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]
 #       the answer judge's verdicts, newest first and under any prompt: what it said, why, the
-#       quote behind it and what you did. The same rows reach Log's Judges' verdicts section.
+#       quote behind it, its impact level, its call id (calls.jsonl .raw) and what you did. The
+#       same rows reach Log's Judges' verdicts section.
+#   judge-eval cells [--any-prompt] [--days N] [--json]
+#       the answer judge per type and impact level (self, repo, fleet, critical): verdicts, scored,
+#       precision with its 95% interval, pending, whether the type is live, the live answers you
+#       reviewed, and how often a floor raised the judge's level. A live answer you never reviewed
+#       is not scored, so silence never counts as agreement.
 #
 #   judge-eval replay [--limit N] [--out DIR] [--json]
 #       the answer judge's current policy over the asks the human answered with an option, newest
@@ -42,6 +48,8 @@ CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.
 SETTLE_H=48
+# A row the ask-sweep model filed carries its quote: ask-sweep file_row writes `<row>; asked MM-DD "<quote>"`.
+SWEEP_ROW_RE='; asked [0-9]{2}-[0-9]{2} "'
 # judge_precision counts only rules with this many scored answers, and a false-defer percent only lanes
 # with this many scored defers: below it one miss swings 10+ points.
 KPI_LABELS=10
@@ -78,8 +86,8 @@ eval_json() {
     '[.[] | objects | select(.agent as $x | $a | split(" ") | index($x))]' > "$tmp/calls" 2>/dev/null
   jq -sc '[.[] | objects]' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$tmp/verdicts" 2>/dev/null
   $JUDGE_EVAL_QUEUE_CMD 2>/dev/null | jq -sc '[.[] | objects | select(((.from // "") | startswith("board:")) or .row != null)]' > "$tmp/queue" 2>/dev/null
-  $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
-    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/"))))
+  $JUDGE_EVAL_INGEST_CMD 2>/dev/null | jq -sc --arg sweepre "$SWEEP_ROW_RE" '[.[] | objects | select(.id != null) | select((.action | IN("filed", "planned", "edited",
+    "dropped", "rehomed", "tagged", "dup")) or (.action == "added" and ((.text // "") | contains("#of/") or test($sweepre))))
     | {ts, action, id, by, from, to, text, why}]' > "$tmp/ingest" 2>/dev/null
   for a in asks calls verdicts queue ingest; do [ -s "$tmp/$a" ] || echo '[]' > "$tmp/$a"; done
   jq -c '.[]' "$tmp/asks" > "$tmp/asklines"
@@ -92,9 +100,9 @@ eval_json() {
   jq -n --slurpfile A "$tmp/asks" --slurpfile C "$tmp/calls" --slurpfile V "$tmp/verdicts" \
     --slurpfile Q "$tmp/queue" --slurpfile P "$tmp/picks" \
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
-    --argjson shas "$shas" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    --argjson shas "$shas" --arg sweepre "$SWEEP_ROW_RE" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
-    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" \
+    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" --argjson levels "$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -122,9 +130,17 @@ JQ_EVAL="$JQ_EPOCH"'
   | ($calls | map({(.id): .}) | add // {}) as $call
   | (if $days == "" then null else $now - ($days | tonumber) * 86400 end
      | if $wm > 0 and (. == null or . < $wm) then $wm else . end) as $since
+  # A row the ingest record scores has no call of its own: it is under the current prompt when
+  # written after the first call made with it since the last call under another prompt.
+  | ($calls | map(select((.prompt_sha // "") != "") | {agent, s: .prompt_sha, e: (.at | epoch)} | select(.e != null))
+     | group_by(.agent) | map(.[0].agent as $a | ([.[] | select(.s != ($shas[$a] // "")) | .e] | max) as $other
+       | {($a): ([.[] | select(.s == ($shas[$a] // "") and ($other == null or .e > $other)) | .e] | min)})
+     | add // {}) as $since_sha
   | def inscope($agent): (.at | epoch) as $e
       | ($since == null or ($e != null and $e >= $since))
-        and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-"));
+        and ($any == 1 or (($call[.judge_call // ""] // {}).prompt_sha // "") == ($shas[$agent] // "-")
+             or ((.judge_call // "") == "" and (($src[$agent] // "") | IN("triage-untouched", "plan-dispatched", "priority-kept", "sweep-untouched"))
+                 and $since_sha[$agent] != null and $e != null and $e >= $since_sha[$agent]));
 
   # One verdict row each: {agent, id, project, question, rule, type, kind (answer|defer|error),
   # live, want, outcome (tp|fp|fn|tn|pending|unscorable), unscorable (why, on an unscorable one),
@@ -144,19 +160,22 @@ JQ_EVAL="$JQ_EPOCH"'
        elif ($a.judge_type // "") == "" then "untyped deferral"
        elif ($a.recommend // "") == "" then "no recommendation" else null end) as $why
     | {agent: $by["ask-answers"], id: $a.id, project: $a.project, question: $a.question, rule: ($a.judge_rule // ""),
-       type: ($a.judge_type // ""), kind: $kind, live: ($a.answered_by == "judge"),
+       type: ($a.judge_type // ""), level: ($a.judge_level // ""), level_raised: ($a.judge_level_raised == "true"),
+       kind: $kind, live: ($a.answered_by == "judge"),
        assumed: ($a.answered_by == "judge" and ($a.assume_at // "") != ""), want: $want,
        human: (if $a.answered_by == "judge" then $a.judge_override // "" else $human // $a.answer // "" end),
        reason: ($a.judge_reason // ""), evidence: ($a.judge_evidence // ""),
        at: $a.judged_at, answered_at: $a.answered_at, judge_call: ($a.judge_call // ""),
        outcome: (if $kind == "error" then null
+         # A live answer is right only when the human named its option (`kept`): `none` is a
+         # message that named no option, silence, which must never count as agreement.
          elif $a.answered_by == "judge" then
-           (if ($a.judge_override // "") == "" then "pending" elif $a.judge_override == "none" then "tp" else "fp" end)
+           ({"": "pending", kept: "tp", none: "unscorable"}[$a.judge_override // ""] // "fp")
          elif $a.status == "pending" then "pending"
          elif $why != null then "unscorable"
          elif $kind == "answer" then (if ($human | ascii_downcase) == ($want | ascii_downcase) then "tp" else "fp" end)
          elif ($human | ascii_downcase) == ($a.recommend | ascii_downcase) then "fn" else "tn" end)}
-    | . + {unscorable: (if .outcome == "unscorable" then $why else null end)}] as $askrows
+    | . + {unscorable: (if .outcome != "unscorable" then null elif .live then "live answer not reviewed" else $why end)}] as $askrows
    # Dispatch: an error line is one verdict each (the row is judged again); otherwise the newest
    # verdict per row, labelled by its queue item: done ok landed, done otherwise or a later
    # `failed` line did not. A run that ended for a cause outside the model (UNRATED_ENDS) labels
@@ -181,16 +200,47 @@ JQ_EVAL="$JQ_EPOCH"'
    ($ev | map(select(.action == "added" or .action == "tagged")
         | ((.text // "") + " " + (.why // "") | capture("#of/(?<p>[A-Za-z0-9_-]+)").p) as $p | {p: $p, id, e})
       | bykey(.p)) as $kids
-   | ($ev | map(select(.action | IN("edited", "dropped", "rehomed", "tagged", "dup"))) | bykey(.id)) as $touch
-   # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
-   # the record named the runner), right when nothing edits, drops, moves or re-tags it for the settle window.
-   | [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | . as $f
+   # A re-tag that only changes the priority is a call of the priority pass, scored on its own lane,
+   # so it touches nothing the triager or planner wrote.
+   | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|low)$")));
+   def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
+       | ($w | length) > 0 and ($w | length) == (prios | length));
+   ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged", "dup")) and (prio_only | not))) | bykey(.id)) as $touch
+   # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
+   # priority-only re-tag from before the pass named itself), right when nobody else changes the
+   # priority of the row for the settle window. A later pass on the row inside the window supersedes
+   # it, unless someone changed the priority before that pass ran.
+   | def prio_pass: .action == "tagged" and ((.by // "") == "inbox-priority" or ((.by // "") == "inbox-triage" and prio_only));
+   ($ev | map(select(.action == "tagged" and (prios | length > 0))) | bykey(.id)) as $prioev
+   | [$ev[] | select(prio_pass) | . as $s
+      | ([prios[] | select(startswith("+")) | ltrimstr("+#")] | last) as $set
+      | select($set != null)
+      | ($prioev[$s.id] // []) as $later
+      | ([$later[] | select(.e > $s.e and prio_pass) | .e] | min) as $next
+      | (if $next != null and $next <= ($s.e + $settle) then $next else $s.e + $settle end) as $end
+      | ([$later[] | select(.e > $s.e and .e <= $end and (prio_pass | not)
+           and (prios | any(. == "-#\($set)" or (startswith("+") and . != "+#\($set)"))))] | first) as $t
+      | select($t != null or $end == $s.e + $settle)
+      | {agent: $by["priority-kept"], id: $s.id, project: (if ($s.to // "") == "" then $s.from else $s.to end),
+         question: ($s.text // ""), rule: $set, kind: "answer", want: $set,
+         human: (if $t == null then "" else ($t.why // "") + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end),
+         reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
+         outcome: (if $t != null then "fp" elif ($now - $s.e) >= $settle then "tp" else "pending" end)}] as $priorows
+   # A row a runner wrote is right when nothing edits, drops, moves or re-tags it for the settle
+   # window, writes by the planner aside; untouched($src) makes the verdict for the lane scored by $src.
+   | def untouched($src): . as $f
       | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
-      | {agent: $by["triage-untouched"], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
+      | {agent: $by[$src], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
          question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",
          human: (if $t == null then "" else $t.action + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end), reason: "", at: $f.ts,
          answered_at: (if $t == null then null else $t.ts end), judge_call: "",
-         outcome: (if $t != null then "fp" elif ($now - $f.e) >= $settle then "tp" else "pending" end)}] as $triagerows
+         outcome: (if $t != null then "fp" elif ($now - $f.e) >= $settle then "tp" else "pending" end)};
+   # Triage: each row the triager filed (`by` its runner name, or no writer on events from before
+   # the record named the runner).
+   [$ev[] | select(.action == "filed" and ((.by // "human") | IN("", "human", "inbox-triage"))) | untouched("triage-untouched")] as $triagerows
+   # Ask sweep: each row its model filed, known by the quote it carries (SWEEP_ROW_RE), whoever ran
+   # it. Its plan rows carry none, since no model wrote them, and the planner wrote a row split from one.
+   | [$ev[] | select(.action == "added" and ((.text // "") | test($sweepre) and (contains("#of/") | not))) | untouched("sweep-untouched")] as $sweeprows
    # Plan: each row the planner planned, right when it (or a row split from it in the same run)
    # starts before any re-split: a later plan, or a row split from it by someone else.
    | [$plans[] | min_by(.e) as $p
@@ -220,7 +270,7 @@ JQ_EVAL="$JQ_EPOCH"'
               outcome: (if $v.verdict == "skip" then
                   (if $hand != null then "fn" elif ($now - $skip0) >= $settle then "tn" else "pending" end)
                 elif $fail or ($st | test("^done/(failed|cancelled)")) then "fp"
-                elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows)
+                elif $st == "done/ok" then "tp" else "pending" end)})] + $triagerows + $planrows + $priorows + $sweeprows)
   | map(select(.agent != null)) as $all
 
   | ($all | map(select(.judge_call != "")) | group_by(.judge_call) | map({(.[0].judge_call): length}) | add // {}) as $share
@@ -249,10 +299,11 @@ JQ_EVAL="$JQ_EPOCH"'
                   (([$j[] | ($call[.judge_call].cost_usd // 0) / $share[.judge_call]] | add) / ($j | length) * 10000 | round) / 10000 end)});
 
   # One row of the verdict list: what the judge said, and what became of it in plain words.
-  def listed: {id, project, question, rule, type, judge: .want, reason, evidence,
+  def listed: {id, project, question, rule, type, level, level_raised, call: .judge_call, judge: .want, reason, evidence,
         said: (if .kind == "error" then "error" elif .live then "answered"
                elif .kind == "answer" then "would answer" else "passed" end),
-        you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept" else .human end),
+        you: (if .outcome == "pending" then "pending" elif .live and .outcome == "tp" then "kept"
+              elif .live and .human == "none" then "not reviewed" else .human end),
         score: ({tp: "right", tn: "right", fp: "wrong", fn: "needless", pending: "pending"}[.outcome // ""] // "-"),
         at: (.at | epoch)};
 
@@ -266,12 +317,14 @@ JQ_EVAL="$JQ_EPOCH"'
      | (if $sc == "ask-answers" then $live elif $sc == "dispatch-queue" then ["*"] else [] end) as $lv
      # The word a score cell puts after its percent; a lane with no counted outcome has none.
      | ({"ask-answers": "agree", "dispatch-queue": "merged", "triage-untouched": "untouched",
-         "plan-dispatched": "dispatched"}[$sc]) as $lb
+         "plan-dispatched": "dispatched", "priority-kept": "kept", "sweep-untouched": "untouched"}[$sc]) as $lb
      | {agent: $ag, prompt_sha: ($shas[$ag] // ""), score: $sc,
-        truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (override or none)",
+        truth: ({"ask-answers": "the human answer to the ask, and the review of a live answer (kept or another option; none is not scored)",
                  "dispatch-queue": "the queue item a dispatched row became: done ok landed, failed or cancelled did not; a skip is a false defer when the row is then started by hand",
                  "triage-untouched": "the ingest record: a filed row is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
                  "plan-dispatched": "the ingest record and the queue: a planned row is right when it starts before anyone re-splits it",
+                 "sweep-untouched": "the ingest record: a row the sweep model filed is right when nothing edits, drops, moves or re-tags it for \($settle / 3600)h",
+                 "priority-kept": "the ingest record: a priority the pass set is right when nobody else changes the priority of the row for \($settle / 3600)h",
                  "unrecorded": "not recorded: the lane leaves no counted outcome, so only its calls show"}[$sc]
                // "unknown SCORE \($sc | tojson): judges.md lists the truth sources"),
         live: $lv,
@@ -304,7 +357,15 @@ JQ_EVAL="$JQ_EPOCH"'
                                      + (if $n < $bar then "; a percent at \($bar) rows" else "" end) end)}}
           + (if $src[$ag] != "ask-answers" then {} else
              {verdicts: ($every | map(select($since == null or (.at | epoch // 0) >= $since))
-               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed))} end))]}'
+               | sort_by(-(.at | epoch // 0)) | .[0:$nverdicts] | map(listed)),
+              # One cell per type and impact level, in scope: what a promotion is weighed on. A
+              # live cell counts only reviewed answers (`audited`), never silence.
+              cells: ($mine | map(select(.kind != "error")) | group_by([.type, .level])
+                | map(.[0] as $c | stats + {type: $c.type, level: $c.level,
+                    live: (($lv | index("*")) != null or ($lv | index($c.type)) != null),
+                    audited: (map(select(.live and (.outcome | IN("tp", "fp")))) | length),
+                    level_raised_pct: pct(map(select(.level_raised)) | length; length)})
+                | sort_by(.type, (.level as $l | $levels | index($l) // -1)))} end))]}'
 
 # report <json>: the table, one block per agent.
 report() {
@@ -355,33 +416,61 @@ kpi_json() {
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
             dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total | fdefer] | .[0])}
          # A runner lane scores from the one bar: below it a single miss swings the number.
-         + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched"))
+         + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched", "priority-kept", "sweep-untouched"))
              | {("runner_score_" + (.agent | gsub("-"; "_"))): (if (.total.tp + .total.fp) >= $need then .total.precision else null end)}]
             | add // {});
     ($a | k) as $x | ($b | k) as $y | $x | keys_unsorted | map({(.): {"7d": $x[.], "28d": $y[.]}}) | add'
 }
 
-# log [filter] [--days N] [--limit N] [--json]: see the header.
+# log [filter] [--level L] [--days N] [--limit N] [--json]: see the header.
 log() {
-  local said="" days="" limit="$LOG_LIMIT" json=0 out
+  local said="" level="" days="" limit="$LOG_LIMIT" json=0 out
   while [ $# -gt 0 ]; do
     case "$1" in
       answered|would-answer|passed|wrong) said="$1"; shift ;;
+      --level) [[ " $JUDGE_LEVELS " == *" ${2:-x} "* ]] || { say "--level takes one of: $JUDGE_LEVELS"; return 2; }; level="$2"; shift 2 ;;
       --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
       --limit) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--limit takes a count"; return 2; }; limit="$2"; shift 2 ;;
       --json) json=1; shift ;;
-      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--days N] [--limit N] [--json]"; return 2 ;;
+      *) say "usage: judge-eval log [answered|would-answer|passed|wrong] [--level L] [--days N] [--limit N] [--json]"; return 2 ;;
     esac
   done
   # Filtered before the limit, so the whole list is read rather than the dashboards' slice.
-  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --argjson n "$limit" '
+  out="$(VERDICTS=1000000 eval_json ask-judge 1 "$days" | jq -c --arg f "$said" --arg l "$level" --argjson n "$limit" '
     .agents[0].verdicts | map(select($f == "" or (if $f == "wrong" then .score == "wrong"
-      else .said == ($f | sub("-"; " ")) end))) | .[0:$n]')" || { say "could not read the sources"; return 1; }
+      else .said == ($f | sub("-"; " ")) end)) | select($l == "" or .level == $l)) | .[0:$n]')" || { say "could not read the sources"; return 1; }
   if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
   jq -r 'if length == 0 then "no verdicts" else .[] |
       "\(.at | if . then localtime | strftime("%m-%d %H:%M") else "-" end)  \(.project)  \(if .type == "" then .rule else .type end)  \(.said)  you: \(.you | .[0:40])  \(.score)",
       "    \(.question | .[0:100])",
-      "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)" end' <<<"$out"
+      "    \(if .rule == "" then "" else .rule + ": " end)\(.reason)\(if .evidence == "" then "" else "  \"\(.evidence)\"" end)",
+      "    level \(if .level == "" then "-" else .level end)\(if .level_raised then " (raised)" else "" end)  call \(if .call == "" then "-" else .call end)" end' <<<"$out"
+}
+
+# cells [--any-prompt] [--days N] [--json]: see the header.
+cells() {
+  local any=0 days="" json=0 out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --any-prompt) any=1; shift ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "--days takes a day count"; return 2; }; days="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) say "usage: judge-eval cells [--any-prompt] [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  out="$(VERDICTS=0 eval_json ask-judge "$any" "$days" | jq -c '[.agents[] | select(.score == "ask-answers") | .cells[]]')" ||
+    { say "could not read the sources"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
+  jq -r 'def pad($w): tostring | if length >= $w then .[0:$w] else . + " " * ($w - length) end;
+    def lpad($w): tostring | if length >= $w then . else " " * ($w - length) + . end;
+    def p: if . == null then "-" else "\(.)%" end;
+    if length == 0 then "no verdicts in scope" else
+      ("type" | pad(24)) + ("level" | pad(9)) + ("verd" | lpad(5)) + ("scored" | lpad(7)) + ("precision [95%]" | lpad(18))
+        + ("pend" | lpad(5)) + ("live" | lpad(5)) + ("audited" | lpad(8)) + ("raised" | lpad(7)),
+      (.[] | (if .type == "" then "(no type)" else .type end | pad(24)) + (if .level == "" then "-" else .level end | pad(9))
+        + (.verdicts | lpad(5)) + (.scored | lpad(7))
+        + ((.precision | p) + (if .precision == null then "" else " [\(.precision_lo)-\(.precision_hi)]" end) | lpad(18))
+        + (.pending | lpad(5)) + (if .live then "yes" else "no" end | lpad(5)) + (.audited | lpad(8)) + (.level_raised_pct | p | lpad(7))) end' <<<"$out"
 }
 
 # replay_labelled: the id and project of each ask the human answered with one option, newest
@@ -450,6 +539,7 @@ main() {
   local want="" any=0 days="" json=0 a
   if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
   if [ "${1:-}" = log ]; then shift; log "$@"; return; fi
+  if [ "${1:-}" = cells ]; then shift; cells "$@"; return; fi
   if [ "${1:-}" = kpi ]; then
     shift
     case "${1:-}" in --json) kpi_json ;; "") kpi_json | jq -r 'to_entries[] | "\(.key)\t7d \(.value["7d"] // "-")\t28d \(.value["28d"] // "-")"' ;;

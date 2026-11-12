@@ -941,6 +941,69 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
 }
 
+# ── reopen on answer ────────────────────────────────────────────────────────
+# A session that closes over its own pending ask (/wind-down auto, close rule "only its own ask is
+# open") sets the ask to reopen it: the answer starts the ended conversation again with the answer.
+
+@test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
+  local id other loose
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-8.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ -f "$NOTES_FIXTURE/live" ] && echo "{\\"session_id\\":\\"sid-8\\",\\"pane\\":\\"%%1\\"}"; exit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'ship it?')"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  assert_line --partial "$id reopens its session on the answer"
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'session gone: the answer reopens the session with it'
+  # The resume is the answer's route, so no board row is filed for it.
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  assert_not_called 'chore(ask)'
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: go"
+  # Negative controls: a live session already had the answer typed in; nothing starts.
+  : >"$NOTES_FIXTURE/calls.log"; : >"$NOTES_FIXTURE/live"
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'is live'
+  assert_not_called 'fleet-dispatch start'
+  rm "$NOTES_FIXTURE/live"
+  # A queue item tagged with the ask is the queue's to restart.
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$id" "the next phase" >/dev/null
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'a queue item holds it'
+  assert_not_called 'fleet-dispatch start'
+  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
+  "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  run "$AGENT_ASK" reopen "$failed"
+  assert_failure
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
+  # Refused: an ask that already resumes some other way, one with no session, one not pending.
+  other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
+  run "$AGENT_ASK" reopen-on-answer "$other"
+  assert_failure
+  assert_output --partial 'already resumes with: /captain resume'
+  loose="$(post demo 'loose?')"
+  run "$AGENT_ASK" reopen-on-answer "$loose"
+  assert_failure
+  assert_output --partial 'names no session'
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_failure
+  assert_output --partial 'answered, not pending'
+}
+
 # ── lifecycle: one home ──────────────────────────────────────────────────────
 # An ask stays pending until the human answers or drops it, however old and whether or not its
 # session lives. Nothing marks it stale or copies it to a board.
@@ -1043,11 +1106,11 @@ registry() {
 # Outside the sandbox dir: its path has a space, and the judge command is a word list.
 # score <what> [answer] [reason]: a schema reply whose criteria derive <what>. `not-<id>` takes a
 # needed criterion away, a criterion id sets it, and anything else is the ask's type, which an
-# answerable verdict names. SCORE_TYPE sets the type beside a criterion.
+# answerable verdict names. SCORE_TYPE sets the type beside a criterion, SCORE_LEVEL the impact (self).
 score() {
-  jq -cn --arg c "$1" --arg a "${2:-}" --arg r "${3:-x}" --arg t "${SCORE_TYPE:-ship_deploy}" '
+  jq -cn --arg c "$1" --arg a "${2:-}" --arg r "${3:-x}" --arg t "${SCORE_TYPE:-ship_deploy}" --arg l "${SCORE_LEVEL:-self}" '
     ["knowledge", "external", "taste", "unclear-ask", "against-precedent", "reversible", "grounded"] as $ids
-    | {decision: "d"}
+    | {decision: "d", impact: {evidence: "q impact", level: $l}}
     + ({knowledge: 0, external: 0, taste: 0, "unclear-ask": 0, "against-precedent": 0, reversible: 1, grounded: 1}
        | with_entries(.value = {evidence: (if .value == 1 then "q \(.key)" else "" end), met: (.value == 1)}))
     | if ($c | startswith("not-")) then .[$c[4:]] = {evidence: "q not", met: false}
@@ -1382,7 +1445,7 @@ ASK-JUDGE-END'
   local policy schema derive="$REPO_ROOT/.local/lib/judge.sh" file="$REPO_ROOT/.config/agent-ask/policy.md"
   local verdict="$REPO_ROOT/.config/agent-ask/verdict.schema.json"
   policy=$(judge_rules "$file" | grep -vx gate | sort)
-  schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision")' "$verdict" | sort)
+  schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision" and . != "impact")' "$verdict" | sort)
   assert_equal "$policy" "$schema"
   assert_equal "$(printf '%s\n' $JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA grounded | sort)" "$schema"
   types() { sed -n 's/^- `\([a-z_]*\)`: .*/\1/p' "$1" | sort; }
@@ -1427,6 +1490,92 @@ ASK-JUDGE-END'
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
   run "$AGENT_ASK" show "$id"
   refute_line --partial 'judge:'
+}
+
+@test "judge: impact is recorded as judge_level, a bundle takes its widest item, external or irreversible is critical" {
+  local id
+  id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: repo'; assert_line 'judge_level_evidence: q impact'; assert_line 'judge_level_raised: false'
+  fake_judge "$(jq -cs '{type: .[0].type, decisions: map(.decisions[0]), reason: "x", answer: ""}' \
+    <(score ship_deploy) <(SCORE_LEVEL=fleet score ship_deploy))"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: fleet'; assert_line 'judge_level_raised: false'
+  assert_equal "$(grep -c '^judge_level: ' "$(ask_file "$id")")" 1
+  local c; for c in external not-reversible; do
+    fake_judge "$(score "$c")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    # critical is derived, not a floor: raised marks only a floor name
+    assert_line 'judge_level: critical'; assert_line 'judge_level_raised: false'; assert_line 'judge: human'
+  done
+  assert_line 'judge_level_evidence: q not'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_output --partial 'level critical'
+  refute_output --partial 'raised by a floor name'
+}
+
+@test "judge: a reply without an impact level, or with one the judge may not give, is no verdict" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  fake_judge "$(score ship_deploy | jq -c 'del(.decisions[0].impact)')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'; refute_line --partial 'judge_level'
+  fake_judge "$(SCORE_LEVEL=critical score ship_deploy)"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  # negative control: the same reply with a level it may give is a verdict
+  fake_judge "$(score ship_deploy)"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: take-recommend'; assert_line 'judge_level: self'
+}
+
+@test "judge: an ask naming a fleet floor name is fleet at least, whatever the judge rated" {
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
+  fake_judge "$(score ship_deploy)"
+  local id; id="$("$AGENT_ASK" post --project demo --context 'CLAUDE.md says landing is authorized' --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: question'; assert_line 'judge: take-recommend'
+  assert_line 'judge_level: fleet'; assert_line 'judge_level_evidence: the ask names CLAUDE.md'; assert_line 'judge_level_raised: true'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_output --partial 'level fleet (raised by a floor name)'
+  # negative control: the same ask naming no floor keeps the judge's rating
+  id="$("$AGENT_ASK" post --project demo --context 'the repo rules say landing is authorized' --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: self'; assert_line 'judge_level_raised: false'
+}
+
+@test "post: an ask naming the judge's own authority is an approval and never reaches the judge" {
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(score agent_policy)"
+  run --separate-stderr "$AGENT_ASK" post --project demo --options 'a=add ship_deploy=0 to DELAY_RULES|b=leave it' --recommend a 'let the judge answer more?'
+  assert_success
+  assert_equal "$stderr" "agent-ask post: the ask names DELAY_RULES, the judge's own authority, so it is an approval for the human"
+  local id="$output"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: approval'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # negative control: an ask naming no authority name goes to the judge as a question
+  id="$("$AGENT_ASK" post --project demo --options 'a=add the test|b=leave it' --recommend a 'add the missing test?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: question'
+  assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # a question posted before the floor existed is held to it when judged again
+  rm "$BATS_TEST_TMPDIR/judge.calls"
+  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a 'trim the hard stops?')"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'; assert_line 'judge_rule: gate'; refute_line --partial 'judge_level'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
 }
 
 # ── live answers ─────────────────────────────────────────────────────────────
@@ -1521,7 +1670,7 @@ live_post() {
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
 }
 
-@test "override: a message that agrees or says nothing about the options closes the review with none" {
+@test "override: a message naming no option closes the review with none, one naming the judge's option with kept" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy=0
   fake_judge "$(score ship_deploy)"
@@ -1534,7 +1683,11 @@ live_post() {
   run "$AGENT_ASK" show "$a"; assert_line 'judge_override: none'
   b="$(live_post sid-3 'fix that one too?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-3 answered "yes, fix it"
-  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: none'
+  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: kept'
+  assert_line 'judge_override_note: in session: yes, fix it'
+  # kept closes the review: a later pick of the other option is about something else
+  "$AGENT_ASK" settle-session sid-3 answered "wait"
+  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: kept'
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
   assert_not_called 'agent-notify'
 }
@@ -1549,9 +1702,9 @@ live_answer_file() {
 @test "override: a type demotes when precision over its last live answers falls under the bar, once it has the minimum" {
   export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
   local d="$HOME/.agent/asks/demo" i
-  # An old override outside the window of 5, then four good answers.
+  # An old override outside the window of 5, then four kept answers.
   live_answer_file 1 1 wait
-  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" kept; done
   # The sixth is overridden: the window is answers 2-6, 4 of 5 is 80%, under 85.
   printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\n' > "$d/L00006.md"
   "$AGENT_ASK" settle-session sid-9 answered "wait"
@@ -1565,6 +1718,12 @@ live_answer_file() {
   export AGENT_ASK_DEMOTE_PRECISION=75
   "$AGENT_ASK" settle-session sid-9 answered "wait"
   run "$AGENT_ASK" show L00006; assert_line 'judge_override: wait'
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # silence is not a review: with 2-5 unreviewed the window is answers 1 and 6, under the minimum
+  rm "$HOME/.local/state/agent-ask/demoted" 2>/dev/null || true
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
   # under the minimum nothing demotes, even at 0%: the window counts only these two
   rm "$d"/L0000[1-4].md
@@ -1840,7 +1999,7 @@ SH
   # the same option agrees
   "$AGENT_ASK" settle-session sid-2 answered "yes fix it"
   run "$AGENT_ASK" show "$b"
-  assert_line 'judge_override: none'; assert_line 'answer: fix'; assert_line 'answered_by: human'
+  assert_line 'judge_override: kept'; assert_line 'answer: fix'; assert_line 'answered_by: human'
   # neither fires later
   due "$a"; due "$b"
   "$AGENT_ASK" assume-due
@@ -1886,10 +2045,11 @@ SH
   assert_line 'judge_override: wait'; assert_line 'judge_override_note: from a board: wait'
   assert_line 'answer: fix'; assert_line 'answered_by: judge'
   assert_called "answered: wait (ask $a)"
-  # the same option changes nothing
+  # the same option keeps it: the review judge-eval scores as agreement, and the answer stays
   "$AGENT_ASK" answer "$b" fix 2>/dev/null
   run "$AGENT_ASK" show "$b"
-  refute_line --partial 'judge_override'; assert_line 'answered_by: judge'
+  assert_line 'judge_override: kept'; assert_line 'judge_override_note: from a board: fix'
+  assert_line 'answer: fix'; assert_line 'answered_by: judge'
   # a board answer on a pending armed ask records the human's and the override
   local c; c="$(armed sid-3 'fix one more?')"
   "$AGENT_ASK" answer "$c" wait 2>/dev/null

@@ -1,8 +1,9 @@
-//! One CI run opened on the Builds section, both surfaces: its jobs, their steps and what each
-//! cost, from `schedules-sync`'s job archive joined to the run ledger on `RunKey`, priced with the
-//! governor's rates. `builds::detail` reads it only when a run is opened (docs/dashboards.md rule
-//! 10), and only from local files and the rates its caller passes, so neither a list render nor
-//! an open asks GitHub anything, and a complete record is never fetched again.
+//! One CI run opened on Infra's CI runs (or Releases' Release runs), both surfaces: its jobs, their
+//! steps and what each cost, from `schedules-sync`'s job archive joined to the run ledger on
+//! `RunKey`, priced with the governor's rates. `builds::detail` reads it only when a run is opened
+//! (docs/dashboards.md rule 10), and only from local files and the rates its caller passes, so
+//! neither a list render nor an open asks GitHub anything, and a complete record is never fetched
+//! again.
 //!
 //! | fact                    | home                                                              |
 //! |-------------------------|-------------------------------------------------------------------|
@@ -10,19 +11,16 @@
 //! | the run's own fields    | the run ledger (`builds`), joined on forge, repo, run id, attempt  |
 //! | a host's $/h and basis  | `ci_governor_rate_usd_per_hour{host,basis}`                        |
 //! | a host's slots          | `ci_governor_registered{host}`                                     |
-//! | idle today, the month   | `ci_governor_power_hours_today{host}`, `ci_governor_budget_usd{kind="actual"}` |
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::builds::{timed_as, Builds, Run, RunKey};
+use crate::builds::{Run, RunKey};
 use crate::prom::Series;
 
 /// A run that finished this recently may still get its jobs from the next 10-minute import.
 pub const PENDING_SECS: i64 = 1200;
-/// The month's priced total and AWS's actual differ by more than this share: the line is flagged.
-pub const RECONCILE_GAP: f64 = 0.2;
 
 /// One line of the job archive: every job of one attempt of one run.
 #[derive(Deserialize, Default, Clone, Debug, PartialEq)]
@@ -76,12 +74,12 @@ pub struct Step {
     pub completed_at: Option<String>,
 }
 
-fn ts(s: &Option<String>) -> Option<i64> {
+pub(crate) fn ts(s: &Option<String>) -> Option<i64> {
     s.as_deref().and_then(crate::fleet::ts)
 }
 
 /// Seconds from `a` to `b`, when both are known.
-fn span(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+pub(crate) fn span(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     Some((b? - a?).max(0))
 }
 
@@ -116,14 +114,12 @@ pub struct HostRate {
     pub basis: String,
     /// Runner slots registered on the host (`ci_governor_registered`).
     pub slots: Option<f64>,
-    pub power_hours_today: Option<f64>,
 }
 
-/// Every host's rate, and the month's AWS actual, from the governor's series.
+/// Every host's rate from the governor's series.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Rates {
     pub hosts: BTreeMap<String, HostRate>,
-    pub budget_actual: Option<f64>,
     /// Why the rates could not be read: every job then reads "no rate".
     pub error: Option<String>,
 }
@@ -136,9 +132,6 @@ impl Rates {
                 continue;
             };
             match s.label("__name__") {
-                "ci_governor_budget_usd" if s.label("kind") == "actual" => {
-                    out.budget_actual = Some(v)
-                }
                 "ci_governor_rate_usd_per_hour" if !host.is_empty() => {
                     let h = out.hosts.entry(host.to_string()).or_default();
                     h.usd_per_hour = Some(v);
@@ -147,10 +140,6 @@ impl Rates {
                 "ci_governor_registered" if !host.is_empty() => {
                     let h = out.hosts.entry(host.to_string()).or_default();
                     h.slots = Some(h.slots.unwrap_or_default() + v);
-                }
-                "ci_governor_power_hours_today" if !host.is_empty() => {
-                    let h = out.hosts.entry(host.to_string()).or_default();
-                    h.power_hours_today = Some(v);
                 }
                 _ => {}
             }
@@ -539,167 +528,6 @@ pub fn build(
     }
 }
 
-/// One job's time on a runner, kept from the archive for the Run times fold's money.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct JobTime {
-    pub runner: String,
-    pub hosted: bool,
-    pub started: i64,
-    pub secs: i64,
-}
-
-/// The archive cut to what the Run times fold prices: each record's finished jobs since `floor`.
-pub fn job_times(records: &HashMap<RunKey, Record>, floor: i64) -> HashMap<RunKey, Vec<JobTime>> {
-    records
-        .iter()
-        .map(|(k, r)| {
-            let times = r
-                .jobs
-                .iter()
-                .filter_map(|j| {
-                    let runner = j.runner_name.clone().filter(|n| !n.is_empty())?;
-                    let started = ts(&j.started_at)?;
-                    let secs = span(Some(started), ts(&j.completed_at))?;
-                    (started >= floor).then(|| JobTime {
-                        hosted: hosted(j, &runner),
-                        runner,
-                        started,
-                        secs,
-                    })
-                })
-                .collect();
-            (k.clone(), times)
-        })
-        .collect()
-}
-
-/// The money the Run times fold shows, beside `Builds::times` (one text per row, in its order).
-#[derive(Serialize, Clone, Debug, Default, PartialEq)]
-pub struct RunCosts {
-    /// Each workflow's mean $ per fully priced run, `-` with none.
-    pub times: Vec<String>,
-    /// One line per host the governor powers: its powered time today less what jobs used.
-    pub idle: Vec<String>,
-    /// The month's priced jobs against AWS's actual.
-    pub month: Option<String>,
-    /// The month line is off by more than `RECONCILE_GAP`.
-    pub month_off: bool,
-    pub rates_error: Option<String>,
-}
-
-fn utc_day_start(now: i64) -> i64 {
-    now - now.rem_euclid(86400)
-}
-
-fn utc_month_start(now: i64) -> i64 {
-    use chrono::Datelike;
-    chrono::DateTime::from_timestamp(now, 0)
-        .and_then(|d| d.date_naive().with_day(1))
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map_or(now, |d| d.and_utc().timestamp())
-}
-
-/// The Run times fold's money from the archive `read` kept and the rates. Today and the month
-/// are UTC days, as the governor counts them.
-pub fn costs(b: &Builds, rates: &Rates, now: i64) -> RunCosts {
-    let price = |t: &JobTime| rates.price(&t.runner, t.hosted, Some(t.secs));
-    // Each workflow's fully priced runs, by the key `builds::time` groups under.
-    let mut by: HashMap<(String, String, String), (f64, usize, bool)> = HashMap::new();
-    for r in b.rows.iter().filter(|r| r.done()) {
-        let Some(jobs) = b.job_times.get(&r.key()).filter(|j| !j.is_empty()) else {
-            continue;
-        };
-        let prices: Vec<Price> = jobs.iter().map(price).collect();
-        let c = RunCost::of(&prices);
-        if c.unpriced > 0 || c.priced == 0 {
-            continue;
-        }
-        let e = by
-            .entry((
-                r.forge.clone(),
-                r.repo.clone(),
-                timed_as(&r.workflow, &r.path),
-            ))
-            .or_default();
-        e.0 += c.usd;
-        e.1 += 1;
-        e.2 |= c.estimate;
-    }
-    let times = b
-        .times
-        .iter()
-        .map(
-            |t| match by.get(&(t.forge.clone(), t.repo.clone(), t.workflow.clone())) {
-                Some((usd, n, est)) if *n > 0 => {
-                    format!(
-                        "{}${:.2} ({n} priced)",
-                        if *est { "~" } else { "" },
-                        usd / *n as f64
-                    )
-                }
-                _ => "-".into(),
-            },
-        )
-        .collect();
-    let (day, month) = (utc_day_start(now), utc_month_start(now));
-    let mut host_today: HashMap<&str, f64> = HashMap::new();
-    let mut month_usd = 0.0;
-    for t in b.job_times.values().flatten() {
-        let Some(usd) = price(t).usd else { continue };
-        if t.started >= day {
-            if let Some(h) = rates.host_of(&t.runner) {
-                *host_today.entry(h).or_default() += usd;
-            }
-        }
-        if t.started >= month {
-            month_usd += usd;
-        }
-    }
-    let idle = rates
-        .hosts
-        .iter()
-        .filter_map(|(host, h)| {
-            let (rate, hours) = (h.usd_per_hour?, h.power_hours_today?);
-            (rate > 0.0).then(|| {
-                let powered = rate * hours;
-                let used = host_today.get(host.as_str()).copied().unwrap_or_default();
-                let est = if h.basis == "spot-estimate" { "~" } else { "" };
-                format!(
-                    "{host}: powered {hours:.1}h today {est}${powered:.2}, jobs {est}${used:.2}, idle {est}${:.2}",
-                    (powered - used).max(0.0)
-                )
-            })
-        })
-        .collect();
-    let (month, month_off) = match rates.budget_actual {
-        Some(actual) => {
-            let off = actual > 0.0 && ((month_usd - actual) / actual).abs() > RECONCILE_GAP;
-            let gap = if off {
-                format!(
-                    ", off by {:.0}% (idle time is not in the jobs)",
-                    ((month_usd - actual) / actual * 100.0).abs()
-                )
-            } else {
-                String::new()
-            };
-            (
-                Some(format!(
-                    "month to date: jobs priced ${month_usd:.2}, AWS actual ${actual:.2}{gap}"
-                )),
-                off,
-            )
-        }
-        None => (None, false),
-    };
-    RunCosts {
-        times,
-        idle,
-        month,
-        month_off,
-        rates_error: rates.error.clone(),
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -739,13 +567,6 @@ pub(crate) mod tests {
             series("ci_governor_registered", &[("host", "aws-burst-2")], 2.0),
             // A host with slots and no rate.
             series("ci_governor_registered", &[("host", "hp-victus")], 1.0),
-            series(
-                "ci_governor_power_hours_today",
-                &[("host", "aws-burst-1")],
-                2.0,
-            ),
-            series("ci_governor_budget_usd", &[("kind", "actual")], 10.0),
-            series("ci_governor_budget_usd", &[("kind", "limit")], 300.0),
         ])
     }
 
