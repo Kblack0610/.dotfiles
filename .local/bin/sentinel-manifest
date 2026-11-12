@@ -72,17 +72,15 @@ class Loader(yaml.SafeLoader):
     def construct_mapping(self, node, deep=False):
         seen = set()
         for key_node, _ in node.value:
-            if key_node.tag == "tag:yaml.org,2002:merge":
+            # Compare the key as written (tag and text), so `1` and `true` are not
+            # equal the way their Python values are, and no key is built twice.
+            if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == "tag:yaml.org,2002:merge":
                 continue  # `<<:` overrides are the point of a merge, not a repeat
-            key = self.construct_object(key_node, deep=deep)
-            try:
-                repeated = key in seen
-            except TypeError:
-                continue  # unhashable; the base constructor reports it
-            if repeated:
+            key = (key_node.tag, key_node.value)
+            if key in seen:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping", node.start_mark,
-                    f"found repeated key {key!r}; only its last value would be kept, "
+                    f"found repeated key {key_node.value!r}; only its last value would be kept, "
                     "so write several values as a YAML list", key_node.start_mark,
                 )
             seen.add(key)
