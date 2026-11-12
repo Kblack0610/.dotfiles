@@ -462,6 +462,20 @@ snapshot() {
   assert_output "$(printf 'landed.txt\nmine.txt')"
 }
 
+@test "a file the default branch deleted, pulled in by a merge, is not the session's deletion (ar-1652)" {
+  echo doomed > "$REPO/doomed.txt"
+  git -C "$REPO" add doomed.txt
+  git -C "$REPO" commit -qm doomed
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  snapshot gone
+  git -C "$REPO" rm -q doomed.txt
+  git -C "$REPO" commit -qm 'upstream deletes it'
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" gone
+  assert_success
+  assert_output ""
+}
+
 @test "a session's deletion of a file upstream never had still counts (ar-1652)" {
   echo branch-only > "$REPO/branch.txt"
   git -C "$REPO" add branch.txt
@@ -472,6 +486,43 @@ snapshot() {
   run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" del
   assert_success
   assert_output branch.txt
+}
+
+@test "a session's deletion of a file upstream deleted and later re-added still counts (ar-1652)" {
+  echo back > "$REPO/back.txt"
+  git -C "$REPO" add back.txt
+  git -C "$REPO" commit -qm add
+  git -C "$REPO" rm -q back.txt
+  git -C "$REPO" commit -qm drop
+  echo back > "$REPO/back.txt"
+  git -C "$REPO" add back.txt
+  git -C "$REPO" commit -qm re-add
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  snapshot readd
+  git -C "$REPO" rm -q back.txt
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" readd
+  assert_success
+  assert_output back.txt
+}
+
+@test "a baseline written before it recorded HEAD counts every deletion (ar-1652)" {
+  echo doomed > "$REPO/doomed.txt"
+  git -C "$REPO" add doomed.txt
+  git -C "$REPO" commit -qm doomed
+  snapshot old
+  python3 - "$HOME/.cache/claude-stop-hook" <<'PY'
+import json, pathlib, sys
+for f in pathlib.Path(sys.argv[1]).glob("session-start-*.json"):
+    data = json.loads(f.read_text())
+    data.pop("\0head", None)
+    f.write_text(json.dumps(data))
+PY
+  git -C "$REPO" rm -q doomed.txt
+  git -C "$REPO" commit -qm 'upstream deletes it'
+  git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+  run python3 "$HOME/.config/shared-hooks/stop-session-changes.py" changed "$REPO" old
+  assert_success
+  assert_output doomed.txt
 }
 
 @test "a second session starts with its own baseline and resume preserves the first" {
