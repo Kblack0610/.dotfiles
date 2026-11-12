@@ -38,7 +38,6 @@ pub struct Query {
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
-    summary: String,
     stale_after: i64,
     rows: Vec<&'a Run>,
     more: usize,
@@ -60,7 +59,6 @@ fn render(b: &Builds, q: &Query) -> String {
     table.links = hub_core::table::links(&rows);
     let out = Shown {
         at: b.at,
-        summary: s.summary(),
         stale_after: STALE_SECS,
         rows,
         more,
@@ -157,15 +155,11 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_view_lists_every_run_and_says_how_they_divide() {
+    fn the_plain_view_lists_every_run() {
         let v = body(Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
         assert_eq!(v["more"], 0);
         assert_eq!(v["table"]["total"], 3);
-        assert_eq!(
-            v["summary"],
-            "3 runs in 30 days: 1 running, 0 queued, 1 red"
-        );
         assert_eq!(v["stale_after"], STALE_SECS);
         assert_eq!(v["counts"]["red"], 1, "the counts ride whatever the view");
         assert!(v.get("times").is_none(), "the Run times fold is retired");
@@ -193,7 +187,6 @@ mod tests {
         .unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["release"]["tag"], "v1.0.0");
-        assert_eq!(v["summary"], "1 run in 30 days: 0 running, 0 queued, 0 red");
         assert_eq!(v["counts"]["total"], 1, "the scope's own counts");
         // negative control: the plain read keeps every run.
         assert_eq!(body(Query::default())["rows"].as_array().unwrap().len(), 3);

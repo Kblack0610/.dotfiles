@@ -174,9 +174,32 @@ test("the Queue is one table with the server's chips and every header a sort but
   }
   assert.ok(h.indexOf("title w1") < h.indexOf("title r1") && h.indexOf("title r1") < h.indexOf("title q1"), "the server's order is kept");
   assert.match(h, /id="sec-flow"/);
-  assert.match(h, /id="sec-table"/);
+  assert.match(h, /<h2 class="sec" id="sec-table">Queue <span class="n">3 of 4<\/span><\/h2>/);
   assert.match(h, /id="sec-candidates"/);
-  assert.match(h, /3 of 4/);
+});
+
+test("Candidates heads its row count; urgent rows blocked are a warn line, auto and the read time a fact in the filter card", () => {
+  load();
+  const cands = { rows: [{ key: "ar-1", title: "t", project: "p", why: "", start_label: "auto", reasons: [], blocked: [] }], total: 5, auto: 2, clear: 1, urgent_blocked: 1, as_of: "10:20", reasons: [] };
+  const h = run(`qst.cands = ${JSON.stringify(cands)}; qst.candErr = null; qCandidates()`);
+  assert.match(h, /<summary><h2 class="sec warn">Candidates <span class="n">5<\/span><\/h2><\/summary><div class="cline warn">1 urgent blocked<\/div>/);
+  assert.match(h, /<div class="cline muted"><b>auto<\/b> 2, <b>as of<\/b> 10:20<\/div><\/div>/);
+  const calm = run(`qst.cands = ${JSON.stringify({ ...cands, urgent_blocked: 0 })}; qCandidates()`);
+  assert.match(calm, /<h2 class="sec">Candidates <span class="n">5<\/span><\/h2>/);
+  assert.doesNotMatch(calm, /urgent/, "the control: no blocked urgent row, no line");
+  assert.match(run("qst.cands = null; qst.candErr = 'boom'; qCandidates()"), /<h2 class="sec bad">Candidates<\/h2><\/summary><div class="panel down">No candidates: boom<\/div>/);
+  run("qst.cands = null; qst.candErr = null");
+});
+
+test("Pipeline is said once: the worst step hues the head and is a warn line under it", () => {
+  load();
+  try {
+    const h = run(`qfl.data = ${JSON.stringify({ line: rail() })}; qfl.err = null; qfl.node = ""; qFlow()`);
+    assert.equal(h.match(/Pipeline/g).length, 1, h);
+    assert.match(h, /<summary><h2 class="sec warn" id="sec-flow">Pipeline<\/h2><\/summary><div class="cline warn">queued stopped<\/div>/);
+    const calm = run(`qfl.data = ${JSON.stringify({ line: rail({ nodes: { queued: { hot: false, stopped: false } } }) })}; qFlow()`);
+    assert.match(calm, /<summary><h2 class="sec" id="sec-flow">Pipeline<\/h2><\/summary><div class="flow">/, "the control: nothing past its bound, no line");
+  } finally { run("qfl.data = null"); }
 });
 
 test("a sorted header says its direction, and the number columns are n", () => {

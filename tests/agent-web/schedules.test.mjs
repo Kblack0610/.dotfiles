@@ -58,10 +58,13 @@ const data = { at: 1793942700, summary: "3 scheduled, 2 red, 1 no purpose, CI re
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
 const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("schst.render()"); };
 
-test("the table draws the summary, the mock's columns and a missing purpose", () => {
+test("the table draws its head, the mock's columns and a missing purpose", () => {
   show();
   const h = box.innerHTML;
-  assert.match(h, /3 scheduled, 2 red, 1 no purpose, CI read 7m ago/);
+  assert.match(h, /<h2 class="sec">Schedules <span class="n">\d+(?: of \d+)?<\/span><\/h2>/, "the head is its title and the view's count");
+  assert.doesNotMatch(h, /CI read 7m ago/, "no summary sentence after the title");
+  // When the schedules were read is a tile after the state tiles (the Schedules tblTab's tiles).
+  assert.match(run("schedulesTiles")(data), /<span class="tl">READ<\/span><span class="tv">\d\d:\d\d<\/span>/);
   for (const c of ["kind", "name", "schedule", "next", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
   assert.doesNotMatch(h, /data-tsort="repo"/, "repo sorts and filters without a column");
   assert.match(h, /<td class="bad">red 6<\/td>/);
