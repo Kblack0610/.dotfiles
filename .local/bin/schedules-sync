@@ -68,6 +68,13 @@ sent in curl's stdin config, never argv; with neither, a public repo still reads
                           after the last sync: that window is not yet complete, and the next
                           pass completes it
 
+  schedules-sync run-tags <repo> <workflow path>...
+                          backfill: for each finished dispatched run of those workflows whose name
+                          carries no tag, read its log once and append the TAG: (or RUN_ID:, the
+                          run a Steam upload ships) it names to SCHEDULES_RUN_TAGS
+                          (run-tags.jsonl beside the ledger), which the hub's release graph joins;
+                          the ledger is never rewritten. Exit 1 when a log could not be read
+
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a `prs-only:<owner/name> <base>` line is read for this alone: no runs, schedules or
 quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
@@ -154,6 +161,11 @@ LEDGER = os.environ.get(
 )
 SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
 JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
+# The tag (or uploaded run) each dispatched release run's log names, for runs whose name does not
+# carry it; the hub's release graph reads it beside the ledger (hub_core::release_graph).
+RUN_TAGS = os.environ.get("SCHEDULES_RUN_TAGS", os.path.join(os.path.dirname(LEDGER), "run-tags.jsonl"))
+# A step's env (TAG, RUN_ID) or a reusable workflow's input (tag), as the log echoes them.
+LOG_NAMES = re.compile(rb"^\S+Z\s+(TAG|tag|RUN_ID): (\S+)\s*$", re.M)
 JOBS_KEEP = timedelta(days=90)  # the job archive's window
 KUBECTL = os.environ.get("SCHEDULES_KUBECTL", "kubectl")
 QUARANTINE = os.environ.get("SCHEDULES_QUARANTINE", os.path.join(os.path.dirname(LEDGER), "quarantine.json"))
@@ -1080,6 +1092,61 @@ def runs(argv, t):
     return 0, json.dumps(rows, separators=(",", ":"))
 
 
+def log_names(repo, run_id):
+    """-> {"tag": T} or {"of": N} from one run's log zip: the TAG: or tag: its steps echo, else the
+    RUN_ID: of the run a Steam upload ships. A release run that uploads its own build echoes its
+    own RUN_ID, which names nothing. None when the log names neither, or two different ones."""
+    seen = set()
+    with zipfile.ZipFile(io.BytesIO(gh_bytes(f"repos/{repo}/actions/runs/{run_id}/logs"))) as z:
+        for n in z.namelist():
+            seen |= {(k.decode().upper(), v.decode()) for k, v in LOG_NAMES.findall(z.read(n))}
+    seen.discard(("RUN_ID", str(run_id)))
+    for k, field in (("TAG", "tag"), ("RUN_ID", "of")):
+        vals = {v for kk, v in seen if kk == k}
+        if len(vals) > 1:
+            return None
+        if vals:
+            v = vals.pop()
+            if field == "tag":
+                return {"tag": v}
+            return {"of": int(v)} if v.isdigit() else None
+    return None
+
+
+def run_tags(argv):
+    """`run-tags <repo> <workflow path>...` -> (exit code, report). For each finished dispatched
+    run of those workflows the ledger holds, whose name carries no tag (`... of <tag>`) and that
+    RUN_TAGS has no line for, reads the run's log and appends what it names. The ledger is never
+    rewritten. Exit 1 when a log could not be read; the next call asks it again."""
+    if len(argv) < 2 or argv[0].startswith("-"):
+        return 2, "run-tags <repo> <workflow path>..."
+    repo, paths = argv[0], set(argv[1:])
+    last, _, _ = read_ledger(f'"repo":"{repo.lower()}"')
+    if last is None:
+        return 1, f"no ledger at {LEDGER}"
+    have, _, _ = read_ledger(None, RUN_TAGS, key=lambda r: (r["repo"].lower(), r["id"]))
+    todo = sorted({r["id"] for r in last.values()
+                   if r["forge"] == "github" and r["repo"].lower() == repo.lower() and r.get("path") in paths
+                   and r.get("event") == "workflow_dispatch" and r.get("status") == "completed"
+                   and " of " not in (r.get("workflow") or "") and (repo.lower(), r["id"]) not in (have or {})})
+    out, rc = [], 0
+    os.makedirs(os.path.dirname(RUN_TAGS), exist_ok=True)
+    for run_id in todo:
+        try:
+            named = log_names(repo, run_id)
+        except (GhError, zipfile.BadZipFile) as e:
+            out.append(f"{run_id}: log not read: {e}")
+            rc = 1
+            continue
+        if not named:
+            out.append(f"{run_id}: the log names no tag")
+            continue
+        with open(RUN_TAGS, "a") as f:
+            f.write(json.dumps({"repo": repo, "id": run_id, **named}, separators=(",", ":")) + "\n")
+        out.append(f"{run_id}: {'tag ' + named['tag'] if 'tag' in named else 'uploads run ' + str(named['of'])}")
+    return rc, "\n".join(out) or "nothing to read"
+
+
 def write_json(path, doc):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.{os.getpid()}"
@@ -1377,8 +1444,12 @@ def main(argv):
         if out:
             print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
+    if argv and argv[0] == "run-tags":
+        rc, out = run_tags(argv[1:])
+        print(out, file=sys.stdout if rc == 0 else sys.stderr)
+        return rc
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, jobs, prs, sync-prs, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, pending, runs, jobs, prs, sync-prs, run-tags, --help)", file=sys.stderr)
         return 2
     try:
         repos = read_repos()

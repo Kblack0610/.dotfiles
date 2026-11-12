@@ -1026,3 +1026,49 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   run "$SUBJECT" sync-prs o/work
   assert_success
 }
+
+# logzip <run id> <line>...: the run's log zip, one job file per line, as actions/runs/<id>/logs
+logzip() {
+  local id="$1"; shift
+  python3 -c 'import sys,zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    for i, l in enumerate(sys.argv[2:]): z.writestr(f"{i}_job.txt", f"2026-11-11T09:59:18.1Z Run x\n2026-11-11T09:59:18.2Z   {l}\n")' \
+    "$GHD/$(key "repos/o/game/actions/runs/$id/logs")" "$@"
+}
+
+@test "run-tags: a finished dispatched release run's log names its tag or upload, appended once; the ledger is untouched" {
+  mkdir -p "$(dirname "$LEDGER")"
+  rt() { printf '{"forge":"github","repo":"o/game","id":%s,"attempt":1,"workflow":"%s","path":".github/workflows/%s","event":"%s","status":"%s"}\n' "$@" >> "$LEDGER"; }
+  rt 1 "Release builds" release.yml workflow_dispatch completed
+  rt 2 Steam steam.yml workflow_dispatch completed
+  rt 3 "Release builds of v1-b" release.yml workflow_dispatch completed
+  rt 4 "Release builds" release.yml push completed
+  rt 5 "Release builds" release.yml workflow_dispatch in_progress
+  rt 6 Tests test.yml workflow_dispatch completed
+  rt 7 "Release builds" release.yml workflow_dispatch completed
+  rt 8 "Release builds" release.yml workflow_dispatch completed
+  rt 9 "Release builds" release.yml workflow_dispatch completed
+  logzip 1 "TAG: v1-a" "TAG: v1-a"
+  logzip 2 "RUN_ID: 1"
+  logzip 8 "TAG: v1-a" "TAG: v1-c"
+  # a release run that uploads its own build: its own RUN_ID names nothing, the Steam input names the tag
+  logzip 9 "RUN_ID: 9" "tag: v1-d"
+  before="$(md5sum < "$LEDGER")"
+  run "$SUBJECT" run-tags o/game .github/workflows/release.yml .github/workflows/steam.yml
+  assert_failure 1
+  assert_output --partial '7: log not read'
+  assert_output --partial '8: the log names no tag'
+  run jq -sc 'map([.id, .tag, .of])' "$XDG_STATE_HOME/ci/run-tags.jsonl"
+  assert_output '[[1,"v1-a",null],[2,null,1],[9,"v1-d",null]]'
+  run grep -c '/logs$' "$GHD/calls"
+  assert_output 5
+  # a second call asks only what it could not answer, and the ledger was never rewritten
+  run "$SUBJECT" run-tags o/game .github/workflows/release.yml .github/workflows/steam.yml
+  run grep -c '/logs$' "$GHD/calls"
+  assert_output 7
+  run jq -sc 'length' "$XDG_STATE_HOME/ci/run-tags.jsonl"
+  assert_output 3
+  [ "$(md5sum < "$LEDGER")" = "$before" ]
+  run "$SUBJECT" run-tags o/game
+  assert_failure 2
+}
