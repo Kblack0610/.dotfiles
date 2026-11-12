@@ -12,6 +12,7 @@
 //! | the owner session   | fleet-sessions' `state.json`: the live session on the branch, else its PR's item's |
 //! | a run's PRs and release | joined on read by `release_graph`, from the PR store, the queue and `release-state` |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
+//! | the pass rate       | computed on read (`verdict`, `pass_by_repo`): the one CI pass rate |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 //! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
 
@@ -147,7 +148,7 @@ pub struct RunTime {
     pub runs: usize,
     pub usual: Option<Usual>,
     pub longest: i64,
-    /// Successes among the runs counted, a whole percent.
+    /// The pass rate (`verdict`) of its finished runs, a whole percent.
     pub pass: u32,
     pub running: usize,
 }
@@ -561,14 +562,83 @@ pub fn timed_as(workflow: &str, path: &str) -> String {
     out.join(" ")
 }
 
+/// The one CI pass rate's verdict on a run: `Some(true)` it succeeded, `Some(false)` it failed
+/// (failure, timeout, startup failure), `None` it is left out: still running, or cancelled,
+/// skipped, neutral, stale or waiting on approval, which stopped before saying pass or fail.
+/// Each attempt is a run, so a red re-run to green is one red and one green. Builds' Run times
+/// and `hub ci pass` (day-log's CI numbers) count with this and nothing else.
+pub fn verdict(conclusion: Option<&str>) -> Option<bool> {
+    match conclusion? {
+        "success" => Some(true),
+        "failure" | "timed_out" | "startup_failure" => Some(false),
+        _ => None,
+    }
+}
+
+/// Runs counted by `verdict` and how many of them succeeded; `pass` is their share, 0..1 to four
+/// places, none when no run counted.
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+pub struct Pass {
+    pub runs: usize,
+    pub green: usize,
+    pub pass: Option<f64>,
+}
+
+impl Pass {
+    fn add(&mut self, conclusion: Option<&str>) {
+        if let Some(green) = verdict(conclusion) {
+            self.runs += 1;
+            self.green += usize::from(green);
+            self.pass = Some((self.green as f64 / self.runs as f64 * 1e4).round() / 1e4);
+        }
+    }
+
+    /// The share as a whole percent, 0 when no run counted.
+    pub fn percent(&self) -> u32 {
+        (self.green * 100).checked_div(self.runs).unwrap_or_default() as u32
+    }
+}
+
+/// One repo's pass rate over a window, whole and per workflow (`timed_as`).
+#[derive(Serialize, Default, Debug, Clone, PartialEq)]
+pub struct RepoPass {
+    #[serde(flatten)]
+    pub all: Pass,
+    pub workflows: BTreeMap<String, Pass>,
+}
+
+/// The pass rate of every repo's runs created in `[since, until)`, keyed `<forge>:<repo>`, on
+/// `branch` alone when one is given: what `hub ci pass` prints.
+pub fn pass_by_repo(
+    rows: &[Run],
+    since: i64,
+    until: i64,
+    branch: Option<&str>,
+) -> BTreeMap<String, RepoPass> {
+    let mut out: BTreeMap<String, RepoPass> = BTreeMap::new();
+    for r in rows {
+        let created = crate::fleet::ts(&r.created_at).unwrap_or(i64::MIN);
+        if created < since || created >= until || branch.is_some_and(|b| r.branch != b) {
+            continue;
+        }
+        let repo = out.entry(format!("{}:{}", r.forge, r.repo)).or_default();
+        repo.all.add(r.conclusion.as_deref());
+        repo.workflows
+            .entry(timed_as(&r.workflow, &r.path))
+            .or_default()
+            .add(r.conclusion.as_deref());
+    }
+    out
+}
+
 /// The value at quantile `q` of sorted `v`, nearest rank.
 fn rank(v: &[i64], q: f64) -> i64 {
     v[((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1]
 }
 
-/// Each workflow's run times from `rows`, and each row's usual time and, running, its ETA. Only
-/// a finished success, failure or timeout counts: a cancelled or skipped run stopped early and
-/// would pull the median down. A running run past its workflow's p90 turns amber.
+/// Each workflow's run times and pass rate (`verdict`) from `rows`, and each row's usual time
+/// and, running, its ETA. Only a run `verdict` counts is timed: a cancelled or skipped run
+/// stopped early and would pull the median down. A running run past its workflow's p90 turns amber.
 pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
     type Key = (String, String, String);
     let key = |r: &Run| {
@@ -578,24 +648,25 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
             timed_as(&r.workflow, &r.path),
         )
     };
-    let mut by: HashMap<Key, (Vec<i64>, usize, usize)> = HashMap::new();
+    let mut by: HashMap<Key, (Vec<i64>, Pass, usize)> = HashMap::new();
     for r in rows.iter() {
-        let (took, green, running) = by.entry(key(r)).or_default();
+        let (took, pass, running) = by.entry(key(r)).or_default();
         *running += usize::from(r.state == "running");
-        let counted = matches!(
-            r.conclusion.as_deref(),
-            Some("success" | "failure" | "timed_out")
-        ) && r.done()
-            && r.started_at.is_some();
-        if let (true, Some(t)) = (counted, r.took) {
+        if !r.done() {
+            continue;
+        }
+        pass.add(r.conclusion.as_deref());
+        // A startup failure never ran its jobs, so its seconds would drag the usual time down.
+        let ran = matches!(r.conclusion.as_deref(), Some("success" | "failure" | "timed_out"));
+        let timed = ran && r.started_at.is_some();
+        if let (true, Some(t)) = (timed, r.took) {
             took.push(t);
-            *green += usize::from(r.state == "green");
         }
     }
     let mut out: Vec<RunTime> = by
         .into_iter()
         .filter(|(_, (took, _, running))| !took.is_empty() || *running > 0)
-        .map(|((forge, repo, workflow), (mut took, green, running))| {
+        .map(|((forge, repo, workflow), (mut took, pass, running))| {
             took.sort_unstable();
             let usual = (took.len() >= USUAL_MIN).then(|| Usual {
                 median: rank(&took, 0.5),
@@ -608,7 +679,7 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
                 runs: took.len(),
                 usual,
                 longest: took.last().copied().unwrap_or_default(),
-                pass: (green * 100).checked_div(took.len()).unwrap_or_default() as u32,
+                pass: pass.percent(),
                 running,
             }
         })
@@ -1229,6 +1300,65 @@ mod tests {
             })
         );
         assert_eq!((t.longest, t.pass), (600, 70));
+    }
+
+    #[test]
+    fn the_pass_rate_counts_each_finished_attempt_and_leaves_out_runs_that_said_neither() {
+        let mut lines: Vec<String> = [
+            (1, "success"),
+            (2, "failure"),
+            (3, "timed_out"),
+            (4, "startup_failure"),
+            (5, "cancelled"),
+            (6, "skipped"),
+            (7, "neutral"),
+            (8, "action_required"),
+        ]
+        .iter()
+        .map(|(i, c)| timed(*i, "Tests", c, 60))
+        .collect();
+        lines.push(running(9, "Tests", 60));
+        // A red re-run to green: two runs, one of each.
+        let rerun = |attempt: u32, c: &str| {
+            let mut v: Value = serde_json::from_str(&timed(10, "Tests", c, 60)).unwrap();
+            v["attempt"] = attempt.into();
+            v.to_string()
+        };
+        lines.push(rerun(1, "failure"));
+        lines.push(rerun(2, "success"));
+        // Another branch, and a run before the window.
+        let mut other: Value = serde_json::from_str(&timed(11, "Lint", "success", 60)).unwrap();
+        other["branch"] = "main".into();
+        lines.push(other.to_string());
+        let mut old: Value = serde_json::from_str(&timed(12, "Tests", "failure", 60)).unwrap();
+        old["created_at"] = iso(NOW - 3 * 86400).into();
+        lines.push(old.to_string());
+        let (rows, times) = timed_rows(&lines);
+        let all = pass_by_repo(&rows, NOW - 86400, NOW, None);
+        let app = &all["github:Org/app"];
+        assert_eq!(
+            (app.all.runs, app.all.green, app.all.pass),
+            (7, 3, Some(0.4286))
+        );
+        assert_eq!(
+            (app.workflows["Tests"].runs, app.workflows["Tests"].green),
+            (6, 2)
+        );
+        let main = pass_by_repo(&rows, NOW - 86400, NOW, Some("main"));
+        assert_eq!(
+            main["github:Org/app"].all,
+            Pass {
+                runs: 1,
+                green: 1,
+                pass: Some(1.0)
+            }
+        );
+        // Run times read the same verdict: 2 of 7 finished Tests runs in the 30 days, 28%.
+        let tests = times.iter().find(|t| t.workflow == "Tests").unwrap();
+        assert_eq!(tests.pass, 28);
+        // The startup failure counts as red but is not timed: 6 of the 7 have a time.
+        assert_eq!(tests.runs, 6);
+        assert_eq!(verdict(None), None);
     }
 
     #[test]
