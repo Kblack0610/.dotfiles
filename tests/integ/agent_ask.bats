@@ -242,6 +242,12 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   "$AGENT_ASK_QUEUE_CMD" settle-ask "$c"
   run "$AGENT_ASK_QUEUE_CMD" show on-c
   assert_line 'state: queued'
+  # 2026-11-12: a free-text answer from the human releases, so the item stays queued with its brief carrying it.
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'how should it look?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-d --tags "ask:$d=go" "runs on go" >/dev/null
+  "$AGENT_ASK" answer "$d" "Neither: make it slope toward every ramp" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-d
+  assert_line 'state: queued'
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the

@@ -501,7 +501,19 @@ ask_pending() {
   [ -z "$by" ] || [ "$by" = human ] || { echo "answered by $by, not the human"; return; }
   [ -n "$want" ] || return 0
   ans="$(sed -n 's/^answer: //p' "$f" | head -1)"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-  case "+${want,,}+" in *"+${ans,,}+"*) ;; *) echo "answered ${ans:-nothing}, not $want" ;; esac
+  case "+${want,,}+" in *"+${ans,,}+"*) return 0 ;; esac
+  # An answer whose first word names none of the ask's options is the human's own answer in free text:
+  # it releases, and the item's brief carries it (fleet-dispatch ask_decisions). Another option is a
+  # deliberate no, as is any other answer to an ask that lists none, which has no free text to tell apart.
+  # 2026-11-12: three Shape City items failed on free-text answers to e76omL, xTxBqv and zIi8Xc.
+  local o opts named=""
+  opts="$(ask_options "$id")"
+  [ -n "$ans" ] && [ -n "$opts" ] || named=1
+  while IFS= read -r o; do
+    o="${o%% *}"
+    case "+${o,,}+" in *"+${ans,,}+"*) named=1 ;; esac
+  done <<<"$opts"
+  [ -z "$named" ] || echo "answered ${ans:-nothing}, not $want"
 }
 
 # ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
@@ -1083,6 +1095,10 @@ cmd_add() {
   [ -z "$running" ] || mark_row "$f" run
   [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   ! waits_turn "$slug" "$priority" || return 0
+  if ! agent-hold check dispatch >/dev/null 2>&1; then
+    echo "agent-queue: dispatch is held, so $slug stays queued for the next dispatch pass" >&2
+    return 0
+  fi
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   exec 8>&-
   fleet-dispatch start --item "$slug" ||

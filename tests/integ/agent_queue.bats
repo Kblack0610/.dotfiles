@@ -547,6 +547,14 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   ask o1 answered 'B, the other' human
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = go ]
+  # 2026-11-12: a free-text answer, whose first word names no option, is the human's own answer and releases.
+  ask o1 answered 'Neither: shape the whole bowl' human
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = go ]
+  # Negative control: an empty answer still holds.
+  ask o1 answered '' human
+  run "$AQ" next --json
+  assert_failure
 }
 
 @test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
@@ -1294,7 +1302,8 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
-@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues" {
+@test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
+  printf '#!/usr/bin/env bash\nexit "${HOLD_EXIT:-0}"\n' > "$SANDBOX/bin/agent-hold"; chmod +x "$SANDBOX/bin/agent-hold"
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
   assert_called 'fleet-dispatch start --item p1'
@@ -1315,6 +1324,12 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -f "$(item queued lp)" ]
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
+  # 2026-11-12: an urgent plan item started under the human's dispatch hold.
+  HOLD_EXIT=1 run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
+  assert_success
+  assert_output --partial 'dispatch is held, so held stays queued'
+  assert_not_called 'start --item held'
+  [ -f "$(item queued held)" ]
 }
 
 @test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
