@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use timebox_core::{dur, CycleStep};
+use timebox_core::{dur, Task};
 
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
@@ -36,9 +36,9 @@ struct RawConfig {
     /// Command run on a lap boundary when `flash = true`. Default `timebox-flash`.
     #[serde(default)]
     flash_cmd: Option<String>,
-    /// Named cycles: `practice = ["work 5m", "guitar 3m", "computer 10m"]`.
+    /// Queue presets: `practice = ["work 5m", "guitar 3m", "computer 10m"]`.
     #[serde(default)]
-    cycles: BTreeMap<String, Vec<String>>,
+    presets: BTreeMap<String, Vec<String>>,
 }
 
 /// Resolved config with absolute paths.
@@ -54,21 +54,21 @@ pub struct Config {
     pub idle_text: String,
     pub flash: bool,
     pub flash_cmd: String,
-    pub cycles: BTreeMap<String, Vec<CycleStep>>,
+    pub presets: BTreeMap<String, Vec<Task>>,
     pub source: String,
 }
 
-/// Parse one cycle step, `"<op> <len>"` (e.g. `"guitar 3m"`).
-fn parse_step(s: &str) -> Result<CycleStep, String> {
+/// Parse one task, `"<op> <len>"` (e.g. `"guitar 3m"`; the op may have spaces).
+pub fn parse_task(s: &str) -> Result<Task, String> {
     let (op, len) = s
         .trim()
         .rsplit_once(char::is_whitespace)
-        .ok_or_else(|| format!("cycle step '{s}' needs '<op> <len>', e.g. 'guitar 3m'"))?;
+        .ok_or_else(|| format!("task '{s}' needs '<op> <len>', e.g. 'guitar 3m'"))?;
     let len_s = dur::parse_duration(len)?;
     if len_s == 0 {
-        return Err(format!("cycle step '{s}' has a zero length"));
+        return Err(format!("task '{s}' has a zero length"));
     }
-    Ok(CycleStep {
+    Ok(Task {
         op: op.trim().to_string(),
         len_s,
     })
@@ -144,17 +144,17 @@ pub fn resolve() -> Result<Config> {
 
     let sound_file = raw.sound_file.as_deref().map(expand).or_else(bundled_sound);
 
-    let mut cycles = BTreeMap::new();
-    for (name, steps) in &raw.cycles {
-        if steps.is_empty() {
-            anyhow::bail!("cycle '{name}' has no steps");
+    let mut presets = BTreeMap::new();
+    for (name, tasks) in &raw.presets {
+        if tasks.is_empty() {
+            anyhow::bail!("preset '{name}' has no tasks");
         }
-        let parsed = steps
+        let parsed = tasks
             .iter()
-            .map(|s| parse_step(s))
+            .map(|s| parse_task(s))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("cycle '{name}': {e}"))?;
-        cycles.insert(name.clone(), parsed);
+            .map_err(|e| anyhow::anyhow!("preset '{name}': {e}"))?;
+        presets.insert(name.clone(), parsed);
     }
 
     Ok(Config {
@@ -169,7 +169,7 @@ pub fn resolve() -> Result<Config> {
         idle_text: raw.idle_text.unwrap_or_else(|| "timebox".into()),
         flash: raw.flash,
         flash_cmd: raw.flash_cmd.unwrap_or_else(|| "timebox-flash".into()),
-        cycles,
+        presets,
         source,
     })
 }
@@ -198,18 +198,18 @@ pub fn print(c: &Config) {
     println!("idle-text   {:?}", c.idle_text);
     println!("flash       {}", c.flash);
     println!("flash-cmd   {}", c.flash_cmd);
-    for (name, steps) in &c.cycles {
-        println!("cycle       {name}: {}", fmt_steps(steps));
+    for (name, tasks) in &c.presets {
+        println!("preset      {name}: {}", fmt_tasks(tasks));
     }
 }
 
-/// `work 5m -> guitar 3m -> computer 10m`
-pub fn fmt_steps(steps: &[CycleStep]) -> String {
-    steps
+/// `work 5m, guitar 3m, computer 10m`
+pub fn fmt_tasks(tasks: &[Task]) -> String {
+    tasks
         .iter()
         .map(|s| format!("{} {}", s.op, dur::fmt_short(s.len_s)))
         .collect::<Vec<_>>()
-        .join(" -> ")
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -217,20 +217,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_cycle_steps() {
+    fn parses_tasks() {
         assert_eq!(
-            parse_step("guitar 3m").unwrap(),
-            CycleStep {
+            parse_task("guitar 3m").unwrap(),
+            Task {
                 op: "guitar".into(),
                 len_s: 180
             }
         );
         assert_eq!(
-            parse_step("work at computer 10m").unwrap().op,
+            parse_task("work at computer 10m").unwrap().op,
             "work at computer"
         );
-        assert!(parse_step("guitar").is_err());
-        assert!(parse_step("guitar 0m").is_err());
-        assert!(parse_step("guitar 3x").is_err());
+        assert!(parse_task("guitar").is_err());
+        assert!(parse_task("guitar 0m").is_err());
+        assert!(parse_task("guitar 3x").is_err());
     }
 }

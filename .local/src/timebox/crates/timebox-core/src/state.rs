@@ -77,32 +77,35 @@ impl Stopwatch {
     }
 }
 
-/// One step of a named cycle: run `op` for `len_s` seconds, then move to the next step.
+/// One queued task: run `op` with a recurring lap of `len_s` seconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CycleStep {
+pub struct Task {
     pub op: String,
     pub len_s: u64,
 }
 
-/// A running named cycle (e.g. work 5m -> guitar 3m -> computer 10m, repeating). The
-/// active stopwatch is always `steps[idx].op`; `catch_up` advances `idx` at each lap
-/// boundary, so the cycle walks on its own with nothing running in the background.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Cycle {
-    pub name: String,
-    pub steps: Vec<CycleStep>,
+/// The task queue. The head (`tasks[0]`) is the task being worked on; while the queue is
+/// `active` its op is the active stopwatch with lap = the task's length, so a timeout is a
+/// plain lap boundary: it flashes and the same task's window starts again. Only `done`
+/// moves to the next task.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Queue {
     #[serde(default)]
-    pub idx: usize,
+    pub tasks: Vec<Task>,
+    /// Running the head right now (cleared by stopping it or starting another op by hand).
     #[serde(default)]
-    pub sound: bool,
+    pub active: bool,
+    /// The head stopwatch's `lap_index` when the head started: laps past it are misses.
+    #[serde(default)]
+    pub lap_base: u32,
+    /// The preset last loaded, for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
 }
 
-impl Cycle {
-    pub fn current(&self) -> &CycleStep {
-        &self.steps[self.idx % self.steps.len()]
-    }
-    pub fn next(&self) -> &CycleStep {
-        &self.steps[(self.idx + 1) % self.steps.len()]
+impl Queue {
+    pub fn head(&self) -> Option<&Task> {
+        self.tasks.first()
     }
 }
 
@@ -124,8 +127,8 @@ pub struct Snapshot {
     pub active_sw: Option<String>,
     #[serde(default)]
     pub stopwatches: BTreeMap<String, Stopwatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cycle: Option<Cycle>,
+    #[serde(default)]
+    pub queue: Queue,
     #[serde(default)]
     pub alerts: Alerts,
 }
@@ -140,7 +143,7 @@ impl Default for Snapshot {
             v: 1,
             active_sw: None,
             stopwatches: BTreeMap::new(),
-            cycle: None,
+            queue: Queue::default(),
             alerts: Alerts::default(),
         }
     }
@@ -177,7 +180,8 @@ impl Snapshot {
         self.active_sw.clone()
     }
 
-    /// Start (create-or-resume) a stopwatch and make it active. Ends any running cycle.
+    /// Start (create-or-resume) a stopwatch and make it active. Starting any op but the
+    /// queue head by hand takes the queue off (its tasks stay).
     pub fn start(
         &mut self,
         now: DateTime<Local>,
@@ -185,7 +189,7 @@ impl Snapshot {
         lap_len_s: Option<u64>,
         sound: Option<bool>,
     ) -> Vec<Event> {
-        self.cycle = None;
+        self.leave_queue_unless(op);
         self.start_inner(now, op, lap_len_s, sound)
     }
 
@@ -244,10 +248,11 @@ impl Snapshot {
         vec![Event::new(now, kind, op).with_lap_len(len)]
     }
 
-    /// Stop a stopwatch, banking its elapsed time. Stopping the active one ends a cycle.
+    /// Stop a stopwatch, banking its elapsed time. Stopping the queue head takes the
+    /// queue off (its tasks stay; `queue go` picks it up again).
     pub fn stop(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
-        if self.active_sw.as_deref() == Some(op) {
-            self.cycle = None;
+        if self.queue.head().map(|t| t.op.as_str()) == Some(op) {
+            self.queue.active = false;
         }
         self.stop_inner(now, op)
     }
@@ -288,21 +293,14 @@ impl Snapshot {
             sw.started_at = now;
             sw.state = RunState::Running;
             self.active_sw = Some(op.to_string());
-            // Resuming an op that is not the cycle's current step leaves the cycle.
-            if self.cycle.as_ref().is_some_and(|c| c.current().op != op) {
-                self.cycle = None;
-            }
+            self.leave_queue_unless(op);
             return vec![Event::new(now, EventKind::Resume, op)];
         }
         vec![]
     }
 
     /// Manually close the current lap window now and restart the cadence from here.
-    /// Inside a cycle, a lap on the active op skips to the next step.
     pub fn lap(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
-        if self.cycle.as_ref().is_some_and(|c| c.current().op == op) {
-            return self.advance_cycle(now);
-        }
         let Some(sw) = self.stopwatches.get_mut(op) else {
             return vec![];
         };
@@ -314,7 +312,8 @@ impl Snapshot {
         vec![Event::new(now, EventKind::Lap, op).with_lap(idx, len)]
     }
 
-    /// Stop/leave the active stopwatch and start `to` in one atomic step. Ends any cycle.
+    /// Stop/leave the active stopwatch and start `to` in one atomic step. Switching to
+    /// any op but the queue head takes the queue off (its tasks stay).
     pub fn switch(
         &mut self,
         now: DateTime<Local>,
@@ -322,7 +321,7 @@ impl Snapshot {
         lap_len_s: Option<u64>,
         sound: Option<bool>,
     ) -> Vec<Event> {
-        self.cycle = None;
+        self.leave_queue_unless(to);
         self.switch_inner(now, to, lap_len_s, sound)
     }
 
@@ -344,57 +343,182 @@ impl Snapshot {
         evs
     }
 
-    /// Start a named cycle at its first step (switching away from the active op).
-    pub fn start_cycle(
-        &mut self,
-        now: DateTime<Local>,
-        name: &str,
-        steps: Vec<CycleStep>,
-        sound: bool,
-    ) -> Vec<Event> {
-        let Some(first) = steps.first().cloned() else {
-            return vec![];
-        };
-        let mut evs = self.switch(now, &first.op, Some(first.len_s), Some(sound));
-        for e in &mut evs {
-            e.meta = serde_json::json!({ "cycle": name });
+    fn leave_queue_unless(&mut self, op: &str) {
+        if self.queue.head().map(|t| t.op.as_str()) != Some(op) {
+            self.queue.active = false;
         }
-        self.cycle = Some(Cycle {
-            name: name.to_string(),
-            steps,
-            idx: 0,
-            sound,
-        });
+    }
+
+    /// Misses on the head task: lap boundaries it crossed since it started.
+    pub fn queue_misses(&self) -> u32 {
+        let Some(h) = self.queue.head() else { return 0 };
+        if !self.queue.active {
+            return 0;
+        }
+        self.stopwatches
+            .get(&h.op)
+            .map(|sw| sw.lap_index.saturating_sub(self.queue.lap_base))
+            .unwrap_or(0)
+    }
+
+    fn qev(now: DateTime<Local>, kind: EventKind, op: &str, meta: serde_json::Value) -> Event {
+        let mut e = Event::new(now, kind, op);
+        e.meta = meta;
+        e
+    }
+
+    /// After the queue changed: while active, make sure the head is the running op with
+    /// its own lap; with no tasks left, stop and go idle.
+    fn sync_head(&mut self, now: DateTime<Local>, sound: bool) -> Vec<Event> {
+        if !self.queue.active {
+            return vec![];
+        }
+        let Some(h) = self.queue.head().cloned() else {
+            self.queue.active = false;
+            return match self.active_sw.clone() {
+                Some(cur) => self.stop_inner(now, &cur),
+                None => vec![],
+            };
+        };
+        // Already the head (running, or paused by hand: an edit behind it must not unpause).
+        let on_head = self.active_sw.as_deref() == Some(h.op.as_str())
+            && self
+                .stopwatches
+                .get(&h.op)
+                .is_some_and(|s| s.state != RunState::Stopped && s.lap_len_s == Some(h.len_s));
+        if on_head {
+            return vec![];
+        }
+        let evs = self.switch_inner(now, &h.op, Some(h.len_s), Some(sound));
+        self.queue.lap_base = self.stopwatches[&h.op].lap_index;
         evs
     }
 
-    /// Close the current cycle step at `at` (a lap on its op) and switch to the next.
-    fn advance_cycle(&mut self, at: DateTime<Local>) -> Vec<Event> {
-        let Some(c) = self.cycle.as_mut() else {
+    /// Append a task to the queue.
+    pub fn queue_add(&mut self, now: DateTime<Local>, task: Task) -> Vec<Event> {
+        let ev = Self::qev(
+            now,
+            EventKind::QueueAdd,
+            &task.op,
+            serde_json::json!({ "len_s": task.len_s, "pos": self.queue.tasks.len() }),
+        );
+        self.queue.tasks.push(task);
+        vec![ev]
+    }
+
+    /// Remove the task at `i` (0 = head). Removing the running head starts the next.
+    pub fn queue_rm(&mut self, now: DateTime<Local>, i: usize, sound: bool) -> Vec<Event> {
+        if i >= self.queue.tasks.len() {
             return vec![];
-        };
-        let name = c.name.clone();
-        let cur = c.current().op.clone();
-        c.idx = (c.idx + 1) % c.steps.len();
-        let next = c.current().clone();
-        let sound = c.sound;
-        let mut evs = Vec::new();
-        if let Some(sw) = self.stopwatches.get_mut(&cur) {
-            sw.lap_base_s = sw.elapsed_s(at);
-            sw.lap_index += 1;
-            evs.push(Event::new(at, EventKind::Lap, &cur).with_lap(sw.lap_index, sw.lap_len_s));
         }
-        evs.extend(self.switch_inner(at, &next.op, Some(next.len_s), Some(sound)));
-        for e in &mut evs {
-            e.meta = serde_json::json!({ "cycle": name });
+        let t = self.queue.tasks.remove(i);
+        let mut evs = vec![Self::qev(
+            now,
+            EventKind::QueueRm,
+            &t.op,
+            serde_json::json!({ "pos": i }),
+        )];
+        evs.extend(self.sync_head(now, sound));
+        evs
+    }
+
+    /// Move the task at `from` to position `to` (clamped). A new head starts if active.
+    pub fn queue_mv(
+        &mut self,
+        now: DateTime<Local>,
+        from: usize,
+        to: usize,
+        sound: bool,
+    ) -> Vec<Event> {
+        let n = self.queue.tasks.len();
+        if from >= n {
+            return vec![];
         }
+        let to = to.min(n - 1);
+        if from == to {
+            return vec![];
+        }
+        let t = self.queue.tasks.remove(from);
+        let op = t.op.clone();
+        self.queue.tasks.insert(to, t);
+        let mut evs = vec![Self::qev(
+            now,
+            EventKind::QueueMv,
+            &op,
+            serde_json::json!({ "from": from, "to": to }),
+        )];
+        evs.extend(self.sync_head(now, sound));
+        evs
+    }
+
+    /// Start working the queue: the head runs with its own lap.
+    pub fn queue_go(&mut self, now: DateTime<Local>, sound: bool) -> Vec<Event> {
+        if self.queue.tasks.is_empty() {
+            return vec![];
+        }
+        self.queue.active = true;
+        self.sync_head(now, sound)
+    }
+
+    /// Finish the head task: it leaves the queue and, if the queue is on, the next starts.
+    pub fn done(&mut self, now: DateTime<Local>, sound: bool) -> Vec<Event> {
+        if self.queue.tasks.is_empty() {
+            return vec![];
+        }
+        let misses = self.queue_misses();
+        let t = self.queue.tasks.remove(0);
+        let mut evs = vec![Self::qev(
+            now,
+            EventKind::QueueDone,
+            &t.op,
+            serde_json::json!({ "misses": misses }),
+        )];
+        if self.queue.active {
+            evs.extend(self.stop_inner(now, &t.op));
+        }
+        evs.extend(self.sync_head(now, sound));
+        evs
+    }
+
+    /// Empty the queue, stopping the head if it is running.
+    pub fn queue_clear(&mut self, now: DateTime<Local>) -> Vec<Event> {
+        if self.queue.tasks.is_empty() {
+            return vec![];
+        }
+        let mut evs = vec![Self::qev(
+            now,
+            EventKind::QueueClear,
+            "",
+            serde_json::Value::Null,
+        )];
+        if self.queue.active {
+            if let Some(h) = self.queue.head().map(|t| t.op.clone()) {
+                evs.extend(self.stop_inner(now, &h));
+            }
+        }
+        self.queue = Queue::default();
+        evs
+    }
+
+    /// Replace the queue with a preset's tasks (stopping a running head). `queue_go`
+    /// starts it.
+    pub fn queue_load(&mut self, now: DateTime<Local>, name: &str, tasks: Vec<Task>) -> Vec<Event> {
+        let mut evs = self.queue_clear(now);
+        evs.push(Self::qev(
+            now,
+            EventKind::QueueLoad,
+            "",
+            serde_json::json!({ "preset": name, "tasks": tasks.len() }),
+        ));
+        self.queue.tasks = tasks;
+        self.queue.preset = Some(name.to_string());
         evs
     }
 
     /// Remove a stopwatch from the live snapshot (its events stay in the log).
     pub fn reset(&mut self, now: DateTime<Local>, op: &str) -> Vec<Event> {
-        if self.active_sw.as_deref() == Some(op) {
-            self.cycle = None;
+        if self.queue.head().map(|t| t.op.as_str()) == Some(op) {
+            self.queue.active = false;
         }
         if self.stopwatches.remove(op).is_none() {
             return vec![];
@@ -410,27 +534,6 @@ impl Snapshot {
     /// each stopwatch's `lap_base_s` past the boundaries it emits.
     pub fn catch_up(&mut self, now: DateTime<Local>) -> Vec<Event> {
         let mut out = Vec::new();
-        // A cycle walks first: each due boundary of the active step switches to the next
-        // step at the boundary's own timestamp, so a late poll replays the steps exactly.
-        while self.cycle.is_some() {
-            let Some(sw) = self
-                .active_sw
-                .as_ref()
-                .and_then(|a| self.stopwatches.get(a))
-            else {
-                break;
-            };
-            if sw.state != RunState::Running {
-                break;
-            }
-            let Some(l) = sw.lap_len() else { break };
-            let boundary = sw.lap_base_s + l;
-            if sw.elapsed_s(now) < boundary {
-                break;
-            }
-            let ts = sw.boundary_ts(boundary);
-            out.extend(self.advance_cycle(ts));
-        }
         for sw in self.stopwatches.values_mut() {
             if sw.state != RunState::Running {
                 continue;
@@ -585,108 +688,218 @@ mod tests {
         assert!(evs.iter().any(|e| e.kind == EventKind::Switch));
     }
 
-    fn steps() -> Vec<CycleStep> {
-        vec![
-            CycleStep {
-                op: "work".into(),
-                len_s: 300,
-            },
-            CycleStep {
-                op: "guitar".into(),
-                len_s: 180,
-            },
-            CycleStep {
-                op: "computer".into(),
-                len_s: 600,
-            },
-        ]
+    fn task(op: &str, len_s: u64) -> Task {
+        Task {
+            op: op.into(),
+            len_s,
+        }
+    }
+
+    fn queued() -> Snapshot {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.queue_add(t, task("guitar", 300));
+        s.queue_add(t, task("email", 600));
+        s.queue_add(t, task("reading", 1500));
+        s
+    }
+
+    fn head(s: &Snapshot) -> &str {
+        s.queue.head().map(|t| t.op.as_str()).unwrap_or("")
     }
 
     #[test]
-    fn cycle_walks_steps_at_their_boundaries() {
-        let mut s = Snapshot::default();
+    fn go_runs_the_head_with_its_own_lap() {
+        let mut s = queued();
         let t = t0();
-        s.start_cycle(t, "practice", steps(), false);
-        assert_eq!(s.active_sw.as_deref(), Some("work"));
-        assert!(s.catch_up(at(t, 299)).is_empty());
-        let evs = s.catch_up(at(t, 300));
+        s.queue_go(t, false);
+        assert_eq!(s.active_sw.as_deref(), Some("guitar"));
+        assert_eq!(s.stopwatches["guitar"].next_lap_countdown_s(t), Some(300));
+    }
+
+    #[test]
+    fn timeout_repeats_the_same_task_and_counts_a_miss() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        let laps = s.catch_up(at(t, 301));
+        assert_eq!(laps.len(), 1);
+        assert_eq!(laps[0].op, "guitar");
+        // the negative control: a timeout never moves the queue on
+        assert_eq!(head(&s), "guitar");
+        assert_eq!(s.active_sw.as_deref(), Some("guitar"));
+        assert_eq!(s.queue_misses(), 1);
+        assert_eq!(
+            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 301)),
+            Some(299)
+        );
+    }
+
+    #[test]
+    fn late_poll_counts_every_missed_window_on_the_same_task() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        assert_eq!(s.catch_up(at(t, 950)).len(), 3);
+        assert_eq!(head(&s), "guitar");
+        assert_eq!(s.queue_misses(), 3);
+    }
+
+    #[test]
+    fn done_pops_the_head_and_starts_the_next() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.catch_up(at(t, 301));
+        let evs = s.done(at(t, 400), false);
         assert!(evs
             .iter()
-            .any(|e| e.kind == EventKind::Switch && e.op == "guitar"));
+            .any(|e| e.kind == EventKind::QueueDone && e.op == "guitar"));
+        assert_eq!(head(&s), "email");
+        assert_eq!(s.active_sw.as_deref(), Some("email"));
+        assert_eq!(s.stopwatches["guitar"].state, RunState::Stopped);
+        assert_eq!(s.queue_misses(), 0);
+        assert_eq!(
+            s.stopwatches["email"].next_lap_countdown_s(at(t, 400)),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn done_on_the_last_task_goes_idle() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.queue_add(t, task("guitar", 60));
+        s.queue_go(t, false);
+        s.done(at(t, 10), false);
+        assert!(s.queue.tasks.is_empty());
+        assert!(!s.queue.active);
+        assert_eq!(s.active_sw, None);
+        assert_eq!(s.display_op(), None);
+    }
+
+    #[test]
+    fn a_task_done_twice_starts_fresh_misses() {
+        let mut s = Snapshot::default();
+        let t = t0();
+        s.queue_add(t, task("guitar", 60));
+        s.queue_add(t, task("guitar", 60));
+        s.queue_go(t, false);
+        s.catch_up(at(t, 130));
+        assert_eq!(s.queue_misses(), 2);
+        s.done(at(t, 130), false);
         assert_eq!(s.active_sw.as_deref(), Some("guitar"));
-        assert_eq!(s.stopwatches["work"].state, RunState::Stopped);
-        assert_eq!(
-            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 300)),
-            Some(180)
-        );
+        assert_eq!(s.queue_misses(), 0);
     }
 
     #[test]
-    fn late_poll_replays_every_missed_step_and_wraps() {
-        let mut s = Snapshot::default();
+    fn rm_and_mv_of_the_head_switch_while_active() {
+        let mut s = queued();
         let t = t0();
-        s.start_cycle(t, "practice", steps(), false);
-        // 300 + 180 + 600 = 1080 is one full loop; 1100 is 20s into work again.
-        let evs = s.catch_up(at(t, 1100));
-        let switches: Vec<_> = evs
-            .iter()
-            .filter(|e| e.kind == EventKind::Switch)
-            .map(|e| e.op.as_str())
-            .collect();
-        assert_eq!(switches, ["guitar", "computer", "work"]);
-        assert_eq!(s.active_sw.as_deref(), Some("work"));
-        assert_eq!(s.cycle.as_ref().unwrap().idx, 0);
-        assert_eq!(s.stopwatches["work"].elapsed_s(at(t, 1100)), 320);
-        assert_eq!(s.stopwatches["guitar"].elapsed_s(at(t, 1100)), 180);
-        assert_eq!(s.stopwatches["computer"].elapsed_s(at(t, 1100)), 600);
-        assert_eq!(
-            s.stopwatches["work"].next_lap_countdown_s(at(t, 1100)),
-            Some(280)
-        );
-    }
-
-    #[test]
-    fn lap_skips_to_next_step_and_pause_holds_the_cycle() {
-        let mut s = Snapshot::default();
-        let t = t0();
-        s.start_cycle(t, "practice", steps(), false);
-        s.lap(at(t, 10), "work");
+        s.queue_go(t, false);
+        s.queue_mv(at(t, 5), 2, 0, false);
+        assert_eq!(s.active_sw.as_deref(), Some("reading"));
+        s.queue_rm(at(t, 6), 0, false);
         assert_eq!(s.active_sw.as_deref(), Some("guitar"));
-        s.pause(at(t, 20), "guitar");
-        assert!(s.catch_up(at(t, 5000)).is_empty());
-        s.resume(at(t, 5000), "guitar");
+        // a move behind the head changes nothing that runs
+        s.queue_mv(at(t, 7), 1, 0, false);
+        assert_eq!(s.active_sw.as_deref(), Some("email"));
+        s.queue_mv(at(t, 8), 0, 9, false);
         assert_eq!(
-            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 5000)),
-            Some(170)
+            s.queue
+                .tasks
+                .iter()
+                .map(|t| t.op.as_str())
+                .collect::<Vec<_>>(),
+            ["guitar", "email"]
         );
-        assert!(s.cycle.is_some());
     }
 
     #[test]
-    fn manual_switch_or_stop_ends_the_cycle() {
-        let mut s = Snapshot::default();
+    fn edits_while_off_never_start_anything() {
+        let mut s = queued();
         let t = t0();
-        s.start_cycle(t, "practice", steps(), false);
-        s.switch(at(t, 10), "email", None, None);
-        assert!(s.cycle.is_none());
-        s.start_cycle(at(t, 20), "practice", steps(), false);
-        s.stop(at(t, 30), "work");
-        assert!(s.cycle.is_none());
+        s.queue_rm(t, 0, false);
+        s.done(t, false);
+        assert_eq!(head(&s), "reading");
+        assert!(s.stopwatches.is_empty());
+    }
+
+    #[test]
+    fn switching_away_takes_the_queue_off_and_go_resumes_it() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.switch(at(t, 30), "phone", None, None);
+        assert!(!s.queue.active);
+        assert_eq!(head(&s), "guitar");
         assert!(s.catch_up(at(t, 9999)).is_empty());
+        s.queue_go(at(t, 9999), false);
+        assert_eq!(s.active_sw.as_deref(), Some("guitar"));
+        assert_eq!(
+            s.stopwatches["guitar"].next_lap_countdown_s(at(t, 9999)),
+            Some(300)
+        );
     }
 
     #[test]
-    fn resuming_another_op_ends_the_cycle() {
+    fn an_edit_behind_a_paused_head_keeps_it_paused() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.pause(at(t, 10), "guitar");
+        s.queue_rm(at(t, 20), 2, false);
+        s.queue_add(at(t, 20), task("walk", 60));
+        assert_eq!(s.stopwatches["guitar"].state, RunState::Paused);
+    }
+
+    #[test]
+    fn clear_stops_the_head_and_empties_the_queue() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.queue_clear(at(t, 10));
+        assert!(s.queue.tasks.is_empty());
+        assert_eq!(s.stopwatches["guitar"].state, RunState::Stopped);
+    }
+
+    #[test]
+    fn load_replaces_the_queue_and_keeps_the_preset_name() {
+        let mut s = queued();
+        let t = t0();
+        s.queue_go(t, false);
+        s.queue_load(
+            at(t, 10),
+            "practice",
+            vec![task("work", 300), task("guitar", 180)],
+        );
+        assert_eq!(head(&s), "work");
+        assert!(!s.queue.active);
+        assert_eq!(s.queue.preset.as_deref(), Some("practice"));
+        s.queue_go(at(t, 10), false);
+        assert_eq!(s.active_sw.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn an_old_snapshot_with_a_cycle_still_loads() {
+        let old = r#"{"v":1,"active_sw":"work","stopwatches":{},"cycle":{"name":"practice","steps":[{"op":"work","len_s":300}],"idx":0}}"#;
+        let s: Snapshot = serde_json::from_str(old).unwrap();
+        assert!(s.queue.tasks.is_empty());
+    }
+
+    #[test]
+    fn resuming_another_op_takes_the_queue_off() {
         let mut s = Snapshot::default();
         let t = t0();
         s.start(t, "email", Some(60), None);
         s.stop(at(t, 10), "email");
-        s.start_cycle(at(t, 10), "practice", steps(), false);
+        s.queue_add(at(t, 10), task("work", 300));
+        s.queue_go(at(t, 10), false);
         s.resume(at(t, 20), "email");
-        assert!(s.cycle.is_none());
-        // email's own lap fires as a plain lap; work is not switched away by the cycle
-        let evs = s.catch_up(at(t, 80));
-        assert!(evs.iter().all(|e| e.kind == EventKind::Lap && e.op == "email"));
-        assert_eq!(s.stopwatches["work"].state, RunState::Running);
+        assert!(!s.queue.active);
+        assert_eq!(s.queue.tasks.len(), 1); // the task stays queued
+        // email's own lap fires as a plain lap; nothing switches back to the head
+        s.catch_up(at(t, 80));
+        assert_eq!(s.active_sw.as_deref(), Some("email"));
     }
 }

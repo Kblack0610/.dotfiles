@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# timebox-panel - the timebox task queue in an fzf float (Super+A t t, or a click on the bar chip).
+#
+#   timebox-panel                    the panel: the queue on the left, `timebox status` on the right
+#   timebox-panel rows               the list: `timebox queue`, its first line the header
+#   timebox-panel act <verb> [pos]   one panel key as a plain command (verbs: the case in act)
+#
+# It holds no state: the queue lives in timebox, so the bar, the leader keys and this panel all
+# write the same queue. Keys and verbs: .local/src/timebox/README.md, "Queue".
+set -u
+
+TIMEBOX="${TIMEBOX:-$HOME/.local/bin/timebox}"
+SELF="$(realpath "${BASH_SOURCE[0]}")"
+
+rows() {
+    local out
+    out="$("$TIMEBOX" queue 2>/dev/null)"
+    if [ "$out" = "queue empty" ] || [ -z "$out" ]; then
+        printf 'queue empty\n-  a adds a task (guitar 5m), l loads a preset\n'
+    else
+        printf '%s\n' "$out"
+    fi
+}
+
+# act <verb> [pos]: a position is the row's first field, and the placeholder row's "-" is none.
+act() {
+    local verb="$1" n="${2:-}"
+    case "$n" in '' | *[!0-9]*) n="" ;; esac
+    case "$verb" in
+        add)
+            local line
+            printf 'task and length (e.g. guitar 5m): '
+            read -r line || return 0
+            [ -n "$line" ] || return 0
+            "$TIMEBOX" queue add "$line" >/dev/null || { printf 'press enter '; read -r _; }
+            ;;
+        done) "$TIMEBOX" done >/dev/null ;;
+        rm) [ -n "$n" ] && "$TIMEBOX" queue rm "$n" >/dev/null ;;
+        down) [ -n "$n" ] && "$TIMEBOX" queue mv "$n" "$((n + 1))" >/dev/null ;;
+        up) [ -n "$n" ] && [ "$n" -gt 1 ] && "$TIMEBOX" queue mv "$n" "$((n - 1))" >/dev/null ;;
+        go) "$TIMEBOX" queue go >/dev/null ;;
+        pause) "$TIMEBOX" pause >/dev/null 2>&1 || "$TIMEBOX" resume >/dev/null 2>&1 ;;
+        load)
+            local name
+            name="$("$TIMEBOX" queue load 2>/dev/null | fzf --prompt='preset> ' --height=40% --layout=reverse | cut -d: -f1)"
+            [ -n "$name" ] && "$TIMEBOX" queue load "$name" >/dev/null && "$TIMEBOX" queue go >/dev/null
+            ;;
+        clear) "$TIMEBOX" queue clear >/dev/null ;;
+        *) echo "timebox-panel: unknown action '$verb'" >&2; return 2 ;;
+    esac
+    return 0
+}
+
+panel() {
+    command -v fzf >/dev/null 2>&1 || { echo "timebox-panel needs fzf" >&2; exit 2; }
+    local r="reload($SELF rows)+refresh-preview"
+    rows | fzf --no-sort --layout=reverse --height=100% --header-lines=1 --disabled \
+        --prompt='timebox> ' \
+        --header='a add  d done  r remove  J/K move  enter go  p pause  l load preset  x clear all  q close' \
+        --preview="$TIMEBOX status" --preview-window='right,45%,wrap' \
+        --bind="a:execute($SELF act add)+$r" \
+        --bind="d:execute-silent($SELF act done)+$r" \
+        --bind="r:execute-silent($SELF act rm {1})+$r" \
+        --bind="J:execute-silent($SELF act down {1})+$r+down" \
+        --bind="K:execute-silent($SELF act up {1})+$r+up" \
+        --bind="enter:execute-silent($SELF act go)+$r" \
+        --bind="p:execute-silent($SELF act pause)+$r" \
+        --bind="l:execute($SELF act load)+$r" \
+        --bind="x:execute-silent($SELF act clear)+$r" \
+        --bind="q:abort" >/dev/null
+}
+
+case "${1:-panel}" in
+    panel) panel ;;
+    rows) rows ;;
+    act) shift; act "$@" ;;
+    *) echo "usage: timebox-panel [rows | act <verb> [pos]]" >&2; exit 2 ;;
+esac

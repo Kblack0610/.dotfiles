@@ -4,7 +4,7 @@
 #   hypr-binds    chord<TAB>description<TAB>dispatcher<TAB>arg, in `hyprctl binds -j` order
 #
 # A bind inside a submap is reached by the binds that enter that submap, so its chord is the path
-# from the top: a leaf `p` in pinbar-timebox reads "Super+A u t p". The first chord into a submap
+# from the top: a leaf `p` in pinbar-timebox reads "Super+A t p". The first chord into a submap
 # wins, and an Esc that goes back to a parent is never taken as the way in. description is empty
 # for a bind made without one (bind rather than bindd).
 #

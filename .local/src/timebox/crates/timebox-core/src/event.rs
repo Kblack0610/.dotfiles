@@ -21,6 +21,18 @@ pub enum EventKind {
     Lap,
     Switch,
     Reset,
+    #[serde(rename = "queue_add")]
+    QueueAdd,
+    #[serde(rename = "queue_rm")]
+    QueueRm,
+    #[serde(rename = "queue_mv")]
+    QueueMv,
+    #[serde(rename = "queue_done")]
+    QueueDone,
+    #[serde(rename = "queue_clear")]
+    QueueClear,
+    #[serde(rename = "queue_load")]
+    QueueLoad,
     /// Any kind a future version writes that this build doesn't know — kept so old
     /// binaries can still read (and fold over) a newer log.
     #[serde(other)]
@@ -97,7 +109,8 @@ mod tests {
 
     #[test]
     fn unknown_kind_survives() {
-        let line = r#"{"v":1,"ts":"2026-07-10T09:15:30-07:00","type":"teleport","op":"x","sw":"x"}"#;
+        let line =
+            r#"{"v":1,"ts":"2026-07-10T09:15:30-07:00","type":"teleport","op":"x","sw":"x"}"#;
         let e: Event = serde_json::from_str(line).unwrap();
         assert_eq!(e.kind, EventKind::Unknown);
     }
