@@ -642,3 +642,23 @@ EOF
   run "$DOCTOR" "$MAP"
   refute_output --partial 'has no tagGlob'
 }
+
+@test "testWorkflows is a list of .github/workflows paths on a tracker with a github slug" {
+  cat > "$MAP" <<'EOF2'
+{
+  "paths":    { "/tmp/r": "r" },
+  "trackers": {
+    "r":    { "system": "board", "github": "Org/r", "testWorkflows": ["tests.yml"] },
+    "bare": { "system": "board", "testWorkflows": [".github/workflows/tests.yml"] }
+  }
+}
+EOF2
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.r.testWorkflows has "tests.yml"'
+  assert_output --partial 'trackers.bare.testWorkflows needs a github slug'
+  # Negative control: a declared path on a tracker with its slug passes the check.
+  sed -i 's|\["tests.yml"\]|[".github/workflows/tests.yml"]|; s|"bare": { "system": "board", |"bare": { "system": "board", "github": "Org/bare", |' "$MAP"
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'testWorkflows'
+}

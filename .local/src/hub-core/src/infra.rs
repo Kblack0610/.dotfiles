@@ -25,10 +25,9 @@ const LOCAL_FRESH: &str =
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|vital)"}"#;
 
-/// What CI time costs: each host's rate and basis, its registered slots, its powered hours today
-/// and the AWS budget's month, which `run_detail::Rates` prices jobs from (`Infra::rates`).
-pub const RATES_QUERY: &str =
-    r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered|power_hours_today|budget_usd)"}"#;
+/// What CI time costs: each host's rate and basis and its registered slots, which
+/// `run_detail::Rates` prices jobs from (`Infra::rates`).
+pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -403,14 +402,11 @@ mod tests {
         let mut i = Infra::default();
         i.instant.insert(
             "rates",
-            vec![
-                cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0),
-                cc("ci_governor_budget_usd", ("kind", "actual"), 10.0),
-            ],
+            vec![cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0)],
         );
         let r = i.rates();
         assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
-        assert_eq!((r.budget_actual, r.error), (Some(10.0), None));
+        assert_eq!(r.error, None);
         let none = Infra {
             error: Some("cannot read prom".into()),
             ..Default::default()

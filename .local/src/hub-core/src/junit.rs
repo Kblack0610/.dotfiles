@@ -1,29 +1,32 @@
-//! The Releases tab's Tests section: what each finished `tests.yml` run's bats suites and tests
-//! said, from the `junit-*` artifacts the workflow uploads (a tier's shards each upload one).
+//! Infra's CI Tests section: what each finished run of a repo's declared test workflow said, suite
+//! by suite and test by test, from the `junit-*` artifacts the workflow uploads (a tier's shards
+//! each upload one). A repo declares its workflows in the registry (`testWorkflows` on its
+//! tracker, `project_map::Registry::test_workflows`); a repo that declares none lists no runs.
 //! The runs come from the builds ledger; an artifact is fetched with `gh run download` only when
 //! its run is read (docs/dashboards.md rule 10) and kept under the hub cache, since a finished
 //! run's artifacts never change and GitHub drops them after the workflow's retention.
 //!
 //! | fact                    | home                                                              |
 //! |-------------------------|-------------------------------------------------------------------|
-//! | which runs have results | the builds ledger: finished runs of `.github/workflows/tests.yml`  |
+//! | which runs have results | the builds ledger: finished runs of a workflow the repo declares    |
+//! | which workflows count   | the registry: `trackers.<repo>.testWorkflows`                      |
 //! | a suite or a test       | `<cache>/junit/<repo>-<run>-<attempt>/junit-<tier>-*/**/report.xml` |
 //! | the tier                | the artifact's name: `junit-unit-1` is `unit`, `junit-ui-tmux-3.8` is `ui` |
 //!
 //! The bats JUnit is read by a small scanner here rather than a new XML dependency: the report
 //! has `testsuite`, `testcase` and a `failure`, `error` or `skipped` child, nothing else is used.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use project_map::Registry;
 use serde::Serialize;
 
 use crate::builds::{Builds, Run};
 use crate::releases::Level;
 use crate::table::{Row, Val, View};
 
-/// The workflow whose artifacts these are, as the ledger names its file.
-pub const WORKFLOW_PATH: &str = ".github/workflows/tests.yml";
 /// How many runs the picker offers, newest first.
 pub const PICK_RUNS: usize = 30;
 /// The most of a failure's text kept per test.
@@ -67,15 +70,26 @@ impl PickRun {
     }
 }
 
-/// The finished runs of the tests workflow, newest first, one per run id (its latest attempt):
-/// a cancelled or skipped run uploaded nothing worth listing.
-pub fn pickable(b: &Builds) -> Vec<PickRun> {
+/// The finished runs of each repo's declared test workflows, newest first, one per run id (its
+/// latest attempt): a cancelled or skipped run uploaded nothing worth listing. With no registry
+/// no repo declares any.
+pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
+    let Some(reg) = registry else {
+        return vec![];
+    };
+    let mut declared: HashMap<&str, Vec<String>> = HashMap::new();
     let mut best: Vec<&Run> = vec![];
-    for r in b.rows.iter().filter(|r| {
-        r.forge == "github"
-            && r.path == WORKFLOW_PATH
-            && matches!(r.state.as_str(), "green" | "red")
-    }) {
+    for r in b
+        .rows
+        .iter()
+        .filter(|r| r.forge == "github" && matches!(r.state.as_str(), "green" | "red"))
+    {
+        let workflows = declared
+            .entry(r.repo.as_str())
+            .or_insert_with(|| reg.test_workflows(&r.repo));
+        if !workflows.contains(&r.path) {
+            continue;
+        }
         match best.iter_mut().find(|o| (&o.repo, o.id) == (&r.repo, r.id)) {
             Some(o) if o.attempt < r.attempt => *o = r,
             Some(_) => {}
@@ -785,6 +799,16 @@ mod tests {
             .is_none());
     }
 
+    const TESTS: &str = ".github/workflows/tests.yml";
+
+    fn registry() -> Registry {
+        Registry::parse(
+            r#"{"trackers": {"app": {"github": "Org/app", "testWorkflows": [".github/workflows/tests.yml"]},
+                "other": {"github": "Org/other"}}}"#,
+        )
+        .unwrap()
+    }
+
     fn ledger_run(id: u64, attempt: u32, path: &str, state: &str) -> Run {
         Run {
             forge: "github".into(),
@@ -799,22 +823,28 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_lists_finished_runs_of_the_workflow_once_each() {
+    fn the_picker_lists_finished_runs_of_the_declared_workflow_once_each() {
+        let mut undeclared = ledger_run(6, 1, TESTS, "green");
+        undeclared.repo = "Org/other".into();
         let b = Builds {
             rows: vec![
-                ledger_run(5, 1, WORKFLOW_PATH, "running"),
-                ledger_run(4, 1, WORKFLOW_PATH, "red"),
-                ledger_run(4, 2, WORKFLOW_PATH, "green"),
+                undeclared,
+                ledger_run(5, 1, TESTS, "running"),
+                ledger_run(4, 1, TESTS, "red"),
+                ledger_run(4, 2, TESTS, "green"),
                 ledger_run(3, 1, ".github/workflows/other.yml", "green"),
-                ledger_run(2, 1, WORKFLOW_PATH, "other"),
-                ledger_run(1, 1, WORKFLOW_PATH, "green"),
+                ledger_run(2, 1, TESTS, "other"),
+                ledger_run(1, 1, TESTS, "green"),
             ],
             ..Default::default()
         };
-        let p = pickable(&b);
+        let reg = registry();
+        let p = pickable(&b, Some(&reg));
         let ids: Vec<(u64, u32)> = p.iter().map(|r| (r.id, r.attempt)).collect();
         assert_eq!(ids, vec![(4, 2), (1, 1)]);
         assert_eq!(p[0].sha, "0123456");
+        // negative control: with no registry no repo declares a workflow.
+        assert!(pickable(&b, None).is_empty());
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -825,7 +855,7 @@ mod tests {
     }
 
     fn pick() -> PickRun {
-        PickRun::of(&ledger_run(9, 1, WORKFLOW_PATH, "green"))
+        PickRun::of(&ledger_run(9, 1, TESTS, "green"))
     }
 
     #[test]

@@ -29,9 +29,17 @@ const WOFF2: &str = "font/woff2";
 /// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -47,6 +55,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
     ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
@@ -303,10 +312,10 @@ mod tests {
 
     #[test]
     fn the_builds_headers_are_hub_cores_columns() {
-        // Rule 8: the Builds table draws the first columns hub_core::builds sorts and filters;
+        // Rule 8: the CI run tables draw the first columns hub_core::builds sorts and filters;
         // `forge` and `event` are dropdowns and `title` the open row's heading.
         use hub_core::table::Row;
-        let js = include_str!("../static/releases.js");
+        let js = include_str!("../static/ci.js");
         let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
         let body = &js[at..at + js[at..].find('}').unwrap()];
         let keys: Vec<&str> = body

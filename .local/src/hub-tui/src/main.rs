@@ -446,6 +446,16 @@ fn vitals(args: Vec<String>) -> i32 {
 }
 
 /// Epoch seconds, or an RFC 3339 time.
+/// The CI runs ledger, joined to the PR store, these queue items and the releases snapshot, as
+/// the live app's `read_builds` reads it.
+fn read_runs(a: &App, items: &[hub_core::queue::Item], now: i64) -> hub_core::builds::Builds {
+    let join = hub_core::builds::Join {
+        runner: &hub_core::session_actions::System,
+        items,
+    };
+    hub_core::builds::read(&a.files.builds, Some(join), now)
+}
+
 fn parse_since(s: &str) -> Option<i64> {
     s.parse().ok().or_else(|| {
         chrono::DateTime::parse_from_rfc3339(s)
@@ -587,6 +597,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    // `--tab 'infra runs'` (and the moved `releases builds`) prints the whole CI runs table.
+    if tab == Some(Tab::Infra) && section.as_deref() == Some("runs") {
+        let now = hub_core::jobs::now();
+        let (items, queue_error) = hub_core::actions::queue_items();
+        let b = read_runs(&a, &items, now);
+        let mut errors = b.errors.clone();
+        errors.extend(queue_error);
+        for l in
+            a.ci.status("Runs", &b, a.p, now)
+                .iter()
+                .chain(&a.ci.table(&b, a.p, w, false, now))
+        {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!errors.is_empty());
+    }
     // `--tab jobs` prints the whole jobs table, as the Jobs tab did.
     if tab == Some(Tab::Infra) && section.as_deref() == Some("jobs") {
         let js = hub_core::jobs::collect(&a.paths, &Default::default());
@@ -607,11 +633,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tab = Tab::Releases;
         a.open_query(section);
         // The strip with its counts, then the inner tab the request names (Apps by default).
-        let join = hub_core::builds::Join {
-            runner: &sys,
-            items: &items,
-        };
-        let mut b = hub_core::builds::read(&a.files.builds, Some(join), now);
+        let mut b = read_runs(&a, &items, now).releases(now);
         s.errors.extend(queue_error.clone());
         b.errors.extend(queue_error);
         let on = a.rv.on();
@@ -623,11 +645,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             w,
         )];
         match on {
-            "builds" => {
-                lines.extend(a.rv.builds.status(&b, a.p, now));
-                lines.extend(a.rv.builds.table(&b, a.p, w, false, now));
+            "runs" => {
+                lines.extend(a.rv.runs.status("Release runs", &b, a.p, now));
+                lines.extend(a.rv.runs.table(&b, a.p, w, false, now));
             }
-            "tests" => lines.extend(releases::tests_note(a.p, w)),
             _ => {
                 lines.extend(a.rv.status(&s, a.p, now));
                 lines.extend(a.rv.table(&s, a.p, w, false));
@@ -636,8 +657,8 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         for l in &lines {
             let _ = writeln!(out, "{}", plain(l));
         }
-        // The exit code is the shown tab's read: Builds' ledger, else the releases snapshot.
-        let errors = if on == "builds" { &b.errors } else { &s.errors };
+        // The exit code is the shown tab's read: the runs ledger, else the releases snapshot.
+        let errors = if on == "runs" { &b.errors } else { &s.errors };
         return i32::from(!errors.is_empty());
     }
     if tab == Some(Tab::Schedules) {
@@ -656,6 +677,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut failed = !infra.ok;
     a.infra = Some(infra);
     a.jobs = Some(hub_core::jobs::collect(&a.paths, &Default::default()));
+    if matches!(tab, None | Some(Tab::Infra)) {
+        let (items, _) = hub_core::actions::queue_items();
+        a.builds = Some(read_runs(&a, &items, hub_core::jobs::now()));
+    }
     // The reds and the Alerts join are read off-thread in the live app; a printed page has no
     // next frame, so read them here or Alerts prints "reading".
     if matches!(tab, None | Some(Tab::Alerts)) {
