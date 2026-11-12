@@ -323,7 +323,7 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "projects/all": ["board", ""], "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
+const INNER_TABS = {"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","fleet","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
@@ -436,8 +436,8 @@ function innerGo(tab, id) {
   stripMark(board, "itab", id);
 }
 // The strip: one button per inner tab, the open one marked, a count pill beside one whose
-// sections need a look (`flagged`: section ids) and only above zero.
-const innerStrip = (tab, flagged) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged);
+// sections need a look (`flagged`: section ids, or `counts` by inner id) and only above zero.
+const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
 // A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
 // open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
 // comes from `flagged` (section ids) or from `counts` by id, and shows only above zero.
