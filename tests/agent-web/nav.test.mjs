@@ -16,9 +16,10 @@ const boards = {};
 const buttons = {};
 const made = [];
 let observed;
+const heard = {};
 const doc = {
   getElementById: (id) => (id.startsWith("tab-") ? (buttons[id] ??= Object.assign(el(), { placed: 0, after() { this.placed++; } })) : id in boards ? boards[id] : el()),
-  addEventListener() {}, querySelector: el, querySelectorAll: () => [],
+  addEventListener(ev, f) { (heard[ev] ??= []).push(f); }, querySelector: el, querySelectorAll: () => [],
   createElement: () => { const e = Object.assign(el(), { innerHTML: "" }); made.push(e); return e; },
   body: el(),
 };
@@ -109,4 +110,29 @@ test("a section painted later above the sought one does not leave it off screen,
   board.scrollTop = 9000;
   vm.runInContext("seekSection()", ctx);
   assert.equal(tests.scrolled, 2, "a dropped hold stays dropped");
+});
+
+test("a reader's input or a new pending section ends the hold, and a hold never pulls back to an old section", () => {
+  const tests = anchor("sec-tests", "Tests");
+  const board = { scrollTop: 0, querySelectorAll: (q) => (q.startsWith("[id^=") ? [tests] : []) };
+  let offset = 400;
+  tests.scrollIntoView = function () { this.scrolled++; board.scrollTop = offset; };
+  tests.getBoundingClientRect = () => ({ top: offset - board.scrollTop });
+  boards.log = board;
+  vm.runInContext('st.tab = "log"; st.section = "tests"; seekSection()', ctx);
+  assert.equal(tests.scrolled, 1);
+  // The reader opens a fold above Tests: no scroll, but a click.
+  for (const f of heard.pointerdown) f();
+  offset = 700;
+  vm.runInContext("seekSection()", ctx);
+  assert.equal(tests.scrolled, 1, "input ended the hold");
+  // A fresh seek holds again; then a new section is asked for that has not painted yet.
+  vm.runInContext('st.section = "tests"; seekSection()', ctx);
+  assert.equal(tests.scrolled, 2);
+  vm.runInContext('st.section = "jobs"', ctx);
+  offset = 5000;
+  vm.runInContext("seekSection()", ctx);
+  assert.equal(tests.scrolled, 2, "the pending section is the target, not the old hold");
+  vm.runInContext("st.section = null; seekSection()", ctx);
+  assert.equal(tests.scrolled, 2, "and the old hold is gone");
 });
