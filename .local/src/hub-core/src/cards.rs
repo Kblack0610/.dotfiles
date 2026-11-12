@@ -458,43 +458,45 @@ pub fn releases(r: &crate::releases::Releases) -> Card {
     }))
 }
 
-/// Schedules: everything that runs on its own, red by its streak, amber with no purpose.
+/// Schedules: everything that runs on its own, by its job state, amber with no purpose.
 pub fn schedules(s: &crate::schedules::Schedules) -> Card {
-    let red = s.rows.iter().filter(|r| r.streak < 0).count();
+    use crate::reading::JobState;
+    let n = |st: JobState| s.rows.iter().filter(|r| r.state == st).count();
+    let (failing, stale, never) = (n(JobState::Failing), n(JobState::Stale), n(JobState::Never));
     let why = s
         .rows
         .iter()
-        .filter(|r| r.streak >= 0 && r.purpose.is_empty())
+        .filter(|r| r.state.level() == crate::vocab::Level::Ok && r.purpose.is_empty())
         .count();
-    let unknown = s.rows.iter().filter(|r| r.streak == 0).count();
+    let look = stale + never + why;
     let mut c = Card::new("schedules", "Schedules", "")
-        .bar(s.rows.len() - red - why, why, red)
-        .part("Failing", red, lvl(red, Level::Red))
-        .part("No purpose", why, lvl(why, Level::Warn))
-        .part("Not run yet", unknown, Level::Ok);
+        .bar(s.rows.len() - failing - look, look, failing)
+        .part("Failing", failing, lvl(failing, Level::Red))
+        .part("Stale", stale, lvl(stale, Level::Warn))
+        .part("Never ran", never, lvl(never, Level::Warn))
+        .part("No purpose", why, lvl(why, Level::Warn));
     c.big = s.rows.len().to_string();
     c.unit = "scheduled things".into();
     c.counted = s.summary.clone();
     if !s.errors.is_empty() {
         c.error = Some(s.errors.join("; "));
     }
-    // The rows come ranked red, then no purpose (schedules::rank).
-    c.first(
-        s.rows
-            .iter()
-            .filter(|r| r.streak < 0 || r.purpose.is_empty())
-            .map(|r| {
-                let (sub, level) = if r.streak < 0 {
-                    (
-                        format!("{} - failed {} in a row", r.kind, -r.streak),
-                        Level::Red,
-                    )
-                } else {
-                    (format!("{} - no purpose", r.kind), Level::Warn)
-                };
-                row(r.name.clone(), sub, level, None)
-            }),
-    )
+    // The rows come ranked failing, stale, never, then no purpose (schedules::rank).
+    c.first(s.rows.iter().filter_map(|r| {
+        let (sub, level) = match r.state {
+            JobState::Failing if r.streak < 0 => (
+                format!("{} - failed {} in a row", r.kind, -r.streak),
+                Level::Red,
+            ),
+            JobState::Failing => (format!("{} - {}", r.kind, r.status), Level::Red),
+            JobState::Stale | JobState::Never => {
+                (format!("{} - {}", r.kind, r.status), Level::Warn)
+            }
+            _ if r.purpose.is_empty() => (format!("{} - no purpose", r.kind), Level::Warn),
+            _ => return None,
+        };
+        Some(row(r.name.clone(), sub, level, None))
+    }))
 }
 
 /// Projects: the lab projects, amber where one waits on the human.
@@ -767,6 +769,11 @@ mod tests {
             r.name = name.into();
             r.kind = "timer".into();
             r.streak = streak;
+            r.state = if streak < 0 {
+                crate::reading::JobState::Failing
+            } else {
+                crate::reading::JobState::Ok
+            };
             r.purpose = purpose.into();
             r
         };

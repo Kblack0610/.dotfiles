@@ -75,7 +75,7 @@ function when(t) {
   const d = new Date(typeof t === "number" ? t * 1e3 : t);
   if (isNaN(d)) return esc(t);
   return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
-    : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    : `${d.toLocaleDateString([], { weekday: "short" })} ${clock(d.getTime())}`;
 }
 // One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
 // drawn as one: its link opens in place, or a URL outside the hub in a new tab.

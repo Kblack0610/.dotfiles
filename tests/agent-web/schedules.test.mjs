@@ -40,20 +40,22 @@ const schst = run("schst");
 
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = {
-  q: "", state: "red", sort: "", dir: "", total: 3, shown: 2,
-  states: [{ name: "all", n: 3 }, { name: "red", n: 2 }, { name: "ok", n: 1 }, { name: "unknown", n: 0 }, { name: "no-purpose", n: 1 }],
-  columns: ["kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo"].map(col),
+  q: "", state: "failing", sort: "", dir: "", total: 3, shown: 2,
+  states: [{ name: "all", n: 3 }, { name: "failing", n: 2 }, { name: "stale", n: 0 }, { name: "never", n: 0 }, { name: "off", n: 0 }, { name: "ok", n: 1 }, { name: "no-purpose", n: 1 }],
+  columns: ["kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak", "triage", "result", "repo"].map(col),
   facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, on: false, q: "kind:ci" }] }],
 };
-const row = (kind, name, o = {}) => ({ kind, name, repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
-const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}` });
+const row = (kind, name, o = {}) => ({ kind, name, state: "failing", state_level: "bad", state_why: "", repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, ok_at: null, fail_at: 1793942659, took: 2520, every: 86400, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
+const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}`, took: 2520 });
 const nightly = row("ci", "playground / Tests", {
-  purpose: "the only full run of every class on main", triage: "queued nightly-triage-1", status: "red since 11-01, triage queued, next 02:00",
+  purpose: "the only full run of every class on main", triage: "queued nightly-triage-1", status: "failing since 11-01, triage queued, next 02:00",
   inside: "Plan -> PlayMode 1..8", before: "cron 0 10 * * * UTC", after: ["Sentinel playground-nightly (pages urgent)", "triage agent playground-nightly-fix"], open: ["nightly-triage-1 (queued)"],
   runs: [run1(0), run1(1), run1(2), run1(3)],
 });
-const data = { at: 1793942700, summary: "3 scheduled, 2 red, 1 no purpose, CI read 7m ago", errors: [], table,
-  rows: [nightly, row("timer", "journal-sync"), row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_word: "green 9" })] };
+const data = { at: 1793942700, summary: "4 scheduled: 2 failing, 0 stale, 0 never ran, 1 off, 1 no purpose, CI read 7m ago", errors: [], table,
+  rows: [nightly, row("timer", "journal-sync"),
+    row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_word: "green 9", state: "ok", state_level: "ok", ok_at: 1793942659, fail_at: null }),
+    row("agentctl", "old-sweep", { page: "old-sweep", purpose: "retired", state: "off", state_level: "ok", streak: 0, streak_word: "", last: null, fail_at: null, took: null })] };
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
 const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("schst.render()"); };
@@ -65,13 +67,16 @@ test("the table draws its head, the mock's columns and a missing purpose", () =>
   assert.doesNotMatch(h, /CI read 7m ago/, "no summary sentence after the title");
   // When the schedules were read is a tile after the state tiles (the Schedules tblTab's tiles).
   assert.match(run("schedulesTiles")(data), /<span class="tl">READ<\/span><span class="tv">\d\d:\d\d<\/span>/);
-  for (const c of ["kind", "name", "schedule", "next", "last", "result", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
-  assert.doesNotMatch(h, /data-tsort="repo"/, "repo sorts and filters without a column");
+  for (const c of ["kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak", "triage"]) assert.match(h, new RegExp(`data-tsort="${c}"`));
+  for (const c of ["result", "repo"]) assert.doesNotMatch(h, new RegExp(`data-tsort="${c}"`), `${c} sorts and filters without a column`);
+  assert.match(h, /<td class="bad" title="[^"]*">failing<\/td>/, "a failing row says so in red");
+  assert.match(h, /<td class="muted" title="">off<\/td>/, "a runner turned off reads off, plain");
+  assert.match(h, /<td class="n">42m<\/td>/, "how long the last run took");
   assert.match(h, /<td class="bad">red 6<\/td>/);
   assert.match(h, /<td class="">green 9<\/td>/);
   assert.match(h, /journal-sync <span class="warn"[^>]*>no purpose<\/span>/, "a missing purpose is amber");
   assert.match(h, /queued nightly-triage-1/);
-  assert.match(h, /<button class="tile on" data-ts=""><span class="tl">RED<\/span><span class="tv">2<\/span><\/button>/);
+  assert.match(h, /<button class="tile on[^"]*" data-ts=""[^>]*><span class="tl">FAILING<\/span><span class="tv">2<\/span><\/button>/);
   assert.match(h, /id="sched-q"/);
 });
 
@@ -90,13 +95,14 @@ test("a row opens its detail and folds runs past the second", () => {
   fire("click", { target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
   const h = box.innerHTML;
   assert.equal(schst.sel, "ci|playground / Tests");
-  assert.match(h, /red since 11-01, triage queued, next 02:00/);
+  assert.match(h, /failing since 11-01, triage queued, next 02:00/);
   assert.match(h, /<b>Why it exists<\/b> the only full run/);
   assert.match(h, /<b>Inside<\/b> Plan -&gt; PlayMode 1..8/);
   assert.match(h, /<b>Before<\/b> cron 0 10/);
   assert.match(h, /<b>After<\/b> Sentinel playground-nightly \(pages urgent\); triage agent/);
   assert.match(h, /<b>Open triage<\/b> nightly-triage-1 \(queued\)/);
   assert.match(h, /PlayMode 2, PlayMode 8/);
+  assert.match(h, /<span class="muted">in 42m<\/span>/, "each run says how long it took");
   assert.match(h, /<summary class="muted">\+2 older<\/summary>/);
   assert.equal((h.match(/Open run/g) || []).length, 4);
   fire("click", { target: target({}, { dataset: { key: "ci|playground / Tests" } }) });
@@ -125,10 +131,10 @@ test("a header click, a chip and a query go to the server as view keys", async (
   fire("click", { type: "click", target: target({ tsort: "streak", tdir: "asc" }) });
   await new Promise((r) => setImmediate(r));
   assert.match(asked.at(-1), /^\/api\/schedules\?sort=streak&dir=asc$/);
-  fire("click", { type: "click", target: target({ ts: "red" }) });
+  fire("click", { type: "click", target: target({ ts: "failing" }) });
   await new Promise((r) => setImmediate(r));
-  assert.match(asked.at(-1), /s=red/);
-  assert.match(run("st.views.schedules"), /s=red/, "the URL keeps the view, so it is a link");
+  assert.match(asked.at(-1), /s=failing/);
+  assert.match(run("st.views.schedules"), /s=failing/, "the URL keeps the view, so it is a link");
 });
 
 test("a repaint leaves the search box in use and a failed read says why", () => {

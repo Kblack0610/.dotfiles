@@ -224,9 +224,9 @@ const alerts = {
 
 // Schedules: hub_core::schedules.
 const schedules = {
-  table: table(7, ["kind", "name", "schedule", "last", "result", "streak", "triage", "repo", "next"], ["all", "red", "ok", "unknown", "no-purpose"], { kind: ["runner", "timer"], repo: ["dotfiles", "homelab-config"], result: ["ok", "failed"] }),
-  rows: rows(7, (i) => ({ kind: pick(["runner", "timer"], i), name: `fleet-${SLUGS[i]}`, schedule: pick(["every 5m", "daily 04:00", "hourly"], i), last: ago(14 + i * 90), result: pick(["ok", "failed", "unknown"], i), ok: i % 3 === 0, streak: 1 + i, streak_word: i % 3 ? "reds" : "greens", triage: i % 3 === 1 ? TEXT[i] : "", purpose: TEXT[i], page: "", status: TEXT[i], inside: "", before: "", after: [], open: [], runs: [] })),
-  summary: "7 schedules, 2 red", at: NOW, errors: [],
+  table: table(7, ["kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak", "triage", "result", "repo"], ["all", "failing", "stale", "never", "off", "ok", "no-purpose"], { kind: ["runner", "timer"], state: ["failing", "ok"], repo: ["dotfiles", "homelab-config"], result: ["ok", "failed"] }),
+  rows: rows(7, (i) => ({ kind: pick(["runner", "timer"], i), name: `fleet-${SLUGS[i]}`, state: pick(["ok", "failing", "stale", "off"], i), state_level: pick(["ok", "bad", "warn", "ok"], i), state_why: "", took: 30 + i * 200, ok_at: ago(14 + i * 90), fail_at: i % 2 ? ago(400) : null, every: 3600, schedule: pick(["every 5m", "daily 04:00", "hourly"], i), last: ago(14 + i * 90), result: pick(["ok", "failed", "unknown"], i), ok: i % 3 === 0, streak: 1 + i, streak_word: i % 3 ? "reds" : "greens", triage: i % 3 === 1 ? TEXT[i] : "", purpose: TEXT[i], page: "", status: TEXT[i], inside: "", before: "", after: [], open: [], runs: [] })),
+  summary: "7 scheduled: 2 failing, 2 stale, 0 never ran, 1 off, 0 no purpose, CI read 4m ago", at: NOW, errors: [],
 };
 
 // Costs: hub_core::costs, the shape costs.test.mjs pins.

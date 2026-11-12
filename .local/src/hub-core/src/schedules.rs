@@ -14,10 +14,12 @@ use crate::fleet::{self, runner, runner::Watch, Conf};
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 use crate::queue;
+use crate::reading::JobState;
 use crate::reds::{self, Red};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 use crate::text::age;
+use crate::vocab::Level;
 
 /// How far back a streak looks; agentctl's ledger and the journal both hold a week.
 const WEEK: i64 = 7 * 86400;
@@ -27,6 +29,8 @@ const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const CI: &str = "ci";
 const AGENTCTL: &str = "agentctl";
+/// The schedule word of a runner with no timer, which another runner starts.
+const ON_DEMAND: &str = "on demand";
 const TIMER: &str = "timer";
 const K8S: &str = "k8s";
 
@@ -40,6 +44,8 @@ pub struct Run {
     pub failed: Vec<String>,
     /// Where the run opens; empty when it has no page.
     pub url: String,
+    /// How long it ran, in seconds.
+    pub took: Option<i64>,
 }
 
 /// One thing that runs on its own.
@@ -48,6 +54,13 @@ pub struct Schedule {
     /// `ci`, `agentctl`, `timer` or `k8s`.
     pub kind: String,
     pub name: String,
+    /// How it stands: off, never, failing, stale or ok (`JobState::of`).
+    pub state: JobState,
+    /// The state's colour, so a surface need not know the words.
+    pub state_level: Level,
+    /// Why the state is what it is, when its runs alone do not say: `agentctl liveness`'s fault,
+    /// or how long it has been quiet.
+    pub state_why: String,
     /// A CI row's repository; empty on the others.
     pub repo: String,
     /// When, in words and local time.
@@ -61,6 +74,13 @@ pub struct Schedule {
     pub streak: i32,
     /// The oldest run of a red streak.
     pub red_since: Option<i64>,
+    /// The newest run that passed, and the newest that failed.
+    pub ok_at: Option<i64>,
+    pub fail_at: Option<i64>,
+    /// How long the newest run took, in seconds.
+    pub took: Option<i64>,
+    /// Seconds between two starts, where the schedule says: stale past two of them.
+    pub every: Option<i64>,
     /// An open red item (`<outcome> <slug>`), else the route a failure takes, else `-`.
     pub triage: String,
     pub next: Option<i64>,
@@ -85,13 +105,12 @@ pub struct Schedule {
     /// The words a watch's `where:` must all name to be about this row.
     #[serde(skip)]
     words: Vec<String>,
+    /// Turned off: a disabled runner, a suspended CronJob.
+    #[serde(skip)]
+    off: bool,
 }
 
 impl Schedule {
-    fn red(&self) -> bool {
-        self.streak < 0
-    }
-
     /// The streak as the column shows it, empty with none.
     pub fn streak_text(&self) -> String {
         match self.streak {
@@ -110,20 +129,77 @@ impl Schedule {
             self.ok = r.ok;
         }
         (self.streak, self.red_since) = streak(&runs);
+        self.ok_at = runs.iter().find(|r| r.ok == Some(true)).and_then(|r| r.at);
+        self.fail_at = runs.iter().find(|r| r.ok == Some(false)).and_then(|r| r.at);
+        self.took = runs.first().and_then(|r| r.took);
         self.runs = runs;
+    }
+
+    /// Settle the state from what is known by `at`: stale when no run finished in two intervals.
+    fn judge(&mut self, at: i64) {
+        let quiet = self.last.map(|l| at - l);
+        let overdue = matches!((quiet, self.every), (Some(q), Some(e)) if e > 0 && q > 2 * e);
+        self.state = JobState::of(self.off, self.last, self.streak < 0, overdue);
+        if self.state == JobState::Stale && self.state_why.is_empty() {
+            self.state_why = format!(
+                "no run in {}, and it starts every {}",
+                age(quiet.unwrap_or(0)),
+                age(self.every.unwrap_or(0))
+            );
+        }
+        self.state_level = self.state.level();
+    }
+
+    /// Fold an `agentctl liveness` fault into the state: a stalled or failed outcome, or a conf
+    /// that will not load, is failing, even on a row whose week of runs is empty, since the outcome
+    /// on file is older than the ledger. Any other fault on a row that reads ok is stale; one on a
+    /// row that has never run leaves it never, and an off one off.
+    fn fault(&mut self, why: &str) {
+        self.state_why = format!("liveness: {why}");
+        let failed = ["STALLED", "FAILED", "invalid conf"]
+            .iter()
+            .any(|w| why.contains(w));
+        self.state = match self.state {
+            JobState::Ok | JobState::Stale | JobState::Never if failed => JobState::Failing,
+            JobState::Ok => JobState::Stale,
+            s => s,
+        };
+        self.state_level = self.state.level();
     }
 }
 
 impl Row for Schedule {
-    // `repo` is last and undrawn: it filters and sorts, and the first eight line up with the
-    // columns each surface draws.
+    // `result` and `repo` are last and undrawn: they filter and sort, and the rest line up with
+    // the columns each surface draws.
     const COLUMNS: &'static [&'static str] = &[
-        "kind", "name", "schedule", "next", "last", "result", "streak", "triage", "repo",
+        "kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak",
+        "triage", "result", "repo",
     ];
-    const STATES: &'static [&'static str] = &["all", "red", "ok", "unknown", "no-purpose"];
-    const FACETS: &'static [&'static str] = &["kind", "repo", "result"];
+    const STATES: &'static [&'static str] = &[
+        "all",
+        JobState::Failing.word(),
+        JobState::Stale.word(),
+        JobState::Never.word(),
+        JobState::Off.word(),
+        JobState::Ok.word(),
+        "no-purpose",
+    ];
+    const FACETS: &'static [&'static str] = &["kind", "state", "repo", "result"];
     const LEAD: &'static str = "name";
-    const GLANCE: &'static [&'static str] = &["last", "result", "streak"];
+    const GLANCE: &'static [&'static str] = &["state", "last", "streak"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (JobState::Failing.word(), JobState::Failing.means()),
+        (JobState::Stale.word(), JobState::Stale.means()),
+        (JobState::Never.word(), JobState::Never.means()),
+        (JobState::Off.word(), JobState::Off.means()),
+        (JobState::Ok.word(), JobState::Ok.means()),
+    ];
+    const TONES: &'static [(&'static str, Level)] = &[
+        (JobState::Failing.word(), JobState::Failing.level()),
+        (JobState::Stale.word(), JobState::Stale.level()),
+        (JobState::Never.word(), JobState::Never.level()),
+        (JobState::Ok.word(), JobState::Ok.level()),
+    ];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {
@@ -134,8 +210,12 @@ impl Row for Schedule {
         match col {
             "kind" => text(&self.kind),
             "name" => text(&self.name),
+            "state" => text(self.state.word()),
             "schedule" => text(&self.schedule),
             "last" => num(self.last),
+            "took" => num(self.took),
+            "passed" => num(self.ok_at),
+            "failed" => num(self.fail_at),
             "result" => text(&self.result),
             // Negated, so a header's first click (biggest first) puts the longest red on top.
             "streak" if self.streak != 0 => Val::Num(-f64::from(self.streak)),
@@ -148,35 +228,42 @@ impl Row for Schedule {
 
     fn in_state(&self, state: &str) -> bool {
         match state {
-            "red" => self.red(),
-            "ok" => self.streak > 0,
-            "unknown" => self.streak == 0,
             "no-purpose" => self.purpose.is_empty(),
-            _ => true,
+            "all" => true,
+            s => self.state.word() == s,
+        }
+    }
+
+    /// The state sorts by how urgent it is, failing first.
+    fn rank(&self, col: &str) -> Val {
+        match col {
+            "state" => Val::Num(self.state as u8 as f64),
+            c => self.val(c),
         }
     }
 
     fn text(&self) -> String {
         [
-            &self.kind,
+            self.kind.as_str(),
             &self.name,
+            self.state.word(),
+            &self.state_why,
             &self.schedule,
             &self.result,
             &self.triage,
             &self.repo,
             &self.purpose,
         ]
-        .map(String::as_str)
         .join("\n")
         .to_lowercase()
     }
 }
 
-/// Every schedule, exceptions first: red, then no purpose, then by kind and name.
+/// Every schedule, exceptions first: failing, stale, never, then no purpose, then by kind and name.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Schedules {
     pub at: i64,
-    /// `41 scheduled, 3 red, 2 no purpose, CI read 4m ago`.
+    /// `41 scheduled: 3 failing, 1 stale, 2 never ran, 4 off, 2 no purpose, CI read 4m ago`.
     pub summary: String,
     pub rows: Vec<Schedule>,
     /// `<source>: <why>` for each source that could not be read.
@@ -219,7 +306,13 @@ fn hourly(min: i32) -> String {
 /// A UTC cron in words, in the zone `off` seconds east: `02:00 daily`, `05:30 Sat`, `every 15m`.
 /// A shape with no short wording stays the cron, marked UTC.
 pub fn cron_words(cron: &str, off: i32) -> String {
-    let raw = || format!("{cron} UTC");
+    cron_words_in(cron, off, "UTC")
+}
+
+/// A cron written in `zone` in words, `off` seconds east of that zone; a shape with no short
+/// wording stays the cron, marked with its zone.
+fn cron_words_in(cron: &str, off: i32, zone: &str) -> String {
+    let raw = || format!("{cron} {zone}");
     let f: Vec<&str> = cron.split_whitespace().collect();
     let [m, h, "*", "*", dow] = f[..] else {
         return raw();
@@ -316,6 +409,16 @@ pub fn cron_next(cron: &str, at: i64) -> Option<i64> {
 /// A UTC cron's last start before `at`: when a run was last due.
 pub fn cron_prev(cron: &str, at: i64) -> Option<i64> {
     cron_walk(cron, at, -60)
+}
+
+/// The seconds between the starts of `cron` around `at`: its last due minute to its next.
+pub fn cron_every(cron: &str, at: i64) -> Option<i64> {
+    Some(cron_next(cron, at)? - cron_prev(cron, at)?)
+}
+
+/// A timer's seconds between starts, from its last and next: none until it has fired once.
+fn timer_every(t: &Listed) -> Option<i64> {
+    Some(secs(t.next)? - secs(t.last)?).filter(|e| *e > 0)
 }
 
 /// A systemd `OnCalendar` in words: it is already local. Shapes with no short wording stay as
@@ -498,6 +601,7 @@ fn ci_rows(text: &str, at: i64, off: i32) -> Result<CiRead, String> {
                 schedule: words.join(", "),
                 purpose: w.purpose.unwrap_or_default().trim().to_string(),
                 next: w.crons.iter().filter_map(|c| cron_next(c, at)).min(),
+                every: w.crons.iter().filter_map(|c| cron_every(c, at)).min(),
                 inside: layers(&w.jobs),
                 before: raw.join(", "),
                 words: vec![short.clone(), file],
@@ -509,8 +613,13 @@ fn ci_rows(text: &str, at: i64, off: i32) -> Result<CiRead, String> {
                 .filter(|r| r.status == "completed")
                 .map(|r| {
                     let c = r.conclusion.unwrap_or_default();
+                    let (start, end) = (
+                        r.created_at.as_deref().and_then(fleet::ts),
+                        r.ended_at.as_deref().and_then(fleet::ts),
+                    );
                     Run {
-                        at: r.ended_at.or(r.created_at).as_deref().and_then(fleet::ts),
+                        at: end.or(start),
+                        took: start.zip(end).map(|(s, e)| e - s).filter(|t| *t >= 0),
                         ok: jobs::conclusion_ok(&c),
                         result: c,
                         failed: r.failed_jobs,
@@ -533,6 +642,9 @@ fn runs_of(jobs: &[Job], name: &str) -> Vec<Run> {
             at: j.finished.or(j.started),
             result: j.result.clone(),
             ok: j.ok,
+            took: j
+                .secs
+                .or_else(|| j.started.zip(j.finished).map(|(s, f)| f - s)),
             ..Default::default()
         })
         .collect()
@@ -552,23 +664,44 @@ fn secs(us: Option<u64>) -> Option<i64> {
     us.filter(|&t| t > 0).map(|t| (t / 1_000_000) as i64)
 }
 
-/// The enabled runners with a schedule. Their history lives on their Fleet page, so a row carries
-/// only the summary and opens that page.
-fn agentctl_rows(confs: Vec<Conf>, runs: &[Job], timers: &[Listed]) -> Vec<Schedule> {
+/// The runners with a schedule, a disabled one as off, plus the ones another runner starts once
+/// they have reported (a run this week, or a liveness fault), as `agentctl liveness` counts its
+/// roster. Their history lives on their Fleet page, so a row carries only the summary and opens
+/// that page. A run older than the ledger's week still counts as a run, from the timer's last
+/// fire, with its verdict left to liveness.
+fn agentctl_rows(
+    confs: Vec<Conf>,
+    runs: &[Job],
+    timers: &[Listed],
+    faulted: &HashMap<String, String>,
+) -> Vec<Schedule> {
     confs
         .into_iter()
-        .filter(|c| c.enabled && !c.schedule.is_empty())
+        .filter(|c| {
+            !c.schedule.is_empty()
+                || (c.enabled
+                    && (faulted.contains_key(&c.name) || runs.iter().any(|j| j.name == c.name)))
+        })
         .map(|c| {
             let unit = format!("agentctl@{}.service", c.name);
+            let timer = timers.iter().find(|t| t.activates == unit);
+            let kicked = c.schedule.is_empty();
             let mut row = Schedule {
                 kind: AGENTCTL.into(),
-                schedule: calendar_words(&c.schedule),
+                schedule: if kicked {
+                    ON_DEMAND.into()
+                } else {
+                    calendar_words(&c.schedule)
+                },
                 purpose: c.description.trim().to_string(),
-                next: timers
-                    .iter()
-                    .find(|t| t.activates == unit)
-                    .and_then(|t| secs(t.next)),
-                before: format!("OnCalendar {}", c.schedule),
+                next: timer.and_then(|t| secs(t.next)).filter(|_| c.enabled),
+                every: timer.and_then(timer_every),
+                off: !c.enabled,
+                before: if kicked {
+                    "no timer: another runner starts it".into()
+                } else {
+                    format!("OnCalendar {}", c.schedule)
+                },
                 page: c.name.clone(),
                 words: vec![c.name.clone()],
                 name: c.name,
@@ -577,6 +710,9 @@ fn agentctl_rows(confs: Vec<Conf>, runs: &[Job], timers: &[Listed]) -> Vec<Sched
             };
             row.settle(runs_of(runs, &row.name));
             row.runs.clear();
+            if row.last.is_none() {
+                row.last = timer.and_then(|t| secs(t.last));
+            }
             row
         })
         .collect()
@@ -679,6 +815,7 @@ fn timer_rows(
                 schedule,
                 purpose: purpose.to_string(),
                 next: secs(t.next),
+                every: timer_every(t),
                 inside: exec(sk, home),
                 before,
                 unit: t.activates.clone(),
@@ -695,6 +832,11 @@ fn timer_rows(
                     row.ok = Some(row.result == "success");
                     row.streak = if row.ok == Some(true) { 1 } else { -1 };
                     row.red_since = row.last.filter(|_| row.streak < 0);
+                    (row.ok_at, row.fail_at) = if row.streak > 0 {
+                        (row.last, None)
+                    } else {
+                        (None, row.last)
+                    };
                 }
             }
             row
@@ -709,33 +851,43 @@ struct Cron {
     next: Vec<Series>,
     suspended: Vec<Series>,
     annotations: Vec<Series>,
+    /// When the controller last started it: a run older than the journal's week.
+    last: Vec<Series>,
 }
 
-/// The CronJobs kube-state-metrics reports. Its cron is in the controller's zone, UTC here. The
+/// The CronJobs kube-state-metrics reports. A cron is UTC (the controller's zone) unless its
+/// `spec.timeZone`, the `timezone` label, names another; one in this machine's own zone `local` reads in words, one
+/// in another zone stays the cron with its zone named, since no zone table is read here. The
 /// purpose is the `description` annotation, once its allowlist exposes it.
-fn k8s_rows(c: &Cron, runs: &[Job], off: i32) -> Vec<Schedule> {
+fn k8s_rows(c: &Cron, runs: &[Job], at: i64, off: i32, local: &str) -> Vec<Schedule> {
     fn find<'a>(of: &'a [Series], ns: &str, job: &str) -> Option<&'a Series> {
         of.iter()
             .find(|s| s.label("namespace") == ns && s.label("cronjob") == job)
     }
-    let mut seen: BTreeMap<(String, String), String> = BTreeMap::new();
+    let mut seen: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for s in &c.info {
         seen.insert(
             (s.label("namespace").into(), s.label("cronjob").into()),
-            s.label("schedule").into(),
+            (s.label("schedule").into(), s.label("timezone").into()),
         );
     }
     seen.into_iter()
-        .map(|((ns, job), cron)| {
+        .map(|((ns, job), (cron, zone))| {
+            let zone = match zone.as_str() {
+                // `local` is no timeZone set: the controller's zone, UTC on these clusters.
+                "" | "local" | "Etc/UTC" => "UTC".to_string(),
+                _ => zone,
+            };
+            let words = match zone.as_str() {
+                "UTC" => cron_words(&cron, off),
+                z if z == local => cron_words_in(&cron, 0, z),
+                z => format!("{cron} {z}"),
+            };
             let suspended = find(&c.suspended, &ns, &job).and_then(|s| s.value) == Some(1.0);
             let name = format!("{ns}/{job}");
             let mut row = Schedule {
                 kind: K8S.into(),
-                schedule: format!(
-                    "{}{}",
-                    cron_words(&cron, off),
-                    if suspended { ", suspended" } else { "" }
-                ),
+                schedule: format!("{words}{}", if suspended { ", suspended" } else { "" }),
                 purpose: find(&c.annotations, &ns, &job)
                     .map(|s| s.label("annotation_description").trim().to_string())
                     .unwrap_or_default(),
@@ -743,12 +895,20 @@ fn k8s_rows(c: &Cron, runs: &[Job], off: i32) -> Vec<Schedule> {
                     .and_then(|s| s.value)
                     .filter(|_| !suspended)
                     .map(|v| v as i64),
-                before: format!("cron {cron} UTC"),
-                words: vec![job],
+                every: cron_every(&cron, at),
+                off: suspended,
+                before: format!("cron {cron} {zone}"),
+                words: vec![job.clone()],
                 name,
                 ..Default::default()
             };
             row.settle(runs_of(runs, &row.name));
+            if row.last.is_none() {
+                row.last = find(&c.last, &ns, &job)
+                    .and_then(|s| s.value)
+                    .map(|v| v as i64)
+                    .filter(|t| *t > 0);
+            }
             row
         })
         .collect()
@@ -862,11 +1022,13 @@ pub(crate) fn local(t: i64, off: i32, fmt: &str) -> String {
 
 /// The detail's head line: how it stands, what is on it, when it next runs.
 fn status(row: &Schedule, at: i64, off: i32) -> String {
-    let mut parts = vec![];
-    match (row.streak, row.red_since) {
-        (n, Some(t)) if n < 0 => parts.push(format!("red since {}", local(t, off, "%m-%d"))),
-        (n, _) if n > 0 => parts.push("green".to_string()),
-        _ => parts.push("no result yet".to_string()),
+    let mut parts = vec![match (row.state, row.red_since) {
+        (JobState::Failing, Some(t)) => format!("failing since {}", local(t, off, "%m-%d")),
+        (JobState::Never, _) => "never ran".to_string(),
+        (s, _) => s.word().to_string(),
+    }];
+    if !row.state_why.is_empty() {
+        parts.push(row.state_why.clone());
     }
     if row.triage != "-" {
         parts.push(format!("triage {}", row.triage));
@@ -882,31 +1044,42 @@ fn status(row: &Schedule, at: i64, off: i32) -> String {
     parts.join(", ")
 }
 
-/// Exceptions first, then the soonest to run, those with no next start last, then a stable order.
+/// Exceptions first (failing, stale, never, then no purpose), then the soonest to run, those
+/// with no next start last, then a stable order.
 fn rank(rows: &mut [Schedule]) {
-    let weight = |r: &Schedule| {
-        if r.red() {
-            0
-        } else if r.purpose.is_empty() {
-            1
-        } else {
-            2
-        }
+    let weight = |r: &Schedule| match r.state {
+        JobState::Failing | JobState::Stale | JobState::Never => r.state as u8,
+        JobState::Ok if r.purpose.is_empty() => JobState::Never as u8 + 1,
+        s => s as u8 + 1,
     };
     let key = |r: &Schedule| (weight(r), r.next.unwrap_or(i64::MAX));
     rows.sort_by(|a, b| (key(a), &a.kind, &a.name).cmp(&(key(b), &b.kind, &b.name)));
 }
 
 fn summary(rows: &[Schedule], ci_at: Option<i64>, at: i64) -> String {
-    let red = rows.iter().filter(|r| r.red()).count();
+    let n = |s: JobState| rows.iter().filter(|r| r.state == s).count();
     let gaps = rows.iter().filter(|r| r.purpose.is_empty()).count();
     let read = ci_at.map_or("CI not read".to_string(), |t| {
         format!("CI read {} ago", age(at - t))
     });
     format!(
-        "{} scheduled, {red} red, {gaps} no purpose, {read}",
-        rows.len()
+        "{} scheduled: {} failing, {} stale, {} never ran, {} off, {gaps} no purpose, {read}",
+        rows.len(),
+        n(JobState::Failing),
+        n(JobState::Stale),
+        n(JobState::Never),
+        n(JobState::Off),
     )
+}
+
+/// `agentctl liveness`'s faults by runner, from its `<runner>: <fault>` lines; the fleet-wide
+/// `fleet:` lines belong to the fleet-liveness watch. It exits 1 when it names any.
+fn parse_liveness(out: &str) -> HashMap<String, String> {
+    out.lines()
+        .filter_map(|l| l.split_once(": "))
+        .filter(|(n, _)| *n != "fleet" && !n.contains(' '))
+        .map(|(n, why)| (n.to_string(), why.trim().to_string()))
+        .collect()
 }
 
 /// `home`'s path `rel`, or the variable's when it is set.
@@ -956,6 +1129,7 @@ fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
                 next: q("kube_cronjob_next_schedule_time"),
                 suspended: q("kube_cronjob_spec_suspend"),
                 annotations: q("kube_cronjob_annotations"),
+                last: q("kube_cronjob_status_last_schedule_time"),
             }
         }
         Err(e) => {
@@ -965,7 +1139,21 @@ fn read_k8s(at: i64, off: i32) -> (Vec<Schedule>, Vec<String>) {
     };
     let (runs, e) = jobs::k8s_runs(at, at - WEEK);
     tagged(e, "k8s", &mut errors);
-    (k8s_rows(&cron, &runs, off), errors)
+    (k8s_rows(&cron, &runs, at, off, &local_zone()), errors)
+}
+
+/// This machine's zone name, from `TZ` or the `/etc/localtime` link; empty when neither says.
+fn local_zone() -> String {
+    if let Some(tz) = std::env::var("TZ").ok().filter(|t| !t.is_empty()) {
+        return tz.trim_start_matches(':').to_string();
+    }
+    std::fs::read_link("/etc/localtime")
+        .ok()
+        .and_then(|p| {
+            let p = p.to_string_lossy().into_owned();
+            p.split_once("zoneinfo/").map(|(_, z)| z.to_string())
+        })
+        .unwrap_or_default()
 }
 
 /// Every timer systemd lists.
@@ -1003,9 +1191,9 @@ pub fn runner_starts(
     tagged(e, "agentctl", &mut errors);
     let confs = confs
         .into_iter()
-        .filter(|c| names.contains(&c.name.as_str()))
+        .filter(|c| c.enabled && names.contains(&c.name.as_str()))
         .collect();
-    let out: Vec<Starts> = agentctl_rows(confs, &[], &listed)
+    let out: Vec<Starts> = agentctl_rows(confs, &[], &listed, &HashMap::new())
         .into_iter()
         .map(|r| Starts {
             fired: listed
@@ -1068,11 +1256,16 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     let mut errors = vec![];
     let mut rows = vec![];
 
-    let (timers, k8s, reds, queued) = std::thread::scope(|s| {
+    let (timers, k8s, reds, queued, live) = std::thread::scope(|s| {
         let timers = s.spawn(|| read_timers(runner, at, &home));
         let k8s = s.spawn(|| read_k8s(at, off));
         let reds = s.spawn(|| reds::read(runner).map(|r| r.open));
         let queued = s.spawn(|| queue::list(runner, "queued"));
+        let live = s.spawn(|| {
+            runner
+                .output(&["agentctl", "liveness"].map(String::from))
+                .map(|(_, out)| parse_liveness(&out))
+        });
         let gone = || "panicked".to_string();
         (
             timers
@@ -1081,6 +1274,7 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
             k8s.join().unwrap_or_else(|_| (vec![], vec![gone()])),
             reds.join().unwrap_or_else(|_| Err(gone())),
             queued.join().unwrap_or_else(|_| Err(gone())),
+            live.join().unwrap_or_else(|_| Err(gone())),
         )
     });
 
@@ -1106,7 +1300,8 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     tagged(e, "agentctl", &mut errors);
     let (runs, e) = jobs::agentctl_runs(&paths.jobs, at - WEEK);
     tagged(e, "agentctl", &mut errors);
-    rows.extend(agentctl_rows(confs, &runs, &listed));
+    let live = noted(live, "liveness", &mut errors);
+    rows.extend(agentctl_rows(confs, &runs, &listed, &live));
     rows.extend(timer_rows);
     let (k8s_rows, e) = k8s;
     rows.extend(k8s_rows);
@@ -1145,6 +1340,10 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     }
 
     for (row, m) in rows.iter_mut().zip(&mine) {
+        row.judge(at);
+        if let Some(why) = live.get(&row.name).filter(|_| row.kind == AGENTCTL) {
+            row.fault(why);
+        }
         join(row, m, &routes, &reds, &held);
         row.status = status(row, at, off);
         row.streak_word = row.streak_text();
@@ -1350,22 +1549,46 @@ mod tests {
             conf("dream", "*-*-* 03:00:00", true),
             conf("called", "", true),
             conf("off", "hourly", false),
+            conf("kicked", "", true),
+            conf("faulted", "", true),
         ];
         let runs = [
             done("dream", true, 10),
             done("dream", true, 20),
             done("x", false, 30),
+            done("kicked", true, 25),
         ];
         let timers = [Listed {
             activates: "agentctl@dream.service".into(),
             next: Some(99_000_000),
             ..Default::default()
         }];
-        let rows = agentctl_rows(confs, &runs, &timers);
+        let live = HashMap::from([("faulted".to_string(), "FAILED".to_string())]);
+        let mut rows = agentctl_rows(confs, &runs, &timers, &live);
+        for r in &mut rows {
+            r.judge(30);
+        }
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
-            rows.len(),
-            1,
-            "a called or disabled runner is not a schedule"
+            names,
+            ["dream", "off", "kicked", "faulted"],
+            "a called runner that never reported is not a schedule"
+        );
+        assert_eq!(
+            (rows[2].schedule.as_str(), rows[2].state),
+            (ON_DEMAND, JobState::Ok)
+        );
+        assert_eq!(rows[3].state, JobState::Never);
+        rows[3].fault("FAILED");
+        assert_eq!(
+            rows[3].state,
+            JobState::Failing,
+            "an outcome older than the week still failed"
+        );
+        let off = &rows[1];
+        assert_eq!(
+            (off.name.as_str(), off.state, off.next),
+            ("off", JobState::Off, None)
         );
         let r = &rows[0];
         assert_eq!(r.page, "dream");
@@ -1375,6 +1598,7 @@ mod tests {
             (Some(20), "WORKED", 2)
         );
         assert_eq!(r.next, Some(99));
+        assert_eq!((r.state, r.ok_at), (JobState::Ok, Some(20)));
         assert!(r.runs.is_empty(), "its history is the Fleet page's");
     }
 
@@ -1449,26 +1673,77 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             v.push(("schedule", "15 4 * * 0"));
             series(&v, 1.0)
         };
+        let zoned = |job: &str, zone: &str| {
+            series(
+                &[
+                    ("namespace", "z"),
+                    ("cronjob", job),
+                    ("schedule", "0 4 * * *"),
+                    ("timezone", zone),
+                ],
+                1.0,
+            )
+        };
         let mut note = id.to_vec();
         note.push(("annotation_description", "Phone photos to the NAS"));
         let c = Cron {
             // A second scrape of the same CronJob is the same row.
-            info: vec![info(&id), info(&id), info(&quiet)],
+            info: vec![
+                info(&id),
+                info(&id),
+                info(&quiet),
+                zoned("here", "America/Los_Angeles"),
+                zoned("there", "Europe/Paris"),
+                zoned("utc", "Etc/UTC"),
+                zoned("unset", "local"),
+            ],
             next: vec![series(&id, 500.0), series(&quiet, 600.0)],
             suspended: vec![series(&id, 0.0), series(&quiet, 1.0)],
             annotations: vec![series(&note, 1.0)],
+            // A start older than the journal's week still counts as the last.
+            last: vec![series(&quiet, 40.0)],
         };
         let mut j = done("nas/phones-backup", true, 50);
         j.source = jobs::Source::K8s;
-        let rows = k8s_rows(&c, &[j], PST);
-        assert_eq!(rows.len(), 2);
+        j.secs = Some(12);
+        let mut rows = k8s_rows(&c, &[j], AT, PST, "America/Los_Angeles");
+        for r in &mut rows {
+            r.judge(AT);
+        }
+        let zoned: Vec<(&str, &str)> = rows[2..]
+            .iter()
+            .map(|r| (r.schedule.as_str(), r.before.as_str()))
+            .collect();
+        assert_eq!(
+            zoned,
+            [
+                ("04:00 daily", "cron 0 4 * * * America/Los_Angeles"),
+                ("0 4 * * * Europe/Paris", "cron 0 4 * * * Europe/Paris"),
+                ("20:00 daily", "cron 0 4 * * * UTC"),
+                ("20:00 daily", "cron 0 4 * * * UTC"),
+            ],
+            "a cron in this zone is already local; another zone is named"
+        );
+        rows.truncate(2);
         let (a, b) = (&rows[0], &rows[1]);
         assert_eq!(a.name, "nas/phones-backup");
         assert_eq!(a.schedule, "20:15 Sat");
         assert_eq!(a.purpose, "Phone photos to the NAS");
         assert_eq!((a.next, a.streak), (Some(500), 1));
+        assert_eq!((a.took, a.ok_at, a.fail_at), (Some(12), Some(50), None));
+        assert_eq!(a.every, Some(7 * 86400), "a weekly cron starts every week");
+        assert_eq!(
+            a.state,
+            JobState::Stale,
+            "its last run is far older than two weeks"
+        );
         assert_eq!(b.schedule, "20:15 Sat, suspended");
         assert_eq!(b.next, None);
+        assert_eq!(
+            (b.last, b.state),
+            (Some(40), JobState::Off),
+            "suspended is off"
+        );
         assert_eq!(b.purpose, "", "no annotation is a gap, drawn amber");
     }
 
@@ -1590,31 +1865,44 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         assert_eq!(none.triage, "-", "no watch and no route says so");
     }
 
+    /// A row whose newest run, a minute before AT, set `streak`; 0 has never run.
     fn row(kind: &str, name: &str, streak: i32, purpose: &str) -> Schedule {
-        Schedule {
+        let mut r = Schedule {
             kind: kind.into(),
             name: name.into(),
             streak,
+            last: Some(AT - 60).filter(|_| streak != 0),
             purpose: purpose.into(),
             triage: "-".into(),
             ..Default::default()
-        }
+        };
+        r.judge(AT);
+        r
     }
 
     #[test]
     fn exceptions_lead_and_the_summary_counts_them() {
+        let mut quiet = row(TIMER, "quiet", 4, "why");
+        quiet.every = Some(10);
+        quiet.judge(AT);
+        let mut off = row(TIMER, "off", 4, "");
+        off.off = true;
+        off.judge(AT);
         let mut rows = vec![
+            off,
             row(TIMER, "b", 3, "why"),
             row(K8S, "gap", 1, ""),
             row(CI, "a", 2, "why"),
+            row(CI, "new", 0, "why"),
+            quiet,
             row(TIMER, "red", -6, "why"),
         ];
         rank(&mut rows);
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["red", "gap", "a", "b"]);
+        assert_eq!(names, ["red", "quiet", "new", "gap", "a", "b", "off"]);
         assert_eq!(
             summary(&rows, Some(AT - 600), AT),
-            "4 scheduled, 1 red, 1 no purpose, CI read 10m ago"
+            "7 scheduled: 1 failing, 1 stale, 1 never ran, 1 off, 2 no purpose, CI read 10m ago"
         );
         assert!(summary(&rows, None, AT).ends_with("CI not read"));
     }
@@ -1638,7 +1926,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["red", "soon", "late", "none"]);
         assert_eq!(
-            Schedule::COLUMNS[3],
+            Schedule::COLUMNS[4],
             "next",
             "next is drawn, after schedule"
         );
@@ -1658,7 +1946,8 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         let view = |q: &str, s: &str| View::new::<Schedule>(q, s, "", "");
         assert_eq!(names(view("kind:timer", "")), ["pulse", "log"]);
         assert_eq!(names(view("repo:app", "")), ["app / Tests"]);
-        assert_eq!(names(view("", "red")), ["app / Tests", "log"]);
+        assert_eq!(names(view("", "failing")), ["app / Tests", "log"]);
+        assert_eq!(names(view("state:ok", "")), ["pulse"]);
         assert_eq!(names(view("", "no-purpose")), ["pulse"]);
         assert_eq!(
             names(view("words", "")),
@@ -1677,12 +1966,69 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         r.next = Some(AT + 12 * 3600);
         assert_eq!(
             status(&r, AT, PST),
-            "red since 11-01, triage no fix ar-1, next 02:00"
+            "failing since 11-01, triage no fix ar-1, next 02:00"
         );
         let mut r = row(TIMER, "x", 2, "why");
         r.next = Some(AT + 3 * 86400);
-        assert_eq!(status(&r, AT, PST), "green, next 11-09 14:00");
-        assert_eq!(status(&row(K8S, "x", 0, ""), AT, PST), "no result yet");
+        assert_eq!(status(&r, AT, PST), "ok, next 11-09 14:00");
+        assert_eq!(status(&row(K8S, "x", 0, ""), AT, PST), "never ran");
+        let mut r = row(TIMER, "x", 2, "why");
+        r.every = Some(300);
+        r.last = Some(AT - 3600);
+        r.judge(AT);
+        assert_eq!(
+            status(&r, AT, PST),
+            "stale, no run in 1h, and it starts every 5m"
+        );
+    }
+
+    #[test]
+    fn a_liveness_fault_folds_into_the_state_and_says_why() {
+        let live = parse_liveness(
+            "inbox-plan: FAILED\nfleet: paused for 2d (x), no scheduled runner starts: agentctl resume\n\
+             dream: timer fired Thu 03:00 but no run since (last run 2d ago, result=success)\n\
+             fresh: never reported an outcome\n",
+        );
+        assert_eq!(
+            live.len(),
+            3,
+            "the fleet-wide line is the watch's: {live:?}"
+        );
+        let mut plan = row(AGENTCTL, "inbox-plan", 4, "why");
+        plan.fault(&live["inbox-plan"]);
+        assert_eq!(
+            (plan.state, plan.state_why.as_str()),
+            (JobState::Failing, "liveness: FAILED")
+        );
+        let mut dream = row(AGENTCTL, "dream", 4, "why");
+        dream.fault(&live["dream"]);
+        assert_eq!(dream.state, JobState::Stale);
+        assert!(status(&dream, AT, PST).starts_with("stale, liveness: timer fired Thu 03:00"));
+        let mut fresh = row(AGENTCTL, "fresh", 0, "why");
+        fresh.fault(&live["fresh"]);
+        assert_eq!(
+            fresh.state,
+            JobState::Never,
+            "a runner that never ran stays never"
+        );
+    }
+
+    #[test]
+    fn a_timer_that_never_fired_reads_never_and_its_interval_comes_from_systemd() {
+        let mut t = listed("fresh", None);
+        t.next = Some((AT as u64 + 3600) * 1_000_000);
+        let rows = timer_rows(&[t], &HashMap::new(), &HashMap::new(), &[], "/h");
+        let mut r = rows[0].clone();
+        r.triage = "-".into();
+        r.judge(AT);
+        assert_eq!((r.state, r.state.level()), (JobState::Never, Level::Warn));
+        assert_eq!(status(&r, AT, PST), "never ran, next 15:00");
+        let t = Listed {
+            next: Some(700_000_000),
+            last: Some(400_000_000),
+            ..Default::default()
+        };
+        assert_eq!(timer_every(&t), Some(300));
     }
 
     #[test]
