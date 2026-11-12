@@ -675,7 +675,7 @@ impl Controls {
 
 /// One part of the page. A URL is printed, since nothing here is clicked; a link to a record in
 /// the hub is not, since its value already names that record.
-fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
+pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
     let url = match &part.link {
         Some(Link::Url(u)) => Some(u),
         _ => None,
@@ -698,7 +698,7 @@ fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
-fn dash(s: &str) -> Cell {
+pub(crate) fn dash(s: &str) -> Cell {
     if s.is_empty() { "-" } else { s }.into()
 }
 
