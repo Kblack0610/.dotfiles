@@ -69,14 +69,15 @@ pub struct Side {
 }
 
 /// The words a blank cell says, one per cause: nothing declares the fact, nothing recorded it,
-/// it moves by hand, its read failed, or the release merged nothing. A surface sorts and
-/// filters them as no value. docs/operations/release-state.md, "Blank cells".
-pub const BLANKS: [&str; 5] = [
+/// it moves by hand, its read failed, the release merged nothing, or the app has no Gatus check.
+/// A surface sorts and filters them as no value. docs/operations/release-state.md, "Blank cells".
+pub const BLANKS: [&str; 6] = [
     "none declared",
     "not recorded",
     "manual",
     "not read",
     "none merged",
+    "no check",
 ];
 
 /// A cell with no value: `-` or one of [`BLANKS`].
@@ -364,6 +365,9 @@ pub struct App {
     /// Where the stage sits on the ladder, lowest first: what the STAGE column sorts by.
     #[serde(skip)]
     pub stage_rank: Option<usize>,
+    /// The CHECKS cell: its Gatus checks' banner (`hub_core::app_status::badges`), `no check`
+    /// when it has none and `not read` until [`Releases::with_checks`] ran or when it failed.
+    pub checks: Badge,
 }
 
 /// One build run of an app: a CI run the release graph joins to one of its tags (its run name, its
@@ -415,7 +419,45 @@ fn released_text(
     }
 }
 
+/// One app's checks badge from [`crate::app_status::badges`]: its banner, `no check` when no
+/// Gatus group of it reported in a week, `not read` when the read failed.
+pub fn check_badge(read: &Result<HashMap<String, Badge>, String>, app: &str) -> Badge {
+    match read {
+        Ok(m) => m.get(app).cloned().unwrap_or(Badge {
+            says: "no check".into(),
+            level: Level::Ok,
+        }),
+        Err(_) => Badge {
+            says: "not read".into(),
+            level: Level::Warn,
+        },
+    }
+}
+
 impl Releases {
+    /// Each app's CHECKS cell from [`crate::app_status::badges`]: its banner, `no check` for an
+    /// app without one, and `not read` on every row (with the reason in `errors`) when the read
+    /// failed. Safe to call again on a newer read.
+    pub fn with_checks(&mut self, read: &Result<HashMap<String, Badge>, String>) {
+        for a in &mut self.apps {
+            a.checks = check_badge(read, &a.project);
+        }
+        if let Err(e) = read {
+            self.errors.push(format!("app checks: {e}"));
+        }
+    }
+
+    /// Each app with its Gatus groups, what [`crate::app_status::badges`] reads.
+    pub fn check_groups(&self) -> Vec<(String, Vec<String>)> {
+        self.apps
+            .iter()
+            .map(|a| {
+                let g = crate::app_status::groups(&a.project, &a.channels);
+                (a.project.clone(), g)
+            })
+            .collect()
+    }
+
     /// Each app's build runs: the builds read's `runs` the release graph tied to one of its tags
     /// (the rows Release runs lists), the newest attempt of each, newest first. The RELEASED cell
     /// then says when one is running. Safe to call again on a newer read.
@@ -483,6 +525,7 @@ impl Row for App {
         "stage",
         "live",
         "status",
+        "checks",
         "channels",
         "released",
         "last_deploy",
@@ -513,6 +556,7 @@ impl Row for App {
             "live" => text(&self.live_text),
             // `not read` is a status word here, not a blank.
             "status" => Val::Text(self.status_text.clone()),
+            "checks" => text(&self.checks.says),
             "channels" => text(&self.channels_text),
             "released" => text(&self.released_text),
             "last_deploy" => text(&self.last_deploy_text),
@@ -541,6 +585,7 @@ impl Row for App {
             self.project.clone(),
             self.live_text.clone(),
             self.status_text.clone(),
+            self.checks.says.clone(),
             self.channels_text.clone(),
             self.released_text.clone(),
             self.last_deploy_text.clone(),
@@ -952,6 +997,10 @@ fn app(
         stage_text,
         stage_level,
         stage_rank: None,
+        checks: Badge {
+            says: "not read".into(),
+            level: Level::Warn,
+        },
     }
 }
 
@@ -1954,5 +2003,31 @@ mod tests {
             r.errors,
             ["release-state stages: notes projects --stages printed nothing"]
         );
+    }
+
+    #[test]
+    fn an_app_without_a_badge_says_no_check_and_a_failed_read_says_not_read() {
+        let app = |p: &str| App {
+            project: p.into(),
+            ..App::default()
+        };
+        let mut r = Releases {
+            apps: vec![app("pmp"), app("shop")],
+            ..Releases::default()
+        };
+        let up = Badge {
+            says: "Operational".into(),
+            level: Level::Ok,
+        };
+        r.with_checks(&Ok(HashMap::from([("pmp".to_string(), up.clone())])));
+        assert_eq!(r.apps[0].checks, up);
+        assert_eq!(r.apps[1].checks.says, "no check");
+        assert!(blank(&r.apps[1].checks.says));
+        r.with_checks(&Err("vm: refused".into()));
+        assert!(r
+            .apps
+            .iter()
+            .all(|a| a.checks.says == "not read" && a.checks.level == Level::Warn));
+        assert_eq!(r.errors, ["app checks: vm: refused"]);
     }
 }

@@ -285,6 +285,33 @@ fi
 targets_n="$(jq '[(.trackers // {})[] | objects | (.targets // []) | arrays | length] | add // 0' "$MAP_FILE" 2>/dev/null)"
 [ "${targets_n:-0}" -gt 0 ] && pass "all $targets_n deploy targets checked ($n references)" || skip "no deploy targets to check"
 
+# An app (type app) with a prod web target (live k8s or health) has a Gatus group named for its
+# tracker key: the app status page and its badges read that group (hub-core app_status), so an app
+# without one reads `no check` everywhere. A game's server is UDP and sleeps until played, so the
+# game registry is its health, not an HTTP check. The groups come from the Gatus config as the live
+# Gatus serves it (its API under CC_GATUS_URL, the board setting that links Gatus): that config is
+# where a check is declared; the page reads its history from VictoriaMetrics. An answer that is not
+# its check list (down, or a login page) is a SKIP.
+gatus_url="${CC_GATUS_URL:-$(sed -n 's/^\(export \)\{0,1\}CC_GATUS_URL=//p' "$HOME/.config/command-center/env" 2>/dev/null | tail -1 | tr -d "\"'")}"
+web_apps="$(jq -r '(.trackers // {}) | to_entries[] | select(.value | type == "object") | select(.value.type == "app") | .key as $k
+  | [(.value.targets // []) | arrays | .[] | objects | select(.channel == "prod" and ((.live.k8s // .live.health) != null))]
+  | select(. != []) | $k' "$MAP_FILE" 2>/dev/null | sort -u)"
+if [ -z "$web_apps" ]; then
+  skip "no app has a prod web target; no Gatus group to check"
+elif [ -z "$gatus_url" ]; then
+  skip "CC_GATUS_URL is not set (env or ~/.config/command-center/env); cannot check app Gatus groups"
+elif ! groups="$(curl -fsS --max-time 10 "$gatus_url/api/v1/endpoints/statuses?pageSize=1" 2>/dev/null | jq -r '.[].group // empty' 2>/dev/null | sort -u)" || [ -z "$groups" ]; then
+  skip "Gatus at $gatus_url did not answer with its checks; cannot check app Gatus groups"
+else
+  missing=0
+  while IFS= read -r app; do
+    grep -qxF -- "$app" <<<"$groups" && continue
+    warn "app \"$app\" has a prod web target but no Gatus check in group \"$app\"; its status page reads \"no check\" (add one in home-config apps/gatus/config.yaml)"
+    missing=$((missing + 1))
+  done <<<"$web_apps"
+  [ "$missing" -eq 0 ] && pass "every app with a prod web target has a Gatus group ($(wc -l <<<"$web_apps") apps)"
+fi
+
 # --- 5. every key under ~/.agent is a registered project ---------------------------
 # Plans, lessons, sessions, asks, outcomes, dreams and evals are filed per project. A key
 # the registry does not know is runtime state no project reads: a lesson no preflight
