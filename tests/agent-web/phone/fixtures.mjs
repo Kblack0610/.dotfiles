@@ -140,7 +140,14 @@ const sessions = {
 };
 const capacity = { parts: [{ text: "39 live", warn: false, start: "", confirm: "" }, { text: "2 slots free", warn: true, start: "", confirm: "" }], unlinked: 0, live: 39, errors: [] };
 const watch = { state: { sessions: [], vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
-const shepherd = { target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" }, rundowns: [] };
+// Log's Rundowns: as many as agent-web sends (shepherd.rs RUNDOWNS), each a long sum-up like the
+// live ones, so the inner tab's height is measured at a live count.
+const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
+const shepherd = {
+  target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
+  shown: 30, // layout::fold_rows("rundowns"), sent by shepherd.rs
+  rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
+};
 
 // Infra: Prometheus instant vectors, and the jobs board from hub_core::jobs.
 const runner = (i) => ({ labels: { name: `runner-${i}`, host: pick(["asus-laptop", "mac-mini", "workstation"], i), site: "home", state: "busy", pool: pick(["unity", "default"], i), repo: "game-core-playground", pr: `${1700 + i}`, job_name: "Tests (EditMode)", title: TEXT[i], workflow: "ci", branch: `feat/${SLUGS[i]}` }, value: 600 + i * 120 });
@@ -181,19 +188,31 @@ const actions = {
   counts: { actor: { shepherd: 3, dispatch: 2, sentinel: 2 }, verb: { page: 3, nudge: 2, start: 2 } }, errors: [],
 };
 
-// Log's Work table: hub_core::worklog.
+// Log's Work table: hub_core::worklog, a live-sized table of which the server sends the first
+// WORK_SHOWN rows (hub_core::layout::fold_rows("work")).
+const WORK_SHOWN = 40;
+const WORK_TOTAL = 3235;
 const logWork = {
-  table: table(8, ["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
-  rows: rows(8, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false })),
-  more: 12, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
+  table: table(WORK_TOTAL, ["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
+  rows: rows(WORK_SHOWN, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false, plan: i % 3 ? null : `${SLUGS[i % SLUGS.length]}: ${TEXT[(i + 2) % TEXT.length].slice(0, 30)} P${1 + (i % 9)}`, ci: i % 7 ? null : pick(["CI pending", "draft"], i) })),
+  more: WORK_TOTAL - WORK_SHOWN, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
 };
 
 // Fleet: hub_core::fleet::who.
 const fleet = {
   table: table(6, ["kind", "who", "state", "cost", "activity", "since", "for", "doing", "under", "project"], ["all", "lead", "deliver", "observe", "learn", "maintain", "session", "held", "failed", "working", "needs you", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"], project: PROJECTS.slice(0, 2) }),
   who: rows(6, (i) => ({ key: `who-${i}`, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `fleet-${SLUGS[i]}`, state: pick(["working", "held", "needs you"], i), activity: pick(["editing", "reading", "gate"], i), since: ago(20 + i * 15), for: `${20 + i * 15}m`, doing: TEXT[i], under: "", project: pick(PROJECTS, i), opens: "", kids: 0 })),
-  hidden: 0, legend: [], at: NOW, errors: [], workers: [],
-  dispatch: { recent: [], eval: { rules: [], prompt_sha: "" } }, judge: { prompt: "", verdicts: [], eval: { rules: [], prompt_sha: "" } },
+  hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::fold_rows("verdicts")
+  // Log's Judges at live counts: hub_core::fleet sends the newest 30 dispatch verdicts
+  // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long.
+  dispatch: {
+    recent: rows(30, (i) => ({ at: iso(ago(5 + i * 9)), ts: ago(5 + i * 9), project: pick(PROJECTS, i), key: `ar-${1990 - i}`, verdict: pick(["dispatch", "skip", "failed"], i), tier: 1 + (i % 3), clear: i % 2 === 0, reason: TEXT[i % TEXT.length] })),
+    counts_24h: { dispatch: 12, skip: 9, failed: 9 }, counts_7d: { dispatch: 80, skip: 51, failed: 40 }, log_24h: { started: 12, reaped: 10 }, partial: false, eval: { rules: [], prompt_sha: "" },
+  },
+  judge: {
+    agree: 40, disagree: 5, deferred: 3, pending: 20, unscored: 2, precision: 88.9, kappa: 0.7, prompt: "", week: { live_pct: 40, coverage: 43.8, precision: 88.9 }, cells: [], eval: { rules: [], prompt_sha: "" },
+    verdicts: rows(200, (i) => ({ id: `v${i}`, at: ago(4 + i * 7), project: pick(PROJECTS, i), question: `${TEXT[i % TEXT.length]}?`, type: pick(["credential_or_account", "agent_policy", "scope"], i), rule: pick(["knowledge", "policy"], i), said: pick(["passed", "answered", "would answer"], i), judge: "human", evidence: TEXT[(i + 3) % TEXT.length], reason: `${TEXT[(i + 5) % TEXT.length]}; ${TEXT[(i + 6) % TEXT.length]}`, you: pick(["pending", "a", "b"], i), score: pick(["pending", "right", "wrong"], i) })),
+  },
 };
 
 // Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.
