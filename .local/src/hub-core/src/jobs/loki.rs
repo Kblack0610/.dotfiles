@@ -1,59 +1,21 @@
-//! A k8s Job's pod logs, from Loki. Loki is ClusterIP-only, so the query goes through the API
-//! server's service proxy (`kubectl get --raw`) with the kube credentials already on this
-//! machine: no ingress and no token. Which cluster, and which service, are board settings
-//! (`CC_KUBE_CONTEXT`, `CC_LOKI_SERVICE`), so no cluster is assumed.
+//! A k8s Job's pod logs, from Loki. Loki is ClusterIP-only, so the query goes through
+//! `kube_proxy` (`CC_KUBE_CONTEXT`, `CC_LOKI_SERVICE`).
 
 use serde_json::Value;
 
-use super::log::run;
-use crate::prom::config;
+use crate::kube_proxy::{self, encode, label};
 
 /// The most lines asked of Loki for one Job: its last ones, which is where a failure is.
 const LINES: usize = 5000;
 /// Slack around the Job's start and end, for a pod that logs before the Job records its start.
 const PAD_SECS: i64 = 60;
-/// A guard on the API server call.
-const REQUEST_TIMEOUT: &str = "--request-timeout=10s";
-
-/// A namespace, Job or service name: a DNS-1123 label, so it cannot break out of the query.
-fn label(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 63
-        && !s.starts_with('-')
-        && !s.ends_with('-')
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// `namespace/name:port` as its three parts.
-fn service(s: &str) -> Option<(&str, &str, u16)> {
-    let (ns, rest) = s.split_once('/')?;
-    let (name, port) = rest.split_once(':')?;
-    let port = port.parse().ok()?;
-    (label(ns) && label(name)).then_some((ns, name, port))
-}
-
-fn encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
 /// The API server path that asks Loki for the pods of Job `job` between `from` and `to` (unix
 /// seconds). A Job's pods are named `<job>-<5 random>`, which keeps a Job named `x` from
 /// matching the pods of a Job named `x-1`.
-pub(super) fn path(svc: (&str, &str, u16), ns: &str, job: &str, from: i64, to: i64) -> String {
+pub(super) fn path(ns: &str, job: &str, from: i64, to: i64) -> String {
     let q = format!(r#"{{namespace="{ns}", pod=~"{job}-[a-z0-9]{{5}}"}}"#);
     format!(
-        "/api/v1/namespaces/{}/services/{}:{}/proxy/loki/api/v1/query_range?query={}&start={}&end={}&limit={LINES}&direction=backward",
-        svc.0,
-        svc.1,
-        svc.2,
+        "/loki/api/v1/query_range?query={}&start={}&end={}&limit={LINES}&direction=backward",
         encode(&q),
         (from - PAD_SECS) * 1_000_000_000,
         (to + PAD_SECS) * 1_000_000_000,
@@ -99,16 +61,11 @@ pub(super) fn job_log(ns: &str, job: &str, from: i64, to: Option<i64>) -> Result
     if !label(ns) || !label(job) {
         return Err("bad namespace or job name".into());
     }
-    let ctx = config("CC_KUBE_CONTEXT")
-        .ok_or("CC_KUBE_CONTEXT is not set: it comes from ~/.config/command-center/env")?;
-    let svc = config("CC_LOKI_SERVICE")
-        .ok_or("CC_LOKI_SERVICE is not set: it comes from ~/.config/command-center/env")?;
-    let svc = service(&svc).ok_or("CC_LOKI_SERVICE is not namespace/name:port")?;
     let to = to.unwrap_or_else(|| chrono::Utc::now().timestamp());
-    let p = path(svc, ns, job, from, to);
-    text(&run(
-        "kubectl",
-        &["--context", &ctx, REQUEST_TIMEOUT, "get", "--raw", &p],
+    text(&kube_proxy::get(
+        &crate::session_actions::System,
+        "CC_LOKI_SERVICE",
+        &path(ns, job, from, to),
     )?)
 }
 
@@ -118,16 +75,8 @@ mod tests {
 
     #[test]
     fn the_query_names_only_this_jobs_pods_in_its_window() {
-        let p = path(
-            ("monitoring", "loki", 3100),
-            "nas",
-            "backup-29895060",
-            1000,
-            1200,
-        );
-        assert!(p.starts_with(
-            "/api/v1/namespaces/monitoring/services/loki:3100/proxy/loki/api/v1/query_range?query="
-        ));
+        let p = path("nas", "backup-29895060", 1000, 1200);
+        assert!(p.starts_with("/loki/api/v1/query_range?query="));
         assert!(p.contains(&encode(
             r#"{namespace="nas", pod=~"backup-29895060-[a-z0-9]{5}"}"#
         )));
@@ -138,19 +87,11 @@ mod tests {
     #[test]
     fn a_name_that_could_change_the_query_is_refused_before_kubectl() {
         for bad in ["", "a\"}", "A", "-a", "a-", "a b", "a/b", &"a".repeat(64)] {
-            assert!(!label(bad), "{bad:?}");
             assert_eq!(
                 job_log(bad, "j", 0, None),
                 Err("bad namespace or job name".into())
             );
         }
-        assert!(label("actual-budget-backup-29895060"));
-        assert_eq!(
-            service("monitoring/loki:3100"),
-            Some(("monitoring", "loki", 3100))
-        );
-        assert_eq!(service("monitoring/loki"), None);
-        assert_eq!(service("Mon/loki:3100"), None);
     }
 
     #[test]

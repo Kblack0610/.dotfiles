@@ -1388,13 +1388,7 @@ mod tests {
         let (j, evals, _) = judges(json).unwrap();
         assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
         assert_eq!(
-            (
-                j.agree,
-                j.disagree,
-                j.deferred,
-                j.pending,
-                j.unscored
-            ),
+            (j.agree, j.disagree, j.deferred, j.pending, j.unscored),
             (2, 1, 4, 1, 2)
         );
         assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
