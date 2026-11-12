@@ -22,7 +22,7 @@ setup() {
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0   # these drive passes back to back; the hold has its own test in integ
   export AGENTCTL_NAME=shepherd-test AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
   mkdir -p "$FLEET_SHEPHERD_DIR" "$HOME/.dotfiles"
-  jq -n '{schema:1, main:[], sessions:[{target:"a", bucket:"DONE", nudged:false, escalated:false, labels:[], fact:"f"}]}' > "$FLEET_STATE_FILE"
+  jq -n '{schema:1, main:[], sessions:[{target:"a", bucket:"DONE", nudged:false, escalated:false, labels:[], fact:"f", close:{verdict:"now"}}]}' > "$FLEET_STATE_FILE"
   stub fleet-sessions ':'
   stub fleet-assess '[ "${1:-}" = --blocked ] || echo "verdict: CLEAR load 0.5x"'
   stub agent-hold ':'
