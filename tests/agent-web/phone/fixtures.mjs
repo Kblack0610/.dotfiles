@@ -243,11 +243,11 @@ function app(i) {
   const project = pick(PROJECTS, i), channels = rows(2 + i % 2, (c) => channel(project, i, c));
   const worst = channels.reduce((w, c) => (LEVEL_RANK.indexOf(c.level) > LEVEL_RANK.indexOf(w.level) ? c : w));
   const counts = REL_STATUS.map(([s]) => [s, channels.filter((c) => c.status === s).length]).filter(([, n]) => n);
-  return { project, status: worst.status, status_text: worst.status_text, level: worst.level, live_text: `v1.${i}.0 prod`, channels_text: `${channels.length}: ${counts.map(([s, n]) => `${n} ${s}`).join(", ")}`, unread: 0, released_text: `v1.${i}.0 3h ago`, last_deploy_text: "2h ago by agent", deploy_level: "ok", channels, lead: 1, others_text: channels.slice(1).map((c) => `${c.channel} 1 ${c.status}`).join("; ") };
+  return { project, stage: pick(["draft", "alpha", "beta", "prod"], i), stage_text: "alpha: no alpha target deployed", stage_level: pick(["ok", "warn"], i), status: worst.status, status_text: worst.status_text, level: worst.level, live_text: `v1.${i}.0 prod`, channels_text: `${counts.map(([s, n]) => `${n} ${s}`).join(", ")}`, unread: 0, released_text: `v1.${i}.0 3h ago`, last_deploy_text: "2h ago by agent", deploy_level: "ok", channels, lead: 1, others_text: channels.slice(1).map((c) => `${c.channel} 1 ${c.status}`).join("; ") };
 }
 const releases = {
-  table: table(6, ["project", "live", "status", "channels", "released", "last_deploy", "channel", "id"], ["all", "attention", "ok"], { project: PROJECTS.slice(0, 3), status: ["ok", "drift"] }),
-  rows: rows(6, app),
+  table: table(6, ["project", "stage", "live", "status", "channels", "released", "last_deploy", "channel", "id"], ["all", "attention", "ok"], { project: PROJECTS.slice(0, 3), stage: ["draft", "alpha"], status: ["ok", "drift"] }),
+  rows: rows(6, app), blanks: ["not recorded", "none declared"],
   question: "", summary: `6 apps: ${REL_STATUS.map(([s]) => [s, rows(6, app).filter((a) => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `${n} ${s}`).join(", ")}`, gaps: "", look: true, at: NOW, stale_after: 3600, errors: [],
 };
 const builds = {

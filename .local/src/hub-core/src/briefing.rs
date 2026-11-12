@@ -137,7 +137,7 @@ pub struct Inputs {
     /// Queue items finished since the start of yesterday: the priority and type each landed PR
     /// is ranked by.
     pub landed_items: Option<Vec<Item>>,
-    /// `release-state show --json`: what is live where, and what deployed.
+    /// `release-state show --json`: what is deployed where, and what deployed.
     pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
     pub sources: Option<Vec<Account>>,
