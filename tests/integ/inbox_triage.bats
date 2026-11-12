@@ -983,9 +983,12 @@ ask_stub() {
   gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
   # rows reach the model in sheet order: sc-4, sc-5, sc-6
   answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
-  run "$TRIAGE" --backlog --priority
+  # run from a session: the record still names inbox-priority, the lane judge-eval scores these by
+  CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --priority
   assert_success
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
+  run notes log --json --action tagged
+  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#low"],["sc-5","inbox-priority","+#high"]]'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
