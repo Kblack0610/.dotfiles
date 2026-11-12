@@ -284,7 +284,7 @@
     "custom/timebox": {
         "format": "{}",
         "return-type": "json",
-        "interval": 2,
+        "interval": 1,
         "exec": "$HOME/.config/waybar/modules.sh gate custom/timebox $HOME/.local/bin/timebox status --json",
         "signal": 10,
         "hide-empty-text": true,

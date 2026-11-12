@@ -15,7 +15,9 @@ sound = true
 # Sound asset for the lap boundary. Defaults to the bundled assets/switch.wav.
 # sound_file = "~/.dotfiles/.local/src/timebox/assets/switch.wav"
 
-# Flash the screen red on a lap boundary (runs flash_cmd; Hyprland screen_shader).
+# Flash the screen red on a lap boundary (runs flash_cmd; Hyprland screen_shader, 3
+# pulses) and blink the bar in a lap's last 10 seconds. `timebox toggle sound|flash`
+# overrides `sound` / `flash` at runtime without editing this file.
 flash = true
 # flash_cmd = "timebox-flash"
 
@@ -25,3 +27,9 @@ icon = ""
 
 # What the Waybar module shows when no stopwatch is active (kept visible + clickable).
 idle_text = "timebox"
+
+# Named cycles: `timebox cycle <name>` runs the steps in order and loops, switching op at
+# each step's end. Each step is "<op> <len>". A manual lap (middle-click) skips to the next
+# step; start/switch/stop ends the cycle.
+[cycles]
+practice = ["work 5m", "guitar 3m", "computer 10m"]

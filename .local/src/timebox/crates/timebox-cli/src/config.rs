@@ -4,8 +4,9 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use timebox_core::dur;
+use timebox_core::{dur, CycleStep};
 
 #[derive(Debug, Default, Deserialize)]
 struct RawConfig {
@@ -35,6 +36,9 @@ struct RawConfig {
     /// Command run on a lap boundary when `flash = true`. Default `timebox-flash`.
     #[serde(default)]
     flash_cmd: Option<String>,
+    /// Named cycles: `practice = ["work 5m", "guitar 3m", "computer 10m"]`.
+    #[serde(default)]
+    cycles: BTreeMap<String, Vec<String>>,
 }
 
 /// Resolved config with absolute paths.
@@ -50,7 +54,24 @@ pub struct Config {
     pub idle_text: String,
     pub flash: bool,
     pub flash_cmd: String,
+    pub cycles: BTreeMap<String, Vec<CycleStep>>,
     pub source: String,
+}
+
+/// Parse one cycle step, `"<op> <len>"` (e.g. `"guitar 3m"`).
+fn parse_step(s: &str) -> Result<CycleStep, String> {
+    let (op, len) = s
+        .trim()
+        .rsplit_once(char::is_whitespace)
+        .ok_or_else(|| format!("cycle step '{s}' needs '<op> <len>', e.g. 'guitar 3m'"))?;
+    let len_s = dur::parse_duration(len)?;
+    if len_s == 0 {
+        return Err(format!("cycle step '{s}' has a zero length"));
+    }
+    Ok(CycleStep {
+        op: op.trim().to_string(),
+        len_s,
+    })
 }
 
 fn home() -> PathBuf {
@@ -121,11 +142,20 @@ pub fn resolve() -> Result<Config> {
         None => None,
     };
 
-    let sound_file = raw
-        .sound_file
-        .as_deref()
-        .map(expand)
-        .or_else(bundled_sound);
+    let sound_file = raw.sound_file.as_deref().map(expand).or_else(bundled_sound);
+
+    let mut cycles = BTreeMap::new();
+    for (name, steps) in &raw.cycles {
+        if steps.is_empty() {
+            anyhow::bail!("cycle '{name}' has no steps");
+        }
+        let parsed = steps
+            .iter()
+            .map(|s| parse_step(s))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("cycle '{name}': {e}"))?;
+        cycles.insert(name.clone(), parsed);
+    }
 
     Ok(Config {
         state_path: state_dir.join("state.json"),
@@ -139,6 +169,7 @@ pub fn resolve() -> Result<Config> {
         idle_text: raw.idle_text.unwrap_or_else(|| "timebox".into()),
         flash: raw.flash,
         flash_cmd: raw.flash_cmd.unwrap_or_else(|| "timebox-flash".into()),
+        cycles,
         source,
     })
 }
@@ -167,4 +198,39 @@ pub fn print(c: &Config) {
     println!("idle-text   {:?}", c.idle_text);
     println!("flash       {}", c.flash);
     println!("flash-cmd   {}", c.flash_cmd);
+    for (name, steps) in &c.cycles {
+        println!("cycle       {name}: {}", fmt_steps(steps));
+    }
+}
+
+/// `work 5m -> guitar 3m -> computer 10m`
+pub fn fmt_steps(steps: &[CycleStep]) -> String {
+    steps
+        .iter()
+        .map(|s| format!("{} {}", s.op, dur::fmt_short(s.len_s)))
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cycle_steps() {
+        assert_eq!(
+            parse_step("guitar 3m").unwrap(),
+            CycleStep {
+                op: "guitar".into(),
+                len_s: 180
+            }
+        );
+        assert_eq!(
+            parse_step("work at computer 10m").unwrap().op,
+            "work at computer"
+        );
+        assert!(parse_step("guitar").is_err());
+        assert!(parse_step("guitar 0m").is_err());
+        assert!(parse_step("guitar 3x").is_err());
+    }
 }

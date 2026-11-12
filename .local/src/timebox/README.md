@@ -33,25 +33,49 @@ timebox status                      # human view of all stopwatches
 timebox switch email                # stop the active op, start "email" in one step
 timebox pause                       # pause the active op (laps pause with it)
 timebox resume
-timebox lap                         # manually close the current lap window now
+timebox cycle practice              # run a named cycle from config (see Cycles)
+timebox cycle                       # list configured cycles
+timebox lap                         # manually close the current lap window now (in a cycle: next step)
 timebox stats                       # per-operation time today (+ lap counts)
 timebox stop --all
+timebox toggle sound                # flip an alert (or: toggle flash off)
 timebox config                      # show resolved paths + settings
 ```
 
 `--lap` accepts `25m | 1h | 90s | 1500`. `--sound` plays a beep on each boundary
 (bundled `assets/switch.wav`, or set `sound_file` / `sound = true` in config).
 
+## Cycles
+
+A cycle is a named, looping list of steps, each an op and a length, defined in config:
+
+```toml
+[cycles]
+practice = ["work 5m", "guitar 3m", "computer 10m"]
+```
+
+`timebox cycle practice` starts `work` with a 5m lap; at the boundary it switches to
+`guitar` for 3m, then `computer` for 10m, then back to `work`. Each op keeps its own
+stopwatch, so `timebox stats` shows the time each got. The switch happens at the boundary
+timestamp, so a late poll replays missed steps exactly. A manual `lap` skips to the next
+step, `pause`/`resume` hold the cycle, and `start`/`switch`/`stop` end it.
+
 ## Alerts
 
 Four layers, most-to-least passive:
 
 - Waybar countdown (`custom/timebox`) - always visible (shows `idle_text` when nothing is
-  running); color walks green -> gold -> red as the switch approaches.
+  running); its class walks `ready` -> `active` -> `urgent` as the switch approaches, and is
+  `final` in the last 10 seconds, which `layout.css` blinks red.
 - Desktop notification via `agent-notify` at each boundary.
 - Sound - opt-in per stopwatch (`--sound`) or globally (`sound = true`).
-- Screen flash - a brief red tint via Hyprland's `screen_shader` (`flash = true`, runs
-  `timebox-flash`, which restores any pre-existing shader).
+- Screen flash - three red pulses via Hyprland's `screen_shader` (`flash = true`, runs
+  `timebox-flash`, which restores any pre-existing shader; `TIMEBOX_FLASH_COUNT` changes
+  the count).
+
+`timebox toggle sound|flash [on|off]` overrides `sound` / `flash` at runtime (stored in
+`state.json`, shown in the tooltip and `timebox status`). `flash` covers both the screen
+flash and the final-10s bar blink. Both are also in `timebox-menu`.
 
 ## Waybar interaction
 
@@ -60,7 +84,7 @@ The `custom/timebox` module is clickable:
 - Left-click -> `timebox-menu` (wofi/rofi): start / switch / pause / resume / lap / stop /
   stats without a terminal.
 - Right-click -> pause the active stopwatch.
-- Middle-click -> manual lap.
+- Middle-click -> manual lap (in a cycle: next step).
 
 Helper scripts (in `~/.local/bin`): `timebox-menu`, `timebox-flash`. The flash shader is
 `~/.config/hypr/shaders/flash.frag`.
@@ -81,7 +105,7 @@ planned upgrade (a systemd user timer, or the Phase-2 daemon).
 ## Config
 
 See `~/.dotfiles/.config/timebox/config.toml`. Keys: `state_dir`, `default_lap`, `sound`,
-`sound_file`, `icon`. All optional.
+`sound_file`, `flash`, `flash_cmd`, `icon`, `idle_text`, `[cycles]`. All optional.
 
 ## Roadmap
 

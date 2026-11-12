@@ -37,7 +37,7 @@ Super+A                L1 pinbar          space control menu | a agents> | i inp
   i inputs             L2 pinbar-input    m mic direct | g guitar | b guitar+mic | w guitar+webcam | esc back
   m machine mode       L2 pinbar-mode     r reserved | s shared | o open | f full | esc back
   u utils              L2 pinbar-utils    h ssh | r reload | t timebox> | y sync> | g git> | esc back
-    t timebox          L3 pinbar-timebox  s start | w switch | p pause | r resume | x stop | o status | esc back
+    t timebox          L3 pinbar-timebox  s start | w switch | c cycle | m sound | b flash | p pause | r resume | x stop | o status | esc back
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
   s settings           L2 pinbar-settings a agents | f fleet | t timebox | m machines | l list> | s size | esc back
