@@ -243,6 +243,8 @@ const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
 // A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
 const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
+// A table cell's text on one line, its second line on hover and in the selected row, the whole on hover.
+const clamp1 = (html, full) => `<div class="c12" title="${esc(full)}">${html}</div>`;
 // A record cell (ui.md rule 9): its name (html; `full` its text) on line one over a muted second
 // line (html; `subFull` its text), each one line cut with an ellipsis and whole on hover, so every
 // row is the same two lines high.

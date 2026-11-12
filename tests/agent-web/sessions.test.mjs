@@ -100,9 +100,9 @@ test("a row says what the columns do not: parked, no session here, and where an 
   setup();
   run("sst.render()");
   const html = boxes["ov-sessions"].innerHTML;
-  assert.match(html, /task of hub\/b:1 <span class="pill parked">parked<\/span>/);
-  assert.match(html, /task of lab\/x:1 <span class="pill">no session<\/span>/);
-  assert.match(html, /task of ucp-394 <span class="pill" title="where this row came from">queue<\/span>/);
+  assert.match(html, /<div class="c2" title="task of hub\/b:1"><span class="pill parked">parked<\/span> task of hub\/b:1<\/div>/);
+  assert.match(html, /<span class="pill">no session<\/span> task of lab\/x:1/);
+  assert.match(html, /<span class="pill" title="where this row came from">queue<\/span> task of ucp-394/);
   assert.match(html, /<td class="n">ended<\/td>/);
 });
 
@@ -229,14 +229,17 @@ test("a page refreshes with the feed, the transcript is not read for it, and the
   assert.equal(run("__asked.length"), 0);
 });
 
-test("past the cap the table offers the rest", () => {
+test("past the server's open_rows the table offers the rest, and the count is every row the view keeps", () => {
   setup();
-  run(`sst.data.rows = Array.from({ length: SESSIONS_OPEN + 7 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
+  run(`sst.data.open_rows = 25; sst.data.rows = Array.from({ length: 32 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
   run("sst.render()");
-  assert.match(boxes["ov-sessions"].innerHTML, /data-all="1">\+7 older/);
+  const h = boxes["ov-sessions"].innerHTML;
+  assert.equal((h.match(/<tr class="click"/g) || []).length, 25, "the page draws the server's cap");
+  assert.match(h, /data-all="1">\+7 more/);
   run("sst.all = true");
   run("sst.render()");
-  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /\+\d+ older/);
+  assert.equal((boxes["ov-sessions"].innerHTML.match(/<tr class="click"/g) || []).length, 32);
+  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /\+\d+ more/);
 });
 
 const VOCAB = ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"];
@@ -269,15 +272,15 @@ test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's 
   for (const t of ["--b-parked", "--b-chat"]) assert.equal(css.split(t + ":").length, 3, `${t} in both themes`);
 });
 
-test("under the table the last day starts open; the shepherd is its own inner tab, the changes and the rundowns are Log's", () => {
+test("under the table the last day starts shut with its lane count; the shepherd is its own inner tab, the changes and the rundowns are Log's", () => {
   setup();
   run("sst.render()");
   const html = boxes["ov-sessions"].innerHTML;
-  assert.match(html, /<details class="ovsec" data-k="lanes" open>/);
+  assert.match(html, /<details class="ovsec" data-k="lanes"><summary><h2 class="sec">Last 24h <span class="n">\d+<\/span><\/h2><\/summary>/);
   for (const k of ["shep", "changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
-  run(`wst.open.lanes = false; sst.render()`);
-  assert.match(boxes["ov-sessions"].innerHTML, /<details class="ovsec" data-k="lanes"><summary>/, "a fold the reader closed stays closed");
-  run(`delete wst.open.lanes`);
+  run(`wst.open.lanes = true; sst.render()`);
+  assert.match(boxes["ov-sessions"].innerHTML, /<details class="ovsec" data-k="lanes" open>/, "a fold the reader opened stays open");
+  run(`wst.open.lanes = false`);
 });
 
 test("the Shepherd inner tab draws its chat, pass and due lines only while it shows", () => {

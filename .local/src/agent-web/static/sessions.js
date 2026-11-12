@@ -5,8 +5,6 @@
 // row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
 
-// A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
-const SESSIONS_OPEN = 200;
 const sst = tblTab({
   tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
@@ -63,22 +61,25 @@ function sessionPr(r) {
   return `#${esc(r.pr)}${r.pr_state ? " " + esc(r.pr_state.toLowerCase()) : ""}${ci}`;
 }
 
+// The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
 function sessionRow(r) {
-  const a = sessionAgent(r);
+  const a = sessionAgent(r), tags = sessionTags(r, a);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
   return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
-    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
+    `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
 
+// A day's ended sessions run to hundreds, so the table draws the server's open_rows (agent-web
+// sessions.rs TABLE_OPEN_ROWS) with the rest a click away; the chips, search and filters reach every row.
 function sessionsBody(d) {
   const t = d.table, shown = d.rows || [];
-  const rows = sst.all ? shown : shown.slice(0, SESSIONS_OPEN);
+  const rows = sst.all ? shown : shown.slice(0, d.open_rows);
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      tblMore(more) + `</div>`
+      tblMore(more, "more") + `</div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
 }
 
@@ -133,10 +134,9 @@ function renderSide(scroll = false) {
   if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
   const d = sst.data;
   if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
-  const rows = (d.rows || []).slice(0, SESSIONS_OPEN);
-  const more = (d.rows || []).length - rows.length;
-  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>') +
-    (more ? `<div class="muted">+${more} more on the table</div>` : ""));
+  // The list scrolls in its own column, so it holds every row the view keeps.
+  const rows = d.rows || [];
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>'));
   if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
 }
 

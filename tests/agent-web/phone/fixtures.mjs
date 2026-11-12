@@ -59,15 +59,17 @@ const briefing = {
   rows: rows(3, (i) => ({ name: pick(["dispatch", "ci", "spend"], i), link: "", level: pick(["warn", "bad", "ok"], i), line: TEXT[i + 3], details: [], fix: null })),
 };
 
-// Queue: hub_core::queue, live-sized: the active view of 2026-11-12 (637 of 3,007 items, titles
-// that wrap and a note on some), of which the page draws the server's open_rows, read from
-// agent-web's TABLE_OPEN_ROWS so this fixture sends what agent-web sends.
-const QUEUE_RS = new URL("../../../.local/src/agent-web/src/queue.rs", import.meta.url);
-const QUEUE_ROWS = (() => {
-  const m = readFileSync(QUEUE_RS, "utf8").match(/TABLE_OPEN_ROWS[^=]*=\s*(\d+)/);
-  if (!m) throw new Error(`fixtures.mjs: no TABLE_OPEN_ROWS = <n> in ${QUEUE_RS.pathname}; the Queue fixture's open_rows reads it`);
+// A table's open_rows as agent-web sends it: the TABLE_OPEN_ROWS of src/<file>, read from the source
+// so a fixture sends what agent-web sends.
+function openRows(file) {
+  const src = new URL(`../../../.local/src/agent-web/src/${file}`, import.meta.url);
+  const m = readFileSync(src, "utf8").match(/TABLE_OPEN_ROWS[^=]*=\s*(\d+)/);
+  if (!m) throw new Error(`fixtures.mjs: no TABLE_OPEN_ROWS = <n> in ${src.pathname}; a fixture's open_rows reads it`);
   return Number(m[1]);
-})();
+}
+// Queue: hub_core::queue, live-sized: the active view of 2026-11-12 (637 of 3,007 items, titles
+// that wrap and a note on some), of which the page draws the server's open_rows.
+const QUEUE_ROWS = openRows("queue.rs");
 const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
 const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
 const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
@@ -138,15 +140,18 @@ const board = {
   focus: [{ profile: "personal", open: 12 }],
 };
 
-// Sessions: hub_core::session_table.
+// Sessions: hub_core::session_table, live-sized: 342 rows on 2026-11-12, of which the page draws
+// the server's open_rows, and a lane a session under the table.
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
+const SESSION_ROWS = 342;
 const sessions = {
-  table: table(6, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "done today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
-  rows: rows(6, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `0000000${i}-aaaa-bbbb-cccc-000000000000`, bucket: BUCKET[i], activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: TEXT[i], by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i, phases_total: 5, idle_min: 2 + i * 6, ended: null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
+  open_rows: openRows("sessions.rs"),
+  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "done today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
+  rows: rows(SESSION_ROWS, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-000000000000`, bucket: pick(BUCKET, i), activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: qTitle(i), by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i % 6, phases_total: 5, idle_min: 2 + i * 6, ended: null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
   spend_usd: 41.5, buckets: ["NEEDS", "STALLED", "WORKING", "LANDED", "DONE"], errors: [],
 };
 const capacity = { parts: [{ text: "39 live", warn: false, start: "", confirm: "" }, { text: "2 slots free", warn: true, start: "", confirm: "" }], unlinked: 0, live: 39, errors: [] };
-const watch = { state: { sessions: [], vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
+const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
 // Log's Rundowns: as many as agent-web sends (shepherd.rs RUNDOWNS), each a long sum-up like the
 // live ones, so the inner tab's height is measured at a live count.
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
@@ -205,10 +210,13 @@ const logWork = {
   more: WORK_TOTAL - WORK_SHOWN, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
 };
 
-// Sessions' Runners: hub_core::fleet::who.
+// Sessions' Runners: hub_core::fleet::who, live-sized: 42 runners on 2026-11-12, a FOR up to 152
+// characters and a DOING NOW up to 390, so a row that wraps shows here as it does live.
+const RUNNERS = 42;
 const fleet = {
-  table: table(6, ["kind", "who", "state", "cost", "since", "for", "doing", "under"], ["all", "lead", "deliver", "observe", "learn", "maintain", "held", "failed", "working", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"] }),
-  who: rows(6, (i) => ({ tier: i ? 2 : 1, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `fleet-${SLUGS[i]}`, state: pick(["working", "held", "idle"], i), since: ago(20 + i * 15), cost_24h: i % 2 ? 1.2 * i : null, cost_estimated: false, for: TEXT[i + 1], doing: TEXT[i], under: i ? "" : "4 sessions" })),
+  table: table(RUNNERS, ["kind", "who", "state", "cost", "since", "for", "doing", "under"], ["all", "lead", "deliver", "observe", "learn", "maintain", "held", "failed", "working", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"] }),
+  who: rows(RUNNERS, (i) => ({ tier: i ? 2 : 1, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `${pick(SLUGS, i)}-${i}`, state: pick(["working", "held", "idle", "failed"], i), since: ago(20 + i * 15), cost_24h: i % 2 ? 1.2 * i : null, cost_estimated: false,
+    for: pick(TEXT, i + 1), doing: i % 3 ? pick(TEXT, i) : `FAILED ${pick(TEXT, i)} why: ${pick(TEXT, i + 2)} (1 failed 24h)`, under: i % 5 ? "" : "4 sessions" })),
   hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::fold_rows("verdicts")
   // Log's Judges at live counts: hub_core::fleet sends the newest 30 dispatch verdicts
   // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long.

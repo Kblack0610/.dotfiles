@@ -187,7 +187,7 @@ test("a runner row opens its page on Sessions' Runners, and a lead counts the se
   assert.match(h, /<tr class="wr" data-href="#sessions\/runners\/fleet-dispatch"><td class="muted">lead<\/td>/);
   assert.match(h, /<a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<td class="bad">failed<\/td>/);
-  assert.match(h, /<td class="wrap muted">2 sessions<\/td>/);
+  assert.match(h, /<td class="muted"><div class="c12" title="2 sessions">2 sessions<\/div><\/td>/);
   assert.doesNotMatch(h, /data-fold|#sessions\/lab/, "no fold and no session rows: the sessions are the Sessions inner tab's");
   // A row the server sent no link for draws its text and opens nothing.
   f.data = { ...fleetData, table: table() };
@@ -242,8 +242,8 @@ test("KIND and FOR say what each row is and why it is deployed, under the lanes.
   const h = box.innerHTML;
   assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
   assert.match(h, /<td class="muted">observe<\/td><td><a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
-  assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
-  assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
+  assert.match(h, /<td><div class="c12" title="Starts a one-shot session per small agent row">Starts a one-shot session per small agent row<\/div><\/td>/);
+  assert.match(h, /<td><div class="c12" title="no gateway route \(2 failed 24h\)">no gateway route \(2 failed 24h\)<\/div><\/td>/);
   for (const k of ["lead", "observe"]) assert.match(h, new RegExp(`data-ts="${k}"><span class="tl">${k.toUpperCase()}</span><span class="tv">`));
   vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
   ctx.renderRunners();

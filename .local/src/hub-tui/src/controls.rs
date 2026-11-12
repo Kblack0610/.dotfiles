@@ -21,10 +21,8 @@ use serde_json::Value;
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, dur, older, Palette};
+use crate::fmt::{clock, dur, Palette};
 
-/// Rows drawn; a day's ended sessions run to hundreds, and `/` reaches the rest.
-const OPEN: usize = 200;
 /// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
 const ON_PAGE: [&str; 7] = ["SYNC", "CONFLICTS", "TREE", "PR", "PRS", "CI", "PLAN"];
 
@@ -118,14 +116,15 @@ impl Controls {
         self.snap.as_ref().map_or(&[], |s| s.agents.as_slice())
     }
 
-    /// The rows the view keeps, up to `OPEN`, in the table's own order or the view's sort.
+    /// Every row the view keeps, in the table's own order or the view's sort. agent-web draws its
+    /// first `open_rows`; here the page scrolls one-line rows and the frame paints the window
+    /// that follows the selection.
     pub fn rows(&self) -> Vec<Row<'_>> {
         let agents = self.agents();
         self.table
             .view
             .apply(&self.all)
             .into_iter()
-            .take(OPEN)
             .map(|r| {
                 let on = r.source == Source::Live;
                 Row {
@@ -158,7 +157,7 @@ impl Controls {
     }
 
     fn len(&self) -> usize {
-        self.table.view.apply(&self.all).len().min(OPEN)
+        self.table.view.apply(&self.all).len()
     }
 
     /// Rebuild the rows after `change`, keeping the selection on the same row when it is still
@@ -466,7 +465,6 @@ impl Controls {
             self.table.style(&mut t, p);
             out.append(&mut t);
         }
-        out.extend(older(self.table.view.apply(&self.all).len(), rows.len(), p));
         out.push(self.status_line(p, w));
         if self.open {
             out.extend(self.detail(rows.get(self.table.sel), p, now, w));
@@ -948,6 +946,32 @@ pub mod tests {
         press(&mut c, KeyCode::Char('T'));
         assert!(c.starting.is_none());
         assert!(matches!(&c.said, Some(Err(e)) if e.contains("no timer")));
+    }
+
+    #[test]
+    fn every_ended_row_is_kept_past_the_webs_cap_and_j_reaches_the_last() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        let items: Vec<String> = (0..250)
+            .map(|i| {
+                serde_json::json!({"slug": format!("end-{i}"), "project": "p", "state": "done",
+                    "task": format!("task {i}"), "finished": chrono::Local::now().to_rfc3339(),
+                    "sessions": format!("sid-{i}"), "status": "ok"})
+                .to_string()
+            })
+            .collect();
+        c.read_feed(Feed {
+            items: hub_core::queue::parse(&items.join("\n")),
+            ..Feed::default()
+        });
+        assert_eq!(c.rows().len(), 252, "two live rows and every ended one");
+        for _ in 0..300 {
+            press(&mut c, KeyCode::Char('j'));
+        }
+        assert_eq!(c.table.sel, 251, "j walks to the last row");
+        let out = text(&c, 200);
+        assert!(out.contains("task 0") && out.contains("task 249"), "{out}");
+        assert!(!out.contains("older"), "no row is left out");
     }
 
     #[test]

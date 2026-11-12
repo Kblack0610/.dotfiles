@@ -76,11 +76,11 @@ const callsTable = (recent) => `<table class="tbl"><tr><th class="n" data-role="
 // The table's headers: hub_core::fleet::who::Who::COLUMNS (checked by assets.rs).
 const FLEET_COLS = { kind: ["kind"], who: ["who"], state: ["state"], cost: ["cost 24h", "n"], since: ["since", "n"], for: ["for"], doing: ["doing now"], under: ["under it"] };
 const STATE_CLASS = { failed: "bad", held: "bad", stalled: "warn", idle: "muted", off: "muted" };
-// A runner opens its page. `l`: the row's links (tblLinks), its who to that page.
+// A runner opens its page, one line a row (clamp1). `l`: the row's links (tblLinks), its who to that page.
 function whoRow(r, l) {
   return `<tr class="wr" data-href="${esc(l.who || "")}"><td class="muted">${esc(r.kind)}</td><td>${tblLink(l.who, r.who)}</td>` +
     `<td class="${STATE_CLASS[r.state] || ""}">${esc(r.state)}</td><td class="n">${r.cost_24h == null ? "-" : `<a href="#costs">${r.cost_estimated ? "~" : ""}${usd(r.cost_24h)}</a>`}</td><td class="n">${r.since ? ago(r.since) : "-"}</td>` +
-    `<td class="wrap">${cut(r.for)}</td><td class="wrap">${cut(r.doing)}</td><td class="wrap muted">${esc(r.under)}</td></tr>`;
+    `<td>${clamp1(esc(r.for), r.for)}</td><td>${clamp1(esc(r.doing), r.doing)}</td><td class="muted">${clamp1(esc(r.under), r.under)}</td></tr>`;
 }
 
 function fleetBody(d) {

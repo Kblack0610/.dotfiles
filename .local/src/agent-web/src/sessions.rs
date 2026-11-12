@@ -20,6 +20,15 @@ const CACHE_SECS: u64 = 15;
 /// minute at most.
 const CAPACITY_SECS: u64 = 60;
 
+/// How many table rows the page draws before its "+N more" button; the chips still count every
+/// row and the search and filters reach them all, as Queue's `TABLE_OPEN_ROWS` does. Holds the
+/// Sessions inner tab under three screens at 1400x900 (tests/agent-web/phone/render.mjs reads this
+/// line). Live data, 2026-11-12, 342 rows: at the page's old 200 the inner tab was 16,114 px, about
+/// 72 px a row; with the lanes shut, 25 rows measured 2,723 px and 20 measured 2,180. Revisit
+/// when the space above the table or the row height changes. Web only: the hub TUI keeps every row
+/// and draws only the window it shows.
+pub const TABLE_OPEN_ROWS: usize = 20;
+
 /// The table view, the same keys the page keeps in its URL.
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -48,6 +57,8 @@ struct Shown<'a> {
     table: Summary,
     /// What the shown rows cost (`session_table::spend`), for the overview row.
     spend_usd: f64,
+    /// How many rows the page draws before "+N more" (`TABLE_OPEN_ROWS`).
+    open_rows: usize,
 }
 
 #[derive(Default)]
@@ -67,6 +78,7 @@ fn render(r: &Read, q: &TableQuery) -> String {
         buckets: &r.buckets,
         errors: &r.errors,
         table,
+        open_rows: TABLE_OPEN_ROWS,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
 }
@@ -162,6 +174,7 @@ mod tests {
         assert_eq!(v["errors"][0], "session outcomes: exit 1");
         assert_eq!(v["table"]["state"], "done today");
         assert_eq!(v["table"]["total"], 2);
+        assert_eq!(v["open_rows"], TABLE_OPEN_ROWS, "the page's cap is the server's");
     }
 
     #[test]
