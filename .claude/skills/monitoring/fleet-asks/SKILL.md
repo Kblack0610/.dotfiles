@@ -1,12 +1,7 @@
 ---
 name: fleet-asks
 description: >-
-  File, read and unstick agent asks: agent-ask post, list, show, answer, the judge, ask-resume. Use for "post an ask", "my ask was answered", "answer went nowhere", "stuck ask", "ask-filed blocked my turn". What waits on the human: fleet-bench.
-paths:
-  - ".local/bin/agent-ask"
-  - ".local/bin/ask-resume"
-  - ".config/agent-ask/**"
-  - ".claude/hooks/stop-post.d/**"
+  File, read, unstick and review agent asks: agent-ask post, answer, park, the judge, ask-resume. Use for "post an ask", "go over my asks", "review pending asks", "answer went nowhere", "stuck ask", "ask-filed blocked my turn". Counts of waits: fleet-bench.
 metadata:
   category: monitoring
   tags: [agent-ask, asks, judge, resume, stop-hook]
@@ -22,6 +17,7 @@ An ask is one question an agent files for the human, stored as `~/.agent/asks/<p
 - You are about to wait on the human, or the Stop check blocked your turn for not filing.
 - An ask you posted is answered, or the human says they answered and nothing moved.
 - An ask is pending with no live session, or the judge answered something it should not have.
+- The human wants the pending backlog gone over: what to close, answer, do themselves or park.
 
 Not for what is waiting on the human across the fleet (`fleet-bench`), or moving a stalled session (`shepherd`).
 
@@ -38,6 +34,20 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 
 - `agent-ask list [project|--all] [--pending|--answered] [--since 3d]`, then `agent-ask show <id>`. The `answered_by` field says human, judge or shepherd.
 - An answer is typed into the live session when there is one. Otherwise `ask-resume <id>` starts a headless run of the ask's `resume` command (`agentctl-run --agent ask-resume`, max turns `ASK_RESUME_MAX_TURNS`, log `ask-resume/<project>.log` under `~/.local/state/agentctl/`, made on its first run).
+
+## Review the backlog
+
+When the human says "go over my asks", turn the pending pile into decisions they can approve in one reply.
+
+1. Read: `fleet-bench asks` (hub Home's order), `agent-ask list --all --open` (pending and parked) and `agent-ask resumable --all` (answered, nothing moved). `agent-ask show <id>` for the context of each.
+2. Check each premise now, not as filed: the PR (`gh pr view`), the hold (`agent-hold list`), the held queue item (`agent-queue`), whether the asking session is alive. An ask that events settled is a close.
+3. Sort into four tables, each row the id, the pick and one line of evidence:
+   - Close: `agent-ask cancel <id> '<reason>'`.
+   - Answer: the option and why. Say plainly when a pick only follows the asker's recommendation, unread.
+   - Only the human: what they run, bare with no leading `!`, and what declining costs.
+   - Park: `agent-ask park <id> --until <date>`, for what waits on something not yet true. A parked ask leaves `--pending` and the boards until that date; with no `--until` the date comes from the held item's priority (`park.conf` PARK_DAYS).
+4. Write it per `comms-standard`. Run nothing until the human says go. Then, per ask, `agent-ask show <id>` first and act only if it is still pending; one the judge, a session or the human settled meanwhile is skipped and named in the report, since cancelling an answered ask fails the items it holds. `answer` resumes the work itself; `ask-resume <id>` is only for rows step 1 found in `resumable`.
+5. Then explain each "only the human" row in plain words: what the thing is for and what happens if they skip it.
 
 ## Stuck asks
 

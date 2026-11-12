@@ -415,8 +415,8 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
         heading(
             "ANSWER JUDGE",
             format!(
-                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  false-defer {}  pending {}  unscored {}",
-                j.agree, j.disagree, j.deferred, j.false_defer, j.pending, j.unscored
+                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  pending {}  unscored {}",
+                j.agree, j.disagree, j.deferred, j.pending, j.unscored
             ),
             p,
         ),
@@ -1095,7 +1095,6 @@ pub mod tests {
                 deferred: 2,
                 pending: 1,
                 unscored: 5,
-                false_defer: 1,
                 precision: Some(75.0),
                 kappa: Some(0.2),
                 prompt: "60c840b".into(),
