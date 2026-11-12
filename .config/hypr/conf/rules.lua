@@ -28,11 +28,11 @@ rule("unity-tiled-ws3", { class = "^([Uu]nity([Hh]ub)?-.*)$", float = false }, {
 rule("unity-ws3",    { class = "^([Uu]nity)$" },                  { workspace = "3 silent" })
 rule("scrcpy-ws7",   { class = "^(scrcpy)$" },                    { workspace = "7", group = "barred" })
 
--- Games on 10 (Super+0), Steam's main window with them; each takes you there. Steam's floating
--- dialogs and toasts stay on the focused workspace, so a friend-online popup never pulls you away.
--- Proton and Steam-launched games map as steam_app_<appid>; a standalone game has no shared class,
--- so it is caught only when it sets the Wayland content type to game.
-rule("steam-ws10",      { class = "^(steam)$", float = false }, { workspace = "10" })
+-- Steam on 9, games on 10 (Super+0); each takes you there. Steam's floating dialogs and toasts
+-- stay on the focused workspace, so a friend-online popup never pulls you away. Proton and
+-- Steam-launched games map as steam_app_<appid>; a standalone game has no shared class, so it is
+-- caught only when it sets the Wayland content type to game.
+rule("steam-ws9",       { class = "^(steam)$", float = false }, { workspace = "9" })
 rule("steam-game-ws10", { class = "^(steam_app_.+)$" },         { workspace = "10" })
 rule("game-ws10",       { content = "game" },                   { workspace = "10" })
 
