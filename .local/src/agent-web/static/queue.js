@@ -214,12 +214,14 @@ function qPrCell(i) {
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
 // so a glance reads what each item is; its note is the muted second line (the Board's two-line cell).
+// Title and note clamp to two lines each, the full text on hover or open; the proof flag goes first
+// so the clamp never hides it.
 function qRow(i, n) {
   const t = i.timing || {};
   const dash = (v) => (v ? esc(v) : "-");
   const open = i.slug === qst.sel;
   return `<tr class="qr${open ? " sel" : ""}" data-slug="${esc(i.slug)}">${qState(i)}` +
-    `<td class="btitle"><div class="bt">${esc(i.title || i.slug)}${qProof(i) ? " " + qProof(i) : ""}</div>${i.note ? `<div class="bsum clamp muted" title="${esc(i.note)}">${esc(i.note)}</div>` : ""}</td>` +
+    `<td class="btitle"><div class="bt clamp" title="${esc(i.title || i.slug)}">${qProof(i) ? qProof(i) + " " : ""}${esc(i.title || i.slug)}</div>${i.note ? `<div class="bsum clamp muted" title="${esc(i.note)}">${esc(i.note)}</div>` : ""}</td>` +
     `<td>${tblLink(tblLinks(qst.table, n).project, i.project)}</td>` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
     `<td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
