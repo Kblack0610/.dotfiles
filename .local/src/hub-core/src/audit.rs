@@ -23,8 +23,8 @@ use serde_json::Value;
 /// the caller, which records it under the person who asked. A grandchild never matches.
 pub const AUDITED_ENV: &str = "AGENT_AUDITED";
 
-/// A string in `from` or `to` longer than this is cut: the log names a change, it does not keep
-/// a copy of a note or a message.
+/// A target, or a string in `from` or `to`, longer than this is cut: the log names a change, it
+/// does not keep a copy of a note or a row.
 pub const TEXT_MAX: usize = 200;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -50,7 +50,7 @@ impl Entry {
             at: crate::jobs::now(),
             actor: actor.into(),
             action: action.into(),
-            target: target.into(),
+            target: cut(target),
             outcome: "ok".into(),
             via: via.into(),
             from: Value::Null,
@@ -123,16 +123,19 @@ pub fn path() -> PathBuf {
         })
 }
 
-/// Append one line to `path` in a single write, so lines from two writers never interleave.
+/// Append one line to `path` in a single write, so lines from two writers never interleave. A new
+/// log is readable only by its owner: it says what was typed where.
 pub fn append_to(path: &std::path::Path, e: &Entry) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
     }
     let mut line = serde_json::to_string(e).map_err(|err| err.to_string())?;
     line.push('\n');
+    use std::os::unix::fs::OpenOptionsExt as _;
     std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(path)
         .and_then(|mut f| f.write_all(line.as_bytes()))
         .map_err(|err| format!("{}: {err}", path.display()))
@@ -223,6 +226,15 @@ mod tests {
         );
         assert!(back[1].ok());
         assert!(!text.lines().nth(1).unwrap().contains("\"from\""));
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the log is its owner's only");
+        let e = Entry::new("ken", "board.edited", &long, "hub");
+        assert_eq!(
+            e.target.len(),
+            TEXT_MAX + "...".len(),
+            "a long target is cut"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

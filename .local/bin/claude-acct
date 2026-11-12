@@ -1437,10 +1437,11 @@ PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # notes ingest record, under the queue item that session works, so `notes log --item` shows the
 # stop and the resume.
 record() {
-    local by="" item=""
+    local by="" item="" action=park.dropped
     [[ -n "${TMUX:-}" ]] && by=$(tmux display-message -p '#S' 2>/dev/null)
+    [[ -n "${3:-}" ]] && action="session.$3"
     agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
-    audit_append "${by:-${PWD##*/}}" "session.${3:-park-dropped}" "$1" ok "$2"
+    audit_append "${by:-${PWD##*/}}" "$action" "$1" ok "$2"
     [[ -n "${3:-}" ]] || return 0
     [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" 2>/dev/null)
     chain_event dispatch "$3" "-" "$2" --item "$item" --why "$1" --by claude-acct

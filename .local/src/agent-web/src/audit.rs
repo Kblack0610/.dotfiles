@@ -19,15 +19,19 @@ const BODY_MAX: usize = 2 * 1024 * 1024;
 /// The largest failed answer whose words go into the outcome.
 const ERROR_BODY_MAX: usize = 64 * 1024;
 
-/// One mutating route: its method and path as main.rs routes it, the action it records, the
-/// fields that name its target (path parameters, then body keys), and the body keys it records
-/// as `to`.
+/// The entry a route builds itself from its fields (path parameters, then body keys): None when
+/// the body is not one it reads, which is then recorded as `<METHOD> <path>`.
+type Own = fn(&str, &Map<String, Value>) -> Option<Entry>;
+
+/// One mutating route: its method and path as main.rs routes it, then either the action it
+/// records, the fields that name its target and the body keys it records as `to`, or `own`.
 pub struct Route {
     pub method: &'static str,
     pub path: &'static str,
     action: fn(&Map<String, Value>) -> String,
     target: &'static [&'static str],
     to: &'static [&'static str],
+    own: Option<Own>,
 }
 
 const fn route(
@@ -43,7 +47,34 @@ const fn route(
         action,
         target,
         to,
+        own: None,
     }
+}
+
+const fn own(method: &'static str, path: &'static str, own: Own) -> Route {
+    Route {
+        method,
+        path,
+        action: |_| String::new(),
+        target: &[],
+        to: &[],
+        own: Some(own),
+    }
+}
+
+/// What was sent to a pane is kept as its length: a pane at a password prompt gets the password.
+fn sent(actor: &str, f: &Map<String, Value>) -> Option<Entry> {
+    let mut to = Map::new();
+    for k in ["key", "submit"] {
+        if let Some(v) = f.get(k) {
+            to.insert(k.into(), v.clone());
+        }
+    }
+    let chars = s(f, "text").chars().count();
+    if chars > 0 {
+        to.insert("chars".into(), chars.into());
+    }
+    Some(Entry::new(actor, "session.sent", s(f, "t"), "web").to(Value::Object(to)))
 }
 
 fn s<'a>(f: &'a Map<String, Value>, k: &str) -> &'a str {
@@ -52,13 +83,7 @@ fn s<'a>(f: &'a Map<String, Value>, k: &str) -> &'a str {
 
 /// Sign-in is recorded where it happens, in the OAuth callback (`signin.started`, `signin.refused`).
 pub const ROUTES: &[Route] = &[
-    route(
-        "POST",
-        "/api/send",
-        |_| "session.sent".into(),
-        &["t"],
-        &["text", "key", "submit"],
-    ),
+    own("POST", "/api/send", sent),
     route(
         "POST",
         "/api/session/{target}/{action}",
@@ -115,24 +140,7 @@ pub const ROUTES: &[Route] = &[
         &["host"],
         &["action", "hours"],
     ),
-    route(
-        "POST",
-        "/api/board",
-        |f| format!("board.{}", audit::past(s(f, "verb"))),
-        &["project", "raw"],
-        &[
-            "text",
-            "priority",
-            "to",
-            "dest",
-            "why",
-            "dup",
-            "proof",
-            "unverified",
-            "add",
-            "remove",
-        ],
-    ),
+    own("POST", "/api/board", crate::board::audit_entry),
     route(
         "POST",
         "/api/inbox/ack",
@@ -183,13 +191,38 @@ fn matched(pattern: &str, path: &str) -> Option<Map<String, Value>> {
     for (a, b) in p.iter().zip(&q) {
         match a.strip_prefix('{').and_then(|a| a.strip_suffix('}')) {
             Some(name) => {
-                params.insert(name.into(), Value::String((*b).into()));
+                params.insert(name.into(), Value::String(decoded(b)));
             }
             None if a == b => {}
             None => return None,
         }
     }
     Some(params)
+}
+
+/// A percent-encoded path segment as the handler's `Path` reads it (`hub%3Aagent-4` is
+/// `hub:agent-4`); a malformed escape is kept as written.
+fn decoded(seg: &str) -> String {
+    let b = seg.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%')
+            .then(|| b.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok());
+        match hex {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The entry a request writes before its outcome is known.
@@ -203,6 +236,12 @@ fn entry(actor: &str, method: &Method, path: &str, body: &[u8]) -> Entry {
         if let Some(b) = body {
             for (k, v) in b {
                 fields.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        if let Some(own) = r.own {
+            match own(actor, &fields) {
+                Some(e) => return e,
+                None => break,
             }
         }
         let target = r
@@ -370,6 +409,58 @@ mod tests {
         assert_eq!(
             (e.action.as_str(), e.target.as_str(), &e.to),
             ("note.saved", "status/inbox", &Value::Null)
+        );
+    }
+
+    #[test]
+    fn an_encoded_target_reads_as_the_handler_reads_it() {
+        let e = entry(
+            "ken",
+            &Method::POST,
+            "/api/session/hub%3Aagent-4/park",
+            b"{}",
+        );
+        assert_eq!(
+            (e.action.as_str(), e.target.as_str()),
+            ("session.parked", "hub:agent-4")
+        );
+        assert_eq!(decoded("a%2"), "a%2", "a cut escape is kept");
+        assert_eq!(decoded("%E2%9C%93"), "\u{2713}");
+    }
+
+    #[test]
+    fn what_was_sent_to_a_pane_is_kept_as_its_length() {
+        let e = entry(
+            "ken",
+            &Method::POST,
+            "/api/send",
+            br#"{"t":"hub:agent-4","text":"hunter2","submit":true}"#,
+        );
+        assert_eq!(
+            (e.action.as_str(), e.target.as_str()),
+            ("session.sent", "hub:agent-4")
+        );
+        assert_eq!(e.to, serde_json::json!({"submit": true, "chars": 7}));
+        assert!(!serde_json::to_string(&e).unwrap().contains("hunter2"));
+    }
+
+    #[test]
+    fn a_board_write_records_what_the_hub_records() {
+        let e = entry(
+            "ken",
+            &Method::POST,
+            "/api/board",
+            br#"{"verb":"move","profile":"home","project":"demo","lane":"agent","raw":"- [ ] tidy","dest":"garden"}"#,
+        );
+        assert_eq!(
+            (e.action.as_str(), e.target.as_str()),
+            ("board.moved", "demo - [ ] tidy")
+        );
+        assert_eq!(e.to["project"], "garden");
+        let bad = entry("ken", &Method::POST, "/api/board", br#"{"verb":"nuke"}"#);
+        assert_eq!(
+            bad.action, "POST /api/board",
+            "a body it cannot read is still recorded"
         );
     }
 

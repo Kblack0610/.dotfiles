@@ -167,6 +167,16 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
     })
 }
 
+/// The audit line a board write records: the same one the hub TUI writes for it
+/// (`tasks::Write::audit_entry`). None when the body is not a write.
+pub fn audit_entry(
+    actor: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Option<hub_core::audit::Entry> {
+    let b: WriteBody = serde_json::from_value(fields.clone().into()).ok()?;
+    Some(to_write(b).ok()?.audit_entry(actor, "web"))
+}
+
 pub async fn write(Json(b): Json<WriteBody>) -> ApiResult<Json<serde_json::Value>> {
     let w = to_write(b).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
     // A malformed write is the page's fault (400); a refused one is the sheet's answer (409).
