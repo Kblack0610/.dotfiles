@@ -244,7 +244,7 @@ toggle_repo() {
   printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
   printf '#!/usr/bin/env bash\ntouch %q\n' "$SANDBOX/landed" > "$SANDBOX/ghbin/agent-land"
   chmod +x "$SANDBOX"/ghbin/*
-  rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue" "$HOME/.local/bin/agent-land"
+  rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
   GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
   assert_success
@@ -289,7 +289,7 @@ toggle_repo() {
   printf '#!/usr/bin/env bash\ncase "$*" in "pr create"*) printf "%%s\\n" "$*" > %q; echo https://github.com/o/r/pull/89 ;; esac\n' "$SANDBOX/pr.txt" > "$SANDBOX/ghbin/gh"
   printf '#!/usr/bin/env bash\necho "agent-queue $*" >> %q\n' "$SANDBOX/aq.log" > "$SANDBOX/ghbin/agent-queue"
   chmod +x "$SANDBOX"/ghbin/*
-  rm -f "$HOME/.local/lib/agent-proof.sh" "$HOME/.local/bin/agent-queue"
+  rm -f "$HOME/.local/lib/agent-proof.sh"
   printf 'proof_outcome() { echo "verdict $2"; }\n' > "$HOME/.local/lib/agent-proof.sh"
   SKILL_TOGGLE_HIDE_CAP=0 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
   assert_success
