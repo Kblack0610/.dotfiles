@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use hub_core::infra::Infra;
 use hub_core::machine_page::{self, MachinePage};
+use hub_core::pool_page::{self, PoolPage};
 use hub_core::table::{Row, View};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -174,6 +175,45 @@ impl Pages {
     }
 }
 
+/// One pool's page (`hub_core::pool_page`), kept for the pool last asked for: its history is
+/// three week-long range queries, so a reload inside `CACHE_SECS` is served the last read.
+#[derive(Default)]
+pub struct PoolPages(ReadCache<String, CACHE_SECS, String>);
+
+/// The page, its machines and waiting jobs sent once, as tables (`shown`, in their own order).
+fn pool_json(p: &PoolPage) -> String {
+    let none = ViewQuery::new();
+    let mut tables = Map::new();
+    tables.insert("machines".into(), shown(&p.machines, &none, ""));
+    tables.insert("waiting".into(), shown(&p.waiting, &none, ""));
+    let mut v = match serde_json::to_value(p) {
+        Ok(v) => v,
+        Err(e) => return json!({"error": e.to_string()}).to_string(),
+    };
+    if let Some(o) = v.as_object_mut() {
+        o.remove("machines");
+        o.remove("waiting");
+        o.insert("tables".into(), Value::Object(tables));
+    }
+    v.to_string()
+}
+
+impl PoolPages {
+    /// `#infra/pools/<pool>`'s read: a name no pool has is a 404, and is not kept.
+    pub async fn get(&self, infra: &Cache, name: String) -> Result<String, (StatusCode, String)> {
+        let read = async {
+            let i = infra.infra().await;
+            let n = name.clone();
+            let now = hub_core::jobs::now().max(0) as u64;
+            off(move || pool_page::read(&i, &n, now).map(|p| pool_json(&p)))
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+                .map_err(|e| (StatusCode::NOT_FOUND, e))
+        };
+        self.0.get(name.clone(), read).await.map(|s| (*s).clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +236,32 @@ mod tests {
         assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
         assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
         assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());
+    }
+
+    /// A pool page sends its machines and waiting jobs once, as tables.
+    #[test]
+    fn a_pool_page_sends_its_lists_once_as_tables() {
+        let p = PoolPage {
+            pool: "unity".into(),
+            machines: vec![hub_core::machines::Machine {
+                host: "ws".into(),
+                ..Default::default()
+            }],
+            waiting: vec![hub_core::ci::Queued {
+                job: "Tests".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_str(&pool_json(&p)).unwrap();
+        assert_eq!(v["pool"], "unity");
+        assert!(v.get("machines").is_none() && v.get("waiting").is_none());
+        assert_eq!(v["tables"]["machines"]["rows"][0]["host"], "ws");
+        assert_eq!(
+            v["tables"]["machines"]["table"]["links"][0]["machine"],
+            "#infra/machines/ws"
+        );
+        assert_eq!(v["tables"]["waiting"]["rows"][0]["job"], "Tests");
     }
 
     /// Each table reads its own prefixed keys, and the CI lists are sent once, as tables.

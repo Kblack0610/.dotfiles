@@ -385,6 +385,8 @@ pub enum Msg {
     Runner(Box<(String, Result<hub_core::fleet::runner::Runner, String>)>),
     /// One machine's page (hub_core::machine_page), for the host it was read for.
     Machine(Box<(String, Result<hub_core::machine_page::MachinePage, String>)>),
+    /// One pool's page (hub_core::pool_page), for the pool it was read for.
+    Pool(Box<(String, Result<hub_core::pool_page::PoolPage, String>)>),
     /// The pipeline summary from `agent_chain_*` (hub_core::pipeline); Ok(None) when absent.
     Pipeline(Result<Option<hub_core::pipeline::Pipeline>, String>),
     /// The machinery's actions over the last `logtab::ACTIONS_HOURS`, for Log's Actions section.
@@ -498,6 +500,12 @@ pub struct App {
     pub machine_page: Option<String>,
     /// That page's read; None until it comes back.
     pub machine: Option<Result<hub_core::machine_page::MachinePage, String>>,
+    /// The pool whose page is open in place of Infra's tables (Enter on its row, a link to it,
+    /// or `hub tab 'infra pools/<pool>'`); None is the tab. At most one of it and
+    /// `machine_page` is open.
+    pub pool_page: Option<String>,
+    /// That page's read; None until it comes back.
+    pub pool: Option<Result<hub_core::pool_page::PoolPage, String>>,
     /// The Daily tab's note; None until the first read.
     pub focus: Option<Result<hub_core::focus::View, String>>,
     /// The Daily tab shows the outbox (`o`) in place of the note.
@@ -606,6 +614,7 @@ pub struct App {
     fleet_read: Read,
     fleet_runner_read: Read,
     machine_read: Read,
+    pool_read: Read,
     pipeline_read: Read,
     focus_read: Read,
     outbox_read: Read,
@@ -666,6 +675,8 @@ impl App {
             fleet_page: None,
             fleet_runner: None,
             machine_page: None,
+            pool_page: None,
+            pool: None,
             machine: None,
             outbox: None,
             outbox_said: None,
@@ -735,6 +746,7 @@ impl App {
             fleet_read: Read::default(),
             fleet_runner_read: Read::default(),
             machine_read: Read::default(),
+            pool_read: Read::default(),
             pipeline_read: Read::default(),
             focus_read: Read::default(),
             outbox_read: Read::default(),
@@ -1066,6 +1078,7 @@ impl App {
         if self.machine_page.as_deref() != Some(host) {
             self.machine = None;
         }
+        self.close_pool();
         self.go(Tab::Infra);
         self.infra_inner = "machines";
         self.infra_runs = false;
@@ -1079,6 +1092,44 @@ impl App {
     fn close_machine(&mut self) {
         self.machine_page = None;
         self.machine = None;
+        self.scroll = 0;
+    }
+
+    /// The open pool page's read, from the Pools rows last read: it waits for the first
+    /// Prometheus read, and a later one reads it again.
+    pub fn read_pool(&mut self) {
+        let (Some(name), Some(infra)) = (self.pool_page.clone(), self.infra.clone()) else {
+            return;
+        };
+        // Its history is three range queries, so a page left open behind another tab is not read.
+        if self.tab == Tab::Infra && self.pool_read.want() {
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let now = jobs::now().max(0) as u64;
+                let r = hub_core::pool_page::read(&infra, &name, now);
+                let _ = tx.send(Msg::Pool(Box::new((name, r))));
+            });
+        }
+    }
+
+    /// Open `name`'s page in place of Infra's Machines tab, where its Pools row is.
+    pub fn open_pool(&mut self, name: &str) {
+        if self.pool_page.as_deref() != Some(name) {
+            self.pool = None;
+        }
+        self.close_machine();
+        self.go(Tab::Infra);
+        self.infra_inner = "machines";
+        self.infra_runs = false;
+        self.pool_page = Some(name.to_string());
+        self.read_reds();
+        self.read_pool();
+    }
+
+    /// Back from a pool's page to the tab.
+    fn close_pool(&mut self) {
+        self.pool_page = None;
+        self.pool = None;
         self.scroll = 0;
     }
 
@@ -1755,6 +1806,15 @@ impl App {
                     self.read_machine();
                 }
             }
+            Msg::Pool(b) => {
+                let (name, r) = *b;
+                if self.pool_page.as_deref() == Some(name.as_str()) {
+                    self.pool = Some(r);
+                }
+                if self.pool_read.done() {
+                    self.read_pool();
+                }
+            }
             Msg::Pipeline(r) => {
                 self.pipeline = Some(r);
                 if self.pipeline_read.done() {
@@ -1792,6 +1852,9 @@ impl App {
                 }
                 if self.machine_page.is_some() {
                     self.read_machine();
+                }
+                if self.pool_page.is_some() {
+                    self.read_pool();
                 }
                 if self.tab == Tab::Alerts {
                     self.read_alerts();
@@ -2143,6 +2206,7 @@ impl App {
             }
             (Link::To(Kind::Session, id), _) => self.open_session(id),
             (Link::To(Kind::Machine, id), _) => self.open_machine(id),
+            (Link::To(Kind::Pool, id), _) => self.open_pool(id),
             (_, Some((tab, arg))) => {
                 if let Some((t, q)) = crate::tabreq::parse(&format!("{tab} {arg}")) {
                     self.go(t);
@@ -2256,6 +2320,11 @@ impl App {
             (Tab::Infra, Some(q)) if q.trim().starts_with("machines/") => {
                 let host = q.trim().trim_start_matches("machines/").to_string();
                 self.open_machine(&host);
+            }
+            // `hub tab 'infra pools/<pool>'`: that pool's page, as its link opens.
+            (Tab::Infra, Some(q)) if q.trim().starts_with("pools/") => {
+                let name = q.trim().trim_start_matches("pools/").to_string();
+                self.open_pool(&name);
             }
             (Tab::Alerts | Tab::Infra | Tab::Log, Some(q)) => {
                 let secs =
@@ -2996,6 +3065,29 @@ impl App {
             }
             return true;
         }
+        // A pool's page: the same keys.
+        if self.pool_page.is_some() && !self.infra_jobs {
+            match k.code {
+                KeyCode::Esc | KeyCode::Backspace => self.close_pool(),
+                KeyCode::Char('o') => {
+                    let url = self
+                        .pool
+                        .as_ref()
+                        .and_then(|m| m.as_ref().ok())
+                        .and_then(crate::pooltab::grafana);
+                    match url {
+                        Some(u) => open(&u),
+                        None => return false,
+                    }
+                }
+                KeyCode::Left | KeyCode::Right => {
+                    self.close_pool();
+                    return self.infra_key(k);
+                }
+                _ => return false,
+            }
+            return true;
+        }
         if self.infra_runs {
             let v = &self.ci;
             let root = v.table.is_default() && v.log.is_none() && v.times.is_none();
@@ -3651,6 +3743,9 @@ impl App {
             Tab::Infra if self.machine_page.is_some() && !self.infra_jobs => format!(
                 "Esc all machines  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
             ),
+            Tab::Infra if self.pool_page.is_some() && !self.infra_jobs => format!(
+                "Esc all pools  o Grafana  <-/-> view  j/k PgUp/PgDn ^d/^u scroll  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Infra if self.infra_runs && self.ci.table.typing.is_some() => QUERY_HINT.into(),
             Tab::Infra if self.infra_runs && self.ci.times.is_some() => {
                 "Esc/t close run times  J/K PgUp/PgDn scroll  j/k move  Enter log  q quit".into()
@@ -4043,6 +4138,25 @@ impl App {
                 l.extend(crate::machinetab::page(
                     self.machine_page.as_deref().unwrap_or_default(),
                     self.machine.as_ref(),
+                    self.p,
+                    now,
+                    w,
+                ));
+                (l, vec![])
+            }
+            // A pool's page, the same way.
+            (Tab::Infra, ..) if self.pool_page.is_some() && !self.infra_jobs => {
+                let strip = crate::innertabs::strip(
+                    infra_tab(),
+                    self.infra_inner,
+                    &self.infra_flagged(self.infra.as_ref()),
+                    self.p,
+                    w,
+                );
+                let mut l = vec![strip];
+                l.extend(crate::pooltab::page(
+                    self.pool_page.as_deref().unwrap_or_default(),
+                    self.pool.as_ref(),
                     self.p,
                     now,
                     w,
@@ -7021,6 +7135,60 @@ mod tests {
             Ok(Default::default()),
         ))));
         assert!(matches!(a.machine, Some(Err(_))));
+    }
+
+    #[test]
+    fn enter_on_a_pools_row_opens_its_page_a_link_and_tab_request_do_too_and_esc_comes_back() {
+        let mut a = infra_app();
+        a.go(Tab::Infra);
+        a.infra_inner = "machines";
+        // No Prometheus in a test: the page's read is held, and its answer handed in below.
+        a.pool_read.busy = true;
+        a.machine_read.busy = true;
+        // c hands the table keys to Pools, the next table on Machines.
+        a.handle(key('c'));
+        let want = a.infra.as_ref().unwrap().pools[0].pool.clone();
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
+        assert_eq!(a.pool_page.as_deref(), Some(want.as_str()));
+        assert!(screen(&mut a, 160, 30).contains(&format!("Reading {want}...")));
+        let page = hub_core::pool_page::PoolPage {
+            pool: want.clone(),
+            head: format!("{want}, 1/3 busy, 2 waiting"),
+            ..Default::default()
+        };
+        a.handle(Msg::Pool(Box::new((want.clone(), Ok(page)))));
+        let s = screen(&mut a, 160, 40);
+        assert!(
+            s.contains(&want.to_uppercase()) && s.contains("QUEUED"),
+            "{s}"
+        );
+        assert!(a.hints().contains("Esc all pools"), "{}", a.hints());
+        a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
+        assert!(a.pool_page.is_none() && a.pool.is_none());
+        assert!(screen(&mut a, 160, 40).contains("POOLS"));
+        // A link opens it, and a machine's page then closes it: one page at a time.
+        a.follow(&hub_core::links::Link::to(Kind::Pool, "unity"));
+        assert_eq!(
+            (a.tab, a.infra_inner, a.pool_page.as_deref()),
+            (Tab::Infra, "machines", Some("unity"))
+        );
+        a.follow(&hub_core::links::Link::to(Kind::Machine, "workstation"));
+        assert!(a.pool_page.is_none() && a.machine_page.is_some());
+        a.go(Tab::Home);
+        a.handle(Msg::Tab(Tab::Infra, Some("pools/nope".into())));
+        assert!(a.machine_page.is_none());
+        assert_eq!(a.pool_page.as_deref(), Some("nope"));
+        a.handle(Msg::Pool(Box::new((
+            "nope".into(),
+            Err("no pool named nope".into()),
+        ))));
+        assert!(screen(&mut a, 160, 30).contains("no pool named nope"));
+        // A late answer for another pool does not land on this page.
+        a.handle(Msg::Pool(Box::new((
+            "other".into(),
+            Ok(Default::default()),
+        ))));
+        assert!(matches!(a.pool, Some(Err(_))));
     }
 
     #[test]

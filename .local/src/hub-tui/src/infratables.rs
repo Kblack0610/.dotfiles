@@ -210,6 +210,27 @@ impl InfraTables {
     }
 }
 
+/// A pool page's machines and waiting jobs (`pooltab`), drawn with the tab's own cells: hub-core's
+/// order, no view, no keys.
+pub fn page_tables(
+    machines_in: &[Machine],
+    waiting: &[Queued],
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let t = DataTable::default();
+    let d = Draw {
+        t: &t,
+        keys: false,
+        picks: false,
+        more: false,
+        p,
+        w,
+    };
+    (machines(&d, machines_in, now), queued(&d, waiting))
+}
+
 /// What one table is drawn with.
 struct Draw<'a> {
     t: &'a DataTable,
