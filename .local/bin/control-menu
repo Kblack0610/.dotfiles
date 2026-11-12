@@ -62,7 +62,7 @@ run_exec() {
 }
 
 # Every described exec bind as chord<TAB>description<TAB>arg. A leader leaf's chord is the
-# path of submap entries that reach it (Super+A u t s); an Esc bind never counts as an entry.
+# path of submap entries that reach it (Super+A t s); an Esc bind never counts as an entry.
 windows() {
     "${SELF%/*}/hypr-binds" | awk -F'\t' -v OFS='\t' '$3 == "exec" && $2 != "" { print $1, $2, $4 }'
 }

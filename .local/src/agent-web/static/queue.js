@@ -300,7 +300,7 @@ function qCandBody() {
   const chip = (c.reasons || []).find((r) => r.reason === qst.candReason);
   const of = qst.candQ.trim() ? rows.length : chip ? chip.rows : qst.candReason === "_takes" ? c.clear : c.total;
   const more = of - Math.min(rows.length, CAND_SHOWN);
-  return `<div class="panel scroll"><table class="tbl"><tr><th class="n">#</th><th>project</th><th>key</th><th>task</th><th>start</th><th>why</th><th></th></tr>` +
+  return `<div class="panel scroll"><table class="tbl"><tr><th class="n">#</th><th data-role="glance">project</th><th>key</th><th data-role="lead">task</th><th data-role="glance">start</th><th>why</th><th></th></tr>` +
     `${rows.slice(0, CAND_SHOWN).map(qCandRow).join("")}</table></div>` +
     (more > 0 ? `<div class="muted">+${more} more${qst.candQ.trim() ? " (the search reads the rows this page holds)" : ""}</div>` : "");
 }

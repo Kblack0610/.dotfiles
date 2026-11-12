@@ -50,7 +50,7 @@ function channelRow(r) {
   return open ? row + releaseDetail(r) : row;
 }
 
-const CH_HEAD = "<tr><th>channel</th><th>id</th><th>live</th><th>pinned</th><th>status</th><th>where</th></tr>";
+const CH_HEAD = '<tr><th data-role="lead">channel</th><th>id</th><th data-role="glance" data-named>live</th><th>pinned</th><th data-role="glance">status</th><th data-role="glance">where</th></tr>';
 const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${rows.map(channelRow).join("")}</table></div>`;
 
 // The opened app: its headline env's channels, the other envs in a fold that starts open, its
@@ -76,7 +76,7 @@ function releaseHistory(a) {
   const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
     `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev || "-")}</td>` +
     `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td></tr>`).join("");
-  const body = `<div class="scroll"><table class="tbl"><tr><th>release</th><th>released</th><th>prev</th><th>reached</th></tr>${rows}</table></div>`;
+  const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th></tr>${rows}</table></div>`;
   return cfold(`rel-hist:${a.project}`, `<b>Releases</b> <span class="muted">${h.length} ${esc(LINE_SAYS[a.line] || "tags")}</span>`, body, REL_OPEN, true);
 }
 
@@ -239,7 +239,7 @@ function buildTimes(d) {
   const row = (w, i) => `<tr><td>${esc(w.repo.split("/").pop())}</td><td class="wrap">${esc(w.workflow)}</td><td class="n">${w.runs}</td>` +
     `<td class="n">${w.usual ? secs(w.usual.median) : "-"}</td><td class="n">${w.usual ? secs(w.usual.p90) : "-"}</td>` +
     `<td class="n">${w.runs ? secs(w.longest) : "-"}</td><td class="n">${w.runs ? w.pass + "%" : "-"}</td><td class="n">${w.running || ""}</td><td class="n">${esc(cost[i] || "-")}</td></tr>`;
-  const head = "<tr><th>repo</th><th>workflow</th><th>runs</th><th>usual</th><th>p90</th><th>longest</th><th>pass</th><th>running</th><th>$ per run</th></tr>";
+  const head = '<tr><th data-role="glance">repo</th><th data-role="lead">workflow</th><th>runs</th><th data-role="glance" data-named>usual</th><th>p90</th><th>longest</th><th data-role="glance" data-named>pass</th><th>running</th><th>$ per run</th></tr>';
   const money = (c.idle || []).map((l) => `<div class="cline">${esc(l)}</div>`).join("") +
     (c.month ? `<div class="cline${c.month_off ? " warn" : ""}">${esc(c.month)}</div>` : "") +
     (c.rates_error ? `<div class="cline warn">no rates: ${esc(c.rates_error)}</div>` : "");
@@ -254,7 +254,7 @@ function buildQuarantine(d) {
   if (!q.length) return "";
   const row = (r) => `<tr><td>${esc(r.row)}</td><td class="n">${r.entries}</td><td>${esc(r.ends)}</td>` +
     `<td class="n ${relClass(r.level)}">${esc(r.left)}</td></tr>`;
-  const head = "<tr><th>owner row</th><th>entries</th><th>ends</th><th>left</th></tr>";
+  const head = '<tr><th data-role="lead">owner row</th><th data-role="glance" data-named>entries</th><th data-role="glance" data-named>ends</th><th data-role="glance" data-named>left</th></tr>';
   const lane = (l) => `<div class="cline ${relClass(l.level)}">${esc(l.says)}` +
     (/^https:/.test(l.url || "") ? ` <a href="${esc(l.url)}" target="_blank" rel="noopener">nightly</a>` : "") + `</div>` +
     (l.rows.length ? `<table class="tbl">${head}${l.rows.map(row).join("")}</table>` : "");
