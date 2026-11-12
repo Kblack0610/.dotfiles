@@ -97,7 +97,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      APT_PKGS: parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
+      APT_PKGS: lua5.4 parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
     strategy:
       fail-fast: false
       matrix:

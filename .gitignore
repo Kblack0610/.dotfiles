@@ -355,6 +355,7 @@ __pycache__/
 .config/waybar/style.css
 .config/sketchybar/colors.sh
 .config/dunst/dunstrc.d/
+.config/hypr/conf/theme.lua
 
 # Private-overlay files that NEST inside this repo's working tree.
 #

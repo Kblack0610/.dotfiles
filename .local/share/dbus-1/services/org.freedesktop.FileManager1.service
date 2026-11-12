@@ -1,5 +1,5 @@
 # Pins org.freedesktop.FileManager1 ("show in folder" from browsers and portals) to Thunar,
-# the $fileManager in .config/hypr/conf.d/programs.conf. The CachyOS Hyprland profile also
+# the fileManager in .config/hypr/conf/programs.lua. The CachyOS Hyprland profile also
 # installs dolphin, whose /usr/share copy of this name won, so a KDE daemon ran under
 # Hyprland. The session bus reads $XDG_DATA_HOME/dbus-1/services before /usr/share, so
 # this file decides. tests/unit/file_manager_dbus.bats keeps the two in step.
