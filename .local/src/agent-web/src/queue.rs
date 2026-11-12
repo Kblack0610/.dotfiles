@@ -244,7 +244,7 @@ pub async fn act(
         .map_err(|e| bad(StatusCode::BAD_REQUEST, e))
 }
 
-/// Queue a task; a plan item starts its session at once (agent-queue does that, not this).
+/// Queue a task; an urgent or high plan item starts its session at once (agent-queue does that, not this).
 pub async fn add(
     State(s): State<Shared>,
     Json(b): Json<hub_queue::Add>,
