@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # harness-projects.sh -- the one reader of a harness's project allowlist (harnesses.json `projects`),
 # sourced by fleet-dispatch (route, gateway_launch) and fleet-bench (canary queue).
 #
