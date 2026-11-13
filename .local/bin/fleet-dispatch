@@ -2742,6 +2742,24 @@ red_floor_start() {
   return "$rc"
 }
 
+# project_floor_start <item json lines> <room> <why> -- start the light items of idle projects among
+# them on the project floor, past <why>, the gates that held the pass; the hold stands (start_item).
+# Rc FLOOR_SHUT when the floor is not due (off, spent, no idle project's item, or a gate it does not
+# lift), so the caller settles the pass as it would have. FLOOR_QUIET=1 (the full fleet) leaves a
+# pass that picks nothing to the caller's NOOP: a full fleet is working, not blocked.
+FLOOR_SHUT=10
+project_floor_start() {
+  local idle rc
+  [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] 2>/dev/null && PROJECT_PASS=1 project_floor_open || return "$FLOOR_SHUT"
+  idle=$(idle_project_items "$1")
+  [ -n "$idle" ] && [ -z "$(PROJECT_PASS=1 gate)" ] || return "$FLOOR_SHUT"
+  say "$3; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
+  PROJECT_PASS=1 FLOOR_GATE=$3
+  start_items "$idle" "$2"; rc=$?
+  PROJECT_PASS=0 FLOOR_GATE=''
+  return "$rc"
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -2762,12 +2780,8 @@ run_queue() {
     if red_floor_due "$reds"; then red_floor_start "$reds" "$2" "$why"; return; fi
     # A project nothing is working on may start one item past real idle: one busy
     # project cannot hold every other project's work behind the idle floor.
-    local idle_items; idle_items=$(idle_project_items "$items")
-    if [ -n "$idle_items" ] && PROJECT_PASS=1 project_floor_open && [ -z "$(PROJECT_PASS=1 gate)" ]; then
-      say "$why; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
-      PROJECT_PASS=1 FLOOR_GATE=$why; start_items "$idle_items" "$2"
-      local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
-    fi
+    local prc; project_floor_start "$items" "$2" "$why"; prc=$?
+    [ "$prc" = "$FLOOR_SHUT" ] || return "$prc"
     settle BLOCKED "$why, queue item $(jq -r .slug <<<"$head") waits"
     [ "$DRY" = 1 ] || return 0
   fi
@@ -2788,7 +2802,7 @@ start_items() {
     fi
     if ! pick_item "$items" && ! preempt_pick; then
       # Every item too heavy for the units left is a full fleet, not a block: NOOP, as cmd_run says.
-      if [ "$n" -gt 0 ]; then say "$PICK_WHY"
+      if [ "$n" -gt 0 ] || [ "${FLOOR_QUIET:-0}" = 1 ]; then say "$PICK_WHY"
       elif [ "$PICK_FULL" = 1 ]; then settle NOOP "$PICK_WHY"
       # cmd_run goes on to the board and settles the pass there, BLOCKED by this unless a row starts.
       elif [ "${HELD_FALLS_THROUGH:-0}" = 1 ] && [ "${FIRING+set}" = set ]; then QUEUE_HELD=$PICK_WHY; say "$PICK_WHY"
@@ -2827,6 +2841,8 @@ start_items() {
   [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
+  # Not on a floor past a full fleet: the pace target already holds the rest, by design.
+  [ "${FLOOR_QUIET:-0}" = 0 ] || return 0
   why=$(gate)
   [ -z "$why" ] || return 0
   local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "$room" -ge "$PER_PASS" ] && limit=DISPATCH_PER_PASS
@@ -4179,22 +4195,20 @@ cmd_run() {
     # a fleet over its target started no red for 21h while 20 watch reds waited (ar-1531 wants an
     # owner on each the hour it trips). Its own bound, DISPATCH_RED_FLOOR plus one per tripped watch
     # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
-    local reds slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
+    local reds queued='' slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
     [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-    if [ "$slots" -gt 0 ]; then reds=$(red_items "$(next_items)"); fi
+    if [ "$slots" -gt 0 ] || [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] 2>/dev/null; then queued=$(next_items); fi
+    if [ "$slots" -gt 0 ]; then reds=$(red_items "$queued"); fi
     if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
       UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "pace target: $full"; return
     fi
-    # The project floor goes past a full fleet too, bounded by DISPATCH_PROJECT_FLOOR: from 11-12
-    # 18:08 hand-started game sessions held 58-78 live against a target of 25-50, and trader, with 15
-    # queued items and nothing running, started nothing for 27h (the 11-07 ask the floor exists for).
-    local idle_items; idle_items=$(idle_project_items "$(next_items)")
-    if [ -n "$idle_items" ] && PROJECT_PASS=1 project_floor_open && [ -z "$(PROJECT_PASS=1 gate)" ]; then
-      say "pace target: $full; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
-      PROJECT_PASS=1 FLOOR_GATE="pace target: $full"
-      UNITS_FREE=$DISPATCH_PROJECT_FLOOR start_items "$idle_items" "$DISPATCH_PROJECT_FLOOR"
-      local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
-    fi
+    # The project floor goes past a full fleet too: hand starts count toward the target but are never
+    # held by it, so game sessions held 58-78 live against 25-50 and an idle trader queue waited 27h
+    # (11-12). Bound: DISPATCH_PROJECT_FLOOR a pass, and a start makes its project busy.
+    local before=${STARTED:-0} prc
+    FLOOR_QUIET=1 UNITS_FREE=$DISPATCH_PROJECT_FLOOR project_floor_start "$queued" "$DISPATCH_PROJECT_FLOOR" "pace target: $full"; prc=$?
+    case "$prc" in 0 | "$FLOOR_SHUT") ;; *) return "$prc" ;; esac
+    [ "${STARTED:-0}" -eq "$before" ] || return 0
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are

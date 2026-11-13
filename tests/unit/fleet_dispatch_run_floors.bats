@@ -297,6 +297,36 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
+@test "project floor: past its pace target, agent-hold and an account in its reserve still hold an idle project's item" {
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
+  fleet_state 8
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  stub agent-hold 'exit 0'
+  acct main:reserve
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "project floor: past its pace target, a finding that holds the idle project's item settles NOOP, not BLOCKED" {
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
+  fleet_state 8
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  findings "$(finding starved pool:unity '["app"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  refute_output --partial 'under-used'
+  assert_equal "$(outcome)" NOOP
+}
+
 @test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
   idle_held_machine
   export DISPATCH_PROJECT_FLOOR=1
