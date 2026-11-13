@@ -17,7 +17,8 @@
 # sweeps pass it over until its words change (a skipped one is asked once more after this script
 # changes). --watch is the runner: a sweep after each save,
 # once INBOX_SWEEP_QUIET seconds pass with no other. --backlog re-triages the rows already on the
-# boards. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
+# boards as the inbox-backlog agent: its own budget, outcome and batch size, so a cleanup never
+# stops the intake sweep. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
 # #low, from one Sonnet call per batch (the inbox-priority agent); --retag-high also re-judges the
 # #high rows. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
@@ -36,6 +37,7 @@ TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_PRIORITY_CMD:=agentctl-run --agent inbox-priority}"  # --priority: a classify call, so Sonnet (its own conf)
 : "${INBOX_SIZE_CMD:=agentctl-run --agent inbox-size}"  # --size: a classify call, so Sonnet (its own conf)
+: "${INBOX_BACKLOG_CMD:=agentctl-run --agent inbox-backlog}"  # --backlog: its own conf and budget, so a cleanup pass never spends the intake sweep's day
 : "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -76,7 +78,7 @@ clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 # the pass's reason; one stopped at the per-call cap (CALLS_RC_CAPPED) halves the next batch, and
 # a clean one lets it grow. It runs from an empty directory, so no repo's Stop hook answers in
 # place of the model. A call with its own <cmd> (a #ask answer) leaves the batch size alone, unless
-# it passes sized (a --priority batch).
+# it passes sized (a --backlog, --priority, --link or --size batch).
 ask() {
   local wd err rc first cmd="${4:-$INBOX_TRIAGE_CMD}" sized=1
   [ -n "${4:-}" ] && [ "${5:-}" != sized ] && sized=0
@@ -574,7 +576,7 @@ $(systems_of "$p")
 $(epics_of "$p" "$epics")
 ## Rows (n. [id] text, child rows indented)
 $listing"
-  ask "$prompt" "${#raws[@]}" "$p ($lane)" || return
+  ask "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT"
   local n action id dest row why epic raw own eid
@@ -1246,6 +1248,8 @@ main() {
   [ "$RETAG_HIGH" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--retag-high goes with --priority"; return 2; }
   [ "$LINK" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ]; } || { say "--link goes with --backlog, without --priority"; return 2; }
   [ "$SIZE" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ] && [ "$LINK" = 0 ]; } || { say "--size goes with --backlog, without --priority or --link"; return 2; }
+  # A plain --backlog pass reports as its own agent, so its BLOCKED or batch size never lands on the intake sweep.
+  [ -z "${AGENTCTL_NAME:-}" ] && [ "$BACKLOG$PRIORITY$LINK$SIZE" = 1000 ] && NAME=inbox-backlog
   if [ "$SIZE" = 1 ]; then
     size_pass; rc=$?
     summary="size: scored $SCORED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"

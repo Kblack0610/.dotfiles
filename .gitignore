@@ -138,6 +138,7 @@ Media/Music
 !.claude/skills/ops/playground-nightly-fix/
 !.claude/skills/ops/ci-cost/
 !.claude/skills/ops/ci-failures/
+!.claude/skills/ops/board-cleanup/
 !.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/fix-ci/
 !.claude/skills/ops/context-trim/

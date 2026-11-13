@@ -24,7 +24,7 @@ setup() {
   export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
   unset NOTES_PROFILE
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot"}}}' >"$PROJECT_MAP_FILE"
-  export INBOX_TRIAGE_CMD=model-stub
+  export INBOX_TRIAGE_CMD=model-stub INBOX_BACKLOG_CMD=model-stub
   printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\ncat > "$NOTES_FIXTURE/prompt.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
   # The planner's start, recorded: no unit ever starts from a test.
@@ -150,7 +150,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE" --backlog
   assert_failure 75
   [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
-  st="$HOME/.local/state/agentctl/inbox-triage"
+  st="$HOME/.local/state/agentctl/inbox-backlog"
   grep -qx BLOCKED "$st/last-outcome"
   grep -q 'outcome=BLOCKED budget: backlog: ' "$st/activity.log" || fail "$(cat "$st/activity.log")"
   # negative control: an exit that is not the budget's is still a failed pass
@@ -158,6 +158,22 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE" --backlog
   assert_failure 1
   grep -qx FAILED "$st/last-outcome"
+}
+
+@test "--backlog: its calls go to the inbox-backlog agent, never the intake sweep's, so a cleanup cannot spend intake's budget" {
+  sheet '' '- [ ] fix(ui): the menu <!-- id:sc-1 -->\n'
+  printf '#!/usr/bin/env bash\necho intake >> "$NOTES_FIXTURE/model.log"\nexit 1\n' >"$SANDBOX/bin/intake-stub"
+  chmod +x "$SANDBOX/bin/intake-stub"
+  printf '%s\n' INBOX-TRIAGE-START '{"n": 1, "action": "keep"}' INBOX-TRIAGE-END >"$NOTES_FIXTURE/model.out"
+  INBOX_TRIAGE_CMD=intake-stub run "$TRIAGE" --backlog
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/model.log")" called
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-backlog/last-outcome"
+  [ ! -e "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "the backlog pass reported as the intake sweep"
+  # negative control: a runner that names itself keeps its own name
+  AGENTCTL_NAME=inbox-triage run "$TRIAGE" --backlog
+  assert_success
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
 }
 
 @test "a reply with no answer block names that reason in the outcome" {
