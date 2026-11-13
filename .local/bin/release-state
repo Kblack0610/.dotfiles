@@ -78,7 +78,8 @@ ENV_QUERY='query($owner: String!, $name: String!) {
 }'
 # What makes a workflow file a deploy for link_facts: its name, or a step that ships (a recorded
 # Deployment, a store upload, a cluster or gitops change, an image push). One that matches and is
-# not a deploy is declared so in the registry's `deployWorkflows`, with why.
+# not a deploy is declared so in the registry's `deployWorkflows`, with why. A step is read from
+# the file's code: a comment naming a marker (a test that stubs `home-config`) ships nothing.
 DEPLOY_NAMES='deploy|release|publish|promote|submit|steam|upload|rollout'
 DEPLOY_MARKERS='record-deployment|steamcmd|upload-google-play|upload-app|altool|fastlane|kubectl (set image|rollout|apply)|helm upgrade|flux reconcile|home-config|docker push|build-push-action|wrangler'
 
@@ -586,6 +587,9 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
+# workflow_code <dir> <branch> <file>: the file on origin's branch without its comment lines.
+workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the
 # GitHub environments that hold a recorded Deployment (record-deployment writes the version as
@@ -628,7 +632,7 @@ link_facts() {
     while IFS= read -r f; do
       case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
       deploy=false
-      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || git -C "$dir" show "origin/$branch:$f" 2>/dev/null | grep -Eiq -- "$DEPLOY_MARKERS"; then
+      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || workflow_code "$dir" "$branch" "$f" | grep -Eiq -- "$DEPLOY_MARKERS"; then
         deploy=true
       fi
       jq -nc --arg p "$f" --argjson d "$deploy" '{path: $p, deploy: $d}' >>"$tmp/files"

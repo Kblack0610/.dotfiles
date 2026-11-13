@@ -94,7 +94,8 @@ it changes, kept forever and compacted like the ledger. It reads pulls?state=all
 first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
-error per repo are in that sync.json. No reader stores a PR fact of its own:
+error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
+(retired, archived), which a reader would otherwise report as stale forever. No reader stores a PR fact of its own:
 run -> PR is a join against this store, so the ledger's runs carry no PR list.
 
 Job detail goes to the job archive SCHEDULES_JOBS_LEDGER (~/.local/state/ci/jobs.jsonl),
@@ -769,6 +770,24 @@ def sync_prs(forge, repo, host, t, wait=True):
         state[name] = entry
         write_json(PRS_SYNC, {"generated_at": iso(t), "repos": state})
     return err
+
+
+def prune_prs(repos, t):
+    """Drop sync.json entries of repos the list no longer names, so a retired repo is not read as a
+    stale store forever; its row file stays as history. An empty list prunes nothing: it is a feed
+    that named no repo, not a list that retired them all."""
+    listed = {pr_name(f, r, h).lower() for f, r, _, h in repos if has_prs(f, r)}
+    if not listed:
+        return
+    os.makedirs(PRS_DIR, exist_ok=True)
+    with open(os.path.join(PRS_DIR, ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = read_sync(path=PRS_SYNC)
+        kept = {k: v for k, v in state.items() if k.lower() in listed}
+        if kept != state:
+            for k in state.keys() - kept.keys():
+                print(f"schedules-sync: PR store: {k} left the list, entry dropped", file=sys.stderr)
+            write_json(PRS_SYNC, {"generated_at": iso(t), "repos": kept})
 
 
 def pr_checks(forge, repo, rows):
@@ -1542,6 +1561,7 @@ def main(argv):
         print(f"schedules-sync: no repo list: {e}", file=sys.stderr)
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
         return 1
+    prune_prs(repos, t)  # before the loop: a pass the service timeout cuts still drops a retired repo
     budget = [0, BACKFILL_CALLS]
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None

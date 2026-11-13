@@ -37,7 +37,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 
 A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from their store targets. `project-map-doctor` check 4c validates every target.
 
-`deployWorkflows` (on the tracker of the app repo, `trackers.<repo>.deployWorkflows`) maps each deploy workflow file to what it deploys: a full path (`.github/workflows/deploy-production.yml`, `.forgejo/workflows/<f>.yml`) to a list of target ids, or to a string giving the reason it deploys none (`"seeds the preview DB"`). `refresh` flags a file as a deploy by a word in its name (`DEPLOY_NAMES` in `release-state`: deploy, release, publish, promote, submit, steam, upload, rollout) or a deploy step in it (`DEPLOY_MARKERS`); `hub releases check` fails a flagged file the map does not name, a mapped path that is not a workflow on the default branch, and an id that is no target.
+`deployWorkflows` (on the tracker of the app repo, `trackers.<repo>.deployWorkflows`) maps each deploy workflow file to what it deploys: a full path (`.github/workflows/deploy-production.yml`, `.forgejo/workflows/<f>.yml`) to a list of target ids, or to a string giving the reason it deploys none (`"seeds the preview DB"`). `refresh` flags a file as a deploy by a word in its name (`DEPLOY_NAMES` in `release-state`: deploy, release, publish, promote, submit, steam, upload, rollout) or a deploy step in its code (`DEPLOY_MARKERS`; comment lines are not read); `hub releases check` fails a flagged file the map does not name, a mapped path that is not a workflow on the default branch, and an id that is no target.
 
 ## Deploy history
 

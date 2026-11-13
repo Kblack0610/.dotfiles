@@ -1163,6 +1163,23 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_success
 }
 
+@test "PR store: a pass drops the sync entry of a repo no longer on the list, keeps its rows, and never prunes to an empty list" {
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  "$SUBJECT"
+  jq '.repos["o/retired"] = {synced_at: "2025-11-06T08:00:00Z", error: null}' "$PRS/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$PRS/sync.json"
+  run "$SUBJECT"
+  assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/empty","o/game"]'
+  assert_output --partial 'o/retired left the list'
+  echo '["o/game"]' > "$KD/repos"
+  "$SUBJECT"
+  assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
+  [ -s "$PRS/o__game.jsonl" ]
+  echo '[]' > "$KD/repos"
+  run "$SUBJECT"
+  assert_success
+  assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
+}
+
 @test "prs --checks: each PR's CI on its head from the run ledger, red job ids only once every run finished" {
   prs_page o/game "$(gh_pr 9 open null a)" "$(gh_pr 8 open null b)" "$(gh_pr 7 open null c)" "$(gh_pr 6 open null d)"
   "$SUBJECT"

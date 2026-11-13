@@ -153,6 +153,17 @@ field() { row "$1" | jq -r "$2"; }
   assert_output --partial 'DRIFT web web-prod: pinned v1.0.0 live v0.9.0'
 }
 
+@test "link facts: a deploy marker in a workflow's code flags it, in a comment it does not" {
+  mkdir -p "$CLONE/.github/workflows"
+  printf 'name: Checks\njobs:\n  t:\n    steps:\n      # stubs home-config and kubectl apply\n      - run: scripts/test_roll.sh\n' > "$CLONE/.github/workflows/checks.yml"
+  printf 'name: Bump\njobs:\n  t:\n    steps:\n      - run: scripts/home-config-bump.sh\n' > "$CLONE/.github/workflows/bump.yml"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm wf; git -C "$CLONE" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote set-head origin main
+  run "$RS" refresh
+  assert_success
+  assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/bump.yml",true],[".github/workflows/checks.yml",false]]'
+}
+
 @test "drift_since carries across refreshes while the same drift holds" {
   export KUBE_IMAGE=reg/web:v0.9.0
   "$RS" refresh >/dev/null
