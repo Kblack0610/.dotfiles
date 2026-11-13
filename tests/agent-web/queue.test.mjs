@@ -307,6 +307,23 @@ test("a state cell says what the item is, and how a done one ended", () => {
   assert.match(h, /<td>done<\/td>/);
 });
 
+test("a stuck running or review row is amber with the server's word and its why on hover; a fine one is plain", () => {
+  load({ ...data, items: [
+    item("s", { state: "running", state_word: "stalled", stuck: true, state_why: "STALLED 42m idle: PR #7 CI red" }),
+    item("n", { state: "running", state_word: "no session", stuck: true, state_why: "no session works it" }),
+    item("p", { state: "review", state_word: "PR red, yours", stuck: true }),
+    item("w", { state: "running", state_word: "running", state_why: "WORKING 1m idle: idle 1m" }),
+    item("o", { state: "review", state_word: "on a PR" }),
+  ] });
+  const h = draw();
+  assert.match(h, /<td class="warn" title="STALLED 42m idle: PR #7 CI red">stalled<\/td>/);
+  assert.match(h, /<td class="warn" title="no session works it">no session<\/td>/);
+  assert.match(h, /<td class="warn">PR red, yours<\/td>/);
+  // Negative controls: a working session and a plain PR are not amber.
+  assert.match(h, /<td title="WORKING 1m idle: idle 1m">running<\/td>/);
+  assert.match(h, /<td>on a PR<\/td>/);
+});
+
 test("an item not started is ready or held, a held cell names its hold, and the legend says what each means", () => {
   const legend = "ready: starts when dispatch has a slot for it; held: waits on its hold";
   load({ ...data, table: { ...table, legend }, items: [item("r", { state: "queued" }), item("h", { state: "queued", hold: "after r" })] });

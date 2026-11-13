@@ -5,7 +5,7 @@
 //! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
 //! rows of the snapshot `fleet-dispatch suggest --write` keeps, for the tabs' Candidates section.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use agent_panel::account::GATEWAY;
 use serde::{Deserialize, Serialize};
@@ -933,6 +933,69 @@ pub struct Queue {
     pub stats: Option<Stats>,
     pub dispatch: Option<crate::capacity::Dispatch>,
     pub errors: Vec<String>,
+    /// Each item's own session as fleet-sessions last saw it (`sessions`), None when that state
+    /// was not read fresh, so a running row then says only `running`.
+    pub sessions: Option<HashMap<String, Health>>,
+}
+
+/// A running item's own session in fleet-sessions' state: its bucket, idle minutes and why.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Health {
+    pub bucket: String,
+    pub idle_min: Option<i64>,
+    pub reason: String,
+}
+
+impl Health {
+    /// `STALLED 42m idle: PR #2487 CI red`, the state cell's hover.
+    pub fn line(&self) -> String {
+        let idle = self
+            .idle_min
+            .map_or(String::new(), |m| format!(" {m}m idle"));
+        format!("{}{idle}: {}", self.bucket, self.reason)
+    }
+}
+
+/// How long a running item may have no session in the fleet state before its row says so: an
+/// item started since the last fleet pass, or before its window registered, has none yet.
+/// Provisional (2026-11-13): fleet-state.timer writes every minute, and the one sessionless
+/// running item that day was 8 minutes old; revisit when a live row reads `no session` wrongly.
+pub const NO_SESSION_GRACE_MIN: i64 = 10;
+
+/// Each item slug's own session (`item.is` is `own`, its `slug` and every `also` slug) in the
+/// fleet state document at `path`. None when the document is missing, unreadable, older than
+/// `FLEET_STATE_STALE_SECS` at `now` (epoch seconds), names a silent worker, or holds no own
+/// session at all, so no row reads `no session` for want of a full read. Of two own sessions on
+/// one slug, one that is not STALLED wins: the item is being worked.
+pub fn sessions(path: &std::path::Path, now: i64) -> Option<HashMap<String, Health>> {
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let at = doc["generated_epoch"].as_i64()?;
+    let silent = doc["silent"].as_array().is_some_and(|a| !a.is_empty());
+    if now - at > crate::home::FLEET_STATE_STALE_SECS || silent {
+        return None;
+    }
+    let mut out: HashMap<String, Health> = HashMap::new();
+    for s in doc["sessions"].as_array()? {
+        if s["item"]["is"].as_str() != Some("own") {
+            continue;
+        }
+        let also = s["item"]["also"].as_array().into_iter().flatten();
+        let slugs = std::iter::once(&s["item"]["slug"]).chain(also);
+        let h = Health {
+            bucket: s["bucket"].as_str().unwrap_or_default().to_string(),
+            idle_min: s["idle_min"].as_i64(),
+            reason: s["reason"].as_str().unwrap_or_default().to_string(),
+        };
+        for slug in slugs.filter_map(Value::as_str).filter(|s| !s.is_empty()) {
+            match out.get(slug) {
+                Some(old) if old.bucket != "STALLED" || h.bucket == "STALLED" => {}
+                _ => {
+                    out.insert(slug.to_string(), h.clone());
+                }
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// What `Queue::read` prefixes a failed `agent-queue list` with.
@@ -947,6 +1010,10 @@ impl Queue {
     pub fn read(runner: &dyn Runner) -> Queue {
         Queue {
             dispatch: Some(crate::capacity::Dispatch::now()),
+            sessions: sessions(
+                &crate::boards::fleet_state(),
+                chrono::Utc::now().timestamp(),
+            ),
             ..Queue::from_reads(list(runner, "all"), stats(runner))
         }
     }
@@ -1001,6 +1068,62 @@ pub struct QueueRow<'a> {
     /// Its place among the ready items in agent-queue's start order (1 starts next); None for
     /// every other row, a held one included.
     pub start: Option<usize>,
+    /// Its own session in the fleet state: `Seen::NotRead` when that state was not read fresh.
+    pub session: Seen<'a>,
+    /// What its state cell says is stuck, if anything (`stuck_on`, set by `Queue::rows`).
+    pub stuck: Option<Stuck>,
+}
+
+/// A running or review row that needs a look: the state cell's amber words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stuck {
+    /// Its own session is STALLED.
+    Stalled,
+    /// No session of a fresh, full fleet pass works it, `NO_SESSION_GRACE_MIN` after it started.
+    NoSession,
+    /// fleet-dispatch spent its fix-ci tries on the PR and handed it to the human (`fix_human`).
+    PrRed,
+    /// As `PrRed`, but the tries were a lander's (`pr_owner: land`): green, and not merging.
+    PrGreen,
+}
+
+impl Stuck {
+    pub fn word(self) -> &'static str {
+        match self {
+            Stuck::Stalled => "stalled",
+            Stuck::NoSession => "no session",
+            Stuck::PrRed => "PR red, yours",
+            Stuck::PrGreen => "PR green, yours",
+        }
+    }
+}
+
+/// What is stuck about `item` with its fleet `session` and stage `timing`, if anything.
+pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck> {
+    match item.state {
+        State::Running => match session {
+            Seen::Own(h) if h.bucket == "STALLED" => Some(Stuck::Stalled),
+            Seen::Missing if timing.run.unwrap_or(0) >= NO_SESSION_GRACE_MIN => {
+                Some(Stuck::NoSession)
+            }
+            _ => None,
+        },
+        State::Review if item.extra_str("fix_human").is_some() => {
+            match item.extra_str("pr_owner") {
+                Some("land") => Some(Stuck::PrGreen),
+                _ => Some(Stuck::PrRed),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a row's item has its own session in the fleet state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Seen<'a> {
+    NotRead,
+    Missing,
+    Own(&'a Health),
 }
 
 impl Queue {
@@ -1011,10 +1134,19 @@ impl Queue {
         let mut rows: Vec<QueueRow<'_>> = self
             .items
             .iter()
-            .map(|item| QueueRow {
-                item,
-                timing: item.timing(now),
-                start: None,
+            .map(|item| {
+                let timing = item.timing(now);
+                let session = match &self.sessions {
+                    None => Seen::NotRead,
+                    Some(m) => m.get(&item.slug).map_or(Seen::Missing, Seen::Own),
+                };
+                QueueRow {
+                    item,
+                    timing,
+                    start: None,
+                    session,
+                    stuck: stuck_on(item, session, &timing),
+                }
             })
             .collect();
         rows.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.within(b)));
@@ -1027,6 +1159,42 @@ impl Queue {
 }
 
 impl QueueRow<'_> {
+    /// The state cell: the item's state, or what is stuck about a running or review row
+    /// (`Stuck`).
+    pub fn state_word(&self) -> &'static str {
+        if let Some(st) = self.stuck {
+            return st.word();
+        }
+        match self.item.state {
+            State::Waiting => "needs",
+            State::Running => "running",
+            State::Review => "on a PR",
+            State::Queued if self.item.is_held() => "held",
+            State::Queued => "ready",
+            State::Done => "done",
+        }
+    }
+
+    /// True when the state cell names something stuck, which the table draws amber and sorts
+    /// first within its state.
+    pub fn stuck(&self) -> bool {
+        self.stuck.is_some()
+    }
+
+    /// Why the state cell says what it does, its hover: a running row's session bucket, idle and
+    /// reason; a sessionless run's recorded session; a handed-back PR's note.
+    pub fn state_why(&self) -> Option<String> {
+        match (self.stuck, self.session) {
+            (_, Seen::Own(h)) if self.item.state == State::Running => Some(h.line()),
+            (Some(Stuck::NoSession), _) => Some(format!(
+                "no session of fleet-sessions' last pass works this item (session: {})",
+                self.item.session.as_deref().unwrap_or("none recorded")
+            )),
+            (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
+            _ => None,
+        }
+    }
+
     /// Where the row sits in the table's own order.
     fn rank(&self) -> u8 {
         match (self.item.state, self.item.is_held()) {
@@ -1041,6 +1209,13 @@ impl QueueRow<'_> {
 
     /// The order inside one rank; equal rows keep agent-queue's order (the sort is stable).
     fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
+        // Stuck first: a stalled or sessionless run, a PR handed back to the human.
+        o.stuck()
+            .cmp(&self.stuck())
+            .then_with(|| self.within_state(o))
+    }
+
+    fn within_state(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.item.state {
             State::Waiting | State::Review => o.timing.in_state.cmp(&self.timing.in_state),
@@ -1092,17 +1267,7 @@ impl crate::table::Row for QueueRow<'_> {
         let i = self.item;
         match col {
             "#" => self.start.map_or(Val::None, |n| Val::Num(n as f64)),
-            "state" => Val::Text(
-                match i.state {
-                    State::Waiting => "needs",
-                    State::Running => "running",
-                    State::Review => "on a PR",
-                    State::Queued if i.is_held() => "held",
-                    State::Queued => "ready",
-                    State::Done => "done",
-                }
-                .into(),
-            ),
+            "state" => Val::Text(self.state_word().into()),
             "in" => num(self.timing.in_state),
             "wait" => num(self.timing.wait),
             "run" => num(self.timing.run),
@@ -1724,6 +1889,8 @@ mod tests {
             item: &i,
             timing: Timing::default(),
             start: None,
+            session: Seen::NotRead,
+            stuck: None,
         };
         use crate::table::Row;
         assert_eq!(
@@ -2483,6 +2650,138 @@ mod tests {
             )),
             ..Queue::default()
         }
+    }
+
+    /// Four running items and two on a PR, each a case of the state cell.
+    fn stuck_queue() -> Queue {
+        let item = |slug: &str, state: &str, extra: &str| {
+            format!(
+                r#"{{"slug":"{slug}","state":"{state}","started":"2026-11-06T10:00:00Z","task":"t {slug}"{extra}}}"#
+            )
+        };
+        let items = [
+            item("ok", "running", ""),
+            item("stuck", "running", ""),
+            item("gone", "running", r#","session":"lab:x-agent-1""#),
+            item("fresh", "running", "").replace("10:00", "11:55"),
+            item(
+                "red",
+                "review",
+                r#","fix_human":"abc","fix_tries":"2 abc","note":"PR #7 red after 2 fix-ci tries""#,
+            ),
+            item("green", "review", r#","fix_human":"abc","pr_owner":"land""#),
+            item("plain", "review", ""),
+        ]
+        .join("\n");
+        let health = |bucket: &str| Health {
+            bucket: bucket.into(),
+            idle_min: Some(42),
+            reason: "PR #7 CI red".into(),
+        };
+        Queue {
+            items: parse(&items),
+            sessions: Some(HashMap::from([
+                ("ok".to_string(), health("WORKING")),
+                ("stuck".to_string(), health("STALLED")),
+            ])),
+            ..Queue::default()
+        }
+    }
+
+    #[test]
+    fn the_state_cell_says_a_run_is_stalled_or_sessionless_and_a_pr_is_handed_back() {
+        let q = stuck_queue();
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let word = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .unwrap()
+                .state_word()
+        };
+        assert_eq!(word("stuck"), "stalled");
+        assert_eq!(word("gone"), "no session");
+        assert_eq!(word("red"), "PR red, yours");
+        assert_eq!(word("green"), "PR green, yours");
+        // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
+        assert_eq!(word("ok"), "running");
+        assert_eq!(word("fresh"), "running", "started 5m ago, inside the grace");
+        assert_eq!(word("plain"), "on a PR");
+        let order: Vec<&str> = rows.iter().map(|r| r.item.slug.as_str()).collect();
+        assert_eq!(
+            order,
+            ["stuck", "gone", "ok", "fresh", "red", "green", "plain"],
+            "stuck rows first within running and within review"
+        );
+        let stuck = rows.iter().find(|r| r.item.slug == "stuck").unwrap();
+        assert_eq!(
+            stuck.state_why().as_deref(),
+            Some("STALLED 42m idle: PR #7 CI red")
+        );
+        let gone = rows.iter().find(|r| r.item.slug == "gone").unwrap();
+        assert!(gone.state_why().unwrap().contains("lab:x-agent-1"));
+        let red = rows.iter().find(|r| r.item.slug == "red").unwrap();
+        assert_eq!(
+            red.state_why().as_deref(),
+            Some("PR #7 red after 2 fix-ci tries")
+        );
+        // The running chip still finds every running row, whatever its cell says.
+        use crate::table::Row;
+        assert_eq!(rows.iter().filter(|r| r.in_state("running")).count(), 4);
+    }
+
+    #[test]
+    fn an_unread_fleet_state_never_says_no_session() {
+        let mut q = stuck_queue();
+        q.sessions = None;
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        assert!(rows
+            .iter()
+            .filter(|r| r.item.state == State::Running)
+            .all(|r| r.state_word() == "running" && r.state_why().is_none()));
+    }
+
+    #[test]
+    fn sessions_reads_each_items_own_session_from_a_fresh_fleet_state() {
+        let dir = std::env::temp_dir().join(format!("hub-queue-sessions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let doc = |at: i64| {
+            serde_json::json!({"generated_epoch": at, "sessions": [
+                {"bucket": "STALLED", "idle_min": 61, "reason": "idle", "item": {"slug": "a", "is": "own"}},
+                {"bucket": "DONE", "idle_min": 5, "reason": "done", "item": {"slug": "b", "is": "moved"}},
+                {"bucket": "CHAT", "item": null},
+                {"bucket": "STALLED", "idle_min": 30, "reason": "idle", "item": {"slug": "c", "is": "own"}},
+                {"bucket": "WORKING", "idle_min": 1, "reason": "busy", "item": {"slug": "d", "is": "own", "also": ["c"]}},
+            ]})
+            .to_string()
+        };
+        std::fs::write(&path, doc(1000)).unwrap();
+        let m = sessions(&path, 1100).expect("fresh");
+        assert_eq!(
+            m.len(),
+            3,
+            "only own sessions join, `also` slugs too: {m:?}"
+        );
+        assert_eq!(m["a"].bucket, "STALLED");
+        assert_eq!(m["a"].idle_min, Some(61));
+        assert_eq!(m["c"].bucket, "WORKING", "the session working it wins");
+        // NEGATIVE CONTROLS: a silent worker, or no own session at all, reads as not read.
+        let silent = serde_json::json!({"generated_epoch": 1000, "silent": [{"host": "mini", "why": "ssh"}],
+            "sessions": [{"bucket": "WORKING", "item": {"slug": "a", "is": "own"}}]});
+        std::fs::write(&path, silent.to_string()).unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::write(&path, r#"{"generated_epoch": 1000, "sessions": []}"#).unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::write(&path, doc(1000)).unwrap();
+        // NEGATIVE CONTROLS: stale, missing and unparseable read as not read.
+        assert_eq!(
+            sessions(&path, 1000 + crate::home::FLEET_STATE_STALE_SECS + 1),
+            None
+        );
+        assert_eq!(sessions(&dir.join("none.json"), 1100), None);
+        std::fs::write(&path, "{").unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -12,7 +12,7 @@
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
 use hub_core::links::Link;
-use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing};
+use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State};
 use hub_core::table::Row;
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -287,11 +287,13 @@ fn mins(m: Option<i64>) -> String {
 }
 
 /// The STATE column: what the item needs, or how it finished.
-fn state(i: &Item, p: Palette) -> Cell {
+fn state(r: &QueueRow, p: Palette) -> Cell {
+    let i = r.item;
     match i.state {
         State::Waiting => cell("needs you", p.warn()),
+        State::Running | State::Review if r.stuck() => cell(r.state_word(), p.warn()),
         State::Running => cell("running", p.good()),
-        State::Review => "on a PR".into(),
+        State::Review => r.state_word().into(),
         State::Queued if i.is_held() => cell("held", p.warn()),
         State::Queued => "ready".into(),
         State::Done => {
@@ -338,7 +340,7 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
         } else {
             prio.into()
         },
-        state(i, p),
+        state(r, p),
         or_dash(r.val("hold").shown().as_deref()).into(),
         or_dash(r.val("from").shown().as_deref()).into(),
         mins(r.timing.in_state).into(),
@@ -370,14 +372,8 @@ fn some(v: &Option<String>) -> Option<&str> {
 /// The selected row in full: every header, then the timeline queued -> ready -> started ->
 /// waiting -> finished -> merged with the minutes from the step before. The agent-queue log is
 /// `notes log --item <slug>`, named here and not read.
-fn detail(
-    i: &Item,
-    t: Timing,
-    mark: Option<usize>,
-    p: Palette,
-    now: i64,
-    w: usize,
-) -> Vec<Line<'static>> {
+fn detail(r: &QueueRow, mark: Option<usize>, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let (i, t) = (r.item, r.timing);
     let mut out = vec![clip_line(
         Line::from(vec![
             Span::styled(i.slug.clone(), p.head()),
@@ -406,6 +402,7 @@ fn detail(
         ("acct", some(&i.account).unwrap_or("").to_string()),
         ("harness", i.harness_label()),
         ("session", some(&i.session).unwrap_or("").to_string()),
+        ("health", r.state_why().unwrap_or_default()),
         ("tags", i.tags.clone()),
         ("area", some(&i.area).unwrap_or("").to_string()),
         ("from", some(&i.from).unwrap_or("").to_string()),
@@ -557,7 +554,7 @@ pub fn page(
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
-        out.extend(detail(r.item, r.timing, v.mark(r.item), p, now, w));
+        out.extend(detail(r, v.mark(r.item), p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
             if all.is_empty() {
@@ -757,6 +754,7 @@ pub(crate) mod tests {
         );
         Queue {
             items: hub_core::queue::parse(jsonl),
+            sessions: None,
             stats: Some(Stats {
                 since: "2026-10-27".into(),
                 done: [("ok".to_string(), 3), ("cancelled".to_string(), 1)].into(),

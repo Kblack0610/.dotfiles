@@ -1531,6 +1531,11 @@ queue_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
   [ "$(jq -r .dispatch <<<"$output")" = null ]
+  # two running here: the row names the first, and `also` the rest, so the Queue finds each one's session
+  printf 'slug: side-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:05:00Z\nsessions: sid-9\n---\nfix it too\n' \
+    > "$HOME/.agent/queue/running/20261103-100500-side-fix.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.item.slug, .item.also]' <<<"$output")" = '["hand-fix",["side-fix"]]' ]
 }
 
 # clean_fixture: landed_fixture with no PR on the branch and no plan file: CHAT until an item names it.
