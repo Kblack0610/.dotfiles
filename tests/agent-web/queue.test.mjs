@@ -115,7 +115,7 @@ const items = [
 const data = { at: 1793942700, items, table, needs_you: 1, open_rows: 200, section_aliases: { waiting: "needs you", running: "running", queued: "ready", done: "done" } };
 const load = (d = data, over = {}) => {
   run("st.tab = 'queue'; st.arg = ''; st.views.queue = ''; Object.assign(qcd, { data: null, err: null, all: false, msg: '', promoting: null })");
-  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, open: {}, candCounts: null, candErr: null, ...over });
+  Object.assign(run("qst"), { items: d.items, table: d.table, aliases: d.section_aliases, needs: d.needs_you, openRows: d.open_rows, all: false, sel: "", err: null, stats: {}, open: {}, hist: {}, candCounts: null, candErr: null, ...over });
 };
 const draw = () => { run("qst.render()"); return parts["q-list"].innerHTML; };
 test("Queue search keeps focus, text and selection across queue, candidates and flow refreshes", async () => {
@@ -583,6 +583,45 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   assert.match(h, /do the thing/);
   fire("click", { type: "click", target: target({}, "w1") });
   assert.doesNotMatch(parts["q-list"].innerHTML, /wdet/, "the same row again shuts it");
+});
+
+test("an opened row's History fold starts shut, reads on opening, once, and drops what it read on shutting", async () => {
+  load({ ...data, items: [item("w1", { state: "review" })] }, { sel: "w1" });
+  asked = [];
+  const hist = { attempts: 3, steps: 54, lines: [{ at: "2026-11-12T07:04:21-08:00", text: "started on lab:ucp-agent-10, sol on codex" }, { at: "2026-11-12T07:16:54-08:00", text: "PR still red after fix-ci, yours" }] };
+  let land;
+  reply = (url) => url.startsWith("/api/queue/history") ? new Promise((r) => { land = r; }) : data;
+  assert.match(draw(), /<details class="cfold" data-k="hist:w1"><summary>History<\/summary><\/details>/);
+  assert.ok(!asked.some((u) => u.startsWith("/api/queue/history")), "a shut fold reads nothing");
+  const fold = (open) => fire("toggle", { target: { open, dataset: { k: "hist:w1" } } });
+  fold(true);
+  assert.match(parts["q-list"].innerHTML, /data-k="hist:w1" open><summary>History<\/summary><div class="muted">Reading history\.\.\.<\/div>/);
+  fold(true);
+  assert.deepEqual(asked.filter((u) => u.startsWith("/api/queue/history")), ["/api/queue/history?slug=w1"], "the redraw's toggle while it reads asks for none");
+  await settle();
+  land(hist);
+  await settle(); await settle();
+  const h = parts["q-list"].innerHTML;
+  assert.match(h, /<summary>History, 3 attempts \(54 steps, last 2\)<\/summary><div class="cline"><span class="muted">[^<]+<\/span> started on lab:ucp-agent-10, sol on codex<\/div><div class="cline">.*PR still red after fix-ci, yours/);
+  fold(false);
+  assert.equal(run("qst.hist.w1"), undefined, "a shut fold holds nothing");
+  assert.match(parts["q-list"].innerHTML, /data-k="hist:w1"><summary>History<\/summary><\/details>/);
+  // A failed read says why; an item with no steps says so, never an empty fold.
+  reply = (url) => url.startsWith("/api/queue/history") ? Promise.reject(new Error("notes: no record")) : data;
+  run(`readHist("w1")`);
+  await settle(); await settle();
+  run(`qst.open["hist:w1"] = true`);
+  assert.match(draw(), /<div class="panel down">No history: notes: no record<\/div>/);
+  run(`qst.hist.w1 = { data: { attempts: 0, steps: 0, lines: [], days: 30 } }`);
+  assert.match(draw(), /History, 0 attempts \(0 steps\)<\/summary><div class="muted">No steps in the last 30 days\.<\/div>/);
+  // Shutting the row (a click on it again) drops its History, read and fold both, so a reopen
+  // starts shut and reads afresh.
+  run(`qst.hist.w1 = { data: { attempts: 1, steps: 1, lines: [], days: 30 } }`);
+  fire("click", { type: "click", target: target({}, "w1") });
+  assert.deepEqual([run("Object.keys(qst.hist).length"), run(`qst.open["hist:w1"]`)], [0, undefined]);
+  fire("click", { type: "click", target: target({}, "w1") });
+  assert.match(parts["q-list"].innerHTML, /data-k="hist:w1"><summary>History<\/summary><\/details>/);
+  reply = {};
 });
 
 test("an opened row past the cap still shows, with its detail", () => {
