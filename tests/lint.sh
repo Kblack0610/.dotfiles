@@ -134,8 +134,8 @@ else
   skipped+=("shellcheck")
 fi
 
-# Say what actually RAN. Without this the difference between "three gates passed" and
-# "two gates were not installed and the third said nothing" is a line of prose in the
+# Say what actually RAN. Without this the difference between "both gates passed" and
+# "shellcheck was not installed and the house rules said nothing" is a line of prose in the
 # middle of the output that nobody reads -- and both exit 0. A skipped gate is not a
 # passing gate, and the summary is where that stops being deniable.
 printf 'lint: ran %s' "$(IFS=,; echo "${ran[*]:-none}")"
