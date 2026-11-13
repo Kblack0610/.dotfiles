@@ -69,7 +69,7 @@ unset _k _v
 : "${DISPATCH_MIN_IDLE:=30}"    # percent of the machine free, idle plus nice time, over the real idle sample (real_idle); the conf holds the human's floor
 : "${DISPATCH_IDLE_WINDOW:=60}"   # seconds the real idle sample spans: one 2 s top frame swung 17-41% on one busy hour (human, ask bo20dU, 2026-11-07)
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
-: "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
+: "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
@@ -806,7 +806,7 @@ watch_reds() {
 
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
 # and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR plus one for
-# each tripped watch's red item. Real idle, load, fleet-assess and the weekly pace do not hold it;
+# each tripped watch's red item. The pace target, real idle, load, fleet-assess and the weekly pace do not hold it;
 # agent-hold, the reserve, the cluster and the github budget still do. RED_LIVE and RED_WATCH are
 # cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
@@ -2722,6 +2722,26 @@ settle_sessionless() {
   echo "flagged queue item $1 ($flag)"
 }
 
+# red_items <item json lines> -> the red items among them, a tripped watch's first, so the floor slot
+# its item adds is not taken by another red.
+red_items() {
+  jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" red ")))
+    | sort_by((" " + (.tags // "") + " ") | contains(" watch ") | not)[]' <<<"$1"
+}
+
+# red_floor_due <red item json lines> -- one is queued and the red floor may start it past the gates.
+red_floor_due() { [ -n "$1" ] && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; }
+
+# red_floor_start <red item json lines> <room> <why> -- start them on the red floor. The start goes
+# past <why>, the gates that held the pass, without proving them open, so the hold stands (start_item).
+red_floor_start() {
+  local rc
+  say "$3; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR, plus ${RED_WATCH:-0} for tripped watches)"
+  RED_PASS=1 FLOOR_GATE=$3; start_items "$1" "$2"; rc=$?
+  RED_PASS=0 FLOOR_GATE=''
+  return "$rc"
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -2738,12 +2758,8 @@ run_queue() {
     # A red the machine gates hold may still start on the red floor; then only reds start this pass,
     # a tripped watch's first, so the floor slot its item adds is not taken by another red.
     # Its start goes past those gates without proving them open, so the hold stands (start_item).
-    if is_red "$head" && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; then
-      say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR, plus ${RED_WATCH:-0} for tripped watches)"
-      RED_PASS=1 FLOOR_GATE=$why; start_items "$(jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" red ")))
-        | sort_by((" " + (.tags // "") + " ") | contains(" watch ") | not)[]' <<<"$items")" "$2"
-      local rc=$?; RED_PASS=0 FLOOR_GATE=''; return "$rc"
-    fi
+    local reds=''; is_red "$head" && reds=$(red_items "$items")
+    if red_floor_due "$reds"; then red_floor_start "$reds" "$2" "$why"; return; fi
     # A project nothing is working on may start one item past real idle: one busy
     # project cannot hold every other project's work behind the idle floor.
     local idle_items; idle_items=$(idle_project_items "$items")
@@ -3475,13 +3491,14 @@ cmd_starved() {
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then [ -z "$dead" ]; return; fi
   items=$(runnable | jq -rs --argjson cut "$cut" '
     [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
-    | sort_by(.t) | .[] | "\(.slug) (\(.priority), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
+    | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
   [ -n "$stopped$items$board$low" ] || { [ -z "$dead" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
   # so one waits on sessions finishing. Only that case holds: an urgent item may preempt a runner
-  # session there, and a standing hold, board or low water still trips. On 11-11 this tripped 4h at
+  # session there, and the red floor goes past the target, so a red item, a standing hold, board or
+  # low water still trips. On 11-11 this tripped 4h at
   # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
   # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
@@ -3489,7 +3506,7 @@ cmd_starved() {
   local TARGET TARGET_WHEN TOTAL_LIVE
   pace_target
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
-    ! grep -q '(urgent, ' <<<"$items"; then
+    ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET), so nothing is starved"
     [ -z "$dead" ]; return
   fi
@@ -3634,7 +3651,7 @@ cmd_headroom() {
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
-        "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it pace, idle, load and fleet-assess do not hold a red",
+        "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
         (if (.focus | length) > 0 then "  focus:     only \(.focus | join(" ")); \(.focus_held) queued item(s) held off focus (reds, urgent and #requested still run)" else empty end)'
     fi
@@ -4151,6 +4168,16 @@ cmd_run() {
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
     [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
+    # The red floor goes past a full fleet as it goes past load and the weekly pace: from 11-12 11:40
+    # a fleet over its target started no red for 21h while 20 watch reds waited (ar-1531 wants an
+    # owner on each the hour it trips). Its own bound, DISPATCH_RED_FLOOR plus one per tripped watch
+    # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
+    local reds slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
+    [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
+    if [ "$slots" -gt 0 ]; then reds=$(red_items "$(next_items)"); fi
+    if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
+      UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "pace target: $full"; return
+    fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are
