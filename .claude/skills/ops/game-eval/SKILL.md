@@ -1,11 +1,11 @@
 ---
 name: game-eval
 description: >-
-  Evaluate a game the same way every time: perf (lag, hitches, fps, GC) and look (style, worlds, UI). Use for "it lags here", "why is this slow", "perf pass", "this looks off", "art/style pass". Bugs: bug-bash.
+  Evaluate a game the same way every time: perf (lag, hitches, fps, GC) and look (style, worlds, UI). Use for "it lags here", "why is this slow", "perf pass", "this looks off", "art/style pass", "find a taste for X". Bugs: bug-bash.
 metadata:
   category: ops
   tags: [games, performance, profiling, art-direction, ui, triage]
-  reviewed: "2026-10-28"
+  reviewed: "2026-11-12"
 ---
 
 # Game eval
@@ -14,7 +14,7 @@ Turns "it lagged here" or "this looks wrong" into numbers or pictures, a named c
 
 ## Scope and triggers
 
-Evaluate a game the same way every time, on any engine and platform, in lanes: perf (lag, hitches, low fps, GC, server tick) and look (style, design and look of worlds and UI). One spine of nine steps (report, adapter, rule out the harness, capture against a baseline, localize, generalize to the pattern, repeatable probe, file rows, fix and prove) plus a lane file for each lane's instruments and patterns. Verbs: triage <lane> for a reported problem or a capture/mark file, review <lane> for a whole-game pass. Use when the user says "it lags here", "is it the editor or the game", "why is this slow", "perf pass", "this looks off", "review the look of <game>", "art/style pass", "go through my lag marks", or after a big content wave. Each game repo keeps one adapter doc (commands, budgets, views, boards); the skill never hardcodes a repo's tools. Not for network feel under load or server capacity (the repo's multiplayer ladder, e.g. load.sh / Edgegap bench), not for functional bugs (bug-bash), not for a whole-repo code health pass (stack-review, which this hands structural findings to), and not for menu-by-menu coverage audits (ui-audit).
+Evaluate a game the same way every time, on any engine and platform, in lanes: perf (lag, hitches, low fps, GC, server tick) and look (style, design and look of worlds and UI). One spine of nine steps (report, adapter, rule out the harness, capture against a baseline, localize, generalize to the pattern, repeatable probe, file rows, fix and prove) plus a lane file for each lane's instruments and patterns. Verbs: triage <lane> for a reported problem or a capture/mark file, review <lane> for a whole-game pass, taste <game> to research and draft the taste a game's look is graded against. Use when the user says "it lags here", "is it the editor or the game", "why is this slow", "perf pass", "this looks off", "review the look of <game>", "art/style pass", "what should <game> look like", "find a taste for <game>", "go through my lag marks", or after a big content wave. Each game repo keeps one adapter doc (commands, budgets, views, boards); the skill never hardcodes a repo's tools. Not for network feel under load or server capacity (the repo's multiplayer ladder, e.g. load.sh / Edgegap bench), not for functional bugs (bug-bash), not for a whole-repo code health pass (stack-review, which this hands structural findings to), and not for menu-by-menu coverage audits (ui-audit).
 
 - When the human reports lag, a hitch or low fps somewhere, or hands you capture/mark files.
 - When the human says a place, a screen or a whole game looks off, or asks for a style pass.
@@ -45,11 +45,21 @@ Not for server capacity or network feel under load (the repo's multiplayer doc),
 
 A whole-game pass, run after a content wave or when triage keeps finding the same pattern. Walk the lane's review list per game, measure or shoot each item against the adapter's budgets and references, and output ranked rows (impact x effort) plus `kb-architect` specs for the structural ones. Same filing rules as triage step 8.
 
+## taste <game>
+
+Research and write the taste a game's look is graded against: its aim, references, palette, light, menus and what it must never look like. The adapter's look section says where a taste lives and the shape it takes. Run it for a new game before its first content wave, and when a review finds the taste itself wrong.
+
+1. **What it wears.** Read the game's doc, its look settings, UI coat, art packs and named views, and shoot its reference view at the default tier.
+2. **Research.** Dispatch `deep-research-agent`, one thread per game: the acclaimed games in its genre and look, what their art directors say makes that look work, and the looks to avoid. Primary sources (GDC talks, devblogs, art director interviews); a claim only a reviewer made is labelled so.
+3. **Draft.** Write the taste in the repo's shape, `Draft` on its first line, each reference cited, the reference view named, and land it as a docs PR.
+4. **Hand the call over.** One human-sheet row with the draft, the shots and the options where the research split. The human's correction removes `Draft`; never pick the direction for them.
+
 ## Do NOT
 
 - Do not measure before reading the lane's patterns: most findings are a known pattern, and the pattern is what gets fixed.
 - Do not patch one instance and leave its siblings: file the migration row with every instance.
 - Do not compare numbers across machines, builds or loads; frame and CPU numbers only compare like for like.
+- Do not grade a look against your own taste: grade it against the game's written taste and the repo's review tests, and run `taste` when there is none.
 - Do not judge a look from one shot at one tier, or from an editor state the lane lists as misleading.
 - Do not hardcode a repo's commands here; they belong in its adapter doc, and this skill links to it.
 - Do not run a player build or heavy capture on a shared workstation without the adapter saying it is allowed.
