@@ -29,14 +29,8 @@ pub(crate) const WEIGHTS: &[(&str, u32)] = &[("xs", 1), ("s", 1), ("m", 3), ("l"
 /// it), so a row's two never disagree. What each count means: `agentctl-inbox-triage`
 /// `size_rule`, the one rubric the scoring pass and a filing session read. It stops at 13:
 /// an epic's appetite is `#size/xl`, never points, so a leaf cannot reach xl.
-pub(crate) const POINTS: &[(u32, &str)] = &[
-    (1, "s"),
-    (2, "s"),
-    (3, "m"),
-    (5, "m"),
-    (8, "l"),
-    (13, "l"),
-];
+pub(crate) const POINTS: &[(u32, &str)] =
+    &[(1, "s"), (2, "s"), (3, "m"), (5, "m"), (8, "l"), (13, "l")];
 
 /// The `#size/` band `pts` falls in, `None` for a count off the scale.
 pub(crate) fn band(pts: u32) -> Option<&'static str> {

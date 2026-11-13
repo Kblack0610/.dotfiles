@@ -149,7 +149,15 @@ fn checked_days(dir: &Path) -> HashMap<String, NaiveDate> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["log", "-p", "-U0", "--no-color", "--reverse", "--format=@@T%at", "--"])
+        .args([
+            "log",
+            "-p",
+            "-U0",
+            "--no-color",
+            "--reverse",
+            "--format=@@T%at",
+            "--",
+        ])
         .args(["agent/README.md", "README.md", "tasks.md"])
         .output();
     let Ok(out) = out else {
@@ -355,16 +363,15 @@ fn plan(
     let open = cuts.last().map_or(cur, |c| {
         projects::next_version(Some(c.version), Bump::Patch)
     });
-    Plan {
-        cuts,
-        open,
-        left,
-    }
+    Plan { cuts, open, left }
 }
 
 /// A week with proof lines but no closed row cuts nothing: its lines join the next week that
 /// has rows, else the last one, else the undated rows.
-fn fold_proof_only(weeks: Vec<(NaiveDate, Bucket)>, undated: &mut Bucket) -> Vec<(NaiveDate, Bucket)> {
+fn fold_proof_only(
+    weeks: Vec<(NaiveDate, Bucket)>,
+    undated: &mut Bucket,
+) -> Vec<(NaiveDate, Bucket)> {
     let mut out: Vec<(NaiveDate, Bucket)> = Vec::new();
     let mut waiting: Vec<Block> = Vec::new();
     for (m, mut b) in weeks {
@@ -943,7 +950,11 @@ mod tests {
             ..Bucket::default()
         };
         let p = plan(rows, (0, 0, 1), false, &none, d("2026-11-11"));
-        let got: Vec<_> = p.cuts.iter().map(|c| (c.week, c.rows.tasks(), c.rows.proof.len())).collect();
+        let got: Vec<_> = p
+            .cuts
+            .iter()
+            .map(|c| (c.week, c.rows.tasks(), c.rows.proof.len()))
+            .collect();
         assert_eq!(
             got,
             vec![(Some(d("2026-08-03")), 1, 0), (Some(d("2026-08-24")), 1, 2)],
@@ -972,12 +983,9 @@ mod tests {
             "feat(notes-cli): a\nfix(notes): b (#3)\nfeat(nvim,tmux): c\nUpdate readme\nWIP(x): y\n",
             &systems,
         );
-        let want: BTreeMap<String, usize> = [
-            ("notes".to_string(), 2),
-            ("other".to_string(), 3),
-        ]
-        .into_iter()
-        .collect();
+        let want: BTreeMap<String, usize> = [("notes".to_string(), 2), ("other".to_string(), 3)]
+            .into_iter()
+            .collect();
         assert_eq!(c, want);
     }
 
@@ -1031,7 +1039,10 @@ mod tests {
             out.starts_with("# p\nVersion: v0.1.1\n\n## Tasks\n- [x] feat(notes): s"),
             "{out}"
         );
-        assert!(out.contains("### other (2)\n- no epic: 2\n"), "an area the project does not list is other: {out}");
+        assert!(
+            out.contains("### other (2)\n- no epic: 2\n"),
+            "an area the project does not list is other: {out}"
+        );
         assert!(out.contains("- pr:12\n- pr:13\n"), "{out}");
         let end = d("2026-08-10")
             .and_hms_opt(0, 0, 0)
