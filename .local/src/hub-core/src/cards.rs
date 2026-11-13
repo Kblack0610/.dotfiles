@@ -647,7 +647,7 @@ mod tests {
         );
         assert_eq!(
             c.first[0].link.as_ref().unwrap().href(),
-            "#sessions/hub%2Fc%3A1"
+            "#sessions/sessions/hub%2Fc%3A1"
         );
         assert_eq!(
             c.parts

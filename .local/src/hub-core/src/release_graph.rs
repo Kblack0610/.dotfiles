@@ -415,7 +415,7 @@ pub fn live(state: &Value) -> HashMap<String, String> {
         if branch.is_empty() || SHARED_BRANCHES.contains(&branch) || target.is_empty() {
             continue;
         }
-        let name = crate::fleet::who::name_of(target);
+        let name = crate::session_table::name_of(target);
         let names = by_branch.entry(branch.to_string()).or_default();
         if !names.contains(&name) {
             names.push(name);

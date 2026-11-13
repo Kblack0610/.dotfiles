@@ -70,7 +70,7 @@ const jobsTail = () => `<div class="muted fold">A runner or timer that ran more 
   (jst.log ? `${secHead("", "Log")}<div class="panel">${pageRow("Job", esc(jst.log.title))}<pre class="joblog">${esc(jst.log.text)}</pre></div>` : "");
 
 // A job's log through /api/jobs/log (its byte range for an agentctl run), or why it has none.
-// The Fleet tab's runner page reads its runs' logs here too.
+// A runner's page (Sessions, Runners) reads its runs' logs here too.
 async function jobLogText(j) {
   if (!j.log) return j.url ? `No log here; the job's page: ${j.url}` : "This job keeps no log.";
   try {

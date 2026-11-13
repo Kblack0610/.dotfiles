@@ -97,7 +97,7 @@ pub struct Schedule {
     /// Each open red item, `<slug> (<outcome>)`.
     pub open: Vec<String>,
     pub runs: Vec<Run>,
-    /// The runner whose Fleet page this row opens instead of a detail of its own; empty if none.
+    /// The runner whose page (Sessions, Runners) this row opens instead of a detail of its own; empty if none.
     pub page: String,
     /// The detail's head: `red since 11-01, triage no fix ar-485, next 02:00`.
     pub status: String,
@@ -681,7 +681,7 @@ fn secs(us: Option<u64>) -> Option<i64> {
 
 /// The runners with a schedule, a disabled one as off, plus the ones another runner starts once
 /// they have reported (a run this week, or a liveness fault), as `agentctl liveness` counts its
-/// roster. Their history lives on their Fleet page, so a row carries only the summary and opens
+/// roster. Their history lives on their runner page (Sessions, Runners), so a row carries only the summary and opens
 /// that page. A run older than the ledger's week still counts as a run, from the timer's last
 /// fire, with its verdict left to liveness.
 fn agentctl_rows(
@@ -1656,7 +1656,7 @@ mod tests {
         );
         assert_eq!(r.next, Some(99));
         assert_eq!((r.state, r.ok_at), (JobState::Ok, Some(20)));
-        assert!(r.runs.is_empty(), "its history is the Fleet page's");
+        assert!(r.runs.is_empty(), "its history is the runner page's");
     }
 
     const SHOW_TIMERS: &str = "Id=day-log.timer\nDescription=Day log\n\

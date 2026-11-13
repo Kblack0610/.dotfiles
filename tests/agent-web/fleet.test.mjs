@@ -1,7 +1,8 @@
-// Unit tests for the Fleet tab's one table of who is working (.local/src/agent-web/static/fleet.js), run by
-// `node --test` from tests/unit/agent_web_queue.bats. The page's real scripts load into one vm
-// context, as the browser loads them; only the DOM is a stub. The registry itself is
-// hub_core::fleet, tested in Rust; this checks what a row draws and where it opens.
+// Unit tests for Sessions' Runners inner tab (.local/src/agent-web/static/fleet.js), the table of
+// agentctl runners and each runner's page, run by `node --test` from tests/unit/agent_web_queue.bats.
+// The page's real scripts load into one vm context, as the browser loads them; only the DOM is a
+// stub. The registry itself is hub_core::fleet, tested in Rust; this checks what a row draws, where
+// it opens, and that the retired `#fleet` links land here.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -13,19 +14,23 @@ const el = () => new Proxy({}, {
   get: (t, k) => (k in t ? t[k] : k === "classList" ? { add() {}, remove() {}, toggle() {} } : k === "dataset" ? {} : k === "style" ? {} : () => el()),
   set: (t, k, v) => { t[k] = v; return true; },
 });
-let click = null;
-const on = {};
-const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { on[ev] = f; if (ev === "click") click = f; } });
+// Sessions' #scroll holds the three inner tabs; every click handler on it hears a click, as in
+// the browser. `box` is the Runners inner tab's own block (#ov-runners).
+const scrollClicks = [];
+const scroll = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") scrollClicks.push(f); } });
+const click = (e) => { for (const f of scrollClicks) f(e); };
+const box = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener() {} });
 const logClicks = [];
 const logClick = (e) => logClicks.forEach((f) => f(e));
 const logBox = Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [], addEventListener: (ev, f) => { if (ev === "click") logClicks.push(f); } });
 const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelectorAll: () => [] });
-const parts = { "fleet-body": part(), "fleet-tiles": part(), "fleet-facets": part(), "fleet-head": part() };
-const doc = { getElementById: (id) => (id === "fleet" ? box : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
+const parts = { "runners-body": part(), "runners-tiles": part(), "runners-facets": part(), "runners-head": part() };
+const doc = { getElementById: (id) => (id === "ov-runners" ? box : id === "scroll" ? scroll : id === "log-verdicts" ? logBox : parts[id] || el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el() };
 const ctx = vm.createContext({
   console,
   document: doc,
   window: { addEventListener() {} },
+  matchMedia: () => ({ matches: false, addEventListener() {} }),
   URLSearchParams,
   setInterval: () => 0,
   clearInterval() {},
@@ -33,7 +38,7 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({}) }),
 });
-for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "board.js", "jobs.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "board.js", "jobs.js", "watch.js", "shepherd.js", "sessions.js", "fleet.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const call = (id, o = {}) => ({ id, at: 1793942659, ms: 3222, ok: true, model: "claude-sonnet-5-5", cost: 0.0871, tokens: 30457, link: `https://lf/project/P/sessions/${id}`, ...o });
 const worker = (name, registry) => ({
@@ -82,7 +87,8 @@ const data = {
 
 
 // A click on a verdict tile, inside the verdicts' block (data-tbl="v").
-const verdictTile = (ts) => ({ type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "v" } } : sel === "[data-ts]" ? { dataset: { ts } } : null) } });
+// A verdict tile: on Log under #log-verdicts, on a runner page inside #ov-runners.
+const verdictTile = (ts) => ({ type: "click", target: { dataset: {}, closest: (sel) => (sel === "#ov-runners" ? {} : sel === "[data-tbl]" ? { dataset: { tbl: "v" } } : sel === "[data-ts]" ? { dataset: { ts } } : null) } });
 
 test("Log lists every answer verdict with why and what you did, under tiles the server counted, and a tile is a view key", async () => {
   const s = vm.runInContext("st", ctx);
@@ -113,7 +119,7 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   assert.match(s.views.log, /vs=passed/);
   ctx.fetch = was;
   s.views.log = "";
-  Object.assign(s, { tab: "fleet", arg: "" });
+  Object.assign(s, { tab: "sessions", arg: "runners" });
 });
 
 test("Log's verdict lists stop at the server's verdicts_shown, clamp long text, and each +N older reads only its own list", async () => {
@@ -143,157 +149,196 @@ test("Log's verdict lists stop at the server's verdicts_shown, clamp long text, 
   assert.deepEqual(asked, ["/api/fleet?vall=1"]);
   ctx.fetch = was;
   Object.assign(vs, { all: false, dispatchAll: false, data });
-  Object.assign(s, { tab: "fleet", arg: "" });
+  Object.assign(s, { tab: "sessions", arg: "runners" });
 });
 
 // The table: hub_core::fleet::who's rows, and the Summary hub_core::table sends beside them.
 const st = vm.runInContext("st", ctx);
-const wrow = (o) => ({ tier: 3, kind: "session", who: "dotfiles-agent-11", opens: "session", key: "lab/dotfiles-agent-11:1", state: "working", since: 1793942000, for: "fleet tab plan", doing: "editing fleet.js", under: "dispatch dotfiles", project: "dotfiles", parent: "fleet-dispatch", kids: 0, ...o });
-const COLS = ["kind", "who", "state", "cost", "since", "for", "doing", "under", "project"];
+// The Runners inner tab shown, its table and no runner page.
+const onRunners = () => { st.tab = "sessions"; st.arg = "runners"; st.page = ""; st.sel = null; };
+const wrow = (o) => ({ tier: 2, kind: "observe", who: "ask-judge", state: "idle", since: 1793942000, for: "Answers asks it can", doing: "next 14:00", under: "called by dream", ...o });
+const COLS = ["kind", "who", "state", "cost", "since", "for", "doing", "under"];
 const table = (o = {}) => ({
-  q: "", state: "", sort: "", dir: "desc", total: 4, shown: 4,
-  states: [{ name: "all", n: 4 }, { name: "lead", n: 1 }, { name: "observe", n: 1 }, { name: "session", n: 2 }, { name: "failed", n: 1 }, { name: "working", n: 2 }],
+  q: "", state: "", sort: "", dir: "desc", total: 3, shown: 3,
+  states: [{ name: "all", n: 3 }, { name: "lead", n: 1 }, { name: "observe", n: 2 }, { name: "failed", n: 1 }],
   columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })),
   facets: [{ key: "kind", on: [], clear: "", values: [{ value: "lead", n: 1, on: false, q: "kind:lead" }] }],
   ...o,
 });
 const people = [
-  wrow({ tier: 1, kind: "lead", who: "fleet-dispatch", opens: "runner", key: "fleet-dispatch", state: "idle", for: "Starts a one-shot session per small agent row", doing: "next 14:00", under: "2 sessions", parent: null, kids: 2 }),
-  wrow({ tier: 2, kind: "observe", who: "ask-judge", opens: "runner", key: "ask-judge", state: "failed", cost_24h: 4.5, for: "Answers asks it can", doing: "no gateway route (2 failed 24h)", under: "called by dream", parent: null, project: "" }),
-  wrow({}),
-  wrow({ who: "dotfiles-agent-12", key: "lab/dotfiles-agent-12:1", state: "needs you" }),
+  wrow({ tier: 1, kind: "lead", who: "fleet-dispatch", for: "Starts a one-shot session per small agent row", under: "2 sessions" }),
+  wrow({ state: "failed", cost_24h: 4.5, doing: "no gateway route (2 failed 24h)" }),
+  wrow({ who: "inbox-triage", for: "files the inbox", under: "" }),
 ];
 // What hub_core::links sends beside those rows (`Who::link`); the page builds no `#...` itself.
 const links = [
-  { who: "#fleet/fleet-dispatch", project: "#projects/dotfiles" },
-  { who: "#fleet/ask-judge" },
-  { who: "#sessions/lab%2Fdotfiles-agent-11%3A1", project: "#projects/dotfiles" },
-  { who: "#sessions/lab%2Fdotfiles-agent-12%3A1", project: "#projects/dotfiles" },
+  { who: "#sessions/runners/fleet-dispatch" },
+  { who: "#sessions/runners/ask-judge" },
+  { who: "#sessions/runners/inbox-triage" },
 ];
 const fleetData = { ...data, who: people, legend: ["lead runs or watches the sessions", "observe reports"], table: table({ links }), hidden: 0 };
 
-test("a tier 1 row carries a fold button and a count, a tier 3 row opens the Sessions record, a runner its page", () => {
-  vm.runInContext("st", ctx).tab = "fleet";
+test("a runner row opens its page on Sessions' Runners, and a lead counts the sessions it oversees", () => {
+  onRunners();
   const f = vm.runInContext("fst", ctx);
   f.data = fleetData;
-  ctx.renderFleet();
+  ctx.renderRunners();
   const h = box.innerHTML;
-  assert.match(h, /<tr class="wr" data-href="#fleet\/fleet-dispatch"><td class="muted"><button class="thsort" data-fold="fleet-dispatch" aria-expanded="true"[^>]*>v<\/button> lead<\/td>/);
-  assert.match(h, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
-  assert.match(h, /<tr class="wr" data-href="#sessions\/lab%2Fdotfiles-agent-11%3A1">/);
+  assert.match(h, /<tr class="wr" data-href="#sessions\/runners\/fleet-dispatch"><td class="muted">lead<\/td>/);
+  assert.match(h, /<a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
   assert.match(h, /<td class="bad">failed<\/td>/);
-  assert.match(h, /<td class="warn">needs you<\/td>/);
-  assert.doesNotMatch(h, /data-fold="ask-judge"/, "only a row with children folds");
-  assert.match(h, /2 sessions/);
-  assert.match(h, /<td class="muted"><a class="tl" href="#projects\/dotfiles">dotfiles<\/a><\/td><\/tr>/, "a session's project links its card");
+  assert.match(h, /<td class="muted"><div class="c12" title="2 sessions">2 sessions<\/div><\/td>/);
+  assert.doesNotMatch(h, /data-fold|#sessions\/lab/, "no fold and no session rows: the sessions are the Sessions inner tab's");
   // A row the server sent no link for draws its text and opens nothing.
   f.data = { ...fleetData, table: table() };
-  ctx.renderFleet();
-  assert.match(box.innerHTML, /<tr class="wr" data-href=""><td class="muted"><button[^>]*>v<\/button> lead<\/td><td>fleet-dispatch<\/td>/);
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /<tr class="wr" data-href=""><td class="muted">lead<\/td><td>fleet-dispatch<\/td>/);
+});
+
+test("the Runners table is drawn only while its inner tab shows", () => {
+  const f = vm.runInContext("fst", ctx);
+  f.data = fleetData;
+  box.innerHTML = "";
+  st.tab = "sessions"; st.arg = "sessions"; st.page = ""; st.sel = null;
+  ctx.renderRunners();
+  assert.equal(box.innerHTML, "", "the Sessions inner tab shows");
+  onRunners();
+  st.sel = { target: "a" };
+  ctx.renderRunners();
+  assert.equal(box.innerHTML, "", "a session's record is open");
+  onRunners();
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /fleet-dispatch/, "the control: Runners shows");
 });
 
 test("a held runner reads red and the held chip counts it", () => {
-  vm.runInContext("st", ctx).tab = "fleet";
-  const held = wrow({ tier: 2, who: "ask-judge", opens: "runner", key: "ask-judge", state: "held", doing: "budget: over its daily budget: $5.03 of $5", parent: null });
+  onRunners();
+  const held = wrow({ state: "held", doing: "budget: over its daily budget: $5.03 of $5" });
   vm.runInContext("fst", ctx).data = { ...fleetData, who: [held], table: table({ states: [{ name: "all", n: 1 }, { name: "held", n: 1 }] }) };
-  ctx.renderFleet();
+  ctx.renderRunners();
   const h = box.innerHTML;
   assert.match(h, /<td class="bad">held<\/td>/);
   assert.match(h, /data-ts="held"><span class="tl">HELD<\/span><span class="tv">1</);
 });
 
-test("the header draws every hub-core column and the bar is the shared one", () => {
+test("the header draws every hub-core column and the bar is the shared one, under the r prefix", () => {
+  onRunners();
   vm.runInContext("fst", ctx).data = fleetData;
-  ctx.renderFleet();
+  ctx.renderRunners();
   const h = box.innerHTML;
   assert.equal((h.match(/data-tsort=/g) || []).length, COLS.length);
   assert.doesNotMatch(h, /\$ 24h/, "a runner's spend is on Costs");
   assert.doesNotMatch(h, /class="bhead"/, "no prose head: the bar and the table count the rows");
-  assert.match(h, /id="fleet-q" data-tsearch/);
+  assert.match(h, /id="runners-q" data-tsearch/);
   assert.match(h, /<tr class="tfilters" data-phone="filters"><th><details class="tfacet" data-fkey="kind"[^>]*>/, "kind's dropdown sits under its header");
   assert.match(h, /data-fv="lead" value="kind:lead"> <span>lead<\/span> <span class="n">1<\/span>/);
 });
 
 test("KIND and FOR say what each row is and why it is deployed, under the lanes.tsv legend", () => {
-  vm.runInContext("st", ctx).tab = "fleet";
+  onRunners();
   vm.runInContext("fst", ctx).data = fleetData;
   doc.activeElement = null;
-  ctx.renderFleet();
+  ctx.renderRunners();
   const h = box.innerHTML;
   assert.match(h, /<div class="muted legend">lead runs or watches the sessions \| observe reports<\/div>/);
-  assert.match(h, /<td class="muted">observe<\/td><td><a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
-  assert.match(h, /<td class="wrap">Starts a one-shot session per small agent row<\/td>/);
-  assert.match(h, /<td class="wrap">no gateway route \(2 failed 24h\)<\/td>/);
-  for (const k of ["lead", "observe", "session"]) assert.match(h, new RegExp(`data-ts="${k}"><span class="tl">${k.toUpperCase()}</span><span class="tv">`));
+  assert.match(h, /<td class="muted">observe<\/td><td><a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
+  assert.match(h, /<td><div class="c12" title="Starts a one-shot session per small agent row">Starts a one-shot session per small agent row<\/div><\/td>/);
+  assert.match(h, /<td><div class="c12" title="no gateway route \(2 failed 24h\)">no gateway route \(2 failed 24h\)<\/div><\/td>/);
+  for (const k of ["lead", "observe"]) assert.match(h, new RegExp(`data-ts="${k}"><span class="tl">${k.toUpperCase()}</span><span class="tv">`));
   vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
-  ctx.renderFleet();
+  ctx.renderRunners();
   assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
+  assert.doesNotMatch(box.innerHTML, /cline warn/, "every session has a lead: no line");
+  vm.runInContext("fst", ctx).data = { ...fleetData, unled: "2 sessions no lead oversees" };
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /<div class="cline warn"><a class="tl" href="#sessions\/sessions">2 sessions no lead oversees<\/a><\/div>/, "the sessions no lead takes, a line over the table");
 });
 
-test("a click on a row sets the hash, a click on a link or the fold button does not", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.data = fleetData;
-  ctx.renderFleet();
-  const target = (hits) => ({ closest: (sel) => hits[sel] || null, dataset: {} });
-  click({ target: target({ "tr.wr": { dataset: { href: "#sessions/x" } } }) });
-  assert.equal(ctx.location.hash, "#sessions/x");
+test("a click on a runner row sets the hash; a link, or a row outside Runners, does not", () => {
+  onRunners();
+  vm.runInContext("fst", ctx).data = fleetData;
+  ctx.renderRunners();
+  const target = (hits, inRunners = true) => ({ closest: (sel) => (sel === "#ov-runners" ? (inRunners ? box : null) : hits[sel] || null), dataset: {} });
+  click({ target: target({ "tr.wr": { dataset: { href: "#sessions/runners/x" } } }) });
+  assert.equal(ctx.location.hash, "#sessions/runners/x");
   ctx.location.hash = "";
-  click({ target: target({ "a, button, select, input": {}, "tr.wr": { dataset: { href: "#sessions/y" } } }) });
+  click({ target: target({ "a, button, select, input": {}, "tr.wr": { dataset: { href: "#sessions/runners/y" } } }) });
   assert.equal(ctx.location.hash, "", "a link is the browser's");
-});
-
-test("the fold button folds and unfolds a tier 1 row and asks the server again", () => {
-  const f = vm.runInContext("fst", ctx);
-  f.data = fleetData;
-  asked = [];
-  ctx.fetch = async (url) => { asked.push(url); return answer(fleetData); };
-  const fold = () => click({ target: { closest: (sel) => (sel === "[data-fold]" ? { dataset: { fold: "fleet-dispatch" } } : null), dataset: {} } });
-  fold();
-  assert.ok(f.fold.has("fleet-dispatch"));
-  assert.ok(asked.some((u) => u.includes("fold=fleet-dispatch")), asked.join());
-  fold();
-  assert.ok(!f.fold.has("fleet-dispatch"));
+  click({ target: target({ "tr.wr": { dataset: { href: "#sessions/runners/z" } } }, false) });
+  assert.equal(ctx.location.hash, "", "another inner tab's row is its own");
 });
 
 test("typing repaints the rows and leaves the search box in place", () => {
+  onRunners();
   const f = vm.runInContext("fst", ctx);
   f.data = fleetData;
   ctx.fetch = async () => answer(fleetData);
-  ctx.renderFleet();
+  ctx.renderRunners();
   const before = box.innerHTML;
-  doc.activeElement = { id: "fleet-q" };
-  ctx.renderFleet();
+  doc.activeElement = { id: "runners-q" };
+  ctx.renderRunners();
   assert.equal(box.innerHTML, before, "the page around the box is not rebuilt");
-  assert.match(parts["fleet-body"].innerHTML, /dotfiles-agent-12/);
+  assert.match(parts["runners-body"].innerHTML, /inbox-triage/);
   doc.activeElement = null;
 });
 
-test("the page is the one table: the accounts, tokens and Langfuse are Costs'", () => {
+test("the tab is the one table: the accounts, tokens and Langfuse are Costs'", () => {
+  onRunners();
   const f = vm.runInContext("fst", ctx);
   f.data = { ...fleetData, tokens: { date: "2026-11-05" } };
   doc.activeElement = null;
-  ctx.renderFleet();
-  assert.match(box.innerHTML, /dotfiles-agent-12/, "the control: the table drew");
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /inbox-triage/, "the control: the table drew");
   for (const id of ["sec-accounts", "sec-tokens", "sec-langfuse"]) assert.doesNotMatch(box.innerHTML, new RegExp(`id="${id}"`));
   assert.doesNotMatch(box.innerHTML, /Claude accounts|Where the tokens go|What Langfuse sees/);
 });
 
 test("a search with no hit says so, and an unconfigured fleet says where runners are", () => {
+  onRunners();
   const f = vm.runInContext("fst", ctx);
-  f.data = { ...fleetData, who: [], table: table({ total: 4, shown: 0 }) };
-  ctx.renderFleet();
-  assert.match(box.innerHTML, /No runner or session matches\./);
+  f.data = { ...fleetData, who: [], table: table({ total: 3, shown: 0 }) };
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /No runner matches\./);
   f.data = { ...fleetData, who: [], table: table({ total: 0, shown: 0 }) };
-  ctx.renderFleet();
+  ctx.renderRunners();
   assert.match(box.innerHTML, /No runner configured in ~\/\.config\/agentctl\/agents\./);
   f.data = fleetData;
 });
 
-test("#sessions/<target> keeps the whole target, slash included", () => {
-  assert.equal(ctx.route("#sessions/lab%2Fdotfiles-agent-11%3A1").arg, "lab/dotfiles-agent-11:1");
+// The retired Fleet tab's links (hub_core::layout RETIRED and MOVED, links::RETIRED_TAB_PAGES).
+test("#fleet lands on Sessions' Runners, and #fleet/<runner> on that runner's page", () => {
+  const r = (h) => JSON.parse(vm.runInContext(`JSON.stringify(route(${JSON.stringify(h)}))`, ctx));
+  const bare = r("#fleet");
+  assert.deepEqual([bare.tab, bare.arg, bare.page], ["sessions", "runners", undefined]);
+  const page = r("#fleet/inbox-triage");
+  assert.deepEqual([page.tab, page.arg, page.page], ["sessions", "runners", "runners/inbox-triage"]);
+  assert.equal(r("#fleet/a%20b").page, "runners/a b", "the name is decoded once");
+  assert.deepEqual(r("#sessions/runners/inbox-triage"), { ...page, name: "sessions" }, "the alias is the new link");
+  // The old view keys move under the Runners table's prefix; a key that is not a table's stays.
+  const view = new URLSearchParams(r("#fleet?s=failed&q=kind:lead&x=1").query);
+  assert.deepEqual([view.get("rs"), view.get("rq"), view.get("s"), view.get("q"), view.get("x")], ["failed", "kind:lead", null, null, "1"]);
+  // A Fleet section that moved before keeps its MOVED target.
+  assert.deepEqual([r("#fleet/tokens").tab, r("#fleet/tokens").section], ["costs", "tokens"]);
+  // Its query is the moved section's own view, never rewritten to the Runners prefix.
+  const tq = new URLSearchParams(r("#fleet/tokens?q=foo&s=x").query);
+  assert.deepEqual([r("#fleet/tokens?q=foo").tab, tq.get("q"), tq.get("s"), tq.get("rq")], ["costs", "foo", "x", null]);
+  const rp = new URLSearchParams(r("#fleet/inbox-triage?q=foo").query);
+  assert.deepEqual([rp.get("rq"), rp.get("q")], ["foo", null], "a runner page's view still takes the prefix");
+  assert.deepEqual([r("#fleet/workers").tab, r("#fleet/workers").arg], ["sessions", "runners"]);
+  // `#fleet/<word>` is always that runner's page, even one named like a Sessions inner tab (rule 8;
+  // the hub's `hub tab 'fleet shepherd'` is tabreq.rs's test of the same).
+  for (const name of ["shepherd", "runners", "sessions"]) assert.deepEqual([r(`#fleet/${name}`).arg, r(`#fleet/${name}`).page], ["runners", `runners/${name}`], name);
+  // A record is under its page word, so an id named like an inner tab still opens its record.
+  assert.deepEqual([r("#sessions/runners/shepherd").arg, r("#sessions/runners/shepherd").page], ["runners", "runners/shepherd"]);
+  assert.deepEqual([r("#sessions/sessions/shepherd").arg, r("#sessions/sessions/shepherd").page], ["sessions", "sessions/shepherd"]);
+  assert.deepEqual([r("#sessions/sessions/lab%2Fa%3A1").arg, r("#sessions/sessions/lab%2Fa%3A1").page], ["sessions", "sessions/lab/a:1"]);
+  // A link from before the page word: a Sessions arg that is no inner tab is a session's id.
+  assert.deepEqual([r("#sessions/lab%2Fdotfiles-agent-11%3A1").arg, r("#sessions/lab%2Fdotfiles-agent-11%3A1").page], ["sessions", "sessions/lab/dotfiles-agent-11:1"]);
+  // Negative control: the bare inner name on the live tab is its inner tab.
+  assert.deepEqual([r("#sessions/shepherd").arg, r("#sessions/shepherd").page], ["shepherd", undefined]);
 });
 
-// The runner page, `#fleet/<name>`: hub_core::fleet::runner's JSON, fetched only when it opens.
+// The runner page, `#sessions/runners/<name>`: hub_core::fleet::runner's JSON, fetched only when it opens.
 const totals = (o) => ({ calls: 0, errors: 0, tokens: 0, cost: null, p50_ms: null, ...o });
 const runnerPage = (name, o = {}) => ({
   at: 1793942659, name, errors: [], lane: "observe", description: "files the inbox", enabled: true, state: "idle", running_since: null,
@@ -315,17 +360,49 @@ const runnerPage = (name, o = {}) => ({
 const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: "", headers: { get: () => (status < 400 ? "application/json" : "text/plain") }, json: async () => body, text: async () => (typeof body === "string" ? body : JSON.stringify(body)) });
 const flush = () => new Promise((r) => setImmediate(r));
 let asked = [];
-const serve = (pages) => { asked = []; ctx.fetch = async (url) => { asked.push(url); const m = url.match(/^\/api\/fleet\/runner\?name=(.*)$/); if (m) { const p = pages[decodeURIComponent(m[1])]; return p ? answer(p) : answer(`no runner named ${decodeURIComponent(m[1])}`, 404); } if (url.startsWith("/api/jobs/log?ref=")) return answer("run log text"); return answer(url === "/api/fleet" ? data : {}); }; };
-const openPage = async (name, pages) => { serve(pages); ctx.setTab("fleet", name, ""); await flush(); return box.innerHTML; };
+const serve = (pages) => { asked = []; ctx.fetch = async (url) => { asked.push(url); const m = url.match(/^\/api\/fleet\/runner\?name=(.*)$/); if (m) { const p = pages[decodeURIComponent(m[1])]; return p ? answer(p) : answer(`no runner named ${decodeURIComponent(m[1])}`, 404); } if (url.startsWith("/api/jobs/log?ref=")) return answer("run log text"); return answer(url === "/api/fleet" ? fleetData : {}); }; };
+const openPage = async (name, pages) => { serve(pages); ctx.setTab("sessions", "runners", "", "runners/" + name); await flush(); return box.innerHTML; };
 
-test("a runner row links to its runner page, and the page is read only when opened", async () => {
+test("the Runners table is read only on its inner tab, and a runner page only when opened", async () => {
   serve({});
-  ctx.setTab("fleet", "", "");
-  vm.runInContext("fst", ctx).data = fleetData;
-  ctx.renderFleet();
-  assert.match(box.innerHTML, /<a class="tl" href="#fleet\/ask-judge">ask-judge<\/a>/);
-  assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the Fleet tab never reads a runner page");
-  assert.equal(ctx.route("#fleet/inbox-triage").arg, "inbox-triage");
+  ctx.setTab("sessions", "sessions", "");
+  await flush();
+  assert.deepEqual(asked.filter((u) => u.startsWith("/api/fleet")), [], "the Sessions inner tab reads no runner");
+  ctx.setTab("sessions", "runners", "");
+  await flush();
+  assert.deepEqual(asked.filter((u) => u.startsWith("/api/fleet")), ["/api/fleet"]);
+  assert.match(box.innerHTML, /<a class="tl" href="#sessions\/runners\/ask-judge">ask-judge<\/a>/);
+  assert.deepEqual(asked.filter((u) => u.includes("/runner")), [], "the table never reads a runner page");
+});
+
+test("the Runners timer ticks only while Runners shows: another inner tab clears it unread", async () => {
+  serve({});
+  const ticks = [];
+  let cleared = 0;
+  Object.assign(ctx, { setInterval: (f) => { ticks.push(f); return ticks.length; }, clearInterval: () => { cleared++; } });
+  ctx.setTab("sessions", "runners", "");
+  await flush();
+  assert.equal(ticks.length, 1, "Runners starts its timer");
+  ticks[0]();
+  await flush();
+  assert.equal(asked.filter((u) => u === "/api/fleet").length, 2, "a tick on Runners reads the table");
+  ctx.setTab("sessions", "shepherd", "");
+  await flush();
+  asked.length = 0;
+  ctx.document.hidden = true;
+  ticks[0]();
+  ctx.document.hidden = false;
+  assert.deepEqual([cleared, asked.filter((u) => u.startsWith("/api/fleet")).length, vm.runInContext("behind", ctx)], [1, 0, false], "off Runners the tick clears, reads nothing, marks nothing behind");
+  Object.assign(ctx, { setInterval: () => 0, clearInterval() {} });
+});
+
+test("a runner page's All runners link carries the Runners view only", async () => {
+  serve({ "inbox-triage": runnerPage("inbox-triage") });
+  ctx.setTab("sessions", "runners", "q=mine&rq=dispatch&vs=failed", "runners/inbox-triage");
+  await flush();
+  const h = box.innerHTML;
+  st.views.sessions = "";
+  assert.match(h, /href="#sessions\/runners\?rq=dispatch">All runners<\/a>/, "not the Sessions table's q or the verdicts' v keys");
 });
 
 test("a runner page draws its runs, status next, activity, 24h and 7d calls, extras and conf", async () => {
@@ -340,7 +417,7 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /<td>filed <span class="muted">ar-9<\/span><\/td><td class="muted">inbox -&gt; board<\/td><td class="muted">inbox-triage<\/td>/, "an intake step names its id, route and writer");
   assert.match(h, /fix the thing<div class="muted">=&gt; fix the thing on the hub<\/div><\/td><td class="wrap muted">model: names the hub<\/td>/, "and the row it became and why");
   assert.match(h, /<td>API_TOKEN<\/td><td class="wrap muted">\(set\)<\/td>/);
-  assert.match(h, /href="#fleet">All runners<\/a>/);
+  assert.match(h, /href="#sessions\/runners">All runners<\/a>/);
   // Each head is its title and a count; a failed run or call tones it, and what fed the
   // section (runs.jsonl, calls.jsonl, the conf's path) is no longer said.
   assert.match(h, /<h2 class="sec warn">Runs <span class="n">2<\/span><\/h2>/);
@@ -350,7 +427,7 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.match(h, /<h2 class="sec">Conf<\/h2>/);
   assert.doesNotMatch(h, /runs\.jsonl|calls\.jsonl|agentctl\/agents\//);
   assert.match(h, /<h2 class="sec">Registry<\/h2><div class="panel"><div><b>[^<]*<\/b>.* trigger always on<\/div>/, "the trigger is a fact in the registry's box");
-  click({ target: { closest: (sel) => (sel === "tr.rr" ? { dataset: { i: "0" } } : null) } });
+  click({ target: { closest: (sel) => (sel === "#ov-runners" ? box : sel === "tr.rr" ? { dataset: { i: "0" } } : null), dataset: {} } });
   await flush();
   assert.match(box.innerHTML, /<pre class="panel joblog">run log text<\/pre>/);
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
@@ -393,48 +470,48 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   click(verdictTile("wrong"));
   await flush();
   assert.deepEqual(asked, ["/api/fleet/runner?name=ask-judge&vs=wrong"]);
-  st.views.fleet = "";
+  st.views.sessions = "";
   // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
   assert.match(j, /<td>ship_deploy<\/td><td>repo<\/td><td class="n">4<\/td><td class="n">3<\/td><td class="n">66.7% <span class="muted">\[20.8-93.9\]<\/span><\/td><td class="n">1<\/td><td class="">yes<\/td><td class="n">3<\/td><td class="n">25%<\/td>/);
   assert.match(j, /<td>\(no type\)<\/td><td>-<\/td>/);
   assert.ok(j.indexOf("AGREE") < j.indexOf("By type and level") && j.indexOf("By type and level") < j.indexOf("land it?"));
   const none = await openPage("ask-judge", { "ask-judge": runnerPage("ask-judge", { extras: { kind: "ask-judge", judge: { ...judge, cells: [] } } }) });
   assert.match(none, /no verdicts under prompt 3fa1c2d/);
-  ctx.setTab("fleet", "", "");
+  ctx.setTab("sessions", "runners", "");
 });
 
-test("a judge has no tile on the Fleet tab, and Log's verdict headers link to the runner whose DETAIL= draws it", () => {
+test("a judge has no tile on the Runners table, and Log's verdict headers link to the runner whose DETAIL= draws it", () => {
   const fs = vm.runInContext("fst", ctx);
   // The links follow the confs: a renamed runner moves the link, no name is hard-coded.
   const judges = { ...fleetData, workers: [{ ...data.workers[0], detail: "ask-judge" }, { ...worker("dispatch-judge"), detail: "dispatch-verdicts" }] };
-  st.tab = "fleet";
+  onRunners();
   fs.data = judges;
-  ctx.renderFleet();
+  ctx.renderRunners();
   assert.doesNotMatch(box.innerHTML, /<div class="tile"/, "the judges' tiles moved to their pages");
   st.tab = "log";
   st.arg = "judges";
   const vs = vm.runInContext("vst", ctx);
   vs.data = judges;
   vs.render();
-  assert.match(logBox.innerHTML, /<a href="#fleet\/dispatch-judge">Dispatch judge<\/a>/);
-  assert.match(logBox.innerHTML, /<a href="#fleet\/ask-judge">Answer judge<\/a>/);
+  assert.match(logBox.innerHTML, /<a href="#sessions\/runners\/dispatch-judge">Dispatch judge<\/a>/);
+  assert.match(logBox.innerHTML, /<a href="#sessions\/runners\/ask-judge">Answer judge<\/a>/);
   // Negative control: no conf names the block, so the header is plain, not a dead link.
   vs.data = fleetData;
   vs.render();
   assert.match(logBox.innerHTML, /<h3 class="sub">Dispatch judge <span/);
-  Object.assign(st, { tab: "fleet", arg: "" });
+  onRunners();
 });
 
 test("COST 24H is a runner's dollars linking to Costs, and none is a dash, never $0", () => {
-  vm.runInContext("st", ctx).tab = "fleet";
+  onRunners();
   vm.runInContext("fst", ctx).data = fleetData;
-  ctx.renderFleet();
+  ctx.renderRunners();
   const h = box.innerHTML;
   assert.match(h, />cost 24h<\/button><\/th>/);
   assert.match(h, /<td class="bad">failed<\/td><td class="n"><a href="#costs">\$4\.50<\/a><\/td>/);
-  assert.match(h, /<td class="warn">needs you<\/td><td class="n">-<\/td>/, "a session has no runner cost");
+  assert.match(h, /<td class="muted">idle<\/td><td class="n">-<\/td>/, "a runner with no spend reads -");
   vm.runInContext("fst", ctx).data = { ...fleetData, who: fleetData.who.map((r) => ({ ...r, cost_estimated: r.cost_24h != null })) };
-  ctx.renderFleet();
+  ctx.renderRunners();
   assert.match(box.innerHTML, /<a href="#costs">~\$4\.50<\/a>/, "an estimated figure is marked on the screen");
   assert.doesNotMatch(h, /\$0\.00/);
 });

@@ -1,7 +1,7 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
 //! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per source
-//! (the Fleet tab's accounts table until 2026-11-07). Under it Consumers has one row per LLM
+//! (each account's week, 5h window and day). Under it Consumers has one row per LLM
 //! consumer (a runner with a priority, or a gateway key no runner names): `K` opens or folds it,
 //! and it starts open when amber or red. Under them the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
@@ -685,7 +685,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 "$24H",
             ],
             rows,
-            // The 5h window and the day's dollars were Fleet's accounts table's; $24H goes first.
+            // The 5h window and the day's dollars drop first at a narrow width, $24H before them.
             keep: vec![0, 7, 4, 1, 8, 9, 2, 14, 10, 11, 3, 5, 6, 12, 13, 15, 16],
             right: vec![2, 4, 5, 6, 8, 9, 14, 16],
             ..Default::default()

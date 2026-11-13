@@ -297,14 +297,14 @@ test("a Running row click opens its session, else its queue item; a link in it g
   draw(home({ running: [{ slug: "ar-1", title: "t", project: "p", target: "lab/x:1" }, { slug: "q-2", title: "u", project: "p" }] }));
   const went = [];
   ctx.went = went;
-  vm.runInContext(`setTab = (t, a) => went.push(t + "/" + a)`, ctx);
+  vm.runInContext(`setTab = (t, a, q, p) => went.push(t + "/" + (p || a))`, ctx);
   const tr = (data) => ({ dataset: data });
   const click = (target) => on.click.forEach((f) => f({ target, preventDefault() {} }));
   const cell = (row, link) => ({ dataset: {}, closest: (sel) => (sel === "a" ? link : sel.startsWith("tr.jr[data-slug]") ? row : null) });
   click(cell(tr({ slug: "ar-1", target: "lab/x:1" }), null));
   click(cell(tr({ slug: "q-2" }), null));
   click(cell(tr({ slug: "q-2" }), {}));
-  assert.deepEqual(went, ["sessions/lab/x:1", "queue/q-2"]);
+  assert.deepEqual(went, ["sessions/sessions/lab/x:1", "queue/q-2"]);
 });
 
 test("Running reads its own r-prefixed keys beside Needs you's and Proposals'", async () => {

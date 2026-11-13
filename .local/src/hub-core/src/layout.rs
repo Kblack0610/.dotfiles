@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 11] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -106,21 +106,33 @@ pub const TABS: [Tab; 12] = [
         sections: &["flow", "table", "candidates"],
         inner: &[],
     },
+    // Every agent at work: the sessions (one row each, an opened one's page), the runners that
+    // work on their own (agentctl's lanes and budgets, each with its page), and the shepherd's
+    // pass. Runners keeps the `fleet` section id (Fleet was its own tab until 2026-11-12), so
+    // `#fleet` and `hub --tab fleet` land on it, as `ci` does on Infra's Runners.
     Tab {
         id: "sessions",
         group: "Agents",
         title: "Sessions",
-        question: "What is each agent doing?",
-        sections: &["shepherd", "sessions", "detail"],
-        inner: &[],
-    },
-    Tab {
-        id: "fleet",
-        group: "Agents",
-        title: "Fleet",
-        question: "Who is working, and on what?",
-        sections: &["workers"],
-        inner: &[],
+        question: "What is each agent doing, and who is working?",
+        sections: &["sessions", "detail", "fleet", "shepherd"],
+        inner: &[
+            Inner {
+                id: "sessions",
+                title: "Sessions",
+                sections: &["sessions", "detail"],
+            },
+            Inner {
+                id: "runners",
+                title: "Runners",
+                sections: &["fleet"],
+            },
+            Inner {
+                id: "shepherd",
+                title: "Shepherd",
+                sections: &["shepherd"],
+            },
+        ],
     },
     Tab {
         id: "projects",
@@ -348,9 +360,12 @@ pub const RETIRED: &[(&str, &str)] = &[
     ("overview", "home"),
     // Home's Numbers heading: the session counts head Running and the spend is its own SPEND line.
     ("numbers", "home"),
-    // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd pinned first.
+    // agent-web's Watch and Shepherd: one row per session on Sessions, the shepherd its inner tab.
     ("watch", "sessions"),
     ("shepherd", "sessions"),
+    // Fleet: its runners are Sessions' Runners (the `fleet` section) and its session rows were
+    // the Sessions table again (2026-11-12); `#fleet/<runner>` is links::RETIRED_TAB_PAGES.
+    ("fleet", "sessions"),
     // The TUI's Jobs, CI and Machines tabs and agent-web's Jobs tab: sections of Infra now,
     // one MACHINES table in place of POOLS, CI by machine and the Machines tab.
     ("jobs", "infra"),
@@ -380,6 +395,8 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("fleet", "accounts", "costs", "burn"),
     ("fleet", "tokens", "costs", "tokens"),
     ("fleet", "langfuse", "costs", "langfuse"),
+    // Fleet's one table, its runners now Sessions' Runners (2026-11-12).
+    ("fleet", "workers", "sessions", "fleet"),
     // Infra's health chips, Red now and Red fixes (with its Reds inner tab): what is firing and
     // who owns it is Alerts' question, not the machinery's (2026-11-11).
     ("infra", "health", "alerts", "health"),
@@ -458,23 +475,22 @@ pub fn bar_digit(id: &str) -> Option<usize> {
         .map(|i| (i + 1) % 10)
 }
 
-/// A tab as the TUI's text names it: its bar digit and title (`8 Alerts`), or the title alone for
+/// A tab as the TUI's text names it: its bar digit and title (`7 Alerts`), or the title alone for
 /// a tab with no digit, so a badge or hint never names a stale key after a reorder.
 pub fn bar_label(id: &str) -> String {
     let title = resolve(id).map_or(id, |t| t.title);
     bar_digit(id).map_or(title.to_string(), |d| format!("{d} {title}"))
 }
 
-/// Where a section that moved off `tab` lives now: its new tab and section.
+/// Where a section that moved off `tab` lives now: its new tab and section. A row's tab and the
+/// one asked each resolve to the tab they mean (`RETIRED`), so a retired tab's rows (`fleet
+/// tokens`) still match after the tab itself retired.
 pub fn moved(tab: &str, sec: &str) -> Option<(&'static Tab, &'static str)> {
-    let (t, s) = (
-        tab.trim().to_ascii_lowercase(),
-        sec.trim().to_ascii_lowercase(),
-    );
-    let id = resolve(&t)?.id;
+    let id = resolve(tab)?.id;
+    let s = sec.trim().to_ascii_lowercase();
     MOVED
         .iter()
-        .find(|m| m.0 == id && m.1 == s)
+        .find(|m| m.1 == s && resolve(m.0).is_some_and(|t| t.id == id))
         .and_then(|m| Some((resolve(m.2)?, m.3)))
 }
 
@@ -607,7 +623,7 @@ mod tests {
         assert_eq!(resolve("Today").map(|t| t.id), Some("log"));
         assert_eq!(resolve("history").map(|t| t.id), Some("log"));
         assert_eq!(resolve("actions").map(|t| t.id), Some("log"));
-        assert_eq!(resolve("fleet").map(|t| t.id), Some("fleet"));
+        assert_eq!(resolve("fleet").map(|t| t.id), Some("sessions"));
         assert_eq!(resolve("Costs").map(|t| t.id), Some("costs"));
         assert_eq!(resolve("nope"), None);
     }
@@ -635,13 +651,27 @@ mod tests {
             moved("fleet", "langfuse").map(|(t, s)| (t.id, s)),
             Some(("costs", "langfuse"))
         );
-        assert_eq!(moved("fleet", "workers"), None, "workers stayed");
+        assert_eq!(
+            moved("fleet", "workers").map(|(t, s)| (t.id, s)),
+            Some(("sessions", "fleet")),
+            "Fleet's table is Sessions' Runners"
+        );
         assert_eq!(
             moved("fleet", "inbox-triage"),
             None,
             "a runner is no section"
         );
         assert_eq!(moved("costs", "tokens"), None);
+        // Each row's old tab is a tab or a retired name, matched as the tab it means: a row whose
+        // tab resolves to nothing would never match.
+        for m in MOVED {
+            assert!(resolve(m.0).is_some(), "{} names no tab", m.0);
+        }
+        assert_eq!(
+            moved(" Fleet ", "Tokens").map(|(t, s)| (t.id, s)),
+            Some(("costs", "tokens")),
+            "a retired tab's row, any case"
+        );
         // Infra's old links (`#infra/red`, `hub tab infra fixes`) land on Alerts.
         for (old, new) in [
             ("red", "firing"),
@@ -674,7 +704,19 @@ mod tests {
             assert!(MOVED.iter().any(|m| m.1 == *old && m.3 == *table), "{old}");
             assert!(<crate::machines::Machine as crate::table::Row>::STATES.contains(chip));
         }
-        assert_eq!(resolve("fleet").unwrap().sections, ["workers"]);
+        // Fleet is Sessions now: `#fleet` and `hub --tab fleet` open Runners, its `fleet` section.
+        let sessions = resolve("fleet").unwrap();
+        assert_eq!(sessions.id, "sessions");
+        assert_eq!(section("fleet"), Some("fleet"));
+        assert_eq!(
+            inner_tab(sessions, section("fleet")).map(|i| i.id),
+            Some("runners")
+        );
+        assert_eq!(
+            inner_tab(sessions, section("shepherd")).map(|i| i.id),
+            Some("shepherd")
+        );
+        assert_eq!(inner_tab(sessions, None).map(|i| i.id), Some("sessions"));
         // Releases' Builds and Tests links land on Infra's Runs and Tests inner tabs.
         let infra = resolve("infra").unwrap();
         for (old, new) in [("builds", "runs"), ("Tests", "tests")] {
@@ -705,10 +747,10 @@ mod tests {
         assert_eq!(at(Some("watches")), Some("watches"));
         assert_eq!(at(Some("history")), Some("history"));
         assert_eq!(section("fixes"), None, "a new section is no retired name");
-        // The eleventh tab on the number row has no digit; the tenth is 0.
-        assert_eq!(bar_digit("schedules"), Some(0));
-        assert_eq!(bar_digit("costs"), None);
-        assert_eq!(bar_digit("alerts"), Some(8));
+        // The tenth tab on the number row is 0.
+        assert_eq!(bar_digit("schedules"), Some(9));
+        assert_eq!(bar_digit("costs"), Some(0));
+        assert_eq!(bar_digit("alerts"), Some(7));
     }
 
     #[test]
@@ -726,19 +768,18 @@ mod tests {
             groups,
             [
                 ("Today", vec!["home", "daily", "log"]),
-                ("Agents", vec!["queue", "sessions", "fleet"]),
+                ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
                 ("System", vec!["alerts", "infra", "schedules", "costs"]),
             ]
         );
-        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Fleet 5, Projects 6, Releases 7,
-        // Alerts 8, Infra 9, Schedules 0; Costs, the eleventh, has none.
+        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
+        // Infra 8, Schedules 9, Costs 0 (Fleet, 5 until 2026-11-12, is Sessions' Runners).
         let ids = [
             "home",
             "log",
             "queue",
             "sessions",
-            "fleet",
             "projects",
             "releases",
             "alerts",
@@ -759,8 +800,7 @@ mod tests {
                 Some(7),
                 Some(8),
                 Some(9),
-                Some(0),
-                None
+                Some(0)
             ]
         );
     }
@@ -768,8 +808,8 @@ mod tests {
     #[test]
     fn a_bar_label_is_the_digit_and_title_or_the_title_alone() {
         assert_eq!(bar_label("sessions"), "4 Sessions");
-        assert_eq!(bar_label("alerts"), "8 Alerts");
-        assert_eq!(bar_label("costs"), "Costs", "the eleventh has no digit");
+        assert_eq!(bar_label("alerts"), "7 Alerts");
+        assert_eq!(bar_label("costs"), "0 Costs", "the tenth is 0");
         assert_eq!(bar_label("daily"), "Daily", "off the bar");
     }
 

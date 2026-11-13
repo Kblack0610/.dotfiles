@@ -15,7 +15,7 @@
 #                                     session's labels; each change also lands on its tmux window
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
-#                                     minute and on each ask change); the hub Fleet tab
+#                                     minute and on each ask change); the hub Sessions tab
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -1119,7 +1119,7 @@ git_facts() {
 }
 
 # activity_line <status> <open job> <doing> <dir|-> <branch> <head sha|-> <now epoch> -> what the
-# session is doing now, for the ACTIVITY column on Fleet and Sessions (nc-41), first match wins:
+# session is doing now, for the ACTIVITY column on Sessions (nc-41), first match wins:
 # parked; testing (a test command runs); editing (busy, its last tool call an edit); waiting on
 # <workflow> <N>m (a run on its head still open in the run ledger, the oldest, N since it was
 # queued, +K for the others); red on <workflow>[, ...] (MAIN_STREAKS over its head's runs); gating
@@ -1661,7 +1661,7 @@ keep_blind() {
   ' "$3" "$1" "$2"
 }
 
-# tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Fleet tab. git, gh and the
+# tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Sessions tab. git, gh and the
 # transcripts have no change event to await, so fleet-state.timer runs it every minute; a pass
 # costs ~12s of gh and git. It logs what moved since the last tick to watch.log (the state file
 # is shared and locked, so two ticks log each change once), keeps watch.state for the next

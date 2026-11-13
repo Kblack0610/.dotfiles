@@ -44,7 +44,7 @@ const ROWS = [
 ];
 const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
   states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "done today", n: 1, tone: "ok", means: "ended today" }],
-  columns: ["bucket", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
+  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
@@ -64,7 +64,7 @@ function setup() {
 test("the header is hub-core's parts: a stopped timer is amber with a Start, and nothing runs until confirmed", () => {
   setup();
   run("sst.render()");
-  let html = boxes.scroll.innerHTML;
+  let html = boxes["ov-sessions"].innerHTML;
   assert.match(html, /38 live: 14 hand, 18 dispatched \(0\/40 run units, 3 per pass\), 6 other<\/span> \| <span class="">dispatch on, next 13:01/);
   assert.match(html, /<span class="capwarn">shepherd timer stopped<\/span> <button class="btn sm" data-start="shepherd">Start<\/button>/);
   assert.equal(html.match(/data-start/g).length, 1, "a running timer has no button");
@@ -72,7 +72,7 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
   assert.match(html, /fleet-dispatch headroom: exit 1/, "what could not be read says so");
   run(`sst.confirm = "shepherd"`);
   run("sst.render()");
-  html = boxes.scroll.innerHTML;
+  html = boxes["ov-sessions"].innerHTML;
   assert.match(html, /Start the shepherd timer\? <button class="btn sm" data-go="shepherd">Start<\/button>/);
   assert.doesNotMatch(html, /data-start/);
 });
@@ -80,7 +80,7 @@ test("the header is hub-core's parts: a stopped timer is amber with a Start, and
 test("the table is the server's rows in its order, with the overview tiles and the facet", () => {
   setup();
   run("sst.render()");
-  const html = boxes.scroll.innerHTML;
+  const html = boxes["ov-sessions"].innerHTML;
   const order = ["hub/b:1", "lab/x:1", "ucp-394"].map((k) => html.indexOf(`data-key="${k}"`));
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
@@ -99,10 +99,10 @@ test("the table is the server's rows in its order, with the overview tiles and t
 test("a row says what the columns do not: parked, no session here, and where an ended row came from", () => {
   setup();
   run("sst.render()");
-  const html = boxes.scroll.innerHTML;
-  assert.match(html, /task of hub\/b:1 <span class="pill parked">parked<\/span>/);
-  assert.match(html, /task of lab\/x:1 <span class="pill">no session<\/span>/);
-  assert.match(html, /task of ucp-394 <span class="pill" title="where this row came from">queue<\/span>/);
+  const html = boxes["ov-sessions"].innerHTML;
+  assert.match(html, /<div class="c2" title="task of hub\/b:1"><span class="pill parked">parked<\/span> task of hub\/b:1<\/div>/);
+  assert.match(html, /<span class="pill">no session<\/span> task of lab\/x:1/);
+  assert.match(html, /<span class="pill" title="where this row came from">queue<\/span> task of ucp-394/);
   assert.match(html, /<td class="n">ended<\/td>/);
 });
 
@@ -113,7 +113,7 @@ test("the overview spend is the server's sum, and the tile in force clears the f
   setup();
   run(`sst.data = { ...sst.data, spend_usd: 41.2, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
   run("sst.render()");
-  const html = boxes.scroll.innerHTML;
+  const html = boxes["ov-sessions"].innerHTML;
   assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
   assert.match(html, /<button class="tile on t-warn" data-ts="">/);
 });
@@ -148,11 +148,13 @@ test("from 900px an open session lists the table's rows beside it, the open one 
 test("every row is a link to its page, keeping the table's view for Back", () => {
   setup();
   run(`location.hash = ""; sessionClick(sst.data.rows[0])`);
-  assert.equal(run("location.hash"), "#sessions/hub%2Fb%3A1-id", "a session on a pane, by its session id");
+  assert.equal(run("location.hash"), "#sessions/sessions/hub%2Fb%3A1-id", "a session on a pane, by its session id");
   run(`st.views.sessions = "q=pr%3Aopen"; sessionClick(sst.data.rows[2])`);
-  assert.equal(run("location.hash"), "#sessions/s9?q=pr%3Aopen", "an ended one, by its session id");
+  assert.equal(run("location.hash"), "#sessions/sessions/s9?q=pr%3Aopen", "an ended one, by its session id");
+  run(`st.views.sessions = "q=pr%3Aopen&rq=dispatch&vs=failed"; sessionClick(sst.data.rows[2])`);
+  assert.equal(run("location.hash"), "#sessions/sessions/s9?q=pr%3Aopen", "the Sessions view only, not Runners' r or the verdicts' v keys");
   run(`st.views.sessions = ""; sessionClick({ ...sst.data.rows[2], session_id: "" })`);
-  assert.equal(run("location.hash"), "#sessions/ucp-394", "no session id, by its row key");
+  assert.equal(run("location.hash"), "#sessions/sessions/ucp-394", "no session id, by its row key");
 });
 
 test("a transcript that answers after the view moved back to the page does not cover it", async () => {
@@ -229,14 +231,17 @@ test("a page refreshes with the feed, the transcript is not read for it, and the
   assert.equal(run("__asked.length"), 0);
 });
 
-test("past the cap the table offers the rest", () => {
+test("past the server's open_rows the table offers the rest, and the count is every row the view keeps", () => {
   setup();
-  run(`sst.data.rows = Array.from({ length: SESSIONS_OPEN + 7 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
+  run(`sst.data.open_rows = 25; sst.data.rows = Array.from({ length: 32 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
   run("sst.render()");
-  assert.match(boxes.scroll.innerHTML, /data-all="1">\+7 older/);
+  const h = boxes["ov-sessions"].innerHTML;
+  assert.equal((h.match(/<tr class="click"/g) || []).length, 25, "the page draws the server's cap");
+  assert.match(h, /data-all="1">\+7 more/);
   run("sst.all = true");
   run("sst.render()");
-  assert.doesNotMatch(boxes.scroll.innerHTML, /\+\d+ older/);
+  assert.equal((boxes["ov-sessions"].innerHTML.match(/<tr class="click"/g) || []).length, 32);
+  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /\+\d+ more/);
 });
 
 const VOCAB = ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"];
@@ -257,8 +262,8 @@ test("a freqtrade_trading_attempt-agent-1 session reads trader in the table", ()
   setup();
   run(`sst.data.rows = [__d]`, row("lab/freqtrade_trading_attempt-agent-1:1", { project: "trader" }));
   run("sst.render()");
-  assert.match(boxes.scroll.innerHTML, /trader/);
-  assert.doesNotMatch(boxes.scroll.innerHTML, /freqtrade_trading_attempt-agent-1<\/td>/);
+  assert.match(boxes["ov-sessions"].innerHTML, /trader/);
+  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /freqtrade_trading_attempt-agent-1<\/td>/);
 });
 
 test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's grey", () => {
@@ -269,25 +274,65 @@ test("PARKED and CHAT have a colour of their own; a retired bucket takes CHAT's 
   for (const t of ["--b-parked", "--b-chat"]) assert.equal(css.split(t + ":").length, 3, `${t} in both themes`);
 });
 
-test("under the table the last day and the shepherd start open; the changes and the rundowns are Log's", () => {
+test("under the table the last day starts shut with its lane count; the shepherd is its own inner tab, the changes and the rundowns are Log's", () => {
   setup();
   run("sst.render()");
-  const html = boxes.scroll.innerHTML;
-  for (const k of ["lanes", "shep"]) assert.match(html, new RegExp(`<details class="ovsec" data-k="${k}" open>`));
-  for (const k of ["changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
+  const html = boxes["ov-sessions"].innerHTML;
+  assert.match(html, /<details class="ovsec" data-k="lanes"><summary><h2 class="sec">Last 24h <span class="n">\d+<\/span><\/h2><\/summary>/);
+  for (const k of ["shep", "changes", "rundowns"]) assert.doesNotMatch(html, new RegExp(`data-k="${k}"`));
+  run(`wst.open.lanes = true; sst.render()`);
+  assert.match(boxes["ov-sessions"].innerHTML, /<details class="ovsec" data-k="lanes" open>/, "a fold the reader opened stays open");
+  run(`wst.open.lanes = false`);
+});
+
+test("the Shepherd inner tab draws its chat, pass and due lines only while it shows", () => {
+  setup();
+  box("ov-shepherd").innerHTML = "";
+  run("renderShepherd()");
+  assert.equal(boxes["ov-shepherd"].innerHTML, "", "the control: the Sessions inner tab shows, so the shepherd paints nothing");
+  run(`st.arg = "shepherd"; renderShepherd()`);
+  const html = boxes["ov-shepherd"].innerHTML;
   assert.match(html, /data-chat>Chat: open hub\/shep:1/);
   assert.match(html, /Skipped on purpose, in Actions/);
-  run(`wst.open.shep = false; sst.render()`);
-  assert.match(boxes.scroll.innerHTML, /<details class="ovsec" data-k="shep"><summary>/, "a fold the reader closed stays closed");
-  assert.match(boxes.scroll.innerHTML, /<details class="ovsec" data-k="lanes" open>/);
-  run(`delete wst.open.shep`);
+  assert.doesNotMatch(html, /<details class="ovsec"/, "the tab is the section, not a fold");
+});
+
+test("each inner tab reads only its own feed while shown", async () => {
+  setup();
+  run(`__asked = []; api = async (u) => { __asked.push(u); return u.startsWith("/api/shepherd") ? shst.data : u.startsWith("/api/watch") ? wst.data : u.startsWith("/api/sessions/capacity") ? sst.cap : sst.data; }`);
+  run(`st.arg = "shepherd"; TABS.sessions.inner("shepherd")`);
+  await new Promise(setImmediate);
+  assert.equal(run("__asked.join()"), "/api/shepherd");
+  // A queue event while Shepherd shows reads no table; it marks the table to read when it shows.
+  run(`__asked.length = 0; st.tab = "sessions"; tableFeed.onEvent({ kind: "queue" })`);
+  await new Promise(setImmediate);
+  assert.doesNotMatch(run("__asked.join()"), /\/api\/sessions\/table/, "off its inner tab the table is not read");
+  run(`__asked.length = 0; st.arg = "sessions"; TABS.sessions.inner("sessions")`);
+  await new Promise(setImmediate);
+  const read = run("__asked.join()");
+  assert.match(read, /\/api\/sessions\/table/, "the control: the Sessions inner tab reads its stale table");
+  assert.doesNotMatch(read, /\/api\/(shepherd|fleet)/);
+  run(`__asked.length = 0; TABS.sessions.inner("sessions")`);
+  await new Promise(setImmediate);
+  assert.doesNotMatch(run("__asked.join()"), /\/api\/sessions\/table/, "shown again with nothing new, it is not read again");
+  run(`api = __api`);
+});
+
+test("STARTED BY says who started a row: dispatch, resume, by hand", () => {
+  setup();
+  run(`sst.data.rows = [{ ...sst.data.rows[0], by: "dispatch" }, { ...sst.data.rows[1], by: "hand" }, sst.data.rows[2]]`);
+  run("sst.render()");
+  const html = boxes["ov-sessions"].innerHTML;
+  assert.match(html, /title="sort by started by">started by<\/button>/);
+  assert.match(html, /<td class="muted">dispatch<\/td>/);
+  assert.match(html, /<td class="muted">hand<\/td>/);
 });
 
 test("Log's ranked sessions list the week worst first, and an open row shows its card", () => {
   setup();
   run(`ost.rows = null; ost.open = null; ost.cards = {}`);
   run("sst.render()");
-  assert.doesNotMatch(boxes.scroll.innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
+  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /data-k="ranked"/, "the ranking is Log's, not the Sessions overview's");
   ctx.renderLogRanked();
   assert.doesNotMatch(boxes["log-ranked"].innerHTML, /by friction/, "no prose head: the summary is the title");
   assert.match(boxes["log-ranked"].innerHTML, /Loading\./, "nothing is read until the section opens");

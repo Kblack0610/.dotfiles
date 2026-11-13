@@ -46,7 +46,7 @@ use notify::{RecursiveMode, Watcher};
 const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub tab TAB
        hub tab projects [NAME]
-       hub tab fleet [RUNNER]
+       hub tab sessions [runners/RUNNER | sessions/ID | INNER]
        hub actions --since WHEN [--json | --records]
        hub phone --json
        hub vitals [--json]
@@ -64,11 +64,12 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   --once  print the page(s) as plain text at $COLUMNS and exit (1 when Prometheus failed)
   --popup a floating window: Esc with nothing left to close quits
   --tab   start on this page; with --once, print only it ('projects NAME' prints that card
-          over its rows, 'fleet RUNNER' that runner's page)
+          over its rows, 'sessions runners/RUNNER' that runner's page)
   tab     ask the running hub to show TAB (the next hub to start takes it when none runs);
           projects takes a project: `hub tab projects agent-runtime` opens its rows (a name
-          no card has opens every project's rows searched for it, as `/` would); fleet takes
-          a runner (`hub tab fleet inbox-triage` opens its page), sessions a session, queue an
+          no card has opens every project's rows searched for it, as `/` would); sessions takes
+          `runners/RUNNER` (`hub tab sessions runners/inbox-triage` opens its page, as the
+          retired `fleet RUNNER` does), `sessions/ID` a session or an inner tab, queue an
           item's slug, and board a row's `id:=ar-1`: what each link in hub_core::links opens
   tabs    the landed tabs as id<TAB>title<TAB>question, in layout order (control-menu)
   ci      the CI runners board: one line per slot and queued job (hub_core::ci); --json gives it
@@ -553,30 +554,20 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     let mut a = App::new(tab.unwrap_or(Tab::Home), tx);
     a.p.no_color = true;
     let mut out = std::io::stdout().lock();
-    if let Some(t @ (Tab::Sessions | Tab::Fleet | Tab::Log)) = tab {
+    if let Some(t @ (Tab::Sessions | Tab::Log)) = tab {
         a.boards = Some(app::Boards::read(&a.files, None));
+        // `--tab 'sessions runners'` (or `fleet`) prints Runners, `--tab 'fleet NAME'` that
+        // runner's page, `--tab 'sessions shepherd'` Shepherd; else the sessions.
         if t == Tab::Sessions {
+            a.sessions_once(section.as_deref());
+        }
+        if t == Tab::Sessions && a.sessions_inner == "sessions" {
             let b = a.boards.as_ref().expect("just read");
             let f = forecast::Forecast::read();
             a.controls
                 .read(Some(&b.watch.state), Some(forecast::schedule(&f)));
             a.forecast = Some(f);
             a.read_sessions_now();
-        }
-        // `--tab 'fleet NAME'` prints that runner's page in place of the tab.
-        if t == Tab::Fleet {
-            match section.as_deref().and_then(fleettab::runner_arg) {
-                Some(name) => {
-                    a.fleet_page = Some(name.to_string());
-                    a.fleet_runner = Some(hub_core::fleet::runner::read(
-                        &hub_core::fleet::Paths::from_env(),
-                        name,
-                    ));
-                }
-                None => {
-                    a.fleet = Some(hub_core::fleet::files(&hub_core::fleet::Paths::from_env()));
-                }
-            }
         }
         a.tab = t;
         for l in a.page_lines(w) {
@@ -870,6 +861,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         if e.paths.iter().any(|p| boards.is_board_file(p)) {
             let _ = files.send(Msg::BoardFiles);
         }
+        if e.paths.iter().any(|p| boards.is_due_file(p)) {
+            let _ = files.send(Msg::ShepherdFiles);
+        }
         if e.paths.iter().any(|p| app::is_queue_file(&queue, p)) {
             let _ = files.send(Msg::QueueFiles);
         }
@@ -906,11 +900,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         app.read_candidates();
     }
     if app.tab == Tab::Sessions {
-        app.read_forecast();
-        app.read_sessions();
-    }
-    if app.tab == Tab::Fleet {
-        app.read_fleet();
+        app.read_sessions_shown();
     }
     if app.tab == Tab::Alerts {
         app.read_reds();

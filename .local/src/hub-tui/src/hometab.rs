@@ -931,7 +931,7 @@ mod tests {
             level,
             line: line.into(),
             details: vec![],
-            link: "#fleet",
+            link: "#sessions/runners",
         };
         let fix = |task: &str| {
             Some(briefing::Fix {
