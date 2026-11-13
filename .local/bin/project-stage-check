@@ -229,10 +229,26 @@ if declare -F lab_roots >/dev/null; then
   done < <(lab_roots)
 fi
 TYPE="$(project_inherited "$NAME" type)"
-# STORE is set for a project that ships through a store: every game, and a project with a
-# steam, play or testflight target in project-map `targets` (release-state's store probes).
-STORE=""
-if [ "$TYPE" = game ] || jq -e --arg n "$NAME" '[.trackers[$n] | objects | .targets[]? | .live // {} | keys[]] | any(IN("steam", "play", "testflight"))' "$(project_map_file)" >/dev/null 2>&1; then STORE=1; fi
+# TAGS: the Applies tags this project takes, `base`, its type, and `store` when it ships through a
+# store: every game, and a project with a steam, play or testflight target (release-state's store
+# probes) in project-map `targets`, its own entry's, else its lab siblings' as TYPE is inherited.
+TAGS="base ${TYPE:-none}"
+if [ "$TYPE" = game ]; then TAGS="$TAGS store"
+else
+  rc=0
+  # shellcheck disable=SC2046 # one lab name per word
+  jq -e '
+    . as $map | def st($n): $map.trackers[$n] | objects | .targets | arrays;
+    $ARGS.positional as $ns
+    | ([st($ns[0])] | if length > 0 then .[0] else [$ns[1:][] as $s | st($s)[]] end)
+    | [.[] | .live // {} | keys[]] | any(IN("steam", "play", "testflight"))' \
+    "$(project_map_file)" --args "$NAME" $(project_lab_names "$NAME") </dev/null >/dev/null || rc=$?
+  case "$rc" in
+    0) TAGS="$TAGS store" ;;
+    1) ;;
+    *) echo "project-stage-check: cannot read the targets of \"$NAME\" from $(project_map_file)" >&2; exit 2 ;;
+  esac
+fi
 REPO="$(project_repo_path "$NAME" 2>/dev/null || true)"
 REPO="${REPO/#\~/$HOME}"
 # A project inside a monorepo (`trackers.<name>.path`, as apps/<app>) keeps its own
@@ -257,10 +273,10 @@ rows() {
     }' "$1"
 }
 
-# applies <cell>: the Applies cell names `base`, the project's type, or `store` for a STORE project.
+# applies <cell>: the Applies cell names one of TAGS.
 applies() {
-  case ", $1, " in *", base, "*|*", ${TYPE:-none}, "*) return 0 ;; esac
-  [ -n "$STORE" ] && case ", $1, " in *", store, "*) return 0 ;; esac
+  local t
+  for t in ${1//,/ }; do case " $TAGS " in *" $t "*) return 0 ;; esac; done
   return 1
 }
 
@@ -307,7 +323,7 @@ systems() {
   done < <(rows "$SYSTEMS_DOC" Systems)
   if [ -n "$ONLY" ] && [ "${#ids[@]}" -eq 0 ]; then
     case " $known " in
-      *" $ONLY "*) echo "project-stage-check: system \"$ONLY\" does not apply to a ${TYPE:-untyped} project" >&2 ;;
+      *" $ONLY "*) echo "project-stage-check: system \"$ONLY\" does not apply to \"$NAME\", which takes: $TAGS" >&2 ;;
       *) echo "project-stage-check: unknown system \"$ONLY\" (want: $known)" >&2 ;;
     esac
     exit 2
@@ -357,12 +373,12 @@ list_systems() {
     | if $bad == [] then $s
       else error("\($n): bad systems entries: \($bad | join(", ")); want {\"<id>\": {\"is\": \"<line>\", \"aliases\": [\"<word>\"]}}, ids and aliases lowercase") end
   ' "$(project_map_file)")" || { echo "project-stage-check: cannot read the systems of \"$NAME\" from $(project_map_file)" >&2; exit 2; }
-  out="$(rows "$SYSTEMS_DOC" Systems | jq -r -R -s --arg type "${TYPE:-none}" --arg store "$STORE" --argjson own "$own" --arg json "$JSON" '
+  out="$(rows "$SYSTEMS_DOC" Systems | jq -r -R -s --arg type "${TYPE:-none}" --arg tags "$TAGS" --argjson own "$own" --arg json "$JSON" '
     [split("\n")[] | select(length > 0) | split("\t") | {id: .[0], applies: (.[1] | split(", ")), is: .[2]}] as $doc
     | ($doc | map(.id)) as $ids
     | [$own | keys[] | select(. as $k | ($ids | index($k) | not) and ($own[$k].is // "") == "")] as $nois
     | if $nois != [] then error("own systems need an \"is\" line: \($nois | join(", "))") else . end
-    | ([$doc[] | select(.applies | index("base") or index($type) or ($store != "" and index("store"))) | .id]) as $applies
+    | ([$doc[] | select(any(.applies[]; . as $a | $tags | split(" ") | index($a))) | .id]) as $applies
     | [$own | keys[] | select(. as $k | ($ids | index($k)) and ($applies | index($k) | not))] as $off
     | if $off != [] then error("\($off | join(", ")) does not apply to a \($type) project, so it cannot take aliases") else . end
     | ([$applies[], ($own | keys[] | select(. as $k | $ids | index($k) | not))]) as $mine

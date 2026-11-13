@@ -279,7 +279,7 @@ DOC
   assert_output --partial 'unknown system "nope" (want: docs netcode payments)'
   run "$CHECK" shooter --system payments
   assert_failure 2
-  assert_output --partial 'system "payments" does not apply to a game project'
+  assert_output --partial 'system "payments" does not apply to "shooter", which takes: base game store'
   printf '| ghost | base | A row with no system | `true` | none |\n' >> "$SYSTEMS_DOC"
   run "$CHECK" shooter --systems
   assert_failure 2
@@ -707,4 +707,11 @@ rs_stub() {
   assert_line --regexp '^FAIL +alpha +Its store listing'
   run "$REPO_ROOT/.local/bin/project-system-check" shooter --list
   assert_line --regexp '^store'
+}
+
+@test "Applies store: an unreadable target fails the check with exit 2, never a silent skip" {
+  jq '.trackers.shooter.type = "app" | .trackers.shooter.targets = [{"id": "bad", "live": "play"}]' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --stage alpha
+  assert_failure 2
+  assert_output --partial 'cannot read the targets of "shooter"'
 }
