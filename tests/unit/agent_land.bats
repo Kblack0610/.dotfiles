@@ -331,6 +331,37 @@ moved_again() {
   assert_output 1
 }
 
+@test "a watch that loses its API connection watches again and merges on green (binks #1531)" {
+  printf '%s\n' 'Post "https://api.github.com/graphql": read tcp 10.0.0.1:1->10.0.0.2:443: read: connection reset by peer' green >"$NOTES_FIXTURE/checks.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge 42' "$LOG"
+  assert_output 1
+}
+
+@test "a watch that keeps losing its API connection stops at checks and never merges" {
+  for _ in 1 2 3 4 5 6; do echo 'Post "https://api.github.com/graphql": read: connection reset by peer'; done >"$NOTES_FIXTURE/checks.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'lost the connection to the API 6 times'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a red watch whose table names a check after a transport error stops at checks, not retried" {
+  printf '%s\n' 'retry on HTTP 503	fail	1m' >"$NOTES_FIXTURE/checks.seq"
+  echo 'retry on HTTP 503' >"$NOTES_FIXTURE/checks.failed"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: retry on HTTP 503'
+  refute_output --partial 'lost the connection'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "a merged-up head whose own checks go red is never merged (dotfiles #1504)" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   printf '%s\n' green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"
@@ -1524,7 +1555,9 @@ case "$method $path" in
       html_url: "https://forgejo.example/o/r/pulls/42", mergeable: true,
       merge_commit_sha: (if $st == "MERGED" then $m else null end)}' ;;
 'PATCH pulls/42') jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
-'GET commits/'*'/status') cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
+# fj.status.reset: the next status read loses its connection, once
+'GET commits/'*'/status') [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
+  cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
 # fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
 'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
   cp "$F/merged.state" "$F/state" ;;
@@ -1589,6 +1622,17 @@ EOF
   assert_output --partial 'checks failed: checks / test'
   run grep -c 'pulls/42/merge' "$LOG"
   assert_output 0
+}
+
+@test "a Forgejo status read that loses its connection reads again and lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  : >"$NOTES_FIXTURE/fj.status.reset"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'checks: lost the connection to the API (1 of 5 retries), reading again'
+  run grep -c 'POST pulls/42/merge' "$LOG"
+  assert_output 1
 }
 
 @test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
