@@ -67,8 +67,8 @@ A row's `Applies` narrows it inside its system: a `ui` row for `game` only skips
 | audio | game | Every screen and core action has sound | human | Silence reads as broken |
 | perf | game, app | A budget written down per target: frame time, load time, memory | not yet | Without a number, slow is an opinion |
 | perf | game, app | A test holds the build to that budget | not yet: per game today (`ApociseumSweepPlayTests`) | A budget nothing checks drifts one change at a time |
-| look | game | A look doc names the style, palette and lighting | `ls "$REPO"/docs/games/ 2>/dev/null \| grep -Eqi "^$(basename "$ROOT").*(look\|hd)"` | Without one, every new asset pulls the style a different way |
-| look | game | Each area reviewed against it from screenshots | human | Drift is visible only next to the reference (`game-eval`) |
+| look | game | The game's doc states its taste (aim, references, palette, light, what it must never look like) | `grep -lis '^## Taste' "$REPO"/docs/games/*.md 2>/dev/null \| xargs -r -n1 basename \| grep -qi "^$(basename "$ROOT")"` | Without one, every new asset pulls the style a different way and every review grades against a guess |
+| look | game | Each named view graded against the taste and the repo's look review tests, from screenshots | human | Drift is visible only next to the reference (`game-eval`) |
 | onboarding | game, app | A new player reaches the core loop without outside help | human | Players who are lost in the first minutes do not come back |
 | store | game, app | The listing text and art are kept in the repo | `[ -d "$REPO/store/$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')" ] \|\| [ -d store ]` | A listing edited only in the console cannot be reviewed or restored |
 | auth | app | Sign-in uses the platform's shared auth package, never a copy | not yet | A second auth path is a second set of holes |

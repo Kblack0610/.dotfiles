@@ -27,7 +27,7 @@
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
-#   requeue <slug> --hold <resource> | --ask <id>   a started item back in the queue, held on that agent-hold or ask
+#   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back in the queue, held on that agent-hold or ask
 #   settle-ask <id>    fail each queued item that ask can no longer release (cancelled, or answered another option);
 #       agent-ask runs it on every cancel and human answer, and the item's board row stays open
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
@@ -78,6 +78,13 @@ AQ_SCHEDULES="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/schedules-sync"
 AQ_ASKS="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
+# Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
+# is free, the rest stay held behind it (desk_wait); a desk:auth item waits while this says away.
+AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
+# Minutes a just-started desk waiter keeps the free resource from the next one while its session
+# boots and claims it. The claim is the event; this bounds a session that never claims, so it
+# cannot hold the line for good.
+AQ_DESK_START_MIN=10
 AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
@@ -387,7 +394,7 @@ focus_hold() {
 # hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
 hold_reason() {
   local HOLD=""
-  hold_for "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$(fm_get "$1" project)" "$(fm_get "$1" priority)"
+  hold_for "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$(fm_get "$1" project)" "$(fm_get "$1" priority)" "$1"
   [ -z "$HOLD" ] || printf '%s\n' "$HOLD"
 }
 
@@ -415,7 +422,7 @@ after_status() {
   fi
 }
 
-# hold_for <after> <tags> [<project> <priority>] -> sets HOLD to hold_reason's answer for these
+# hold_for <after> <tags> [<project> <priority> <file>] -> sets HOLD to hold_reason's answer for these
 # header values.
 hold_for() {
   local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
@@ -471,9 +478,73 @@ hold_for() {
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
       hold:?*)
         memo "$tag" hold_pending "${tag#hold:}"
-        [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
+        [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; }
+        [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${5-}"
+        [ -z "$HOLD" ] || return 0 ;;
     esac
   done
+}
+
+# desk_class <tags> -> the item's desk:<class>, other when it names none.
+desk_class() {
+  local t
+  for t in $1; do case "$t" in desk:?*) printf '%s' "${t#desk:}"; return ;; esac; done
+  printf other
+}
+
+# human_away -- the human is away (fleet-presence); unread or a missing presence reads as here.
+# Asked once per listing, so every item in it reads the same answer.
+presence_word() { local p; p="$("$AQ_PRESENCE" 2>/dev/null)"; printf '%s' "${p%% *}"; }
+human_away() { memo presence presence_word; [ "$MEMO_V" = away ]; }
+
+# desk_starting <resource> -> the slug of an item started on that resource less than
+# AQ_DESK_START_MIN ago, whose session may not have claimed it yet.
+desk_starting() {
+  local f st now
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    [ "$(fm_get "$f" desk_start)" = "$1" ] || continue
+    st="$(date -d "$(fm_get "$f" started)" +%s 2>/dev/null)" || continue
+    [ $((now - st)) -lt $((AQ_DESK_START_MIN * 60)) ] && { fm_get "$f" slug; return; }
+  done < <(items_in "$AQ_DIR/running")
+}
+
+# desk_head <resource> -> "<file>\t<slug>\t<class>" of the queued item that takes the resource next:
+# the best class (agent-hold classes), then priority, then the oldest. Only an item that could start
+# counts: one still held by another tag (night, at:, after) would keep the desktop from the rest, and a
+# desk:auth item counts only while the human is here.
+desk_head() {
+  local res="$1" f tags cls rank p ranks away="" HOLD DESK_SCAN=1
+  ranks="$("$AQ_HOLD" classes 2>/dev/null)"
+  human_away && away=1
+  while IFS= read -r f; do
+    tags="$(fm_get "$f" tags)"
+    [[ " $tags " == *" hold:$res "* ]] || continue
+    cls="$(desk_class "$tags")"
+    [ "$cls" = auth ] && [ -n "$away" ] && continue
+    HOLD=""; hold_for "$(fm_get "$f" after)" "$tags" "$(fm_get "$f" project)" "$(fm_get "$f" priority)"
+    [ -z "$HOLD" ] || continue
+    rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
+    case "$(fm_get "$f" priority)" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "${rank:-9}" "$p" "$f" "$(fm_get "$f" slug)" "$cls"
+  done < <(items_in "$AQ_DIR/queued") | sort -t$'\t' -k1,1n -k2,2n -k3,3 | awk -F'\t' -v OFS='\t' 'NR == 1 { print $3, $4, $5 }'
+}
+
+# desk_wait <resource> <tags> <file> -> sets HOLD while that free resource goes to another waiter
+# first: one start per release, the best-ranked, where every waiter used to start and race for the
+# claim. A desk:auth item waits while the human is away, since nobody can answer its prompt.
+desk_wait() {
+  local head
+  [ -n "$3" ] || return 0
+  if [ "$(desk_class "$2")" = auth ] && human_away; then
+    HOLD="hold:$1 (desk:auth waits for the human, away)"; return
+  fi
+  memo "desk-start:$1" desk_starting "$1"
+  [ -z "$MEMO_V" ] || { HOLD="hold:$1 (behind $MEMO_V, starting)"; return; }
+  memo "desk:$1" desk_head "$1"; head="$MEMO_V"
+  [ -n "$head" ] && [ "${head%%$'\t'*}" != "$3" ] || return 0
+  head="${head#*$'\t'}"
+  HOLD="hold:$1 (behind ${head%%$'\t'*}, ${head#*$'\t'})"
 }
 
 # hold_resource <name> -- an agent-hold resource name: one path segment of letters, digits, . _ -.
@@ -681,7 +752,7 @@ item_side() {
   local d HOLD="" WEIGHT=""
   case "$1" in
     "$AQ_DIR"/done/*) ;;
-    *) d="${1%/*}"; [ "${d##*/}" != queued ] || hold_for "$2" "$3" "${9-}" "${10-}" ;;
+    *) d="${1%/*}"; [ "${d##*/}" != queued ] || hold_for "$2" "$3" "${9-}" "${10-}" "$1" ;;
   esac
   [ -n "$4" ] || weight_of "$5" "$6" "$7"
   [ -z "$HOLD$WEIGHT$8" ] || printf '%s\x1f%s\x1f%s\x1f%s\x1e' "$1" "$HOLD" "$WEIGHT" "$8"
@@ -1594,14 +1665,17 @@ cmd_move() {
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
     # lane_run goes too: the next start logs a run of its own, and host: too, since the next start
     # may run it here.
-    queued) header_del "$f" session window started waiting review origin lane_run host ;;
+    queued) header_del "$f" session window started waiting review origin lane_run host desk_start ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
       # A new run has not ended yet: the last run's reason goes.
       header_del "$f" end_reason
       # A hold: tag gates one start: once running, the item's own session may claim that resource,
       # and a tag left on would hold the item behind its own claim if it is ever requeued.
       tags="$(fm_get "$f" tags)"
+      # Its desk_start keeps the next waiter off the resource until this session claims it; its
+      # desk: class stays, so a later requeue keeps its rank.
       case " $tags " in *" hold:"*)
+        header_set "$f" desk_start "$(tr ' ' '\n' <<<"$tags" | sed -n 's/^hold://p' | head -1)"
         tags="$(tr ' ' '\n' <<<"$tags" | grep -v '^hold:' | paste -sd' ')"
         if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
       esac ;;
@@ -1715,6 +1789,8 @@ check_tags() {
         done <<<"$opts"
         [ "$rest" = + ] || die "$tag: that ask offers ${opts//$'\n'/,}, and those are what an answer can match" ;;
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
+      desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
+        die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
     esac
   done
 }
@@ -1727,17 +1803,20 @@ check_tags() {
 # hear it. Not a redo: the model did nothing wrong, so its lane run is dropped, not reported to
 # model-lane, as a cancel is.
 cmd_requeue() {
-  local usage="usage: agent-queue requeue <slug> --hold <resource> | --ask <id>[=<option>[+<option>]]"
-  local slug="${1:?$usage}" res="" ask="" tag f tags
+  local usage="usage: agent-queue requeue <slug> --hold <resource> [--class <class>] | --ask <id>[=<option>[+<option>]]"
+  local slug="${1:?$usage}" res="" ask="" cls="" tag f tags
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --hold) res="${2:?--hold needs a resource}"; shift 2 ;;
       --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
+      --class) cls="${2:?--class needs a class (agent-hold classes)}"; shift 2 ;;
       *) die "$usage" ;;
     esac
   done
   [ -n "$res$ask" ] && { [ -z "$res" ] || [ -z "$ask" ]; } || die "$usage"
+  [ -z "$cls" ] || [ -n "$res" ] || die "$usage"
+  [ -z "$cls" ] || check_tags "desk:$cls"
   if [ -n "$res" ]; then
     hold_resource "$res" || die "not an agent-hold resource: $res (letters, digits, . _ -)"
     # A free resource would restart the item at once: the caller claims it instead.
@@ -1752,10 +1831,12 @@ cmd_requeue() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   tags="$(fm_get "$f" tags)"
-  case " $tags " in
-    *" $tag "*) ;;
-    *) header_set "$f" tags "${tags:+$tags }$tag"; item_event item-set "$f" --why "tags=${tags:+$tags }$tag" ;;
-  esac
+  local want="$tags"
+  case " $want " in *" $tag "*) ;; *) want="${want:+$want }$tag" ;; esac
+  # One class per item: a new --class replaces the last.
+  [ -z "$cls" ] || want="$(tr ' ' '\n' <<<"$want" | grep -v '^desk:' | paste -sd' ') desk:$cls"
+  want="${want# }"
+  [ "$want" = "$tags" ] || { header_set "$f" tags "$want"; item_event item-set "$f" --why "tags=$want"; }
   header_del "$f" lane_run
   # The move runs under this lock, so no writer closes or moves the item between the edit and it.
   local AQ_LOCKED=1
