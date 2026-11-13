@@ -660,6 +660,55 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(field "$(item running forms)" tags)" = night ]
 }
 
+@test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  presence() { printf '#!/usr/bin/env bash\necho "%s 5 tmux"\n' "$1" > "$SANDBOX/bin/fleet-presence"; chmod +x "$SANDBOX/bin/fleet-presence"; }
+  presence here
+  run "$AQ" add --project game --slug bad --tags "hold:mac-desktop desk:nope" "x"
+  assert_failure; assert_output --partial "desk:<class>"
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  "$AQ" add --project game --slug shots --tags "hold:mac-desktop desk:listing" "store screenshots" >/dev/null
+  "$AQ" add --project game --slug plain --tags "hold:mac-desktop" "no class" >/dev/null
+  "$AQ" add --project game --slug signup --tags "hold:mac-desktop desk:legal" "xbox sign-up" >/dev/null
+  # Held by its own at: as well, an older item of the same class does not keep the desktop from the rest.
+  "$AQ" add --project game --slug at-tonight --tags "hold:mac-desktop desk:auth at:23:59" "tonight" >/dev/null
+  "$AQ" add --project game --slug code --tags "hold:mac-desktop desk:auth" "2fa step" >/dev/null
+  run "$AQ" next --json
+  assert_failure
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  run env AGENT_QUEUE_NOW=12:00 "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = code ]
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind code, auth)"
+  # Away, the 2FA item waits and the next class takes the desktop.
+  presence away
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = signup ]
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (desk:auth waits for the human, away)"
+  assert_output --partial "hold:mac-desktop (behind signup, legal)"
+  # Started, the item drops both tags; the next best (listing over no class) is head.
+  "$AQ" move signup running >/dev/null
+  [ -z "$(field "$(item running signup)" tags)" ]
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = shots ]
+}
+
+@test "requeue --class tags the item's desk class once, and a later --class replaces it" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  "$AQ" add --project game --running --slug forms "fill the store forms" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  run "$AQ" requeue forms --hold mac-desktop --class nope
+  assert_failure; assert_output --partial "desk:<class>"
+  run "$AQ" requeue forms --ask q1 --class legal
+  assert_failure; assert_output --partial "usage"
+  "$AQ" requeue forms --hold mac-desktop --class legal >/dev/null
+  [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:legal" ]
+  "$AQ" move forms running >/dev/null
+  "$AQ" requeue forms --hold mac-desktop --class auth >/dev/null
+  [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:auth" ]
+}
+
 @test "requeue --ask puts a headless run that needs the human back behind its ask; the human's answer releases it" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }

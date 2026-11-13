@@ -3,9 +3,12 @@
 # a message.
 #
 #   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
-#   agent-hold claim <resource> [--by name] "<what>"   one session's exclusive use: fails
-#                                   while another session holds it, and the holder's own
-#                                   `check` passes (the agent machine's desktop: mac-desktop)
+#   agent-hold claim <resource> [--by name] [--class c] "<what>"   one session's exclusive
+#                                   use: fails while another session holds it, and the
+#                                   holder's own `check` passes (the agent machine's desktop:
+#                                   mac-desktop); --class says why it needs it (`classes`)
+#   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
+#                                   claimed resource next (agent-queue desk:<class>)
 #   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
@@ -38,6 +41,19 @@ HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 PROC_ROOT="${AGENT_HOLD_PROC:-/proc}"
 # 1 of the default 100: a held scope gets about 1% of a contended CPU, near nice 19's share.
 LOW_CPU_WEIGHT=1
+# Desk classes, best first: why a session needs a claimed resource, and so who takes it next
+# once it is free (agent-queue starts the best-ranked `desk:<class>` waiter). auth ranks first
+# only while the human is here, since a 2FA prompt with nobody to answer it holds the desktop
+# for nothing. A live claim is never taken over: preempting a session mid-form breaks both
+# forms. Release builds are not here: they run over ssh and never claim the desktop.
+DESK_CLASSES='auth	1	the human must answer now: a 2FA code, passkey, CAPTCHA or Allow prompt
+legal	2	partner and developer program sign-ups, agreements, tax, bank, content ratings
+release	3	console steps a release waits on: first upload, app record, depot or branch, review submit
+listing	4	store text, art, screenshots
+other	5	setup, exploration, anything else (the default)'
+
+# class_rank <class> -> its rank, nothing for an unknown class
+class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
@@ -129,29 +145,36 @@ cmd_set() {
 cmd_claim() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local by="" reason=""
+  local by="" reason="" class=other
   while [ $# -gt 0 ]; do
     case "$1" in
       --by) by="${2:-}"; shift 2 ;;
+      --class) class="${2:-}"; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold claim: unknown flag $1" >&2; exit 2 ;;
       *)  reason="$*"; break ;;
     esac
   done
   [ -n "$reason" ] || { echo "agent-hold claim: say what you are doing with it" >&2; exit 2; }
+  [ -n "$(class_rank "$class")" ] || { echo "agent-hold claim: unknown class '$class' (agent-hold classes)" >&2; exit 2; }
   [ -n "$by" ] || by="$(default_by)"
   by="$(oneline "$by")"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
   local f="$HOLD_ROOT/$resource" body
-  body="$(printf 'resource: %s\nkind: claim\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
-    "$resource" "$(now_iso)" "$by" "$(oneline "$reason")")"
+  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
+    "$resource" "$class" "$(now_iso)" "$by" "$(oneline "$reason")")"
   if [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
     echo "claimed: $resource"; return 0
   fi
-  echo "busy: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)" >&2
+  # The holder keeps it; a better class is told it starts next, not that it may take over.
+  local held; held="$(field "$f" class)"
+  local outrank=""
+  [ -n "$held" ] && [ "$(class_rank "$class")" -lt "$(class_rank "$held")" ] &&
+    outrank=" (you outrank it: requeue with --class $class, it starts next)"
+  echo "busy: $resource since $(field "$f" since) by $(field "$f" by)${held:+ ($held)}: $(field "$f" reason)$outrank" >&2
   return 1
 }
 
@@ -297,11 +320,11 @@ cmd_check() {
 
 cmd_list() {
   [ -d "$HOLD_ROOT" ] || return 0
-  local f g
+  local f g c
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
-    g="$(field "$f" granted)"
-    printf '%s\t%s\t%s\t%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "$(field "$f" reason)" "${g:+ (granted: $g)}"
+    g="$(field "$f" granted)" c="$(field "$f" class)"
+    printf '%s\t%s\t%s\t%s%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "${c:+[$c] }" "$(field "$f" reason)" "${g:+ (granted: $g)}"
   done
 }
 
@@ -311,7 +334,9 @@ cmd_show() {
   cat "$HOLD_ROOT/$resource" 2>/dev/null || { echo "agent-hold: $resource is not held" >&2; exit 1; }
 }
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
+cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
+
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -322,6 +347,7 @@ case "$verb" in
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
   list)    cmd_list ;;
+  classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
