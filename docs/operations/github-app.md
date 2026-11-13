@@ -36,6 +36,22 @@ With no App configured, the wrapper only logs and passes every call straight thr
 
 The config and key are per machine. Repeat steps 4 and 6 on the mac-mini to route its reads too.
 
+## The shared budget
+
+The App is the lever that adds budget; until it is set up (`gh-app status` prints `off`) every read spends the user's 5,000 an hour, so the wrapper also keeps one shared reading of it. Whoever calls `gh` first in a 30 second window renews `~/.local/state/gh-calls/budget` with `gh api rate_limit` (free, never counted); every other process reads the file. Below `GH_BUDGET_RESERVE` (1,000) calls left, a read from a caller in `GH_DEFER_CALLERS` (`schedules-sync ci-failures.py fleet-sessions fleet-assess`) exits 75 with `gh: N REST calls left ... waits for the reset at HH:MM` and a `user:deferred` log row. Those four poll for a display or a report; a gate, `agent-land`, `gh-run-wait`, `night.sh`, every write and the `rate_limit` probe never wait. A call on the App's token is never deferred. `tests/unit/gh_wrapper.bats` pins each case.
+
+The hour the budget ran out (2026-11-13 05:35Z to 06:35Z, 4,651 calls, all on the user token because the App was off):
+
+| Caller | Calls | What |
+|---|---|---|
+| playground gate pollers (`gate-line.py`, `ci-gate.sh`, run as `bash`) | 2,021 | `test.yml` runs per branch 409, `pulls/N` 387, issue events 410, `landing-slot` 145, runs lists 167 |
+| `schedules-sync` | 628 | run reads for the Builds section, already conditional (ETag) |
+| `ci-failures.py` | 336 | annotations, jobs and logs of finished runs |
+| `fleet-sessions` | 300 | 287 of them `repo view` for the default branch, now kept an hour (`FLEET_BASE_TTL`) |
+| `gh-run-wait` | 202 | one `run view` a minute per waiting session |
+
+The gate pollers are the largest and are not deferrable: a tournament gate is a decision. Cutting them is queued as its own item in the playground repo.
+
 ## Reading the log
 
 ```sh
@@ -54,3 +70,4 @@ awk -F'\t' -v s=$(( $(date +%s) - 3600 )) '$1 >= s && $2 ~ /^user/ { n[$4]++ } E
 | An owner's reads stay on `user` | No installation for that owner, or it covers selected repos only | Install on that account with All repositories |
 | A session's `gh` is not the wrapper | `~/.local/bin/gh` is not stowed yet | Re-run the dotfiles deploy so stow links the new file |
 | `gh: HOME is <dir>, not <home>: a sandboxed caller never reaches GitHub`, exit 3 | The caller runs under a HOME that is not the account's, as a test does, and `gh` on its PATH is this wrapper, not the test's stub | Put the stub first on PATH in the test; the refusal is the point, never work around it |
+| `gh: N REST calls left, under the 1000 kept for gates and merges; <caller> waits for the reset`, exit 75 | The shared budget is under `GH_BUDGET_RESERVE` and a background caller asked | Nothing: it reads again after the reset. A gate that sees it is not in `GH_DEFER_CALLERS`; check `caller` in the log row. `rm ~/.local/state/gh-calls/budget` forces a fresh reading |
