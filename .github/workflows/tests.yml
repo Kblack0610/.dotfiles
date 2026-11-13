@@ -211,8 +211,8 @@ jobs:
         tmux: ['3.8']
     steps:
       - uses: actions/checkout@v4
-      # docker.sh builds the image, vendors bats on the host first, then runs the tier
-      # inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
+      # The test-image step loads the image (or builds it on a cache miss); docker.sh vendors
+      # bats on the host, then runs the tier inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
       # and capture-pane all work headless. Only display-popup needs an attached client, and
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's

@@ -38,7 +38,7 @@ DOCKER="${DOCKER:-docker}"
 build_hash() {
   {
     cat "$HERE/Dockerfile"
-    find "$CONTEXT" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sed "s|$CONTEXT/||"
+    (cd "$CONTEXT" && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
     printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF"
   } | sha256sum | cut -c1-12
 }
@@ -76,6 +76,12 @@ else
     --build-arg "TMUX_STOCK=$TMUX_STOCK" \
     --build-arg "FZF_REF=$FZF_REF" \
     -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
+  # A new hash leaves the old image tagged, and prune skips tagged images, so drop this
+  # tmux/fzf pair's older builds here. One another run is still using stays.
+  if [ -z "${COCKPIT_TEST_IMAGE:-}" ]; then
+    "$DOCKER" image ls --format '{{.Repository}}:{{.Tag}}' cockpit-tests | grep -F "${IMAGE%-*}-" |
+      grep -vxF "$IMAGE" | xargs -r "$DOCKER" rmi >/dev/null 2>&1 || true
+  fi
 fi
 [ "${1:-}" = "--build" ] && exit 0
 

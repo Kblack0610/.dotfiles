@@ -18,6 +18,7 @@ setup() {
 #!/bin/sh
 echo "\$*" >> "$LOG"
 [ "\$1 \$2" = "image inspect" ] && { [ -e "$BATS_TEST_TMPDIR/present" ]; exit; }
+[ "\$1 \$2" = "image ls" ] && { cat "$BATS_TEST_TMPDIR/images" 2>/dev/null; exit 0; }
 exit 0
 FAKE
   chmod +x "$T/bin/docker"
@@ -68,4 +69,15 @@ FAKE
   assert_success
   run grep -c '^build .*-t mine:latest' "$LOG"
   assert_output 1
+}
+
+@test "a new build drops the same tmux/fzf pair's older images, and nothing else" {
+  run "$T/tests/docker.sh" --image
+  new="$output"
+  printf '%s\n' "${new%-*}-0123456789ab" "$new" "cockpit-tests:tmux3.4-fzf0.74.1-0123456789ab" \
+    > "$BATS_TEST_TMPDIR/images"
+  run "$T/tests/docker.sh" --build
+  assert_success
+  run grep '^rmi' "$LOG"
+  assert_output "rmi ${new%-*}-0123456789ab"
 }
