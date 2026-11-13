@@ -105,16 +105,13 @@ fn config_paths() -> Vec<PathBuf> {
 fn bundled_sound() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    for cand in [
+    [
         dir.join("assets/switch.wav"),
         dir.join("../assets/switch.wav"),
         home().join(".dotfiles/.local/src/timebox/assets/switch.wav"),
-    ] {
-        if cand.exists() {
-            return Some(cand);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|cand| cand.exists())
 }
 
 pub fn resolve() -> Result<Config> {

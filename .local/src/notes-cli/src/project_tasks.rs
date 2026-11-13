@@ -1235,7 +1235,11 @@ fn row_ids(dir: &Path) -> HashSet<String> {
     let mut files = Vec::new();
     for lane in [dir.to_path_buf(), projects::agent_dir(dir)] {
         files.extend(task_sheet(&lane));
-        files.extend(projects::version_notes(&lane.join("versions")).into_iter().map(|(_, p)| p));
+        files.extend(
+            projects::version_notes(&lane.join("versions"))
+                .into_iter()
+                .map(|(_, p)| p),
+        );
     }
     files
         .iter()
@@ -1669,7 +1673,10 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
             .and_then(|n| n.parse::<u32>().ok())
             .filter(|&p| crate::epics::band(p).is_some());
         let Some(pts) = pts else {
-            let scale: Vec<String> = crate::epics::POINTS.iter().map(|(n, _)| n.to_string()).collect();
+            let scale: Vec<String> = crate::epics::POINTS
+                .iter()
+                .map(|(n, _)| n.to_string())
+                .collect();
             bail!("#{t} is off the points scale: one of {}", scale.join(", "));
         };
         return Ok(format!("#pts/{pts}"));
@@ -3042,9 +3049,16 @@ Version: v1.13.0
         );
         assert!(tag_token("pts/4").is_err(), "4 is off the scale");
         assert!(tag_token("pts/x").is_err());
-        assert!(tag_token("pts/21").is_err(), "xl is an epic's #size/, never points");
+        assert!(
+            tag_token("pts/21").is_err(),
+            "xl is an epic's #size/, never points"
+        );
         assert!(tag_token("pts/+5").is_err(), "digits only");
-        assert_eq!(tag_token("pts/05").unwrap(), "#pts/5", "written back canonical");
+        assert_eq!(
+            tag_token("pts/05").unwrap(),
+            "#pts/5",
+            "written back canonical"
+        );
         assert_eq!(
             retag(scored, &t(&["pts/8", "size/s"]), &[]),
             "- [ ] row #ai #pts/8 #size/l <!-- id:ar-1 -->",
@@ -3056,14 +3070,34 @@ Version: v1.13.0
             "a bare resize drops the points it overrides"
         );
         assert_eq!(
-            retag("- [ ] row #pts/3 #ai #pts/8 #size/m <!-- id:ar-1 -->", &t(&["pts/1"]), &[]),
+            retag(
+                "- [ ] row #pts/3 #ai #pts/8 #size/m <!-- id:ar-1 -->",
+                &t(&["pts/1"]),
+                &[]
+            ),
             "- [ ] row #ai #pts/1 #size/s <!-- id:ar-1 -->",
             "every stray points tag goes"
         );
-        assert_eq!(projects::size_name("- [ ] r #pts/5"), Some("m".into()), "no size tag: the band");
-        assert_eq!(projects::size_of("- [ ] r #pts/13 #size/l"), Some(13), "points are the weight");
-        assert_eq!(projects::size_of("- [ ] r #size/l"), Some(8), "no points: the size weighs");
-        assert_eq!(projects::points_of("- [ ] r #pts/4 #size/m"), None, "off-scale points are unscored");
+        assert_eq!(
+            projects::size_name("- [ ] r #pts/5"),
+            Some("m".into()),
+            "no size tag: the band"
+        );
+        assert_eq!(
+            projects::size_of("- [ ] r #pts/13 #size/l"),
+            Some(13),
+            "points are the weight"
+        );
+        assert_eq!(
+            projects::size_of("- [ ] r #size/l"),
+            Some(8),
+            "no points: the size weighs"
+        );
+        assert_eq!(
+            projects::points_of("- [ ] r #pts/4 #size/m"),
+            None,
+            "off-scale points are unscored"
+        );
     }
 
     #[test]
@@ -3206,7 +3240,10 @@ Version: v1.2.0
         };
         assert_eq!(
             lifted(&[]),
-            ("- [ ] dodgeball menu polish #low".into(), Some("ar-9".into()))
+            (
+                "- [ ] dodgeball menu polish #low".into(),
+                Some("ar-9".into())
+            )
         );
         assert_eq!(
             lifted(&["ar-9"]),
@@ -3242,9 +3279,16 @@ Version: v1.2.0
             "- [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->\n",
             "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n",
         );
-        let m = lift_into(&src, DEST, &w("spawn bug"), None, Some((1, 2, 0)), &HashSet::new())
-            .unwrap()
-            .unwrap();
+        let m = lift_into(
+            &src,
+            DEST,
+            &w("spawn bug"),
+            None,
+            Some((1, 2, 0)),
+            &HashSet::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             m.dest.contains(
                 "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n"
@@ -3294,9 +3338,16 @@ Version: v1.2.0
         assert!(lift(&w("no such row"), None).unwrap().is_none());
         // A closed row is not movable.
         let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
-        assert!(lift_into(&closed, DEST, &w("menu polish"), None, None, &HashSet::new())
-            .unwrap()
-            .is_none());
+        assert!(lift_into(
+            &closed,
+            DEST,
+            &w("menu polish"),
+            None,
+            None,
+            &HashSet::new()
+        )
+        .unwrap()
+        .is_none());
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -3311,7 +3362,11 @@ Version: v1.2.0
         let d = scratch("ids");
         fs::create_dir_all(d.join("agent/versions")).unwrap();
         fs::write(d.join("README.md"), "## Tasks\n- [ ] a <!-- id:hc-1 -->\n").unwrap();
-        fs::write(d.join("agent/README.md"), "## Tasks\n- [ ] b <!-- id:hc-2 -->\n").unwrap();
+        fs::write(
+            d.join("agent/README.md"),
+            "## Tasks\n- [ ] b <!-- id:hc-2 -->\n",
+        )
+        .unwrap();
         fs::write(
             d.join("agent/versions/v0.1.0.md"),
             "## Tasks\n- [x] c <!-- id:hc-3 -->\n",
@@ -3329,7 +3384,9 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let m = transfer(&s, &t, &w("spawn"), None, &HashSet::new()).unwrap().unwrap();
+        let m = transfer(&s, &t, &w("spawn"), None, &HashSet::new())
+            .unwrap()
+            .unwrap();
         // Written swept: the same rows as returned, laid out in sections.
         let (src, dest) = (
             fs::read_to_string(&s).unwrap(),
@@ -3357,10 +3414,14 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let same = transfer(&s, &s, &w("spawn"), None, &HashSet::new()).unwrap_err().to_string();
+        let same = transfer(&s, &s, &w("spawn"), None, &HashSet::new())
+            .unwrap_err()
+            .to_string();
         assert!(same.contains("same sheet"), "{same}");
         assert!(transfer(&s, &t, &w("spawn"), Some("next"), &HashSet::new()).is_err());
-        assert!(transfer(&s, &t, &w("no such row"), None, &HashSet::new()).unwrap().is_none());
+        assert!(transfer(&s, &t, &w("no such row"), None, &HashSet::new())
+            .unwrap()
+            .is_none());
         assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
         assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
         let _ = fs::remove_dir_all(&d);

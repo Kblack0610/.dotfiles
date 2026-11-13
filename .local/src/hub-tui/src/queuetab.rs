@@ -11,6 +11,7 @@
 
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
+use hub_core::item_history::History;
 use hub_core::links::Link;
 use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State};
 use hub_core::table::Row;
@@ -56,6 +57,9 @@ pub struct QueueView {
     pub running: Option<String>,
     /// The last action's answer: agent-queue's output, or why it failed.
     pub said: Option<Result<String, String>>,
+    /// The open detail's history (hub-core item_history): the slug asked for and its read, None
+    /// while it reads. A shut detail drops it, so a reopen reads afresh.
+    pub history: Option<(String, Option<Result<History, String>>)>,
 }
 
 /// `now` (unix seconds) as the time the rows are measured at.
@@ -75,6 +79,7 @@ impl Default for QueueView {
             confirm: None,
             running: None,
             said: None,
+            history: None,
         }
     }
 }
@@ -112,6 +117,33 @@ impl QueueView {
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
         self.shown(q, now).get(self.table.sel).map(|r| r.item)
+    }
+
+    /// The slug whose history the open detail wants read, once per item; with no detail open the
+    /// last read is dropped.
+    pub fn wants_history(&mut self, q: Option<&Queue>, now: i64) -> Option<String> {
+        let slug = q
+            .filter(|_| self.detail)
+            .and_then(|q| self.selected(q, now))
+            .map(|i| i.slug.clone());
+        let Some(slug) = slug else {
+            self.history = None;
+            return None;
+        };
+        if self.history.as_ref().is_some_and(|(s, _)| *s == slug) {
+            return None;
+        }
+        self.history = Some((slug.clone(), None));
+        Some(slug)
+    }
+
+    /// A history read; one for an item left since is dropped.
+    pub fn read_history(&mut self, slug: String, h: Result<History, String>) {
+        if let Some((s, read)) = &mut self.history {
+            if *s == slug {
+                *read = Some(h);
+            }
+        }
     }
 
     /// The candidates the fold lists: none while it is shut.
@@ -364,15 +396,71 @@ fn kv(k: &str, v: String, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
+/// The detail's history: a heading with the attempts, then one line a step, or why there is none.
+fn history(
+    h: Option<&Result<History, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let head = |rest: String| clip_line(heading("HISTORY", rest, p), w);
+    let h = match h {
+        None => return vec![head("  reading...".into())],
+        Some(Err(e)) => {
+            return vec![
+                head(String::new()),
+                kv("", format!("no history: {e}"), p, w),
+            ]
+        }
+        Some(Ok(h)) => h,
+    };
+    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    let cut = if h.steps > h.lines.len() {
+        format!(", last {}", h.lines.len())
+    } else {
+        String::new()
+    };
+    let mut out = vec![head(format!(
+        "  {}, {}{cut}",
+        plural(h.attempts, "attempt"),
+        plural(h.steps, "step")
+    ))];
+    if h.lines.is_empty() {
+        out.push(Line::styled(
+            format!("No steps in the last {} days.", h.days),
+            p.dim(),
+        ));
+    }
+    out.extend(h.lines.iter().map(|l| {
+        let when =
+            DateTime::parse_from_rfc3339(&l.at).map_or(l.at.clone(), |d| clock(d.timestamp(), now));
+        clip_line(
+            Line::from(vec![
+                Span::styled(format!("{when:<12}"), p.dim()),
+                Span::raw(l.text.clone()),
+            ]),
+            w,
+        )
+    }));
+    out
+}
+
 /// A header's text, or None when it is blank.
 fn some(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// The selected row in full: every header, then the timeline queued -> ready -> started ->
-/// waiting -> finished -> merged with the minutes from the step before. The agent-queue log is
-/// `notes log --item <slug>`, named here and not read.
-fn detail(r: &QueueRow, mark: Option<usize>, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// waiting -> finished -> merged with the minutes from the step before, then its history once
+/// read (`hist`: None not asked, Some(None) reading).
+fn detail(
+    r: &QueueRow,
+    mark: Option<usize>,
+    hist: Option<Option<&Result<History, String>>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let (i, t) = (r.item, r.timing);
     let mut out = vec![clip_line(
         Line::from(vec![
@@ -463,11 +551,10 @@ fn detail(r: &QueueRow, mark: Option<usize>, p: Palette, now: i64, w: usize) -> 
         };
         out.push(kv(st.step, value, p, w));
     }
-    out.push(Line::raw(""));
-    out.push(clip_line(
-        Line::styled(format!("log: notes log --item {}", i.slug), p.dim()),
-        w,
-    ));
+    if let Some(h) = hist {
+        out.push(Line::raw(""));
+        out.extend(history(h, p, now, w));
+    }
     let task: Vec<&str> = i.task.lines().take(8).collect();
     if !task.is_empty() {
         out.push(Line::raw(""));
@@ -554,7 +641,12 @@ pub fn page(
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
-        out.extend(detail(r, v.mark(r.item), p, now, w));
+        let hist = v
+            .history
+            .as_ref()
+            .filter(|(s, _)| *s == r.item.slug)
+            .map(|(_, h)| h.as_ref());
+        out.extend(detail(r, v.mark(r.item), hist, p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
             if all.is_empty() {
@@ -1209,7 +1301,6 @@ pub(crate) mod tests {
             "PR r#7 merged",
             "$6.10",
             "in -  wait 15m  run 1h05  lead 1h30",
-            "log: notes log --item shipped",
         ] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
@@ -1236,11 +1327,42 @@ pub(crate) mod tests {
         }
         assert!(line(&s, "merged ").contains("abcdef1234"), "{s}");
         assert!(!s.contains("STATE "), "the detail replaces the table\n{s}");
-        // Esc closes the detail first, and the query stays.
+        assert!(
+            !s.contains("HISTORY"),
+            "a history not asked for draws nothing\n{s}"
+        );
+        // The open detail asks for its history once; it says it reads, then draws the steps under
+        // the timeline. A read for an item left since is dropped.
+        assert_eq!(v.wants_history(Some(&q), now()), Some("shipped".into()));
+        assert_eq!(v.wants_history(Some(&q), now()), None, "asked once");
+        assert!(text(&q, &v, 100).contains("HISTORY  reading..."));
+        v.read_history("other".into(), Ok(History::default()));
+        assert!(text(&q, &v, 100).contains("HISTORY  reading..."));
+        let step = hub_core::item_history::Line {
+            at: "2026-11-03T09:30:00Z".into(),
+            text: "merged o/r#7".into(),
+        };
+        let read = History {
+            attempts: 2,
+            steps: 25,
+            lines: vec![step],
+            days: 30,
+        };
+        v.read_history("shipped".into(), Ok(read));
+        let s = text(&q, &v, 100);
+        assert!(s.contains("HISTORY  2 attempts, 25 steps, last 1"), "{s}");
+        let (timeline, hist) = (s.find("\nmerged "), s.find("HISTORY"));
+        assert!(timeline.is_some() && timeline < hist, "{s}");
+        assert!(s.contains("merged o/r#7"), "{s}");
+        v.read_history("shipped".into(), Err("boom".into()));
+        assert!(text(&q, &v, 100).contains("no history: boom"));
+        // Esc closes the detail first, and the query stays; the history goes with it.
         let esc = || KeyEvent::from(KeyCode::Esc);
         assert_eq!(v.key(esc(), Some(&q), &[], 10, now()), Ask::Done);
         assert!(!v.detail && v.table.view.q == "shipped");
         assert!(text(&q, &v, 100).contains("STATE"));
+        assert_eq!(v.wants_history(Some(&q), now()), None);
+        assert!(v.history.is_none(), "a shut detail holds no history");
     }
 
     #[test]

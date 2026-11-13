@@ -12,7 +12,7 @@ const sst = tblTab({
   tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
-const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
+const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], ctx: ["ctx", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
 
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
@@ -61,6 +61,13 @@ function sessionPr(r) {
   return `#${esc(r.pr)}${r.pr_state ? " " + esc(r.pr_state.toLowerCase()) : ""}${ci}`;
 }
 
+// How full the session's context window is: hub-core's rounded percent (SessionRow context_pct)
+// as a meter and its number, "-" when the model's window is unknown, never 0%.
+function ctxCell(r) {
+  if (r.context_pct == null) return '<td class="n">-</td>';
+  return `<td class="n" title="${kfmt(r.context_tokens || 0)} of ${kfmt(r.context_window)} tokens">${meter(r.context_pct / 100, "var(--accent)")} ${r.context_pct}%</td>`;
+}
+
 // The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
 function sessionRow(r) {
   const a = sessionAgent(r), tags = sessionTags(r, a);
@@ -68,7 +75,7 @@ function sessionRow(r) {
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
   return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
-    `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
+    `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
 
 // A day's ended sessions run to hundreds, so the table draws the server's open_rows (agent-web
@@ -166,7 +173,7 @@ function pageHtml(p) {
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
     p.parts.map(pagePart).join("") +
-    outcome + (s ? fold("page-state", "Fleet state", card(s, maxContext(), Date.now())) : "");
+    outcome + (s ? fold("page-state", "Fleet state", card(s, Date.now())) : "");
 }
 
 const loadPage = coalesce(async () => {

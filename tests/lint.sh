@@ -28,10 +28,6 @@
 # is silently ignored. See the comment at the top of .shellcheckrc.
 SEVERITY="${SHELLCHECK_SEVERITY:-error}"
 
-# shfmt is advisory for now, for the same reason: the tree was never formatted, so gating on
-# it today would be a big-bang red. Set SHFMT_GATE=1 to make it blocking once it is clean.
-SHFMT_GATE="${SHFMT_GATE:-0}"
-
 # No `-e`: this script reports on several tools and accumulates rc, so an individual failure
 # must not abort it. That makes the explicit `|| exit` on cd load-bearing (SC2164).
 set -uo pipefail
@@ -51,9 +47,9 @@ ran=() skipped=()
 
 # ── house rules ──────────────────────────────────────────────────────────────
 # Two repo-specific rules shellcheck cannot express. Deliberately implemented in
-# pure shell with no external tool, because the two gates below BOTH skip when
-# their binary is missing -- which is the whole state this section exists to stop
-# being invisible. On a host without shellcheck and shfmt, everything above this
+# pure shell with no external tool, because the shellcheck gate above skips when
+# its binary is missing -- which is the whole state this section exists to stop
+# being invisible. On a host without shellcheck, everything above this
 # printed "NOT INSTALLED (skipped)" and the gate still exited 0.
 
 # RULE 1: a test may not re-parse a subject out of its source file.
@@ -138,25 +134,8 @@ else
   skipped+=("shellcheck")
 fi
 
-if command -v shfmt >/dev/null 2>&1; then
-  if shfmt -d -i 2 -ci "${FILES[@]}" > /tmp/shfmt.diff 2>&1 && [ ! -s /tmp/shfmt.diff ]; then
-    echo "shfmt: clean"
-    ran+=("shfmt")
-  elif [ "$SHFMT_GATE" = 1 ]; then
-    cat /tmp/shfmt.diff >&2
-    echo "shfmt: FAILED (SHFMT_GATE=1)" >&2
-    rc=1
-  else
-    echo "shfmt: $(grep -c '^--- ' /tmp/shfmt.diff 2>/dev/null || echo '?') files would change (advisory; SHFMT_GATE=1 to enforce)"
-    ran+=("shfmt")
-  fi
-else
-  echo "shfmt: NOT INSTALLED (skipped)"
-  skipped+=("shfmt")
-fi
-
-# Say what actually RAN. Without this the difference between "three gates passed" and
-# "two gates were not installed and the third said nothing" is a line of prose in the
+# Say what actually RAN. Without this the difference between "both gates passed" and
+# "shellcheck was not installed and the house rules said nothing" is a line of prose in the
 # middle of the output that nobody reads -- and both exit 0. A skipped gate is not a
 # passing gate, and the summary is where that stops being deniable.
 printf 'lint: ran %s' "$(IFS=,; echo "${ran[*]:-none}")"

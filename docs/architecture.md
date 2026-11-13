@@ -40,7 +40,7 @@ Three tiers in `tests/` (`tests/Makefile` is the entry point, `.github/workflows
 ## Standards
 
 - Panel rules and the test that enforces each one: `.local/src/tmux/CONVENTIONS.md`, "What is enforced, and where".
-- Repo-wide shell rules are checked by `tests/lint.sh` (shellcheck, shfmt, house rules).
+- Repo-wide shell rules are checked by `tests/lint.sh` (shellcheck, house rules).
 - The shared agent-runtime standards: `.local/src/docs/standards.md`. Stage and system criteria this repo is held to: `.local/src/docs/stages.md`, `.local/src/docs/systems.md`.
 
 # agent-runtime

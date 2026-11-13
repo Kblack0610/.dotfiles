@@ -116,11 +116,12 @@ guess_system() {
 }
 
 # applies <system> <type> -- the systems.md Systems row for <system> applies to <type> (or base).
+# A backfill knows only the type, so a `store` cell counts for a game or an app.
 applies() {
   awk -F'|' -v s="$1" -v t="$2" '
     /^## Systems/ { on = 1; next } /^## / { on = 0 }
     on && NF > 3 { id = $2; gsub(/ /, "", id); if (id != s) next
-      n = split($3, a, ","); for (i = 1; i <= n; i++) { gsub(/ /, "", a[i]); if (a[i] == "base" || a[i] == t) ok = 1 } }
+      n = split($3, a, ","); for (i = 1; i <= n; i++) { gsub(/ /, "", a[i]); if (a[i] == "base" || a[i] == t || (a[i] == "store" && (t == "game" || t == "app"))) ok = 1 } }
     END { exit !ok }' "$SYSTEMS_MD"
 }
 

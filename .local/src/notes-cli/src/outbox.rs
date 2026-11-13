@@ -619,7 +619,10 @@ mod tests {
         let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
         assert_eq!(left, vec!["keep me".to_string()]);
         let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
-        assert!(rec.contains("\"dropped\"") && rec.contains("drop me"), "{rec}");
+        assert!(
+            rec.contains("\"dropped\"") && rec.contains("drop me"),
+            "{rec}"
+        );
         // A line that is not there drops nothing (negative control).
         assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 1);
         assert_eq!(lines(&p).unwrap().len(), 1);

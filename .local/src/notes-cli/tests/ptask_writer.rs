@@ -569,14 +569,34 @@ fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
             "fix(sound): resume flickers again #size/s",
         ],
     );
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!h.board().contains("resume flickers again"), "{}", h.board());
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !h.board().contains("resume flickers again"),
+        "{}",
+        h.board()
+    );
     // An edit that matches no row files no standing epic before it fails.
     let out = agent(
         &h,
-        &["edit", "no such row", "--link", "--text", "docs(docs): a setup guide #size/s"],
+        &[
+            "edit",
+            "no such row",
+            "--link",
+            "--text",
+            "docs(docs): a setup guide #size/s",
+        ],
     );
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
 }
 
@@ -654,7 +674,11 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
     assert!(!pt(&["pass", "--build", "b9 #v9.9.9"]).status.success());
     // The next build is its own row, though only its id differs.
     ok(&pt(&["pass", "--build", "b2102"]));
-    assert!(h.sheet().contains("play build b2102, 3 checks"), "{}", h.sheet());
+    assert!(
+        h.sheet().contains("play build b2102, 3 checks"),
+        "{}",
+        h.sheet()
+    );
 
     // A tick is dated and stays in Done; the nightly sweep rolls off only what the window drops.
     ok(&pt(&["done", "lobby", "--unverified", "played it"]));

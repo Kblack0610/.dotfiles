@@ -202,6 +202,7 @@ async fn main() -> Result<()> {
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/queue/candidates", get(queue::candidates))
+        .route("/api/queue/history", get(queue::history))
         .route("/api/shepherd", get(shepherd::get))
         .route("/api/outcomes", get(outcomes::ranked))
         .route("/api/outcomes/card", get(outcomes::card))

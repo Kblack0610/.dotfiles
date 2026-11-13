@@ -70,13 +70,13 @@ struct Buckets {
 fn rebuild(body: &[&str]) -> Vec<String> {
     let mut b = bucket(body, Layout::Focus, true);
     let mut out: Vec<String> = Vec::new();
-    out.extend(b.open[LANES].drain(..));
+    out.append(&mut b.open[LANES]);
     for (i, (_, _, heading)) in md::PRIORITIES.iter().enumerate() {
         if !out.is_empty() {
             out.push(String::new());
         }
         out.push((*heading).to_string());
-        out.extend(b.open[i].drain(..));
+        out.append(&mut b.open[i]);
     }
     out.push(String::new());
     out.push("---".to_string());

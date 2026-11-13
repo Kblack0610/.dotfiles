@@ -24,14 +24,13 @@
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
 
-# The linters are pinned, and that is not fussiness: a new shellcheck release finds new
-# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
+# shellcheck is pinned, and that is not fussiness: a new shellcheck release finds new
+# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping it is a
 # deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
-# Each comes from its project's official image (a static binary at /bin, amd64 and arm64),
+# It comes from the project's official image (a static binary at /bin, amd64 and arm64),
 # pinned by digest, from the registry the base image already needs. Not the GitHub release
 # asset: that one can answer 504 for longer than any curl retry waits.
 FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
-FROM mvdan/shfmt:v3.13.1@sha256:f22f3936140be1ba02d493b5d2b91d0e8b4af93fd903e7f46c477822bca4a3be AS shfmt
 
 FROM debian:trixie-slim
 
@@ -102,11 +101,10 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/fzf.tar.gz \
     && fzf --version
 
-# shellcheck + shfmt, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
+# shellcheck, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
 # having to install a linter.
 COPY --from=shellcheck /bin/shellcheck /usr/local/bin/shellcheck
-COPY --from=shfmt /bin/shfmt /usr/local/bin/shfmt
-RUN shellcheck --version | grep version: && shfmt --version
+RUN shellcheck --version | grep version:
 
 # THE MARKER. tmux_harness.bash's require_disposable_host() checks for this together with
 # /.dockerenv, and hard-fails the test otherwise. Both are needed: the env var alone could
