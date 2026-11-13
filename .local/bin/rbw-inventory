@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""rbw-inventory: prove a vault reorganisation lost nothing. Read-only; never prints a value.
+
+  rbw-inventory snap <label> [--no-sync]   record every entry: id, folder, name, and keyed hashes
+                                           of its data, fields, notes and history, plus what
+                                           `rbw get <name>` (no --folder, as every caller runs it)
+                                           resolves to
+  rbw-inventory diff <a> <b> [--allow NAME]...
+                                           what moved, was renamed, added or removed between two
+                                           snapshots; exits 1 on LOST (content with no copy left),
+                                           BROKEN (a name that resolved no longer resolves to the
+                                           same content) or CHANGED (an entry's content changed),
+                                           except for names passed with --allow
+  rbw-inventory dups <label>               entries sharing a name or their full content, and which
+                                           parts of each pair match
+  rbw-inventory clean                      delete every snapshot and the hash key
+
+Snapshots and the HMAC key live in $XDG_RUNTIME_DIR/rbw-inventory (tmpfs, mode 0600), so the
+hashes cannot be checked against guesses once the session ends. Usage doc: .config/rbw/README.md.
+"""
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+
+SECTIONS = ("data", "fields", "notes", "history")
+CONTENT = ("data", "fields", "notes")
+
+
+def state_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or sys.exit("rbw-inventory: XDG_RUNTIME_DIR unset")
+    d = os.path.join(base, "rbw-inventory")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def key():
+    p = os.path.join(state_dir(), "key")
+    if not os.path.exists(p):
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, secrets.token_bytes(32))
+        os.close(fd)
+    with open(p, "rb") as f:
+        return f.read()
+
+
+def rbw(*args):
+    return subprocess.run(["rbw", *args], capture_output=True, text=True)
+
+
+def digest(k, value):
+    blob = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hmac.new(k, blob, hashlib.sha256).hexdigest()[:24]
+
+
+def snap(label, sync=True):
+    if sync:
+        r = rbw("sync")
+        if r.returncode:
+            sys.exit(f"rbw-inventory: rbw sync failed: {r.stderr.strip()}")
+    r = rbw("list", "--fields", "id,folder,name")
+    if r.returncode:
+        sys.exit(f"rbw-inventory: rbw list failed: {r.stderr.strip()}")
+    k = key()
+    entries = {}
+    for line in r.stdout.splitlines():
+        parts = line.split("\t")
+        if not parts or not parts[0]:
+            continue
+        eid, folder, name = (parts + ["", ""])[:3]
+        g = rbw("get", "--raw", eid)
+        if g.returncode:
+            sys.exit(f"rbw-inventory: cannot read entry {eid}: {g.stderr.strip()}")
+        raw = json.loads(g.stdout)
+        h = {s: digest(k, raw.get(s)) for s in SECTIONS}
+        h["content"] = digest(k, {s: raw.get(s) for s in CONTENT})
+        entries[eid] = {"folder": folder, "name": name, "hash": h}
+    resolves = {}
+    for name in sorted({e["name"] for e in entries.values() if e["name"]}):
+        g = rbw("get", "--raw", name)
+        if g.returncode:
+            err = g.stderr.strip().lower()
+            resolves[name] = "ambiguous" if "multiple" in err else "missing"
+        else:
+            resolves[name] = json.loads(g.stdout).get("id", "?")
+    out = os.path.join(state_dir(), f"{label}.json")
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"entries": entries, "resolves": resolves}, f, indent=1, sort_keys=True)
+    bad = [n for n, v in resolves.items() if v in ("ambiguous", "missing")]
+    print(f"snap {label}: {len(entries)} entries, {len(resolves)} names, {len(bad)} not resolvable by name")
+    for n in bad:
+        print(f"  {resolves[n]}: {n}")
+
+
+def load(label):
+    p = os.path.join(state_dir(), f"{label}.json")
+    if not os.path.exists(p):
+        sys.exit(f"rbw-inventory: no snapshot {label}")
+    with open(p) as f:
+        return json.load(f)
+
+
+def label_of(e):
+    return f"{e['folder']}/{e['name']}" if e["folder"] else e["name"] or "(no name)"
+
+
+def diff(a_label, b_label, allow):
+    a, b = load(a_label), load(b_label)
+    ea, eb = a["entries"], b["entries"]
+    fail = []
+    for eid, e in ea.items():
+        if eid not in eb:
+            print(f"removed: {label_of(e)} [{eid}]")
+            continue
+        n = eb[eid]
+        if e["name"] != n["name"]:
+            print(f"renamed: {label_of(e)} -> {n['name']} [{eid}]")
+        if e["folder"] != n["folder"]:
+            print(f"moved: {e['name']}: '{e['folder']}' -> '{n['folder']}' [{eid}]")
+        changed = [s for s in SECTIONS if e["hash"][s] != n["hash"][s]]
+        if changed:
+            line = f"CHANGED: {label_of(n)} [{eid}]: {', '.join(changed)}"
+            (print(line + " (allowed)") if (e["name"] in allow or n["name"] in allow) else fail.append(line))
+    for eid, n in eb.items():
+        if eid not in ea:
+            print(f"added: {label_of(n)} [{eid}]")
+    left = {n["hash"]["content"] for n in eb.values()}
+    for eid, e in ea.items():
+        if e["hash"]["content"] not in left and e["name"] not in allow:
+            fail.append(f"LOST: {label_of(e)} [{eid}]: its content exists nowhere in {b_label}")
+        if eid not in eb:
+            hist = {n["hash"]["history"] for n in eb.values()}
+            if e["hash"]["history"] not in hist:
+                print(f"note: removed {label_of(e)} took its password history with it (trash keeps it 30 days)")
+    content_a = {eid: e["hash"]["content"] for eid, e in ea.items()}
+    content_b = {eid: e["hash"]["content"] for eid, e in eb.items()}
+    for name, rid in a["resolves"].items():
+        if rid in ("ambiguous", "missing") or name in allow:
+            continue
+        nid = b["resolves"].get(name, "missing")
+        if nid in ("ambiguous", "missing"):
+            fail.append(f"BROKEN: rbw get '{name}' resolved before and is {nid} now")
+        elif content_b.get(nid) != content_a.get(rid):
+            fail.append(f"BROKEN: rbw get '{name}' now resolves to different content")
+    for line in fail:
+        print(line)
+    print(f"diff {a_label} -> {b_label}: {'FAIL' if fail else 'ok'} ({len(fail)} problems)")
+    return 1 if fail else 0
+
+
+def dups(label):
+    s = load(label)["entries"]
+    by_name, by_content = {}, {}
+    for eid, e in s.items():
+        by_name.setdefault(e["name"].lower(), []).append(eid)
+        by_content.setdefault(e["hash"]["content"], []).append(eid)
+    groups = [g for g in by_name.values() if len(g) > 1]
+    groups += [g for g in by_content.values() if len(g) > 1 and g not in groups]
+    for g in groups:
+        first = s[g[0]]
+        print(" == ".join(f"{label_of(s[i])} [{i}]" for i in g))
+        for i in g[1:]:
+            same = [x for x in SECTIONS if s[i]["hash"][x] == first["hash"][x]]
+            diffs = [x for x in SECTIONS if x not in same]
+            print(f"   same: {', '.join(same) or '-'}; differ: {', '.join(diffs) or '-'}")
+    print(f"dups {label}: {len(groups)} groups")
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cmd, rest = argv[1], argv[2:]
+    if cmd == "snap" and rest:
+        snap(rest[0], sync="--no-sync" not in rest)
+        return 0
+    if cmd == "diff" and len(rest) >= 2:
+        allow = {rest[i + 1] for i, x in enumerate(rest) if x == "--allow" and i + 1 < len(rest)}
+        return diff(rest[0], rest[1], allow)
+    if cmd == "dups" and rest:
+        dups(rest[0])
+        return 0
+    if cmd == "clean":
+        shutil.rmtree(state_dir())
+        print("rbw-inventory: snapshots and key deleted")
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
