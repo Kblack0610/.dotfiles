@@ -1241,7 +1241,11 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
 
 @test "a pass keys sync.json case-blind, so a list that respelled a repo leaves no stale twin for runs to read" {
   # NEGATIVE CONTROL: keyed by the list's casing, the pass wrote github:o/game beside the old
-  # github:O/Game, and runs read the stale one first: "not yet past" (token-usage, 2026-11-13).
+  # github:O/Game, and runs read the stale one first: "not yet past".
+  mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
+  echo '{"repos":{"github:O/Game":{"synced_at":"2025-11-05T09:00:00Z"},"github:o/game":{"synced_at":"2025-11-06T11:59:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:00:00Z
+  assert_success  # before any pass, runs reads the newest twin
   game_files
   runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
