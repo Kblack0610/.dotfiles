@@ -221,6 +221,10 @@ jobs:
       # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
       - name: Build agent-panel for the ui tier
         run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
+      # The image comes from the Actions cache when nothing it is built from changed.
+      - uses: ./.github/actions/test-image
+        with:
+          tmux: ${{ matrix.tmux }}
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}
@@ -409,5 +413,6 @@ jobs:
       # developer does, and the first version bump would produce findings nobody can
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.
+      - uses: ./.github/actions/test-image
       - name: lint
         run: tests/docker.sh lint
