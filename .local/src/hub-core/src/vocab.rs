@@ -18,18 +18,10 @@ pub const QUEUE: &[(&str, &str)] = &[
         "held",
         "waits on its hold: after another item, until a PR merges, until night or a set time; HOLD says which",
     ),
-    (
-        "stalled",
-        "running, and fleet-sessions found its session STALLED; hover says why",
-    ),
-    (
-        "no session",
-        "running for 10m or more, and no session in fleet-sessions' last pass works it",
-    ),
-    (
-        "PR red, yours",
-        "on a PR whose fix-ci tries are spent; it is on your sheet (green: the land tries are)",
-    ),
+    ("stalled", "its session is STALLED"),
+    ("no session", "running 10m+, and no session works it"),
+    ("PR red, yours", "its fix-ci tries are spent; yours now"),
+    ("PR green, yours", "its land tries are spent; yours now"),
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
@@ -136,6 +128,9 @@ mod tests {
         };
         let mut red = item("pr", State::Review, None);
         red.extra.insert("fix_human".into(), "abc".into());
+        let mut green = item("pg", State::Review, None);
+        green.extra.insert("fix_human".into(), "abc".into());
+        green.extra.insert("pr_owner".into(), "land".into());
         let stalled = crate::queue::Health {
             bucket: "STALLED".into(),
             ..Default::default()
@@ -147,6 +142,7 @@ mod tests {
                 item("s", State::Running, None),
                 item("n", State::Running, None),
                 red,
+                green,
             ],
             sessions: Some([("s".to_string(), stalled)].into()),
             ..Queue::default()
