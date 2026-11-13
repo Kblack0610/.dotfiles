@@ -89,13 +89,31 @@ CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
 CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
-# A watch that loses its connection to the API (a reset, a timeout, a 5xx) has seen no check fail:
-# it starts again, up to CHECKS_NET_TRIES times. It hit binks #1531 three times on 2026-11-13.
-CHECKS_NET_TRIES=5
+# A read that loses its connection to the API (a reset, a timeout, a 5xx) has seen no check fail:
+# it reads again, up to CHECKS_NET_TRIES times in one wait. It hit binks #1531 three times on
+# 2026-11-13. Only the last line is classified, and on GitHub only when no check reads as failed,
+# since a check's name may hold any of these words. A rate limit is not here: retrying it spends
+# the budget it ran out of.
+CHECKS_NET_TRIES="${AGENT_LAND_CHECKS_NET_TRIES:-5}"
+net_error() {
+  case "$(lastline "$1")" in
+  *'connection reset by peer'* | *'Connection reset by peer'* | *'connection refused'* | *'Connection refused'* | \
+    *'i/o timeout'* | *'TLS handshake timeout'* | *'context deadline exceeded'* | *'unexpected EOF'* | \
+    *'HTTP 500'* | *'HTTP 502'* | *'HTTP 503'* | *'HTTP 504'*) return 0 ;;
+  esac
+  return 1
+}
+# net_retry <output>: count one lost connection, or stop at checks once CHECKS_NET_TRIES are spent.
+net=0
+net_retry() {
+  ((++net <= CHECKS_NET_TRIES)) || fail checks "lost the connection to the API $net times: $(lastline "$1")"
+  echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES retries), reading again"
+  sleep "$CHECKS_POLL"
+}
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed queued net=0
+  local try out failed queued
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       echo "checks: green"
@@ -104,15 +122,13 @@ wait_checks() {
     }
     case "$out" in
     *'no checks reported'*) ;;
-    *'connection reset by peer'* | *'i/o timeout'* | *'TLS handshake timeout'* | *'unexpected EOF'* | *'HTTP 502'* | *'HTTP 503'* | *'HTTP 504'*)
-      ((++net <= CHECKS_NET_TRIES)) || fail checks "lost the connection to the API $CHECKS_NET_TRIES times: $(lastline "$out")"
-      echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES), watching again"
-      try=0
-      sleep "$CHECKS_POLL"
-      continue
-      ;;
     *)
       failed=$(gh pr checks "$pr" "${R[@]}" --json name,bucket -q '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' 2>/dev/null || true)
+      if [ -z "$failed" ] && net_error "$out"; then
+        net_retry "$out"
+        try=0
+        continue
+      fi
       fail checks "${failed:-$(lastline "$out")}"
       ;;
     esac
@@ -147,7 +163,12 @@ fj_wait_checks() {
   local try st head
   head=$(git rev-parse HEAD)
   for ((try = 1; ; try++)); do
-    st=$(so_forgejo_checks "$fj" "$head" 2>&1) || fail checks "Forgejo status read: $(lastline "$st")"
+    st=$(so_forgejo_checks "$fj" "$head" 2>&1) || {
+      net_error "$st" || fail checks "Forgejo status read: $(lastline "$st")"
+      net_retry "$st"
+      try=0
+      continue
+    }
     case "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | ci' <<<"$st")" in
     PASS)
       echo "checks: green"
