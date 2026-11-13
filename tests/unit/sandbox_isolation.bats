@@ -29,6 +29,9 @@ setup() {
   # inside one would read them as its own.
   export CLAUDE_HEADLESS=1 AGENTCTL_MODEL=inherited-model
   export NO_COLOR=1 PANEL_NO_COLOR=1
+  export MODEL=claude-opus-5-5 HARNESS=claude ROUTE=r DATA_CLASS=d AGENTCTL_ACCOUNT=alt AGENTCTL_INBOX=/i \
+    AGENTCTL_EXPLAIN=1 CLAUDE_TELEMETRY_SERVICE=s FLEET_SHEPHERD_DIR=/d FLEET_STATE_FILE=/f \
+    FLEET_SHEPHERD_HOLDER=runner FLEET_SHEPHERD_LEASE_MIN=60 CLAUDE_CONFIG_DIR=/c
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -45,6 +48,16 @@ setup() {
 @test "sandbox_init detaches from an inherited CLAUDE_HEADLESS and AGENTCTL_MODEL" {
   [ -z "${CLAUDE_HEADLESS:-}" ]
   [ -z "${AGENTCTL_MODEL:-}" ]
+}
+
+# A shepherd pass runs the Stop-hook suite with its lane, account and state paths exported, and a
+# Claude session with its CLAUDE_CONFIG_DIR (ar-1553, ar-1326).
+@test "sandbox_init detaches from a shepherd pass's exports and CLAUDE_CONFIG_DIR" {
+  local v
+  for v in MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
+    FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR; do
+    [ -z "${!v+x}" ] || { echo "$v is still set: ${!v}"; return 1; }
+  done
 }
 
 # md_render.bats, panel_lib.bats and questions_panel.bats assert on colour escapes, which either
