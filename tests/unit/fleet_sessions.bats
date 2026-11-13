@@ -1943,9 +1943,13 @@ research_item() {
   assert_success
   [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
 
-  # gh unreachable: the symref decides, stale or not
+  # the name is reused for FLEET_BASE_TTL across passes: gh is not asked again (the budget ran out on these)
   printf '#!/usr/bin/env bash\ncase "$1" in repo) exit 1 ;; api) echo "[]" ;; esac\n' > "$SANDBOX/bin/gh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
+
+  # gh unreachable once the name is stale: the symref decides, stale or not
+  FLEET_BASE_TTL=0 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = '3 file(s) not on the default branch, no PR' ]
 }
 

@@ -12,8 +12,19 @@
 # Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
 # user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
 # redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
+# Budget: every account spends the user's one REST budget, so the wrapper keeps one shared reading of
+# it (GH_CALLS_DIR/budget, from the free rate_limit call, at most GH_BUDGET_STALE_S old) and, below
+# GH_BUDGET_RESERVE calls left, refuses a read from a background caller in GH_DEFER_CALLERS (exit 75,
+# bucket user:deferred) so gates, agent-land and the night keep what is left. Writes never wait.
 # Docs: docs/operations/github-app.md.
 set -u
+
+: "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a background read waits for the reset
+: "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
+# Callers (the script that ran gh) that poll for a display or a report, not for a decision: on
+# 2026-11-13 05:35Z-06:35Z they spent 1,264 of 4,651 calls. A gate, agent-land, gh-run-wait or
+# night.sh is never in this list.
+: "${GH_DEFER_CALLERS:=schedules-sync ci-failures.py fleet-sessions fleet-assess}"
 
 [ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
 # A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
@@ -149,6 +160,65 @@ log_call() {
     "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" >> "$f"
 }
 
+# is_read <gh args>: the call only reads (the routable reads, `repo view`, and a GET `gh api`).
+is_read() {
+  local grp="${1:-}" sub="${2:-}" a method="" prev=""
+  case "$grp $sub" in
+    'run list' | 'run view' | 'run download' | 'pr list' | 'pr view' | 'pr checks' | 'pr diff' | 'issue list' | \
+      'issue view' | 'workflow list' | 'workflow view' | 'release list' | 'release view' | 'release download' | \
+      'repo view') return 0 ;;
+    'api '*) ;;
+    *) return 1 ;;
+  esac
+  shift
+  for a in "$@"; do
+    case "$prev" in -X | --method) method="$a" ;; esac
+    case "$a" in
+      graphql | -f | -F | --field | --raw-field | --input | -f?* | -F?* | --field=* | --raw-field=* | --input=*) return 1 ;;
+      --method=*) method="${a#--method=}" ;;
+      -X?*) method="${a#-X}" ;;
+    esac
+    prev="$a"
+  done
+  [ -z "$method" ] || [ "$(tr '[:lower:]' '[:upper:]' <<<"$method")" = GET ]
+}
+
+# budget_left -> "<remaining> <reset epoch>" of the user's core REST bucket, one reading shared by
+# every process: a reading older than GH_BUDGET_STALE_S is renewed by whoever gets the lock first
+# (rate_limit costs nothing), the rest use the old one. A failed renewal stores "- -" so a dead
+# network is retried once per stale window, not once per call.
+budget_left() {
+  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}" f rem="-" reset="-" at=0 now line
+  f="$dir/budget"
+  now="${EPOCHSECONDS:-$(date +%s)}"
+  [ ! -f "$f" ] || read -r rem reset at <"$f" 2>/dev/null || true
+  if [ $((now - ${at:-0})) -ge "$GH_BUDGET_STALE_S" ]; then
+    umask 077
+    mkdir -p "$dir" 2>/dev/null || true
+    {
+      flock -n 9 || exit 0
+      line=$(GH_WRAPPED=1 timeout 5 "$real" api rate_limit --jq '.resources.core | "\(.remaining) \(.reset)"' 2>/dev/null) || line="- -"
+      printf '%s %s\n' "${line:-- -}" "$now" >"$f.$$" && mv "$f.$$" "$f"
+    } 9>"$f.lock" 2>/dev/null || true
+    read -r rem reset at <"$f" 2>/dev/null || true
+  fi
+  printf '%s %s' "$rem" "$reset"
+}
+
+# defer_read <gh args>: succeed (and say why on stderr) when this is a background caller's read and
+# the shared budget is under the reserve with its reset still ahead.
+defer_read() {
+  local who rem reset now="${EPOCHSECONDS:-$(date +%s)}"
+  who=$(caller)
+  case " $GH_DEFER_CALLERS " in *" $who "*) ;; *) return 1 ;; esac
+  is_read "$@" || return 1
+  case "${1:-} ${2:-}" in 'api rate_limit' | 'api -i'*) return 1 ;; esac
+  read -r rem reset <<<"$(budget_left)"
+  [[ "$rem" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 1
+  [ "$rem" -lt "$GH_BUDGET_RESERVE" ] && [ "$reset" -gt "$now" ] || return 1
+  echo "gh: $rem REST calls left, under the $GH_BUDGET_RESERVE kept for gates and merges; $who waits for the reset at $(date -d "@$reset" +%H:%M)" >&2
+}
+
 bucket=user
 tok=""
 if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
@@ -160,6 +230,12 @@ elif owner=$(route_owner "$@"); then
     2) tok="" ;;
     *) tok="" bucket=user:app-error ;;
   esac
+fi
+
+if [ -z "$tok" ] && [ "$bucket" != env ] && defer_read "$@"; then
+  rc=75 bucket=user:deferred
+  { log_call "$@"; } 2>/dev/null || true
+  exit 75
 fi
 
 export GH_WRAPPED=1 GH_REAL="$real"

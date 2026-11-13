@@ -59,6 +59,10 @@ set -uo pipefail
 # (the ask watcher, fleet-bench, the shepherd, the board) runs a pass, and on 2026-10-29 the fleet
 # spent GitHub's 5,000/hr REST limit; a PR's state is no less true five minutes later.
 : "${FLEET_MAIN_TTL:=300}"
+# FLEET_BASE_TTL: seconds a repo's default branch is reused across passes. It was one `gh repo view` per
+# repo per pass (287 of the 4,651 calls in the hour the budget ran out, 2026-11-13 05:35Z) for a name
+# that changes about never; origin/HEAD is the offline fallback either way.
+: "${FLEET_BASE_TTL:=3600}"
 # Each fleet worker's sessions are rows too (remote_panel_lines).
 # shellcheck source=../lib/fleet-hosts.sh
 . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
@@ -821,13 +825,15 @@ sibling_pr() {
   jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
 
-# default_base <dir> -> origin/<default branch>, cached per repo per pass. GitHub's answer
-# wins: origin/HEAD is set at clone time and goes stale when the default branch changes.
+# default_base <dir> -> origin/<default branch>, kept in MAIN_CACHE for FLEET_BASE_TTL across passes.
+# GitHub's answer wins: origin/HEAD is set at clone time and goes stale when the default branch changes.
 # The symref is the offline fallback, and a name this clone has no remote ref for is unused.
 default_base() {
-  local d="$1" key b
-  key="$CACHE/base_$(repo_slug "$d")" || { echo origin/main; return; }
-  if [ ! -f "$key" ]; then
+  local d="$1" key b slug
+  slug="$(repo_slug "$d")" || { echo origin/main; return; }
+  key="$MAIN_CACHE/base_$slug"
+  if [ ! -s "$key" ] || [ $(( $(date +%s) - $(date -r "$key" +%s) )) -ge "$FLEET_BASE_TTL" ]; then
+    mkdir -p "$MAIN_CACHE"
     b="$(cd "$d" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
     if [ -z "$b" ] || ! git -C "$d" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1; then
       b="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; b="${b#origin/}"
