@@ -110,12 +110,32 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'at 8 live sessions, the away pace target is 6; red items start on the red floor (DISPATCH_RED_FLOOR=1, plus 1 for tripped watches)'
+  assert_output --partial 'pace target: 8 live sessions, the away pace target is 6; red items start on the red floor (DISPATCH_RED_FLOOR=1, plus 1 for tripped watches)'
   assert_equal "$(grep -o 'started queue item [a-z0-9]*' <<<"$output" | head -n 1)" 'started queue item w1'
   assert_output --partial 'started queue item r1 on the red floor'
   refute_output --partial 'started queue item r2'
   refute_output --partial 'started queue item p'
   assert_equal "$(outcome)" WORKED
+}
+
+@test "red floor: a fleet past its pace target with its live reds at the floor starts nothing" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=2 DISPATCH_PER_PASS=3
+  fleet_state 8
+  local s
+  for s in l1 l2; do
+    started_item "$s" "lab:game-agent-$s" run "area-$s"
+    sed -i "/^mode:/a tags: red cause:$s" "$AGENT_QUEUE_DIR"/running/*-"$s".md
+  done
+  printf 'game-agent-l1\ngame-agent-l2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  # Negative control: one live red fewer opens a slot, and r1 starts on it.
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item r1 on the red floor'
 }
 
 @test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {

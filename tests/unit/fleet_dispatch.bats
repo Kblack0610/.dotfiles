@@ -1895,6 +1895,12 @@ J
   run cmd_starved
   assert_failure
   assert_output --partial 'stuck (high'
+  # A red item behind a full fleet starves: the red floor goes past the pace target.
+  queued_item stuck-red high "$old" 'red cause:ab'
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck-red (high, red'
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck-red.md
   # A standing hold still trips at a full fleet, led by its Stopped line.
   fleet_state 3
   hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
