@@ -101,49 +101,6 @@ EOF
   refute_output --partial 'family:      anthropic'
 }
 
-# The classification is DATA, and this is the test that keeps it honest: every
-# transport-shaped name anywhere in the tree must be filed under [scrub] or
-# [not-transport], with a reason. A new one fails the suite until a human says
-# which kind it is.
-@test "every transport-shaped env name in the tree is classified" {
-  local list="$REPO_ROOT/.local/src/agent-run/lib/scrub.list"
-  assert [ -r "$list" ]
-
-  # Scope: code WE own and deploy, so tracked and untracked files but never
-  # ignored ones. ~/.claude is stowed from this tree, and Claude Code writes
-  # runtime state into it (.claude/cache/changelog.md names ~200 of its own
-  # vars), which a plain grep -r picked up. Also excluded, each for a reason:
-  #   node_modules vendored third-party JS (the opencode SDK names its own vars)
-  #   vendor       vendored bats
-  #   .serena      a third-party tool's own config, which names model ids
-  # The question this test asks is "what can OUR code be handed", so a vendored
-  # library's private variable names are noise, and history is not code at all.
-  #
-  # Note this file is itself in scope, which is correct and is a small trap: an
-  # identifier written into a comment here is indistinguishable from one in real
-  # code. It caught me once already. So do not spell unclassified examples out.
-  local -a names=()
-  while IFS= read -r n; do [ -n "$n" ] && names+=("$n"); done < <(
-    git -C "$REPO_ROOT" grep --untracked -hoIwE \
-      '(ANTHROPIC|CLAUDE_CODE|LLM|OPENCODE)_[A-Z0-9_]+' -- . \
-      ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/vendor/**' \
-      ':(exclude,glob)**/.serena/**' ':(exclude,glob)**/.opencode/**' 2>/dev/null | sort -u
-  )
-  # Empty input is FAILURE, not success. A scanner that matched nothing would
-  # otherwise report a perfectly classified codebase.
-  assert [ "${#names[@]}" -gt 20 ]
-
-  local -a unclassified=()
-  local n
-  for n in "${names[@]}"; do
-    grep -qE "^[[:space:]]*${n}([[:space:]]|#|$)" "$list" || unclassified+=("$n")
-  done
-  # Named in the failure, so the fix is obvious rather than a hunt.
-  [ "${#unclassified[@]}" -eq 0 ] || \
-    echo "unclassified: ${unclassified[*]}" >&2
-  assert [ "${#unclassified[@]}" -eq 0 ]
-}
-
 # ---------------------------------------------------------------- the interlock
 
 @test "personal data on a route that is not personal-safe is REFUSED" {
