@@ -680,7 +680,7 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
 test("a row carries its start place, hold, source and board row, and the head says what dispatch is doing", () => {
   const rows = [
     item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
-    item("q2", { priority: "low", hold: "after q1", held_on: "after q1", source: "human" }),
+    item("q2", { priority: "low", hold: "after q1", waits_for: "after q1", source: "human" }),
   ];
   const links = [{ row: "#board/apo-120" }, {}];
   load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });

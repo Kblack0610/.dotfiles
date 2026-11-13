@@ -348,7 +348,9 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>, up: Option<(usize, usiz
 fn why(queue: &Queue, state: State, head: &str) -> Option<String> {
     let mut by = std::collections::BTreeMap::new();
     for i in queue.in_state(state) {
-        *by.entry(i.waits_on()).or_insert(0_usize) += 1;
+        if let Some(w) = i.waits_on() {
+            *by.entry(w.phrase()).or_insert(0_usize) += 1;
+        }
     }
     let mut by: Vec<_> = by.into_iter().collect();
     by.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
@@ -683,7 +685,7 @@ pub(crate) mod tests {
         assert_eq!(needs.count.as_deref(), Some("2"), "only the human's turn");
         assert_eq!(
             needs.facts.last().map(String::as_str),
-            Some("Why waiting: 1 on an ask or report, 1 on its session's question")
+            Some("Why waiting: 1 on an ask, 1 on its session's question")
         );
         let review = node_at(&r, "review");
         assert_eq!(review.count.as_deref(), Some("3"));

@@ -544,19 +544,35 @@ impl Item {
         said(&self.merged).is_some()
     }
 
-    /// Why an item in review or waiting sits there, in the words of what its headers record.
-    /// Review is a PR to merge; waiting is the human's turn, by an ask, a note or the question
-    /// its live session shows.
-    pub fn waits_on(&self) -> &'static str {
-        match self.state {
-            State::Review if self.partial.as_deref() == Some("yes") => "on a final landing",
-            State::Review => "on its merge",
-            _ if self.extra_str("ask").is_some() || self.extra_str("report").is_some() => {
-                "on an ask or report"
-            }
-            _ if said(&self.note).is_some() => "parked with a note",
-            _ => "on its session's question",
+    /// Why an item in review or waiting sits there, in the words of what its headers record:
+    /// review is a PR to merge; waiting is the human's turn, by an ask, a report, a note or the
+    /// question its live session shows. None in any other state.
+    pub fn waits_on(&self) -> Option<Wait> {
+        Some(match self.state {
+            State::Review if self.partial.as_deref() == Some("yes") => Wait::Landing,
+            State::Review => Wait::Merge,
+            State::Waiting if self.extra_str("ask").is_some() => Wait::Ask,
+            State::Waiting if self.extra_str("report").is_some() => Wait::Report,
+            State::Waiting if said(&self.note).is_some() => Wait::Parked,
+            State::Waiting => Wait::Question,
+            _ => return None,
+        })
+    }
+
+    /// The HOLD cell: what the item waits on. A queued item's hold (`held_on`); a waiting or
+    /// review item's `Wait`, an ask with its id (`ask PGpGsi`).
+    pub fn waits_for(&self) -> Option<String> {
+        if let Some(h) = self.held_on() {
+            return Some(h);
         }
+        let w = self.waits_on()?;
+        let id = self
+            .extra_str("ask")
+            .map(|a| a.split('=').next().unwrap_or(a));
+        Some(match (w, id) {
+            (Wait::Ask, Some(id)) => format!("ask {id}"),
+            _ => w.word().to_string(),
+        })
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -575,6 +591,49 @@ impl Item {
         let i = PRIORITIES.iter().position(|p| *p == self.priority)?;
         let j = if up { i.checked_sub(1)? } else { i + 1 };
         PRIORITIES.get(j).copied()
+    }
+}
+
+/// What a waiting or review item waits on (`Item::waits_on`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// A partial landing's last PR (`partial: yes`).
+    Landing,
+    /// Its PR's merge.
+    Merge,
+    /// The human's answer to its ask (`ask`).
+    Ask,
+    /// The human's read of its report (`report`).
+    Report,
+    /// Parked with a note, which says what for.
+    Parked,
+    /// The question its live session shows.
+    Question,
+}
+
+impl Wait {
+    /// The HOLD cell's word, which is also its facet value.
+    pub fn word(self) -> &'static str {
+        match self {
+            Wait::Landing => "landing",
+            Wait::Merge => "merge",
+            Wait::Ask => "ask",
+            Wait::Report => "report",
+            Wait::Parked => "parked",
+            Wait::Question => "question",
+        }
+    }
+
+    /// The pipeline line's words: `3 on its merge`.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            Wait::Landing => "on a final landing",
+            Wait::Merge => "on its merge",
+            Wait::Ask => "on an ask",
+            Wait::Report => "on a report",
+            Wait::Parked => "parked with a note",
+            Wait::Question => "on its session's question",
+        }
     }
 }
 
@@ -1257,7 +1316,7 @@ impl crate::table::Row for QueueRow<'_> {
         "project", "priority", "state", "hold", "from", "kind", "acct", "plan",
     ];
     const LEAD: &'static str = "title";
-    const GLANCE: &'static [&'static str] = &["project", "priority", "state"];
+    const GLANCE: &'static [&'static str] = &["project", "state", "hold"];
     const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
 
     fn val(&self, col: &str) -> crate::table::Val {
@@ -1273,7 +1332,7 @@ impl crate::table::Row for QueueRow<'_> {
             "run" => num(self.timing.run),
             "project" => text(Some(i.project.trim()).filter(|p| !p.is_empty())),
             "priority" => text(Some(i.priority.trim()).filter(|p| !p.is_empty())),
-            "hold" => text(i.held_on().as_deref()),
+            "hold" => text(i.waits_for().as_deref()),
             "from" => text(i.source()),
             "row" => text(i.board_row().map(|(_, id)| id)),
             "kind" => text(said(&i.kind)),
@@ -1293,7 +1352,7 @@ impl crate::table::Row for QueueRow<'_> {
         match col {
             "hold" => vec![self
                 .item
-                .held_on()
+                .waits_for()
                 .and_then(|h| h.split_whitespace().next().map(str::to_string))
                 .map_or(crate::table::Val::None, crate::table::Val::Text)],
             _ => vec![self.val(col)],
@@ -2782,6 +2841,56 @@ mod tests {
         std::fs::write(&path, "{").unwrap();
         assert_eq!(sessions(&path, 1100), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_hold_cell_says_what_every_waiting_or_review_row_waits_on() {
+        let item = |state: State, f: &dyn Fn(&mut Item)| {
+            let mut i = Item {
+                state,
+                ..Item::default()
+            };
+            f(&mut i);
+            i
+        };
+        let cell = |i: &Item| i.waits_for();
+        let waiting = |f: &dyn Fn(&mut Item)| cell(&item(State::Waiting, f));
+        assert_eq!(
+            waiting(&|i| {
+                i.extra.insert("ask".into(), "OBAJTo=a".into());
+            })
+            .as_deref(),
+            Some("ask OBAJTo")
+        );
+        assert_eq!(
+            waiting(&|i| {
+                i.extra.insert("report".into(), "docs/x.md".into());
+            })
+            .as_deref(),
+            Some("report")
+        );
+        assert_eq!(
+            waiting(&|i| i.note = Some("no hardware arrived".into())).as_deref(),
+            Some("parked")
+        );
+        assert_eq!(waiting(&|_| {}).as_deref(), Some("question"));
+        assert_eq!(
+            cell(&item(State::Review, &|_| {})).as_deref(),
+            Some("merge")
+        );
+        assert_eq!(
+            cell(&item(State::Review, &|i| i.partial = Some("yes".into()))).as_deref(),
+            Some("landing")
+        );
+        // A queued item's hold still says its hold.
+        assert_eq!(
+            cell(&item(State::Queued, &|i| i.hold = Some("after a b".into()))).as_deref(),
+            Some("after a b")
+        );
+        // NEGATIVE CONTROLS: a ready, a running and a done item wait on nothing.
+        for st in [State::Queued, State::Running, State::Done] {
+            assert_eq!(cell(&item(st, &|_| {})), None, "{st:?}");
+        }
     }
 
     #[test]
