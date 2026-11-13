@@ -1325,3 +1325,10 @@ with zipfile.ZipFile(sys.argv[1], "w") as z:
   run "$SUBJECT" run-tags o/game
   assert_failure 2
 }
+
+@test "the service unit sends stderr to the journal, so a failed pass names its repo" {
+  # StandardOutput=null alone leaves StandardError=inherit: every "schedules-sync: <repo>: <why>"
+  # line is dropped, and the watch's journalctl action shows only "status=1/FAILURE".
+  run grep -c '^StandardError=journal$' "$REPO_ROOT/.config/systemd/user/schedules-sync.service"
+  assert_output 1
+}
