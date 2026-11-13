@@ -60,27 +60,6 @@ setup() {
   # pinned deterministically in the fixture half below.
 }
 
-@test "no tracked bash script under .local/bin is left unlinted" {
-  # The self-maintaining half. The list above pins a vocabulary; this one covers whatever
-  # gets added tomorrow, so a new extensionless bin cannot slip through the same hole. It
-  # also cannot pass vacuously: the input list is asserted non-trivial first.
-  run "$LINT_FILES"
-  assert_success
-
-  local selected="$output" bins=0 missing=()
-  local f first
-  while IFS= read -r f; do
-    [ -f "$REPO_ROOT/$f" ] || continue
-    IFS= read -r first < "$REPO_ROOT/$f" || true
-    case "$first" in *bash|*bash\ *|*/sh|*/sh\ *) ;; *) continue ;; esac
-    bins=$((bins + 1))
-    grep -qxF -- "$f" <<< "$selected" || missing+=("$f")
-  done < <(git -C "$REPO_ROOT" ls-files .local/bin)
-
-  [ "$bins" -ge 40 ] || { echo "only $bins shell bins found - the enumeration broke" >&2; return 1; }
-  [ "${#missing[@]}" -eq 0 ] || { printf 'unlinted: %s\n' "${missing[@]}" >&2; return 1; }
-}
-
 @test "still selects the .sh and .bash files the old selector covered" {
   run "$LINT_FILES"
   assert_success

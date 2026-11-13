@@ -47,7 +47,7 @@ check_cells() { # <doc>
 check_pinned() { # <doc>
   local b name bad=0
   while IFS=$'\037' read -r b name; do
-    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests" || { echo "$b: no @test \"$name\""; bad=1; }
+    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "$b: no @test \"$name\""; bad=1; }
   done < <(rows "$1" | awk -F'\037' '{ n = split($4, p, "`"); for (i = 2; i <= n; i += 2) print $1 "\037" p[i] }')
   return "$bad"
 }
