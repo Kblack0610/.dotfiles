@@ -715,3 +715,44 @@ rs_stub() {
   assert_failure 2
   assert_output --partial 'cannot read the targets of "shooter"'
 }
+
+@test "--requirements lists every Requirements row with its check kind, for no project" {
+  run "$CHECK" --requirements --json
+  assert_success
+  run jq -c '[.enforced_from, (.requirements | length)]' <<<"$output"
+  assert_output '["2026-11-19",8]'
+  run bash -c '"$0" --requirements --json | jq -r ".requirements[] | [.stage, (.applies | join(\",\")), .kind, .requirement] | @tsv"' "$CHECK"
+  assert_line --index 0 "$(printf 'draft\tbase\tpredicate\tA lab sheet')"
+  assert_line --index 4 "$(printf 'alpha\tbase\thuman\tPlays start to finish')"
+  assert_line --index 5 "$(printf 'alpha\tbase\tnot-yet\tA deploy workflow')"
+  # An escaped pipe stays one cell and one predicate.
+  assert_line --index 6 "$(printf 'alpha\tbase\tpredicate\tA cell with a | pipe')"
+  refute_output --partial 'outside Requirements'
+}
+
+@test "--requirements names only the backticked skills that exist, and a check that names one never runs" {
+  export SKILLS_DIR="$HOME/skills"
+  mkdir -p "$SKILLS_DIR/docs-write" "$SKILLS_DIR/half-made"
+  printf -- '---\nname: docs-write\n---\n' > "$SKILLS_DIR/docs-write/SKILL.md"
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` |
+EOF2
+  run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .skills]"' "$CHECK"
+  assert_success
+  # NEGATIVE CONTROL: a dir with no SKILL.md and an unknown name are not skills; a cell of two
+  # code spans names a check, so it is not-yet, never a predicate.
+  assert_output '[["app","store"],"not-yet",["docs-write"]]'
+}
+
+@test "--requirements takes no project, and a doc with no Requirements rows exits 2" {
+  run "$CHECK" shooter --requirements
+  assert_failure 2
+  assert_output --partial 'takes no project'
+  printf '# Stages\n' > "$STAGES_DOC"
+  run "$CHECK" --requirements
+  assert_failure 2
+  assert_output --partial 'no Requirements rows'
+}
