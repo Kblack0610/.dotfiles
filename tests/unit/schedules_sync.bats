@@ -1239,6 +1239,25 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output '["O/Game"]'
 }
 
+@test "a pass keys sync.json case-blind, so a list that respelled a repo leaves no stale twin for runs to read" {
+  # NEGATIVE CONTROL: keyed by the list's casing, the pass wrote github:o/game beside the old
+  # github:O/Game, and runs read the stale one first: "not yet past".
+  mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
+  echo '{"repos":{"github:O/Game":{"synced_at":"2025-11-05T09:00:00Z"},"github:o/game":{"synced_at":"2025-11-06T11:59:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:00:00Z
+  assert_success  # before any pass, runs reads the newest twin
+  game_files
+  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
+  echo '{"repos":{"github:O/Game":{"synced_at":"2025-11-05T09:00:00Z","error":null}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos | keys' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '["github:o/empty","github:o/game"]'
+  run "$SUBJECT" runs o/game --until 2025-11-06T11:00:00Z
+  assert_success
+}
+
 @test "prs-only: a tracker with prsOnly feeds the PR store and sync-prs, never its runs, schedules or state" {
   # o/game is a CI repo, which reads its PRs already
   jq '.trackers.work = {github: "o/work", prsOnly: true} | .trackers.game.prsOnly = true' "$PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP"

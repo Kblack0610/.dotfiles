@@ -1121,7 +1121,8 @@ def runs(argv, t):
         until = parse_iso(opts["--until"]) if "--until" in opts else None
     except ValueError:
         return 2, "runs: --since and --until are YYYY-MM-DDTHH:MM:SSZ"
-    entry = next((e for k, e in read_sync().items() if k.lower() == key), None)
+    # Case twins (a respelled repo the pass has not folded yet): the newest entry is the truth.
+    entry = max((e for k, e in read_sync().items() if k.lower() == key), key=lambda e: e.get("synced_at") or "", default=None)
     if entry is None:
         return 3, f"{argv[0]} is not in the run ledger (schedules-sync repos)"
     synced = when(entry.get("synced_at"))
@@ -1573,7 +1574,11 @@ def main(argv):
             bad += bool(sync_prs("github", repo, None, t))
             continue
         rows = []
-        entry = dict(sync.get(f"{forge}:{repo}") or {})
+        # Case-blind, as sync_prs is: a list that respells a repo (kblack0610 -> Kblack0610) folds
+        # the old key into this one, so `runs` never finds a stale twin first. The newest entry wins.
+        key = f"{forge}:{repo}"
+        twins = [sync.pop(k) for k in [k for k in sync if k.lower() == key.lower()]]
+        entry = dict(max(twins, key=lambda e: e.get("synced_at") or "", default={}))
         p = prev.get(repo) if forge == "github" else None
         state = None
         try:
@@ -1604,7 +1609,7 @@ def main(argv):
                 kept = dict(state or p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
                 kept["error"] = str(e)
                 out.append(kept)
-        sync[f"{forge}:{repo}"] = entry
+        sync[key] = entry
         # Per repo, so a cold pass the service timeout cuts keeps the repos it finished. The
         # ledger goes first: a crash between the two re-reads the repo, it never skips it.
         n, torn = write_ledger(last, n, torn, rows, t), False
