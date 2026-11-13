@@ -12,6 +12,8 @@
 #   ./docker.sh --shell             # interactive shell in the image, for debugging
 #   TMUX_REF=3.4 ./docker.sh        # sweep a different tmux
 #   TMUX_STOCK=1 ./docker.sh ...    # 3.8 without .local/src/tmux/patched: a negative control
+#   ./docker.sh --image             # print the image tag and exit (CI keys its image cache on it)
+#   ./docker.sh --build             # build the image if it is missing, and exit
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -25,8 +27,31 @@ REPO="$(cd "$HERE/.." && pwd)"
 TMUX_REF="${TMUX_REF:-3.8}"
 TMUX_STOCK="${TMUX_STOCK:-}"
 FZF_REF="${FZF_REF:-0.74.1}"
-IMAGE="${COCKPIT_TEST_IMAGE:-cockpit-tests:tmux${TMUX_REF}${TMUX_STOCK:+-stock}-fzf${FZF_REF}}"
+CONTEXT="$REPO/.local/src/tmux/patched"
 DOCKER="${DOCKER:-docker}"
+
+# One build identity: the default tag ends in a hash of everything the image is built from
+# (the Dockerfile, the context and the build args), so an image already present under that
+# tag is that build and is not built again. CI restores it from the Actions cache keyed on
+# the same tag (.github/actions/test-image). An image named by COCKPIT_TEST_IMAGE carries no
+# hash, so it is always built.
+build_hash() {
+  {
+    cat "$HERE/Dockerfile"
+    (cd "$CONTEXT" && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
+    printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF"
+  } | sha256sum | cut -c1-12
+}
+if [ -n "${COCKPIT_TEST_IMAGE:-}" ]; then
+  IMAGE="$COCKPIT_TEST_IMAGE"
+else
+  IMAGE="cockpit-tests:tmux${TMUX_REF}${TMUX_STOCK:+-stock}-fzf${FZF_REF}-$(build_hash)"
+fi
+
+if [ "${1:-}" = "--image" ]; then
+  echo "$IMAGE"
+  exit 0
+fi
 
 command -v "$DOCKER" >/dev/null 2>&1 || {
   echo "docker not found. Install it, or run only the tmux-free tiers: make -C tests test-fast" >&2
@@ -41,13 +66,24 @@ command -v "$DOCKER" >/dev/null 2>&1 || {
 # network. Cloning inside would also write into the bind mount as a different UID.
 [ -x "$HERE/vendor/bats-core/bin/bats" ] || make -C "$HERE" bootstrap
 
-echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
-# The context is the patch directory: the one thing the image copies.
-"$DOCKER" build \
-  --build-arg "TMUX_REF=$TMUX_REF" \
-  --build-arg "TMUX_STOCK=$TMUX_STOCK" \
-  --build-arg "FZF_REF=$FZF_REF" \
-  -t "$IMAGE" -f "$HERE/Dockerfile" "$REPO/.local/src/tmux/patched" >/dev/null
+if [ -z "${COCKPIT_TEST_IMAGE:-}" ] && "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "==> image $IMAGE (present, not rebuilt)"
+else
+  echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
+  # The context is the patch directory: the one thing the image copies.
+  "$DOCKER" build \
+    --build-arg "TMUX_REF=$TMUX_REF" \
+    --build-arg "TMUX_STOCK=$TMUX_STOCK" \
+    --build-arg "FZF_REF=$FZF_REF" \
+    -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
+  # A new hash leaves the old image tagged, and prune skips tagged images, so drop this
+  # tmux/fzf pair's older builds here. One another run is still using stays.
+  if [ -z "${COCKPIT_TEST_IMAGE:-}" ]; then
+    "$DOCKER" image ls --format '{{.Repository}}:{{.Tag}}' cockpit-tests | grep -F "${IMAGE%-*}-" |
+      grep -vxF "$IMAGE" | xargs -r "$DOCKER" rmi >/dev/null 2>&1 || true
+  fi
+fi
+[ "${1:-}" = "--build" ] && exit 0
 
 # --network none      the suite needs no network; nothing can phone home
 # --init              reap orphans. A crashed test can leave fzf/tmux children behind, and
