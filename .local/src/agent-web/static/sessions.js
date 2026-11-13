@@ -92,8 +92,10 @@ async function startTimer(name) {
 const sessionId = (a) => a.session || a.target;
 
 // A row is a link, so Back returns to the table as it was left.
+// The link carries the Sessions table's own view (its plain keys), never Runners' `r` or the
+// verdicts' `v` keys that share the URL.
 function sessionClick(r) {
-  const a = sessionAgent(r), q = st.views.sessions;
+  const a = sessionAgent(r), q = tblParams(st.views.sessions).toString();
   location.hash = `#sessions/sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
 }
 

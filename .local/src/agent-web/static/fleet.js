@@ -93,7 +93,8 @@ function fleetBody(d) {
 function fleetHead(d) {
   const errs = [...(fst.err ? [fst.err] : []), ...(d.errors || [])];
   return pfold("fleet-legend", "Legend", `<div class="muted legend">${esc((d.legend || []).join(" | ") || "-")}</div>`) +
-    (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
+    (errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "") +
+    (d.unled ? `<div class="cline warn"><a class="tl" href="#sessions/sessions">${esc(d.unled)}</a></div>` : "");
 }
 
 const VERDICT_COLOR = { dispatch: "var(--b-done)", skip: "var(--c-other)", failed: "var(--b-needs)", error: "var(--b-needs)" };
@@ -219,7 +220,9 @@ function runnerExtras(x) {
 // `#sessions/runners/<runner>`: summary first, then its runs with their logs, status and activity, calls,
 // what the registry says, the lane's extras, and the conf.
 function renderRunner(el) {
-  const back = `<a class="btn sm" href="#sessions/runners${st.views.sessions ? "?" + st.views.sessions : ""}">All runners</a>`;
+  // Back to the list with the Runners view only: the page's own `v` keys stay on the page.
+  const rv = tblParams(st.views.sessions, RUNNERS_PRE).toString();
+  const back = `<a class="btn sm" href="#sessions/runners${rv ? "?" + rv : ""}">All runners</a>`;
   const r = rst.data;
   if (!r) { paint(el, `<div class="bhead"><span>${esc(runnerName())}</span>${back}</div><div class="${rst.err ? "panel down" : "empty"}">${rst.err ? esc(rst.err) : "Loading..."}</div>`); return; }
   const g = r.registry, day = r.calls.day, week = r.calls.week;

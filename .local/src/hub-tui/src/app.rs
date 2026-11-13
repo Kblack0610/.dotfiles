@@ -2961,9 +2961,15 @@ impl App {
     /// the selected row in view while no detail is open.
     fn sessions_key(&mut self, k: KeyEvent) -> bool {
         let armed = |c: &Controls| c.confirm.is_some() || c.starting.is_some();
-        // Left/Right step the inner tabs, unless a query is typed or a confirm wants an account.
+        // Left/Right step the inner tabs from a list only: not while a query is typed, a confirm
+        // wants an account, or a session's detail or a runner's page is open.
         let typing = self.controls.table.typing.is_some() || self.fleet_table.typing.is_some();
-        if !typing && !armed(&self.controls) && matches!(k.code, KeyCode::Left | KeyCode::Right) {
+        let list = !self.controls.open && self.fleet_page.is_none();
+        if list
+            && !typing
+            && !armed(&self.controls)
+            && matches!(k.code, KeyCode::Left | KeyCode::Right)
+        {
             let to = crate::innertabs::step(
                 sessions_tab(),
                 self.sessions_inner,
@@ -7280,6 +7286,38 @@ mod tests {
         assert_eq!(a.sessions_inner, "runners");
         let (t, q) = crate::tabreq::parse("sessions shepherd").unwrap();
         a.handle(Msg::Tab(t, q));
+        assert_eq!(a.sessions_inner, "shepherd");
+    }
+
+    #[test]
+    fn left_and_right_switch_inner_tabs_only_from_a_list() {
+        let press = |a: &mut App, c| a.handle(Msg::Input(Event::Key(KeyEvent::from(c))));
+        let mut a = app(Tab::Sessions);
+        a.forecast_read.busy = true;
+        a.fleet_read.busy = true;
+        a.shepherd_read.busy = true;
+        // A session's detail open: the arrows stay on it.
+        a.controls.open = true;
+        press(&mut a, KeyCode::Right);
+        assert_eq!((a.sessions_inner, a.controls.open), ("sessions", true));
+        // A typed query: the arrows are the input's.
+        a.controls.open = false;
+        press(&mut a, KeyCode::Char('/'));
+        assert!(a.controls.table.typing.is_some());
+        press(&mut a, KeyCode::Left);
+        assert_eq!(a.sessions_inner, "sessions");
+        press(&mut a, KeyCode::Esc);
+        // A runner's page open: the arrows stay on it.
+        a.sessions_go("runners");
+        a.fleet_page = Some("shepherd".into());
+        press(&mut a, KeyCode::Right);
+        assert_eq!(
+            (a.sessions_inner, a.fleet_page.as_deref()),
+            ("runners", Some("shepherd"))
+        );
+        // Negative control: from the Runners list they step.
+        a.fleet_page = None;
+        press(&mut a, KeyCode::Right);
         assert_eq!(a.sessions_inner, "shepherd");
     }
 

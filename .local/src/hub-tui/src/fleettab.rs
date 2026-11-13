@@ -64,6 +64,10 @@ pub fn page(
     for l in wrap(&f.legend, " | ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
+    let unled: Vec<&str> = f.unled.split_whitespace().collect();
+    for l in wrap(&unled, " ", w) {
+        out.push(clip_line(Line::styled(l, p.warn()), w));
+    }
     out.extend(wrap_spans(t.status(&f.who, p), w));
     // The table's head is its first line; the selected row is under it.
     let sel = (!rows.is_empty()).then(|| out.len() + 1 + t.sel.min(rows.len() - 1));
@@ -1000,6 +1004,7 @@ pub mod tests {
             at: NOW,
             errors: vec!["dispatch: unreadable".into()],
             legend: vec!["lead runs the sessions".into(), "observe reports".into()],
+            unled: String::new(),
             workers: vec![
                 Worker {
                     name: "dream".into(),
@@ -1326,6 +1331,26 @@ pub mod tests {
         assert_eq!(out[at].style, p.sel());
         assert_ne!(out[at - 1].style, p.sel());
         assert_eq!(sel, Some(at), "the line it names is the reversed one");
+    }
+
+    #[test]
+    fn the_sessions_no_lead_oversees_are_a_line_over_the_table() {
+        let mut f = fixture();
+        assert!(
+            !text(&f, 100).contains("no lead oversees"),
+            "none unled, no line"
+        );
+        f.unled = "2 sessions no lead oversees (no tier 1 runner has OVERSEES=sessions); the Sessions table lists them".into();
+        let l = lines(&f, &DataTable::default(), 40);
+        let at = l
+            .iter()
+            .position(|x| x.starts_with("2 sessions no lead"))
+            .expect("the line shows");
+        assert!(
+            l[at + 1].starts_with("oversees") || l[at].contains("oversees"),
+            "wrapped, not clipped: {l:?}"
+        );
+        assert!(l.iter().any(|x| x.contains("table lists them")), "{l:?}");
     }
 
     #[test]

@@ -194,6 +194,41 @@ fn clock(t: i64) -> String {
 /// lead takes the dispatched ones).
 pub fn build(workers: &[Worker], state: &Value, at: i64) -> Vec<Who> {
     let mut rows: Vec<Who> = workers.iter().map(|w| runner(w, at)).collect();
+    let (counts, _) = leads(workers, state);
+    for r in &mut rows {
+        if let Some((_, n)) = counts.iter().find(|(n, _)| *n == r.who) {
+            r.under = sessions(*n);
+        }
+    }
+    rows.sort_by(|a, b| {
+        a.tier
+            .cmp(&b.tier)
+            .then(rank(&a.state).cmp(&rank(&b.state)))
+            .then_with(|| a.who.cmp(&b.who))
+    });
+    rows
+}
+
+/// `1 session`, `N sessions`.
+fn sessions(n: usize) -> String {
+    format!("{n} session{}", if n == 1 { "" } else { "s" })
+}
+
+/// The line over the Runners table when some live sessions have no lead (a hand-started one
+/// while only `OVERSEES=dispatched` is configured): they are counted nowhere else on Runners
+/// since its session rows went to the Sessions table. Empty when every one has a lead.
+pub fn unled(workers: &[Worker], state: &Value) -> String {
+    match leads(workers, state).1 {
+        0 => String::new(),
+        n => format!(
+            "{} no lead oversees (no tier 1 runner has OVERSEES={ALL_SESSIONS}); the Sessions table lists them",
+            sessions(n)
+        ),
+    }
+}
+
+/// Each lead's count of the live sessions it oversees, and how many sessions no lead takes.
+fn leads<'a>(workers: &'a [Worker], state: &Value) -> (Vec<(&'a str, usize)>, usize) {
     let boss = |what: &str| {
         workers
             .iter()
@@ -201,7 +236,7 @@ pub fn build(workers: &[Worker], state: &Value, at: i64) -> Vec<Who> {
             .map(|w| w.name.as_str())
     };
     let (all, dispatched) = (boss(ALL_SESSIONS), boss(DISPATCHED));
-    let mut counts: Vec<(&str, usize)> = vec![];
+    let (mut counts, mut unled): (Vec<(&str, usize)>, usize) = (vec![], 0);
     for x in state["sessions"].as_array().into_iter().flatten() {
         if x["target"].as_str().unwrap_or_default().is_empty() {
             continue;
@@ -212,25 +247,15 @@ pub fn build(workers: &[Worker], state: &Value, at: i64) -> Vec<Who> {
         } else {
             all
         };
-        if let Some(lead) = lead {
-            match counts.iter_mut().find(|(n, _)| *n == lead) {
+        match lead {
+            Some(lead) => match counts.iter_mut().find(|(n, _)| *n == lead) {
                 Some((_, n)) => *n += 1,
                 None => counts.push((lead, 1)),
-            }
+            },
+            None => unled += 1,
         }
     }
-    for r in &mut rows {
-        if let Some((_, n)) = counts.iter().find(|(n, _)| *n == r.who) {
-            r.under = format!("{n} sessions");
-        }
-    }
-    rows.sort_by(|a, b| {
-        a.tier
-            .cmp(&b.tier)
-            .then(rank(&a.state).cmp(&rank(&b.state)))
-            .then_with(|| a.who.cmp(&b.who))
-    });
-    rows
+    (counts, unled)
 }
 
 /// The legend above the table: `kind meaning` for each row of agentctl's `lanes.tsv`
@@ -527,7 +552,7 @@ mod tests {
         let r = rows();
         let under = |n: &str| r.iter().find(|x| x.who == n).unwrap().under.clone();
         // One session the dispatcher started; the hand one and the one with no item are the rest.
-        assert_eq!(under("fleet-dispatch"), "1 sessions");
+        assert_eq!(under("fleet-dispatch"), "1 session");
         assert_eq!(under("shepherd"), "2 sessions");
         assert_eq!(
             under("zeta"),
@@ -537,6 +562,28 @@ mod tests {
         // With no lead for the dispatched ones, the all-sessions lead counts every one.
         let r = build(&[worker("shepherd", 1, "sessions")], &state(), 1000);
         assert_eq!(r[0].under, "3 sessions");
+    }
+
+    #[test]
+    fn a_session_no_lead_takes_is_counted_over_the_table() {
+        // Only a dispatched lead: the hand-started session and the one with no item have none.
+        let only = [worker("fleet-dispatch", 1, "dispatched")];
+        assert_eq!(build(&only, &state(), 1000)[0].under, "1 session");
+        assert_eq!(
+            unled(&only, &state()),
+            "2 sessions no lead oversees (no tier 1 runner has OVERSEES=sessions); the Sessions table lists them"
+        );
+        // An all-sessions lead takes every one, so nothing is left over.
+        let both = [
+            worker("fleet-dispatch", 1, "dispatched"),
+            worker("shepherd", 1, "sessions"),
+        ];
+        assert_eq!(unled(&both, &state()), "");
+        assert_eq!(
+            unled(&only, &Value::Null),
+            "",
+            "an unreadable state counts none"
+        );
     }
 
     #[test]

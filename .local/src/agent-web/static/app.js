@@ -180,7 +180,8 @@ function select(a) {
 
 // No session open: the page is the inner tabs' strip and one group each, the table (sessions.js)
 // and the folds under it, the runners (fleet.js) and the shepherd (shepherd.js); TABS.sessions
-// reads only the one shown.
+// reads only the one shown. It draws only the empty boards: its one caller, TABS.sessions.show,
+// then calls inner(), whose render of the shown inner tab fills its board.
 function overview() {
   st.sel = null; st.start = null; st.end = null;
   $("d-dot").hidden = $("v-seg").hidden = true;
@@ -444,6 +445,10 @@ function route(hash) {
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  // A section that left its tab keeps the query as written: it is that section's view, not the
+  // retired tab's table (`#fleet/tokens?q=x` is Costs' q).
+  const moved = MOVED[name + "/" + arg.toLowerCase()];
+  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query: query || moved[2] || "", section: moved[1] });
   const old = Object.hasOwn(RETIRED_TAB_PAGES, name) ? RETIRED_TAB_PAGES[name] : null;
   if (old && query) {
     // The retired tab's table keeps its view under the prefix it has on its new tab.
@@ -451,8 +456,6 @@ function route(hash) {
     for (const k of TBL_KEYS) if (p.has(k)) { p.set(old[2] + k, p.get(k)); p.delete(k); }
     query = p.toString();
   }
-  const moved = MOVED[name + "/" + arg.toLowerCase()];
-  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query: query || moved[2] || "", section: moved[1] });
   if (old && arg) return innerRoute({ name, tab: old[0], arg: old[1] + "/" + arg, query });
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);

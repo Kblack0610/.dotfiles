@@ -248,6 +248,10 @@ test("KIND and FOR say what each row is and why it is deployed, under the lanes.
   vm.runInContext("fst", ctx).data = { ...fleetData, legend: [] };
   ctx.renderRunners();
   assert.match(box.innerHTML, /<div class="muted legend">-<\/div>/, "no lanes.tsv reads as -");
+  assert.doesNotMatch(box.innerHTML, /cline warn/, "every session has a lead: no line");
+  vm.runInContext("fst", ctx).data = { ...fleetData, unled: "2 sessions no lead oversees" };
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /<div class="cline warn"><a class="tl" href="#sessions\/sessions">2 sessions no lead oversees<\/a><\/div>/, "the sessions no lead takes, a line over the table");
 });
 
 test("a click on a runner row sets the hash; a link, or a row outside Runners, does not", () => {
@@ -315,6 +319,11 @@ test("#fleet lands on Sessions' Runners, and #fleet/<runner> on that runner's pa
   assert.deepEqual([view.get("rs"), view.get("rq"), view.get("s"), view.get("q"), view.get("x")], ["failed", "kind:lead", null, null, "1"]);
   // A Fleet section that moved before keeps its MOVED target.
   assert.deepEqual([r("#fleet/tokens").tab, r("#fleet/tokens").section], ["costs", "tokens"]);
+  // Its query is the moved section's own view, never rewritten to the Runners prefix.
+  const tq = new URLSearchParams(r("#fleet/tokens?q=foo&s=x").query);
+  assert.deepEqual([r("#fleet/tokens?q=foo").tab, tq.get("q"), tq.get("s"), tq.get("rq")], ["costs", "foo", "x", null]);
+  const rp = new URLSearchParams(r("#fleet/inbox-triage?q=foo").query);
+  assert.deepEqual([rp.get("rq"), rp.get("q")], ["foo", null], "a runner page's view still takes the prefix");
   assert.deepEqual([r("#fleet/workers").tab, r("#fleet/workers").arg], ["sessions", "runners"]);
   // `#fleet/<word>` is always that runner's page, even one named like a Sessions inner tab (rule 8;
   // the hub's `hub tab 'fleet shepherd'` is tabreq.rs's test of the same).
@@ -385,6 +394,15 @@ test("the Runners timer ticks only while Runners shows: another inner tab clears
   ctx.document.hidden = false;
   assert.deepEqual([cleared, asked.filter((u) => u.startsWith("/api/fleet")).length, vm.runInContext("behind", ctx)], [1, 0, false], "off Runners the tick clears, reads nothing, marks nothing behind");
   Object.assign(ctx, { setInterval: () => 0, clearInterval() {} });
+});
+
+test("a runner page's All runners link carries the Runners view only", async () => {
+  serve({ "inbox-triage": runnerPage("inbox-triage") });
+  ctx.setTab("sessions", "runners", "q=mine&rq=dispatch&vs=failed", "runners/inbox-triage");
+  await flush();
+  const h = box.innerHTML;
+  st.views.sessions = "";
+  assert.match(h, /href="#sessions\/runners\?rq=dispatch">All runners<\/a>/, "not the Sessions table's q or the verdicts' v keys");
 });
 
 test("a runner page draws its runs, status next, activity, 24h and 7d calls, extras and conf", async () => {

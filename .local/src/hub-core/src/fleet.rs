@@ -99,6 +99,9 @@ pub struct Fleet {
     pub workers: Vec<Worker>,
     /// Sessions' Runners table: the runners by tier (`who`).
     pub who: Vec<who::Who>,
+    /// The line over that table counting the live sessions no lead oversees (`who::unled`),
+    /// empty when every one has a lead.
+    pub unled: String,
     /// The line above the table, one `kind meaning` per kind (`who::legend`).
     pub legend: Vec<String>,
     pub dispatch: Dispatch,
@@ -547,6 +550,7 @@ pub fn files(paths: &Paths) -> Fleet {
         }
     };
     let who = who::build(&workers, &sessions, at);
+    let unled = who::unled(&workers, &sessions);
     let mut legend = who::legend(&paths.lanes);
     legend.push(crate::fleet_cost::FLEET_LEGEND.into());
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
@@ -555,6 +559,7 @@ pub fn files(paths: &Paths) -> Fleet {
         errors,
         workers,
         who,
+        unled,
         legend,
         dispatch,
         judge,

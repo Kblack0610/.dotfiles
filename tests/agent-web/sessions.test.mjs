@@ -151,6 +151,8 @@ test("every row is a link to its page, keeping the table's view for Back", () =>
   assert.equal(run("location.hash"), "#sessions/sessions/hub%2Fb%3A1-id", "a session on a pane, by its session id");
   run(`st.views.sessions = "q=pr%3Aopen"; sessionClick(sst.data.rows[2])`);
   assert.equal(run("location.hash"), "#sessions/sessions/s9?q=pr%3Aopen", "an ended one, by its session id");
+  run(`st.views.sessions = "q=pr%3Aopen&rq=dispatch&vs=failed"; sessionClick(sst.data.rows[2])`);
+  assert.equal(run("location.hash"), "#sessions/sessions/s9?q=pr%3Aopen", "the Sessions view only, not Runners' r or the verdicts' v keys");
   run(`st.views.sessions = ""; sessionClick({ ...sst.data.rows[2], session_id: "" })`);
   assert.equal(run("location.hash"), "#sessions/sessions/ucp-394", "no session id, by its row key");
 });

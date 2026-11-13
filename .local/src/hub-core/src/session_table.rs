@@ -54,14 +54,19 @@ pub fn is_unlinked(s: &Value) -> bool {
 }
 
 /// Who started a session, from its queue item's `origin`: `dispatch` (fleet-dispatch's run or
-/// redispatch), `resume`, `hand` (started by hand), or blank when the item does not say.
-pub fn started_by(origin: &str) -> &'static str {
-    match origin {
-        "run" | "redispatch" => "dispatch",
-        "resume" => "resume",
-        "hand" => "hand",
-        _ => "",
+/// redispatch), else the origin as written (`resume`, `hand`, or one this list does not know),
+/// blank when the item does not say.
+pub fn started_by(origin: &str) -> String {
+    match origin.trim() {
+        "run" | "redispatch" => "dispatch".into(),
+        o => o.into(),
     }
+}
+
+/// `started_by` of an item's `origin` field, the one reader for a state document's item and a
+/// queue item's frontmatter alike.
+fn by_of(origin: Option<&Value>) -> String {
+    started_by(origin.and_then(Value::as_str).unwrap_or(""))
 }
 
 /// Where a row came from.
@@ -344,7 +349,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         activity: str_of(s, "activity_line").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
-        by: started_by(str_of(&s["item"], "origin")).to_string(),
+        by: by_of(s["item"].get("origin")),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
         session_id: sid.to_string(),
@@ -418,7 +423,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         bucket: "DONE".into(),
         project: i.project.clone(),
         task: i.title(),
-        by: started_by(&extra_str(i, "origin")).to_string(),
+        by: by_of(i.extra.get("origin")),
         item: i.slug.clone(),
         session_id: sids.first().cloned().unwrap_or_default(),
         pr_state: if pr.is_none() {
@@ -704,7 +709,20 @@ mod tests {
         assert_eq!(by("lab/d:2"), Val::Text("hand".into()));
         assert_eq!(by("lab/d:3"), Val::None, "no item says nobody");
         assert_eq!(by("ucp-394"), Val::Text("resume".into()), "a queue row");
-        assert_eq!(started_by("bogus"), "");
+        assert_eq!(
+            started_by("bogus"),
+            "bogus",
+            "an origin this list does not know shows as written"
+        );
+        let mut f2 = feed();
+        f2.items[1].extra.insert("origin".into(), " sweep ".into());
+        let r2 = rows(&s, &vocab(), &f2, &[]);
+        let q = r2.iter().find(|x| x.key == "ucp-394").unwrap();
+        assert_eq!(
+            q.val("by"),
+            Val::Text("sweep".into()),
+            "a queue row's unknown origin too"
+        );
         let v = View::new::<SessionRow>("by:dispatch", "", "", "");
         let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
         assert_eq!(kept, ["lab/d:1"]);
