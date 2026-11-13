@@ -363,7 +363,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" next
   assert_failure
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed failed, dead: cancel it or set after=<slug>"
+  assert_output "after first closed failed, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why"
   "$AQ" add --project game --slug first --repeat "again"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
@@ -376,9 +376,9 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug second --after first "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: cancel it or set after=<slug>"
+  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why"
 }
 
 # ar-39: after: is a list of slugs.
@@ -443,7 +443,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug two --after c,x "two" >/dev/null
   "$AQ" move x done --status failed >/dev/null
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
-  assert_output "after x closed failed, dead: cancel it or set after=<slug>"
+  assert_output "after x closed failed, dead: read who closed it and why in agent-queue show x, then set after=<slug> or cancel this with --why"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
@@ -1662,6 +1662,61 @@ EOF
   run "$AQ" cancel s
   assert_success
   run grep -- "-L default kill-session -t =game-agent-3" "$NOTES_FIXTURE/calls.log"
+  assert_success
+}
+
+# 2026-11-12: two cleanup sessions cancelled 425 items and the items said only "cancelled".
+@test "cancel from a session needs --why, and records who and why on the item and in the event" {
+  "$AQ" add --project game --slug w1 "w1"
+  "$AQ" add --project game --slug w2 "w2"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel w1
+  assert_failure; assert_output --partial "needs --why"
+  [ -n "$(item queued w1)" ]
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 AGENT_QUEUE_ITEM=other run "$AQ" cancel w1 --why "superseded by w2"
+  assert_success
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-w1.md)"
+  [ "$(field "$f" status)" = cancelled ]
+  [ "$(field "$f" cancelled_by)" = sess-9 ]
+  [ "$(field "$f" cancel_why)" = "superseded by w2" ]
+  assert_called "--action item-cancelled"
+  assert_called "--by sess-9 --why superseded by w2"
+  # a script with only the item slug is named by it
+  AGENT_QUEUE_ITEM=sweeper run "$AQ" cancel w2
+  assert_failure; assert_output --partial "needs --why"
+  AGENT_QUEUE_ITEM=sweeper run "$AQ" cancel w2 --why "dup"
+  assert_success
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-w2.md)" cancelled_by)" = sweeper ]
+}
+
+@test "cancel at a terminal with no session needs no --why and writes no canceller" {
+  "$AQ" add --project game --slug h1 "h1"
+  run "$AQ" cancel h1
+  assert_success
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-h1.md)"
+  [ "$(field "$f" status)" = cancelled ]
+  [ -z "$(field "$f" cancelled_by)" ]
+  [ -z "$(field "$f" cancel_why)" ]
+  "$AQ" add --project game --slug h2 "h2"
+  run "$AQ" cancel h2 --why "not needed"
+  assert_success
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-h2.md)" cancel_why)" = "not needed" ]
+}
+
+@test "move --status cancelled takes the same --why, and --why on any other close is refused" {
+  "$AQ" add --project game --slug m1 "m1"
+  "$AQ" add --project game --slug m2 "m2"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m1 done --status cancelled
+  assert_failure; assert_output --partial "needs --why"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m1 done --status cancelled --why "gone"
+  assert_success
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-m1.md)"
+  [ "$(field "$f" cancelled_by)" = sess-9 ]
+  [ "$(field "$f" cancel_why)" = gone ]
+  run "$AQ" move m2 done --status failed --why "x"
+  assert_failure; assert_output --partial "--why records a cancel"
+  # a failed close from a session still needs no reason
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m2 done --status failed
   assert_success
 }
 
