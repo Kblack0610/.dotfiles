@@ -623,13 +623,26 @@ cmd_tokens() {
 # number in its expect_cmd. Exit 0 at or under the ceiling, 1 over, 2 when Prometheus cannot
 # be read or answers with anything but a vector (a watch must trip then too: a blind spend
 # alarm is a failed alarm), 64 for bad arguments. An empty vector counts as $0.
+# _spent subtracts each series' last sample before the window, so it needs Prometheus history
+# from before the window: with less (a fresh TSDB, as when Prometheus moved node on 2026-11-12
+# and the hourly check read $448 for an hour that cost $123), it would count each live
+# session's lifetime cost as window spend. That exits 2 too, naming the short history.
+SPEND_HISTORY_MARGIN=300  # seconds of history past the window: a few scrape and OTel export intervals
 cmd_spend() {
-  local verb="${1:-}" win="${2:-}" max="${3:-}" v
-  if [ "$verb" != check ] || ! [[ "$win" =~ ^[0-9]+[smhdw]$ ]] || ! [[ "$max" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  local verb="${1:-}" win="${2:-}" max="${3:-}" v age need
+  if [ "$verb" != check ] || ! [[ "$max" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! [[ "$win" =~ ^([0-9]+)([smhdw])$ ]]; then
     echo "usage: agent-usage spend check <window e.g. 1h> <max-usd>" >&2; return 64
   fi
+  case "${BASH_REMATCH[2]}" in s) need=1 ;; m) need=60 ;; h) need=3600 ;; d) need=86400 ;; w) need=604800 ;; esac
+  need=$(( BASH_REMATCH[1] * need + SPEND_HISTORY_MARGIN ))
   [ -n "${CC_PROM_URL:-}" ] || { echo "spend: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
   local PROM_TIMEOUT=20
+  age="$(prom_q 'time() - min(prometheus_tsdb_lowest_timestamp_seconds)' | jq -er '.data.result[0].value[1]' 2>/dev/null)" \
+    && [[ "$age" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+    || { echo "spend: Prometheus history age unreadable" >&2; return 2; }
+  if (( ${age%%.*} < need )); then
+    echo "spend: Prometheus history starts $(prom_dur "$age") ago, too short for a $win window (no baseline before it)" >&2; return 2
+  fi
   v="$(prom_q "$(_spent claude_code_cost_usage_USD_total "$win")" \
        | jq -er '.data.result | if type != "array" then error("not a vector") elif length == 0 then "0" else .[0].value[1] end' 2>/dev/null)" \
     && [[ "$v" =~ ^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$ ]] \
