@@ -20,6 +20,7 @@ name: shell tests
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
 #   lint   shellcheck + shfmt + house rules, in the pinned image.
+#   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
 on:
@@ -248,6 +249,26 @@ jobs:
           path: tests/artifacts/*.screen
           if-no-files-found: ignore
           retention-days: 14
+
+  # The one check branch protection requires. It is green only when every gating job ran and
+  # passed: a job that failed, was cancelled or was skipped reads red here, so a dropped shard
+  # or a job a bad `if:` skipped cannot merge. weights may fail (fast falls back to test
+  # counts) and report only draws, so neither is a gate. tests/unit/ci_gate.bats keeps `needs`
+  # complete: a new job either joins it or is named there as not a gate. always(), not
+  # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
+  gate:
+    name: gate
+    needs: [fast, ui, rust, skills, lint]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Every gating job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
 
   # Draws only: the tier jobs are the gate, and fail-on-error: false keeps a failed test from
   # failing this job too. The reporter writes the job summary (use-actions-summary, its
