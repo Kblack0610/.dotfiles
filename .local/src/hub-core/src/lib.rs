@@ -27,6 +27,7 @@ pub mod gateway;
 pub mod home;
 pub mod host_history;
 pub mod infra;
+pub mod item_history;
 pub mod jobs;
 pub mod junit;
 pub mod kube_proxy;

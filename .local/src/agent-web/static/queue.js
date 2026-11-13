@@ -31,6 +31,8 @@ const qst = tblTab({
     stats: null, projects: [], busy: false, msg: "", draft: null,
     // candCounts: the Candidates heading's counts, read whether the fold is open or shut.
     candCounts: null, candErr: null,
+    // hist: an opened row's History fold, by slug: {} while reading, then {data} or {err}.
+    hist: {},
     open: {},
   },
   head: (t) => (t.err ? `<div class="panel down">${esc(t.err)}</div>` : "") + qFlow() + qTableHead(),
@@ -266,7 +268,7 @@ function qFlowTail() {
 const qLinks = (i) => ((i.links || []).length ? `<div class="cline qlinks">${i.links.map((l) => `${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}`).join(", ")}</div>` : "");
 
 // An opened row, drawn under it: every header, the stages with the minutes between them (hub-core's `timeline`),
-// the task as typed, and for an active item what it needs from the human and its actions.
+// the task as typed, its history (read on opening), and for an active item what it needs from the human and its actions.
 function qDetail(i) {
   const active = i.state !== "done";
   const a = qAgent(i);
@@ -291,7 +293,24 @@ function qDetail(i) {
       ["project", i.project], ["kind", i.type], ["size", i.size], ["acct", i.account], ["pr", i.pr_label || i.pr],
       ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags], ["from", i.from],
       ["session", i.session], ["plan", i.plan], ["phases", i.phases],
-    ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open) + acts + `</div>`;
+    ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open) + qHist(i) + acts + `</div>`;
+}
+
+// An opened row's History fold (hub-core item_history): read when it opens, dropped when it shuts.
+const HIST_K = "hist:";
+function qHist(i) {
+  const h = qst.hist[i.slug], d = h && h.data;
+  const sum = d ? `History, ${d.attempts} attempt${d.attempts === 1 ? "" : "s"} (${d.steps} step${d.steps === 1 ? "" : "s"}${d.steps > d.lines.length ? `, last ${d.lines.length}` : ""})` : "History";
+  const inner = !h ? "" : h.err ? `<div class="panel down">No history: ${esc(h.err)}</div>` : !d ? `<div class="muted">Reading history...</div>`
+    : d.lines.length ? d.lines.map((l) => `<div class="cline"><span class="muted">${stamp(l.at)}</span> ${esc(l.text)}</div>`).join("")
+    : `<div class="muted">No steps in the last 30 days.</div>`;
+  return cfold(HIST_K + i.slug, sum, inner, qst.open);
+}
+async function readHist(slug) {
+  const h = (qst.hist[slug] = {});
+  try { h.data = await api(`/api/queue/history?slug=${encodeURIComponent(slug)}`); } catch (e) { h.err = e.message; }
+  // A fold shut while it read dropped this read; only the current one paints.
+  if (qst.hist[slug] === h) qst.render();
 }
 
 function qCompose() {
@@ -492,6 +511,13 @@ $("queue").addEventListener("toggle", (e) => {
     // The element's own state, every time: a redraw that lands before this async event re-inserts
     // the fold as the map last said, so comparing with the map would lose the click.
     qst.open[k] = e.target.open;
+    // A History fold reads on opening, and the toggle a redraw fires while it reads asks for none.
+    if (k.startsWith(HIST_K)) {
+      const slug = k.slice(HIST_K.length);
+      if (e.target.open && !qst.hist[slug]) { readHist(slug); qst.render(); }
+      else if (!e.target.open && qst.hist[slug]) { delete qst.hist[slug]; qst.render(); }
+      return;
+    }
     if (k !== CAND_K) return;
     // Open with no rows for this snapshot (a shut fold dropped them) reads them and says so; the
     // toggle that redraw fires, with the read out, does nothing, nor does a redraw of an open fold
