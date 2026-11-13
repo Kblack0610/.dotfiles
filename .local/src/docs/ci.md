@@ -63,7 +63,7 @@ One decision list. Walk it top to bottom for every red.
 
 | Repo | CI doc | PR gate budget (p90) | Gate shape | Budget alert |
 | --- | --- | --- | --- | --- |
-| unity-core-playground | `~/dev/bnb/games/engine/unity-core-playground/docs/operations/ci.md` (cost: `ci-cost.md`) | `.github/ci-budgets.json` `tiers.gate`, 15 min (2026-11-13), judged by `scripts/ci-cost.py --days 1` `.gate.wall.p90` (other gate-time figures, such as `fleet-bench`, use other windows and are not the budget) | affected classes on the pool, nightly runs every class | Sentinel `playground-gate-budget`, hourly; the pool wait under it, `unity-queue-wait` |
+| unity-core-playground | `~/dev/bnb/games/engine/unity-core-playground/docs/operations/ci.md` (cost: `ci-cost.md`) | 15 min, `.github/ci-budgets.json` `tiers.gate`, judged by `scripts/ci-cost.py --days 1` (p90 114 min on 2026-11-13) | affected classes on the pool, nightly runs every class | Sentinel `playground-gate-budget`, hourly |
 | platform | `~/dev/bnb/platform/docs/deployment/PIPELINES.md` | not declared (fleet default 10) | turbo affected plus draft tier, full on develop/main and nightly | none yet |
 | dotfiles | skill `shell-test-harness`, section 5 | 5 min, provisional (`rules.jsonl`; PR p90 was 9.0 min on 2026-11-10, before the picked gate) | picked set plus broad set, full on main; shards weighed by the last green main JUnit | Sentinel `dotfiles-gate-budget`, hourly |
 | dotfiles-private, home-config, unity-core, unity-core-harness, bnb-game-servers, dodginballs, binks-agent-orchestrator, personal-sites, crypto-indexer | none yet | fleet default 10 | none written | none yet |
