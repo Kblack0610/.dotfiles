@@ -106,3 +106,22 @@ overlay_install() {
   assert_success
   assert_output --partial "secret scan is off"
 }
+
+@test "with gh signed in, the private overlay is cloned by gh, not over ssh" {
+  # A fleet worker signed in to gh over https has no github.com host key, so the
+  # ssh clone failed and the overlay never arrived (razer-laptop, 2026-11-13).
+  sandbox_init
+  [ "$HOME" != "$(getent passwd "$(id -u)" | cut -d: -f6)" ]
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nexit 0\n' >"$BATS_TEST_TMPDIR/bin/stow"
+  printf '#!/bin/sh\necho "gh $*" >>"%s/calls"\n[ "$1 $2" = "repo clone" ] && git init -q "$4"\nexit 0\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/gh"
+  printf '#!/bin/sh\necho "ssh $*" >>"%s/calls"\nexit 255\n' "$BATS_TEST_TMPDIR" >"$BATS_TEST_TMPDIR/bin/ssh"
+  chmod +x "$BATS_TEST_TMPDIR/bin/"*
+  deploy_skills() { :; }
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run setup_dotfiles_private
+  assert_success
+  [ -d "$HOME/.dotfiles-private/.git" ]
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output --partial "gh repo clone Kblack0610/.dotfiles-private $HOME/.dotfiles-private"
+  refute_output --partial "ssh "
+}
