@@ -829,18 +829,22 @@ sibling_pr() {
 # GitHub's answer wins: origin/HEAD is set at clone time and goes stale when the default branch changes.
 # The symref is the offline fallback, and a name this clone has no remote ref for is unused.
 default_base() {
-  local d="$1" key b slug
+  local d="$1" key pass b slug confirmed=
   slug="$(repo_slug "$d")" || { echo origin/main; return; }
-  key="$MAIN_CACHE/base_$slug"
-  if [ ! -s "$key" ] || [ $(( $(date +%s) - $(date -r "$key" +%s) )) -ge "$FLEET_BASE_TTL" ]; then
-    mkdir -p "$MAIN_CACHE"
+  key="$MAIN_CACHE/base_$slug" pass="$CACHE/base_$slug"
+  if [ -s "$key" ] && [ $(( $(date +%s) - $(date -r "$key" +%s) )) -lt "$FLEET_BASE_TTL" ]; then cat "$key"; return; fi
+  if [ ! -s "$pass" ]; then
     b="$(cd "$d" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
-    if [ -z "$b" ] || ! git -C "$d" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1; then
+    if [ -n "$b" ] && git -C "$d" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1; then
+      confirmed=1
+    else
       b="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; b="${b#origin/}"
     fi
-    echo "origin/${b:-main}" > "$key"
+    # Only GitHub's answer outlives the pass: the symref may be the stale one, and a refused call must not pin it.
+    if [ -n "$confirmed" ]; then mkdir -p "$MAIN_CACHE"; echo "origin/$b" > "$key.$$" && mv "$key.$$" "$key"; fi
+    echo "origin/${b:-main}" > "$pass"
   fi
-  cat "$key"
+  cat "$pass"
 }
 
 # main_state: main_runs JSON (any order) on stdin -> one line per workflow whose latest

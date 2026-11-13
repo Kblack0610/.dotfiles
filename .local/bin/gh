@@ -196,9 +196,10 @@ budget_left() {
     umask 077
     mkdir -p "$dir" 2>/dev/null || true
     {
-      flock -n 9 || exit 0
-      line=$(GH_WRAPPED=1 timeout 5 "$real" api rate_limit --jq '.resources.core | "\(.remaining) \(.reset)"' 2>/dev/null) || line="- -"
-      printf '%s %s\n' "${line:-- -}" "$now" >"$f.$$" && mv "$f.$$" "$f"
+      if flock -n 9; then
+        line=$(GH_WRAPPED=1 timeout 5 "$real" api rate_limit --jq '.resources.core | "\(.remaining) \(.reset)"' 2>/dev/null) || line="- -"
+        printf '%s %s\n' "${line:-- -}" "$now" >"$f.$$" && mv "$f.$$" "$f"
+      fi
     } 9>"$f.lock" 2>/dev/null || true
     read -r rem reset at <"$f" 2>/dev/null || true
   fi
@@ -208,11 +209,11 @@ budget_left() {
 # defer_read <gh args>: succeed (and say why on stderr) when this is a background caller's read and
 # the shared budget is under the reserve with its reset still ahead.
 defer_read() {
-  local who rem reset now="${EPOCHSECONDS:-$(date +%s)}"
+  local who a rem reset now="${EPOCHSECONDS:-$(date +%s)}"
   who=$(caller)
   case " $GH_DEFER_CALLERS " in *" $who "*) ;; *) return 1 ;; esac
   is_read "$@" || return 1
-  case "${1:-} ${2:-}" in 'api rate_limit' | 'api -i'*) return 1 ;; esac
+  for a in "$@"; do [ "$a" != rate_limit ] || return 1; done # the free probe that shows the reset
   read -r rem reset <<<"$(budget_left)"
   [[ "$rem" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 1
   [ "$rem" -lt "$GH_BUDGET_RESERVE" ] && [ "$reset" -gt "$now" ] || return 1

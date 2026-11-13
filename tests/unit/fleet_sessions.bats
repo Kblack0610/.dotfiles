@@ -1951,6 +1951,8 @@ research_item() {
   # gh unreachable once the name is stale: the symref decides, stale or not
   FLEET_BASE_TTL=0 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = '3 file(s) not on the default branch, no PR' ]
+  # the fallback is not kept: the cache still holds the name GitHub gave
+  [ "$(cat "${MAIN_CACHE:-$HOME/.cache/fleet}"/base_*)" = origin/develop ]
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {

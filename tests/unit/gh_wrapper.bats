@@ -284,6 +284,8 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_success
   run as_caller schedules-sync api rate_limit
   assert_success
+  run as_caller schedules-sync api -H 'Accept: application/json' rate_limit
+  assert_success
   run as_caller gate-line.py run view 5 -R other/x --json status
   assert_success
   run as_caller agent-land pr checks 5 -R other/x
@@ -307,4 +309,14 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   echo "0 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
   run as_caller schedules-sync run view 5 -R acme/x --json status
   assert_success
+}
+
+@test "budget: a conditional read (api -i) from a listed caller waits like any other; a process that loses the renewal lock uses the old reading" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller schedules-sync api -i repos/other/x/actions/runs/5
+  mkdir -p "$GH_CALLS_DIR"
+  echo "40 $(( $(date +%s) + 1800 )) 1" > "$GH_CALLS_DIR/budget"   # stale
+  exec 8>"$GH_CALLS_DIR/budget.lock"; flock -n 8                    # another process holds the renewal
+  run -75 as_caller schedules-sync api repos/other/x/pulls/5
+  exec 8>&-
 }
