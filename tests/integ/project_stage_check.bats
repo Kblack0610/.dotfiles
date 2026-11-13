@@ -604,3 +604,73 @@ rs_stub() {
   run "$CHECK" shooter --stage prod
   assert_line --regexp '^PASS +prod +Live on a public channel'
 }
+
+# Shooter's root is Assets/Games/Shooter in $REPO, so its id is shooter.
+@test "stages.md: a game's title screen, icon and splash, taste and rating rows read its own files" {
+  local root="$REPO/Assets/Games/Shooter"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^FAIL +[a-z]+ +${r##*| }"
+  done
+  mkdir -p "$root/Resources/Games" "$REPO/scripts/build/games" "$REPO/Assets/Br" "$REPO/docs/games" "$REPO/store/shooter"
+  printf '{"standalone": true, "titleScreen": {"modes": [{"label": "Play", "game": "shooter"}]}}\n' > "$root/Resources/Games/shooter.json"
+  printf '{"branding": {"icon": "Assets/Br/icon.png", "splash": ["Assets/Br/splash.png"]}}\n' > "$REPO/scripts/build/games/shooter.json"
+  touch "$REPO/Assets/Br/icon.png" "$REPO/Assets/Br/splash.png"
+  printf '# Shooter: look\n\n## Taste\n\nDraft\n' > "$REPO/docs/games/shooter-look.md"
+  printf '{"rating": {"answers": {"violence": "fantasy"}}}\n' > "$REPO/store/shooter/game.json"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^PASS +[a-z]+ +${r##*| }"
+  done
+  # NEGATIVE CONTROLS: a title screen with no modes, a splash file missing, empty answers.
+  printf '{"standalone": true, "titleScreen": {"modes": []}}\n' > "$root/Resources/Games/shooter.json"
+  real_row 'alpha | game | A title screen'; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A title screen'
+  rm "$REPO/Assets/Br/splash.png"
+  real_row 'alpha | game | An app icon and splash'; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +An app icon and splash'
+  printf '{"rating": {"answers": {}}}\n' > "$REPO/store/shooter/game.json"
+  real_row 'beta | game | Content rating done'; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Content rating done'
+}
+
+@test "stages.md: the store listing row reads a game's listing.json or an app's metadata.yaml" {
+  real_row 'alpha | game, app | Its store listing'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  mkdir -p "$REPO/store/shooter/steam"; printf '{}\n' > "$REPO/store/shooter/steam/listing.json"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +Its store listing'
+  # An app: its listing is mobile/metadata.yaml in its own folder.
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  rm -r "$REPO/store"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  mkdir -p "$REPO/Assets/Games/Shooter/mobile"; touch "$REPO/Assets/Games/Shooter/mobile/metadata.yaml"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +Its store listing'
+}
+
+@test "stages.md: an app's icon and splash, brand sheet and a UI audit under 90 days" {
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  local root="$REPO/Assets/Games/Shooter"
+  mkdir -p "$root/mobile/assets" "$root/docs" "$REPO/docs/plans"
+  printf '{"expo": {"icon": "./assets/icon.png", "splash": {"image": "./assets/splash.png"}}}\n' > "$root/mobile/app.json"
+  touch "$root/mobile/assets/icon.png"
+  real_row "alpha | app | A mobile app's icon"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp "^FAIL +alpha +A mobile app's icon"
+  touch "$root/mobile/assets/splash.png"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp "^PASS +alpha +A mobile app's icon"
+  real_row 'alpha | app | A brand sheet'
+  printf '# Brand\n\n## Palette\n' > "$root/docs/brand.md"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A brand sheet'
+  printf '\n## Logo\n' >> "$root/docs/brand.md"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +A brand sheet'
+  real_row 'beta | app | A UI polish pass'
+  touch "$REPO/docs/plans/$(date -d '120 days ago' +%F)_Shooter_ui_audit.md"; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +A UI polish pass'
+  touch "$REPO/docs/plans/$(date -d '10 days ago' +%F)_Shooter_ui_audit.md"; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +A UI polish pass'
+}

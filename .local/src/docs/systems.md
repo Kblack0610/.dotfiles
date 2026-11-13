@@ -70,7 +70,7 @@ A row's `Applies` narrows it inside its system: a `ui` row for `game` only skips
 | look | game | The game's doc states its taste (aim, references, palette, light, what it must never look like) | `grep -lis '^## Taste' "$REPO"/docs/games/*.md 2>/dev/null \| xargs -r -n1 basename \| grep -qi "^$(basename "$ROOT")"` | Without one, every new asset pulls the style a different way and every review grades against a guess |
 | look | game | Each named view graded against the taste and the repo's look review tests, from screenshots | human | Drift is visible only next to the reference (`game-eval`) |
 | onboarding | game, app | A new player reaches the core loop without outside help | human | Players who are lost in the first minutes do not come back |
-| store | game, app | The listing text and art are kept in the repo | `[ -d "$REPO/store/$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')" ] \|\| [ -d store ]` | A listing edited only in the console cannot be reviewed or restored |
+| store | game, app | The listing text and art are kept in the repo | `[ -d "$REPO/store/$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')" ] \|\| [ -d store ] \|\| [ -f mobile/metadata.yaml ]` | A listing edited only in the console cannot be reviewed or restored |
 | auth | app | Sign-in uses the platform's shared auth package, never a copy | not yet | A second auth path is a second set of holes |
 | data | app | Schema changes are migrations in the repo | `git -C "$REPO" ls-files \| grep -qi '/migrations/'` | A schema changed by hand cannot be replayed on the next environment |
 | data | app | Backups run, and a restore has been done | human | A backup that was never restored is a guess |
