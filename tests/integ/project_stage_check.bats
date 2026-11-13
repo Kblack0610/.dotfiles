@@ -438,7 +438,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'ptask shooter --agent add'
 }
 
-@test "file: with no --stage and no epic the target is the stage after the declared one" {
+@test "file: with no --stage the target is the stage after the declared one, or a later open epic's" {
   declare_stage alpha
   epics '[]'
   printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
@@ -452,6 +452,13 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_line --regexp '^filed +beta +A changelog$'
   assert_called 'notes ptask shooter add epic(stage): prod to standard'
+  # A leftover epic for a stage already passed never holds the target below the next one.
+  declare_stage alpha; : > "$NOTES_FIXTURE/calls.log"
+  epics '[{"id":"sh-1","system":"stage","title":"dev to standard"}]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
 }
 
 @test "file: an open agent row whose check now passes is closed by its id with the check as proof" {
@@ -471,6 +478,16 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   parses '- [x] chore(beta): A changelog <!-- id:sh-4 -->'
   run "$CHECK" shooter --file
   assert_success
+  assert_not_called 'done'
+}
+
+@test "file: a title that passes on one row and fails on another stays open" {
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_line --regexp '^open +beta +A changelog$'
   assert_not_called 'done'
 }
 

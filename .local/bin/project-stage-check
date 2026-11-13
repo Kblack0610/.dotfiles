@@ -17,8 +17,8 @@
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
 # --file reconciles the project's agent board with the check: each FAIL row becomes a story under
 # the open epic for its target, and each open board row whose title is a row that now PASSes is
-# closed with the check as proof. A stage's target is --stage, else the stage the open
-# `epic(stage): <stage> ...` names, else the stage after the declared one; with no open epic for
+# closed with the check as proof. A stage's target is --stage, else the highest of the
+# stage after the declared one and the stages open `epic(stage):` rows name; with no open epic for
 # it, `epic(stage): <stage> to standard` is filed on the human sheet first. A system's row goes
 # under `epic(<system>): ...`, which `notes ptask add` files when it is missing (standing.rs). A
 # row already on either sheet under the same title, open or closed or dropped, is never filed
@@ -99,7 +99,7 @@ stage_epic() {
 # add`, whose twin check holds a concurrent run off an open row.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
-  local target area text full chk epic title row state declared lane id
+  local target area text full chk epic title row state declared lane id today
   [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
@@ -113,17 +113,20 @@ file_gaps() {
     passes="$(jq -r '.systems[].criteria[] | select(.result == "PASS") | .criterion' <<<"$check")"
   else
     ladder="$(notes projects --stages 2>/dev/null)"
-    # With no --stage, the target is the stage the open `epic(stage):` row names first, else the
-    # stage after the declared one (that check holds every row below it too, so a regression at
-    # today's stage is filed with the next stage's gaps). prod has no next: it checks itself.
-    [ -n "$TARGET" ] || TARGET="$(jq -r --arg ladder "$ladder" '[.[] | select(.system == "stage")
-      | (.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":")) as $s
-      | select($ladder | split(" ") | index($s)) | $s][0] // empty' <<<"$epics")"
+    # With no --stage, the target is the highest of the stage after the declared one and the stages
+    # the open `epic(stage):` rows name: an epic opened by hand for a later stage keeps its work
+    # coming, and a leftover epic for a stage already passed never pins the target below the next.
+    # The check of a stage holds every row below it, so a regression at today's stage is filed too.
+    # prod has no next: it checks itself.
     if [ -z "$TARGET" ]; then
       # shellcheck disable=SC2086 # the ladder is a word list on purpose
       declared="$(lab_head_tag "$(lab_front_page "$LAB")" $ladder)"
       [ -n "$declared" ] || { echo "project-stage-check: \"$NAME\" declares no stage; pass --stage" >&2; exit 2; }
-      TARGET="$(awk -v s="$declared" '{ for (i = 1; i <= NF; i++) if ($i == s) { print (i < NF ? $(i + 1) : $i); exit } }' <<<"$ladder")"
+      TARGET="$(jq -r --arg ladder "$ladder" --arg d "$declared" '($ladder | split(" ")) as $l
+        | ($l | index($d)) as $i | [([$i + 1, ($l | length) - 1] | min)]
+          + [.[] | select(.system == "stage") | (.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":")) as $s
+            | $l | index($s) | select(. != null)]
+        | $l[max]' <<<"$epics")"
     fi
     check="$("$0" "$NAME" ${TARGET:+--stage "$TARGET"} --json)"; rc=$?
     [ "$rc" -le 1 ] || exit "$rc"
@@ -132,22 +135,24 @@ file_gaps() {
       | [$t, .stage, .requirement, .check] | @tsv' <<<"$check")"
     passes="$(jq -r '.requirements[] | select(.result == "PASS") | .requirement' <<<"$check")"
   fi
+  # A title that also fails (two rows or systems sharing a text) is a gap, never met.
+  passes="$(grep -vxF -f <(cut -f3 <<<"$gaps" | grep .) <<<"$passes" || true)"
+  today="$(date +%F)"
 
   # A row this check filed closes once its check passes: an open agent-sheet row whose title is
   # a PASS row's, closed by its id with the check as proof. A regression files it again.
   while IFS= read -r full; do
     [ -n "$full" ] || continue
     title="$(title_of "$full")"
-    while IFS=$'\t' read -r state title lane id; do
+    while IFS=$'\t' read -r state _ lane id; do
       [ "$state" = open ] && [ "$lane" = agent ] && [ -n "$id" ] || continue
-      if notes ptask "$NAME" --agent done "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $(date +%F)" >/dev/null; then
+      if notes ptask "$NAME" --agent done "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
         met=$((met + 1)); printf 'met     %-10s  %s\n' "$id" "$title"
       else
         failed=$((failed + 1)); printf 'error   %-10s  %s (ptask done failed)\n' "$id" "$title"
       fi
     done < <(awk -F'\t' -v t="$title" '$2 == t' <<<"$have")
   done <<<"$passes"
-
 
   # Each row's priority is its own (no writer defaults one): #high while the gate it fails blocks
   # the stage, #low for a report-only gap and for a system's.
