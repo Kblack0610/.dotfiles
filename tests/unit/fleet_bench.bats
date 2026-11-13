@@ -2451,6 +2451,18 @@ failed() {
   assert_output --partial 'fix(hold): ci-aaa11111-shell-tests went red after cleanup merge hit'
 }
 
+@test "hold: a prs-only repo is skipped quietly, so hold rows still retire" {
+  hold_setup
+  echo '[{"forge":"prs-only","repo":"O/R","base":"main","host":null,"clone":null}]' > "$GHD/repos"
+  touch "$GHD/unsynced"   # a runs read would exit 3 (not in the ledger): it must not happen
+  cleanup kept -3600 5 aaa11111 .local/bin/tool
+  board_row ' ' 'fix(hold): liveness-179 went red after cleanup merges kept (pr 5 at aaa11111)'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'is not in the run ledger'
+  assert_line 'retire: fix(hold): liveness-179 went red'
+}
+
 @test "hold: main going red on a merge's area test names that merge, and only that one" {
   hold_setup
   cleanup hit -7200 5 aaa11111 .local/bin/tool
