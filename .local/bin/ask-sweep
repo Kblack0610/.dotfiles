@@ -172,8 +172,9 @@ $prs
 $TYPES"
   wd="$(mktemp -d)"
   # shellcheck disable=SC2086 # a word list by design, overridable in tests
-  # An empty directory, so no repo's Stop hook answers in place of the model.
-  out="$(cd "$wd" && $ASK_SWEEP_CMD -p "$prompt" 2>/dev/null)"; rc=$?
+  # An empty directory, so no repo's Stop hook answers in place of the model. The prompt goes on
+  # stdin: a board's open rows outgrow the kernel's 128 KiB cap on one argument (E2BIG, exit 126).
+  out="$(cd "$wd" && $ASK_SWEEP_CMD -p <<<"$prompt" 2>/dev/null)"; rc=$?
   rm -rf -- "$wd"
   case "$rc" in
     0) ;;

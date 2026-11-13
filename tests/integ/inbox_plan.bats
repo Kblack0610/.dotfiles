@@ -22,13 +22,24 @@ setup() {
   unset NOTES_PROFILE
   printf '{"paths": {"%s": "scratch"}, "trackers": {"scratch": {"code": "sc"}}}\n' "$SANDBOX/code/scratch" >"$PROJECT_MAP_FILE"
   export INBOX_PLAN_CMD=model-stub
-  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nprintf "%%s\\n" "$@" > "$NOTES_FIXTURE/args.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\nrc="$(sed -n "$(wc -l <"$NOTES_FIXTURE/model.log")p" "$NOTES_FIXTURE/model.rc" 2>/dev/null)"\nexit "${rc:-0}"\n' >"$SANDBOX/bin/model-stub"
+  printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\nfor a; do case "$a" in *"The row:"*) echo "the prompt came as an argument" >\&2; exit 64 ;; esac; done\n{ printf "%%s\\n" "$@"; cat; } > "$NOTES_FIXTURE/args.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\nrc="$(sed -n "$(wc -l <"$NOTES_FIXTURE/model.log")p" "$NOTES_FIXTURE/model.rc" 2>/dev/null)"\nexit "${rc:-0}"\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
 }
 
 sheet() { printf '# scratch\n\nVersion: v0.1.0\n\n## Inbox\n\n## Tasks\n%b\n' "$1" >"$SHEET"; }
 answer() { { echo INBOX-PLAN-START; echo "$1"; echo INBOX-PLAN-END; } >"$NOTES_FIXTURE/model.out"; }
 record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
+
+@test "a board whose open rows pass 128 KiB is still planned: the prompt goes on stdin" {
+  # 2026-11-12: ask-sweep's call outgrew one argument (E2BIG, exit 126) on agent-runtime's 780 rows.
+  rows="$(for i in $(seq 1 3000); do printf -- '- [ ] fix(ui): row %s %s <!-- id:sc-%s -->\\n' "$i" "$(printf 'x%.0s' $(seq 1 90))" "$((i + 10))"; done)"
+  sheet "- [ ] feat(brand): a brand kit #size/s #plan <!-- id:sc-1 -->\\n$rows"
+  answer '{"goal": "one kit", "approach": ["collect the assets"], "checks": ["the guide renders"], "size": "s", "split": []}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  [ "$(wc -c < "$NOTES_FIXTURE/args.txt")" -gt 131072 ] || fail "the fixture never passed the argument cap"
+}
 
 @test "a #plan row gets goal, approach, checks and its split rows, and loses the tag" {
   sheet '- [ ] feat(brand): a brand kit #size/s #plan #high <!-- id:sc-1 -->\n  was: brand kit for the studio\n- [ ] fix(ui): the menu flickers #low <!-- id:sc-2 -->\n'
