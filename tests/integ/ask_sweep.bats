@@ -21,7 +21,7 @@ setup() {
   stub fleet-sessions 'cat "$NOTES_FIXTURE/live.json" 2>/dev/null; exit 0'
   stub gh 'echo "$PWD" >> "$NOTES_FIXTURE/gh.log"; exit 0'
   # The model saves each prompt and answers from model.out.<board>, else model.out
-  stub model-stub 'b="$(sed -n "1s/^## Messages (\(.*\))$/\1/p" <<<"$2")"; echo "$b" >> "$NOTES_FIXTURE/model.log"; printf "%s" "$2" > "$NOTES_FIXTURE/prompt.$b"
+  stub model-stub '[ "$#" = 1 ] || { echo "the prompt came as an argument" >&2; exit 64; }; p="$(cat)"; b="$(sed -n "1s/^## Messages (\(.*\))$/\1/p" <<<"$p")"; echo "$b" >> "$NOTES_FIXTURE/model.log"; printf "%s" "$p" > "$NOTES_FIXTURE/prompt.$b"
     cat "$NOTES_FIXTURE/model.out.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.out" 2>/dev/null; exit "$(cat "$NOTES_FIXTURE/model.rc.$b" 2>/dev/null || cat "$NOTES_FIXTURE/model.rc" 2>/dev/null || echo 0)"'
   touch -d '2 days ago' "$ASK_SWEEP_DIR/first-run"
   # The board: add files a row, refused as an open twin (exit 3) when that text is open already;
@@ -230,6 +230,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   refute_output --partial 'client words'
   refute_output --partial 'loose words'
   assert_equal "$(sort -u "$NOTES_FIXTURE/gh.log" | paste -sd,)" "$R/board,$R/two"
+}
+
+@test "a board whose open rows pass 128 KiB still reaches the model: the prompt goes on stdin" {
+  # 2026-11-12: agent-runtime's 780 open rows made one argument too long (E2BIG, exit 126).
+  message 'two words' two
+  for i in $(seq 1 1500); do printf 'p\t%s\tk\t- [ ] row %s %s\n' "$i" "$i" "$(printf 'x%.0s' $(seq 1 90))"; done > "$NOTES_FIXTURE/ptask.two.list"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1 $2" = "ptask two" ] && [ "$3" = --agent ] && cat "$NOTES_FIXTURE/ptask.two.list"; exit 0'
+  answer
+  run "$SWEEP" run
+  assert_success
+  refute_output --partial 'model call failed'
+  [ "$(wc -c < "$NOTES_FIXTURE/prompt.two")" -gt 131072 ] || fail "the fixture never passed the argument cap"
 }
 
 @test "a second run with nothing new makes no call; a new message asks only its board" {
