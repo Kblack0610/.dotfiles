@@ -2722,6 +2722,26 @@ settle_sessionless() {
   echo "flagged queue item $1 ($flag)"
 }
 
+# red_items <item json lines> -> the red items among them, a tripped watch's first, so the floor slot
+# its item adds is not taken by another red.
+red_items() {
+  jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" red ")))
+    | sort_by((" " + (.tags // "") + " ") | contains(" watch ") | not)[]' <<<"$1"
+}
+
+# red_floor_due <red item json lines> -- one is queued and the red floor may start it past the gates.
+red_floor_due() { [ -n "$1" ] && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; }
+
+# red_floor_start <red item json lines> <room> <why> -- start them on the red floor. The start goes
+# past <why>, the gates that held the pass, without proving them open, so the hold stands (start_item).
+red_floor_start() {
+  local rc
+  say "$3; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR, plus ${RED_WATCH:-0} for tripped watches)"
+  RED_PASS=1 FLOOR_GATE=$3; start_items "$1" "$2"; rc=$?
+  RED_PASS=0 FLOOR_GATE=''
+  return "$rc"
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -2738,12 +2758,8 @@ run_queue() {
     # A red the machine gates hold may still start on the red floor; then only reds start this pass,
     # a tripped watch's first, so the floor slot its item adds is not taken by another red.
     # Its start goes past those gates without proving them open, so the hold stands (start_item).
-    if is_red "$head" && RED_PASS=1 red_floor_open && [ -z "$(RED_PASS=1 gate)" ]; then
-      say "$why; red items start on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR, plus ${RED_WATCH:-0} for tripped watches)"
-      RED_PASS=1 FLOOR_GATE=$why; start_items "$(jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" red ")))
-        | sort_by((" " + (.tags // "") + " ") | contains(" watch ") | not)[]' <<<"$items")" "$2"
-      local rc=$?; RED_PASS=0 FLOOR_GATE=''; return "$rc"
-    fi
+    local reds; reds=$(red_items "$items")
+    if is_red "$head" && red_floor_due "$reds"; then red_floor_start "$reds" "$2" "$why"; return; fi
     # A project nothing is working on may start one item past real idle: one busy
     # project cannot hold every other project's work behind the idle floor.
     local idle_items; idle_items=$(idle_project_items "$items")
@@ -4151,6 +4167,16 @@ cmd_run() {
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
     [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
+    # The red floor goes past a full fleet as it goes past load and the weekly pace: from 11-12 11:40
+    # a fleet over its target started no red for 21h while 20 watch reds waited (ar-1531 wants an
+    # owner on each the hour it trips). Its own bound, DISPATCH_RED_FLOOR plus one per tripped watch
+    # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
+    local reds slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
+    [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
+    if [ "$slots" -gt 0 ]; then reds=$(red_items "$(next_items)"); fi
+    if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
+      UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "at $full"; return
+    fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are

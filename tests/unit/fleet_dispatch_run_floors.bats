@@ -95,6 +95,29 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
+@test "red floor: a fleet past its pace target still starts a red, a tripped watch's first, up to the floor; a plain item waits" {
+  # 2026-11-12: 58 live sessions against a target of 30 returned NOOP before the red floor, and no red started for 21h.
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=1 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project game --slug r2 --tags 'red cause:b' "fix r2" >/dev/null
+  agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
+  # Negative control first: no red floor, the full fleet starts nothing.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'at 8 live sessions, the away pace target is 6; red items start on the red floor (DISPATCH_RED_FLOOR=1, plus 1 for tripped watches)'
+  assert_equal "$(grep -o 'started queue item [a-z0-9]*' <<<"$output" | head -n 1)" 'started queue item w1'
+  assert_output --partial 'started queue item r1 on the red floor'
+  refute_output --partial 'started queue item r2'
+  refute_output --partial 'started queue item p'
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {
   red_held_machine
   export DISPATCH_RED_FLOOR=1
