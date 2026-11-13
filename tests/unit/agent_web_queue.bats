@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list and its conversation, the Fleet runner rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab, the Costs tab and the tab skeleton they share (tblTab)
+# agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list and its conversation, the Sessions Runners rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab, the Costs tab and the tab skeleton they share (tblTab)
 # are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,projects,focus,log,sessions,convo,fleet,alerts,infra,jobs,schedules,releases,costs,table,heads}.test.mjs); skips where node is absent.
 
 setup() {

@@ -1,27 +1,24 @@
-//! The Fleet tab: hub-core's `fleet`, shared with the TUI. It is all files, read on every
-//! request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is read
-//! only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
+//! Sessions' Runners inner tab: hub-core's `fleet`, shared with the TUI. It is all files, read on
+//! every request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is
+//! read only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
 //! The answer judge's verdicts are a table of their own under the `v` key prefix (`vq`, `vs`,
 //! `vsort`, `vdir`), on Log's Judges section and on the ask-judge runner page alike.
 
-use std::collections::HashSet;
-
-use hub_core::fleet::{self, who, who::Who, AskVerdict, Fleet, Paths};
+use hub_core::fleet::{self, who::Who, AskVerdict, Fleet, Paths};
 use hub_core::table::View;
 use serde::Deserialize;
 
 use crate::cache::off;
 
-/// The table view the page keeps in its URL (`q`, `s`, `sort`, `dir`, as every table's) and the
-/// tier 1 rows it has folded (`fold`, comma-separated runner names).
+/// The table view the page keeps in its URL. Runners shares `#sessions?...` with the Sessions
+/// table, so its keys carry the `r` prefix (`rq`, `rs`, `rsort`, `rdir`; table.js `pre`).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct FleetQuery {
-    pub q: String,
-    pub s: String,
-    pub sort: String,
-    pub dir: String,
-    pub fold: String,
+    pub rq: String,
+    pub rs: String,
+    pub rsort: String,
+    pub rdir: String,
     #[serde(flatten)]
     pub verdicts: VerdictQuery,
 }
@@ -53,7 +50,7 @@ pub struct RunnerQuery {
     pub verdicts: VerdictQuery,
 }
 
-/// A Fleet read. The files are read afresh each time, so there is nothing to keep.
+/// A runners read. The files are read afresh each time, so there is nothing to keep.
 pub async fn get(q: FleetQuery) -> String {
     let f = off(|| fleet::files(&Paths::from_env()))
         .await
@@ -64,32 +61,20 @@ pub async fn get(q: FleetQuery) -> String {
     render(f, &q)
 }
 
-/// The Fleet with its `who` rows cut to the view and folds, and the controls that drew them
-/// (`table`; `hidden` is how many rows the folds hold back), and the verdicts Log lists.
+/// The Fleet with its `who` rows cut to the view, the controls that drew them (`table`), and the
+/// verdicts Log lists.
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let cap = match q.verdicts.vall {
         Some(_) => usize::MAX,
         None => hub_core::layout::fold_rows("verdicts"),
     };
     f.judge.view(&q.verdicts.view(), cap);
-    let view = View::new::<Who>(&q.q, &q.s, &q.sort, &q.dir);
+    let view = View::new::<Who>(&q.rq, &q.rs, &q.rsort, &q.rdir);
     let all = std::mem::take(&mut f.who);
-    let (rows, mut table) = view.summary(&all);
-    let folded: HashSet<String> = q
-        .fold
-        .split(',')
-        .filter(|n| !n.is_empty())
-        .map(String::from)
-        .collect();
-    let shown = who::unfolded(rows.clone(), &folded, &view);
-    let hidden = rows.len() - shown.len();
-    // The links run beside the rows the page gets, and the folds dropped some.
-    table.links = hub_core::table::links(&shown);
+    let (rows, table) = view.summary(&all);
     let out = serde_json::to_value(&f).map(|mut v| {
-        v["who"] = serde_json::json!(shown);
+        v["who"] = serde_json::json!(rows);
         v["table"] = serde_json::json!(table);
-        v["table"]["shown"] = shown.len().into();
-        v["hidden"] = hidden.into();
         // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
         v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
         v
@@ -100,7 +85,8 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         })
 }
 
-/// One runner's page, read only when `#fleet/<name>` opens. An unknown name is the caller's 404.
+/// One runner's page, read only when `#sessions/runners/<name>` opens. An unknown name is the
+/// caller's 404.
 pub async fn runner(q: RunnerQuery) -> Result<String, String> {
     let name = q.name.clone();
     let mut r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
@@ -113,77 +99,55 @@ pub async fn runner(q: RunnerQuery) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hub_core::fleet::who::Opens;
 
-    fn row(tier: u8, key: &str, parent: Option<&str>, kids: usize) -> Who {
+    fn row(tier: u8, who: &str, state: &str) -> Who {
         Who {
             tier,
-            kind: if tier == 3 { "session" } else { "lead" }.into(),
-            who: key.into(),
-            opens: if tier == 3 {
-                Opens::Session
-            } else {
-                Opens::Runner
-            },
-            key: key.into(),
-            state: "working".into(),
+            kind: if tier == 1 { "lead" } else { "observe" }.into(),
+            who: who.into(),
+            state: state.into(),
             since: None,
             cost_24h: None,
             cost_estimated: false,
-            activity: String::new(),
             purpose: String::new(),
             doing: String::new(),
             under: String::new(),
-            project: "dotfiles".into(),
-            parent: parent.map(String::from),
-            kids,
         }
     }
 
     fn fleet() -> Fleet {
         Fleet {
-            who: vec![
-                row(1, "shepherd", None, 1),
-                row(3, "lab/a:1", Some("shepherd"), 0),
-            ],
+            who: vec![row(1, "shepherd", "working"), row(2, "briefing", "failed")],
             ..Fleet::default()
         }
     }
 
-    fn q(fold: &str, text: &str) -> FleetQuery {
-        FleetQuery {
-            fold: fold.into(),
-            q: text.into(),
-            ..FleetQuery::default()
-        }
+    fn who_of(s: &str) -> serde_json::Value {
+        serde_json::from_str(s).unwrap()
     }
 
-    fn who_of(out: &str) -> serde_json::Value {
-        serde_json::from_str(out).unwrap()
+    fn read(q: &FleetQuery) -> serde_json::Value {
+        who_of(&render(fleet(), q))
     }
 
     #[test]
-    fn a_folded_tier_one_row_hides_its_children_and_the_page_says_how_many() {
-        let v = who_of(&render(fleet(), &q("shepherd", "")));
-        assert_eq!(v["who"].as_array().unwrap().len(), 1);
-        assert_eq!(v["hidden"], 1);
+    fn each_row_links_its_runner_page_on_sessions_runners() {
+        let v = read(&FleetQuery::default());
+        assert_eq!(v["who"].as_array().unwrap().len(), 2);
+        assert_eq!(v["table"]["shown"], 2);
         assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
-        assert!(v["table"].is_object());
         assert_eq!(
             v["table"]["links"],
-            serde_json::json!([{"who": "#fleet/shepherd", "project": "#projects/dotfiles"}]),
-            "the links match the rows the folds left"
+            serde_json::json!([{"who": "#sessions/runners/shepherd"}, {"who": "#sessions/runners/briefing"}])
         );
-        let v = who_of(&render(fleet(), &q("", "")));
-        assert_eq!(v["table"]["links"][1]["who"], "#sessions/lab%2Fa%3A1");
     }
 
     #[test]
     fn the_verdicts_view_rides_the_fleet_read_and_counts_every_verdict() {
-        let uri = "/api/fleet?q=lab&vs=wrong&vq=ship".parse().unwrap();
+        let uri = "/api/fleet?rq=lab&vs=wrong&vq=ship".parse().unwrap();
         let axum::extract::Query(q) =
             axum::extract::Query::<FleetQuery>::try_from_uri(&uri).unwrap();
-        assert_eq!((q.q.as_str(), q.verdicts.vs.as_str()), ("lab", "wrong"));
+        assert_eq!((q.rq.as_str(), q.verdicts.vs.as_str()), ("lab", "wrong"));
         let wrong = |question: &str| AskVerdict {
             question: question.into(),
             score: "wrong".into(),
@@ -229,10 +193,18 @@ mod tests {
     }
 
     #[test]
-    fn a_search_shows_a_hit_even_under_a_folded_row() {
-        let v = who_of(&render(fleet(), &q("shepherd", "lab")));
+    fn the_view_is_read_from_the_r_prefixed_keys() {
+        let v = read(&FleetQuery {
+            rs: "failed".into(),
+            ..FleetQuery::default()
+        });
         assert_eq!(v["who"].as_array().unwrap().len(), 1);
-        assert_eq!(v["who"][0]["key"], "lab/a:1");
-        assert_eq!(v["hidden"], 0);
+        assert_eq!(v["who"][0]["who"], "briefing");
+        assert_eq!(v["table"]["links"][0]["who"], "#sessions/runners/briefing");
+        let v = read(&FleetQuery {
+            rq: "shep".into(),
+            ..FleetQuery::default()
+        });
+        assert_eq!(v["who"][0]["who"], "shepherd");
     }
 }

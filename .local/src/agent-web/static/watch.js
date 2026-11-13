@@ -1,5 +1,5 @@
 "use strict";
-// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each session's
+// Sessions' fleet-state half: each session's
 // card, the folded facts card above an open transcript, and the last day's fold under the
 // table. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
 // through /api/watch; nothing is judged here.
@@ -145,8 +145,9 @@ function renderFacts() {
   paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
 }
 
-// The folds under the table: how old the state is, the last day's swimlanes and the shepherd's
-// pass and due lines. The change feed, the rundowns and the ranked sessions are Log's.
+// The folds under the table: how old the state is and the last day's swimlanes, shut to one line
+// with its lane count so the table's rows come first. The shepherd is
+// its own inner tab (shepherd.js); the change feed, the rundowns and the ranked sessions are Log's.
 function overviewFolds() {
   if (!wst.data) return '<div class="empty">Loading the overview.</div>';
   const state = wst.data.state;
@@ -160,11 +161,12 @@ function overviewFolds() {
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
     // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
     const unread = (state.unreadable || []).length ? `<div class="cline warn">could not read ${esc(state.unreadable.join(", "))}</div>` : "";
-    html += fold("lanes", `Last ${WATCH_HOURS}h`, unread + `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
+    // The unread warn stays outside the shut fold, so it is seen.
+    html += unread + fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
       `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
-      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
+      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`, keep.length, true);
   }
-  return html + shepherdOverview();
+  return html;
 }
 
 // Log's Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes'
@@ -202,9 +204,10 @@ $("log-ranked").addEventListener("click", (e) => {
 });
 LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
-// An overview section, open until the reader folds it; the fold is remembered across re-renders by its key.
-// title is text.
-const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${secOpen(wst.open, k) ? " open" : ""}><summary>${secHead("", title)}</summary>${body}</details>`;
+// An overview section, open until the reader folds it, or with `shut` shut until the reader opens it;
+// the fold is remembered across re-renders by its key. title is text, n the count its summary shows.
+const fold = (k, title, body, n, shut) =>
+  `<details class="ovsec" data-k="${k}"${(shut ? wst.open[k] === true : secOpen(wst.open, k)) ? " open" : ""}><summary>${secHead("", title, n)}</summary>${body}</details>`;
 
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;

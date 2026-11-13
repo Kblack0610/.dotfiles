@@ -1378,7 +1378,7 @@ mod tests {
         assert_eq!(
             (at(0, "item"), at(0, "project"), at(0, "row"), at(0, "epic")),
             (
-                Some("#sessions/lab%2Frepo-agent-2%3A1"),
+                Some("#sessions/sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
                 Some("#projects/all?q=id:=tr-9"),
                 Some("#projects/all?q=id:=tr-1")

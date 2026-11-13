@@ -422,7 +422,7 @@ test("a Fleet link to a moved section opens Costs at that section", () => {
   assert.equal(ctx.route("#fleet/LANGFUSE").section, "langfuse");
   assert.deepEqual([ctx.route("#fleet/accounts").tab, ctx.route("#fleet/accounts").section], ["costs", "burn"]);
   const runner = ctx.route("#fleet/inbox-triage");
-  assert.deepEqual([runner.tab, runner.arg, runner.section], ["fleet", "inbox-triage", undefined], "the control: a runner page stays on Fleet");
+  assert.deepEqual([runner.tab, runner.arg, runner.page, runner.section], ["sessions", "runners", "runners/inbox-triage", undefined], "the control: a runner page opens on Sessions' Runners");
 });
 
 // Where the tokens go: hub_core::tokens's sums, open until the reader folds it.

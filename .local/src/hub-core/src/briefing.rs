@@ -456,7 +456,7 @@ fn workers(i: &Inputs) -> Area {
             level: Level::Warn,
             line: "the runner ledger could not be read".into(),
             details: vec![],
-            link: "#fleet",
+            link: "#sessions/runners",
         };
     };
     let last = newest(runs);
@@ -511,9 +511,9 @@ fn workers(i: &Inputs) -> Area {
             })
             .collect(),
         link: if failed.is_empty() {
-            "#fleet"
+            "#sessions/runners"
         } else {
-            "#fleet?s=failed"
+            "#sessions/runners?rs=failed"
         },
     }
 }
@@ -1729,7 +1729,7 @@ mod tests {
             "{}",
             w.line
         );
-        assert_eq!(w.link, "#fleet?s=failed");
+        assert_eq!(w.link, "#sessions/runners?rs=failed");
         assert_eq!(w.details.len(), 1);
         let inf = area(&b, "Infra");
         assert_eq!(
@@ -1773,7 +1773,7 @@ mod tests {
             fix.task
                 .starts_with("Fix what the briefing's Workers overnight area reads bad since ")
                 && fix.task.contains(&w.area.line)
-                && fix.task.contains("#fleet?s=failed"),
+                && fix.task.contains("#sessions/runners?rs=failed"),
             "{}",
             fix.task
         );

@@ -118,7 +118,7 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr service.name "${CLAUDE_TELEMETRY_SERVICE:-claude-code}")"
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr host.name "$(hostname)")"
     # `agentctl.runner` names which runner spent it (agentctl@.service sets AGENTCTL_NAME), so
-    # the Fleet tab can show $ per runner. Dropped when unset, so nothing else carries one.
+    # Costs can show $ per runner. Dropped when unset, so nothing else carries one.
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr agentctl.runner "${AGENTCTL_NAME:-}")"
     # `project` (the canonical name project-name.sh gives the directory Claude starts in, as
     # every hook names it) is added per launch by claude_telemetry_launch, which the .ai-rc

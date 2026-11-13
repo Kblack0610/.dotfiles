@@ -1,18 +1,19 @@
-//! The Fleet tab, read once for both surfaces (agent-web's Fleet tab and the hub TUI's): who
-//! is working, what each agentctl runner did, and how the two judges call it. What it costs (the
+//! The agentctl runners, read once for both surfaces (Sessions' Runners inner tab on agent-web and
+//! the hub TUI, and Log's Judges): who is working, what each runner did, and how the two judges
+//! call it. What it costs (the
 //! accounts, where the tokens go) is `crate::costs`. Nothing here keeps a
 //! copy; each part reads the file or series its writer owns:
 //!
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
-//! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
-//! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane, session) to what it means (`who::legend`) |
+//! | who          | the workers, one row each, tiered; a lead counts the `state.json` live sessions it oversees (`who::build`) |
+//! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane) to what it means (`who::legend`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
 //!
-//! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
+//! One runner's page (`#sessions/runners/<name>`, read only when opened) is `runner::read`.
 //!
 //! Every part is a file read, fresh each time (judge-eval takes about a second).
 
@@ -59,7 +60,7 @@ pub struct Paths {
     pub judge_eval: String,
     /// The notes CLI's state dir, which holds the ingest record (`ingest.jsonl`).
     pub notes_state: PathBuf,
-    /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
+    /// fleet-sessions' `state.json`: the live sessions a lead row counts.
     pub state: PathBuf,
     /// agentctl's `lanes.tsv`: what each KIND in the table means, the legend above it.
     pub lanes: PathBuf,
@@ -96,8 +97,11 @@ pub struct Fleet {
     /// `<part>: <why>` for each part that could not be read; the rest still show.
     pub errors: Vec<String>,
     pub workers: Vec<Worker>,
-    /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
+    /// Sessions' Runners table: the runners by tier (`who`).
     pub who: Vec<who::Who>,
+    /// The line over that table counting the live sessions no lead oversees (`who::unled`),
+    /// empty when every one has a lead.
+    pub unled: String,
     /// The line above the table, one `kind meaning` per kind (`who::legend`).
     pub legend: Vec<String>,
     pub dispatch: Dispatch,
@@ -143,11 +147,11 @@ pub struct Worker {
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
-    /// The Fleet tab's judge tiles link to the runner whose block they summarise.
+    /// The judge tiles link to the runner whose block they summarise.
     pub detail: String,
     /// 1 for a supervisor (the conf's `TIER=1`), else 2.
     pub tier: u8,
-    /// What a tier 1 runner folds in the table: `sessions` or `dispatched` (the conf's `OVERSEES=`).
+    /// The live sessions a tier 1 runner counts: `sessions` or `dispatched` (the conf's `OVERSEES=`).
     pub oversees: String,
 }
 
@@ -546,6 +550,7 @@ pub fn files(paths: &Paths) -> Fleet {
         }
     };
     let who = who::build(&workers, &sessions, at);
+    let unled = who::unled(&workers, &sessions);
     let mut legend = who::legend(&paths.lanes);
     legend.push(crate::fleet_cost::FLEET_LEGEND.into());
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
@@ -554,13 +559,14 @@ pub fn files(paths: &Paths) -> Fleet {
         errors,
         workers,
         who,
+        unled,
         legend,
         dispatch,
         judge,
     }
 }
 
-/// fleet-dispatch's verdicts and log.md counts, for the Fleet tab's tile and its runner page.
+/// fleet-dispatch's verdicts and log.md counts, for the runner page.
 fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
     let mut dispatch = match tail(&dir.join("verdicts.jsonl"), VERDICT_TAIL) {
         Ok((text, cut)) => verdicts(&text, cut, at),

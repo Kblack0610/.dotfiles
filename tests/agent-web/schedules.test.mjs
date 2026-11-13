@@ -115,11 +115,11 @@ test("a row with no purpose says so in its detail", () => {
   assert.match(box.innerHTML, /<span class="warn">no purpose written/);
 });
 
-test("an agentctl row goes to its runner's Fleet page and copies nothing", () => {
+test("an agentctl row goes to its runner's page on Sessions' Runners and copies nothing", () => {
   show();
   loc.hash = "";
   fire("click", { target: target({}, { dataset: { key: "agentctl|dream" } }) });
-  assert.equal(loc.hash, "fleet/dream");
+  assert.equal(loc.hash, "#sessions/runners/dream");
   assert.equal(schst.sel, null);
 });
 

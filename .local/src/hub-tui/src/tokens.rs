@@ -1,6 +1,6 @@
 //! The Costs tab's two folds from the nightly token snapshot (hub_core::tokens, the same read
 //! agent-web's Costs tab draws): where the tokens go (`u`, `U` the window) and what Langfuse sees
-//! (`l`). Moved from the Fleet tab on 2026-11-07: what the fleet costs, not who is working.
+//! (`l`): what the fleet costs, not who is working.
 
 use hub_core::costs::tokens as count;
 use hub_core::tokens::{Count, Langfuse, Share, Tokens};

@@ -192,7 +192,7 @@ proof_report() {
   # one's reason, and a WORKED or NOOP pass ends the run. A pass that went past the hold without
   # proving it gone (a run-floor start, a pass that never read the gates) sets PROOF_HELD_KEEP=1.
   # FAILED and STALLED leave it: they say nothing about the gate. proof_unhold ends a hold whose own
-  # gate let a pass through. Readers: fleet-dispatch stopped, the Fleet tab (hub-core fleet.rs).
+  # gate let a pass through. Readers: fleet-dispatch stopped, Sessions' Runners (hub-core fleet.rs).
   case "$verdict" in
     BLOCKED)
       [ -s "$dir/held_since" ] || date +%s > "$dir/held_since" 2>/dev/null

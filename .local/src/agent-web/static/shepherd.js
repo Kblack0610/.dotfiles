@@ -1,7 +1,6 @@
 "use strict";
-// Sessions' shepherd half (the Shepherd tab until phase 3 of the hub layout). The header's
-// shepherd part is `hub_core::capacity`'s; the fold under the table holds the full
-// pass, what Binks owes (each line the last `fleet-shepherd check` handed to a pass: its role, how
+// Sessions' Shepherd inner tab. The capacity header's shepherd part is `hub_core::capacity`'s;
+// this tab holds the full pass, what Binks owes (each line the last `fleet-shepherd check` handed to a pass: its role, how
 // long it has been due, and whether the last pass left it unhandled) and every rundown and chat
 // answer the shepherd kept (`fleet-shepherd log --rundown`, one file each in
 // ~/.agent/shepherd/rundowns). The chat is the shepherd's own session:
@@ -14,7 +13,7 @@ const shst = { data: null, err: null, open: new Set(), all: false };
 
 const refreshShepherd = coalesce(async () => {
   try { shst.data = await api("/api/shepherd"); shst.err = null; } catch (e) { shst.err = e.message; }
-  sst.render();
+  renderShepherd();
   if (st.tab === "log") renderLogRundowns();
 });
 
@@ -66,14 +65,16 @@ function dueHtml(l) {
   return `<h3 class="sub">Due <span class="muted">${l.due.length}, ${pass}</span></h3>${owed}${skips}`;
 }
 
-// The overview's shepherd section: the pass and what is due.
-function shepherdOverview() {
+// The Shepherd inner tab: its chat, the pass and what is due.
+function renderShepherd() {
+  const el = $("ov-shepherd");
+  if (!el || st.sel || !sessShows("shepherd")) return;
   const d = shst.data;
   const chat = d && d.target ? `<button class="btn" data-chat>Chat: open ${esc(d.target)} (${esc(d.status)})</button>`
     : '<span class="muted">No shepherd armed. Its lease is set when fleet-shepherd starts a pass.</span>';
   const pass = shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
     : passHtml(d.stats) + dueHtml(d.ledger);
-  return fold("shep", "Shepherd", `<div class="ovbar">${chat}</div>${pass}`);
+  paint(el, `<div class="ovbar">${chat}</div>${pass}`);
 }
 
 // Log's Rundowns section: the shepherd's kept sum-ups, newest first, the first `shown` (the

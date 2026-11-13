@@ -1701,7 +1701,7 @@ mod tests {
                 want(
                     "session",
                     "lab:dotfiles-agent-21",
-                    "#sessions/ops-center-p6"
+                    "#sessions/sessions/ops-center-p6"
                 ),
                 want("project", "dotfiles", "#projects/dotfiles"),
                 want("row", "ar-1726", "#projects/all?q=id:=ar-1726"),
