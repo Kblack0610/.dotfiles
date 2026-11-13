@@ -35,6 +35,17 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 0
 fi
 
+# One Rust version for every run, local and CI: tests/rust-toolchain. Each release adds
+# clippy lints, so a gate on "whatever stable is installed" goes red when a runner image
+# moves, on a commit that changed no Rust (main, 2026-11-13: clippy 0.1.99 in CI, 0.1.93
+# here). Bump the file in a PR that fixes what the new version finds; it runs every crate.
+RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
+export RUSTUP_TOOLCHAIN
+rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt >/dev/null 2>&1 || {
+  echo "rust: cannot install toolchain $RUSTUP_TOOLCHAIN (tests/rust-toolchain)" >&2
+  exit 1
+}
+
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
 if [ $# -gt 0 ]; then
   CRATES=("$@")

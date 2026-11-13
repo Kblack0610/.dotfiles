@@ -532,7 +532,7 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
         .iter()
         .filter(|c| c.waiting > 0 || c.hot > 0)
         .collect();
-    look.sort_by(|a, b| (b.waiting, b.hot).cmp(&(a.waiting, a.hot)));
+    look.sort_by_key(|a| std::cmp::Reverse((a.waiting, a.hot)));
     c.first(look.into_iter().map(|p| {
         let level = if p.waiting > 0 {
             Level::Warn
