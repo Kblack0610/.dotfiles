@@ -840,24 +840,30 @@ deliver_one() {
   # releases nothing and still files one. A judge's answer does not release them
   # (agent-queue ask_pending), so its row stays the human's way to override.
   [ "$by" != human ] || held="$(released_by "$id" "$answer")"
-  local went="its resume and the queue items held on it"
+  # went: where the answer went, each place named only when it was used.
+  local went=() resume=""
+  [ -n "$beside" ] || resume="$(field "$f" resume)"
   if [ -n "$row" ]; then
-    note="$(deliver_to_session "$f" "$said" "$row")"; went="typed into $(field "$f" session)"
-  elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
-    answer_row "$f" "$answer" "$by"; went="a board row: no live session, resume or held item takes it"
+    note="$(deliver_to_session "$f" "$said" "$row")"; went+=("typed into $(field "$f" session)")
+  elif [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; then
+    answer_row "$f" "$answer" "$by"; went+=("a board row: no live session, resume or held item takes it")
   fi
   [ -n "$beside" ] || start_resume "$id"
-  [ -z "$held" ] || start_held
+  [ -z "$resume" ] || went+=("its resume")
+  [ -z "$held" ] || { start_held; went+=("$(grep -c . <<<"$held") queue item(s) held on it"); }
 
   # Ends the claim it made only: an answer given meanwhile queued a new delivery, and that one stays.
   (
     command -v flock >/dev/null 2>&1 && flock 9
     [ "$(field "$f" delivery)" = delivering ] && [ "$(field "$f" delivery_at)" = "$stamp" ] || exit 0
+    # A beside answer's text is spent once it went: a later delivery reads the answer of its own.
+    local spent=()
+    [ -z "$beside" ] || spent=(delivery_answer "")
     if [ -n "$note" ]; then
       echo "agent-ask: $id not delivered: $note" >&2
-      write_fields "$f" delivery failed delivery_at "$(now_iso)" delivery_note "$(oneline "$note")"
+      write_fields "$f" delivery failed delivery_at "$(now_iso)" delivery_note "$(oneline "$note")" "${spent[@]}"
     else
-      write_fields "$f" delivery done delivery_at "$(now_iso)" delivery_note "$went"
+      write_fields "$f" delivery done delivery_at "$(now_iso)" delivery_note "$(IFS=';'; printf '%s' "${went[*]}" | sed 's/;/; /g')" "${spent[@]}"
     fi
   ) 9>"$lock"
   queue_changed

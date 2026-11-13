@@ -119,6 +119,9 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_success
   run calls
   assert_output --partial 'agentctl-run --agent ask-resume -p /captain alpha go'
+  # The note names the resume, the one place it went.
+  run "$AGENT_ASK" show "$id"
+  assert_line 'delivery_note: its resume'
   run "$AGENT_ASK" resumable alpha
   assert_output ''
   ask-resume --all

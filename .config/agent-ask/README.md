@@ -175,7 +175,7 @@ Consumers: `ask-resume` runs an answered ask's `resume` command headless through
 | `failed` | not sent; `delivery_note` says why (a dialog was open, the pane did not take the Enter) | `deliver` |
 | `seen` | a failed one the human read on a board | `delivery-seen` |
 
-`agent-ask-deliver.path` watches `.deliver` and runs `agent-ask-deliver.service` (`deliver --all`, which repeats until nothing is queued). `fleet-state.service` runs `deliver --all` each pass as the backstop. A `delivering` claim older than `AGENT_ASK_DELIVERY_STALE` seconds (600) died with its run and is taken again. An ask with no `delivery:` field was answered before deliveries were queued and reads as delivered. An answer typed in the asking session itself (`settle-session`) is already where it needs to be and queues none. A human answer beside a judge answer whose delivery is still queued sends the judge's first, since that one runs the resume.
+`agent-ask-deliver.path` watches `.deliver` and runs `agent-ask-deliver.service` (`deliver --all`, which repeats until nothing is queued). `fleet-state.service` starts `agent-ask-deliver.service` each pass, without waiting, as the backstop. A `delivering` claim older than `AGENT_ASK_DELIVERY_STALE` seconds (600) died with its run and is taken again. An ask with no `delivery:` field was answered before deliveries were queued and reads as delivered. An answer typed in the asking session itself (`settle-session`) is already where it needs to be and queues none. A human answer beside a judge answer whose delivery is still queued sends the judge's first, since that one runs the resume.
 
 When answers stop arriving: `systemctl --user status agent-ask-deliver.path`, then `agent-ask deliver --all` by hand.
 

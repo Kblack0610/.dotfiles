@@ -242,6 +242,9 @@ delivery() { sed -n 's/^delivery: //p' "$HOME/.agent/asks/demo/$1.md"; }
   "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "fix it? -> answered: wait (ask $a)"
   assert_equal "$(delivery "$a")" done
+  # The human's text is spent once it went, and the note names only the place it went.
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery_answer: '; assert_line 'delivery_note: a board row: no live session, resume or held item takes it'
 }
 
 @test "an answer typed in its own session queues no delivery" {
