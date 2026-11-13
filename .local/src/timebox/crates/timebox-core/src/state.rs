@@ -152,7 +152,7 @@ impl Default for Snapshot {
 impl Snapshot {
     /// Resolve a target: an explicit op, else the active stopwatch. Returns the op name
     /// only if that stopwatch exists.
-    pub fn resolve<'a>(&self, op: Option<&'a str>) -> Option<String> {
+    pub fn resolve(&self, op: Option<&str>) -> Option<String> {
         match op {
             Some(o) => self.stopwatches.contains_key(o).then(|| o.to_string()),
             None => self
@@ -262,7 +262,7 @@ impl Snapshot {
             return vec![];
         };
         if sw.state == RunState::Running {
-            sw.accumulated_s = sw.accumulated_s + (now - sw.started_at).num_seconds();
+            sw.accumulated_s += (now - sw.started_at).num_seconds();
         }
         sw.state = RunState::Stopped;
         if self.active_sw.as_deref() == Some(op) {
@@ -277,7 +277,7 @@ impl Snapshot {
             return vec![];
         };
         if sw.state == RunState::Running {
-            sw.accumulated_s = sw.accumulated_s + (now - sw.started_at).num_seconds();
+            sw.accumulated_s += (now - sw.started_at).num_seconds();
             sw.state = RunState::Paused;
             return vec![Event::new(now, EventKind::Pause, op)];
         }

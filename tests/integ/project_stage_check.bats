@@ -381,7 +381,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^filed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped'
+  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed'
   assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #low --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
   # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
   : > "$NOTES_FIXTURE/calls.log"
@@ -404,7 +404,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^closed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped'
+  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped, 0 met and closed'
   assert_not_called 'ptask'
   # A row archived into a version note counts as well.
   rm "$LAB/agent/README.md"; mkdir -p "$LAB/agent/versions"
@@ -415,18 +415,80 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'ptask'
 }
 
-@test "file: with no open epic it lists the gap and writes nothing; it never files the epic" {
+@test "file: with no open epic the stage's epic is filed on the human sheet once, and the gap goes under it" {
   epics '[]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
   run "$CHECK" shooter --stage beta --file
   assert_success
-  assert_line --regexp '^no epic +beta +A changelog$'
-  assert_output --partial '1 with no open epic (file `epic(stage): beta ...` on the human sheet)'
-  assert_not_called 'ptask'
-  # An epic for another stage is not this target's epic.
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_output --partial 'epic    beta        beta to standard (sh-9)'
+  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed, 1 epic opened'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-9 #size/s #low'
+  # An epic for another stage is not this target's epic: beta's is still opened.
+  : > "$NOTES_FIXTURE/calls.log"
   epics '[{"id":"sh-1","system":"stage","title":"prod for shooter"}]'
   run "$CHECK" shooter --stage beta --file
-  assert_line --regexp '^no epic +beta +A changelog$'
-  assert_not_called 'ptask'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  # NEGATIVE CONTROL: an add that prints no id files no orphan rows.
+  : > "$NOTES_FIXTURE/calls.log"; : > "$NOTES_FIXTURE/ptask.added"; epics '[]'
+  run "$CHECK" shooter --stage beta --file
+  assert_failure 1
+  assert_line --regexp '^error +beta +A changelog \(could not file the stage epic\)$'
+  assert_not_called 'ptask shooter --agent add'
+}
+
+@test "file: with no --stage the target is the stage after the declared one, or a later open epic's" {
+  declare_stage alpha
+  epics '[]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  # A project at the top of the ladder checks its own stage.
+  declare_stage prod; : > "$NOTES_FIXTURE/calls.log"
+  printf -- '- [ ] epic(stage): prod to standard <!-- id:sh-10 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): prod to standard'
+  # A leftover epic for a stage already passed never holds the target below the next one.
+  declare_stage alpha; : > "$NOTES_FIXTURE/calls.log"
+  epics '[{"id":"sh-1","system":"stage","title":"dev to standard"}]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+}
+
+@test "file: an open agent row whose check now passes is closed by its id with the check as proof" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^met +sh-2 +A changelog$'
+  assert_output --partial '0 failing, 0 filed, 0 already open, 0 closed or dropped, 1 met and closed'
+  assert_called "notes ptask shooter --agent done sh-2 --proof check:project-stage-check shooter PASS $(date +%F)"
+  # NEGATIVE CONTROL: a human-sheet row and a closed row with the same title are never touched.
+  : > "$NOTES_FIXTURE/calls.log"
+  rm "$LAB/agent/README.md"
+  printf '# shooter\nVersion: v0.1.0 #dev\n\n## Tasks\n- [ ] chore(beta): A changelog <!-- id:sh-3 -->\n- [x] chore(beta): A changelog <!-- id:sh-4 -->\n' > "$LAB/README.md"
+  parses '- [ ] chore(beta): A changelog <!-- id:sh-3 -->'
+  parses '- [x] chore(beta): A changelog <!-- id:sh-4 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_not_called 'done'
+}
+
+@test "file: a title that passes on one row and fails on another stays open" {
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_line --regexp '^open +beta +A changelog$'
+  assert_not_called 'done'
 }
 
 @test "file: systems rows go under their system's epic, and a long title is cut with the whole text kept" {
@@ -436,9 +498,19 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --systems --file
   assert_success
   assert_line --regexp '^filed +docs +An architecture doc$'
-  assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped'
+  assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped, 0 met and closed'
   assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s #low'
   assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s #low --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+}
+
+@test "file: a systems row with no open epic is filed bare, for notes ptask add to link its standing epic" {
+  write_systems_doc
+  run "$CHECK" shooter --systems --file
+  assert_success
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #size/s #low'
+  # NEGATIVE CONTROL: systems mode never opens a stage epic on the human sheet.
+  assert_not_called 'add epic(stage)'
+  refute_output --partial 'epic opened'
 }
 
 @test "file: --file with --json is refused, and an unknown project exits 2" {
@@ -531,4 +603,91 @@ rs_stub() {
   real_row 'prod | game, app | Live on a public channel'
   run "$CHECK" shooter --stage prod
   assert_line --regexp '^PASS +prod +Live on a public channel'
+}
+
+# Shooter's root is Assets/Games/Shooter in $REPO, so its id is shooter.
+@test "stages.md: a game's title screen, icon and splash, taste and rating rows read its own files" {
+  local root="$REPO/Assets/Games/Shooter"
+  export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^FAIL +[a-z]+ +${r##*| }"
+  done
+  mkdir -p "$root/Resources/Games" "$REPO/scripts/build/games" "$REPO/Assets/Br" "$REPO/docs/games" "$REPO/store/shooter"
+  printf '{"standalone": true, "titleScreen": {"modes": [{"label": "Play", "game": "shooter"}]}}\n' > "$root/Resources/Games/shooter.json"
+  printf '{"branding": {"icon": "Assets/Br/icon.png", "splash": ["Assets/Br/splash.png", "Assets/Br/splash2.png"]}}\n' > "$REPO/scripts/build/games/shooter.json"
+  touch "$REPO/Assets/Br/icon.png" "$REPO/Assets/Br/splash.png" "$REPO/Assets/Br/splash2.png"
+  printf '# Shooter: look\n\n## Taste\n\nDraft\n' > "$REPO/docs/games/shooter-look.md"
+  printf '{"rating": {"answers": {"violence": "fantasy"}}}\n' > "$REPO/store/shooter/game.json"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^PASS +[a-z]+ +${r##*| }"
+  done
+  # NEGATIVE CONTROLS: no repo at all, a title screen with no modes, the second splash missing, empty answers.
+  jq 'del(.trackers.shooter.repo, .trackers.shooter.path)' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && cp "$PROJECT_MAP_FILE" "$PROJECT_MAP_FILE.keep" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^FAIL +[a-z]+ +${r##*| }"
+  done
+  mv "$PROJECT_MAP_FILE.keep" "$PROJECT_MAP_FILE"
+  printf '{"standalone": true, "titleScreen": {"modes": []}}\n' > "$root/Resources/Games/shooter.json"
+  real_row 'alpha | game | A title screen'; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A title screen'
+  rm "$REPO/Assets/Br/splash2.png"
+  real_row 'alpha | game | An app icon and splash'; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +An app icon and splash'
+  printf '{"rating": {"answers": {}}}\n' > "$REPO/store/shooter/game.json"
+  real_row 'beta | game | Content rating done'; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Content rating done'
+}
+
+@test "stages.md: the store listing row reads a game's listing.json or an app's metadata.yaml" {
+  export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
+  real_row 'alpha | game, app | Its store listing'
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  # NEGATIVE CONTROL: a listing with no name or title is a scaffold, not a listing.
+  mkdir -p "$REPO/store/shooter/steam"; printf '{}\n' > "$REPO/store/shooter/steam/listing.json"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  printf '{"name": "Shooter"}\n' > "$REPO/store/shooter/steam/listing.json"
+  mkdir -p "$REPO/store/shooter/play"; printf '{"title": "Shooter"}\n' > "$REPO/store/shooter/play/listing.json"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +Its store listing'
+  # An app: its listing is mobile/metadata.yaml in its own folder.
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  rm -r "$REPO/store"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  mkdir -p "$REPO/Assets/Games/Shooter/mobile"; touch "$REPO/Assets/Games/Shooter/mobile/metadata.yaml"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  printf 'title: Shooter\n' > "$REPO/Assets/Games/Shooter/mobile/metadata.yaml"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +Its store listing'
+}
+
+@test "stages.md: an app's icon and splash, brand sheet and a UI audit under 90 days" {
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  local root="$REPO/Assets/Games/Shooter"
+  mkdir -p "$root/mobile/assets" "$root/docs" "$REPO/docs/plans"
+  printf '{"expo": {"icon": "./assets/icon.png", "splash": {"image": "./assets/splash.png"}}}\n' > "$root/mobile/app.json"
+  touch "$root/mobile/assets/icon.png"
+  real_row "alpha | app | A mobile app's icon"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp "^FAIL +alpha +A mobile app's icon"
+  touch "$root/mobile/assets/splash.png"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp "^PASS +alpha +A mobile app's icon"
+  real_row 'alpha | app | A brand sheet'
+  printf '# Brand\n\n## Palette\n' > "$root/docs/brand.md"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +A brand sheet'
+  printf '\n## Logo\n' >> "$root/docs/brand.md"; run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^PASS +alpha +A brand sheet'
+  real_row 'beta | app | A UI polish pass'
+  touch "$REPO/docs/plans/$(date -d '120 days ago' +%F)_Shooter_ui_audit.md"; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +A UI polish pass'
+  touch "$REPO/docs/plans/$(date -d '10 days ago' +%F)_Shooter_ui_audit.md"; run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +A UI polish pass'
 }

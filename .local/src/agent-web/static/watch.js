@@ -81,7 +81,7 @@ function prList(prs, now) {
   return `<details><summary>${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}</summary><ul>${items}</ul></details>`;
 }
 
-function card(s, maxCtx, now) {
+function card(s, now) {
   const pr = s.pr && s.pr !== "-" ? `PR #${esc(s.pr)}${s.pr_state ? " " + esc(s.pr_state.toLowerCase()) : ""}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "no PR";
   const git = [s.ahead ? `ahead ${s.ahead}` : "", s.behind ? `behind ${s.behind}` : "", s.dirty ? `${s.dirty} dirty` : "", s.conflicts ? "<b class=\"ci fail\">conflicts</b>" : ""].filter(Boolean).join(", ");
   const phases = s.phases_total ? `<span class="kv">phases ${meter(s.phases_done / s.phases_total, "var(--b-done)")} ${s.phases_done}/${s.phases_total}</span>` : "";
@@ -94,7 +94,7 @@ function card(s, maxCtx, now) {
       <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
       ${timeUse(s.time)}
       <div class="wk">
-        <span class="kv">ctx ${meter((s.context_tokens || 0) / maxCtx, "var(--accent)")} ${kfmt(s.context_tokens)}</span>
+        <span class="kv">ctx ${s.context_window ? `${meter((s.context_tokens || 0) / s.context_window, "var(--accent)")} ${kfmt(s.context_tokens)} of ${kfmt(s.context_window)}` : kfmt(s.context_tokens)}</span>
         ${phases}
         <span class="kv">idle ${dur(s.idle_min)}</span><span class="kv">open ${dur(s.age_min)}</span>
         ${s.compactions ? `<span class="kv">compactions ${esc(s.compactions)}</span>` : ""}
@@ -131,8 +131,6 @@ $("log-changes").addEventListener("change", (e) => {
   if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
 });
 
-const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_tokens || 0));
-
 // The open session's fleet-state card above its transcript, open until the reader folds it to one line.
 function renderFacts() {
   const el = $("facts");
@@ -142,7 +140,7 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
+  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, Date.now())}</details>`, wst.open);
 }
 
 // The folds under the table: how old the state is and the last day's swimlanes, shut to one line

@@ -310,14 +310,17 @@ fn tag_verb(
 /// `notes projects --stage <name> [--set <value>]`: read a project's maturity, or move it.
 ///
 /// A move up the ladder runs the stage gate first and refuses when it blocks; a move down or
-/// sideways never does, since a project claiming less than it meets is no risk. A hand edit
-/// of the tag skips the gate, and the nightly `project-map-doctor` run catches it.
+/// sideways never does, since a project claiming less than it meets is no risk. A move up that
+/// lands then files the new stage's work: `project-stage-check <name> --file` opens the next
+/// stage's epic and a story per failing row, so the work arrives the moment the stage does. A
+/// hand edit of the tag skips both, and the nightly project-index pass files it.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     stage_via(p, log, name, value, STAGE_GATE_BIN)
 }
 
 /// `stage` with the gate command named, so a test can point it at a stub.
 fn stage_via(p: &Profile, log: &Logger, name: &str, value: Option<&str>, gate: &str) -> Result<()> {
+    let mut moved_up = None;
     if let Some(v) = value {
         let Some(to) = stage_rank(v) else {
             bail!("unknown stage '{v}' (want: {})", STAGES.join(", "));
@@ -330,9 +333,35 @@ fn stage_via(p: &Profile, log: &Logger, name: &str, value: Option<&str>, gate: &
             // The dir's name is the canonical project name; an alias would miss the map.
             let canon = dir.file_name().map_or(name.into(), |n| n.to_string_lossy());
             stage_gate(gate, &canon, v)?;
+            moved_up = Some(canon.into_owned());
         }
     }
-    tag_verb(p, log, name, &STAGES, value)
+    tag_verb(p, log, name, &STAGES, value)?;
+    if let Some(canon) = moved_up {
+        stage_file(gate, &canon);
+    }
+    Ok(())
+}
+
+/// Run `project-stage-check <name> --file` after a move up: its report goes to stderr, and a
+/// run that fails only says so, since the move already landed and the nightly pass files again.
+fn stage_file(bin: &str, name: &str) {
+    match std::process::Command::new(bin)
+        .args([name, "--file"])
+        .output()
+    {
+        Ok(o) => {
+            eprint!("{}", String::from_utf8_lossy(&o.stdout));
+            if !o.status.success() {
+                eprintln!(
+                    "stage work not filed ({bin} --file exited {}: {})",
+                    o.status,
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
+            }
+        }
+        Err(e) => eprintln!("stage work not filed ({bin}: {e})"),
+    }
 }
 
 const STAGE_GATE_BIN: &str = "project-stage-check";
@@ -452,14 +481,6 @@ pub(crate) fn group_vocab() -> Vec<String> {
     let mut v = config::all_profile_names().unwrap_or_default();
     v.push("tooling".to_string());
     v
-}
-
-/// A project's declared index group, or `None` to mean "its own org".
-pub(crate) fn group_of(dir: &Path) -> Option<String> {
-    let content = fs::read_to_string(front_page(dir)).ok()?;
-    let vocab = group_vocab();
-    let refs: Vec<&str> = vocab.iter().map(String::as_str).collect();
-    head_tag(&content, &refs)
 }
 
 /// `notes projects <name>` — print `"<path>\t<label>"` for each note file in the
@@ -6686,11 +6707,12 @@ mod shape_tests {
     }
 
     #[test]
-    fn a_move_up_the_gate_passes_is_written() {
+    fn a_move_up_the_gate_passes_is_written_then_files_its_work() {
         let (s, sheet, gate) = gated("gate-pass", 0);
         stage_via(&s.p, &s.log, "demo", Some("alpha"), &gate).unwrap();
         let text = fs::read_to_string(&sheet).unwrap();
         assert!(text.contains("#alpha") && !text.contains("#dev"), "{text}");
+        assert_eq!(calls(&s), "demo --stage alpha\ndemo --file\n");
     }
 
     #[test]
@@ -6707,6 +6729,8 @@ mod shape_tests {
         let (s, sheet, gate) = gated("gate-usage", 2);
         stage_via(&s.p, &s.log, "demo", Some("alpha"), &gate).unwrap();
         assert!(fs::read_to_string(&sheet).unwrap().contains("#alpha"));
+        // The filer ran and failed too; the move stands.
+        assert_eq!(calls(&s), "demo --stage alpha\ndemo --file\n");
         let missing = s.root.join("no-such-gate").display().to_string();
         stage_via(&s.p, &s.log, "demo", Some("beta"), &missing).unwrap();
         assert!(fs::read_to_string(&sheet).unwrap().contains("#beta"));
