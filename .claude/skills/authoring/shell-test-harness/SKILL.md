@@ -127,7 +127,7 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 ```bash
 make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
 tests/docker.sh test-container # all tiers
-tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
+tests/docker.sh lint           # shellcheck at the current ratchet + house rules
 ```
 
 The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.
