@@ -455,8 +455,13 @@ burn_sorted() {
 
 # -- spend check: the one check behind claude-spend-hourly and claude-spend-daily --
 
+# spend_curl <body> [<history age seconds, default 10 days>]: a curl that logs each call to
+# $SANDBOX/q, answers the history-age query with the age and every other query with <body>.
 spend_curl() {
-  printf '#!/usr/bin/env bash\necho %q\n' "$1" > "$SANDBOX/bin/curl"
+  local hist
+  hist=$(printf '{"status":"success","data":{"result":[{"metric":{},"value":[0,"%s"]}]}}' "${2:-864000}")
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\ncase "$*" in *prometheus_tsdb_lowest_timestamp_seconds*) echo %q ;; *) echo %q ;; esac\n' \
+    "$SANDBOX/q" "$hist" "$1" > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
 }
 
@@ -475,9 +480,8 @@ spend_curl() {
 }
 
 @test "spend check: the query carries the window it was given" {
-  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
-  chmod +x "$SANDBOX/bin/curl"
-  SANDBOX="$SANDBOX" run "$AU" spend check 24h 900
+  spend_curl '{"status":"success","data":{"result":[]}}'
+  run "$AU" spend check 24h 900
   assert_success
   assert_output 'last 24h: $0.0 (alert at $900)'
   run grep -c 'max_over_time(claude_code_cost_usage_USD_total\[24h\])' "$SANDBOX/q"
@@ -514,12 +518,40 @@ spend_curl() {
 @test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
   mkdir -p "$HOME/.config/command-center"
   echo 'CC_PROM_URL=http://from-env.test' > "$HOME/.config/command-center/env"
-  printf '#!/usr/bin/env bash\necho "$*" > "$SANDBOX/q"; echo %q\n' '{"status":"success","data":{"result":[]}}' > "$SANDBOX/bin/curl"
-  chmod +x "$SANDBOX/bin/curl"
-  SANDBOX="$SANDBOX" CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
+  spend_curl '{"status":"success","data":{"result":[]}}'
+  CC_PROM_URL='' PROM_URL=http://stale.test run "$AU" spend check 1h 150
   assert_success
   run grep -c 'http://from-env.test/api/v1/query' "$SANDBOX/q"
-  assert_output 1
+  assert_output 2
+  run grep -c 'stale.test' "$SANDBOX/q"
+  assert_output 0
+}
+
+@test "spend check: Prometheus history shorter than the window exits 2, never a lifetime total read as window spend" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"448.8"]}]}}' 7200
+  run "$AU" spend check 1h 250
+  assert_failure 1
+  assert_output 'last 1h: $448.8 (alert at $250)'
+  run "$AU" spend check 24h 900
+  assert_failure 2
+  assert_output --partial 'Prometheus history starts 2h00m ago, too short for a 24h window'
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"448.8"]}]}}' 3700
+  run "$AU" spend check 1h 250
+  assert_failure 2
+}
+
+@test "spend check: a zero-padded window is decimal, not an octal error" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  run "$AU" spend check 08h 150
+  assert_success
+  assert_output 'last 08h: $88.4 (alert at $150)'
+}
+
+@test "spend check: a history age Prometheus cannot answer exits 2" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}' NaN
+  run "$AU" spend check 1h 150
+  assert_failure 2
+  assert_output --partial 'history age unreadable'
 }
 
 @test "spend check: just over the ceiling prints a figure that shows it" {
