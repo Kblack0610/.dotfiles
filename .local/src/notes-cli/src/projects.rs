@@ -3249,13 +3249,24 @@ fn row_kind(line: &str) -> String {
     row_type_area(line).map_or_else(|| UNTYPED.to_string(), |(ty, _)| ty)
 }
 
-/// A row's weight from its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); `None` when it has
-/// no size the scale knows, which every rollup weighs at 1 and counts as unsized.
+/// A row's weight: its `#pts/<n>` when it has points on the scale ([`crate::epics::POINTS`]),
+/// else its `#size/<s>` tag ([`crate::epics::WEIGHTS`]); `None` when it has neither, which
+/// every rollup weighs at 1 and counts as unsized.
 pub(crate) fn size_of(line: &str) -> Option<u32> {
-    project_tasks::size_tag(line)
-        .and_then(|t| t.strip_prefix("#size/"))
-        .and_then(|s| crate::epics::WEIGHTS.iter().find(|(k, _)| *k == s))
-        .map(|&(_, w)| w)
+    points_of(line).or_else(|| {
+        project_tasks::size_tag(line)
+            .and_then(|t| t.strip_prefix("#size/"))
+            .and_then(|s| crate::epics::WEIGHTS.iter().find(|(k, _)| *k == s))
+            .map(|&(_, w)| w)
+    })
+}
+
+/// A row's `#pts/<n>` effort estimate, `None` when it has none or one off the scale.
+pub(crate) fn points_of(line: &str) -> Option<u32> {
+    project_tasks::points_tag(line)
+        .and_then(|t| t.strip_prefix("#pts/"))
+        .and_then(|n| n.parse().ok())
+        .filter(|&n| crate::epics::band(n).is_some())
 }
 
 /// A row's weight, 1 when [`size_of`] knows none.
