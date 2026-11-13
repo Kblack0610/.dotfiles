@@ -121,4 +121,3 @@ landed_dirs() {
   write_status
   assert [ -f "$B/probe/status" ]
 }
-

@@ -3,4 +3,4 @@
 unit/smoke.bats            # the harness itself and every .local/bin link resolving
 unit/claude_rules.bats     # each .claude/rules glob still matches a file
 integ/dotfiles_deploy.bats # stow deploys the tree with no conflict
-integ/tree_scans.bats     # checks that grep or list the whole tree (unit/pick.bats keeps them here)
+integ/tree_scans.bats      # checks that grep or list the whole tree (its last test keeps them here)
