@@ -878,6 +878,14 @@ fn last_usage(text: &str) -> (u64, String) {
         .unwrap_or_default()
 }
 
+/// The context window a session on `model` works in, None for a model this does not know (a
+/// gateway lane, a Codex run). Every Claude model runs in Claude Code's 200k window, where it
+/// auto-compacts near 167k: the API's 1M needs a `[1m]` model name, which no fleet launch uses and
+/// which the transcript's model id would not show.
+pub fn context_window(model: &str) -> Option<u64> {
+    model.starts_with("claude-").then_some(200_000)
+}
+
 /// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), unless the
 /// session later landed a phase against another plan (`agent-land --plan`, `plans_landed`): it
 /// works the plan it lands, as when it copies its plan-mode file under a name of its own
@@ -2073,6 +2081,15 @@ mod tests {
         assert_eq!(row_info(&p).plan_slug, "new-curious-garden");
         fs::remove_file(&p).ok();
         assert_eq!(row_info(Path::new("/no/such/file.jsonl")).plan_slug, "");
+    }
+
+    #[test]
+    fn context_window_knows_claude_models_only() {
+        assert_eq!(context_window("claude-opus-5-5"), Some(200_000));
+        assert_eq!(context_window("claude-haiku-4-5-20251001"), Some(200_000));
+        assert_eq!(context_window(""), None);
+        assert_eq!(context_window("lazer"), None);
+        assert_eq!(context_window("<synthetic>"), None);
     }
 
     #[test]
