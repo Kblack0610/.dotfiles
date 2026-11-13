@@ -426,7 +426,10 @@ fn history(
         plural(h.steps, "step")
     ))];
     if h.lines.is_empty() {
-        out.push(Line::styled("No steps in the last 30 days.", p.dim()));
+        out.push(Line::styled(
+            format!("No steps in the last {} days.", h.days),
+            p.dim(),
+        ));
     }
     out.extend(h.lines.iter().map(|l| {
         let when =
@@ -1343,6 +1346,7 @@ pub(crate) mod tests {
             attempts: 2,
             steps: 25,
             lines: vec![step],
+            days: 30,
         };
         v.read_history("shipped".into(), Ok(read));
         let s = text(&q, &v, 100);

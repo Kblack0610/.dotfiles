@@ -612,8 +612,15 @@ test("an opened row's History fold starts shut, reads on opening, once, and drop
   await settle(); await settle();
   run(`qst.open["hist:w1"] = true`);
   assert.match(draw(), /<div class="panel down">No history: notes: no record<\/div>/);
-  run(`qst.hist.w1 = { data: { attempts: 0, steps: 0, lines: [] } }`);
+  run(`qst.hist.w1 = { data: { attempts: 0, steps: 0, lines: [], days: 30 } }`);
   assert.match(draw(), /History, 0 attempts \(0 steps\)<\/summary><div class="muted">No steps in the last 30 days\.<\/div>/);
+  // Shutting the row (a click on it again) drops its History, read and fold both, so a reopen
+  // starts shut and reads afresh.
+  run(`qst.hist.w1 = { data: { attempts: 1, steps: 1, lines: [], days: 30 } }`);
+  fire("click", { type: "click", target: target({}, "w1") });
+  assert.deepEqual([run("Object.keys(qst.hist).length"), run(`qst.open["hist:w1"]`)], [0, undefined]);
+  fire("click", { type: "click", target: target({}, "w1") });
+  assert.match(parts["q-list"].innerHTML, /data-k="hist:w1"><summary>History<\/summary><\/details>/);
   reply = {};
 });
 

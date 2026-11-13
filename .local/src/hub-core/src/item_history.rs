@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 /// The lines a history keeps, newest last.
 pub const KEEP: usize = 20;
 
-/// How far back the record is read. An item older than this shows its last month.
-const DAYS: &str = "30";
+/// How far back the record is read, in days. An item older than this shows its last month.
+pub const DAYS: u32 = 30;
 
 /// One event as `notes log --json` prints it; the fields a line is made from.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -32,19 +32,30 @@ pub struct Line {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct History {
-    /// Times the item went to running: each is a session that took it.
+    /// Times the item went to running (a move to running, or an add straight into it).
     pub attempts: usize,
     /// Steps worth a line, before the cut to [`KEEP`].
     pub steps: usize,
     /// The last [`KEEP`] steps, oldest first.
     pub lines: Vec<Line>,
+    /// How far back it was read ([`DAYS`]).
+    pub days: u32,
 }
 
 pub fn read(runner: &dyn Runner, slug: &str) -> Result<History, String> {
     if !is_slug(slug) {
         return Err(format!("not a queue slug: {slug}"));
     }
-    let argv = ["notes", "log", "--item", slug, "--days", DAYS, "--json"].map(String::from);
+    let argv = [
+        "notes",
+        "log",
+        "--item",
+        slug,
+        "--days",
+        &DAYS.to_string(),
+        "--json",
+    ]
+    .map(String::from);
     Ok(build(&runner.run(&argv)?))
 }
 
@@ -56,7 +67,7 @@ pub fn build(log: &str) -> History {
         .collect();
     let attempts = events
         .iter()
-        .filter(|e| e.action == "item-moved" && e.to == "running")
+        .filter(|e| matches!(e.action.as_str(), "item-moved" | "item-added") && e.to == "running")
         .count();
     let mut lines: Vec<Line> = events
         .iter()
@@ -73,6 +84,7 @@ pub fn build(log: &str) -> History {
         attempts,
         steps,
         lines,
+        days: DAYS,
     }
 }
 
@@ -105,24 +117,53 @@ fn text(e: &Event) -> Option<String> {
 }
 
 /// An `item-set` worth a line: a note, a fix-ci try, a red PR handed to the human, a PR, a rewrite.
+/// Its `why` is every `key=value` the one `agent-queue set` call took, so each key is read, and
+/// a key set to nothing (cleared) says nothing.
 fn set_text(why: &str, pr: &str) -> Option<String> {
-    if let Some(rest) = why.strip_prefix("fix_tries=") {
-        let n = rest.split(' ').next().unwrap_or("");
-        return Some(format!("fix-ci try {n}"));
-    }
-    if why.starts_with("fix_human=") {
-        return Some("PR still red after fix-ci, yours".into());
-    }
-    if let Some(note) = why.strip_prefix("note=") {
-        return Some(format!("note: {note}"));
-    }
-    if why.starts_with("pr=") {
-        return Some(format!("PR {pr}"));
-    }
     if why.starts_with("task rewritten") {
         return Some("task rewritten".into());
     }
-    None
+    let mut said = Vec::new();
+    for (k, v) in pairs(why) {
+        if v.is_empty() {
+            continue;
+        }
+        match k {
+            "fix_tries" => said.push(format!("fix-ci try {}", v.split(' ').next().unwrap_or(v))),
+            "fix_human" => said.push("PR still red after fix-ci, yours".into()),
+            "pr" => said.push(format!("PR {}", if pr.is_empty() { v } else { pr })),
+            "note" => said.push(format!("note: {v}")),
+            _ => {}
+        }
+    }
+    (!said.is_empty()).then(|| said.join("; "))
+}
+
+/// The `key=value` pairs of a set's `why`: a word that starts `key=` opens a pair and the words
+/// after it, up to the next, are its value (a note has spaces).
+fn pairs(why: &str) -> Vec<(&str, &str)> {
+    let is_key = |w: &str| {
+        w.split_once('=').is_some_and(|(k, _)| {
+            !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+        })
+    };
+    let mut starts: Vec<usize> = Vec::new();
+    let mut at = 0;
+    for w in why.split(' ') {
+        if is_key(w) {
+            starts.push(at);
+        }
+        at += w.len() + 1;
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(n, &a)| {
+            let end = starts.get(n + 1).map_or(why.len(), |&b| b - 1);
+            let (k, v) = why[a..end].split_once('=').unwrap_or_default();
+            (k, v.trim())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -163,8 +204,14 @@ mod tests {
             ev(
                 "item-set",
                 "",
-                "fix_tries=2 94193c mode=oneshot note=red",
+                "fix_tries=2 94193c mode=oneshot note=red at 9419",
                 "o/r#2134",
+            ),
+            ev(
+                "item-set",
+                "",
+                "pr_owner=fix fix_human= fix_tries= land_tries=",
+                "",
             ),
             ev("item-set", "", "fix_human=ba7f53", "o/r#2134"),
             ev("item-set", "", "note=held for the night", "o/r#2134"),
@@ -184,7 +231,7 @@ mod tests {
                 "queued -> running",
                 "started on lab:ucp-agent-10, sol on codex",
                 "PR o/r#2134",
-                "fix-ci try 2",
+                "fix-ci try 2; note: red at 9419",
                 "PR still red after fix-ci, yours",
                 "note: held for the night",
                 "task rewritten",
@@ -223,6 +270,6 @@ mod tests {
             read(&Fake(Err("no notes".into())), "ucp-526"),
             Err("no notes".into())
         );
-        assert_eq!(build(""), History::default());
+        assert_eq!(build("").lines, []);
     }
 }

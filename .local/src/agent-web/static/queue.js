@@ -113,7 +113,7 @@ const refreshQueue = coalesce(async () => {
       if (arg === "candidates" && !qCandOpen()) { qst.open[CAND_K] = true; readCands(); }
     } else if ((qst.items || []).some((i) => i.slug === arg)) {
       // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
-      st.arg = ""; qst.sel = arg; setQuery(st.views.queue);
+      st.arg = ""; qSelect(arg); setQuery(st.views.queue);
     } else if (tblParams(st.views.queue).get("q") !== arg) {
       // Not in this view: search for it once on every row (a done item too), and the read that answers opens it.
       setQuery(tblSet(st.views.queue, { q: arg, s: "all" })); refreshQueue();
@@ -303,8 +303,15 @@ function qHist(i) {
   const sum = d ? `History, ${d.attempts} attempt${d.attempts === 1 ? "" : "s"} (${d.steps} step${d.steps === 1 ? "" : "s"}${d.steps > d.lines.length ? `, last ${d.lines.length}` : ""})` : "History";
   const inner = !h ? "" : h.err ? `<div class="panel down">No history: ${esc(h.err)}</div>` : !d ? `<div class="muted">Reading history...</div>`
     : d.lines.length ? d.lines.map((l) => `<div class="cline"><span class="muted">${stamp(l.at)}</span> ${esc(l.text)}</div>`).join("")
-    : `<div class="muted">No steps in the last 30 days.</div>`;
+    : `<div class="muted">No steps in the last ${d.days} days.</div>`;
   return cfold(HIST_K + i.slug, sum, inner, qst.open);
+}
+// Another row (or none) opened: the History of the one shut goes with it, read and fold state both,
+// so opening it again starts shut and reads afresh.
+function qSelect(slug) {
+  qst.sel = slug;
+  qst.hist = {};
+  for (const k of Object.keys(qst.open)) if (k.startsWith(HIST_K)) delete qst.open[k];
 }
 async function readHist(slug) {
   const h = (qst.hist[slug] = {});
@@ -490,7 +497,7 @@ $("queue").addEventListener("click", (e) => {
   // A click on a row (not its PR link) opens its detail; the same row again shuts it.
   const row = t.closest("tr.qr");
   if (row && !t.closest("a")) {
-    qst.sel = qst.sel === row.dataset.slug ? "" : row.dataset.slug;
+    qSelect(qst.sel === row.dataset.slug ? "" : row.dataset.slug);
     qst.render();
   }
 });
