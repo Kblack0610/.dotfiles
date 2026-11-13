@@ -136,7 +136,7 @@ def diff(a_label, b_label, allow):
         if eid not in eb:
             hist = {n["hash"]["history"] for n in eb.values()}
             if e["hash"]["history"] not in hist:
-                print(f"note: removed {label_of(e)} took its password history with it (trash keeps it 30 days)")
+                print(f"note: removed {label_of(e)} took its password history with it (a web vault delete keeps it in the trash 30 days; rbw remove does not)")
     content_a = {eid: e["hash"]["content"] for eid, e in ea.items()}
     content_b = {eid: e["hash"]["content"] for eid, e in eb.items()}
     for name, rid in a["resolves"].items():

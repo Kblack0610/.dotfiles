@@ -87,7 +87,7 @@ rbw-inventory diff 0-baseline 1 --allow 'fleet token'   # a removal you meant
 rbw-inventory clean                      # when done: drops the snapshots and the hash key
 ```
 
-`diff` exits 1 on LOST (content with no copy left anywhere), BROKEN (a name that resolved before no longer resolves to the same content) or CHANGED (an entry's content changed). Same content is not the same entry: several different logins share a password, and every empty entry hashes alike, so `dups` lists candidates, and a person decides. Deleted entries stay in the Vaultwarden trash for 30 days. Snapshots and the HMAC key live in `$XDG_RUNTIME_DIR/rbw-inventory`, mode 0600.
+`diff` exits 1 on LOST (content with no copy left anywhere), BROKEN (a name that resolved before no longer resolves to the same content) or CHANGED (an entry's content changed). Same content is not the same entry: several different logins share a password, and every empty entry hashes alike, so `dups` lists candidates, and a person decides. A delete in the web vault goes to the trash for 30 days, but `rbw remove` deletes permanently (checked 2026-11-12: the removed ids were gone from the server db), so before an `rbw remove` take a server backup and copy that archive to `backups/vault-exports/`, out of the keep-30 rotation. `--allow NAME` also hides a CHANGED on another entry with that name, so when two entries share it, compare the one you keep by hand.. Snapshots and the HMAC key live in `$XDG_RUNTIME_DIR/rbw-inventory`, mode 0600.
 
 ## Storing & sourcing the Cloudflare tokens
 
