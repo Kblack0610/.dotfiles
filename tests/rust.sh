@@ -41,10 +41,12 @@ fi
 # here). Bump the file in a PR that fixes what the new version finds; it runs every crate.
 RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
 export RUSTUP_TOOLCHAIN
-rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt >/dev/null 2>&1 || {
-  echo "rust: cannot install toolchain $RUSTUP_TOOLCHAIN (tests/rust-toolchain)" >&2
+# A cargo with no rustup (a distro package) cannot honor the pin, so it fails here rather
+# than checking with a different clippy.
+if ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1); then
+  printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
   exit 1
-}
+fi
 
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
 if [ $# -gt 0 ]; then
