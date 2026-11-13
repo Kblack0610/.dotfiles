@@ -10,6 +10,13 @@ Type=oneshot
 KillMode=process
 # A boot under linger has no login PATH, and up calls tmx, agent-panel and claude by name.
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+# The restore runs about 10s into boot, and claude-telemetry.sh turns the OTel export on only when
+# hp-victus resolves, so a session reopened before the network is up exports nothing all its life
+# (2026-11-13: the two reopened at 01:17:04-06 had no endpoint, all from 01:17:08 on had it). A user unit cannot
+# order After=network-online.target, which is a system unit the user manager does not load, so wait
+# for NetworkManager here (-x: return at once where NetworkManager is not running). The leading - keeps a host without nm-online, or with no network in 120s,
+# restoring anyway: off the LAN no telemetry is the intent, and queue-cost-export names a dark one.
+ExecStartPre=-/usr/bin/nm-online -q -x -t 120
 ExecStart=%h/.local/bin/session-snapshot up
 TimeoutStartSec=600
 
