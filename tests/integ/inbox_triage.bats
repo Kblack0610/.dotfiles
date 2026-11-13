@@ -150,7 +150,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE" --backlog
   assert_failure 75
   [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
-  st="$HOME/.local/state/agentctl/inbox-triage"
+  st="$HOME/.local/state/agentctl/inbox-backlog"
   grep -qx BLOCKED "$st/last-outcome"
   grep -q 'outcome=BLOCKED budget: backlog: ' "$st/activity.log" || fail "$(cat "$st/activity.log")"
   # negative control: an exit that is not the budget's is still a failed pass
@@ -168,8 +168,12 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   INBOX_TRIAGE_CMD=intake-stub run "$TRIAGE" --backlog
   assert_success
   assert_equal "$(cat "$NOTES_FIXTURE/model.log")" called
-  # negative control: the default names the inbox-backlog agent, not inbox-triage
-  grep -qF 'INBOX_BACKLOG_CMD:=agentctl-run --agent inbox-backlog}' "$TRIAGE"
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-backlog/last-outcome"
+  [ ! -e "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "the backlog pass reported as the intake sweep"
+  # negative control: a runner that names itself keeps its own name
+  AGENTCTL_NAME=inbox-triage run "$TRIAGE" --backlog
+  assert_success
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
 }
 
 @test "a reply with no answer block names that reason in the outcome" {
