@@ -1932,33 +1932,6 @@ cmd_ask_holds() {
 # open and `note:` names the ask, so re-gating it is one add. On 2026-11-10 three items sat behind
 # vmToL3 (answered a, gate wanted b) and VOEW9i (cancelled) and tripped queue-starved; dead_holds in
 # fleet-dispatch reports what this missed.
-# ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options
-# `+`-joined as the tag has them, empty for any answer), from the header's slug and tags lines alone.
-# Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
-# record for it, 1.7 s against a few ms (2026-11-13).
-cmd_ask_holds() {
-  local id="${1:-}" FILES=()
-  lock_read
-  list_files waiting review running queued
-  ((${#FILES[@]})) || return 0
-  awk -v id="$id" -v OFS='\t' '
-    function flush(  n, i, t, a) {
-      if (slug == "") return
-      n = split(tags, t, " ")
-      for (i = 1; i <= n; i++) {
-        if (substr(t[i], 1, 4) != "ask:") continue
-        split(substr(t[i], 5), a, "=")
-        if (id == "" || a[1] == id) print slug, a[1], a[2]
-      }
-    }
-    FNR == 1 { flush(); slug = ""; tags = ""; head = 1 }
-    !head { next }
-    $0 == "---" { head = 0; next }
-    /^slug: / { slug = substr($0, 7) }
-    /^tags: / { tags = substr($0, 7) }
-    END { flush() }' "${FILES[@]}"
-}
-
 cmd_settle_ask() {
   local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
