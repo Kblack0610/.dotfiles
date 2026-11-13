@@ -16,12 +16,15 @@
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
 #   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
-#   next [--json] | show <slug> [--json] | cancel <slug> | bump <slug> <priority>
+#   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] | bump <slug> <priority>
+#       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
+#       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--if <state>]
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--if <state>]
+#       --why is cancel's: with --status cancelled it records cancelled_by: and cancel_why:, and is refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
@@ -442,7 +445,7 @@ hold_for() {
       "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD="after $s closed $AST, dead: cancel it or set after=<slug>"; return ;;
+      *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"; return ;;
     esac
   done
   [ -z "$live" ] || { HOLD="after $live"; return; }
@@ -871,9 +874,10 @@ header_set() {
   local f="$1" k="$2" v="$3" tmp
   case "$v" in *$'\n'*) die "a value cannot span lines: $k" ;; esac
   tmp="$(mktemp "$(dirname "$f")/.set.XXXXXX")" || die "cannot write in $(dirname "$f")"
-  awk -v k="$k" -v v="$v" '
-    !done && $0 == "---" { if (!seen) print k ": " v; done = 1; print; next }
-    !done && index($0, k ":") == 1 { print k ": " v; seen = 1; next }
+  # The value rides in the environment: awk -v would read a backslash in a free-text value as an escape.
+  HV="$v" awk -v k="$k" '
+    !done && $0 == "---" { if (!seen) print k ": " ENVIRON["HV"]; done = 1; print; next }
+    !done && index($0, k ":") == 1 { print k ": " ENVIRON["HV"]; seen = 1; next }
     { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
 }
 
@@ -1435,9 +1439,18 @@ close_on() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug>}" f session server window host dest
+  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>]}" f session server window host dest why="" by
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      *) die "usage: agent-queue cancel <slug> [--why <text>]" ;;
+    esac
+  done
+  cancel_check "$why"
+  by="$(cancel_who)"
   lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug"; return; }
+  f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug" "$why" "$by"; return; }
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
@@ -1459,8 +1472,9 @@ cmd_cancel() {
   header_set "$f" status cancelled
   header_set "$f" finished "$(now_utc)"
   header_del "$f" end_reason
+  cancel_stamp "$f" "$why"
   dest="$(move_to "$f" "done")" || die "could not move $f"
-  item_event item-cancelled "$dest" --to done
+  item_event item-cancelled "$dest" --to done ${by:+--by "$by"} ${why:+--why "$why"}
   echo "cancelled $slug -> $dest"
 }
 
@@ -1468,11 +1482,11 @@ cmd_cancel() {
 # last step in the chain record (notes log --steps), which fleet-bench counts as chain_drift for
 # good. Cancel closes it there, with the project and title of its add; no row is named.
 cancel_record_only() {
-  local slug=$1 added
+  local slug=$1 why=${2-} by=${3-} added
   record_active "$slug" || die "nothing active with slug $slug"
   added=$(notes log --days 3650 --item "$slug" --json 2>/dev/null | jq -sc 'map(select(.action == "item-added")) | last // {}')
   chain_event queue item-cancelled "$(jq -r '.from // "-"' <<<"$added")" "$(jq -r '.text // "-"' <<<"$added")" \
-    --item "$slug" --to done
+    --item "$slug" --to done ${by:+--by "$by"} ${why:+--why "$why"}
   # chain_event swallows a failed write, and here the write is the whole cancel
   ! record_active "$slug" || die "$slug is still active in the record: notes ingest record did not close it"
   echo "cancelled $slug in the record: its file was already gone"
@@ -1642,26 +1656,44 @@ cmd_credit_of() {
 # END_REASONS and UNRATED_ENDS: lib/end-reasons.sh.
 check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of: $END_REASONS, not $1" ;; esac; }
 
+# cancel_who -> who a cancel is attributed to: the Claude session, else the item the caller works,
+# else nothing (a terminal). A caller with an identity owes a reason; the human at a terminal does not.
+cancel_who() { printf '%s' "${CLAUDE_CODE_SESSION_ID:-${AGENT_QUEUE_ITEM:-}}"; }
+# cancel_check <why> -> die when a session or script cancels with no reason.
+cancel_check() {
+  case "$1" in *$'\n'*) die "--why is one line" ;; esac
+  [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
+}
+# cancel_stamp <file> <why> -> cancelled_by: and cancel_why: on the item, the one record of a cancel.
+cancel_stamp() {
+  local who; who="$(cancel_who)"
+  [ -z "$who" ] || header_set "$1" cancelled_by "$who"
+  [ -z "$2" ] || header_set "$1" cancel_why "$2"
+}
+
 # move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended
 # (end_reason:); --if is the compare in a compare-and-set: the
 # move happens only while the item is still in the state the caller read, so a pass that read it a
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
   local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" end="" expect="" f from dest deps run tags
+  local status="" end="" expect="" why="" f from dest deps run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --status) status="${2:?--status needs a value}"; shift 2 ;;
       --end) end="${2:?--end needs a reason}"; check_end "$end"; shift 2 ;;
       --if) expect="${2:?--if needs a state}"; shift 2 ;;
-      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]" ;;
+      --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--why text] [--if state]" ;;
     esac
   done
   case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
   if [ "$to" = "done" ]; then
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
+  if [ "$to" = done ] && [ "$status" = cancelled ]; then cancel_check "$why"
+  elif [ -n "$why" ]; then die "--why records a cancel: use it with move <slug> done --status cancelled"; fi
   [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"
@@ -1705,11 +1737,12 @@ cmd_move() {
     review) header_set "$f" review "$(now_utc)" ;;
     # A run that landed or was cancelled has no end to report: a reason left from a wait on its PR goes.
     done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)"
+      [ "$status" != cancelled ] || cancel_stamp "$f" "$why"
       case "$status" in ok | cancelled) header_del "$f" end_reason; end="" ;; esac ;;
   esac
   [ -z "$end" ] || header_set "$f" end_reason "$end"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
-  item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}"
+  item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
   lane_outcome "$run" "$from" "$to" "$status" "$end"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
@@ -1864,6 +1897,33 @@ cmd_requeue() {
   # The move runs under this lock, so no writer closes or moves the item between the edit and it.
   local AQ_LOCKED=1
   cmd_move "$slug" queued
+}
+
+# ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options
+# `+`-joined as the tag has them, empty for any answer), from the header's slug and tags lines alone.
+# Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
+# record for it, 1.7 s against a few ms (2026-11-13).
+cmd_ask_holds() {
+  local id="${1:-}" FILES=()
+  lock_read
+  list_files waiting review running queued
+  ((${#FILES[@]})) || return 0
+  awk -v id="$id" -v OFS='\t' '
+    function flush(  n, i, t, a) {
+      if (slug == "") return
+      n = split(tags, t, " ")
+      for (i = 1; i <= n; i++) {
+        if (substr(t[i], 1, 4) != "ask:") continue
+        split(substr(t[i], 5), a, "=")
+        if (id == "" || a[1] == id) print slug, a[1], a[2]
+      }
+    }
+    FNR == 1 { flush(); slug = ""; tags = ""; head = 1 }
+    !head { next }
+    $0 == "---" { head = 0; next }
+    /^slug: / { slug = substr($0, 7) }
+    /^tags: / { tags = substr($0, 7) }
+    END { flush() }' "${FILES[@]}"
 }
 
 # settle-ask <id> -- fail every queued item held on that ask that it can no longer release, now that

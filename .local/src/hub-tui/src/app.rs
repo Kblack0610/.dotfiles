@@ -388,6 +388,8 @@ pub enum Msg {
     Capacity(Box<hub_core::capacity::Capacity>),
     /// One session's page (hub_core::session_page), for the row it was read for.
     SessionPage(Box<(String, Option<hub_core::session_page::SessionPage>)>),
+    /// The history of the queue item whose detail is open, by slug.
+    ItemHistory(Box<(String, Result<hub_core::item_history::History, String>)>),
     Forecast(Box<Forecast>),
     /// `agentctl-session-outcomes worst`, or why it failed.
     Ranked(Result<Vec<Ranked>, String>),
@@ -1463,6 +1465,19 @@ impl App {
         });
     }
 
+    /// Read the history of the queue item whose detail is open, in a worker, once per item.
+    fn read_history(&mut self) {
+        let Some(slug) = self.qv.wants_history(self.queue.as_ref(), jobs::now()) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        let runner = self.runner.clone();
+        std::thread::spawn(move || {
+            let h = hub_core::item_history::read(runner.as_ref(), &slug);
+            let _ = tx.send(Msg::ItemHistory(Box::new((slug, h))));
+        });
+    }
+
     /// What `read_sessions` reads in its workers, here and now, for `--once`.
     pub fn read_sessions_now(&mut self) {
         use hub_core::{capacity, session_table as table};
@@ -2160,6 +2175,7 @@ impl App {
                 self.read_page();
             }
             Msg::SessionPage(p) => self.controls.read_page(p.0, p.1),
+            Msg::ItemHistory(h) => self.qv.read_history(h.0, h.1),
             Msg::Capacity(c) => {
                 self.controls.capacity = Some(*c);
                 if self.feed_read.done() {
@@ -2203,6 +2219,7 @@ impl App {
                     .map(|i| i.slug.clone());
                 self.qv.reselect(was, &q, cands_of(&self.candidates), now);
                 self.queue = Some(*q);
+                self.read_history();
                 if self.queue_read.done() {
                     self.read_queue();
                 }
@@ -2301,6 +2318,7 @@ impl App {
             let half = (self.page / 2).max(1);
             if self.tab == Tab::Queue {
                 self.queue_key(k);
+                self.read_history();
             } else if k.code == KeyCode::Char('d') {
                 self.scroll += half;
             } else {
@@ -2326,8 +2344,12 @@ impl App {
         if self.tab == Tab::Sessions && self.sessions_key(k) {
             return;
         }
-        if self.tab == Tab::Queue && self.queue_key(k) {
-            return;
+        if self.tab == Tab::Queue {
+            let took = self.queue_key(k);
+            self.read_history();
+            if took {
+                return;
+            }
         }
         if self.tab == Tab::Projects && self.projects_key(k) {
             self.want_proj_page();
@@ -2514,6 +2536,7 @@ impl App {
             self.qv.table.sel = i;
             self.qv.detail = true;
         }
+        self.read_history();
     }
 
     /// Sessions' Runners keys; false leaves the key to the page's defaults. On a runner's page
@@ -5315,7 +5338,7 @@ mod tests {
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Enter))));
         let s = screen(&mut a, 140, 40);
         assert!(
-            s.contains("log: notes log --item pick-sides") && s.contains("timeline"),
+            s.contains("HISTORY  reading...") && s.contains("timeline"),
             "{s}"
         );
         a.handle(esc());
@@ -5639,6 +5662,7 @@ mod tests {
         let wide = screen(&mut a, 220, 30);
         let wl: Vec<&str> = wide.lines().collect();
         assert!(wl[4].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
+        assert!(wl[4].contains("IDLE  CTX"), "CTX sits beside IDLE: {wide}");
         assert!(wl[5].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.

@@ -72,6 +72,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "parsed once per process; boxing the Projects flags buys nothing"
+)]
 enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today {

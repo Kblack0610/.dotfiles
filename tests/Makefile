@@ -57,8 +57,8 @@ help:
 	@echo "  make test-files   FILES=... only these (the stop-hook picks them)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
-	@echo "  make lint         shellcheck + shfmt + house rules over tracked shell scripts"
-	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates (CRATES=<dirs> for some)"
+	@echo "  make lint         shellcheck + house rules over tracked shell scripts"
+	@echo "  make test-rust    cargo test/clippy/fmt over the tracked Rust crates (CRATES=<dirs> for some, CLIPPY=0 skips clippy)"
 	@echo ""
 	@echo "container-only (real tmux servers; NEVER runs on this machine):"
 	@echo "  make test-ui      the tmux ui tier, inside docker"
@@ -167,7 +167,7 @@ lint:
 	@$(HERE)lint.sh
 
 # The Rust crates (notes-cli, agent-panel, agent-web, timebox). Same shape as `lint`: one
-# implementation in rust.sh, shared with CI, carrying its own ratchet.
+# implementation in rust.sh, shared with CI; its header says which gates block where.
 #
 # Deliberately NOT part of test-fast. test-fast is the Stop-hook gate and is measured in
 # seconds; a cold cargo build is ~20s and would tax every single turn. It is also

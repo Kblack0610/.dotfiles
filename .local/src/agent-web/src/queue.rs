@@ -335,6 +335,28 @@ pub async fn candidates(Query(q): Query<CandQuery>) -> ApiResult<Json<serde_json
     }))
 }
 
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    slug: String,
+}
+
+/// One item's history (hub-core `item_history`), read when its row's History fold opens.
+pub async fn history(
+    Query(q): Query<HistoryQuery>,
+) -> ApiResult<Json<hub_core::item_history::History>> {
+    if !hub_queue::is_slug(&q.slug) {
+        return Err(bad(
+            StatusCode::BAD_REQUEST,
+            format!("not a queue slug: {}", q.slug),
+        ));
+    }
+    tokio::task::spawn_blocking(move || hub_core::item_history::read(&System, &q.slug))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+}
+
 /// One hub-core action off the async workers: hub-core checks the input and runs the CLI, and
 /// what the CLI says on failure is the answer.
 pub async fn act(

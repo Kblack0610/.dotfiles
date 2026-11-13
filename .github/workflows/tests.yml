@@ -19,7 +19,7 @@ name: shell tests
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
-#   lint   shellcheck + shfmt + house rules, in the pinned image.
+#   lint   shellcheck + house rules, in the pinned image.
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -307,7 +307,7 @@ jobs:
           fail-on-empty: false
 
   rust:
-    name: rust crates (test + clippy + fmt)
+    name: rust crates (test + fmt, clippy on main)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -318,12 +318,13 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       # The ubuntu-24.04 image ships a stable Rust toolchain, so no third-party setup
       # action is needed -- consistent with this repo running zero tmux plugins by policy.
-      # `rustup component add` is idempotent and only guards against an image that ships
-      # cargo without clippy/rustfmt; rust.sh degrades to advisory on those two anyway.
+      # `rustup component add` is idempotent and covers an image that ships cargo without
+      # clippy or rustfmt; if it cannot add them, the job fails here, not as a gate that
+      # silently checked less.
       - name: Toolchain
         id: toolchain
         run: |
-          rustup component add clippy rustfmt || true
+          rustup component add clippy rustfmt
           cargo --version && cargo clippy --version && cargo fmt --version
           echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
       # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
@@ -344,9 +345,11 @@ jobs:
           key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
           restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
       # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
+      # Clippy runs everywhere but pull requests (tests/rust.sh, THE GATES).
       - name: Rust gate
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          CLIPPY: ${{ github.event_name == 'pull_request' && '0' || '1' }}
         run: |
           crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
@@ -400,13 +403,13 @@ jobs:
     uses: ./.github/workflows/skill-lint.yml
 
   lint:
-    name: shellcheck + shfmt
+    name: shellcheck + house rules
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      # Runs in the SAME image as the ui tier, which pins shellcheck and shfmt. Installing
-      # them from apt here instead would mean CI lints with a different shellcheck than the
+      # Runs in the SAME image as the ui tier, which pins shellcheck. Installing
+      # it from apt here instead would mean CI lints with a different shellcheck than the
       # developer does, and the first version bump would produce findings nobody can
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.

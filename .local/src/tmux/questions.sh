@@ -265,15 +265,21 @@ ask_load() {
 
 # The rows as last built, before the parked filter, in "$QUESTIONS_STATE.rows": the reload and the
 # header's count both read the one build (after built the rows twice per answer, a second each, on
-# 2026-11-13). rows_build writes it; rows_saved reads it, building it first when there is none.
-rows_build() { cmd_rows >"$QUESTIONS_STATE.rows"; }
-rows_saved() { [ -e "$QUESTIONS_STATE.rows" ] || rows_build; cat "$QUESTIONS_STATE.rows"; }
+# 2026-11-13). rows_build writes it, whole or not at all (a reload reading it mid-build would show
+# a blank list); rows_saved reads it, building it first when there is none. Outside the panel
+# (no QUESTIONS_STATE) there is no file: saved builds the rows each time.
+rows_build() { [ -z "$QUESTIONS_STATE" ] || { cmd_rows >"$QUESTIONS_STATE.rows.$$" && mv -f "$QUESTIONS_STATE.rows.$$" "$QUESTIONS_STATE.rows"; }; }
+rows_saved() {
+  [ -n "$QUESTIONS_STATE" ] || { cmd_rows; return 0; }
+  [ -e "$QUESTIONS_STATE.rows" ] || rows_build
+  cat "$QUESTIONS_STATE.rows"
+}
 
 # after <message>: reload the rows and say what happened, with the count in the header.
 after() {
   local n
   rows_build
-  n="$(rows_count <"$QUESTIONS_STATE.rows")"
+  n="$(rows_saved | rows_count)"
   st_write ""
   printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
   if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
@@ -403,6 +409,8 @@ cmd_key() {
     # A choice armed on a row P is about to hide must not ride a later enter.
     st_write ""
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
+    # P is also the refresh: asks that came or went since the last build show now.
+    rows_build
     printf 'reload(%s saved)+' "$(printf '%q' "$SELF")"
     header_count
     if parked_shown; then footer "parked asks shown . P hides them"; else footer "parked asks hidden . P shows them"; fi
@@ -414,8 +422,7 @@ cmd_key() {
     ask_load "$id"
     # A key pressed before the reload after a send lands on the row just answered: refresh.
     if [ "$A_STATUS" != pending ]; then
-      printf 'reload(%s rows)+' "$(printf '%q' "$SELF")"
-      footer "that question was just ${A_STATUS:-closed}; the list is refreshed"
+      after "that question was just ${A_STATUS:-closed}; the list is refreshed"
       return 0
     fi
     case "$k" in
@@ -547,7 +554,7 @@ cmd_pick() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
-rows) if [ -n "$QUESTIONS_STATE" ]; then rows_build; parked_filter <"$QUESTIONS_STATE.rows"; else cmd_rows | parked_filter; fi ;;
+rows) rows_build; rows_saved | parked_filter ;;
 saved) rows_saved | parked_filter ;;
 count) cmd_count ;;
 key) shift; cmd_key "$@" ;;

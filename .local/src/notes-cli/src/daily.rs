@@ -1123,7 +1123,11 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)]) -> status::Page {
                 } else {
                     detail.push(("why".into(), why.to_string()));
                 }
-                let said = if action == "asked" { "asked you" } else { action };
+                let said = if action == "asked" {
+                    "asked you"
+                } else {
+                    action
+                };
                 (
                     true,
                     format!("{at} {said} ({}): {}", name(&ev.from, ""), ev.text),
