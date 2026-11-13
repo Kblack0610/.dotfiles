@@ -1175,7 +1175,8 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
   [ -s "$PRS/o__game.jsonl" ]
   echo '[]' > "$KD/repos"
-  "$SUBJECT"
+  run "$SUBJECT"
+  assert_success
   assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
 }
 

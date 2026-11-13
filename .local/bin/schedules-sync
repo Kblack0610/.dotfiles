@@ -1561,6 +1561,7 @@ def main(argv):
         print(f"schedules-sync: no repo list: {e}", file=sys.stderr)
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
         return 1
+    prune_prs(repos, t)  # before the loop: a pass the service timeout cuts still drops a retired repo
     budget = [0, BACKFILL_CALLS]
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None
@@ -1611,7 +1612,6 @@ def main(argv):
         if has_prs(forge, repo) and sync_prs(forge, repo, host, t):
             bad += 1
     write_json(STATE, {"generated_at": iso(t), "repos": out})
-    prune_prs(repos, t)
     quarantine_pass(repos, last, t)
     print(STATE)
     return 1 if bad else 0
