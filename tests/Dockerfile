@@ -58,8 +58,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
-# and the image is rebuilt on every CI run with no layer cache. curl reads this file, so the
-# retry lives in one place and each download keeps its plain `curl -fsSL`.
+# and a cold build (any change to what tests/docker.sh hashes) downloads them again. curl reads
+# this file, so the retry lives in one place and each download keeps its plain `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
 # python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
