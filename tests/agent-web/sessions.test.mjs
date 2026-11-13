@@ -44,7 +44,7 @@ const ROWS = [
 ];
 const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
   states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "done today", n: 1, tone: "ok", means: "ended today" }],
-  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
+  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
@@ -89,7 +89,7 @@ test("the table is the server's rows in its order, with the overview tiles and t
   assert.ok(html.indexOf("stiles") < html.indexOf("tqbar"), "the overview row sits on the search bar");
   assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
-  assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">\$1\.20<\/td>/);
+  assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">-<\/td><td class="n">\$1\.20<\/td>/);
   assert.match(html, /title="sort by harness">harness<\/button>/, "the harness is a column");
   assert.match(html, /title="sort by close">close<\/button>/, "the close verdict is a column");
   assert.match(html, /<td>a<\/td><td>codex<\/td><td>now<\/td><\/tr>/, "each row names its harness after its account, then its close verdict");
@@ -326,6 +326,18 @@ test("STARTED BY says who started a row: dispatch, resume, by hand", () => {
   assert.match(html, /title="sort by started by">started by<\/button>/);
   assert.match(html, /<td class="muted">dispatch<\/td>/);
   assert.match(html, /<td class="muted">hand<\/td>/);
+});
+
+test("CTX meters a known window and says - for an unknown one, never 0%", () => {
+  setup();
+  run(`sst.data.rows = [{ ...sst.data.rows[0], context_tokens: 150000, context_window: 200000, context_pct: 75 }, { ...sst.data.rows[1], context_tokens: 150000, context_window: null, context_pct: null }, sst.data.rows[2]]`);
+  run("sst.render()");
+  const html = boxes["ov-sessions"].innerHTML;
+  assert.match(html, /title="sort by ctx">ctx<\/button>/);
+  assert.match(html, /<td class="n" title="150k of 200k tokens"><span class="meter"><span style="width:75\.0%;[^"]*"><\/span><\/span> 75%<\/td>/);
+  const stalled = html.split('<tr class="click"')[2];
+  assert.match(stalled, /<td class="n">1d 9h<\/td><td class="n">-<\/td>/, "the unknown window's ctx cell reads -");
+  assert.doesNotMatch(stalled, /%</);
 });
 
 test("Log's ranked sessions list the week worst first, and an open row shows its card", () => {

@@ -753,6 +753,7 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
             "idle_since": idle_since,
             "started_at": a.started_at,
             "context_tokens": info.context_tokens,
+            "context_window": jsonl::context_window(&info.model),
             "model": info.model,
             "plan_file": info.plan_file,
             "edited_files": info.edited_files,

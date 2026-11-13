@@ -5662,6 +5662,7 @@ mod tests {
         let wide = screen(&mut a, 220, 30);
         let wl: Vec<&str> = wide.lines().collect();
         assert!(wl[4].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
+        assert!(wl[4].contains("IDLE  CTX"), "CTX sits beside IDLE: {wide}");
         assert!(wl[5].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.

@@ -381,7 +381,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^filed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped'
+  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed'
   assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #low --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
   # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
   : > "$NOTES_FIXTURE/calls.log"
@@ -404,7 +404,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^closed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped'
+  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped, 0 met and closed'
   assert_not_called 'ptask'
   # A row archived into a version note counts as well.
   rm "$LAB/agent/README.md"; mkdir -p "$LAB/agent/versions"
@@ -415,18 +415,80 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'ptask'
 }
 
-@test "file: with no open epic it lists the gap and writes nothing; it never files the epic" {
+@test "file: with no open epic the stage's epic is filed on the human sheet once, and the gap goes under it" {
   epics '[]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
   run "$CHECK" shooter --stage beta --file
   assert_success
-  assert_line --regexp '^no epic +beta +A changelog$'
-  assert_output --partial '1 with no open epic (file `epic(stage): beta ...` on the human sheet)'
-  assert_not_called 'ptask'
-  # An epic for another stage is not this target's epic.
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_output --partial 'epic    beta        beta to standard (sh-9)'
+  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed, 1 epic opened'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-9 #size/s #low'
+  # An epic for another stage is not this target's epic: beta's is still opened.
+  : > "$NOTES_FIXTURE/calls.log"
   epics '[{"id":"sh-1","system":"stage","title":"prod for shooter"}]'
   run "$CHECK" shooter --stage beta --file
-  assert_line --regexp '^no epic +beta +A changelog$'
-  assert_not_called 'ptask'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  # NEGATIVE CONTROL: an add that prints no id files no orphan rows.
+  : > "$NOTES_FIXTURE/calls.log"; : > "$NOTES_FIXTURE/ptask.added"; epics '[]'
+  run "$CHECK" shooter --stage beta --file
+  assert_failure 1
+  assert_line --regexp '^error +beta +A changelog \(could not file the stage epic\)$'
+  assert_not_called 'ptask shooter --agent add'
+}
+
+@test "file: with no --stage the target is the stage after the declared one, or a later open epic's" {
+  declare_stage alpha
+  epics '[]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+  # A project at the top of the ladder checks its own stage.
+  declare_stage prod; : > "$NOTES_FIXTURE/calls.log"
+  printf -- '- [ ] epic(stage): prod to standard <!-- id:sh-10 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): prod to standard'
+  # A leftover epic for a stage already passed never holds the target below the next one.
+  declare_stage alpha; : > "$NOTES_FIXTURE/calls.log"
+  epics '[{"id":"sh-1","system":"stage","title":"dev to standard"}]'
+  printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'notes ptask shooter add epic(stage): beta to standard'
+}
+
+@test "file: an open agent row whose check now passes is closed by its id with the check as proof" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^met +sh-2 +A changelog$'
+  assert_output --partial '0 failing, 0 filed, 0 already open, 0 closed or dropped, 1 met and closed'
+  assert_called "notes ptask shooter --agent done sh-2 --proof check:project-stage-check shooter PASS $(date +%F)"
+  # NEGATIVE CONTROL: a human-sheet row and a closed row with the same title are never touched.
+  : > "$NOTES_FIXTURE/calls.log"
+  rm "$LAB/agent/README.md"
+  printf '# shooter\nVersion: v0.1.0 #dev\n\n## Tasks\n- [ ] chore(beta): A changelog <!-- id:sh-3 -->\n- [x] chore(beta): A changelog <!-- id:sh-4 -->\n' > "$LAB/README.md"
+  parses '- [ ] chore(beta): A changelog <!-- id:sh-3 -->'
+  parses '- [x] chore(beta): A changelog <!-- id:sh-4 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_not_called 'done'
+}
+
+@test "file: a title that passes on one row and fails on another stays open" {
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  run "$CHECK" shooter --file
+  assert_line --regexp '^open +beta +A changelog$'
+  assert_not_called 'done'
 }
 
 @test "file: systems rows go under their system's epic, and a long title is cut with the whole text kept" {
@@ -436,9 +498,19 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --systems --file
   assert_success
   assert_line --regexp '^filed +docs +An architecture doc$'
-  assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped'
+  assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped, 0 met and closed'
   assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s #low'
   assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s #low --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+}
+
+@test "file: a systems row with no open epic is filed bare, for notes ptask add to link its standing epic" {
+  write_systems_doc
+  run "$CHECK" shooter --systems --file
+  assert_success
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #size/s #low'
+  # NEGATIVE CONTROL: systems mode never opens a stage epic on the human sheet.
+  assert_not_called 'add epic(stage)'
+  refute_output --partial 'epic opened'
 }
 
 @test "file: --file with --json is refused, and an unknown project exits 2" {
