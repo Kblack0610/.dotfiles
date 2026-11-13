@@ -45,7 +45,7 @@
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
-# hold_pending). A start on a later day is the dated form, never a held session.
+# hold_pending) and rbw:<folder>/<name> (until rbw lists that entry; see rbw_pending). A start on a later day is the dated form, never a held session.
 #
 # One file per item under $AGENT_QUEUE_DIR/<state>/. Design: ~/.config/agentctl/QUEUE.md.
 set -uo pipefail
@@ -85,6 +85,8 @@ AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
 # boots and claims it. The claim is the event; this bounds a session that never claims, so it
 # cannot hold the line for good.
 AQ_DESK_START_MIN=10
+# An `rbw:<folder>/<name>` item waits until this rbw lists that Bitwarden entry.
+AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
 AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
@@ -283,7 +285,7 @@ finished_row_ok() {
 # and a session working a queue item ($AGENT_QUEUE_ITEM) that adds one without --from, recorded as
 # `from: item:<its slug>` when admission gates it (an exempt or deferred add keeps `human`). Never held: --running (the caller's own work), a --plan not from a
 # machine filer (an approved plan), urgent, `red` and `#requested` items, auto:epics verify items, and a session's add that
-# arrives held (--after, at:, pr:, ask:, hold:, nightly:): its own work later, not runnable inflow.
+# arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:): its own work later, not runnable inflow.
 # A held add writes no item, logs one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD. Drain is the
 # items started out of the queue (started after they were queued) over AQ_DRAIN_DAYS, a day.
 # Provisional, confidence low: AGENT_QUEUE_ADMIT_DAYS 1 and the floor AGENT_QUEUE_ADMIT_MIN 10 were
@@ -481,6 +483,9 @@ hold_for() {
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; }
         [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${5-}"
         [ -z "$HOLD" ] || return 0 ;;
+      rbw:?*/?*)
+        memo "$tag" rbw_pending "${tag#rbw:}"
+        [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
     esac
   done
 }
@@ -563,6 +568,18 @@ hold_pending() {
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -eq 1 ] && [ -n "$out" ] || { echo "agent-hold check failed, exit $rc"; return; }
   printf '%s\n' "${out#held: "$1" }"
+}
+
+# rbw_pending <folder>/<name> -> why that Bitwarden entry still holds an item, or nothing once rbw
+# lists it (folder up to the first /). Read-only, so it never prompts and never reads a secret: only
+# `rbw unlocked` and `rbw list --fields folder,name`, never get, unlock or sync (Auth-State Safety);
+# rbw-agent's own sync brings a new entry in. Locked or missing rbw holds. The item that deploys a key
+# is filed with the ask to add it: keys added to rbw for trader on 2026-11-12 sat undeployed until asked.
+rbw_pending() {
+  local out
+  "$AQ_RBW" unlocked </dev/null >/dev/null 2>&1 || { echo "rbw locked or missing"; return; }
+  out="$("$AQ_RBW" list --fields folder,name </dev/null 2>/dev/null)" || { echo "rbw list failed"; return; }
+  grep -qxF -- "${1%%/*}"$'\t'"${1#*/}" <<<"$out" || echo "not in rbw yet"
 }
 
 # ask_pending <id>[=<option>[+<option>]] -> why that agent-ask still holds an item, or nothing once
@@ -1096,7 +1113,7 @@ cmd_add() {
   local auto='' deferred=''
   case "$from" in research:?* | auto:?*) auto=1 ;; esac
   if [ -z "$from_given" ] && [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -z "$running" ] && ! admission_exempt "$priority" "$tags"; then
-    for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | nightly:*) deferred=1 ;; esac; done
+    for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
     [ -n "$after" ] || [ -n "$deferred" ] || { from="item:$AGENT_QUEUE_ITEM"; auto=1; }
   fi
   lock
@@ -1791,6 +1808,7 @@ check_tags() {
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
       desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
         die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
+      rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>, the entry's folder and name as rbw list shows them, not $tag" ;;
     esac
   done
 }
