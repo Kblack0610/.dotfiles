@@ -531,6 +531,19 @@ so_latest() {
     | map(max_by([.observed, .updated])) | .[]'
 }
 
+# so_latest_of OUT PREFIX - so_latest for the sessions whose id starts with PREFIX alone: grep picks
+# their lines before jq parses anything, so one card reads its own rows, not the whole store (20 ms
+# against 1 s on 29 MB, 2026-11-13). A line naming the prefix only in a nested field gets through
+# grep; the caller's select on .session_id drops it.
+so_latest_of() {
+  local out="$1" p="$2"
+  [[ "$p" =~ ^[0-9A-Za-z-]+$ ]] || return 1
+  compgen -G "$out/*/*.jsonl" >/dev/null || return 0
+  cat "$out"/*/*.jsonl | { grep -E "\"session_id\": *\"$p" || :; } | jq -cn '
+    [inputs] | group_by(.session_id)
+    | map(max_by([.observed, .updated])) | .[]'
+}
+
 # so_friction_def - the ONE ranking every reader uses: a sort key for "look at this
 # session first", not a grade (an idle session scores 0 like a perfect one). A revert
 # undoes shipped work (5); a PR closed unmerged or a written-down correction is redirected

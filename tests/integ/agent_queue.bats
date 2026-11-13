@@ -555,6 +555,28 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
 }
 
+# agent-ask reads holds on every card and answer through ask-holds, which reads the header lines
+# alone: it must name exactly what list --json's tags do, and nothing from a done item.
+@test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_DIR/game/$i.md"; done
+  "$AQ" add --project game --slug one --tags "night ask:h1=a+b" "one"
+  "$AQ" add --project game --slug two --tags "ask:h1=a ask:h2=b" "two"
+  "$AQ" add --project game --slug free "no ask"
+  "$AQ" add --project game --slug gone --tags "ask:h2=a" "gone"
+  "$AQ" cancel gone >/dev/null
+  run "$AQ" ask-holds
+  assert_success
+  assert_equal "$(sort <<<"$output")" "$(printf 'one\th1\ta+b\ntwo\th1\ta\ntwo\th2\tb')"
+  assert_equal "$(sort <<<"$output")" "$("$AQ" list --json | jq -r '.slug as $s | (.tags // "") | split(" ")[]
+    | select(startswith("ask:")) | .[4:] | [$s, split("=")[0], (split("=")[1] // "")] | @tsv' | sort)"
+  run "$AQ" ask-holds h2
+  assert_output "$(printf 'two\th2\tb')"
+  run "$AQ" ask-holds nope
+  assert_success
+  assert_output ''
+}
+
 @test "an ask: tag refuses an option the ask does not offer, which could never match an answer" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   printf 'id: o2\nstatus: pending\noptions: go|stop-burst+do-bridge|steps done, verify it\n' > "$AGENT_ASK_DIR/game/o2.md"
