@@ -284,6 +284,54 @@ setup_printing() {
     log_info "Access CUPS web interface at: http://localhost:631"
 }
 
+# Local model on the headless NVIDIA card: llama-server (llama-server.service)
+# serves Qwen3.5-9B to the LiteLLM gateway route "local (qwen3.5-9b)". Only a
+# opt-in module (--with llm) on a machine with an NVIDIA GPU; the unit skips
+# where the model is absent.
+LOCAL_LLM_MODEL="$HOME/.local/share/llm-models/Qwen3.5-9B-IQ4_XS.gguf"
+LOCAL_LLM_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-IQ4_XS.gguf"
+LOCAL_LLM_SHA256="7e918aeca06c52bcb528ea6b04b4ec957e75ee8c0a73138854c0dfcf371ea429"
+setup_local_llm() {
+    log_section "Setting up the local model (llama-server on NVIDIA)"
+
+    if ! command -v nvidia-smi &>/dev/null; then
+        log_info "No NVIDIA GPU: skipping the local model"
+        return 0
+    fi
+
+    # The CachyOS llama-cpp loads its GPU backend from ggml-cuda (pulls cuda).
+    install_pacman_package "llama-cpp"
+    install_pacman_package "ggml-cuda"
+
+    if [[ ! -f "$LOCAL_LLM_MODEL" ]]; then
+        log_info "Downloading $(basename "$LOCAL_LLM_MODEL") (about 5.2 GB)..."
+        mkdir -p "$(dirname "$LOCAL_LLM_MODEL")"
+        curl -fL --retry 3 -C - -o "$LOCAL_LLM_MODEL.part" "$LOCAL_LLM_URL" || return 1
+        if ! echo "$LOCAL_LLM_SHA256  $LOCAL_LLM_MODEL.part" | sha256sum -c --quiet; then
+            log_error "Model checksum mismatch; leaving $LOCAL_LLM_MODEL.part for inspection"
+            return 1
+        fi
+        mv "$LOCAL_LLM_MODEL.part" "$LOCAL_LLM_MODEL"
+    fi
+
+    # The gateway pod reaches it from whichever k3s node it runs on, so the
+    # rule is the home LAN (the 192.168 default route; a USB tether may also
+    # carry one), not a node list that drifts.
+    local lan_dev lan
+    lan_dev="$(ip -4 route show default | awk '/ src 192\.168\./ {print $5; exit}')"
+    lan="$(ip -4 route show dev "${lan_dev:-none}" scope link proto kernel 2>/dev/null | awk '{print $1; exit}')"
+    if [ -n "$lan" ]; then
+        install_pacman_package "ufw"
+        sudo ufw allow from "$lan" to any port 8780 proto tcp comment 'llama-server (LiteLLM local route)'
+    else
+        log_warning "no 192.168 LAN route found; open 8780 to the LAN by hand"
+    fi
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now llama-server
+    log_info "llama-server on :8780; check: curl -s localhost:8780/health"
+}
+
 # Override: Setup Sunshine game streaming with GPU auto-detection
 setup_sunshine() {
     log_section "Setting up Sunshine (game streaming)"
@@ -836,6 +884,9 @@ install_all() {
 
     # Game streaming
     step streaming   setup_sunshine
+
+    # Local model on the NVIDIA card (opt-in: --with llm)
+    step llm         setup_local_llm
     step streaming   install_moonlight
 
     # Remote desktop (Azure Virtual Desktop via FreeRDP webview)

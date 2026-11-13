@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# ask-local - talk to the home-only local model (Qwen3.5-9B on the workstation 4060 Ti).
+# Which gateway, model and key come from the agent-run route gateway-local (private
+# overlay); that route has no fallback, so a down model fails here instead of spilling
+# onto a paid one. Guide: docs/operations/local-llm.md
+#
+#   ask-local "why is the sky blue"                 one-shot answer on stdout
+#   git diff | ask-local "write a commit message"   stdin is appended to the prompt
+#   ask-local --json "3 fruits as {\"fruits\": []}"  JSON object out, validated
+#   ask-local --schema s.json "extract the dates"   output held to a JSON schema
+#   ask-local --chat                                a REPL that keeps the conversation
+# Options: --system TEXT, --max-tokens N (1024), --timeout S (120), --route NAME, --raw.
+# Exit: 0 answered, 1 the call failed (down, refused, empty or bad JSON), 2 cannot start.
+set -euo pipefail
+
+ROUTE=gateway-local MAX_TOKENS=1024 TIMEOUT=120 SYSTEM="" MODE=ask FORMAT=text SCHEMA="" RAW=0
+
+die() { echo "ask-local: $*" >&2; exit 2; }
+usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; }
+
+prompt=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --chat)       MODE=chat ;;
+    --json)       FORMAT=json ;;
+    --schema)     [ $# -ge 2 ] || die "--schema needs a file"; FORMAT=schema SCHEMA="$2"; shift ;;
+    --system)     [ $# -ge 2 ] || die "--system needs text"; SYSTEM="$2"; shift ;;
+    --max-tokens) [ $# -ge 2 ] || die "--max-tokens needs a number"; MAX_TOKENS="$2"; shift ;;
+    --timeout)    [ $# -ge 2 ] || die "--timeout needs seconds"; TIMEOUT="$2"; shift ;;
+    --route)      [ $# -ge 2 ] || die "--route needs a name"; ROUTE="$2"; shift ;;
+    --raw)        RAW=1 ;;
+    --)           shift; prompt+=("$@"); break ;;
+    -*)           die "unknown option $1 (see --help)" ;;
+    *)            prompt+=("$1") ;;
+  esac
+  shift
+done
+case "$MAX_TOKENS" in ''|*[!0-9]*) die "--max-tokens must be a whole number" ;; esac
+case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
+command -v jq >/dev/null || die "needs jq"
+command -v curl >/dev/null || die "needs curl"
+
+out="$(mktemp)" err="$(mktemp)" req="$(mktemp)"
+trap 'rm -f "$out" "$err" "$req"' EXIT
+
+# The route owns the endpoint, model and key (agent-run lib/route.sh); --print-env only
+# resolves them, and the raw harness grants no tools.
+env_out="$("${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$ROUTE" --harness raw --print-env 2>"$err")" \
+  || die "route $ROUTE did not resolve: $(cat "$err")"
+eval "$env_out"
+MODEL="$LLM_MODEL" ENDPOINT="${LLM_BASE_URL%/}/chat/completions" key="$LLM_API_KEY"
+[ -n "$key" ] || die "route $ROUTE gave no key (its ROUTE_KEY_SOURCE has nothing yet)"
+# The key goes into a curl config line, where a quote or backslash would be parsed as config.
+case "$key" in *[\"\\]*) die "the key has a quote or backslash" ;; esac
+
+response_format='null'
+case "$FORMAT" in
+  json)   response_format='{"type":"json_object"}' ;;
+  schema) [ -r "$SCHEMA" ] || die "cannot read schema $SCHEMA"
+          response_format="$(jq -c '{type: "json_schema", json_schema: {name: "answer", strict: true, schema: .}}' "$SCHEMA")" \
+            || die "schema $SCHEMA is not JSON" ;;
+esac
+
+tags=ask-local
+case "${AGENT_QUEUE_ITEM:-}" in
+  ""|*[!A-Za-z0-9._-]*) ;;
+  *) tags="ask-local,queue:$AGENT_QUEUE_ITEM" ;;
+esac
+
+# call <messages-json>: one chat completion. Prints the answer (or the raw JSON with --raw)
+# and returns 0, or prints why on stderr and returns 1.
+call() {
+  local meta code msg content
+  jq -nc --arg m "$MODEL" --argjson msgs "$1" --argjson n "$MAX_TOKENS" --argjson rf "$response_format" \
+    '{model: $m, messages: $msgs, max_tokens: $n} + (if $rf then {response_format: $rf} else {} end)' >"$req"
+  # The key goes in on stdin (-K -), never argv, where any `ps` would show it, so the body
+  # comes from a file. curl prints the -w line even when the transfer fails (code 000).
+  meta="$(printf 'header = "Authorization: Bearer %s"\n' "$key" | curl -sS -K - -m "$TIMEOUT" -o "$out" \
+    -w '%{http_code}' -H 'Content-Type: application/json' -H "x-litellm-tags: $tags" \
+    --data-binary @"$req" "$ENDPOINT" 2>"$err")" || true
+  code="${meta:-000}"
+  if [ "$code" = 000 ]; then
+    echo "ask-local: no answer from $ENDPOINT: $(tr '\n' ' ' <"$err")" >&2
+    return 1
+  fi
+  if [ "$code" != 200 ]; then
+    msg="$(jq -r '.error.message // .detail // empty' "$out" 2>/dev/null | head -c 600)"
+    [ -n "$msg" ] || msg="$(head -c 300 "$out")"
+    case "$code" in
+      401|403) echo "ask-local: the gateway refused the key ($code): $msg" >&2 ;;
+      *) echo "ask-local: $MODEL failed ($code): $msg" >&2
+         echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
+    esac
+    return 1
+  fi
+  [ "$RAW" = 1 ] && { cat "$out"; echo; return 0; }
+  content="$(jq -r '.choices[0].message.content // empty' "$out")"
+  if [ -z "$content" ]; then
+    echo "ask-local: $MODEL returned an empty answer (finish_reason $(jq -r '.choices[0].finish_reason // "none"' "$out")); raise --max-tokens?" >&2
+    return 1
+  fi
+  if [ "$FORMAT" != text ] && ! jq -e . >/dev/null 2>&1 <<<"$content"; then
+    echo "ask-local: $MODEL did not return valid JSON:" >&2
+    printf '%s\n' "$content" >&2
+    return 1
+  fi
+  printf '%s\n' "$content"
+}
+
+messages='[]'
+[ -n "$SYSTEM" ] && messages="$(jq -c --arg s "$SYSTEM" '. + [{role: "system", content: $s}]' <<<"$messages")"
+
+if [ "$MODE" = chat ]; then
+  [ ${#prompt[@]} -eq 0 ] || die "--chat takes no prompt; type it at the prompt"
+  echo "ask-local chat with $MODEL. Empty line or Ctrl-D quits, /reset clears the history." >&2
+  while IFS= read -e -r -p 'you> ' line; do
+    [ -n "$line" ] || break
+    if [ "$line" = /reset ]; then
+      messages='[]'
+      [ -n "$SYSTEM" ] && messages="$(jq -c --arg s "$SYSTEM" '[{role: "system", content: $s}]' <<<null)"
+      echo "(history cleared)" >&2
+      continue
+    fi
+    history -s -- "$line"
+    turn="$(jq -c --arg u "$line" '. + [{role: "user", content: $u}]' <<<"$messages")"
+    answer="$(RAW=0 call "$turn")" || continue
+    printf '%s\n\n' "$answer"
+    messages="$(jq -c --arg a "$answer" '. + [{role: "assistant", content: $a}]' <<<"$turn")"
+  done
+  exit 0
+fi
+
+text="${prompt[*]:-}"
+if [ ! -t 0 ]; then
+  input="$(cat)"
+  if [ -n "$input" ]; then
+    text="${text:+$text$'\n\n'}$input"
+  fi
+fi
+[ -n "$text" ] || { usage >&2; exit 2; }
+messages="$(jq -c --arg u "$text" '. + [{role: "user", content: $u}]' <<<"$messages")"
+call "$messages"

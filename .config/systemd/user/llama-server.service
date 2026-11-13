@@ -1,0 +1,32 @@
+[Unit]
+Description=llama.cpp llama-server: Qwen3.5-9B on the RTX 4060 Ti, served to the LiteLLM gateway as "local (qwen3.5-9b)"
+Documentation=https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+After=network-online.target
+Wants=network-online.target
+# Stow deploys this unit to every machine; only the workstation has the model
+# (setup_local_llm in install_arch.sh fetches it), so elsewhere it skips cleanly.
+ConditionPathExists=%h/.local/share/llm-models/Qwen3.5-9B-IQ4_XS.gguf
+ConditionPathExists=/usr/bin/llama-server
+
+[Service]
+Type=simple
+# Pin to the headless RTX 4060 Ti by UUID; the AMD card drives the desktop and
+# Sunshine, and a non-CUDA backend would pick it. RustDesk shares this card, so
+# the budget below keeps total use near 6 GB of 8.
+Environment=CUDA_VISIBLE_DEVICES=GPU-c48a7e5f-8ea9-2a69-3505-3d37ec828061
+Environment=LLAMA_MODEL=%h/.local/share/llm-models/Qwen3.5-9B-IQ4_XS.gguf
+ExecStart=/usr/bin/llama-server \
+    -m ${LLAMA_MODEL} --alias qwen3.5-9b \
+    --device CUDA0 -ngl 99 \
+    -c 16384 --parallel 2 --kv-unified \
+    -fa on -ctk q8_0 -ctv q8_0 \
+    --jinja --reasoning-budget 0 \
+    --cache-ram 1024 \
+    --sleep-idle-seconds 600 \
+    --metrics \
+    --host 0.0.0.0 --port 8780
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
