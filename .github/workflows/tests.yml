@@ -1,6 +1,6 @@
 name: shell tests
 
-# Five jobs, by what they can catch:
+# The jobs, by what they can catch:
 #
 #   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
 #          it never starts a tmux server. On a pull request only the files the change can
@@ -9,9 +9,7 @@ name: shell tests
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
-#   drift  weekly sweep across tmux versions. What a local hook cannot catch is the
-#          environment moving underneath the repo -- a new tmux, a new fzf, a distro bump --
-#          which surfaces precisely when nothing in the repo changed.
+#          The schedule and a manual run sweep four tmux versions (the drift sweep).
 #   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
 #          image, which has no Rust toolchain. On a pull request only the crates the change can
 #          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
@@ -207,8 +205,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # On push/PR only the version the author runs. The weekly `drift` job sweeps wider.
-        tmux: ['3.8']
+        # A push or PR runs only the version the author runs. The weekly schedule and a manual
+        # run are the drift sweep: the environment moving underneath the repo (a new tmux, fzf
+        # or distro) surfaces when nothing in the repo changed. Only this tier starts tmux, so
+        # it is the only one swept. 3.4 is ubuntu-24.04's apt, 3.5a Debian trixie's, 3.7b the
+        # first with floating panes, 3.8 (patched) the author's; the image builds each from source.
+        tmux: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.4", "3.5a", "3.7b", "3.8"]' || '["3.8"]') }}
     steps:
       - uses: actions/checkout@v4
       # The test-image step loads the image (or builds it on a cache miss); docker.sh vendors
@@ -244,33 +246,6 @@ jobs:
         with:
           name: screens-tmux-${{ matrix.tmux }}
           path: tests/artifacts/*.screen
-          if-no-files-found: ignore
-          retention-days: 14
-
-  drift:
-    name: drift sweep (tmux ${{ matrix.tmux }})
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        # 3.4 is what ubuntu-24.04's apt ships and what most machines have.
-        # 3.5a is Debian trixie's version. 3.7b is the first with floating panes, and 3.8 (patched) the author's.
-        # The image builds tmux from source, so all of them are reachable.
-        tmux: ['3.4', '3.5a', '3.7b', '3.8']
-    steps:
-      - uses: actions/checkout@v4
-      - name: Whole suite in the container
-        env:
-          TMUX_REF: ${{ matrix.tmux }}
-        run: tests/docker.sh test-container
-      - name: Upload failure screens
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: drift-screens-tmux-${{ matrix.tmux }}
-          path: tests/artifacts/
           if-no-files-found: ignore
           retention-days: 14
 

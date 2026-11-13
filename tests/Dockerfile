@@ -68,11 +68,9 @@ RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 # with python3 but no PyYAML it fails with the subject's own honest refusal,
 # `sentinel-manifest: PyYAML is required`. Both were red; both are fixed here.
 #
-# That was invisible because of WHICH job runs the whole suite. The `ui` tier runs only
-# tests/ui/, and `fast` runs on the bare runner where python3 exists -- only the weekly
-# DRIFT sweep runs every tier inside this image, so the failure surfaced once a week in a
-# job nobody was watching, and both PR-gating tiers stayed green. A gate that runs weekly
-# and is never read is the same as no gate.
+# CI never runs unit or integ in this image: `fast` runs them on the bare runner and `ui`
+# (the weekly drift sweep included) runs only tests/ui/. A runtime dependency missing here
+# therefore shows only in a local `tests/docker.sh` with no target, which runs every tier.
 
 # tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.8 with the patch in
 # .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
