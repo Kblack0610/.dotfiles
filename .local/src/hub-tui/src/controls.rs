@@ -439,26 +439,28 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first fifteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first sixteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "BY", "PR", "PLAN", "IDLE", "COST",
-                    "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA", "YOU",
-                    "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "BY", "PR", "PLAN", "IDLE", "CTX",
+                    "COST", "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA",
+                    "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 5, 6, 7, 14, 2, 8, 9, 17, 16, 4, 1, 15, 10, 11, 12, 13],
-                flex: Some(18),
+                keep: vec![
+                    0, 3, 5, 6, 7, 15, 2, 9, 10, 18, 17, 8, 4, 1, 16, 11, 12, 13, 14,
+                ],
+                flex: Some(19),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
-                right: vec![7, 8],
+                right: vec![7, 8, 9],
                 cap: vec![
                     (1, 22),
                     (2, 16),
                     (3, 30),
-                    (10, 16),
-                    (12, 22),
-                    (14, fleet::NAME_MAX),
-                    (15, 22),
+                    (11, 16),
+                    (13, 22),
+                    (15, fleet::NAME_MAX),
+                    (16, 22),
                 ],
             }
             .fit(w, p.head());
@@ -559,6 +561,8 @@ impl Controls {
             pr,
             plan,
             idle,
+            x.context_pct()
+                .map_or("-".into(), |c| format!("{c:.0}%").into()),
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
             dash(&x.harness),
