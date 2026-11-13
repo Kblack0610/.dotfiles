@@ -5,6 +5,8 @@
 # repo in the sandbox, so fetch is real git. The store probes sign and fetch through
 # .local/lib/store-auth.sh, which store_sales.bats shares, so a change to it picks both files.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -162,6 +164,21 @@ field() { row "$1" | jq -r "$2"; }
   run "$RS" refresh
   assert_success
   assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/bump.yml",true],[".github/workflows/checks.yml",false]]'
+}
+
+@test "link facts: a long deploy workflow writes no broken pipe when SIGPIPE is ignored, as under systemd" {
+  mkdir -p "$CLONE/.github/workflows"
+  { printf 'name: Ship\njobs:\n  t:\n    steps:\n      - run: kubectl apply -f k8s\n'
+    for i in $(seq 1 6000); do printf '      - run: echo step %s padding padding\n' "$i"; done
+  } > "$CLONE/.github/workflows/ship.yml"
+  git -C "$CLONE" add -A; git -C "$CLONE" commit -qm wf; git -C "$CLONE" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote set-head origin main
+  trap '' PIPE
+  run --separate-stderr "$RS" refresh
+  trap - PIPE
+  assert_success
+  refute_regex "$stderr" 'Broken pipe'
+  assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/ship.yml",true]]'
 }
 
 @test "drift_since carries across refreshes while the same drift holds" {
