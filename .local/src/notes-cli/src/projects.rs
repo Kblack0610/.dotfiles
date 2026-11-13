@@ -3214,9 +3214,7 @@ impl LeafRow {
             kind: row_kind(line),
             title: row_title(line),
             parent: crate::epics::parent_of(line).unwrap_or_default(),
-            size: project_tasks::size_tag(line)
-                .and_then(|t| t.strip_prefix("#size/").map(str::to_string))
-                .unwrap_or_default(),
+            size: size_name(line).unwrap_or_default(),
             weight: size_weight(line),
             state: match line.trim_start() {
                 l if l.starts_with("- [/]") => "started",
@@ -3258,6 +3256,16 @@ pub(crate) fn size_of(line: &str) -> Option<u32> {
             .and_then(|t| t.strip_prefix("#size/"))
             .and_then(|s| crate::epics::WEIGHTS.iter().find(|(k, _)| *k == s))
             .map(|&(_, w)| w)
+    })
+}
+
+/// A row's size name: the band of its points, else its `#size/` tag; `None` for neither.
+/// The one reader the feed and the leaf rows share, so the two never disagree.
+pub(crate) fn size_name(line: &str) -> Option<String> {
+    points_of(line).and_then(crate::epics::band).map(str::to_string).or_else(|| {
+        project_tasks::size_tag(line)
+            .and_then(|t| t.strip_prefix("#size/"))
+            .map(str::to_string)
     })
 }
 

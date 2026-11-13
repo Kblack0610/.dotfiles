@@ -1023,15 +1023,15 @@ ask_stub() {
 
 @test "--backlog --size: each row with no points gets the model's points and their size band, a pointed row or an epic is not asked, an off-scale answer writes nothing" {
   export INBOX_SIZE_CMD=model-stub
-  sheet '' '- [ ] epic(ui): menus #epic <!-- id:sc-3 -->\n- [ ] the save is slow #size/s <!-- id:sc-4 -->\n- [ ] the menu flickers <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n- [ ] the logo #pts/2 #size/s <!-- id:sc-7 -->\n'
+  sheet '' '- [ ] epic(ui): menus #epic <!-- id:sc-3 -->\n- [ ] the save is slow #size/s <!-- id:sc-4 -->\n- [ ] the menu flickers <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n- [ ] the logo #pts/2 #size/s <!-- id:sc-7 -->\n  - [ ] a child step <!-- id:sc-8 -->\n'
   # rows reach the model in sheet order: sc-4, sc-5, sc-6; a second answer for n 1 is ignored
   answer '{"n": 1, "pts": 5}' '{"n": 1, "pts": 1}' '{"n": 2, "pts": 13}' '{"n": 3, "pts": 4}'
   CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --size --project scratch
   assert_success
-  assert_output --partial 'size: scored 2, left 0, refused 0'
+  assert_output --partial 'size: scored 2, left 1, refused 0'
   run notes log --json --action tagged
   assert_equal "$(jq -sc 'map([.id, .by])' <<<"$output")" '[["sc-4","inbox-size"],["sc-5","inbox-size"]]'
-  refute grep -q 'logo\|epic(ui)' "$NOTES_FIXTURE/prompt.txt"
+  refute grep -q 'logo\|epic(ui)\|child step' "$NOTES_FIXTURE/prompt.txt"
   grep -q 'should be split' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
   run tasks
   assert_output --regexp 'the save is slow #pts/5 #size/m <!-- id:sc-4 -->'

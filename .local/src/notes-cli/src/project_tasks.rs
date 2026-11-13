@@ -1627,10 +1627,16 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
         bail!("#{t} is a release: use move, promote or demote");
     }
     if let Some(n) = t.strip_prefix("pts/") {
-        if n.parse().ok().and_then(crate::epics::band).is_none() {
+        // Digits only, written back canonical: `+5` and `05` would parse but never match `#pts/5`.
+        let pts = Some(n)
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|&p| crate::epics::band(p).is_some());
+        let Some(pts) = pts else {
             let scale: Vec<String> = crate::epics::POINTS.iter().map(|(n, _)| n.to_string()).collect();
             bail!("#{t} is off the points scale: one of {}", scale.join(", "));
-        }
+        };
+        return Ok(format!("#pts/{pts}"));
     }
     Ok(format!("#{t}"))
 }
@@ -1638,7 +1644,8 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
 /// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
 /// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
 /// estimate too: adding a `#pts/<n>` replaces its old points and sets its `#size/` to the
-/// band they fall in ([`crate::epics::POINTS`]), so the two never disagree. It has one
+/// band they fall in ([`crate::epics::POINTS`]), over any `#size/` added beside them; adding a
+/// bare `#size/<s>` drops the points, which no longer hold. So the two never disagree. It has one
 /// created stamp too, its origin day, so an added `#cMMDD` lands only on a row with none:
 /// `--add c1105` on a `#c1104` row gave nc-71 both (nc-83).
 pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
@@ -1652,17 +1659,24 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
     let add: Vec<&String> = add
         .iter()
         .filter(|t| !(stamped && md::is_created_tag(&t[1..].to_lowercase())))
+        .filter(|t| banded.is_none() || !t.starts_with("#size/"))
         .chain(banded.as_ref())
         .collect();
     let sized = add.iter().any(|t| t.starts_with("#size/"));
     let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| *a == t));
-    let pointed = add.iter().any(|t| t.starts_with("#pts/"));
-    let old_pts = points_tag(line).filter(|t| pointed && !add.iter().any(|a| *a == t));
+    // A new size, banded from new points or set bare, retires every points tag the row had.
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let old_pts: Vec<String> = head
+        .split_whitespace()
+        .filter(|w| sized && w.starts_with("#pts/") && !add.iter().any(|a| a == w))
+        .map(str::to_string)
+        .collect();
     let mut l = old
         .into_iter()
+        .map(str::to_string)
         .chain(old_pts)
-        .chain(remove.iter().map(String::as_str))
-        .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+        .chain(remove.iter().cloned())
+        .fold(line.to_string(), |l, t| md::drop_tag(&l, &t));
     if add.iter().any(|a| md::is_priority(a)) {
         l = md::strip_priority_tag(&l);
     }
@@ -2992,6 +3006,25 @@ Version: v1.13.0
         );
         assert!(tag_token("pts/4").is_err(), "4 is off the scale");
         assert!(tag_token("pts/x").is_err());
+        assert!(tag_token("pts/21").is_err(), "xl is an epic's #size/, never points");
+        assert!(tag_token("pts/+5").is_err(), "digits only");
+        assert_eq!(tag_token("pts/05").unwrap(), "#pts/5", "written back canonical");
+        assert_eq!(
+            retag(scored, &t(&["pts/8", "size/s"]), &[]),
+            "- [ ] row #ai #pts/8 #size/l <!-- id:ar-1 -->",
+            "points win over a size added beside them"
+        );
+        assert_eq!(
+            retag(scored, &t(&["size/l"]), &[]),
+            "- [ ] row #ai #size/l <!-- id:ar-1 -->",
+            "a bare resize drops the points it overrides"
+        );
+        assert_eq!(
+            retag("- [ ] row #pts/3 #ai #pts/8 #size/m <!-- id:ar-1 -->", &t(&["pts/1"]), &[]),
+            "- [ ] row #ai #pts/1 #size/s <!-- id:ar-1 -->",
+            "every stray points tag goes"
+        );
+        assert_eq!(projects::size_name("- [ ] r #pts/5"), Some("m".into()), "no size tag: the band");
         assert_eq!(projects::size_of("- [ ] r #pts/13 #size/l"), Some(13), "points are the weight");
         assert_eq!(projects::size_of("- [ ] r #size/l"), Some(8), "no points: the size weighs");
         assert_eq!(projects::points_of("- [ ] r #pts/4 #size/m"), None, "off-scale points are unscored");

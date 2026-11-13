@@ -710,10 +710,7 @@ fn feed_row(
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let requested = all.iter().any(|t| t == "requested");
     let points = crate::projects::points_of(line);
-    let size = points.and_then(crate::epics::band).map(str::to_string).or_else(|| {
-        all.iter()
-            .find_map(|t| t.strip_prefix("size/").map(str::to_string))
-    });
+    let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
     let tags = all
         .into_iter()

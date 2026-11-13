@@ -24,7 +24,8 @@
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
 # (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
 # points by size_rule, one Sonnet call per batch (the inbox-size agent); the tag sets the row's
-# #size/ band too. A --dry-run keeps its answers, so the apply writes what it printed
+# #size/ band too, and keeps no answers: its --dry-run shows the calls, the apply asks again.
+# The --link pass's --dry-run keeps its answers, so the apply writes what it printed
 # and a dry run stopped at its budget picks up where it stopped.
 # How it all fits: notes-cli README, "Intake".
 
@@ -775,9 +776,9 @@ $listing"
   local -a seen=()
   while IFS=$'\x1f' read -r n pts; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#ids[@]}" ] || continue
+    case "$pts" in 1|2|3|5|8|13) ;; *) continue ;; esac   # off the scale: the row is left
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    case "$pts" in 1|2|3|5|8|13) ;; *) continue ;; esac
     # The ingest record names the writer inbox-size, whoever ran the pass, as --priority does.
     AGENTCTL_NAME=inbox-size AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' \
       pt "$p" "$lane" tag --add "pts/$pts" "${ids[n - 1]}" && SCORED=$((SCORED + 1))
@@ -786,8 +787,10 @@ $listing"
   return 0
 }
 
-# The --size pass: every managed board's open rows with no points (epics excepted: an epic
-# weighs what its leaves do), in batches, the boards with the most such rows first.
+# The --size pass: every managed board's open top-level rows with no points (epics excepted: an
+# epic weighs what its leaves do; child steps too, as --link skips them), in batches, the boards
+# with the most such rows first. A row's old #size/, a hand-set one included, is in its text the
+# model reads, and the points replace it: the stamp from machine load was no estimate.
 size_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
@@ -795,7 +798,8 @@ size_pass() {
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg only "$ONLY" '[.rows[]
     | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
-             and .type != "epic" and .points == null and ($only == "" or .project == $only))]' <<<"$board")"
+             and .type != "epic" and .points == null and (.raw | test("^\\s") | not)
+             and ($only == "" or .project == $only))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do
     [ -n "$p" ] || continue
     local mine; mine="$(jq -c --arg p "$p" --arg l "$lane" '[.[] | select(.project == $p and .lane == $l)] | sort_by(.line)' <<<"$rows")"
