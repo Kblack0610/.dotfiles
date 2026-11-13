@@ -169,16 +169,14 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # Such an ask gates queued work, and agent-queue releases it only on the human's answer, so the
 # judge never answers it live and a session reply never cancels it: on 2026-11-07 a reply cancelled
 # KZhaE0 under upwork-p2..p5, and the judge answered itX9A3 under a vast-clarke phase, and each item
-# would have waited for good. The ids come from `agent-queue list`, read once per run (load_queue_asks).
+# would have waited for good. The ids come from `agent-queue ask-holds`, read once per run (load_queue_asks).
 queue_waits() {
   load_queue_asks
   [[ "$QUEUE_ASKS" == *" $1 "* ]]
 }
 load_queue_asks() {
   [ -z "${QUEUE_ASKS+set}" ] || return 0
-  QUEUE_HOLDS="$($AGENT_ASK_QUEUE_CMD list --json 2>/dev/null | jq -r '
-    .slug as $s | (.tags // "") | split(" ")[] | select(startswith("ask:")) | .[4:]
-    | [$s, split("=")[0], (split("=")[1] // "")] | @tsv' 2>/dev/null)"
+  QUEUE_HOLDS="$($AGENT_ASK_QUEUE_CMD ask-holds 2>/dev/null)"
   QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
 }
 
@@ -1349,26 +1347,18 @@ story_words() {
   done
 }
 
-# story_telemetry <sid>: one line from the nightly outcome row (agentctl-session-outcomes), and
-# where its friction ranks among this week's sessions with any. Friction's terms are its own
-# "why"; the rest is size. Nothing when the session has no row yet.
+# story_telemetry <sid>: one line from the session's nightly outcome row (agentctl-session-outcomes
+# card, which reads that session's rows alone). Friction's terms are its own "why"; the rest is size.
+# Nothing when the session has no row yet. No week rank: it needs every session's row, a second of a
+# card the panel draws on each move (2026-11-13).
 story_telemetry() {
   command -v agentctl-session-outcomes >/dev/null 2>&1 || return 0
-  local row rank
-  # The week's ranking holds the row of any session with friction; one with none has no rank,
-  # so its row comes from its card.
-  rank="$(agentctl-session-outcomes worst --days 7 -n 100000 --json 2>/dev/null |
-    jq -cs --arg s "$1" '(map(.session_id) | index($s)) as $i
-      | if $i == null then empty else {rank: "#\($i + 1) of \(length) this week", row: .[$i]} end')"
-  if [ -n "$rank" ]; then
-    row="$(jq -c .row <<<"$rank")"; rank="$(jq -r .rank <<<"$rank")"
-  else
-    row="$(agentctl-session-outcomes card "$1" --json 2>/dev/null)" && [ -n "$row" ] || return 0
-  fi
-  jq -r --arg rank "$rank" --arg seen "$(age_of "$(jq -r '.observed // ""' <<<"$row")")" "$JQ_MONEY"'
+  local row
+  row="$(agentctl-session-outcomes card "$1" --json 2>/dev/null)" && [ -n "$row" ] || return 0
+  jq -r --arg seen "$(age_of "$(jq -r '.observed // ""' <<<"$row")")" "$JQ_MONEY"'
     def dur: if . == null then empty elif . >= 3600 then "\(. / 3600 | floor)h\(. % 3600 / 60 | floor)m"
              else "\(. / 60 | floor)m" end;
-    [ "friction \(.friction // 0)" + (if $rank != "" then " (\($rank))" else "" end)
+    [ "friction \(.friction // 0)"
         + (if (.why // "") != "" then ": \(.why)" else "" end),
       (if .cost_usd then (.cost_usd | money) else empty end),
       (.duration_s | dur),

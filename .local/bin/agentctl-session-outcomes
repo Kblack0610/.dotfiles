@@ -799,7 +799,7 @@ cmd_card() {
   done
   [ -n "$prefix" ] || { echo "usage: $NAME card <session-id prefix> [--json]" >&2; return 2; }
   local rows n
-  rows="$(so_latest "$OUT" | jq -c --arg p "$prefix" 'select(.session_id | startswith($p))')"
+  rows="$(so_latest_of "$OUT" "$prefix" | jq -c --arg p "$prefix" 'select(.session_id | startswith($p))')"
   n=$(grep -c . <<<"$rows")
   if [ "$n" -eq 0 ]; then
     echo "$NAME card: no outcome row for $prefix" >&2; return 1

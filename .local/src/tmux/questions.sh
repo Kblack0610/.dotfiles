@@ -22,6 +22,7 @@
 #                     then the live asks oldest first, then the sessions with a dialog open
 #                     (id @<target>), then the dead asks oldest first, then the parked asks
 #                     soonest back first; in the panel the parked ones only after P
+#   saved             the rows as the panel last built them (after an answer, P), not built again
 #   count             how many rows rows prints less the parked ones, one number: the pending asks
 #                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
 #                     never disagree
@@ -57,7 +58,7 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P park
 # "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts.
 # park is an ask parked until a revisit date (agent-ask park), shown last with that date in the
 # age column, so it is in reach but not in the count. Where an answer goes is on the card
-# (agent-ask answer_route), not the row: it reads the queue, 1.8 s, too slow for the open path
+# (agent-ask answer_route), not the row: the row has no room for it
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
 # selected row still reads on fzf's selection bar.
@@ -262,17 +263,23 @@ ask_load() {
   [[ "$session" =~ agent-([0-9]+)$ ]] && A_WHO+=":${BASH_REMATCH[1]}"
 }
 
+# The rows as last built, before the parked filter, in "$QUESTIONS_STATE.rows": the reload and the
+# header's count both read the one build (after built the rows twice per answer, a second each, on
+# 2026-11-13). rows_build writes it; rows_saved reads it, building it first when there is none.
+rows_build() { cmd_rows >"$QUESTIONS_STATE.rows"; }
+rows_saved() { [ -e "$QUESTIONS_STATE.rows" ] || rows_build; cat "$QUESTIONS_STATE.rows"; }
+
 # after <message>: reload the rows and say what happened, with the count in the header.
 after() {
   local n
-  n="$(cmd_rows | rows_count)"
+  rows_build
+  n="$(rows_count <"$QUESTIONS_STATE.rows")"
   st_write ""
-  printf 'hide-input+change-prompt~~+reload(QUESTIONS_ANSWERED=%q %q rows)+change-header~%s~+' \
-    "${QUESTIONS_ANSWERED:-}" "$SELF" "$(waiting $n)"
+  printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
   if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
-header_count() { printf 'change-header~%s~+' "$(waiting $(cmd_rows | rows_count))"; }
+header_count() { printf 'change-header~%s~+' "$(waiting $(rows_saved | rows_count))"; }
 # waiting <asks> <plans> <questions> <prompts> [<parked>]: the header, "3 asks . 11 plans . 2
 # questions waiting . 5 parked", a kind with none left out.
 waiting() {
@@ -396,7 +403,7 @@ cmd_key() {
     # A choice armed on a row P is about to hide must not ride a later enter.
     st_write ""
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
-    printf 'reload(%s rows)+' "$(printf '%q' "$SELF")"
+    printf 'reload(%s saved)+' "$(printf '%q' "$SELF")"
     header_count
     if parked_shown; then footer "parked asks shown . P hides them"; else footer "parked asks hidden . P shows them"; fi
     ;;
@@ -508,25 +515,24 @@ cmd_pick() {
   panel_fzf_table
   panel_fzf_layout side
 
-  local me rows k binds=()
+  local me k binds=()
   me="$(printf '%q' "$SELF")"
   QUESTIONS_STATE="$(mktemp)"
   QUESTIONS_PARKED="$(mktemp)"
-  rows="$(mktemp)"
   export QUESTIONS_STATE QUESTIONS_PARKED
-  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_STATE.busy" "$QUESTIONS_PARKED" "$rows" "$rows.all"' EXIT
-  cmd_rows >"$rows.all"
-  parked_filter <"$rows.all" >"$rows"
+  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_STATE.busy" "$QUESTIONS_STATE.rows" "$QUESTIONS_PARKED"' EXIT
+  rows_build
   for k in 1 2 3 4 5 6 7 8 9 d p P t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
 
   # --no-input --disabled: no search box (a handful of rows), which frees the digit keys;
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row
   # and reads in full in the card. --read0: a row is two lines (question, then session).
   # The card scrolls on panel_fzf_layout's keys (C-d/C-u, pgup/pgdn), the same in every panel.
-  fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" <"$rows" \
+  parked_filter <"$QUESTIONS_STATE.rows" |
+  fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" \
     --read0 --no-wrap --no-input --disabled --with-nth=2.. \
     --border-label=' questions ' --border-label-pos=3 \
-    --header="$(waiting $(rows_count <"$rows.all"))" \
+    --header="$(waiting $(rows_count <"$QUESTIONS_STATE.rows"))" \
     --footer="$QUESTIONS_KEYS" \
     --preview="AGENT_ASK_COLOR=1 COLUMNS=\$FZF_PREVIEW_COLUMNS $me card {1}" \
     "${binds[@]}" \
@@ -541,7 +547,8 @@ cmd_pick() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 case "${1:-}" in
-rows) cmd_rows | parked_filter ;;
+rows) if [ -n "$QUESTIONS_STATE" ]; then rows_build; parked_filter <"$QUESTIONS_STATE.rows"; else cmd_rows | parked_filter; fi ;;
+saved) rows_saved | parked_filter ;;
 count) cmd_count ;;
 key) shift; cmd_key "$@" ;;
 card) shift; cmd_card "$@" ;;
