@@ -130,13 +130,16 @@ sandbox_init() {
   # route's model. Neither is a transport name, so the scrub.list unset below is not for them.
   unset CLAUDE_HEADLESS AGENTCTL_MODEL
 
-  # A fleet-shepherd pass (.pass.sh) exports its runner's lane and state paths, and agentctl-run its
-  # AGENTCTL_EXPLAIN: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude model as
-  # Codex's), AGENTCTL_ACCOUNT picks the account (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes
-  # the lease the runner's (fleet_shepherd.bats), and the DIR and FILE names point at live state.
-  # A Claude session's CLAUDE_CONFIG_DIR names its account the same way (ar-1553, ar-1326).
+  # A suite run from a fleet-shepherd pass inherits what its .pass.sh exports and what agentctl-run
+  # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
+  # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
+  # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
+  # AGENTCTL_AGENT names the caller in the call log, and the DIR and FILE names point at live state.
+  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here.
+  # A test that wants one of these sets it after sandbox_init.
   unset MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
-    FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR
+    FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR \
+    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
 
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.

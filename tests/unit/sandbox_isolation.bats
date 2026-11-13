@@ -13,6 +13,21 @@
 # These tests pin the detachment itself. They are cheap and they are the control on every
 # other file in the suite.
 
+# runner_exports -> the names a fleet-shepherd pass writes into its .pass.sh (launch_pass: the
+# `for v in` loop and its `export X=` lines) and agentctl-run exports for its agent. Read from the
+# launchers, so a name added there is checked here without a second list. PATH is kept and
+# AGENTCTL_STATE_DIR re-pointed into the sandbox, so neither is a leak.
+runner_exports() {
+  local root="${BATS_TEST_DIRNAME}/../.."
+  {
+    awk '/^launch_pass\(\)/ {f = 1} f && /^}/ {exit} f' "$root/.local/bin/fleet-shepherd" > "$BATS_TEST_TMPDIR/pass"
+    awk '/for v in / {l = 1} l {print} l && /; do/ {l = 0}' "$BATS_TEST_TMPDIR/pass" | sed 's/.*for v in//; s/; do.*//; s/\\$//'
+    grep -oE "(echo|printf) 'export [A-Z_]+=" "$BATS_TEST_TMPDIR/pass" | grep -oE '[A-Z_]+=$' | tr -d =
+    awk '/^ *export [A-Z_]+/ {l = 1} l {print} l && !/\\$/ {l = 0}' "$root/.local/src/agent-run/agentctl-run" |
+      grep -oE '\b[A-Z][A-Z_]+\b' | grep -v '^[A-Z]$'
+  } | tr ' ' '\n' | grep -E '^[A-Z][A-Z_]+$' | grep -vxE 'PATH|AGENTCTL_STATE_DIR' | sort -u
+}
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -29,9 +44,10 @@ setup() {
   # inside one would read them as its own.
   export CLAUDE_HEADLESS=1 AGENTCTL_MODEL=inherited-model
   export NO_COLOR=1 PANEL_NO_COLOR=1
-  export MODEL=claude-opus-5-5 HARNESS=claude ROUTE=r DATA_CLASS=d AGENTCTL_ACCOUNT=alt AGENTCTL_INBOX=/i \
-    AGENTCTL_EXPLAIN=1 CLAUDE_TELEMETRY_SERVICE=s FLEET_SHEPHERD_DIR=/d FLEET_STATE_FILE=/f \
-    FLEET_SHEPHERD_HOLDER=runner FLEET_SHEPHERD_LEASE_MIN=60 CLAUDE_CONFIG_DIR=/c
+  # Everything a fleet-shepherd pass and agentctl-run export, as a suite run from one inherits it,
+  # plus the Claude session's own account dir.
+  local v
+  for v in $(runner_exports) CLAUDE_CONFIG_DIR; do [ -n "${!v+x}" ] || export "$v=inherited-$v"; done
 
   load '../helpers/sandbox'
   sandbox_init basic
@@ -51,13 +67,19 @@ setup() {
 }
 
 # A shepherd pass runs the Stop-hook suite with its lane, account and state paths exported, and a
-# Claude session with its CLAUDE_CONFIG_DIR (ar-1553, ar-1326).
-@test "sandbox_init detaches from a shepherd pass's exports and CLAUDE_CONFIG_DIR" {
-  local v
-  for v in MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
-    FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR; do
-    [ -z "${!v+x}" ] || { echo "$v is still set: ${!v}"; return 1; }
-  done
+# Claude session with its CLAUDE_CONFIG_DIR; each one turned unrelated suites red.
+@test "sandbox_init detaches from every name a shepherd pass or agentctl-run exports" {
+  local v left=()
+  for v in $(runner_exports) CLAUDE_CONFIG_DIR; do [ -z "${!v+x}" ] || left+=("$v"); done
+  assert_equal "${left[*]}" ""
+}
+
+@test "runner_exports reads the launchers, not an empty list" {
+  run runner_exports
+  assert_line MODEL
+  assert_line FLEET_SHEPHERD_HOLDER
+  assert_line AGENTCTL_ACCOUNT
+  assert_line AGENT_CALL_CONTEXT
 }
 
 # md_render.bats, panel_lib.bats and questions_panel.bats assert on colour escapes, which either
