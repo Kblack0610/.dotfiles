@@ -86,7 +86,7 @@ call() {
     return 1
   fi
   if [ "$code" != 200 ]; then
-    msg="$(jq -r '.error.message // .detail // empty' "$out" 2>/dev/null | head -c 600)"
+    msg="$(jq -r '(.error.message // .detail // empty) | tostring | .[:600]' "$out" 2>/dev/null)"
     [ -n "$msg" ] || msg="$(head -c 300 "$out")"
     case "$code" in
       401|403) echo "ask-local: the gateway refused the key ($code): $msg" >&2 ;;
