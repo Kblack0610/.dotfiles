@@ -4164,7 +4164,12 @@ cmd_run() {
   # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
-  if [ -n "$urgent" ] && [ -z "$(gate)" ]; then start_items "$urgent" 1; return; fi
+  # An urgent item no runner session can be parked for starts nothing, and the pass goes on to the
+  # red floor: returning there held every red for a day while three heavy urgent items waited (11-13).
+  if [ -n "$urgent" ] && [ -z "$(gate)" ]; then
+    local before=${STARTED:-0} urc; start_items "$urgent" 1; urc=$?
+    [ "${STARTED:-0}" -eq "$before" ] || return "$urc"
+  fi
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
     [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"

@@ -118,6 +118,25 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
+@test "red floor: an urgent item no runner session can be parked for does not hold a red at a full fleet" {
+  # 2026-11-13: three heavy urgent items waited on run units every pass, and the pass returned there,
+  # before the red floor, so 13 watch reds stayed queued all day.
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=1 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue add --project game --slug big --priority urgent --weight heavy "big urgent" >/dev/null
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  # Negative control first: no red floor, the urgent item waits and nothing starts.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'run units: big (heavy needs 2 run units, 0 free)'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r1 on the red floor'
+  refute_output --partial 'started queue item big'
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "red floor: a fleet past its pace target with its live reds at the floor starts nothing" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=2 DISPATCH_PER_PASS=3
