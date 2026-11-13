@@ -347,7 +347,9 @@ jobs:
           key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
           restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
       # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
-      # Clippy runs everywhere but pull requests (tests/rust.sh, THE GATES).
+      # Clippy runs everywhere but pull requests (tests/rust.sh, THE GATES), and on a pull request
+      # that touches the rust gate or tests/rust-toolchain, whose new lints would otherwise first
+      # show on main (2026-11-13, #2086).
       - name: Rust gate
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
@@ -355,6 +357,7 @@ jobs:
         run: |
           crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          if grep -q 'touches the rust gate' "$RUNNER_TEMP/why"; then export CLIPPY=1; fi
           printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
           [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
           make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"

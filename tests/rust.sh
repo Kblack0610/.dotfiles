@@ -16,10 +16,11 @@
 # THE GATES
 # ---------
 # cargo test and cargo fmt (--all, so a workspace checks its member crates) block on every
-# run. cargo clippy blocks too, unless CLIPPY=0: the CI rust job sets that on pull
-# requests and runs clippy on main pushes, the schedule and a manual run, where a red stops
-# the line (docs/ci.md). Clippy is a full second compile, the slowest step of a PR's rust
-# job; a new lint that lands is caught on the next main push.
+# run. cargo clippy blocks too, unless CLIPPY=0, which the CI rust job sets on a pull
+# request. Clippy is a full second compile, the slowest step of a PR's rust job. It still
+# runs on a pull request that touches the rust gate or tests/rust-toolchain (pick.sh says
+# so; pick.bats pins that line), and on main pushes, the schedule and a manual run, where a
+# red stops the line (docs/ci.md).
 CLIPPY="${CLIPPY:-1}"
 
 # No `-e`: this script runs several gates over several crates and accumulates rc, so one
