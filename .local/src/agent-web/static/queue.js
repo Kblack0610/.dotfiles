@@ -207,14 +207,14 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
-// What a held item waits on (hub-core `Item::held_on`), the whole hold on hover; an item it
+// What an item waits on (hub-core `Item::waits_for`): a hold, an ask, a merge; a hold whole on hover, an item it
 // waits after opens that item's row.
 function qHoldCell(i) {
-  if (!i.held_on) return `<td class="muted">-</td>`;
+  if (!i.waits_for) return `<td class="muted">-</td>`;
   // `after a b`: each slug it waits on opens that item.
-  const m = /^after (.+)$/.exec(i.held_on);
-  const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.held_on);
-  return `<td title="${esc(i.hold || "")}">${text}</td>`;
+  const m = /^after (.+)$/.exec(i.waits_for);
+  const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.waits_for);
+  return `<td title="${esc(i.hold || i.waits_for)}">${text}</td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
