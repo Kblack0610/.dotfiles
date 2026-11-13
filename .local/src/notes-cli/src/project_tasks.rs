@@ -1219,15 +1219,27 @@ pub fn move_to_project(
         &crate::ingest::Event::row("rehomed", src, dest, lane.name(), &moved.line),
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
+    if let Some(id) = &moved.unlinked {
+        // Kept in the journal log, so a child moved ahead of its epic can be linked again.
+        let why = format!("dropped #of/{id}: it names no row in {dest}");
+        log.info("ptask", &format!("{} {why}", moved.line.trim()));
+        println!("  {why}");
+    }
     Ok(0)
 }
 
-/// The ids of every row on a project's two live sheets, the human sheet and the agent board:
-/// the rows an `#of/` there may name (`notes doctor`'s tree reads the same two).
+/// The ids of every row a project holds: its human sheet, its agent board and both lanes'
+/// `versions/` notes, the rows `notes doctor`'s tree (`epics::Index::of`) reads, so an `#of/`
+/// naming one of them is never dangling there.
 fn row_ids(dir: &Path) -> HashSet<String> {
-    [dir.to_path_buf(), projects::agent_dir(dir)]
+    let mut files = Vec::new();
+    for lane in [dir.to_path_buf(), projects::agent_dir(dir)] {
+        files.extend(task_sheet(&lane));
+        files.extend(projects::version_notes(&lane.join("versions")).into_iter().map(|(_, p)| p));
+    }
+    files
         .iter()
-        .filter_map(|lane| task_sheet(lane).and_then(|s| fs::read_to_string(s).ok()))
+        .filter_map(|f| fs::read_to_string(f).ok())
         .flat_map(|t| t.lines().filter_map(md::row_id).collect::<Vec<_>>())
         .collect()
 }
@@ -1238,6 +1250,8 @@ struct Lifted {
     src: String,
     dest: String,
     line: String,
+    /// The `#of/` parent the row lost: it names no row in the destination.
+    unlinked: Option<String>,
 }
 
 /// File half of `move_to_project`: read both sheets, compute both edits, then write.
@@ -1308,9 +1322,10 @@ fn lift_into(
         Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
         None => md::split_version(line).0,
     };
-    let line = match crate::epics::parent_of(&line) {
-        Some(id) if !held.contains(&id) => md::drop_tag(&line, &format!("#of/{id}")),
-        _ => line,
+    let unlinked = crate::epics::parent_of(&line).filter(|id| !held.contains(id));
+    let line = match &unlinked {
+        Some(id) => md::drop_tag(&line, &format!("#of/{id}")),
+        None => line,
     };
     let mut landed = vec![line.clone()];
     landed.extend(block);
@@ -1319,6 +1334,7 @@ fn lift_into(
         src: cut,
         dest: grown,
         line,
+        unlinked,
     }))
 }
 
@@ -3183,13 +3199,19 @@ Version: v1.2.0
         let src = SRC.replace("menu polish #low", "menu polish #low #of/ar-9");
         let lifted = |held: &[&str]| {
             let held = held.iter().map(|s| s.to_string()).collect();
-            lift_into(&src, DEST, &w("menu polish"), None, None, &held)
+            let m = lift_into(&src, DEST, &w("menu polish"), None, None, &held)
                 .unwrap()
-                .unwrap()
-                .line
+                .unwrap();
+            (m.line, m.unlinked)
         };
-        assert_eq!(lifted(&[]), "- [ ] dodgeball menu polish #low");
-        assert_eq!(lifted(&["ar-9"]), "- [ ] dodgeball menu polish #low #of/ar-9");
+        assert_eq!(
+            lifted(&[]),
+            ("- [ ] dodgeball menu polish #low".into(), Some("ar-9".into()))
+        );
+        assert_eq!(
+            lifted(&["ar-9"]),
+            ("- [ ] dodgeball menu polish #low #of/ar-9".into(), None)
+        );
     }
 
     #[test]
@@ -3285,14 +3307,19 @@ Version: v1.2.0
     }
 
     #[test]
-    fn row_ids_reads_the_sheet_and_the_agent_board() {
+    fn row_ids_reads_both_sheets_and_their_version_notes() {
         let d = scratch("ids");
-        fs::create_dir_all(d.join("agent")).unwrap();
+        fs::create_dir_all(d.join("agent/versions")).unwrap();
         fs::write(d.join("README.md"), "## Tasks\n- [ ] a <!-- id:hc-1 -->\n").unwrap();
         fs::write(d.join("agent/README.md"), "## Tasks\n- [ ] b <!-- id:hc-2 -->\n").unwrap();
+        fs::write(
+            d.join("agent/versions/v0.1.0.md"),
+            "## Tasks\n- [x] c <!-- id:hc-3 -->\n",
+        )
+        .unwrap();
         let mut ids: Vec<_> = row_ids(&d).into_iter().collect();
         ids.sort();
-        assert_eq!(ids, ["hc-1", "hc-2"]);
+        assert_eq!(ids, ["hc-1", "hc-2", "hc-3"]);
         let _ = fs::remove_dir_all(&d);
     }
 
