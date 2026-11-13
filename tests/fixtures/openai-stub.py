@@ -7,6 +7,7 @@ The bearer key picks the behaviour, so one server serves every test:
   good   200, echoes the last user message as "echo: <text>"
   json   200, content is the JSON object {"ok": true}
   prose  200, content is "not json"
+  scalar 200, content is the bare JSON value false
   empty  200, empty content (a model that spent its budget thinking)
   down   500 with a LiteLLM-shaped error (the route's backend is unreachable)
   hang   never answers (the client's timeout must end the call)
@@ -51,6 +52,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, reply("echo: " + users[-1]))
         if key == "json":
             return self.send(200, reply('{"ok": true}'))
+        if key == "scalar":
+            return self.send(200, reply("false"))
         if key == "prose":
             return self.send(200, reply("not json"))
         if key == "empty":

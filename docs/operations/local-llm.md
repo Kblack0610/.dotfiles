@@ -1,6 +1,6 @@
 # Local model (Qwen3.5-9B on the workstation)
 
-One small model runs at home: Qwen3.5-9B (IQ4_XS GGUF) under llama.cpp's `llama-server`, on the workstation's RTX 4060 Ti. The AMD card keeps the desktop and Sunshine; RustDesk shares the 4060 Ti, so the model is sized to leave at least 1.5 GB of its 8 GB free.
+One small model runs at home: Qwen3.5-9B (IQ4_XS GGUF) under llama.cpp's `llama-server`, on the workstation's RTX 4060 Ti. The AMD card keeps the desktop and Sunshine; RustDesk shares the 4060 Ti, so the model is sized to leave at least 1.5 GB of its 8 GB free. Measured 2026-11-13: 5.36 GB used in all while generating (RustDesk 0.3 GB of it), about 48 tokens a second.
 
 Everything reaches it through the LiteLLM gateway route `local (qwen3.5-9b)`, never by host and port. That route is priced 0 and has no fallback: when the workstation is off or asleep, a call fails instead of moving to a paid model.
 
@@ -46,4 +46,5 @@ ask-local "say ok"
 | `ask-local: route gateway-local gave no key` | no `~/.local/state/ask-local/litellm.key` | mint it per home-config `apps/litellm/README.md` "Local model key", `chmod 600` |
 | `failed (500)` with a connection error | llama-server is down or the workstation is off | `systemctl --user status llama-server`; `journalctl --user -u llama-server` |
 | unit shows `condition failed` | the model file is missing | `install.sh --with llm` downloads and checks it |
+| `install.sh --with llm` stops with `UFW is inactive` | the server checks no key, so it only starts behind a firewall | allow SSH, `sudo ufw enable`, re-run |
 | `refused the key (401)` or a 403 naming the model | the key lacks the route | `/key/update` the key's `models` to include `local (qwen3.5-9b)` |

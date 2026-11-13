@@ -10,10 +10,9 @@ ConditionPathExists=/usr/bin/llama-server
 
 [Service]
 Type=simple
-# Pin to the headless RTX 4060 Ti by UUID; the AMD card drives the desktop and
-# Sunshine, and a non-CUDA backend would pick it. RustDesk shares this card, so
-# the budget below keeps total use near 6 GB of 8.
-Environment=CUDA_VISIBLE_DEVICES=GPU-c48a7e5f-8ea9-2a69-3505-3d37ec828061
+# `--device CUDA0` keeps it on the NVIDIA card (the 4060 Ti); the AMD card drives
+# the desktop and Sunshine. RustDesk shares the 4060 Ti, so the budget below
+# keeps total use near 5.4 GB of 8.
 Environment=LLAMA_MODEL=%h/.local/share/llm-models/Qwen3.5-9B-IQ4_XS.gguf
 ExecStart=/usr/bin/llama-server \
     -m ${LLAMA_MODEL} --alias qwen3.5-9b \

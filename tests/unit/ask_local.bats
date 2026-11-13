@@ -77,7 +77,7 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
 @test "--route picks another route; --system and --max-tokens reach the body" {
   key good
   route other "$ASK_LOCAL_GATEWAY_URL" "other (m)"
-  run "$ASK_LOCAL" --route other --system "be terse" --max-tokens 64 hi </dev/null
+  run "$ASK_LOCAL" --route other --system "be terse" --max-tokens 064 hi </dev/null
   assert_success
   assert_equal "$(sent '.body.messages[0]')" '{"role":"system","content":"be terse"}'
   assert_equal "$(sent .body.model)" "other (m)"
@@ -114,6 +114,17 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
   run "$ASK_LOCAL" --json "give me ok" </dev/null
   assert_failure 1
   assert_output --partial "did not return valid JSON"
+}
+
+@test "--json wants an object; --schema takes any JSON value, false included" {
+  key scalar
+  run "$ASK_LOCAL" --json "is it?" </dev/null
+  assert_failure 1
+  assert_output --partial "did not return valid JSON"
+  echo '{"type": "boolean"}' >"$BATS_TEST_TMPDIR/s.json"
+  run "$ASK_LOCAL" --schema "$BATS_TEST_TMPDIR/s.json" "is it?" </dev/null
+  assert_success
+  assert_output "false"
 }
 
 @test "--raw prints the whole response" {

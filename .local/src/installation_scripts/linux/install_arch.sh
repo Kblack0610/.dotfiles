@@ -308,7 +308,8 @@ setup_local_llm() {
         mkdir -p "$(dirname "$LOCAL_LLM_MODEL")"
         curl -fL --retry 3 -C - -o "$LOCAL_LLM_MODEL.part" "$LOCAL_LLM_URL" || return 1
         if ! echo "$LOCAL_LLM_SHA256  $LOCAL_LLM_MODEL.part" | sha256sum -c --quiet; then
-            log_error "Model checksum mismatch; leaving $LOCAL_LLM_MODEL.part for inspection"
+            log_error "Model checksum mismatch; removed the download, re-run to fetch it again"
+            rm -f "$LOCAL_LLM_MODEL.part"
             return 1
         fi
         mv "$LOCAL_LLM_MODEL.part" "$LOCAL_LLM_MODEL"
@@ -320,12 +321,18 @@ setup_local_llm() {
     local lan_dev lan
     lan_dev="$(ip -4 route show default | awk '/ src 192\.168\./ {print $5; exit}')"
     lan="$(ip -4 route show dev "${lan_dev:-none}" scope link proto kernel 2>/dev/null | awk '{print $1; exit}')"
-    if [ -n "$lan" ]; then
-        install_pacman_package "ufw"
-        sudo ufw allow from "$lan" to any port 8780 proto tcp comment 'llama-server (LiteLLM local route)'
-    else
-        log_warning "no 192.168 LAN route found; open 8780 to the LAN by hand"
+    if [ -z "$lan" ]; then
+        log_error "No 192.168 LAN route: the gateway could not reach :8780"
+        return 1
     fi
+    # The server has no key of its own, so without an active firewall :8780 is
+    # open on every interface. Turning UFW on here could cut off SSH, so stop.
+    install_pacman_package "ufw"
+    if ! sudo ufw status | grep -q "Status: active"; then
+        log_error "UFW is inactive: enable it (allowing SSH first), then re-run --with llm"
+        return 1
+    fi
+    sudo ufw allow from "$lan" to any port 8780 proto tcp comment 'llama-server (LiteLLM local route)'
 
     systemctl --user daemon-reload
     systemctl --user enable --now llama-server
@@ -885,9 +892,10 @@ install_all() {
     # Game streaming
     step streaming   setup_sunshine
 
+    step streaming   install_moonlight
+
     # Local model on the NVIDIA card (opt-in: --with llm)
     step llm         setup_local_llm
-    step streaming   install_moonlight
 
     # Remote desktop (Azure Virtual Desktop via FreeRDP webview)
     step avd         setup_freerdp_avd

@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$MAX_TOKENS" in ''|*[!0-9]*) die "--max-tokens must be a whole number" ;; esac
+MAX_TOKENS=$((10#$MAX_TOKENS))
 case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
 command -v jq >/dev/null || die "needs jq"
 command -v curl >/dev/null || die "needs curl"
@@ -100,7 +101,8 @@ call() {
     echo "ask-local: $MODEL returned an empty answer (finish_reason $(jq -r '.choices[0].finish_reason // "none"' "$out")); raise --max-tokens?" >&2
     return 1
   fi
-  if [ "$FORMAT" != text ] && ! jq -e . >/dev/null 2>&1 <<<"$content"; then
+  check='type == "object"'; [ "$FORMAT" = schema ] && check='true'
+  if [ "$FORMAT" != text ] && ! jq -e "$check" >/dev/null 2>&1 <<<"$content"; then
     echo "ask-local: $MODEL did not return valid JSON:" >&2
     printf '%s\n' "$content" >&2
     return 1
@@ -132,7 +134,8 @@ if [ "$MODE" = chat ]; then
 fi
 
 text="${prompt[*]:-}"
-if [ ! -t 0 ]; then
+# Only a pipe or a file: an inherited socket or tty would block until EOF.
+if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
   input="$(cat)"
   if [ -n "$input" ]; then
     text="${text:+$text$'\n\n'}$input"
