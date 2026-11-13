@@ -61,15 +61,14 @@ function sessionPr(r) {
   return `#${esc(r.pr)}${r.pr_state ? " " + esc(r.pr_state.toLowerCase()) : ""}${ci}`;
 }
 
-// The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
-// How full the session's context window is: a meter and its percent, "-" when the model's window
-// is unknown (hub-core SessionRow::context_pct), so an unknown model never reads as empty.
+// How full the session's context window is: hub-core's rounded percent (SessionRow context_pct)
+// as a meter and its number, "-" when the model's window is unknown, never 0%.
 function ctxCell(r) {
-  if (!r.context_window) return '<td class="n">-</td>';
-  const f = (r.context_tokens || 0) / r.context_window;
-  return `<td class="n" title="${kfmt(r.context_tokens || 0)} of ${kfmt(r.context_window)} tokens">${meter(f, "var(--accent)")} ${Math.round(f * 100)}%</td>`;
+  if (r.context_pct == null) return '<td class="n">-</td>';
+  return `<td class="n" title="${kfmt(r.context_tokens || 0)} of ${kfmt(r.context_window)} tokens">${meter(r.context_pct / 100, "var(--accent)")} ${r.context_pct}%</td>`;
 }
 
+// The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
 function sessionRow(r) {
   const a = sessionAgent(r), tags = sessionTags(r, a);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);

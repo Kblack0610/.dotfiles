@@ -561,8 +561,7 @@ impl Controls {
             pr,
             plan,
             idle,
-            x.context_pct()
-                .map_or("-".into(), |c| format!("{c:.0}%").into()),
+            x.context_pct.map_or("-".into(), |c| format!("{c}%").into()),
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
             dash(&x.harness),

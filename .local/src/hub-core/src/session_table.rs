@@ -121,6 +121,9 @@ pub struct SessionRow {
     /// `context_window`); the window is None for a model agent-panel does not know.
     pub context_tokens: Option<i64>,
     pub context_window: Option<i64>,
+    /// How full that window is, whole percent: the one rounding both surfaces print. None when
+    /// the window is unknown, so an unknown model reads as no data, never as an empty context.
+    pub context_pct: Option<i64>,
     /// What an ended row's idle column says instead: `ended`, or the item's non-ok status.
     pub ended: String,
     /// When it ended, unix seconds.
@@ -138,15 +141,6 @@ pub struct SessionRow {
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
-}
-
-impl SessionRow {
-    /// How full the context window is, in percent; None when the window is unknown, so an
-    /// unknown model reads as no data, never as an empty context.
-    pub fn context_pct(&self) -> Option<f64> {
-        let w = self.context_window.filter(|w| *w > 0)?;
-        Some(self.context_tokens.unwrap_or(0) as f64 * 100.0 / w as f64)
-    }
 }
 
 /// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
@@ -197,7 +191,7 @@ impl Row for SessionRow {
             "source" => Val::Text(self.source.name().into()),
             "session" if self.target.is_empty() => text(&self.session_id),
             "session" => text(&self.target),
-            "ctx" => self.context_pct().map_or(Val::None, Val::Num),
+            "ctx" => self.context_pct.map_or(Val::None, |n| Val::Num(n as f64)),
             _ => Val::None,
         }
     }
@@ -379,6 +373,9 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         idle_min: s["idle_min"].as_i64(),
         context_tokens: s["context_tokens"].as_i64(),
         context_window: s["context_window"].as_i64(),
+        context_pct: s["context_window"].as_i64().filter(|w| *w > 0).map(|w| {
+            (s["context_tokens"].as_i64().unwrap_or(0) as f64 * 100.0 / w as f64).round() as i64
+        }),
         cost_usd: feed.cost.get(sid).copied(),
         item_cost_usd: item.and_then(|i| {
             let mut sids = item_sessions(i);
@@ -667,6 +664,14 @@ mod tests {
         let r = rows(&s, &vocab(), &feed(), &[]);
         let at = |t: &str| r.iter().find(|x| x.target == t).unwrap().val("ctx");
         assert_eq!(at("lab/d:1"), Val::Num(75.0));
+        s[0]["context_tokens"] = json!(165_000);
+        let r2 = rows(&s, &vocab(), &feed(), &[]);
+        let half = r2.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(
+            half.context_pct,
+            Some(83),
+            "82.5 rounds half away from zero, once, here"
+        );
         assert_eq!(
             at("lab/d:2"),
             Val::None,

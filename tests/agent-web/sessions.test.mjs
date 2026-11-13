@@ -330,7 +330,7 @@ test("STARTED BY says who started a row: dispatch, resume, by hand", () => {
 
 test("CTX meters a known window and says - for an unknown one, never 0%", () => {
   setup();
-  run(`sst.data.rows = [{ ...sst.data.rows[0], context_tokens: 150000, context_window: 200000 }, { ...sst.data.rows[1], context_tokens: 150000, context_window: null }, sst.data.rows[2]]`);
+  run(`sst.data.rows = [{ ...sst.data.rows[0], context_tokens: 150000, context_window: 200000, context_pct: 75 }, { ...sst.data.rows[1], context_tokens: 150000, context_window: null, context_pct: null }, sst.data.rows[2]]`);
   run("sst.render()");
   const html = boxes["ov-sessions"].innerHTML;
   assert.match(html, /title="sort by ctx">ctx<\/button>/);
