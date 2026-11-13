@@ -726,3 +726,44 @@ test("an opened sheet row closes from its card: a refresh keeps the form, the ro
     assert.equal(sent.filter(([k]) => k === "write").length, 1);
   } finally { ctx.fetch = before; vm.runInContext(`hst.close = {}`, ctx); }
 });
+
+test("a page's #home/ask/<id> opens that ask's answer card, and one no longer waiting says so", async () => {
+  const before = ctx.fetch;
+  const a = (id) => ({ kind: "ask", need: "ask", project: "p", text: id, id });
+  const answer = home({ needs: [a("a1"), a("a2")] });
+  ctx.fetch = async (path) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path === "/api/briefing" ? { error: "off" } : answer) });
+  ctx.URLSearchParams = URLSearchParams;
+  const pick = doc.querySelector, picked = [];
+  ctx.CSS = { escape: (s) => s.replace(/[:"\\]/g, "\\$&") };
+  doc.querySelector = (sel) => (sel.startsWith("#home tr") ? { scrollIntoView: (o) => picked.push([sel, o.block]) } : pick(sel));
+  try {
+    vm.runInContext(`st.tab = "home"; st.arg = "ask/a2"; hst.open = new Set(); takeAskArg()`, ctx);
+    assert.equal(vm.runInContext("st.arg", ctx), "", "the link is taken once");
+    await vm.runInContext("refreshHome()", ctx);
+    assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
+    assert.deepEqual(picked, [['#home tr[data-need="ask\\:a2"]', "center"]], "and scrolls its row into view, once");
+    assert.equal(vm.runInContext("hst.scroll", ctx), null);
+    assert.doesNotMatch(vm.runInContext("needsHead(hst.data.table)", ctx), /no longer waits/);
+    vm.runInContext(`st.arg = "ask/gone1"; takeAskArg()`, ctx);
+    await vm.runInContext("refreshHome()", ctx);
+    assert.match(vm.runInContext("needsHead(hst.data.table)", ctx), /Ask gone1 no longer waits on you: it was answered or withdrawn\./);
+    vm.runInContext(`takeAskArg()`, ctx);
+    assert.doesNotMatch(vm.runInContext("needsHead(hst.data.table)", ctx), /no longer waits/, "Home shown again without a link drops the note");
+    vm.runInContext(`st.views.home = "nq=kind:turn&ns=x&nsort=waited"; st.arg = "ask/a1"; takeAskArg()`, ctx);
+    assert.equal(vm.runInContext("st.views.home", ctx), "nsort=waited", "the link clears the Needs you search and chip that could hide it");
+    // A read already running when the link came cannot rule on it; the next one does.
+    let release, n = 0;
+    ctx.fetch = async (path) => {
+      if (path.startsWith("/api/home") && n++ === 0) await new Promise((r) => { release = r; });
+      return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path === "/api/briefing" ? { error: "off" } : path.startsWith("/api/home") && n === 1 ? home({ needs: [] }) : answer) };
+    };
+    vm.runInContext(`hst.open = new Set(); hst.want = null; st.arg = ""`, ctx);
+    const first = vm.runInContext("refreshHome()", ctx);
+    vm.runInContext(`st.arg = "ask/a2"; takeAskArg(); refreshHome()`, ctx);
+    while (!release) await new Promise((r) => setImmediate(r));
+    release(); await first;
+    while (vm.runInContext("hst.want", ctx)) await new Promise((r) => setImmediate(r));
+    assert.equal(vm.runInContext("hst.gone", ctx), null, "the stale read did not call a waiting ask gone");
+    assert.equal(vm.runInContext("JSON.stringify([...hst.open])", ctx), '["ask:a2"]');
+  } finally { ctx.fetch = before; doc.querySelector = pick; delete ctx.CSS; delete ctx.URLSearchParams; vm.runInContext(`hst.open = new Set(); hst.want = null; hst.gone = null; st.tab = "home"; st.arg = ""; st.views.home = ""`, ctx); }
+});
