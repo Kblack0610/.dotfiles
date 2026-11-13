@@ -28,8 +28,9 @@ TM_SOCKET=""        # absolute socket path, inside $SANDBOX
 TM_TARGET=""
 TM_LAST_SCREEN=""
 
-# Geometry is pinned. tmux's default is 80x24, and with the default `window-size latest`
-# any client that attaches to the server silently resizes the window underneath the test.
+# Geometry is pinned by new-session -x/-y, and new windows inherit it while no client is
+# attached; no test attaches one to this server. Not `window-size manual`: with it, tmux 3.4
+# and 3.5a crash the server on the next new-window in a detached session (the drift sweep).
 TM_WIDTH="${TM_WIDTH:-100}"
 TM_HEIGHT="${TM_HEIGHT:-30}"
 
@@ -87,7 +88,6 @@ tmux_kill_named() {
 tmux_start() {
   [ -n "$TM_SOCKET" ] || tmux_shim
   _tm new-session -d -x "$TM_WIDTH" -y "$TM_HEIGHT" "$@" </dev/null
-  _tm set-option -g window-size manual 2>/dev/null || true
   _tm set-option -g status off 2>/dev/null || true
   TM_TARGET="$(_tm list-panes -F '#{pane_id}' | head -1)"
 }

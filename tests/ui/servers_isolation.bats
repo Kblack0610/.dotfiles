@@ -539,7 +539,9 @@ fleet_state() {
 @test "a window with an empty name keeps its columns" {
   manifest "$SRV_A" "one $MDIR"
   "$TMX" ensure "$SRV_A"
-  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:' -n ''
+  # rename-window, not new-window -n '': tmux 3.7b ignores an empty -n and auto-names it.
+  "${REAL_TMUX}" -L "$SRV_A" new-window -t 'one:'
+  "${REAL_TMUX}" -L "$SRV_A" rename-window -t 'one:' ''
   "${REAL_TMUX}" -L "$SRV_A" select-pane -t 'one:' -T 'the-title'
   run bash -c "'$TMX' rows | awk -F'\t' '\$3!=\"\" {print \$4}'"
   assert_success
