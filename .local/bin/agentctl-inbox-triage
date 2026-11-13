@@ -17,7 +17,7 @@
 # sweeps pass it over until its words change (a skipped one is asked once more after this script
 # changes). --watch is the runner: a sweep after each save,
 # once INBOX_SWEEP_QUIET seconds pass with no other. --backlog re-triages the rows already on the
-# boards. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
+# boards, on its own agent (inbox-backlog) and budget. --backlog --priority gives each open row with no priority tag one, #urgent, #high or
 # #low, from one Sonnet call per batch (the inbox-priority agent); --retag-high also re-judges the
 # #high rows. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
@@ -36,6 +36,7 @@ TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_PRIORITY_CMD:=agentctl-run --agent inbox-priority}"  # --priority: a classify call, so Sonnet (its own conf)
 : "${INBOX_SIZE_CMD:=agentctl-run --agent inbox-size}"  # --size: a classify call, so Sonnet (its own conf)
+: "${INBOX_BACKLOG_CMD:=agentctl-run --agent inbox-backlog}"  # --backlog: its own conf and budget, so a cleanup pass never spends the intake sweep's day
 : "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -574,7 +575,7 @@ $(systems_of "$p")
 $(epics_of "$p" "$epics")
 ## Rows (n. [id] text, child rows indented)
 $listing"
-  ask "$prompt" "${#raws[@]}" "$p ($lane)" || return
+  ask "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT"
   local n action id dest row why epic raw own eid
