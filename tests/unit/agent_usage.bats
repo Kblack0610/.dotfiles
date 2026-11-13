@@ -578,14 +578,14 @@ qproc() {
 # export_curl <session ids exporting cost> <fleet-dispatch series count> [session ids with only the
 # session_count heartbeat]: Prometheus, answering by query. A cost session has the heartbeat too.
 export_curl() {
-  local res beat
-  res=$(printf '%s\n' $1 | jq -Rsc 'split("\n") | map(select(. != "") | {metric:{session_id:.}, value:[0,"1"]})')
-  beat=$(printf '%s\n' $1 ${3:-} | jq -Rsc 'split("\n") | map(select(. != "") | {metric:{session_id:.}, value:[0,"1"]})')
+  local res
+  res=$(jq -nc --arg cost "$1" --arg beat "$1 ${3:-}" '
+    def s($n; $ids): $ids | split(" ") | map(select(. != "") | {metric:{__name__:$n, session_id:.}, value:[0,"1"]});
+    s("claude_code_cost_usage_USD_total"; $cost) + s("claude_code_session_count_total"; $beat)')
   cat > "$SANDBOX/bin/curl" <<STUB
 #!/usr/bin/env bash
 case "\$*" in
   *by_runner*) [ "$2" -gt 0 ] && echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"$2"]}]}}' || echo '{"status":"success","data":{"result":[]}}' ;;
-  *session_count*) echo '{"status":"success","data":{"result":$beat}}' ;;
   *) echo '{"status":"success","data":{"result":$res}}' ;;
 esac
 STUB
@@ -608,8 +608,16 @@ STUB
   assert_output 'no telemetry exported in the last 1h: ar-2 (session bbb-2, pid 102)'
 }
 
+# turn <session id> <seconds ago>: an assistant turn in that session's transcript, that long ago.
+turn() {
+  mkdir -p "$HOME/.claude/projects/p"
+  jq -nc --arg ts "$(date -u -d "@$(( $(date +%s) - $2 ))" +%Y-%m-%dT%H:%M:%S.123Z)" \
+    '{type:"assistant", timestamp:$ts}' >> "$HOME/.claude/projects/p/$1.jsonl"
+}
+
 @test "export check: a session with the session_count heartbeat but no cost has spent nothing yet, listed not failed" {
   qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 7200 ar-2; qproc 103 ccc-3 7200 ar-3
+  turn bbb-2 9000   # its last turn is from before this process started: a resume left waiting
   export_curl 'aaa-1' 1 'bbb-2'
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 1
@@ -620,6 +628,15 @@ STUB
   assert_success
   assert_output "$(printf '%s\n' 'exporting, no spend yet (no API call since it started): ar-2 (session bbb-2, pid 102)' \
     '2 queue sessions past 1h, each exporting (1 with cost, 1 not spent yet); the by_runner rule has a fleet-dispatch series')"
+}
+
+@test "export check: a heartbeat with an API call since start and no cost series is spend the export lost, so it fails" {
+  qproc 101 aaa-1 7200 ar-1
+  turn aaa-1 9000; turn aaa-1 600
+  export_curl '' 1 'aaa-1'
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output 'no cost exported in the last 1h though it made an API call since it started: ar-1 (session aaa-1, pid 101)'
 }
 
 @test "export check: queue sessions live but no fleet-dispatch series in the by_runner rule exits 1" {

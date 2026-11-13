@@ -655,19 +655,21 @@ cmd_spend() {
 # export check [<age>]: every live queue session that has run <age> (default 1h) is exporting telemetry.
 # A queue session is a claude whose environment has AGENT_QUEUE_ITEM (fleet-dispatch's launch line),
 # found by its ~/.claude*/sessions/<pid>.json and checked live in /proc as claude_pid_live does. Each
-# must have a claude_code_cost_usage_USD_total sample under its session_id in the last <age>: a
-# cumulative counter re-exports every interval while the process lives, idle or not. The cost counter
-# has no point until the process's first API call, though, so a session resumed and left waiting
-# exports none however long it lives (2026-11-13: four resumed at boot, idle 9h, read as dark). Its
-# claude_code_session_count_total, counted at start, is the export heartbeat: a session with that and
-# no cost has spent nothing yet and is listed, not failed; one with neither is dark. And while one
+# must have a claude_code_cost_usage_USD_total sample under its session_id in the last <age>: once a
+# cumulative counter has a point it re-exports every interval while the process lives, idle or not.
+# The cost counter gets its first point at the process's first API call, so a session resumed and left
+# waiting exports none however long it lives (2026-11-13: four resumed at boot, idle 9h, read as dark).
+# Such a session passes only on two facts: its claude_code_session_count_total (a point from start,
+# so the same re-export) shows the export works, and its transcript has no assistant turn since
+# startedAt, so there was no API call to cost. It is listed, not failed. A session with neither series,
+# or with the heartbeat and a turn since start (spend the cost series lost), fails. And while one
 # runs, cc:claude_code_cost_24h_usd:by_runner must hold an agentctl_runner="fleet-dispatch" series.
 # The queue-cost-export watch runs it: on 2026-11-08 16 of 16 queue sessions exported nothing (#1585)
 # and nothing noticed. Exit 0 when all export or none has run <age>, 1 naming each that does not, 2
 # when Prometheus cannot be read, 64 for bad arguments.
 AU_PROC="${AGENT_USAGE_PROC:-/proc}"
 cmd_export() {
-  local verb="${1:-}" age="${2:-1h}" secs now d f pid sid pstart started item sids have beat runner rc=0 idle=0
+  local verb="${1:-}" age="${2:-1h}" secs now d f pid sid pstart started item sids got have beat runner turn rc=0 idle=0
   local -a live=() st=()
   local -A seen=()  # the account dirs may be symlinks to one sessions/
   local PROM_TIMEOUT=20 vec='.data.result | if type != "array" then error("not a vector") else . end'
@@ -690,28 +692,33 @@ cmd_export() {
       [ "${st[0]:-Z}" != Z ] || continue  # stat after "comm) ": [0] state, [19] starttime
       [ -z "$pstart" ] || [ "${st[19]:-}" = "$pstart" ] || continue
       item=$(tr '\0' '\n' 2>/dev/null < "$AU_PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
-      [ -n "$item" ] && live+=("$sid$TAB$item$TAB$pid")
+      [ -n "$item" ] && live+=("$sid$TAB$item$TAB$pid$TAB$started$TAB${d%/sessions}")
     done
   done
   [ "${#live[@]}" -gt 0 ] || { echo "no queue session has run $age"; return 0; }
   [ -n "${CC_PROM_URL:-}" ] || { echo "export: no CC_PROM_URL (set it in ~/.config/command-center/env)" >&2; return 2; }
   sids=$(printf '%s\n' "${live[@]}" | cut -f1 | paste -sd'|' -)
-  have=$(prom_q "count by (session_id) (last_over_time(claude_code_cost_usage_USD_total{session_id=~\"$sids\"}[$age]))" |
-    jq -er "$vec | map(.metric.session_id) | join(\" \")" 2>/dev/null) ||
+  # One query for both series, split by name: line 1 the sessions with cost, line 2 those with the heartbeat.
+  got=$(prom_q "count by (session_id, __name__) (last_over_time({__name__=~\"claude_code_cost_usage_USD_total|claude_code_session_count_total\", session_id=~\"$sids\"}[$age]))" |
+    jq -er "$vec | (map(select(.metric.__name__ == \"claude_code_cost_usage_USD_total\") | .metric.session_id) | join(\" \")),
+      (map(select(.metric.__name__ == \"claude_code_session_count_total\") | .metric.session_id) | join(\" \"))" 2>/dev/null) ||
     { echo "export: Prometheus unreadable or not a vector" >&2; return 2; }
-  beat=$(prom_q "count by (session_id) (last_over_time(claude_code_session_count_total{session_id=~\"$sids\"}[$age]))" |
-    jq -er "$vec | map(.metric.session_id) | join(\" \")" 2>/dev/null) ||
-    { echo "export: Prometheus unreadable or not a vector" >&2; return 2; }
+  { IFS= read -r have; IFS= read -r beat; } <<<"$got"
   runner=$(prom_q 'count(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner="fleet-dispatch"})' |
     jq -er "$vec | length" 2>/dev/null) ||
     { echo "export: Prometheus unreadable or not a vector" >&2; return 2; }
   for f in "${live[@]}"; do
-    IFS="$TAB" read -r sid item pid <<<"$f"
+    IFS="$TAB" read -r sid item pid started d <<<"$f"
     case " $have " in *" $sid "*) continue ;; esac
-    case " $beat " in
-      *" $sid "*) echo "exporting, no spend yet (no API call since it started): $item (session $sid, pid $pid)"; idle=$((idle + 1)) ;;
-      *) echo "no telemetry exported in the last $age: $item (session $sid, pid $pid)"; rc=1 ;;
-    esac
+    case " $beat " in *" $sid "*) ;; *) echo "no telemetry exported in the last $age: $item (session $sid, pid $pid)"; rc=1; continue ;; esac
+    # The newest assistant turn in the transcript, as epoch seconds; none or unreadable reads as 0.
+    turn=$(cat "$d"/projects/*/"$sid".jsonl 2>/dev/null | grep '"type":"assistant"' | tail -n1 |
+      jq -r '.timestamp // "" | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0' 2>/dev/null)
+    if (( ${turn:-0} >= started )); then
+      echo "no cost exported in the last $age though it made an API call since it started: $item (session $sid, pid $pid)"; rc=1
+    else
+      echo "exporting, no spend yet (no API call since it started): $item (session $sid, pid $pid)"; idle=$((idle + 1))
+    fi
   done
   [ "$runner" -gt 0 ] || { echo 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'; rc=1; }
   [ "$rc" -ne 0 ] || echo "${#live[@]} queue sessions past $age, each exporting ($((${#live[@]} - idle)) with cost, $idle not spent yet); the by_runner rule has a fleet-dispatch series"
