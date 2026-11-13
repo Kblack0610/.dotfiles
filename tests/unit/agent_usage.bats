@@ -540,6 +540,13 @@ spend_curl() {
   assert_failure 2
 }
 
+@test "spend check: a zero-padded window is decimal, not an octal error" {
+  spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}'
+  run "$AU" spend check 08h 150
+  assert_success
+  assert_output 'last 08h: $88.4 (alert at $150)'
+}
+
 @test "spend check: a history age Prometheus cannot answer exits 2" {
   spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}' NaN
   run "$AU" spend check 1h 150
