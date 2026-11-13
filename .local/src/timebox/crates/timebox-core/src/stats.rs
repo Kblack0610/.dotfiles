@@ -21,13 +21,14 @@ pub fn today_totals(events: &[Event], now: DateTime<Local>) -> BTreeMap<String, 
     let mut running_since: BTreeMap<String, DateTime<Local>> = BTreeMap::new();
     let mut totals: BTreeMap<String, i64> = BTreeMap::new();
 
-    let add = |totals: &mut BTreeMap<String, i64>, sw: &str, a: DateTime<Local>, b: DateTime<Local>| {
-        let lo = a.max(midnight);
-        let hi = b.min(now);
-        if hi > lo {
-            *totals.entry(sw.to_string()).or_insert(0) += (hi - lo).num_seconds();
-        }
-    };
+    let add =
+        |totals: &mut BTreeMap<String, i64>, sw: &str, a: DateTime<Local>, b: DateTime<Local>| {
+            let lo = a.max(midnight);
+            let hi = b.min(now);
+            if hi > lo {
+                *totals.entry(sw.to_string()).or_insert(0) += (hi - lo).num_seconds();
+            }
+        };
 
     for e in evs {
         match e.kind {
