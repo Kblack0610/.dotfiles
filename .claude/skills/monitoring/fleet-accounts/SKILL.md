@@ -43,7 +43,7 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 ## Runner caps
 
 - `agentctl budget` lists each named runner's spend against its caps for today.
-- `agentctl budget <name> raise <usd> [calls]` writes `<name>/budget-raise`, which lifts that runner's day cap until midnight. The hour cap rises only by `[calls]` (default 0), so a rate stop needs `raise <usd> <calls>`. The per-call cap has no raise. Defaults are $2 a call, $10 a day, 20 calls an hour; a conf sets `BUDGET_CALL_USD`, `BUDGET_DAY_USD`, `MAX_CALLS_HOUR`.
+- `agentctl budget <name> raise <usd> [calls]` writes `<name>/budget-raise`, which lifts that runner's day cap until midnight. The hour cap rises only by `[calls]` (default 0), so a rate stop needs `raise <usd> <calls>`. The per-call cap has no raise. Defaults are 2 dollars a call, 10 dollars a day, 20 calls an hour; a conf sets `BUDGET_CALL_USD`, `BUDGET_DAY_USD`, `MAX_CALLS_HOUR`.
 - Read why it was spent (`fleet-runners`, "Steps" 3 and 4) before a raise. An over-cap `ask-judge` leaves asks with the human, which is safe. Over-cap dispatch work means sessions do not start.
 
 ## Do NOT
