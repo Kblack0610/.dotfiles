@@ -454,14 +454,6 @@ pub(crate) fn group_vocab() -> Vec<String> {
     v
 }
 
-/// A project's declared index group, or `None` to mean "its own org".
-pub(crate) fn group_of(dir: &Path) -> Option<String> {
-    let content = fs::read_to_string(front_page(dir)).ok()?;
-    let vocab = group_vocab();
-    let refs: Vec<&str> = vocab.iter().map(String::as_str).collect();
-    head_tag(&content, &refs)
-}
-
 /// `notes projects <name>` — print `"<path>\t<label>"` for each note file in the
 /// project (summary first, then version notes / changelog / others by label). The
 /// name match is case-insensitive.

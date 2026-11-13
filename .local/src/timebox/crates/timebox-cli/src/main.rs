@@ -251,36 +251,31 @@ fn run(
             }
             Ok(0)
         }
-        Cmd::Pause { op } => single(
-            snap,
-            op.as_deref(),
-            "pause",
-            |s, o| s.pause(now, o),
-            cfg,
-            log,
-            dirty,
-            now,
-        ),
-        Cmd::Resume { op } => single(
-            snap,
-            op.as_deref(),
-            "resume",
-            |s, o| s.resume(now, o),
-            cfg,
-            log,
-            dirty,
-            now,
-        ),
-        Cmd::Lap { op } => single(
-            snap,
-            op.as_deref(),
-            "lap",
-            |s, o| s.lap(now, o),
-            cfg,
-            log,
-            dirty,
-            now,
-        ),
+        Cmd::Pause { op } | Cmd::Resume { op } | Cmd::Lap { op } => {
+            type Transition = fn(&mut Snapshot, DateTime<Local>, &str) -> Vec<timebox_core::Event>;
+            let (verb, apply): (&str, Transition) = match cmd {
+                Cmd::Pause { .. } => ("pause", Snapshot::pause),
+                Cmd::Resume { .. } => ("resume", Snapshot::resume),
+                _ => ("lap", Snapshot::lap),
+            };
+            let Some(t) = snap.resolve(op.as_deref()) else {
+                match op {
+                    Some(o) => eprintln!("no stopwatch '{o}' to {verb}"),
+                    None => eprintln!("no active stopwatch to {verb}"),
+                }
+                return Ok(1);
+            };
+            let evs = apply(snap, now, &t);
+            if evs.is_empty() {
+                eprintln!("{verb}: {t} not in a state to {verb}");
+                return Ok(1);
+            }
+            persist(cfg, snap, &evs, dirty);
+            log.info(verb, &t);
+            println!("{verb} {t}");
+            print_one(snap, &t, now);
+            Ok(0)
+        }
         Cmd::Switch { op, lap, sound } => {
             let evs = snap.switch(now, op, lap_opt(lap)?, sound_opt(*sound));
             persist(cfg, snap, &evs, dirty);
@@ -440,36 +435,6 @@ fn targets(snap: &Snapshot, op: Option<&str>, all: bool, verb: &str) -> Result<V
             Ok(vec![])
         }
     }
-}
-
-/// Apply a single-target transition (pause/resume/lap) to the active-or-named stopwatch.
-fn single(
-    snap: &mut Snapshot,
-    op: Option<&str>,
-    verb: &str,
-    f: impl FnOnce(&mut Snapshot, &str) -> Vec<timebox_core::Event>,
-    cfg: &config::Config,
-    log: &logging::Logger,
-    dirty: &mut bool,
-    now: DateTime<Local>,
-) -> Result<i32> {
-    let Some(t) = snap.resolve(op) else {
-        match op {
-            Some(o) => eprintln!("no stopwatch '{o}' to {verb}"),
-            None => eprintln!("no active stopwatch to {verb}"),
-        }
-        return Ok(1);
-    };
-    let evs = f(snap, &t);
-    if evs.is_empty() {
-        eprintln!("{verb}: {t} not in a state to {verb}");
-        return Ok(1);
-    }
-    persist(cfg, snap, &evs, dirty);
-    log.info(verb, &t);
-    println!("{verb} {t}");
-    print_one(snap, &t, now);
-    Ok(0)
 }
 
 fn state_label(s: RunState) -> &'static str {
@@ -713,7 +678,7 @@ fn print_stats(
     let laps: BTreeMap<String, u32> = snap
         .stopwatches
         .iter()
-        .filter(|(k, _)| filter.map_or(true, |f| *k == f))
+        .filter(|(k, _)| filter.is_none_or(|f| *k == f))
         .map(|(k, v)| (k.clone(), v.lap_index))
         .collect();
 
