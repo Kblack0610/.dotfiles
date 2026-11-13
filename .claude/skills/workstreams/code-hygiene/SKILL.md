@@ -32,7 +32,7 @@ BASE="${1:-origin/develop}"                      # or origin/main - read the rep
 git fetch -q origin
 git diff --name-only "$(git merge-base HEAD "$BASE")"...HEAD
 # uncommitted work too:
-git status --porcelain | awk '{print $2}'
+git status --porcelain | awk '{print $(2)}'
 ```
 
 Widen only on an explicit ask ("the whole `src/device-types/` tree", "every file I touched this week"). Say what scope you used in the report.

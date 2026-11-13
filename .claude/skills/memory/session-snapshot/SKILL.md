@@ -70,8 +70,8 @@ done
 ps -eo pid,etime,cmd | grep -E '[c]laude ' | grep -v claude-1000
 
 # 3. systemd --user: RUNNING now vs ENABLED (enabled => auto-start; running-but-not-enabled => manual)
-systemctl --user list-units --type=service --state=running --no-legend | awk '{print $1}'
-systemctl --user list-unit-files --state=enabled --no-legend | awk '{print $1}'
+systemctl --user list-units --type=service --state=running --no-legend | awk '{print $(1)}'
+systemctl --user list-unit-files --state=enabled --no-legend | awk '{print $(1)}'
 #   -> anything running but NOT enabled is the "restart manually" list (e.g. agentctl@sentinel)
 
 # 4. dev servers / runtimes (filter noise: tsserver, ASR, language servers)
@@ -98,7 +98,7 @@ WINDOW_MIN=30
 find ~/.claude*/projects -name '*.jsonl' -mmin -$WINDOW_MIN 2>/dev/null | while read -r f; do
   case $f in */subagents/*) sid=$(basename "$(dirname "$(dirname "$f")")") ;; *) sid=$(basename "$f" .jsonl) ;; esac
   printf '%s\t%s\n' "$sid" "$(rg -o -m1 '"cwd":"[^"]*"' "$f" | cut -d'"' -f4)"
-done | sort -u | awk -F'\t' 'NR==FNR{k[$0];next} !($1 in k)' /tmp/snap-known.$$ -
+done | sort -u | awk -F'\t' 'NR==FNR{k[$(0)];next} !($(1) in k)' /tmp/snap-known.$$ -
 rm -f /tmp/snap-known.$$
 #   -> each line is <session id> <cwd>: a row in "Dies on reboot" marked "from transcript", and its cwd joins
 #      the step 6 dirty/unpushed loop. This session itself is excluded.

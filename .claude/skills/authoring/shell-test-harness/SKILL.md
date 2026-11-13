@@ -62,7 +62,7 @@ Container caveat: inside a worktree `.git` is a *file* pointing at the main repo
 
 Choose by what the thing under test *is*:
 
-- **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0` above the dispatch. Add it if missing.
+- **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0` above the dispatch. Add it if missing.
 - **A verb's output shape** (`--list` emits 7 tab-separated fields; `--task-op done` shells out to the right command) -> `integ`, using the stubs in `tests/helpers/stubs/`.
 - **State that IS tmux state** (a window option, a session's existence, what a keypress renders) -> `ui`. There is nothing to assert against a stub here: faking `set-option`/`show-options` only tests the fake.
 
