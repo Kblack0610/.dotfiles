@@ -331,6 +331,26 @@ moved_again() {
   assert_output 1
 }
 
+@test "a watch that loses its API connection watches again and merges on green (binks #1531)" {
+  printf '%s\n' 'Post "https://api.github.com/graphql": read tcp 10.0.0.1:1->10.0.0.2:443: read: connection reset by peer' green >"$NOTES_FIXTURE/checks.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'checks: lost the connection to the API (1 of 5), watching again'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge 42' "$LOG"
+  assert_output 1
+}
+
+@test "a watch that keeps losing its API connection stops at checks and never merges" {
+  for _ in 1 2 3 4 5 6; do echo 'Post "https://api.github.com/graphql": read: connection reset by peer'; done >"$NOTES_FIXTURE/checks.seq"
+  AGENT_LAND_CHECKS_POLL=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'lost the connection to the API 5 times'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "a merged-up head whose own checks go red is never merged (dotfiles #1504)" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   printf '%s\n' green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"

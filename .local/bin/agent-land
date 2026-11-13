@@ -89,10 +89,13 @@ CHECKS_POLL="${AGENT_LAND_CHECKS_POLL:-10}"
 CHECKS_QUEUED_POLL="${AGENT_LAND_CHECKS_QUEUED_POLL:-60}"
 CHECKS_WATCH_INTERVAL=30 # gh's default is 10s; a check takes minutes
 CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
+# A watch that loses its connection to the API (a reset, a timeout, a 5xx) has seen no check fail:
+# it starts again, up to CHECKS_NET_TRIES times. It hit binks #1531 three times on 2026-11-13.
+CHECKS_NET_TRIES=5
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out failed queued
+  local try out failed queued net=0
   for ((try = 1; ; try++)); do
     out=$(gh pr checks "$pr" "${R[@]}" --watch --fail-fast -i "$CHECKS_WATCH_INTERVAL" 2>&1) && {
       echo "checks: green"
@@ -101,6 +104,13 @@ wait_checks() {
     }
     case "$out" in
     *'no checks reported'*) ;;
+    *'connection reset by peer'* | *'i/o timeout'* | *'TLS handshake timeout'* | *'unexpected EOF'* | *'HTTP 502'* | *'HTTP 503'* | *'HTTP 504'*)
+      ((++net <= CHECKS_NET_TRIES)) || fail checks "lost the connection to the API $CHECKS_NET_TRIES times: $(lastline "$out")"
+      echo "checks: lost the connection to the API ($net of $CHECKS_NET_TRIES), watching again"
+      try=0
+      sleep "$CHECKS_POLL"
+      continue
+      ;;
     *)
       failed=$(gh pr checks "$pr" "${R[@]}" --json name,bucket -q '[.[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | join(", ")' 2>/dev/null || true)
       fail checks "${failed:-$(lastline "$out")}"
