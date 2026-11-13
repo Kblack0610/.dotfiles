@@ -873,9 +873,10 @@ header_set() {
   local f="$1" k="$2" v="$3" tmp
   case "$v" in *$'\n'*) die "a value cannot span lines: $k" ;; esac
   tmp="$(mktemp "$(dirname "$f")/.set.XXXXXX")" || die "cannot write in $(dirname "$f")"
-  awk -v k="$k" -v v="$v" '
-    !done && $0 == "---" { if (!seen) print k ": " v; done = 1; print; next }
-    !done && index($0, k ":") == 1 { print k ": " v; seen = 1; next }
+  # The value rides in the environment: awk -v would read a backslash in a free-text value as an escape.
+  HV="$v" awk -v k="$k" '
+    !done && $0 == "---" { if (!seen) print k ": " ENVIRON["HV"]; done = 1; print; next }
+    !done && index($0, k ":") == 1 { print k ": " ENVIRON["HV"]; seen = 1; next }
     { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
 }
 
@@ -1448,7 +1449,7 @@ cmd_cancel() {
   cancel_check "$why"
   by="$(cancel_who)"
   lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug"; return; }
+  f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug" "$why" "$by"; return; }
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
@@ -1659,6 +1660,7 @@ check_end() { case " $END_REASONS " in *" $1 "*) ;; *) die "end_reason is one of
 cancel_who() { printf '%s' "${CLAUDE_CODE_SESSION_ID:-${AGENT_QUEUE_ITEM:-}}"; }
 # cancel_check <why> -> die when a session or script cancels with no reason.
 cancel_check() {
+  case "$1" in *$'\n'*) die "--why is one line" ;; esac
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
 # cancel_stamp <file> <why> -> cancelled_by: and cancel_why: on the item, the one record of a cancel.

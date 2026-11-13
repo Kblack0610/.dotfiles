@@ -1720,6 +1720,16 @@ EOF
   assert_success
 }
 
+@test "cancel keeps a backslash in --why as typed, refuses a multi-line one before touching the item, and carries why to a record-only cancel" {
+  "$AQ" add --project game --slug b1 "b1"
+  run "$AQ" cancel b1 --why $'two\nlines'
+  assert_failure; assert_output --partial "one line"
+  [ -n "$(item queued b1)" ]
+  [ -z "$(field "$(item queued b1)" status)" ]
+  "$AQ" cancel b1 --why 'C:\tmp a\nb'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b1.md)" cancel_why)" = 'C:\tmp a\nb' ]
+}
+
 # 2026-11-10: two probe items deleted by hand sat queued in the record for days, chain_drift 2.
 @test "cancel of a slug whose file is gone closes it in the record while the record holds it active" {
   cat > "$SANDBOX/bin/notes" <<'EOF'
@@ -1743,6 +1753,10 @@ EOF
   assert_success
   assert_output "cancelled ghost in the record: its file was already gone"
   assert_called "notes ingest record --stage queue --action item-cancelled --from game --item ghost --to done -- probe"
+  # a session's reason and name reach the event of a cancel with no file, too
+  : > "$NOTES_FIXTURE/calls.log"
+  NOTES_DROP=1 CLAUDE_CODE_SESSION_ID=sess-7 run "$AQ" cancel ghost --why "file deleted"
+  assert_called "--item ghost --to done --by sess-7 --why file deleted -- probe"
   # one the record has closed, or never held, is still nothing active
   for s in gone never; do
     run "$AQ" cancel "$s"
