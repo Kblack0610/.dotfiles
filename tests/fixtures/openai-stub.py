@@ -2,8 +2,9 @@
 """A stub of the gateway's /v1/chat/completions for the ask-local suite.
 
 Usage: openai-stub.py <state-dir>. Binds 127.0.0.1 on a free port, prints it as one line
-on stdout once it listens, and saves each request (headers, body) to <state-dir>/last.json.
-The bearer key picks the behaviour, so one server serves every test:
+on stdout once it listens, and saves each request (headers, body) to <state-dir>/<key>.json.
+The bearer key is <behaviour>.<test>, so tests running in parallel each read their own
+request; the behaviour part picks the answer, so one server serves every test:
   good   200, echoes the last user message as "echo: <text>"
   json   200, content is the JSON object {"ok": true}
   prose  200, content is "not json"
@@ -14,6 +15,7 @@ The bearer key picks the behaviour, so one server serves every test:
   other  401
 """
 import json
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,9 +44,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        (STATE / "last.json").write_text(json.dumps(
+        token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+        (STATE / (re.sub(r"[^A-Za-z0-9._-]", "_", token) + ".json")).write_text(json.dumps(
             {"path": self.path, "headers": dict(self.headers), "body": body}))
-        key = self.headers.get("Authorization", "").removeprefix("Bearer ")
+        key = token.split(".")[0]
         if key == "hang":
             NEVER.wait()
         if key == "good":

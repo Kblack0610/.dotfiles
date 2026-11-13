@@ -33,7 +33,7 @@ setup() {
   ASK_LOCAL_GATEWAY_URL="http://127.0.0.1:$(cat "$STUB_DIR/port")/v1"
   route gateway-local "$ASK_LOCAL_GATEWAY_URL" "local (qwen3.5-9b)"
   unset AGENT_QUEUE_ITEM LLM_BASE_URL LLM_MODEL LLM_API_KEY
-  rm -f "$STUB_DIR/last.json"
+  KEY="none.$BATS_SUITE_TEST_NUMBER"
 }
 
 # route <name> <base-url> <model>: a gateway route whose key is the sandbox's key file.
@@ -45,12 +45,15 @@ route() {
     >"$AGENTCTL_ROUTES/$1.route"
 }
 
+# key <behaviour>: the stub answers by the part before the dot and files the request under the
+# whole key, so a test reads only its own request when bats runs the file's tests in parallel.
 key() {
+  KEY="$1.$BATS_SUITE_TEST_NUMBER"
   mkdir -p "$HOME/.local/state/ask-local"
-  printf '%s\n' "$1" >"$HOME/.local/state/ask-local/key"
+  printf '%s\n' "$KEY" >"$HOME/.local/state/ask-local/key"
   chmod 600 "$HOME/.local/state/ask-local/key"
 }
-sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
+sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
 
 @test "a prompt goes to the route's endpoint, model and key and prints the answer" {
   key good
@@ -59,7 +62,7 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
   assert_output "echo: why is the sky blue"
   assert_equal "$(sent .path)" "/v1/chat/completions"
   assert_equal "$(sent .body.model)" "local (qwen3.5-9b)"
-  assert_equal "$(sent .headers.Authorization)" "Bearer good"
+  assert_equal "$(sent .headers.Authorization)" "Bearer $KEY"
   assert_equal "$(sent '.headers["x-litellm-tags"]')" "ask-local"
   assert_equal "$(sent '.body | has("response_format")')" "false"
 }
@@ -138,7 +141,7 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
   run "$ASK_LOCAL" hi </dev/null
   assert_failure 2
   assert_output --partial "route gateway-local gave no key"
-  [ ! -e "$STUB_DIR/last.json" ]
+  [ ! -e "$STUB_DIR/$KEY.json" ]
 }
 
 @test "a route that does not exist stops before any call, exit 2, with the resolver's reason" {
@@ -146,7 +149,7 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
   run "$ASK_LOCAL" --route nope hi </dev/null
   assert_failure 2
   assert_output --partial "route nope did not resolve"
-  [ ! -e "$STUB_DIR/last.json" ]
+  [ ! -e "$STUB_DIR/$KEY.json" ]
 }
 
 @test "a refused key says so, exit 1" {
@@ -215,5 +218,5 @@ sent() { jq -cr "$1" "$STUB_DIR/last.json"; }
   assert_failure 2
   run "$ASK_LOCAL" </dev/null
   assert_failure 2
-  [ ! -e "$STUB_DIR/last.json" ]
+  [ ! -e "$STUB_DIR/$KEY.json" ]
 }
