@@ -103,6 +103,11 @@ setup() {
   assert_success
 }
 
+@test "agent-web app.js, the live line by the header dot: node unit tests pass" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/conn.test.mjs"
+  assert_success
+}
+
 @test "agent-web nav.js, the sidebar's outline: node unit tests pass" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/nav.test.mjs"
   assert_success

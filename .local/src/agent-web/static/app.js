@@ -574,18 +574,38 @@ function setQuery(q) {
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
+// The live line beside the dot, the worst of: the event stream is down (since when, and a Retry),
+// the page is catching up after a drop or a hidden spell, or the server could not watch some
+// paths (the user's inotify limit, usually; it retries). Nothing to say hides it.
+const conn = { open: false, down: 0, catching: false, off: [] };
+function showConn() {
+  const off = conn.off, el = $("live-off");
+  $("conn").classList.toggle("live", conn.open && !conn.down);
+  $("conn").classList.toggle("off", !conn.down && off.length > 0);
+  $("conn").title = conn.down ? "live updates down" : off.length ? "live updates off for " + off.join(", ") : "live updates";
+  el.className = "cchip live-off" + (conn.down || (!conn.catching && off.length) ? " warn" : "");
+  el.hidden = !conn.down && !conn.catching && !off.length;
+  el.title = conn.down ? "" : off.join("\n");
+  el.innerHTML = conn.down ? `offline since ${clock(conn.down)} <button class="btn sm quiet" id="live-retry">Retry</button>`
+    : conn.catching ? "catching up"
+    : off.length ? "live updates off, reload to refresh" : "";
+}
 function showLive(ev) {
-  // The server could not watch some paths (the user's inotify limit, usually); it retries.
-  const off = ev.off || [];
-  $("conn").classList.toggle("off", off.length > 0);
-  $("conn").title = off.length ? "live updates off for " + off.join(", ") : "live updates";
-  $("live-off").hidden = off.length === 0;
-  $("live-off").title = off.join("\n");
+  conn.off = ev.off || [];
+  showConn();
+}
+// Says "catching up" until `read`, the catch-up's sessions read, lands.
+function catchUp(read) {
+  conn.catching = true;
+  showConn();
+  Promise.resolve(read).then(() => { conn.catching = false; showConn(); });
 }
 
+// Returns the sessions read the event started, if any, which a catch-up waits on.
 function dispatch(ev) {
+  let read = null;
   if (ev.kind === "sessions" || ev.kind === "resync") {
-    refreshAgents();
+    read = refreshAgents();
     if (st.view === "screen") loadScreen();
     // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
     if (st.tab === "home") refreshHome();
@@ -595,6 +615,7 @@ function dispatch(ev) {
     if (st.view === "screen") loadScreen(); else loadNewer();
   }
   for (const t of Object.values(TABS)) t.onEvent(ev);
+  return read;
 }
 
 // A page in a background browser tab reads nothing: events (and poll ticks, ui.js) that arrive
@@ -604,13 +625,24 @@ let behind = false;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || !behind) return;
   behind = false;
-  dispatch({ kind: "resync" });
+  catchUp(dispatch({ kind: "resync" }));
 });
 
+// The stream: EventSource reconnects by itself after a drop, but not after the server answered an
+// error (a proxy's 502), so the line's Retry opens a new one.
+let es = null;
 function connect() {
-  const es = new EventSource("/api/events");
-  es.onopen = () => { $("conn").classList.add("live"); refreshAgents(); refreshAsks(); if (st.sel) load(); };
-  es.onerror = () => { $("conn").classList.remove("live"); }; // EventSource reconnects by itself
+  if (es) es.close();
+  es = new EventSource("/api/events");
+  es.onopen = () => {
+    const was = conn.down;
+    Object.assign(conn, { open: true, down: 0 });
+    const read = refreshAgents();
+    refreshAsks();
+    if (st.sel) load();
+    if (was) catchUp(read); else showConn();
+  };
+  es.onerror = () => { conn.down = conn.down || Date.now(); showConn(); };
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.kind === "live") { showLive(ev); return; }
@@ -632,5 +664,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query, r.page);
+  $("live-off").addEventListener("click", (e) => { if (e.target.id === "live-retry") connect(); });
   connect();
 });

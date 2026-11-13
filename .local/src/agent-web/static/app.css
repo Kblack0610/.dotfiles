@@ -27,7 +27,9 @@ html, body { height: 100%; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
-.live-off { font-size: 12px; color: var(--wait); white-space: nowrap; }
+.live-off { display: inline-flex; align-items: center; gap: 6px; }
+.live-off[hidden] { display: none; }
+.live-off .btn.sm { margin: 0; padding: 0 6px; }
 main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head) - env(safe-area-inset-top, 0px)); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }
 .dot.waiting { background: var(--wait); box-shadow: 0 0 0 3px color-mix(in srgb, var(--wait) 25%, transparent); }
