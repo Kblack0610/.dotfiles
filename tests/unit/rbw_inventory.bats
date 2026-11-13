@@ -125,3 +125,13 @@ entry() {
   assert_success
   [ ! -e "$XDG_RUNTIME_DIR/rbw-inventory" ]
 }
+
+@test "any removal prints the permanent-delete note, history or not" {
+  "$INV" snap a
+  sed -i '/^id2\t/d' "$V/list.tsv"
+  "$INV" snap b
+  run "$INV" diff a b --allow "dup token"
+  assert_success
+  assert_output --partial "note: 1 removed."
+  assert_output --partial "an rbw remove is permanent"
+}

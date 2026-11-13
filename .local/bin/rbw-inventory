@@ -10,7 +10,9 @@
                                            snapshots; exits 1 on LOST (content with no copy left),
                                            BROKEN (a name that resolved no longer resolves to the
                                            same content) or CHANGED (an entry's content changed),
-                                           except for names passed with --allow
+                                           except for names passed with --allow (which also covers
+                                           every other entry sharing that name). An rbw remove is
+                                           permanent, not the 30-day trash: back up the server first
   rbw-inventory dups <label>               entries sharing a name or their full content, and which
                                            parts of each pair match
   rbw-inventory clean                      delete every snapshot and the hash key
@@ -136,7 +138,10 @@ def diff(a_label, b_label, allow):
         if eid not in eb:
             hist = {n["hash"]["history"] for n in eb.values()}
             if e["hash"]["history"] not in hist:
-                print(f"note: removed {label_of(e)} took its password history with it (a web vault delete keeps it in the trash 30 days; rbw remove does not)")
+                print(f"note: removed {label_of(e)} took its password history with it")
+    gone = [eid for eid in ea if eid not in eb]
+    if gone:
+        print(f"note: {len(gone)} removed. A web vault delete sits in the trash for 30 days; an rbw remove is permanent, so its only copy is a server backup (.config/rbw/README.md)")
     content_a = {eid: e["hash"]["content"] for eid, e in ea.items()}
     content_b = {eid: e["hash"]["content"] for eid, e in eb.items()}
     for name, rid in a["resolves"].items():
