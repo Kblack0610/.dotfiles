@@ -69,7 +69,8 @@ HEADER=$(
     echo "⛔ Active holds - do not start work on these until released (GO):"
     for hold in "$HOLD_DIR"/*; do
       [ -f "$hold" ] || continue
-      printf '  %s since %s by %s: %s\n' "${hold##*/}" \
+      cls="$(sed -n 's/^class: //p' "$hold")"
+      printf '  %s%s since %s by %s: %s\n' "${hold##*/}" "${cls:+ ($cls)}" \
         "$(sed -n 's/^since: //p' "$hold")" "$(sed -n 's/^by: //p' "$hold")" \
         "$(sed -n 's/^reason: //p' "$hold")"
     done
