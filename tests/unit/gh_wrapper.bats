@@ -17,6 +17,7 @@ setup() {
 #!/usr/bin/env bash
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
+case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
 if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then echo "HTTP 401: $DENY" >&2; exit 1; fi
 exit "${REAL_RC:-0}"
 SH
@@ -242,4 +243,80 @@ SH
   HOME="$(getent passwd "$(id -un)" | cut -d: -f6)" run "$WRAP" workflow run hd.yml -R acme/x
   assert_success
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|workflow run hd.yml -R acme/x'
+}
+
+# The shared budget: a background caller's read waits when few calls are left. The caller is the
+# script that ran gh, so each case runs the wrapper from a script named like the real one.
+as_caller() { # <script name> <gh args...>
+  local name="$1"; shift
+  printf '#!/usr/bin/env bash\n"%s" "$@"\n' "$WRAP" > "$BATS_TEST_TMPDIR/$name"
+  chmod +x "$BATS_TEST_TMPDIR/$name"
+  bash "$BATS_TEST_TMPDIR/$name" "$@"
+}
+gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true; } 2>/dev/null; }
+
+@test "budget: a listed caller's read under the reserve waits, logged as deferred, and never reaches gh" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller schedules-sync run view 5 -R other/x --json status
+  assert_output --partial 'waits for the reset'
+  assert_equal "$(gh_calls)" 0
+  assert_equal "$(bucket)" user:deferred
+}
+
+@test "budget: above the reserve, or once the reset has passed, the same read goes through" {
+  echo "4000 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run as_caller ci-failures.py api repos/other/x/actions/runs/5
+  assert_success
+  assert_equal "$(gh_calls)" 1
+  rm -f "$GH_CALLS_DIR/budget"
+  echo "40 $(( $(date +%s) - 5 ))" > "$BATS_TEST_TMPDIR/rate"
+  run as_caller fleet-sessions repo view --json defaultBranchRef
+  assert_success
+}
+
+@test "budget: writes, graphql, other callers and the rate_limit probe never wait, however low the budget" {
+  echo "0 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run as_caller schedules-sync pr merge 5 -R other/x --squash
+  assert_success
+  run as_caller schedules-sync api -X POST repos/other/x/issues -f title=t
+  assert_success
+  run as_caller schedules-sync api graphql -f query=q
+  assert_success
+  run as_caller schedules-sync api rate_limit
+  assert_success
+  run as_caller schedules-sync api -H 'Accept: application/json' rate_limit
+  assert_success
+  run as_caller gate-line.py run view 5 -R other/x --json status
+  assert_success
+  run as_caller agent-land pr checks 5 -R other/x
+  assert_success
+}
+
+@test "budget: one reading is shared, renewed only when older than GH_BUDGET_STALE_S, and an unreadable one never blocks" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller fleet-assess run list -R other/x
+  echo "4000 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller fleet-assess run list -R other/x      # the reading is still fresh: no second probe
+  GH_BUDGET_STALE_S=0 run as_caller fleet-assess run list -R other/x
+  assert_success
+  rm -f "$GH_CALLS_DIR/budget" "$BATS_TEST_TMPDIR/rate"  # the probe prints nothing: unknown, so let it through
+  run as_caller fleet-assess run list -R other/x
+  assert_success
+  assert_equal "$(cut -d' ' -f1,2 "$GH_CALLS_DIR/budget")" '- -'
+}
+
+@test "budget: a call on the App's token spends another budget and is never deferred" {
+  echo "0 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run as_caller schedules-sync run view 5 -R acme/x --json status
+  assert_success
+}
+
+@test "budget: a conditional read (api -i) from a listed caller waits like any other; a process that loses the renewal lock uses the old reading" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller schedules-sync api -i repos/other/x/actions/runs/5
+  mkdir -p "$GH_CALLS_DIR"
+  echo "40 $(( $(date +%s) + 1800 )) 1" > "$GH_CALLS_DIR/budget"   # stale
+  exec 8>"$GH_CALLS_DIR/budget.lock"; flock -n 8                    # another process holds the renewal
+  run -75 as_caller schedules-sync api repos/other/x/pulls/5
+  exec 8>&-
 }
