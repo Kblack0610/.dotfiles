@@ -474,8 +474,13 @@ setup_dotfiles_private() {
 
     local PRV="$HOME/.dotfiles-private"
     if [ ! -d "$PRV" ]; then
-        if gh auth status &>/dev/null \
-           || ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@github.com 2>&1 | grep -qiE 'success|authenticat'; then
+        # gh clones with its own auth and git protocol: a fleet worker signed in to gh
+        # over https has no github.com host key, so an ssh clone failed there.
+        if gh auth status &>/dev/null; then
+            log_info "Cloning private overlay -> $PRV"
+            gh repo clone Kblack0610/.dotfiles-private "$PRV" \
+                || { log_warning "Private overlay clone failed; continuing public-only"; return 0; }
+        elif ssh -T -o BatchMode=yes -o ConnectTimeout=5 git@github.com 2>&1 | grep -qiE 'success|authenticat'; then
             log_info "Cloning private overlay -> $PRV"
             git clone git@github.com:Kblack0610/.dotfiles-private.git "$PRV" \
                 || { log_warning "Private overlay clone failed; continuing public-only"; return 0; }

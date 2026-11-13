@@ -1,0 +1,48 @@
+name: test image
+description: >-
+  Load the tests/Dockerfile image from the Actions cache, or build it once and cache it, so a
+  later tests/docker.sh finds it present and does not rebuild. The cache key is the image tag,
+  which ends in a hash of everything the image is built from (tests/docker.sh --image).
+inputs:
+  tmux:
+    description: TMUX_REF for the image; empty is tests/docker.sh's default
+    default: ''
+runs:
+  using: composite
+  steps:
+    - id: tag
+      shell: bash
+      env:
+        TMUX_REF: ${{ inputs.tmux }}
+      # The week is in the key because the image also takes in what the hash cannot see: the
+      # debian base tag and unpinned apt packages. A gate never tests an image over a week old.
+      run: |
+        echo "tag=$(tests/docker.sh --image)" >> "$GITHUB_OUTPUT"
+        echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/test-image.tar
+        key: test-image-${{ steps.tag.outputs.tag }}-${{ steps.tag.outputs.week }}
+    - if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+      # A load that does not yield the tag docker.sh looks up fails here, not as a silent rebuild.
+      run: |
+        docker load -q -i "$RUNNER_TEMP/test-image.tar"
+        docker image inspect "$TAG" >/dev/null
+    # A miss builds and saves before the tests run, so a red test still leaves the image cached.
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TMUX_REF: ${{ inputs.tmux }}
+        TAG: ${{ steps.tag.outputs.tag }}
+      run: |
+        tests/docker.sh --build
+        docker save -o "$RUNNER_TEMP/test-image.tar" "$TAG"
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/test-image.tar
+        key: test-image-${{ steps.tag.outputs.tag }}-${{ steps.tag.outputs.week }}
