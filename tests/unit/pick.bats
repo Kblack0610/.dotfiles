@@ -123,3 +123,21 @@ setup() {
   done < <(sed -n 's#^\([a-z]*/[^[:space:]#]*\.bats\).*#\1#p' "$BATS_TEST_DIRNAME/../broad.txt")
   [ "$n" -gt 0 ]
 }
+
+# The picker reads a test's dependencies from the names in it, so a test that greps or lists the
+# whole tree (or a directory named in a way it cannot read, such as '$REPO_ROOT'/.local) depends
+# on every file and belongs in a broad.txt file. Why: on 2026-11-12 such a scan sat in
+# agent_run_route.bats, no PR picked it, and main was red 3.4 hours across 15 pushes.
+@test "a test that scans the whole tree lives in the broad set" {
+  local scan='git -C "?\$\{?REPO_ROOT\}?"? (grep|ls-files)|(grep -[A-Za-z]*r[A-Za-z]*|find) .*(\$\{?REPO_ROOT\}?["'"'"']?( |$|\|)|'"'"'\$\{?REPO_ROOT\}?'"'"')'
+  local broad f hits bad=
+  broad=$(sed -n 's#^\([a-z]*/[^[:space:]#]*\.bats\).*#\1#p' "$BATS_TEST_DIRNAME/../broad.txt")
+  cd "$BATS_TEST_DIRNAME/.."
+  for f in unit/*.bats integ/*.bats; do
+    grep -qxF "$f" <<<"$broad" && continue
+    hits=$(grep -nE -- "$scan" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -vF -- '--error-unmatch') || continue
+    bad+="$f:${hits%%:*}"$'\n'
+  done
+  [ -z "$bad" ] || fail "tree scans outside tests/broad.txt (move them to integ/tree_scans.bats):"$'\n'"$bad"
+}
+

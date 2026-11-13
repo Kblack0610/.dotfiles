@@ -122,24 +122,3 @@ landed_dirs() {
   assert [ -f "$B/probe/status" ]
 }
 
-# ------------------------------------------------------------------ drift guard
-#
-# The resolvers must stay byte-identical in precedence. They are in separate
-# files that no single change touches together, which is exactly how they came
-# apart the first time. Written as a scan so a NEW reader that honours only one
-# name is caught the day it lands, rather than the day someone sets a variable.
-@test "every state-dir resolver honours BOTH names" {
-  local offenders=()
-  local f
-  for f in .local/bin/agentctl .local/lib/agent-proof.sh \
-           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish; do
-    # the line that establishes the state dir must mention both names
-    grep -qE 'AGENTCTL_STATE_DIR:-\$\{?AGENTCTL_STATE' "$REPO_ROOT/$f" || offenders+=("$f")
-  done
-  assert [ "${#offenders[@]}" -eq 0 ]
-  # A NEW resolver anywhere under .local must join the list above rather than
-  # quietly honouring one name. The count is also the empty-input guard: if the
-  # grep matched nothing at all, this fails rather than reading as "all fine".
-  run bash -c "grep -rlE 'AGENTCTL_STATE_DIR:-\\\$\\{?AGENTCTL_STATE' '$REPO_ROOT'/.local | wc -l"
-  assert_output '4'
-}
