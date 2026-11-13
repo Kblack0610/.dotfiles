@@ -608,6 +608,7 @@ rs_stub() {
 # Shooter's root is Assets/Games/Shooter in $REPO, so its id is shooter.
 @test "stages.md: a game's title screen, icon and splash, taste and rating rows read its own files" {
   local root="$REPO/Assets/Games/Shooter"
+  export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
   for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
     real_row "$r"
     run "$CHECK" shooter --stage beta
@@ -615,8 +616,8 @@ rs_stub() {
   done
   mkdir -p "$root/Resources/Games" "$REPO/scripts/build/games" "$REPO/Assets/Br" "$REPO/docs/games" "$REPO/store/shooter"
   printf '{"standalone": true, "titleScreen": {"modes": [{"label": "Play", "game": "shooter"}]}}\n' > "$root/Resources/Games/shooter.json"
-  printf '{"branding": {"icon": "Assets/Br/icon.png", "splash": ["Assets/Br/splash.png"]}}\n' > "$REPO/scripts/build/games/shooter.json"
-  touch "$REPO/Assets/Br/icon.png" "$REPO/Assets/Br/splash.png"
+  printf '{"branding": {"icon": "Assets/Br/icon.png", "splash": ["Assets/Br/splash.png", "Assets/Br/splash2.png"]}}\n' > "$REPO/scripts/build/games/shooter.json"
+  touch "$REPO/Assets/Br/icon.png" "$REPO/Assets/Br/splash.png" "$REPO/Assets/Br/splash2.png"
   printf '# Shooter: look\n\n## Taste\n\nDraft\n' > "$REPO/docs/games/shooter-look.md"
   printf '{"rating": {"answers": {"violence": "fantasy"}}}\n' > "$REPO/store/shooter/game.json"
   for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
@@ -624,11 +625,18 @@ rs_stub() {
     run "$CHECK" shooter --stage beta
     assert_line --regexp "^PASS +[a-z]+ +${r##*| }"
   done
-  # NEGATIVE CONTROLS: a title screen with no modes, a splash file missing, empty answers.
+  # NEGATIVE CONTROLS: no repo at all, a title screen with no modes, the second splash missing, empty answers.
+  jq 'del(.trackers.shooter.repo, .trackers.shooter.path)' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && cp "$PROJECT_MAP_FILE" "$PROJECT_MAP_FILE.keep" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  for r in 'alpha | game | A title screen' 'alpha | game | An app icon and splash' 'alpha | game | A written taste' 'beta | game | Content rating done'; do
+    real_row "$r"
+    run "$CHECK" shooter --stage beta
+    assert_line --regexp "^FAIL +[a-z]+ +${r##*| }"
+  done
+  mv "$PROJECT_MAP_FILE.keep" "$PROJECT_MAP_FILE"
   printf '{"standalone": true, "titleScreen": {"modes": []}}\n' > "$root/Resources/Games/shooter.json"
   real_row 'alpha | game | A title screen'; run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +A title screen'
-  rm "$REPO/Assets/Br/splash.png"
+  rm "$REPO/Assets/Br/splash2.png"
   real_row 'alpha | game | An app icon and splash'; run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +An app icon and splash'
   printf '{"rating": {"answers": {}}}\n' > "$REPO/store/shooter/game.json"
@@ -637,10 +645,16 @@ rs_stub() {
 }
 
 @test "stages.md: the store listing row reads a game's listing.json or an app's metadata.yaml" {
+  export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
   real_row 'alpha | game, app | Its store listing'
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +Its store listing'
+  # NEGATIVE CONTROL: a listing with no name or title is a scaffold, not a listing.
   mkdir -p "$REPO/store/shooter/steam"; printf '{}\n' > "$REPO/store/shooter/steam/listing.json"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  printf '{"name": "Shooter"}\n' > "$REPO/store/shooter/steam/listing.json"
+  mkdir -p "$REPO/store/shooter/play"; printf '{"title": "Shooter"}\n' > "$REPO/store/shooter/play/listing.json"
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^PASS +alpha +Its store listing'
   # An app: its listing is mobile/metadata.yaml in its own folder.
@@ -649,6 +663,9 @@ rs_stub() {
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +Its store listing'
   mkdir -p "$REPO/Assets/Games/Shooter/mobile"; touch "$REPO/Assets/Games/Shooter/mobile/metadata.yaml"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  printf 'title: Shooter\n' > "$REPO/Assets/Games/Shooter/mobile/metadata.yaml"
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^PASS +alpha +Its store listing'
 }
