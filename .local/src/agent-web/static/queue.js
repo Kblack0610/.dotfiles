@@ -182,10 +182,14 @@ const Q_COLS = {
   kind: ["kind"], size: ["size"], acct: ["acct"], mode: ["mode"], plan: ["plan"],
 };
 
-// The state cell: what the item is. A finish says how it ended.
+// The state cell: what the item is. A finish says how it ended; a running or review row says
+// when it is stuck (hub-core QueueRow::state_word), amber with the session's why on hover.
 function qState(i) {
   if (i.state === "waiting") return `<td class="warn">needs</td>`;
-  if (i.state === "review") return `<td>on a PR</td>`;
+  if (i.state === "running" || i.state === "review") {
+    const word = i.state_word || (i.state === "review" ? "on a PR" : i.state);
+    return `<td${i.stuck ? ` class="warn"` : ""}${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>${esc(word)}</td>`;
+  }
   if (i.state === "done") {
     const s = i.status || "ok";
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;
