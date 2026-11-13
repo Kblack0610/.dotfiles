@@ -52,15 +52,17 @@ async function putBase(path, body, what, then = "") {
 }
 
 // Run fn, and if it is asked for again while running, run it once more after.
-// An event storm becomes at most one trailing refetch, with no timer involved.
+// An event storm becomes at most one trailing refetch, with no timer involved. Every call returns
+// the run, trailing refetch included, so a caller can wait for the read to land.
 function coalesce(fn) {
-  let running = false, again = false;
-  return async function run() {
-    if (running) { again = true; return; }
-    running = true;
-    try { await fn(); } catch (e) { console.warn(e); }
-    running = false;
-    if (again) { again = false; run(); }
+  let running = null, again = false;
+  return function run() {
+    if (running) { again = true; return running; }
+    running = (async () => {
+      do { again = false; try { await fn(); } catch (e) { console.warn(e); } } while (again);
+      running = null;
+    })();
+    return running;
   };
 }
 
