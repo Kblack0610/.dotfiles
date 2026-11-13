@@ -293,7 +293,7 @@ git_tag_for_version() {
   # `<product>-*-v*` is a pattern, not a literal, so it needs a listing rather than
   # a ref lookup -- an anchored grep so `-v1.13.0` cannot match `-v1.13.0-rc1`.
   git -C "$repo" tag --list "${product}-*-${version}" 2>/dev/null \
-    | grep -xE ".*-${version//./\\.}" | head -1 || true
+    | grep -m1 -xE ".*-${version//./\\.}" || true
 }
 
 # git_shipping_next <repo> <tag> <branch> [pathfilter] [limit] — merged since the
@@ -321,9 +321,11 @@ git_shipping_next() {
 # One filter for "what changed", shared by what is waiting to ship and what a tag shipped.
 _gr_subjects() {
   local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}"
+  # One filter that reads to the end and prints the first <limit>: a reader that quits early leaves
+  # its writer a broken pipe, printed when SIGPIPE is ignored, as it is under systemd.
   # shellcheck disable=SC2086  # $pf is a deliberate multi-path filter, not one word
   git -C "$repo" log "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
-    | grep -E '\(#[0-9]+\)' | grep -vE '^Merge |release/|deploy/' | head -"$limit" || true
+    | awk -v n="$limit" '/\(#[0-9]+\)/ && !/^Merge |release\/|deploy\// { if (c++ < n) print }' || true
 }
 
 # git_tags <repo> <name> <scoped> [glob] - every tag of the project's line, newest first.

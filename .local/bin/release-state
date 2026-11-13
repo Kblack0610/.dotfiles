@@ -217,9 +217,9 @@ pin_value() {
       /^[[:space:]]*-[[:space:]]*name:/ { n = $0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", n); gsub(/"/, "", n); on = (n == img); next }
       on && /^[[:space:]]*newTag:/ { t = $0; sub(/^[[:space:]]*newTag:[[:space:]]*/, "", t); gsub(/"/, "", t); sub(/[[:space:]].*/, "", t); print t; exit }
       /^[^[:space:]-]/ { on = 0 }' <<<"$blob")"
-    [ -n "$v" ] || v="$(grep -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
+    [ -n "$v" ] || v="$(grep -m1 -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
   else
-    v="$(grep -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" | head -1 \
+    v="$(grep -m1 -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" \
       | sed -E "s/^[[:space:]-]*${key}:[[:space:]]*\"?([^\"[:space:]#]+).*/\1/")"
   fi
   printf '%s' "$v"
@@ -277,7 +277,7 @@ live_steam() {
   jq -e --arg b "$bid" '.response.builds | has($b)' <<<"$builds" >/dev/null 2>&1 \
     || { probe_failed "$src" "build $bid is not in the last $STEAM_BUILDS builds"; return; }
   desc="$(jq -r --arg b "$bid" '.response.builds[$b].Description // empty' <<<"$builds")"
-  v="$(tr ' ' '\n' <<<"$desc" | grep -E '^v?[0-9]+\.' | head -1)"
+  v="$(grep -m1 -E '^v?[0-9]+\.' <<<"${desc// /$'\n'}")"
   jq -nc --arg v "${v:-$bid}" --arg b "$bid" --arg s "$src" '{value: $v, build: $b, source: $s}'
 }
 
@@ -526,7 +526,7 @@ row() {
     status=ok
   elif [ -n "$(jq -r '.sha // empty' <<<"$l")" ] && sha_is_tag "$proj" "$t" "$lv" "$pv"; then
     status=ok
-  elif [ -n "$lver" ] && [ "$(grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' <<<"$pv" | head -1)" = "$lver" ]; then
+  elif [ -n "$lver" ] && [[ "$pv" =~ [0-9]+\.[0-9]+\.[0-9]+ ]] && [ "${BASH_REMATCH[0]}" = "$lver" ]; then
     status=ok
   else
     status=drift
@@ -588,6 +588,8 @@ stage_facts() {
 }
 
 # workflow_code <dir> <branch> <file>: the file on origin's branch without its comment lines.
+# Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
+# matcher that exits on the first hit leaves this grep a write error on stderr.
 workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
@@ -632,7 +634,7 @@ link_facts() {
     while IFS= read -r f; do
       case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
       deploy=false
-      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || workflow_code "$dir" "$branch" "$f" | grep -Eiq -- "$DEPLOY_MARKERS"; then
+      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || grep -Eiq -- "$DEPLOY_MARKERS" <<<"$(workflow_code "$dir" "$branch" "$f")"; then
         deploy=true
       fi
       jq -nc --arg p "$f" --argjson d "$deploy" '{path: $p, deploy: $d}' >>"$tmp/files"
@@ -836,7 +838,7 @@ changelog_section() {
 # _cl_list <subjects> -> them as a markdown list, cut at CHANGELOG_LINES with a line saying so.
 _cl_list() {
   [ -n "$1" ] || return 0
-  sed 's/^/- /' <<<"$1" | head -n "$CHANGELOG_LINES"
+  sed -e 's/^/- /' -e "${CHANGELOG_LINES}q" <<<"$1"
   if [ "$(wc -l <<<"$1")" -gt "$CHANGELOG_LINES" ]; then echo "- ... and older PRs, not shown"; fi
 }
 
@@ -865,7 +867,7 @@ cmd_changelog() {
   [ -n "$all" ] || die "$proj has no release tags${_PTS_BUILDS:+ and no build tags}"
   if [ "$list" = 1 ]; then printf '%s\n' "$all"; return; fi
   # The newest release: the first tag that is not a prerelease, else the newest of all.
-  [ -n "$tag" ] || tag="$(grep -vE -- "$_GR_PRERELEASE" <<<"$all" | head -1 || true)"
+  [ -n "$tag" ] || tag="$(grep -m1 -vE -- "$_GR_PRERELEASE" <<<"$all" || true)"
   [ -n "$tag" ] || tag="$(head -1 <<<"$all")"
   # Only a tag of this project's line: the argument reaches git, so it is never taken as typed.
   grep -Fxq -- "$tag" <<<"$all" || die "$tag is not a release tag of $proj"
