@@ -81,6 +81,10 @@ AQ_HOLD="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
 # is free, the rest stay held behind it (desk_wait); a desk:auth item waits while this says away.
 AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
+# Minutes a just-started desk waiter keeps the free resource from the next one while its session
+# boots and claims it. The claim is the event; this bounds a session that never claims, so it
+# cannot hold the line for good.
+AQ_DESK_START_MIN=10
 AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
@@ -489,7 +493,21 @@ desk_class() {
 }
 
 # human_away -- the human is away (fleet-presence); unread or a missing presence reads as here.
-human_away() { local p; p="$("$AQ_PRESENCE" 2>/dev/null)"; [ "${p%% *}" = away ]; }
+# Asked once per listing, so every item in it reads the same answer.
+presence_word() { local p; p="$("$AQ_PRESENCE" 2>/dev/null)"; printf '%s' "${p%% *}"; }
+human_away() { memo presence presence_word; [ "$MEMO_V" = away ]; }
+
+# desk_starting <resource> -> the slug of an item started on that resource less than
+# AQ_DESK_START_MIN ago, whose session may not have claimed it yet.
+desk_starting() {
+  local f st now
+  now="$(date +%s)"
+  while IFS= read -r f; do
+    [ "$(fm_get "$f" desk_start)" = "$1" ] || continue
+    st="$(date -d "$(fm_get "$f" started)" +%s 2>/dev/null)" || continue
+    [ $((now - st)) -lt $((AQ_DESK_START_MIN * 60)) ] && { fm_get "$f" slug; return; }
+  done < <(items_in "$AQ_DIR/running")
+}
 
 # desk_head <resource> -> "<file>\t<slug>\t<class>" of the queued item that takes the resource next:
 # the best class (agent-hold classes), then priority, then the oldest. Only an item that could start
@@ -521,6 +539,8 @@ desk_wait() {
   if [ "$(desk_class "$2")" = auth ] && human_away; then
     HOLD="hold:$1 (desk:auth waits for the human, away)"; return
   fi
+  memo "desk-start:$1" desk_starting "$1"
+  [ -z "$MEMO_V" ] || { HOLD="hold:$1 (behind $MEMO_V, starting)"; return; }
   memo "desk:$1" desk_head "$1"; head="$MEMO_V"
   [ -n "$head" ] && [ "${head%%$'\t'*}" != "$3" ] || return 0
   head="${head#*$'\t'}"
@@ -1645,15 +1665,18 @@ cmd_move() {
     # that no longer works it. `sessions:` stays: it is the history of who worked the item.
     # lane_run goes too: the next start logs a run of its own, and host: too, since the next start
     # may run it here.
-    queued) header_del "$f" session window started waiting review origin lane_run host ;;
+    queued) header_del "$f" session window started waiting review origin lane_run host desk_start ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
       # A new run has not ended yet: the last run's reason goes.
       header_del "$f" end_reason
       # A hold: tag gates one start: once running, the item's own session may claim that resource,
       # and a tag left on would hold the item behind its own claim if it is ever requeued.
       tags="$(fm_get "$f" tags)"
-      case " $tags " in *" hold:"* | *" desk:"*)
-        tags="$(tr ' ' '\n' <<<"$tags" | grep -Ev '^(hold|desk):' | paste -sd' ')"
+      # Its desk_start keeps the next waiter off the resource until this session claims it; its
+      # desk: class stays, so a later requeue keeps its rank.
+      case " $tags " in *" hold:"*)
+        header_set "$f" desk_start "$(tr ' ' '\n' <<<"$tags" | sed -n 's/^hold://p' | head -1)"
+        tags="$(tr ' ' '\n' <<<"$tags" | grep -v '^hold:' | paste -sd' ')"
         if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
       esac ;;
     waiting) header_set "$f" waiting "$(now_utc)" ;;

@@ -145,22 +145,25 @@ cmd_set() {
 cmd_claim() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local by="" reason="" class=other
+  local by="" reason="" class=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --by) by="${2:-}"; shift 2 ;;
-      --class) class="${2:-}"; shift 2 ;;
+      --by|--class) [ $# -ge 2 ] || { echo "agent-hold claim: $1 needs a value" >&2; exit 2; }
+        if [ "$1" = --by ]; then by="$2"; else class="$2"; fi; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold claim: unknown flag $1" >&2; exit 2 ;;
       *)  reason="$*"; break ;;
     esac
   done
   [ -n "$reason" ] || { echo "agent-hold claim: say what you are doing with it" >&2; exit 2; }
-  [ -n "$(class_rank "$class")" ] || { echo "agent-hold claim: unknown class '$class' (agent-hold classes)" >&2; exit 2; }
+  [ -z "$class" ] || [ -n "$(class_rank "$class")" ] || { echo "agent-hold claim: unknown class '$class' (agent-hold classes)" >&2; exit 2; }
   [ -n "$by" ] || by="$(default_by)"
   by="$(oneline "$by")"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
   local f="$HOLD_ROOT/$resource" body
+  # A refresh with no --class keeps the class the claim had.
+  if [ -z "$class" ] && [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then class="$(field "$f" class)"; fi
+  class="${class:-other}"
   body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
     "$resource" "$class" "$(now_iso)" "$by" "$(oneline "$reason")")"
   if [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then
@@ -172,7 +175,9 @@ cmd_claim() {
   # The holder keeps it; a better class is told it starts next, not that it may take over.
   local held; held="$(field "$f" class)"
   local outrank=""
-  [ -n "$held" ] && [ "$(class_rank "$class")" -lt "$(class_rank "$held")" ] &&
+  # A class the table no longer has (or a claim from before classes) ranks last.
+  local hr; hr="$(class_rank "$held")"
+  [ -n "$held" ] && [ "$(class_rank "$class")" -lt "${hr:-9}" ] &&
     outrank=" (you outrank it: requeue with --class $class, it starts next)"
   echo "busy: $resource since $(field "$f" since) by $(field "$f" by)${held:+ ($held)}: $(field "$f" reason)$outrank" >&2
   return 1

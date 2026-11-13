@@ -171,9 +171,23 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   run "$HOLD" claim mac-desktop --by agent-9 "explore"
   assert_failure 1
   refute_output --partial 'outrank'
+  # A refresh with no --class keeps the class.
+  "$HOLD" claim mac-desktop --by agent-6 "more screenshots"
+  grep -qx 'class: listing' "$AGENT_HOLD_DIR/mac-desktop"
+  # A class the table no longer has ranks last, with no shell error.
+  sed -i 's/^class: .*/class: gone/' "$AGENT_HOLD_DIR/mac-desktop"
+  run --separate-stderr "$HOLD" claim mac-desktop --by agent-9 --class auth "2fa"
+  assert_failure 1
+  [[ "$stderr" == *"(gone): more screenshots (you outrank it"* ]]
+  [[ "$stderr" != *"integer"* ]]
   "$HOLD" release mac-desktop
   "$HOLD" claim mac-desktop --by agent-9 "explore"
   grep -qx 'class: other' "$AGENT_HOLD_DIR/mac-desktop"
+  # A flag with no value is a usage error, not a hang.
+  run timeout 5 "$HOLD" claim mac-desktop --class
+  assert_failure 2
+  run timeout 5 "$HOLD" claim mac-desktop --by
+  assert_failure 2
 }
 
 @test "claim never replaces a set hold, and a set hold's owner is not let through by check" {

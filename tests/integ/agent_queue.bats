@@ -687,9 +687,17 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (desk:auth waits for the human, away)"
   assert_output --partial "hold:mac-desktop (behind signup, legal)"
-  # Started, the item drops both tags; the next best (listing over no class) is head.
+  # Started, the item drops its hold: and keeps its class, and the desktop stays its own until its
+  # session claims it: no second waiter starts in between.
   "$AQ" move signup running >/dev/null
-  [ -z "$(field "$(item running signup)" tags)" ]
+  [ "$(field "$(item running signup)" tags)" = desk:legal ]
+  [ "$(field "$(item running signup)" desk_start)" = mac-desktop ]
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind signup, starting)"
+  # A session that never claims holds the line only AQ_DESK_START_MIN; then the next best (listing over no class) is head.
+  sed -i "s/^started: .*/started: $(date -u -d '11 minutes ago' +%Y-%m-%dT%H:%M:%SZ)/" "$(item running signup)"
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = shots ]
 }
@@ -704,6 +712,12 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "usage"
   "$AQ" requeue forms --hold mac-desktop --class legal >/dev/null
   [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:legal" ]
+  # A requeue with no --class keeps the class the item had.
+  "$AQ" move forms running >/dev/null
+  [ -z "$(field "$(item queued forms 2>/dev/null)" desk_start)" ]
+  "$AQ" requeue forms --hold mac-desktop >/dev/null
+  [ "$(field "$(item queued forms)" tags)" = "desk:legal hold:mac-desktop" ]
+  [ -z "$(field "$(item queued forms)" desk_start)" ]
   "$AQ" move forms running >/dev/null
   "$AQ" requeue forms --hold mac-desktop --class auth >/dev/null
   [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:auth" ]
