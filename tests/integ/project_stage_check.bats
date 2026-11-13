@@ -597,7 +597,7 @@ rs_stub() {
   rs_stub '{"shooter": {"stage": "alpha", "rungs": ["alpha", "prod"]}}'
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^PASS +alpha +A private target live'
-  real_row 'beta | game, app | Its external tester channel live'
+  real_row 'beta | store | Its external tester channel live'
   run "$CHECK" shooter --stage beta
   assert_line --regexp '^FAIL +beta +Its external tester channel live'
   real_row 'prod | game, app | Live on a public channel'
@@ -646,7 +646,7 @@ rs_stub() {
 
 @test "stages.md: the store listing row reads a game's listing.json or an app's metadata.yaml" {
   export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
-  real_row 'alpha | game, app | Its store listing'
+  real_row 'alpha | store | Its store listing'
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +Its store listing'
   # NEGATIVE CONTROL: a listing with no name or title is a scaffold, not a listing.
@@ -657,8 +657,8 @@ rs_stub() {
   mkdir -p "$REPO/store/shooter/play"; printf '{"title": "Shooter"}\n' > "$REPO/store/shooter/play/listing.json"
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^PASS +alpha +Its store listing'
-  # An app: its listing is mobile/metadata.yaml in its own folder.
-  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  # A store app (a play target): its listing is mobile/metadata.yaml in its own folder.
+  jq '.trackers.shooter.type = "app" | .trackers.shooter.targets = [{"id": "shooter-play", "where": "play", "live": {"play": {}}}]' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
   rm -r "$REPO/store"
   run "$CHECK" shooter --stage alpha
   assert_line --regexp '^FAIL +alpha +Its store listing'
@@ -690,4 +690,21 @@ rs_stub() {
   assert_line --regexp '^FAIL +beta +A UI polish pass'
   touch "$REPO/docs/plans/$(date -d '10 days ago' +%F)_Shooter_ui_audit.md"; run "$CHECK" shooter --stage beta
   assert_line --regexp '^PASS +beta +A UI polish pass'
+}
+
+@test "Applies store: an app with no store target skips the store rows; a play target brings them in" {
+  export SYSTEMS_DOC="$REPO_ROOT/.local/src/docs/systems.md" PATH="$REPO_ROOT/.local/bin:$PATH"
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  real_row 'alpha | store | Its store listing'
+  run "$CHECK" shooter --stage alpha
+  refute_line --partial 'Its store listing'
+  run "$CHECK" shooter --system store
+  assert_failure 2
+  assert_output --partial 'does not apply'
+  # NEGATIVE CONTROL: a play target makes it a store project, so the row runs and fails.
+  jq '.trackers.shooter.targets = [{"id": "shooter-play", "channel": "internal", "where": "play", "live": {"play": {}}}]' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  run "$CHECK" shooter --stage alpha
+  assert_line --regexp '^FAIL +alpha +Its store listing'
+  run "$REPO_ROOT/.local/bin/project-system-check" shooter --list
+  assert_line --regexp '^store'
 }
