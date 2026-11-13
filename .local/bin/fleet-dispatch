@@ -2950,6 +2950,7 @@ preempt_for() {
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
   [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
+  PREEMPT_PARKED=1
   UNITS_FREE=$(( TARGET - $(live_units) ))
   pick_item "$PICK_RESERVED"
 }
@@ -4164,11 +4165,12 @@ cmd_run() {
   # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
   # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
-  # An urgent item no runner session can be parked for starts nothing, and the pass goes on to the
-  # red floor: returning there held every red for a day while three heavy urgent items waited (11-13).
+  # An urgent item that waits on run units alone, with no runner session to park for it, goes on to
+  # the red floor: returning there held every red for a day behind three heavy urgent items (11-13).
+  # A start, a park, a finding's hold or an error ends the pass here as before.
   if [ -n "$urgent" ] && [ -z "$(gate)" ]; then
-    local before=${STARTED:-0} urc; start_items "$urgent" 1; urc=$?
-    [ "${STARTED:-0}" -eq "$before" ] || return "$urc"
+    local before=${STARTED:-0} urc; PREEMPT_PARKED=0; start_items "$urgent" 1; urc=$?
+    [ "$urc" = 0 ] && [ "${STARTED:-0}" -eq "$before" ] && [ "${PICK_FULL:-0}" = 1 ] && [ "$PREEMPT_PARKED" = 0 ] || return "$urc"
   fi
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"

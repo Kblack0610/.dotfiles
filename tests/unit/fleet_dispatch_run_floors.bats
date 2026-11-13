@@ -130,6 +130,7 @@ load 'fleet_dispatch/common'
   DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'run units: big (heavy needs 2 run units, 0 free)'
   assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item r1 on the red floor'
