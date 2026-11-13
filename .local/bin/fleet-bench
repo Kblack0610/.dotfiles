@@ -3667,19 +3667,22 @@ triage_coverage() {
 
 # hold_ledger <owner/repo> -> "<ledger name> <base branch>" from `schedules-sync repos`, the one
 # list of watched repos: a GitHub repo as listed, else a Forgejo one as forgejo:owner/repo (the
-# name pr_ci uses), else the repo and main, which the ledger then answers for.
+# name pr_ci uses), else "prs-only" for a repo listed only for its PRs (a work or client repo whose
+# runs the ledger never reads), else the repo and main, which the ledger then answers for.
 hold_ledger() {
   { "$SCHEDULES_SYNC" repos 2>/dev/null || echo '[]'; } | jq -r --arg want "${1,,}" --arg fallback "$1 main" '
     def on($f): map(select(.forge == $f and (.repo | ascii_downcase) == $want)) | first | select(.);
-    (on("github") | "\(.repo) \(.base)") // (on("forgejo") | "forgejo:\(.repo | ascii_downcase) \(.base)") // $fallback'
+    (on("github") | "\(.repo) \(.base)") // (on("forgejo") | "forgejo:\(.repo | ascii_downcase) \(.base)")
+      // (on("prs-only") | "prs-only \(.base)") // $fallback'
 }
 
 # hold_runs <owner/repo> -> the runs main's pushes started, from main_runs (exit 3: the run ledger
-# does not sync the repo). A scheduled run is left out: it fails on the environment moving, not on
-# a merge.
+# does not sync the repo; exit 5: it lists the repo for its PRs alone, so no run of it is ever read).
+# A scheduled run is left out: it fails on the environment moving, not on a merge.
 hold_runs() {
   local runs name base
   read -r name base < <(hold_ledger "$1")
+  [ "$name" != prs-only ] || return 5
   runs=$(main_runs "$name" "$base") || return
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
@@ -3812,6 +3815,7 @@ hold_reaching() {
 # stays out, and only against a merge liveness_reach says could reach a runner its probe names.
 # A repo or run that cannot be read, or that the run ledger does not hold, says so and
 # counts as nothing, and the return is 1 so a caller that needs "not red" can tell that from "unknown".
+# A repo the ledger lists for its PRs alone (prs-only) has no main to guard: it is skipped quietly.
 hold_reds() {
   local t=$1 merges repo runs rc streak since near hits='' reach w=fleet-liveness h=$((HOLD_HOURS * 3600)) unread=0
   # pr: and merged: are lists in step, one PR per repo (agent-land)
@@ -3831,6 +3835,8 @@ hold_reds() {
   fi
   while IFS= read -r repo; do
     rc=0; runs=$(hold_runs "$repo") || rc=$?
+    # A prs-only repo has no runs to read by its config: nothing to hold, and not an unknown.
+    [ "$rc" -ne 5 ] || continue
     if [ "$rc" -eq 3 ]; then say "hold: $repo is not in the run ledger (schedules-sync repos), so nothing guards its main"; unread=1; continue; fi
     [ "$rc" -eq 0 ] || { say "hold: cannot read the runs on $repo main"; unread=1; continue; }
     while IFS= read -r streak; do
