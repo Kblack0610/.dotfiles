@@ -33,6 +33,7 @@
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back in the queue, held on that agent-hold or ask
 #   settle-ask <id>    fail each queued item that ask can no longer release (cancelled, or answered another option);
 #       agent-ask runs it on every cancel and human answer, and the item's board row stays open
+#   ask-holds [<id>]   `<slug><TAB><ask id><TAB><releasing options>` per active item held on an ask (that ask only, given one)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -1898,6 +1899,33 @@ cmd_requeue() {
   cmd_move "$slug" queued
 }
 
+# ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options
+# `+`-joined as the tag has them, empty for any answer), from the header's slug and tags lines alone.
+# Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
+# record for it, 1.7 s against a few ms (2026-11-13).
+cmd_ask_holds() {
+  local id="${1:-}" FILES=()
+  lock_read
+  list_files waiting review running queued
+  ((${#FILES[@]})) || return 0
+  awk -v id="$id" -v OFS='\t' '
+    function flush(  n, i, t, a) {
+      if (slug == "") return
+      n = split(tags, t, " ")
+      for (i = 1; i <= n; i++) {
+        if (substr(t[i], 1, 4) != "ask:") continue
+        split(substr(t[i], 5), a, "=")
+        if (id == "" || a[1] == id) print slug, a[1], a[2]
+      }
+    }
+    FNR == 1 { flush(); slug = ""; tags = ""; head = 1 }
+    !head { next }
+    $0 == "---" { head = 0; next }
+    /^slug: / { slug = substr($0, 7) }
+    /^tags: / { tags = substr($0, 7) }
+    END { flush() }' "${FILES[@]}"
+}
+
 # settle-ask <id> -- fail every queued item held on that ask that it can no longer release, now that
 # the human answered or cancelled it: cancelled, or answered with an option its tag does not name
 # (ask_pending decides). agent-ask runs this on each cancel and human answer. The board row stays
@@ -2220,6 +2248,7 @@ case "${1:-}" in
   add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   settle-ask) shift; cmd_settle_ask "$@" ;;
+  ask-holds) shift; cmd_ask_holds "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

@@ -559,7 +559,7 @@ outcomes_cli() {
   # The newest block is where the session stands; the older one is left to the session.
   assert_line 'it said   Keep it? 1 keep 2 drop'
   refute_output --partial 'Looked at the queue.'
-  assert_line --regexp '^telemetry friction 2 \(#2 of 2 this week\): 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
+  assert_line --regexp '^telemetry friction 2: 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
   grep -qx "agent-panel said $HOME/.claude/projects/p/sid-s.jsonl --around $id" "$NOTES_FIXTURE/calls.log"
   # The asking pane's own copy is the card alone: that session already holds the story.
   run env CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo 'again?'
@@ -579,7 +579,7 @@ outcomes_cli() {
   refute_output --partial 'it said'
   refute_output --partial 'telemetry'
   refute_line --partial 'only-a-title:'
-  # A session with no friction has no rank; its row still gives the telemetry line.
+  # A session with no friction still gets the telemetry line from its row.
   mkdir -p "$HOME/.agent/outcomes/demo"; outcomes_cli
   printf '{"session_id":"sid-t","project":"demo","title":"t","updated":"x","updated_epoch":%d,"observed":"%s","prs":[],"prs_merged":0}\n' \
     "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOME/.agent/outcomes/demo/2026-11.jsonl"

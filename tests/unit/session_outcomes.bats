@@ -753,6 +753,19 @@ EOF
   assert_equal "$(jq -r '[.friction, .why] | @tsv' <<<"$output")" "$(printf '3\t2 nudges + 1 CI reds before merge')"
 }
 
+# card reads its own session's lines alone (so_latest_of), so a row that names the session only in a
+# nested field is no match, and a prefix that is no id cannot reach grep as a pattern.
+@test "card: only the session's own rows count, and its newest wins" {
+  "$SUBJECT" run
+  local f; f="$(ls "$SO_OUT"/*/*.jsonl | head -1)"
+  printf '%s\n' '{"session_id":"other-x","project":"proj","title":"nested","parent":{"session_id":"sess-a"},"observed":"2099-01-01T00:00:00Z","updated":"2099-01-01T00:00:00Z","prs":[]}' >> "$f"
+  run "$SUBJECT" card sess-a --json
+  assert_success
+  assert_equal "$(jq -r .session_id <<<"$output")" sess-a
+  run "$SUBJECT" card 'sess.*'
+  assert_failure 1
+}
+
 @test "card: a prefix naming no session is 1, more than one is 2 and lists them" {
   "$SUBJECT" run
   run "$SUBJECT" card nope
