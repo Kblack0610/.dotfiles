@@ -855,3 +855,20 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'wt new --host'
   assert_equal "$(qfield "$(qitem running fix-menu)" host)" ''
 }
+
+# 2026-11-12: the classifier's key sat in an over-budget gateway team, every verdict fell back to opus,
+# and the cache kept those for the rest of the day, so free harnesses stayed off work after it was fixed.
+@test "a fallback verdict is kept only for its TTL, so a later pass asks model-lane again; a real one is kept all day" {
+  lane_cache fix-a '{"lane": "opus", "by": "fallback", "why": "llm unavailable (HTTP 429)", "candidates": [{"harness": "claude", "model": "opus", "fit": 0}]}'
+  lane_cache fix-b '{"lane": "sonnet", "by": "llm", "candidates": [{"harness": "claude", "model": "sonnet", "fit": 0}]}'
+  run lane_cached fix-a
+  assert_output --partial '"by":"fallback"'
+  LANE_FALLBACK_TTL=0 run lane_cached fix-a
+  assert_output ''
+  LANE_FALLBACK_TTL=0 run lane_cached fix-b
+  assert_output --partial '"by":"llm"'
+  # A fallback row from before the TTL has no cached_at, so it is already past it.
+  printf '%s\tfix-c\t%s\n' "$(date +%F)" '{"lane":"opus","by":"fallback"}' >>"$LANE_CACHE"
+  run lane_cached fix-c
+  assert_output ''
+}

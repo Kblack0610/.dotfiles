@@ -936,10 +936,18 @@ excluded_kind() {
 # lane_cached <slug> -> the verdict a pass recorded today for an item no source could take;
 # lane_cache <slug> <verdict> records it, so later passes do not ask model-lane again for every
 # Opus item while only other sources have room. Only a skip reads it: a start classifies afresh.
-lane_cached() { awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$LANE_CACHE" 2>/dev/null; }
+# A fallback verdict (model-lane could not reach its LLM) is an error, not a pick, so it is kept only
+# LANE_FALLBACK_TTL seconds: a retry backoff, so an outage costs one classify per item per TTL, not
+# per pass, and the item routes on the real pick once the classifier answers. A row with no cached_at
+# (written before the TTL) is past it.
+LANE_FALLBACK_TTL=${LANE_FALLBACK_TTL:-900}
+lane_cached() {
+  awk -F'\t' -v d="$(date +%F)" -v s="$1" '$1 == d && $2 == s { print $3; exit }' "$LANE_CACHE" 2>/dev/null |
+    jq -c --argjson ttl "$LANE_FALLBACK_TTL" 'select(.by != "fallback" or now - (.cached_at // 0) < $ttl)' 2>/dev/null
+}
 lane_cache() {
   local d; d=$(date +%F); mkdir -p "$DIR"
-  { awk -F'\t' -v d="$d" -v s="$1" '$1 == d && $2 != s' "$LANE_CACHE" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$(jq -c . <<<"$2")"; } > "$LANE_CACHE.tmp" &&
+  { awk -F'\t' -v d="$d" -v s="$1" '$1 == d && $2 != s' "$LANE_CACHE" 2>/dev/null; printf '%s\t%s\t%s\n' "$d" "$1" "$(jq -c '.cached_at = (now | floor)' <<<"$2")"; } > "$LANE_CACHE.tmp" &&
     mv -f "$LANE_CACHE.tmp" "$LANE_CACHE"
 }
 
