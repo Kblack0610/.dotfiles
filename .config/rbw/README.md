@@ -67,6 +67,28 @@ Confirm it took: the mtime on `~/.cache/rbw/*.json` should be current, and `rbw 
 
 If `rbw login` still returns silently, the account has 2FA and the device needs registering with a personal API key (web vault -> Settings -> Security -> Keys -> View API Key), then `rbw register`.
 
+## Vault layout: entry names are an API
+
+- Every caller looks an entry up by its exact name with `rbw get <name>` and no `--folder`, so a name is an interface: a rename changes its callers in the same PR. Folders are free: rbw finds an entry in any folder by name alone (`rbw get kalshi` resolves `trading/kalshi`).
+- A name must be unique across the whole vault. Two entries with one name make `rbw get <name>` fail as ambiguous for every caller. When one of them has no folder, rbw returns that one.
+- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin`, `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
+- After a non-interactive `rbw add`, check that the entry is not empty: when stdin is not a terminal, rbw reads the secret from it, and empty stdin creates an entry with nothing in it.
+
+## Reorganising the vault without losing anything
+
+`rbw-inventory` is read-only and never prints a value. Make each change in the web vault (it can move entries between folders; rbw cannot), then run `rbw-inventory snap <n>` and `rbw-inventory diff <prev> <n>`.
+
+```bash
+rbw-inventory snap 0-baseline            # before anything
+rbw-inventory dups 0-baseline            # same name or same content, and which parts match
+# ... one change in the web vault ...
+rbw-inventory snap 1 && rbw-inventory diff 0-baseline 1
+rbw-inventory diff 0-baseline 1 --allow 'fleet token'   # a removal you meant
+rbw-inventory clean                      # when done: drops the snapshots and the hash key
+```
+
+`diff` exits 1 on LOST (content with no copy left anywhere), BROKEN (a name that resolved before no longer resolves to the same content) or CHANGED (an entry's content changed). Same content is not the same entry: several different logins share a password, and every empty entry hashes alike, so `dups` lists candidates, and a person decides. Deleted entries stay in the Vaultwarden trash for 30 days. Snapshots and the HMAC key live in `$XDG_RUNTIME_DIR/rbw-inventory`, mode 0600.
+
 ## Storing & sourcing the Cloudflare tokens
 
 ```bash
