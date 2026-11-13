@@ -3262,11 +3262,14 @@ pub(crate) fn size_of(line: &str) -> Option<u32> {
 /// A row's size name: the band of its points, else its `#size/` tag; `None` for neither.
 /// The one reader the feed and the leaf rows share, so the two never disagree.
 pub(crate) fn size_name(line: &str) -> Option<String> {
-    points_of(line).and_then(crate::epics::band).map(str::to_string).or_else(|| {
-        project_tasks::size_tag(line)
-            .and_then(|t| t.strip_prefix("#size/"))
-            .map(str::to_string)
-    })
+    points_of(line)
+        .and_then(crate::epics::band)
+        .map(str::to_string)
+        .or_else(|| {
+            project_tasks::size_tag(line)
+                .and_then(|t| t.strip_prefix("#size/"))
+                .map(str::to_string)
+        })
 }
 
 /// A row's `#pts/<n>` effort estimate, `None` when it has none or one off the scale.
@@ -6593,7 +6596,11 @@ mod shape_tests {
         // an older note frozen before stamps, rewritten today: its mtime never outranks a stamp
         fs::write(dir.join("versions/v0.1.0.md"), "## Tasks\n- [x] old\n").unwrap();
         let r = release_due(&dir, 7, 4, &ix, Some((0, 2, 1)), day("2026-11-08"));
-        assert_eq!(r.last_cut.as_deref(), Some("2026-11-01"), "a rewrite moves no cut");
+        assert_eq!(
+            r.last_cut.as_deref(),
+            Some("2026-11-01"),
+            "a rewrite moves no cut"
+        );
         // NEGATIVE CONTROL: with no stamp anywhere, the newest mtime is the date
         fs::remove_file(dir.join("versions/v0.2.0.md")).unwrap();
         let today = chrono::Local::now().date_naive();
