@@ -151,6 +151,7 @@ fn render(
         .count();
     let queue = hub_queue::Queue {
         items,
+        sessions: hub_queue::sessions(&hub_core::boards::fleet_state(), now.timestamp()),
         ..Default::default()
     };
     let rows = queue.rows(now);
@@ -171,13 +172,20 @@ fn render(
 }
 
 /// A table row: its item (`item_view`) plus `start` (its place in the start order, ready items
-/// only) and the cells the row's own columns hold (`Row::val`, what a filter on them matches):
+/// only), the state cell (`state_word`, `stuck` for amber, `state_why` for its hover) and the cells the row's own columns hold (`Row::val`, what a filter on them matches):
 /// `held_on`, `source` and `row_id`.
 fn row_view(r: &QueueRow, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
     use hub_core::table::Row;
     let mut v = item_view(r.item, now);
     if let Some(n) = r.start {
         v["start"] = n.into();
+    }
+    v["state_word"] = r.state_word().into();
+    if r.stuck() {
+        v["stuck"] = true.into();
+    }
+    if let Some(why) = r.state_why() {
+        v["state_why"] = why.into();
     }
     for (key, col) in [("held_on", "hold"), ("source", "from"), ("row_id", "row")] {
         if let Some(t) = r.val(col).shown() {

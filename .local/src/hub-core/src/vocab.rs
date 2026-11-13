@@ -7,7 +7,8 @@
 pub use agent_panel::vocab::Vocab;
 use serde::Serialize;
 
-/// An agent-queue item that has not started (`queue::State::Queued`), the Queue table's STATE.
+/// The Queue table's STATE words that need saying: an item not started (`queue::State::Queued`),
+/// and a running or review item that is stuck (`queue::QueueRow::state_word`).
 pub const QUEUE: &[(&str, &str)] = &[
     (
         "ready",
@@ -17,6 +18,10 @@ pub const QUEUE: &[(&str, &str)] = &[
         "held",
         "waits on its hold: after another item, until a PR merges, until night or a set time; HOLD says which",
     ),
+    ("stalled", "its session is STALLED"),
+    ("no session", "running 10m+, and no session works it"),
+    ("PR red, yours", "its fix-ci tries are spent; yours now"),
+    ("PR green, yours", "its land tries are spent; yours now"),
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
@@ -105,7 +110,7 @@ mod tests {
         let legend = s.legend.expect("the table carries its legend");
         for (word, _) in R::LEGEND {
             assert!(legend.contains(&format!("{word}: ")), "{legend}");
-            let n = View::new::<R>(&format!("{col}:{word}"), "", "", "")
+            let n = View::new::<R>(&format!("{col}:\"{word}\""), "", "", "")
                 .apply(rows)
                 .len();
             assert_eq!(n, 1, "`{col}:{word}` finds its one row");
@@ -113,15 +118,33 @@ mod tests {
     }
 
     #[test]
-    fn a_queue_item_not_started_is_ready_or_held_and_its_legend_says_which() {
-        let item = |slug: &str, hold: Option<&str>| Item {
+    fn a_queue_item_not_started_is_ready_or_held_a_stuck_one_says_so_and_its_legend_says_which() {
+        let item = |slug: &str, state: State, hold: Option<&str>| Item {
             slug: slug.into(),
-            state: State::Queued,
+            state,
             hold: hold.map(str::to_string),
+            started: Some("2026-11-06T10:00:00Z".into()),
             ..Item::default()
         };
+        let mut red = item("pr", State::Review, None);
+        red.extra.insert("fix_human".into(), "abc".into());
+        let mut green = item("pg", State::Review, None);
+        green.extra.insert("fix_human".into(), "abc".into());
+        green.extra.insert("pr_owner".into(), "land".into());
+        let stalled = crate::queue::Health {
+            bucket: "STALLED".into(),
+            ..Default::default()
+        };
         let q = Queue {
-            items: vec![item("r", None), item("h", Some("after r"))],
+            items: vec![
+                item("r", State::Queued, None),
+                item("h", State::Queued, Some("after r")),
+                item("s", State::Running, None),
+                item("n", State::Running, None),
+                red,
+                green,
+            ],
+            sessions: Some([("s".to_string(), stalled)].into()),
             ..Queue::default()
         };
         let rows: Vec<QueueRow> = q.rows(chrono::Utc::now());

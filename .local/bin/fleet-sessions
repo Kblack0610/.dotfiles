@@ -1373,11 +1373,12 @@ collect() {
       asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
       item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
     fi
-    # The row's queue item (item_of's one join), with the board row it came from and its origin.
-    local islug=- irel=- irow=- iorigin=-
+    # The row's queue item (item_of's one join), with the board row it came from and its origin;
+    # islugs keeps every item running here (own:a,b), the JSON's item.also.
+    local islug=- islugs=- irel=- irow=- iorigin=-
     case "$item" in
       own:* | moved:* | here:* | review:*)
-        irel="${item%%:*}"; islug="${item#*:}"; islug="${islug%% *}"; islug="${islug%%,*}"
+        irel="${item%%:*}"; islugs="${item#*:}"; islugs="${islugs%% *}"; islug="${islugs%%,*}"
         IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
@@ -1476,7 +1477,7 @@ collect() {
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}" "$islug" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -1848,8 +1849,10 @@ json_rows() {
       phases: ((.[44] // "[]") | fromjson),
       account: (if (.[45] // "-") == "-" then null else .[45] end),
       item: (if (.[46] // "-") == "-" then null else
-        {slug: .[46], is: .[47], row: (if .[48] == "-" then null else .[48] end),
-         origin: (if .[49] == "-" then null else .[49] end)} end),
+        (.[46] | split(",")) as $s
+        | {slug: $s[0], is: .[47], row: (if .[48] == "-" then null else .[48] end),
+           origin: (if .[49] == "-" then null else .[49] end)}
+        + (if ($s | length) > 1 then {also: $s[1:]} else {} end) end),
       project: (if (.[50] // "") == "" then null else .[50] end),
       host: (if (.[51] // "-") == "-" then null else .[51] end),
       activity_line: (if (.[52] // "-") == "-" then null else .[52] end),
