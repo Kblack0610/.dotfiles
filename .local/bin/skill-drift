@@ -39,6 +39,9 @@
 #   NONASCII   the house plain-ASCII rule (em/en dash, arrows, >=, ellipsis...).
 #   NOHEADING  no `## Scope and triggers` heading, so a reader cannot find what the
 #              skill covers in the same place in every skill.
+#   ARGSUB     a `$N` in the body. Claude Code replaces it with argument N when the
+#              skill is called with that many arguments, so awk '{print $1}' or
+#              "costs $0" turn into argument text. It has no escape for `$N`.
 #
 # .claude/commands/**/*.md and .claude/agents/*.md are linted too, as command:<path>
 # and agent:<name>: NOFRONTMATTER, BADYAML, LONGDESC and NONASCII.
@@ -417,6 +420,17 @@ check_ascii() {
   return 0
 }
 
+# Claude Code (2.1.325) runs /\$(\d+)(?!\w)/ over the body after the frontmatter and
+# swaps in argument N when it exists; `${1}` and `$(1)` do not match, so code keeps
+# working and the finding names the lines.
+check_argsub() {
+  local lines
+  lines=$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {fm=0; next} !fm {print NR": "$0}' "$2" \
+    | grep -P '\$\d+(?!\w)' | cut -d: -f1 | paste -sd, -)
+  [ -n "$lines" ] && add ARGSUB "$1" "SKILL.md:$lines" "\$N in the body becomes argument N when the skill is called with arguments"
+  return 0
+}
+
 check_heading() {
   grep -qE "^${HEADING}[[:space:]]*$" "$2" || add NOHEADING "$1" SKILL.md "no '$HEADING' heading"
   return 0
@@ -744,6 +758,7 @@ run_static() {
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
       check_heading  "$s" "$m"
+      check_argsub   "$s" "$m"
       check_replaces "$s" "$m"
     done < <(find_skills "$root")
   done
@@ -1197,6 +1212,7 @@ cat <<'EOF'
   LONGDESC   -> cut the description to a trigger line (what it is, the main
                 "use when" phrases, one "not this, use X"); detail goes in the body
   NONASCII   -> plain ASCII (see the Writing Style rules)
+  ARGSUB     -> write `${1}` in shell and `$(1)` in awk; money in words ("5 dollars")
   NOHEADING  -> say what the skill covers and when under `## Scope and triggers`
                 (`--write-lint-baseline` freezes debt in these two, it does not make
                 the rule optional, and `--ratchet` refuses a line added to it)

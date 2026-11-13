@@ -760,3 +760,20 @@ listing_report() {
   assert_failure
   echo "$output" | jq -e '.findings[] | select(.type == "BADYAML")'
 }
+
+@test "ARGSUB: a \$N in the body fails and names the line" {
+  d=$(mkskill ops dollars)
+  printf '%s\n' "It costs \$0." "awk '{print \$1}'" >> "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "ARGSUB"
+  assert_output --partial "SKILL.md:13,14"
+}
+
+@test "ARGSUB: \${1}, \$(1), \$\$ and \$VAR pass, and frontmatter is not body" {
+  d=$(mkskill ops escaped 'when_to_use: costs $0')
+  printf '%s\n' 'f() { echo "${1}"; }' "awk '{print \$(1)}'" 'echo $$ $HOME' >> "$d/SKILL.md"
+  lint
+  assert_success
+  refute_output --partial "ARGSUB"
+}

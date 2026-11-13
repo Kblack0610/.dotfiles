@@ -50,5 +50,5 @@ Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". 
 - Do not run the whole PlayMode suite or a player build on the workstation (`docs/operations/ci.md` rule 3).
 - Do not call Unity `-runTests` or `-executeMethod` by hand (the guard denies both; an editor method runs through `scripts/authoring/unity-method.sh`) or use port 7770: a `-host` that cannot bind joins the human's game.
 - Do not loop run.sh in zsh with unsplit args; wrap the loop in `bash -c`.
-- Do not stop Unity with `pkill -f` or a `pgrep -f` waiter; they match your own shell. Filter `ps -eo pid,comm,args` on `$2=="Unity"`.
+- Do not stop Unity with `pkill -f` or a `pgrep -f` waiter; they match your own shell. Filter `ps -eo pid,comm,args` on `$(2)=="Unity"`.
 - Do not touch `External/unity-core` (checkout, merge, commit) while a run uses that tree.
