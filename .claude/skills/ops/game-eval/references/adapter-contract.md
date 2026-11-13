@@ -24,3 +24,4 @@ Each game repo answers these headings in ONE doc (unity-core-playground: `docs/o
 - How to render a view without playing, at each graphics tier and art set.
 - The gallery the shots publish to.
 - The look rules (world art direction, UI theme rules) and the docs that hold them.
+- Where each game's taste lives and the shape it takes, and the review tests a shot is graded on.
