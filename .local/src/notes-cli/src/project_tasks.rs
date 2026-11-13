@@ -17,6 +17,7 @@ use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
 use anyhow::{bail, Context, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1200,7 +1201,8 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
-    let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to)? else {
+    let held = row_ids(&projects::project_dir(p, dest)?);
+    let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
         eprintln!("no open task matches '{pick}' in {src}");
         return Ok(1);
     };
@@ -1218,6 +1220,16 @@ pub fn move_to_project(
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
     Ok(0)
+}
+
+/// The ids of every row on a project's two live sheets, the human sheet and the agent board:
+/// the rows an `#of/` there may name (`notes doctor`'s tree reads the same two).
+fn row_ids(dir: &Path) -> HashSet<String> {
+    [dir.to_path_buf(), projects::agent_dir(dir)]
+        .iter()
+        .filter_map(|lane| task_sheet(lane).and_then(|s| fs::read_to_string(s).ok()))
+        .flat_map(|t| t.lines().filter_map(md::row_id).collect::<Vec<_>>())
+        .collect()
 }
 
 /// What a cross-project move did: both sheets' new text and the row as it landed.
@@ -1238,6 +1250,7 @@ fn transfer(
     dest_sheet: &Path,
     pick: &Pick,
     to: Option<&str>,
+    held: &HashSet<String>,
 ) -> Result<Option<Lifted>> {
     if same_sheet(src_sheet, dest_sheet) {
         bail!(
@@ -1251,7 +1264,7 @@ fn transfer(
     if let Some(v) = to {
         refuse_behind(v, dest_cur)?;
     }
-    let Some(moved) = lift_into(&src, &dest, pick, to, dest_cur)? else {
+    let Some(moved) = lift_into(&src, &dest, pick, to, dest_cur, held)? else {
         return Ok(None);
     };
     write_sheet(dest_sheet, &moved.dest)?;
@@ -1267,13 +1280,16 @@ fn transfer(
 
 /// Pure core of a cross-project move: the first open row matching `query` in `src`, cut from
 /// `src` and inserted into `dest`'s `## Tasks`. The source's `#v` tag means nothing on another
-/// project's roadmap, so it goes unless `to` names one. `None` on no match.
+/// project's roadmap, so it goes unless `to` names one, and so does an `#of/` naming no row
+/// in `held` (the destination's ids): it would dangle there, and `--link` files the row under
+/// one of that project's epics. `None` on no match.
 fn lift_into(
     src: &str,
     dest: &str,
     pick: &Pick,
     to: Option<V>,
     dest_cur: Option<V>,
+    held: &HashSet<String>,
 ) -> Result<Option<Lifted>> {
     // Refuse before looking at the source: a dest with no section to land in is the refusal,
     // whether or not the query would have matched.
@@ -1291,6 +1307,10 @@ fn lift_into(
     let line = match to {
         Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
         None => md::split_version(line).0,
+    };
+    let line = match crate::epics::parent_of(&line) {
+        Some(id) if !held.contains(&id) => md::drop_tag(&line, &format!("#of/{id}")),
+        _ => line,
     };
     let mut landed = vec![line.clone()];
     landed.extend(block);
@@ -3155,7 +3175,21 @@ Version: v1.2.0
     const SRC_CUR: Option<V> = Some((0, 4, 0));
 
     fn lift(pick: &Pick, to: Option<V>) -> Result<Option<Lifted>> {
-        lift_into(SRC, DEST, pick, to, Some((1, 2, 0)))
+        lift_into(SRC, DEST, pick, to, Some((1, 2, 0)), &HashSet::new())
+    }
+
+    #[test]
+    fn a_move_drops_an_of_naming_no_row_in_the_destination_and_keeps_one_it_holds() {
+        let src = SRC.replace("menu polish #low", "menu polish #low #of/ar-9");
+        let lifted = |held: &[&str]| {
+            let held = held.iter().map(|s| s.to_string()).collect();
+            lift_into(&src, DEST, &w("menu polish"), None, None, &held)
+                .unwrap()
+                .unwrap()
+                .line
+        };
+        assert_eq!(lifted(&[]), "- [ ] dodgeball menu polish #low");
+        assert_eq!(lifted(&["ar-9"]), "- [ ] dodgeball menu polish #low #of/ar-9");
     }
 
     #[test]
@@ -3186,7 +3220,7 @@ Version: v1.2.0
             "- [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->\n",
             "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n",
         );
-        let m = lift_into(&src, DEST, &w("spawn bug"), None, Some((1, 2, 0)))
+        let m = lift_into(&src, DEST, &w("spawn bug"), None, Some((1, 2, 0)), &HashSet::new())
             .unwrap()
             .unwrap();
         assert!(
@@ -3230,7 +3264,7 @@ Version: v1.2.0
     #[test]
     fn a_cross_project_move_refuses_a_dest_with_no_section() {
         let prose = "# prose only\n\nnothing here\n";
-        assert!(lift_into(SRC, prose, &w("spawn"), None, None).is_err());
+        assert!(lift_into(SRC, prose, &w("spawn"), None, None, &HashSet::new()).is_err());
     }
 
     #[test]
@@ -3238,7 +3272,7 @@ Version: v1.2.0
         assert!(lift(&w("no such row"), None).unwrap().is_none());
         // A closed row is not movable.
         let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
-        assert!(lift_into(&closed, DEST, &w("menu polish"), None, None)
+        assert!(lift_into(&closed, DEST, &w("menu polish"), None, None, &HashSet::new())
             .unwrap()
             .is_none());
     }
@@ -3251,12 +3285,24 @@ Version: v1.2.0
     }
 
     #[test]
+    fn row_ids_reads_the_sheet_and_the_agent_board() {
+        let d = scratch("ids");
+        fs::create_dir_all(d.join("agent")).unwrap();
+        fs::write(d.join("README.md"), "## Tasks\n- [ ] a <!-- id:hc-1 -->\n").unwrap();
+        fs::write(d.join("agent/README.md"), "## Tasks\n- [ ] b <!-- id:hc-2 -->\n").unwrap();
+        let mut ids: Vec<_> = row_ids(&d).into_iter().collect();
+        ids.sort();
+        assert_eq!(ids, ["hc-1", "hc-2"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn transfer_writes_both_sheets() {
         let d = scratch("ok");
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let m = transfer(&s, &t, &w("spawn"), None).unwrap().unwrap();
+        let m = transfer(&s, &t, &w("spawn"), None, &HashSet::new()).unwrap().unwrap();
         // Written swept: the same rows as returned, laid out in sections.
         let (src, dest) = (
             fs::read_to_string(&s).unwrap(),
@@ -3284,10 +3330,10 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let same = transfer(&s, &s, &w("spawn"), None).unwrap_err().to_string();
+        let same = transfer(&s, &s, &w("spawn"), None, &HashSet::new()).unwrap_err().to_string();
         assert!(same.contains("same sheet"), "{same}");
-        assert!(transfer(&s, &t, &w("spawn"), Some("next")).is_err());
-        assert!(transfer(&s, &t, &w("no such row"), None).unwrap().is_none());
+        assert!(transfer(&s, &t, &w("spawn"), Some("next"), &HashSet::new()).is_err());
+        assert!(transfer(&s, &t, &w("no such row"), None, &HashSet::new()).unwrap().is_none());
         assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
         assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
         let _ = fs::remove_dir_all(&d);
