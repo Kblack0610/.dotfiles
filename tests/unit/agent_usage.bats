@@ -575,9 +575,13 @@ qproc() {
      | if $ps == "-" then del(.procStart) else . end | if $age == "-" then del(.startedAt) else . end' \
     > "$HOME/.claude/sessions/$1.json"
 }
-# export_curl <session ids exporting> <fleet-dispatch series count>: Prometheus, answering by query.
+# export_curl <session ids exporting cost> <fleet-dispatch series count> [session ids with only the
+# session_count heartbeat]: Prometheus, answering by query. A cost session has the heartbeat too.
 export_curl() {
-  local res; res=$(printf '%s\n' $1 | jq -Rsc 'split("\n") | map(select(. != "") | {metric:{session_id:.}, value:[0,"1"]})')
+  local res
+  res=$(jq -nc --arg cost "$1" --arg beat "$1 ${3:-}" '
+    def s($n; $ids): $ids | split(" ") | map(select(. != "") | {metric:{__name__:$n, session_id:.}, value:[0,"1"]});
+    s("claude_code_cost_usage_USD_total"; $cost) + s("claude_code_session_count_total"; $beat)')
   cat > "$SANDBOX/bin/curl" <<STUB
 #!/usr/bin/env bash
 case "\$*" in
@@ -593,15 +597,46 @@ STUB
   export_curl 'aaa-1 bbb-2' 2
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_success
-  assert_output '2 queue sessions past 1h, each exporting cost; the by_runner rule has a fleet-dispatch series'
+  assert_output '2 queue sessions past 1h, each exporting (2 with cost, 0 not spent yet); the by_runner rule has a fleet-dispatch series'
 }
 
-@test "export check: a queue session past 1h with no cost series exits 1 and names it" {
+@test "export check: a queue session past 1h with no cost and no heartbeat exits 1 and names it" {
   qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 7200 ar-2
   export_curl 'aaa-1' 1
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 1
-  assert_output 'no cost exported in the last 1h: ar-2 (session bbb-2, pid 102)'
+  assert_output 'no telemetry exported in the last 1h: ar-2 (session bbb-2, pid 102)'
+}
+
+# turn <session id> <seconds ago>: an assistant turn in that session's transcript, that long ago.
+turn() {
+  mkdir -p "$HOME/.claude/projects/p"
+  jq -nc --arg ts "$(date -u -d "@$(( $(date +%s) - $2 ))" +%Y-%m-%dT%H:%M:%S.123Z)" \
+    '{type:"assistant", timestamp:$ts}' >> "$HOME/.claude/projects/p/$1.jsonl"
+}
+
+@test "export check: a session with the session_count heartbeat but no cost has spent nothing yet, listed not failed" {
+  qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 7200 ar-2; qproc 103 ccc-3 7200 ar-3
+  turn bbb-2 9000   # its last turn is from before this process started: a resume left waiting
+  export_curl 'aaa-1' 1 'bbb-2'
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output "$(printf '%s\n' 'exporting, no spend yet (no API call since it started): ar-2 (session bbb-2, pid 102)' \
+    'no telemetry exported in the last 1h: ar-3 (session ccc-3, pid 103)')"
+  rm -r "$SANDBOX/proc/103"
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_success
+  assert_output "$(printf '%s\n' 'exporting, no spend yet (no API call since it started): ar-2 (session bbb-2, pid 102)' \
+    '2 queue sessions past 1h, each exporting (1 with cost, 1 not spent yet); the by_runner rule has a fleet-dispatch series')"
+}
+
+@test "export check: a heartbeat with an API call since start and no cost series is spend the export lost, so it fails" {
+  qproc 101 aaa-1 7200 ar-1
+  turn aaa-1 9000; turn aaa-1 600
+  export_curl '' 1 'aaa-1'
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output 'no cost exported in the last 1h though it made an API call since it started: ar-1 (session aaa-1, pid 101)'
 }
 
 @test "export check: queue sessions live but no fleet-dispatch series in the by_runner rule exits 1" {
@@ -624,8 +659,8 @@ STUB
   export_curl '' 1
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 1
-  assert_output "$(printf '%s\n' 'no cost exported in the last 1h: ar-6 (session a-0006, pid 106)' \
-    'no cost exported in the last 1h: ar-8 (session a-0008, pid 108)')"
+  assert_output "$(printf '%s\n' 'no telemetry exported in the last 1h: ar-6 (session a-0006, pid 106)' \
+    'no telemetry exported in the last 1h: ar-8 (session a-0008, pid 108)')"
 }
 
 @test "export check: the age is a parameter, and one sessions/ seen through two account dirs counts once" {
@@ -634,7 +669,7 @@ STUB
   export_curl 'aaa-1' 1
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check 15m
   assert_success
-  assert_output '1 queue sessions past 15m, each exporting cost; the by_runner rule has a fleet-dispatch series'
+  assert_output '1 queue sessions past 15m, each exporting (1 with cost, 0 not spent yet); the by_runner rule has a fleet-dispatch series'
 }
 
 @test "export check: Prometheus unreadable or not a vector exits 2, so the watch trips instead of going blind" {
