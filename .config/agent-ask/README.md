@@ -16,7 +16,7 @@ An ask file is the only record that something waits on the human, for attended s
 
 - An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
-- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list) or from a board (`agent-ask answer` also types the answer into the live session's pane).
+- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list) or from a board (`agent-ask answer` records it, and its delivery types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone", where the answer will go, and that g reopens the session when it is a Claude conversation; an owner with no Claude transcript (a Codex thread) is answered on the card.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
 - On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, each row marked `LIVE` (a running session waits, from `agent-ask live-sessions`), `dead` (its asking session ended) or `none` (no session filed it, sorted with the live ones) and its question, live rows first, with the session's registry title under it, the selected one's card beside it (pgup/pgdn scroll it), answered in place; parked asks stay hidden until `P` (see Parked asks below). The `Prefix g` preview shows the card above the pane.
@@ -28,7 +28,7 @@ An ask file is the only record that something waits on the human, for attended s
 The main producers are headless (timer runners, queue items) and CANNOT block.
 
 So the first-class flow is: post-now -> exit -> answer-later -> consumed by the ask's
-`resume` command, which `agent-ask answer` hands to `ask-resume`. `post --wait` (block until answered, print the answer) is a
+`resume` command, which the answer's delivery hands to `ask-resume`. `post --wait` (block until answered, print the answer) is a
 SECONDARY convenience for an attended agent only; producers never use it.
 
 ## A question is one line
@@ -66,11 +66,13 @@ agent-ask count [project|--all]             number of pending asks, parked ones 
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released
-agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private session-outcomes.conf)
+agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, delivered or not sent and why, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private session-outcomes.conf)
 agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
 agent-ask live-sessions                      the Claude session ids running now (what the questions panel and the card read to tell a live session from a dead one)
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
-agent-ask answer [--by who] <id> <answer...> record answer; status->answered; type it into the live session; run `resume`; --by human (default) | judge | shepherd sets answered_by
+agent-ask answer [--by who] <id> <answer...> record answer; status->answered; queue its delivery and return; --by human (default) | judge | shepherd sets answered_by
+agent-ask deliver <id> | --all               run a queued delivery: type the answer into the live session, else a board row; run `resume`; start the queue items it releases
+agent-ask delivery-seen <id>                 the human read a failed delivery's note; it leaves the boards
 agent-ask judge <id>                         the answer judge's call on one pending ask, replacing any older verdict (post runs it in the foreground); an answered ask is refused
 agent-ask sweep [project|--all]              judge every pending ask again and answer each live one as the judge through `answer`'s delivery, or arm it when its type has a wait; prints `<project> <id> answered <x>|armed <x>|yours <rule> <reason>` per ask. Run after a policy or DELAY_RULES change
 agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again; `fleet-state.service` runs it each pass
@@ -157,9 +159,25 @@ An ask that waits on something the human must do with their hands (wear a headse
 
 Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
-An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). If the session does not take the Enter, `answer` still records it and prints where the text is.
+An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). If the session does not take the Enter, the delivery ends `failed` with a note saying where the text is.
 
-Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (`agent-ask answer` calls it; `ask-resume --all` drains by hand).
+Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (the delivery calls it; `ask-resume --all` drains by hand).
+
+## Delivery
+
+`answer` returns as soon as the answer is written, so a board is free for the next question. The slow part (typing into a pane, a board row, `ask-resume`, a fleet-dispatch start for the queue items the answer releases) is the delivery, and the ask file holds its state:
+
+| `delivery:` | Meaning | Written by |
+|---|---|---|
+| `queued` | recorded, not sent yet | `answer`, which also rewrites `~/.agent/asks/.deliver` |
+| `delivering` | a `deliver` run claimed it under the project lock | `deliver` |
+| `done` | sent; `delivery_note` says where (typed into a session, a board row, its resume) | `deliver` |
+| `failed` | not sent; `delivery_note` says why (a dialog was open, the pane did not take the Enter) | `deliver` |
+| `seen` | a failed one the human read on a board | `delivery-seen` |
+
+`agent-ask-deliver.path` watches `.deliver` and runs `agent-ask-deliver.service` (`deliver --all`, which repeats until nothing is queued). `fleet-state.service` runs `deliver --all` each pass as the backstop. A `delivering` claim older than `AGENT_ASK_DELIVERY_STALE` seconds (600) died with its run and is taken again. An ask with no `delivery:` field was answered before deliveries were queued and reads as delivered. An answer typed in the asking session itself (`settle-session`) is already where it needs to be and queues none. A human answer beside a judge answer whose delivery is still queued sends the judge's first, since that one runs the resume.
+
+When answers stop arriving: `systemctl --user status agent-ask-deliver.path`, then `agent-ask deliver --all` by hand.
 
 Surfaces:
 - `prefix g` agent-bridge -> `agent-ask list --pending --all` + sentinel trips + gates + live panes.

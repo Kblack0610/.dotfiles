@@ -107,13 +107,15 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
 }
 
 # -- answering is starting --
-# agent-web, fleet.sh and the CLI all answer through `agent-ask answer`, so the resume
-# has to happen there or an answer given on one of them goes nowhere.
+# agent-web, fleet.sh and the CLI all answer through `agent-ask answer`, so the resume has to
+# follow from it (its queued delivery, `deliver`) or an answer given on one of them goes nowhere.
 
 @test "answering a gate runs its resume, once, with no separate ask-resume call" {
   unset AGENT_ASK_NO_RESUME
   local id; id="$(gate alpha)"
   run "$AGENT_ASK" answer "$id" approve
+  assert_success
+  run "$AGENT_ASK" deliver --all
   assert_success
   run calls
   assert_output --partial 'agentctl-run --agent ask-resume -p /captain alpha go'
@@ -129,6 +131,7 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   local id; id="$("$AGENT_ASK" post --project alpha --kind question 'just wondering?')"
   run "$AGENT_ASK" answer "$id" ok
   assert_success
+  "$AGENT_ASK" deliver --all
   run calls
   refute_output --partial 'agentctl-run'
 }
@@ -140,8 +143,10 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   local id; id="$(gate alpha)"
   run "$AGENT_ASK" answer "$id" approve
   assert_success
-  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^status: //p"' _ "$id"
-  assert_output 'answered'
+  run "$AGENT_ASK" deliver --all
+  assert_success
+  run bash -c '"$AGENT_ASK" show "$1" | sed -n "s/^status: //p;s/^delivery: //p"' _ "$id"
+  assert_output $'answered\ndone'
 }
 
 # -- running --

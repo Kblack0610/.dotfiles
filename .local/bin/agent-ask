@@ -40,9 +40,13 @@
 #   agent-ask unpark <id>               put a parked ask back on the boards now
 #   agent-ask show <id>                 print the ask file
 #   agent-ask answer [--by who] <id> <answer...>
-#                                       record the answer; flip to answered;
-#                                       run its `resume` command (via ask-resume).
+#                                       record the answer; flip to answered; queue its
+#                                       delivery (`deliver`) and return.
 #                                       --by human (default) | judge | shepherd -> answered_by
+#   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
+#                                       else a board row, then its `resume` (via ask-resume).
+#                                       agent-ask-deliver.path runs --all on each answer
+#   agent-ask delivery-seen <id>        a failed delivery was read; take it off the boards
 #   agent-ask cancel <id> [reason...]   flip to cancelled
 #   agent-ask count [project|--all]     number of pending asks, parked ones left out (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
@@ -91,10 +95,11 @@
 # they post and exit, and the ask's `resume` command consumes the answer. `post --wait` is a
 # secondary convenience for an attended agent.
 #
-# ANSWERING IS STARTING. `answer` records the decision (no page: only the human answers) and then hands the id to
-# `ask-resume`, which runs the ask's `resume` command (detached, through agentctl-run) and
-# exits silently for an ask that has none. Every surface
-# that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
+# ANSWERING IS STARTING. `answer` records the decision (no page: only the human answers) and
+# queues its delivery, which `deliver` runs in the background (agent-ask-deliver.path): it types
+# the answer into a live session, and hands the id to `ask-resume`, which runs the ask's `resume`
+# command (detached, through agentctl-run) and exits silently for an ask that has none. Every
+# surface that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
 # can record an answer that silently goes nowhere. `resumable` + `mark-resumed` remain
 # the queue behind it: `ask-resume --all` drains it by hand as a backstop for an answer
 # whose resume failed to start, and `resumed_at` empty on an answered ask is still the "your answer went nowhere" signal.
@@ -713,36 +718,33 @@ cmd_answer() {
     review_judge_answer "$f" "$answer" "from a board"
     [ "$(field "$f" answered_by)" = judge ] && beside=1
   fi
-  [ -n "$beside" ] || record_answer "$f" "$by" "$answer" || return 1
+  # The answer is recorded now and delivered in the background (cmd_deliver), so a board returns
+  # at once. A beside answer while the judge's own delivery still waits sends that one first: it
+  # is the one that resumes the session, and a beside answer resumes nothing.
+  if [ -n "$beside" ]; then
+    [ "$(field "$f" delivery)" != queued ] || cmd_deliver "$id"
+    set_field "$f" delivery queued delivery_at "$(now_iso)" delivery_answer "$answer"
+    queue_changed
+  else
+    record_answer "$f" "$by" "$answer" delivery queued delivery_at "$(now_iso)" || return 1
+  fi
+  delivery_changed
 
   # No page: only the human answers, so "ask answered" told them what they just did. The
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
-
-  local row said; row="$(live_row "$(field "$f" claude_session)")"; said="$(answer_said "$f" "$answer" "$by")"
-  # A human answer that releases queue items held on the ask is their restart (start_held), so it files
-  # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
-  # releases nothing and still files one. A judge's answer does not release them
-  # (agent-queue ask_pending), so its row stays the human's way to override.
-  local held=""; [ "$by" != human ] || held="$(released_by "$id" "$answer")"
-  if [ -n "$row" ]; then
-    deliver_to_session "$f" "$said" "$row"
-  elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
-    answer_row "$f" "$answer" "$by"
-  fi
-  [ -n "$beside" ] || start_resume "$id"
-  [ -z "$held" ] || start_held
 }
 
-# record_answer <file> <by> <answer>: the ask's answer fields in one locked rewrite, so no reader
-# sees `status: answered` ahead of its answer, and the boards told. The judge answers a pending ask
-# only: it fails, writing nothing, when the human or a cancel got there during its model call.
+# record_answer <file> <by> <answer> [<key> <value>...]: the ask's answer fields, and any others
+# given (cmd_answer's delivery claim), in one locked rewrite, so no reader sees `status: answered`
+# ahead of its answer, and the boards told. The judge answers a pending ask only: it fails,
+# writing nothing, when the human or a cancel got there during its model call.
 record_answer() {
-  local f="$1" by="$2" answer="$3"
+  local f="$1" by="$2" answer="$3"; shift 3
   (
     command -v flock >/dev/null 2>&1 && flock 9
     [ "$by" != judge ] || [ "$(field "$f" status)" = pending ] || exit 1
-    write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by"
+    write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
   [ "$by" != human ] || settle_queue "$(field "$f" id)"
@@ -771,6 +773,104 @@ released_by() {
 start_held() {
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v agentctl >/dev/null 2>&1 || return 0
   agentctl start fleet-dispatch --no-block >/dev/null 2>&1 || true
+}
+
+# --- delivery --------------------------------------------------------------
+#
+# DELIVERY IS QUEUED. `answer` writes the decision with `delivery: queued` and touches
+# ~/.agent/asks/.deliver, which agent-ask-deliver.path watches; its service runs `deliver --all`.
+# The field is the queue, so an answer survives a closed board, a crash or a reboot, and
+# fleet-state.service drains it too, each pass, as the backstop. `deliver` claims an ask
+# (`delivering`) under the project lock, so two runs never type one answer twice, and ends it
+# `done`, or `failed`, with `delivery_note` saying where it went or why not; a board shows a failed one until the human
+# clears it (`seen`). A claim older than AGENT_ASK_DELIVERY_STALE seconds died with its run and is
+# taken again. An ask with no `delivery` field was answered before this and reads as delivered.
+
+delivery_changed() { : > "$ASKS_ROOT/.deliver" 2>/dev/null || true; }
+
+# delivery_due: the ask files with a delivery to run, queued or a claim gone stale.
+delivery_due() {
+  ask_files --all | xargs -r -d '\n' grep -lE '^delivery: (queued|delivering)$' 2>/dev/null || true
+}
+
+# cmd_deliver <id> | --all: run the answer's delivery. --all repeats until a pass finds nothing
+# queued, so an answer recorded while it runs goes out in the same run.
+cmd_deliver() {
+  local f any
+  case "${1:-}" in
+    "") echo "usage: agent-ask deliver <id> | --all" >&2; return 2 ;;
+    --all)
+      any=1
+      while [ -n "$any" ]; do
+        any=""
+        while IFS= read -r f; do deliver_one "$f" && any=1; done < <(delivery_due)
+      done
+      return 0 ;;
+  esac
+  f="$(find_ask "$1")"
+  [ -n "$f" ] || { echo "agent-ask: no ask '$1'" >&2; return 1; }
+  deliver_one "$f" || { echo "agent-ask: $1 has no delivery waiting" >&2; return 0; }
+}
+
+# deliver_one <file>: claim the ask's delivery and run it: typed into its live session, else a
+# board row when no resume or queue item takes it, then its resume and the held items' start.
+# Fails, doing nothing, when there is no delivery to claim.
+deliver_one() {
+  local f="$1" stamp lock id answer by beside="" row said held="" note=""
+  lock="$(dirname "$f")/.lock"; stamp="$(now_iso)"
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    case "$(field "$f" delivery)" in
+      queued) ;;
+      delivering)
+        local at; at="$(date -d "$(field "$f" delivery_at)" +%s 2>/dev/null)" || at=0
+        [ $(( $(date +%s) - at )) -ge "${AGENT_ASK_DELIVERY_STALE:-600}" ] || exit 1 ;;
+      *) exit 1 ;;
+    esac
+    write_fields "$f" delivery delivering delivery_at "$stamp"
+  ) 9>"$lock" || return 1
+
+  id="$(field "$f" id)"
+  answer="$(field "$f" delivery_answer)"
+  if [ -n "$answer" ]; then by=human beside=1
+  else answer="$(field "$f" answer)"; by="$(field "$f" answered_by)"; fi
+  row="$(live_row "$(field "$f" claude_session)")"; said="$(answer_said "$f" "$answer" "$by")"
+  # A human answer that releases queue items held on the ask is their restart (start_held), so it files
+  # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
+  # releases nothing and still files one. A judge's answer does not release them
+  # (agent-queue ask_pending), so its row stays the human's way to override.
+  [ "$by" != human ] || held="$(released_by "$id" "$answer")"
+  local went="its resume and the queue items held on it"
+  if [ -n "$row" ]; then
+    note="$(deliver_to_session "$f" "$said" "$row")"; went="typed into $(field "$f" session)"
+  elif [ -n "$beside" ] || { [ -z "$(field "$f" resume)" ] && [ -z "$held" ]; }; then
+    answer_row "$f" "$answer" "$by"; went="a board row: no live session, resume or held item takes it"
+  fi
+  [ -n "$beside" ] || start_resume "$id"
+  [ -z "$held" ] || start_held
+
+  # Ends the claim it made only: an answer given meanwhile queued a new delivery, and that one stays.
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    [ "$(field "$f" delivery)" = delivering ] && [ "$(field "$f" delivery_at)" = "$stamp" ] || exit 0
+    if [ -n "$note" ]; then
+      echo "agent-ask: $id not delivered: $note" >&2
+      write_fields "$f" delivery failed delivery_at "$(now_iso)" delivery_note "$(oneline "$note")"
+    else
+      write_fields "$f" delivery done delivery_at "$(now_iso)" delivery_note "$went"
+    fi
+  ) 9>"$lock"
+  queue_changed
+  return 0
+}
+
+# cmd_delivery_seen <id>: the human read a failed delivery's note on a board; it leaves the boards.
+cmd_delivery_seen() {
+  local f; f="$(find_ask "${1:-}")"
+  [ -n "$f" ] || { echo "usage: agent-ask delivery-seen <id>" >&2; return 2; }
+  [ "$(field "$f" delivery)" = failed ] || return 0
+  set_field "$f" delivery seen
+  queue_changed
 }
 
 # --- live answers ----------------------------------------------------------
@@ -1139,16 +1239,17 @@ in_dialog() { [ -n "$1" ] && [ "$(jq -r .status <<< "$1" 2>/dev/null)" = waiting
 
 # deliver_to_session <file> <answer> <live row>: an ask from a live attended session is answered
 # in that session too, so a board answer and a typed answer reach the same place. Skipped when
-# the session sits in a permission/question dialog that a paste would answer by accident.
+# the session sits in a permission/question dialog that a paste would answer by accident. Prints
+# why when the answer did not go in, which deliver_one records as the failed delivery's note.
 deliver_to_session() {
   local f="$1" answer="$2" row="$3" pane
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
-  in_dialog "$row" && { echo "agent-ask: session is in a dialog; answer not typed into it" >&2; return 0; }
+  in_dialog "$row" && { echo "its session is in a dialog, so the answer was not typed into it"; return 0; }
   # agent-panel send owns typing into a pane: it waits for the paste to be drawn before Enter
   # (Claude Code drops an Enter on the heels of a paste) and says when the Enter was not taken.
   pane="$(jq -r .pane <<< "$row")"
-  agent-panel send --pane "$pane" "Answer to ask $(field "$f" id): $answer" ||
-    echo "agent-ask: answer recorded, but it did not submit in $(field "$f" session); it is in that session's input box" >&2
+  agent-panel send --pane "$pane" "Answer to ask $(field "$f" id): $answer" >&2 ||
+    echo "it did not submit in $(field "$f" session); the answer is in that session's input box"
   return 0
 }
 
@@ -1859,6 +1960,10 @@ cmd_trace() {
        ev($a.answered_at; "answered"; "\($a.answer) by \(if ($a.answered_by // "") == "" then "human" else $a.answered_by end)"
                                       + (if ($a.answer_note // "") != "" then " (\($a.answer_note))" else "" end)),
        ev($a.judge_override_at; (if $a.judge_override == "kept" then "kept" else "overridden" end); ($a.judge_override // "") + (if ($a.judge_override_note // "") != "" then " (\($a.judge_override_note))" else "" end)),
+       ev($a.delivery_at; ({queued: "queued", delivering: "sending", done: "delivered", failed: "not sent", seen: "not sent"}[$a.delivery // ""] // "delivery");
+          ({queued: "waiting for agent-ask deliver", delivering: "agent-ask deliver is running it",
+            done: $a.delivery_note, failed: $a.delivery_note,
+            seen: "\($a.delivery_note // ""); the human read it"}[$a.delivery // ""] // $a.delivery)),
        ev($a.resumed_at; "resumed"; $a.resume // ""),
        ev($a.closed_at; "closed"; ($a.status // "") + (if ($a.closed_reason // "") != "" then ": \($a.closed_reason)" else "" end))
      ],
@@ -1931,6 +2036,8 @@ case "$sub" in
   precedents)   cmd_precedents "$@" ;;
   sweep)        cmd_sweep "$@" ;;
   assume-due)   cmd_assume_due ;;
+  deliver)      cmd_deliver "$@" ;;
+  delivery-seen) cmd_delivery_seen "$@" ;;
   trace)        cmd_trace "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;

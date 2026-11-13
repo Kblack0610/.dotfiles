@@ -7,6 +7,8 @@ Type=oneshot
 # minute this keeps is what `fleet-dispatch restore` reopens from.
 ExecStartPre=-%h/.local/bin/fleet-dispatch record
 ExecStartPre=-%h/.local/bin/agent-ask assume-due
+# The backstop for agent-ask-deliver.path: any answer still queued goes out here.
+ExecStartPre=-%h/.local/bin/agent-ask deliver --all
 # The runner pool's failing tests, for the tick's SHARED rows. Allowed to fail: a missed read is
 # retried next minute, and the local gate's ledger still counts.
 ExecStartPre=-%h/.local/bin/pool-test-failures sync
