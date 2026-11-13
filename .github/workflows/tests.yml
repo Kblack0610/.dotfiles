@@ -254,7 +254,8 @@ jobs:
   # passed: a job that failed, was cancelled or was skipped reads red here, so a dropped shard
   # or a job a bad `if:` skipped cannot merge. weights may fail (fast falls back to test
   # counts) and report only draws, so neither is a gate. tests/unit/ci_gate.bats keeps `needs`
-  # complete: a new job either joins it or is named there as not a gate.
+  # complete: a new job either joins it or is named there as not a gate. always(), not
+  # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
   gate:
     name: gate
     needs: [fast, ui, rust, skills, lint]

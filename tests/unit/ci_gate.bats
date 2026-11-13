@@ -13,7 +13,7 @@ setup() {
 }
 
 # jobs <wf>: every job id, one a line, sorted
-jobs() { sed -nE '/^jobs:$/,$ s/^  ([a-z][a-z0-9_-]*):$/\1/p' "$1" | sort; }
+jobs() { sed -nE '/^jobs:$/,$ s/^  ([A-Za-z0-9_][A-Za-z0-9_-]*):$/\1/p' "$1" | sort; }
 
 # gate_needs <wf>: the gate job's needs, one a line, sorted
 gate_needs() { sed -n '/^  gate:$/,/^  [a-z]/{s/^    needs: *\[\(.*\)\]$/\1/p}' "$1" | tr -d ' ' | tr ',' '\n' | sort; }
@@ -21,15 +21,28 @@ gate_needs() { sed -n '/^  gate:$/,/^  [a-z]/{s/^    needs: *\[\(.*\)\]$/\1/p}' 
 # missing <wf>: jobs that are neither in gate's needs nor named as not gates
 missing() { comm -23 <(jobs "$1") <({ gate_needs "$1"; tr ' ' '\n' <<<"$NOT_GATES"; } | sort); }
 
+# unknown <wf>: names in gate's needs that are not jobs (a renamed or deleted job)
+unknown() { comm -13 <(jobs "$1") <(gate_needs "$1"); }
+
 @test "the gate needs every job but the ones that are not gates" {
   [ -n "$(gate_needs "$WF")" ] || fail "no needs read from the gate job"
   run missing "$WF"
   assert_success
   assert_output ''
   # Negative control: a new job that nobody added to the gate is named.
-  sed '/^  gate:$/i\  newjob:\n    runs-on: ubuntu-24.04\n' "$WF" >"$BATS_TEST_TMPDIR/new.yml"
+  awk '/^  gate:$/ { print "  Newjob-2:"; print "    runs-on: ubuntu-24.04" } { print }' "$WF" >"$BATS_TEST_TMPDIR/new.yml"
   run missing "$BATS_TEST_TMPDIR/new.yml"
-  assert_output 'newjob'
+  assert_output 'Newjob-2'
+}
+
+@test "every job the gate needs exists" {
+  run unknown "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a renamed job leaves its old name in needs.
+  sed 's/^  lint:$/  lints:/' "$WF" >"$BATS_TEST_TMPDIR/renamed.yml"
+  run unknown "$BATS_TEST_TMPDIR/renamed.yml"
+  assert_output 'lint'
 }
 
 @test "the gate step is green only when every needed job succeeded" {
