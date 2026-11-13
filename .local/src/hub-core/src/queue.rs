@@ -560,10 +560,11 @@ impl Item {
     }
 
     /// The HOLD cell: what the item waits on. A queued item's hold (`held_on`); a waiting or
-    /// review item's `Wait`, an ask with its id (`ask PGpGsi`).
+    /// review item's `Wait`, an ask with its id (`ask PGpGsi`), never a `hold` line left over
+    /// from before it started.
     pub fn waits_for(&self) -> Option<String> {
-        if let Some(h) = self.held_on() {
-            return Some(h);
+        if self.state == State::Queued {
+            return self.held_on();
         }
         let w = self.waits_on()?;
         let id = self
@@ -2881,6 +2882,11 @@ mod tests {
         assert_eq!(
             cell(&item(State::Review, &|i| i.partial = Some("yes".into()))).as_deref(),
             Some("landing")
+        );
+        // NEGATIVE CONTROL: a hold line left from before it started does not hide its wait.
+        assert_eq!(
+            cell(&item(State::Review, &|i| i.hold = Some("ask:X".into()))).as_deref(),
+            Some("merge")
         );
         // A queued item's hold still says its hold.
         assert_eq!(

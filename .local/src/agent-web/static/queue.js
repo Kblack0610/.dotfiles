@@ -214,7 +214,7 @@ function qHoldCell(i) {
   // `after a b`: each slug it waits on opens that item.
   const m = /^after (.+)$/.exec(i.waits_for);
   const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.waits_for);
-  return `<td title="${esc(i.hold || "")}">${text}</td>`;
+  return `<td title="${esc(i.hold || i.waits_for)}">${text}</td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
