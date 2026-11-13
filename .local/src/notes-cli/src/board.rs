@@ -601,8 +601,11 @@ struct FeedRow {
     /// The `type(area):` prefix split out; `None` on a row without a well-formed one.
     r#type: Option<String>,
     area: Option<String>,
-    /// `#size/s|m|l`: s a small single PR, m one PR, l needs a plan.
+    /// `#size/s|m|l`: s a small single PR, m one PR, l needs a plan. The band of `points`
+    /// when the row has them ([`crate::epics::POINTS`]), else its own `#size/` tag.
     size: Option<String>,
+    /// `#pts/<n>`: the row's effort estimate on the points scale, `None` when unscored.
+    points: Option<u32>,
     text: String,
     tags: Vec<String>,
     marker: Option<String>,
@@ -706,9 +709,8 @@ fn feed_row(
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let requested = all.iter().any(|t| t == "requested");
-    let size = all
-        .iter()
-        .find_map(|t| t.strip_prefix("size/").map(str::to_string));
+    let points = crate::projects::points_of(line);
+    let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
     let tags = all
         .into_iter()
@@ -720,6 +722,7 @@ fn feed_row(
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
+                && !t.starts_with("pts/")
                 && t != "requested"
         })
         .collect();
@@ -744,6 +747,7 @@ fn feed_row(
         r#type: ty,
         area,
         size,
+        points,
         text: md::task_text(line),
         tags,
         marker: md::marker_of(line),
@@ -1394,6 +1398,7 @@ mod tests {
             "type",
             "area",
             "size",
+            "points",
             "text",
             "tags",
             "marker",

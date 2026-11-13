@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link]] [--watch]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size]] [--watch]
 #   agentctl-inbox-triage --answer <ask id>
 #
 # A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
@@ -22,7 +22,10 @@
 # #high rows. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
-# (`notes ptask edit --link`). A --dry-run keeps its answers, so the apply writes what it printed
+# (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
+# points by size_rule, one Sonnet call per batch (the inbox-size agent); the tag sets the row's
+# #size/ band too, and keeps no answers: its --dry-run shows the calls, the apply asks again.
+# The --link pass's --dry-run keeps its answers, so the apply writes what it printed
 # and a dry run stopped at its budget picks up where it stopped.
 # How it all fits: notes-cli README, "Intake".
 
@@ -32,6 +35,7 @@ NAME="${AGENTCTL_NAME:-inbox-triage}"
 TYPES=""   # the row types from `notes row types`, read once a pass
 : "${INBOX_TRIAGE_CMD:=agentctl-run --agent inbox-triage}"
 : "${INBOX_PRIORITY_CMD:=agentctl-run --agent inbox-priority}"  # --priority: a classify call, so Sonnet (its own conf)
+: "${INBOX_SIZE_CMD:=agentctl-run --agent inbox-size}"  # --size: a classify call, so Sonnet (its own conf)
 : "${INBOX_ASK_CMD:=agentctl-run --agent inbox-triage --role observe --max-turns 8}"  # a #ask answer: the observe role may look things up and write nothing
 : "${INBOX_TRIAGE_PASSES:=3}"
 : "${INBOX_TRIAGE_MAX:=40}"   # the most lines one model call carries (route and --backlog); budget_batch sizes each call under it
@@ -57,7 +61,7 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0
 OUT=""; ANSWER_ID=""; DEFERRED='[]'
 FLAG=""; RECORD=""; OUTBOX=""
@@ -728,6 +732,92 @@ priority_pass() {
   return "$rc"
 }
 
+# size_rule: what each point count means, the one rubric the --size pass scores by and a
+# session filing a row reads (notes-cli README, "points"). The scale and its s/m/l bands are
+# notes-cli's epics::POINTS; the minutes are measured agent work, queue start to close, over
+# 1,937 items closed ok 2026-10-20 to 11-12 (p25 10, median 24, p75 54, p90 114 min).
+# Provisional: re-read when a week of closes shows a count's median outside its band.
+size_rule() {
+  cat <<'RULE'
+Points measure the whole job: the agent's work, the tests it needs, CI and review rounds, and anything it waits on. They are not value or priority.
+1 (size s): a one-line or one-file change with no design and no new test, about 10 minutes.
+2 (size s): one small PR, the fix or change is already clear, about 10 to 25 minutes.
+3 (size m): one PR across a few files or with a test to write, about 25 to 60 minutes.
+5 (size m): one PR with real design, a cross-component change, or a live, device or on-hardware check, about 1 to 2 hours.
+8 (size l): needs a plan: two to four PRs, more than one repo, or a migration, about half a day.
+13 (size l): more than a day of work: it should be split into smaller rows.
+Go one step up when the row waits on a human answer, a device, a store console or a nightly run. A check row that only reads a state and reports is 1. When unsure between two, pick the higher.
+RULE
+}
+
+# One --size answer line -> n, pts, split by US.
+# shellcheck disable=SC2016 # jq source, not shell
+SIZE_JQ='fromjson? | select(type == "object" and (.n | type) == "number" and (.pts | type) == "number")
+  | [(.n | floor | tostring), (.pts | floor | tostring)] | join("\u001f")'
+
+# size_batch <project> <lane> <batch json>: one call gives each row its points, and `ptask tag`
+# writes each (`--add pts/<n>`, which also sets the row's #size/ to their band).
+size_batch() {
+  local p="$1" lane="$2" batch="$3" listing prompt n pts
+  local -a ids
+  mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)" + (if (.value.details | length) > 0 then "\n   " + (.value.details[:4] | join("\n   ")) else "" end)' <<<"$batch" | cut -c1-300)"
+  prompt="You estimate the effort of each row on one board of a person's project task list, in points. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
+
+$(size_rule)
+
+For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them; pts is one of 1, 2, 3, 5, 8, 13:
+{\"n\": 1, \"pts\": 3}
+
+## Rows (n. [id] text, then up to four detail lines)
+$listing"
+  ask "$prompt" "${#ids[@]}" "$p ($lane) size" "$INBOX_SIZE_CMD" sized || return
+  answered "$p ($lane) size" || return 1
+  local -a seen=()
+  while IFS=$'\x1f' read -r n pts; do
+    [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#ids[@]}" ] || continue
+    case "$pts" in 1|2|3|5|8|13) ;; *) continue ;; esac   # off the scale: the row is left
+    [ -z "${seen[n]:-}" ] || continue   # one answer per row
+    seen[n]=1
+    # The ingest record names the writer inbox-size, whoever ran the pass, as --priority does.
+    AGENTCTL_NAME=inbox-size AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' \
+      pt "$p" "$lane" tag --add "pts/$pts" "${ids[n - 1]}" && SCORED=$((SCORED + 1))
+  done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$OUT" | sed '1d;$d' | jq -rR "$SIZE_JQ")
+  for ((n = 1; n <= ${#ids[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
+  return 0
+}
+
+# The --size pass: every managed board's open top-level rows with no points (epics excepted: an
+# epic weighs what its leaves do; child steps too, as --link skips them), in batches, the boards
+# with the most such rows first. A row's old #size/, a hand-set one included, is in its text the
+# model reads, and the points replace it: the stamp from machine load was no estimate.
+size_pass() {
+  local board rows p lane total off size r rc=0
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
+  # shellcheck disable=SC2016 # jq source, not shell
+  rows="$(jq -c --arg only "$ONLY" '[.rows[]
+    | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
+             and .type != "epic" and .points == null and (.raw | test("^\\s") | not)
+             and ($only == "" or .project == $only))]' <<<"$board")"
+  while IFS=$'\t' read -r p lane; do
+    [ -n "$p" ] || continue
+    local mine; mine="$(jq -c --arg p "$p" --arg l "$lane" '[.[] | select(.project == $p and .lane == $l)] | sort_by(.line)' <<<"$rows")"
+    total="$(jq length <<<"$mine")"; off=0
+    agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
+    while [ "$off" -lt "$total" ]; do
+      size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+      size_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")"; r=$?
+      [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
+      [ "$r" = "$EX_BUDGET" ] && break 2
+      [ "$r" = 0 ] || rc=1
+      off=$((off + size))
+    done
+  done < <(jq -r 'group_by([.project, .lane]) | sort_by(-length) | .[] | [.[0].project, .[0].lane] | @tsv' <<<"$rows")
+  [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
+  return "$rc"
+}
+
 # One --link answer line -> n, system, of, epic, split by US.
 # shellcheck disable=SC2016 # jq source, not shell
 LINK_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
@@ -1144,6 +1234,7 @@ main() {
       --priority) PRIORITY=1; shift ;;
       --retag-high) RETAG_HIGH=1; shift ;;
       --link) LINK=1; shift ;;
+      --size) SIZE=1; shift ;;
       --watch) WATCH=1; shift ;;
       --answer) [ -n "${2:-}" ] || { say "--answer takes an ask id"; return 2; }; ANSWER_ID="$2"; shift 2 ;;
       -h|--help) sed -n '2,5p' "$0"; return 0 ;;
@@ -1154,6 +1245,19 @@ main() {
   [ "$PRIORITY" = 0 ] || [ "$BACKLOG" = 1 ] || { say "--priority goes with --backlog"; return 2; }
   [ "$RETAG_HIGH" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--retag-high goes with --priority"; return 2; }
   [ "$LINK" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ]; } || { say "--link goes with --backlog, without --priority"; return 2; }
+  [ "$SIZE" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ] && [ "$LINK" = 0 ]; } || { say "--size goes with --backlog, without --priority or --link"; return 2; }
+  if [ "$SIZE" = 1 ]; then
+    size_pass; rc=$?
+    summary="size: scored $SCORED, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+    say "$summary"
+    [ "$DRY" = 1 ] && return "$rc"
+    verdict=NOOP
+    [ "$SCORED" -gt 0 ] && verdict=WORKED
+    [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
+    [ "$rc" = 1 ] && verdict=FAILED
+    proof_report "$NAME" "$verdict" "$summary"
+    return "$rc"
+  fi
   if [ "$LINK" = 1 ]; then
     link_pass; rc=$?
     summary="link: feature $LINKED, standing $STANDING, new epics $NEW_EPICS, left $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
