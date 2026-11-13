@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """agent-web-shot: screenshot agent-web pages in a headless scratch Firefox over raw Marionette.
 
-usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height PX] --out DIR HASH...
+usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height PX] [--scheme light|dark] --out DIR HASH...
 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
-as DIR/<hash>-<width>.png, the whole page. The cookie signs the browser in: `agent_web=dev` for the
-dev instance in .local/src/agent-web/README.md ("look at a change"). A page is shot once its tab
-element has drawn and no visible element on the page is only a placeholder ("Loading.", "Reading the
-tabs.", "reading..."), watched by a MutationObserver.
+as DIR/<hash>-<width>[-<scheme>].png, the whole page, in the system color scheme or the --scheme
+given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
+.local/src/agent-web/README.md ("look at a change"). A page is shot once its tab element has drawn
+and no visible element on the page is only a placeholder ("Loading.", "Reading the tabs.",
+"reading..."), watched by a MutationObserver.
 
 The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
 started is stopped, by its process group. Never point this at the live Firefox profile.
@@ -99,6 +100,7 @@ def main():
     ap.add_argument("--cookie", default="agent_web=dev")
     ap.add_argument("--width", type=int, default=1400)
     ap.add_argument("--height", type=int, default=900)
+    ap.add_argument("--scheme", choices=["light", "dark"])
     ap.add_argument("--out", required=True)
     ap.add_argument("hashes", nargs="+")
     a = ap.parse_args()
@@ -110,8 +112,11 @@ def main():
     try:
         port = free_port()
         with open(f"{prof}/user.js", "w") as f:
-            for k, v in {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
-                         "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}.items():
+            prefs = {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
+                     "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}
+            if a.scheme:  # what prefers-color-scheme reports to the page: 0 dark, 1 light
+                prefs["layout.css.prefers-color-scheme.content-override"] = 0 if a.scheme == "dark" else 1
+            for k, v in prefs.items():
                 f.write(f'user_pref("{k}", {json.dumps(v)});\n')
         with open(f"{prof}/firefox.log", "w") as log:
             ff = subprocess.Popen(["firefox", "--headless", "--no-remote", "--marionette", "--profile", prof],
@@ -133,7 +138,7 @@ def main():
             except RuntimeError as e:
                 print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e}); shooting it as it is", file=sys.stderr)
             png = m.cmd("WebDriver:TakeScreenshot", full=True)["value"]
-            path = os.path.join(a.out, f"{h.replace('/', '_').replace('?', '_')}-{a.width}.png")
+            path = os.path.join(a.out, f"{h.replace('/', '_').replace('?', '_')}-{a.width}{'-' + a.scheme if a.scheme else ''}.png")
             with open(path, "wb") as f:
                 f.write(base64.b64decode(png))
             print(path)
