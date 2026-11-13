@@ -252,3 +252,12 @@ notes_vault() {
   run "$CB" apply game
   assert_failure; assert_output --partial "column 4 is ?): x"
 }
+
+@test "propose tags a store-worded plan with the store system, whose Applies cell is store" {
+  pr 31 300 Assets/Store/S.cs
+  printf '%s\n' '# Steam: the store page listing' '' '## Phases' '' '- [x] P1 capsule art (#31)' '- [ ] P2 trailer' >"$CREDIT_BACKFILL_PLANS/game/steam-page.md"
+  run "$CB" propose game
+  assert_success
+  run lines
+  assert_line --regexp '^epic\|steam-page\|[^|]*\|store\|'
+}
