@@ -4185,6 +4185,16 @@ cmd_run() {
     if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
       UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "pace target: $full"; return
     fi
+    # The project floor goes past a full fleet too, bounded by DISPATCH_PROJECT_FLOOR: from 11-12
+    # 18:08 hand-started game sessions held 58-78 live against a target of 25-50, and trader, with 15
+    # queued items and nothing running, started nothing for 27h (the 11-07 ask the floor exists for).
+    local idle_items; idle_items=$(idle_project_items "$(next_items)")
+    if [ -n "$idle_items" ] && PROJECT_PASS=1 project_floor_open && [ -z "$(PROJECT_PASS=1 gate)" ]; then
+      say "pace target: $full; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"
+      PROJECT_PASS=1 FLOOR_GATE="pace target: $full"
+      UNITS_FREE=$DISPATCH_PROJECT_FLOOR start_items "$idle_items" "$DISPATCH_PROJECT_FLOOR"
+      local prc=$?; PROJECT_PASS=0 FLOOR_GATE=''; return "$prc"
+    fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are

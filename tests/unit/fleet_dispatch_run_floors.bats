@@ -271,6 +271,32 @@ load 'fleet_dispatch/common'
   refute_output --partial 'started queue item a2'
 }
 
+@test "project floor: a fleet past its pace target still starts an idle project's item; a busy project's waits" {
+  # 2026-11-12 18:08 to 11-13 21:00: hand-started game sessions held 58-78 live against a target of
+  # 25-50, the pass returned NOOP before the project floor, and trader's 15 queued items waited 27h.
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6
+  fleet_state 8
+  agent-queue add --project game --slug busy "game work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  # Negative control first: no project floor, the full fleet starts nothing.
+  export DISPATCH_PROJECT_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  export DISPATCH_PROJECT_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'pace target: 8 live sessions, the away pace target is 6; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  refute_output --partial 'started queue item g2'
+  refute_output --partial 'started queue item a2'
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
   idle_held_machine
   export DISPATCH_PROJECT_FLOOR=1
