@@ -72,7 +72,8 @@ RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 # (the weekly drift sweep included) runs only tests/ui/. A runtime dependency missing here
 # therefore shows only in a local `tests/docker.sh` with no target, which runs every tier.
 
-# tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.8 with the patch in
+# tmux from source. Debian trixie ships 3.5a, the mac-mini 3.6a (stock, like every version but
+# 3.8); the author's machine runs 3.8 with the patch in
 # .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
 # Floating panes only exist from 3.7. Release tarballs ship a generated ./configure, so no
 # autogen; `git apply` keeps the source's timestamps from asking for one.
