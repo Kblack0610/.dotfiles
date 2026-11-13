@@ -623,6 +623,44 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = forms ]
 }
 
+@test "an rbw: tag holds an item until rbw lists that folder and name, and locked rbw holds it" {
+  # A fake rbw: unlocked unless rbw.locked exists, and list prints rbw.list. Never the real one.
+  printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\ncase "$1" in\n  unlocked) [ ! -e "%s/rbw.locked" ] ;;\n  list) cat "%s/rbw.list" ;;\n  *) exit 9 ;;\nesac\n' \
+    "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  printf 'trading\tkalshi-key\nother\tmanifold-key\n' > "$SANDBOX/rbw.list"
+  for t in "rbw:" "rbw:trading" "rbw:trading/" "rbw:/manifold-key"; do
+    run "$AQ" add --project game --slug nope --tags "$t" "x"
+    assert_failure; assert_output --partial "rbw:<folder>/<name>"
+  done
+  "$AQ" add --project game --slug deploy-key --tags "rbw:trading/manifold-key" "deploy the manifold key"
+  # Same name in another folder, and a prefix of a listed name, do not release it.
+  run "$AQ" next --json
+  assert_failure
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:trading/manifold-key (not in rbw yet)"
+  printf 'trading\tmanifold-key-old\n' >> "$SANDBOX/rbw.list"
+  run "$AQ" next --json
+  assert_failure
+  printf 'trading\tmanifold-key\n' >> "$SANDBOX/rbw.list"
+  : > "$SANDBOX/rbw.locked"
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:trading/manifold-key (rbw locked or missing)"
+  run env AGENT_QUEUE_RBW="$SANDBOX/no-such-rbw" "$AQ" next --json
+  assert_failure
+  rm "$SANDBOX/rbw.locked"
+  mv "$SANDBOX/rbw.list" "$SANDBOX/rbw.list.ok"   # list fails while unlocked
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:trading/manifold-key (rbw list failed)"
+  mv "$SANDBOX/rbw.list.ok" "$SANDBOX/rbw.list"
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = deploy-key ]
+  # Only the read-only verbs ran: never get, unlock or sync.
+  run grep -cvE '^rbw (unlocked|list --fields folder,name)$' "$SANDBOX/rbw.calls"
+  assert_output 0
+}
+
 @test "requeue --hold puts a started item back behind the resource, keeps its tags, and is not a model redo (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
