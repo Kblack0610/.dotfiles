@@ -680,7 +680,7 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
 test("a row carries its start place, hold, source and board row, and the head says what dispatch is doing", () => {
   const rows = [
     item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
-    item("q2", { priority: "low", hold: "after q1", held_on: "after q1", source: "human" }),
+    item("q2", { priority: "low", hold: "after q1", waits_for: "after q1", source: "human" }),
   ];
   const links = [{ row: "#board/apo-120" }, {}];
   load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
@@ -692,6 +692,8 @@ test("a row carries its start place, hold, source and board row, and the head sa
   // NEGATIVE CONTROL: a held item has no start place, and its hold links the item it waits on.
   assert.match(h, /<tr class="qr" data-slug="q2"><td class="n"><\/td>/);
   assert.match(h, /<td title="after q1">after <a class="tl" href="#queue\/q1">q1<\/a><\/td>/);
+  load({ ...data, items: [item("w1", { state: "waiting", waits_for: "ask OBAJTo" })], table: { ...table, links: [{}] } });
+  assert.match(draw(), /<td title="ask OBAJTo">ask OBAJTo<\/td>/, "a waiting row says its wait, and hovers it");
   assert.match(h, /<div class="cline qdispatch warn">Dispatch held: load 31 is over the pace\. It could start 0 of 1 runnable\.<\/div>/);
   load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
   assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);

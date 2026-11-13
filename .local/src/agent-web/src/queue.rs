@@ -173,7 +173,7 @@ fn render(
 
 /// A table row: its item (`item_view`) plus `start` (its place in the start order, ready items
 /// only), the state cell (`state_word`, `stuck` for amber, `state_why` for its hover) and the cells the row's own columns hold (`Row::val`, what a filter on them matches):
-/// `held_on`, `source` and `row_id`.
+/// `waits_for`, `source` and `row_id`.
 fn row_view(r: &QueueRow, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
     use hub_core::table::Row;
     let mut v = item_view(r.item, now);
@@ -187,7 +187,7 @@ fn row_view(r: &QueueRow, now: chrono::DateTime<chrono::Utc>) -> serde_json::Val
     if let Some(why) = r.state_why() {
         v["state_why"] = why.into();
     }
-    for (key, col) in [("held_on", "hold"), ("source", "from"), ("row_id", "row")] {
+    for (key, col) in [("waits_for", "hold"), ("source", "from"), ("row_id", "row")] {
         if let Some(t) = r.val(col).shown() {
             v[key] = t.into();
         }
