@@ -94,3 +94,24 @@ test("paths the server cannot watch still say so, below a drop", async () => {
   await land();
   assert.equal(pill.innerHTML, "live updates off, reload to refresh");
 });
+
+test("coalesce: a call while a read runs returns that run, its trailing refetch included", async () => {
+  const lands = [];
+  let n = 0;
+  const read = vm.runInContext("coalesce", ctx)(() => new Promise((r) => lands.push(() => { n++; r(); })));
+  const first = read(), second = read(), third = read();
+  assert.equal(second, first, "one run");
+  assert.equal(third, first);
+  let done = false;
+  second.then(() => { done = true; });
+  lands.shift()();
+  await settle();
+  assert.equal(done, false, "the trailing refetch has not landed");
+  assert.equal(lands.length, 1, "three calls, two reads");
+  lands.shift()();
+  await settle();
+  assert.equal(done, true);
+  assert.equal(n, 2);
+  // NEGATIVE CONTROL: a call after the run ends starts a new one.
+  assert.notEqual(read(), first);
+});
