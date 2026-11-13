@@ -650,6 +650,10 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run env AGENT_QUEUE_RBW="$SANDBOX/no-such-rbw" "$AQ" next --json
   assert_failure
   rm "$SANDBOX/rbw.locked"
+  mv "$SANDBOX/rbw.list" "$SANDBOX/rbw.list.ok"   # list fails while unlocked
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:trading/manifold-key (rbw list failed)"
+  mv "$SANDBOX/rbw.list.ok" "$SANDBOX/rbw.list"
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = deploy-key ]
   # Only the read-only verbs ran: never get, unlock or sync.

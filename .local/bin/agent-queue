@@ -87,6 +87,7 @@ AQ_PRESENCE="${AGENT_QUEUE_PRESENCE:-fleet-presence}"
 AQ_DESK_START_MIN=10
 # An `rbw:<folder>/<name>` item waits until this rbw lists that Bitwarden entry.
 AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
+AQ_RBW_TIMEOUT_S=5
 AQ_ASK="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-ask"
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
@@ -483,7 +484,9 @@ hold_for() {
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; }
         [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${5-}"
         [ -z "$HOLD" ] || return 0 ;;
-      rbw:?*/?*)
+      rbw:*)
+        # A tag edited past check_tags into the wrong shape holds rather than starting before its key.
+        [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || { HOLD="$tag (not rbw:<folder>/<name>, never releases)"; return; }
         memo "$tag" rbw_pending "${tag#rbw:}"
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; } ;;
     esac
@@ -573,12 +576,13 @@ hold_pending() {
 # rbw_pending <folder>/<name> -> why that Bitwarden entry still holds an item, or nothing once rbw
 # lists it (folder up to the first /). Read-only, so it never prompts and never reads a secret: only
 # `rbw unlocked` and `rbw list --fields folder,name`, never get, unlock or sync (Auth-State Safety);
-# rbw-agent's own sync brings a new entry in. Locked or missing rbw holds. The item that deploys a key
+# rbw-agent's own sync brings a new entry in. Locked, missing or slow rbw (AQ_RBW_TIMEOUT_S, so a hung
+# rbw-agent cannot stall a listing or a dispatch pass) holds, and the list says so. The item that deploys a key
 # is filed with the ask to add it: keys added to rbw for trader on 2026-11-12 sat undeployed until asked.
 rbw_pending() {
   local out
-  "$AQ_RBW" unlocked </dev/null >/dev/null 2>&1 || { echo "rbw locked or missing"; return; }
-  out="$("$AQ_RBW" list --fields folder,name </dev/null 2>/dev/null)" || { echo "rbw list failed"; return; }
+  timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" unlocked </dev/null >/dev/null 2>&1 || { echo "rbw locked or missing"; return; }
+  out="$(timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" list --fields folder,name </dev/null 2>/dev/null)" || { echo "rbw list failed"; return; }
   grep -qxF -- "${1%%/*}"$'\t'"${1#*/}" <<<"$out" || echo "not in rbw yet"
 }
 
@@ -1808,7 +1812,7 @@ check_tags() {
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
       desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
         die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
-      rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>, the entry's folder and name as rbw list shows them, not $tag" ;;
+      rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]+/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>: a top-level folder, then the entry name after the first /, no spaces in either, not $tag" ;;
     esac
   done
 }
