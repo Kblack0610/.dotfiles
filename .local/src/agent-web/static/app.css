@@ -28,7 +28,6 @@ html, body { height: 100%; }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
 .live-off { display: inline-flex; align-items: center; gap: 6px; }
-.live-off[hidden] { display: none; }
 .live-off .btn.sm { margin: 0; padding: 0 6px; }
 main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head) - env(safe-area-inset-top, 0px)); }
 .dot { flex: none; width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: var(--idle); }

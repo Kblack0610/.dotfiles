@@ -51,18 +51,23 @@ test("a dropped stream says offline since when with a Retry, and a reopen catche
   assert.ok(parts.conn.classList.on.has("live"));
   es.onerror();
   assert.equal(pill.hidden, false);
-  assert.match(pill.innerHTML, /^offline since \d\d:\d\d <button class="btn sm quiet" id="live-retry">Retry<\/button>$/);
+  assert.match(pill.innerHTML, /^offline since \d\d:\d\d <button class="btn sm" id="live-retry">Retry<\/button>$/);
   assert.match(pill.className, /warn/);
   assert.ok(!parts.conn.classList.on.has("live"));
   // A second error keeps the first drop's time.
   const was = pill.innerHTML;
   es.onerror();
   assert.equal(pill.innerHTML, was);
-  // Retry closes the stream and opens a new one.
+  // Retry closes the stream and opens a new one, and says so until the new one answers.
   pill.heard.click({ target: { id: "live-retry" } });
   assert.ok(es.closed);
-  const again = streams.at(-1);
+  assert.match(pill.innerHTML, /disabled>Retrying</);
+  let again = streams.at(-1);
   assert.notEqual(again, es);
+  again.onerror();
+  assert.equal(pill.innerHTML, was, "a retry that failed offers Retry again, the first drop's time kept");
+  pill.heard.click({ target: { id: "live-retry" } });
+  again = streams.at(-1);
   again.onopen();
   await settle();
   assert.equal(pill.innerHTML, "catching up", "until the sessions read lands");

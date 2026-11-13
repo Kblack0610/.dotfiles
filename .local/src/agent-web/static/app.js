@@ -577,7 +577,7 @@ for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 // The live line beside the dot, the worst of: the event stream is down (since when, and a Retry),
 // the page is catching up after a drop or a hidden spell, or the server could not watch some
 // paths (the user's inotify limit, usually; it retries). Nothing to say hides it.
-const conn = { open: false, down: 0, catching: false, off: [] };
+const conn = { open: false, down: 0, catching: false, retrying: false, off: [], html: "" };
 function showConn() {
   const off = conn.off, el = $("live-off");
   $("conn").classList.toggle("live", conn.open && !conn.down);
@@ -586,9 +586,11 @@ function showConn() {
   el.className = "cchip live-off" + (conn.down || (!conn.catching && off.length) ? " warn" : "");
   el.hidden = !conn.down && !conn.catching && !off.length;
   el.title = conn.down ? "" : off.join("\n");
-  el.innerHTML = conn.down ? `offline since ${clock(conn.down)} <button class="btn sm quiet" id="live-retry">Retry</button>`
+  const html = conn.down ? `offline since ${clock(conn.down)} <button class="btn sm" id="live-retry"${conn.retrying ? " disabled>Retrying" : ">Retry"}</button>`
     : conn.catching ? "catching up"
     : off.length ? "live updates off, reload to refresh" : "";
+  // Only a change redraws, so an event landing mid-click never swaps the Retry button out.
+  if (html !== conn.html) el.innerHTML = conn.html = html;
 }
 function showLive(ev) {
   conn.off = ev.off || [];
@@ -636,13 +638,13 @@ function connect() {
   es = new EventSource("/api/events");
   es.onopen = () => {
     const was = conn.down;
-    Object.assign(conn, { open: true, down: 0 });
+    Object.assign(conn, { open: true, down: 0, retrying: false });
     const read = refreshAgents();
     refreshAsks();
     if (st.sel) load();
     if (was) catchUp(read); else showConn();
   };
-  es.onerror = () => { conn.down = conn.down || Date.now(); showConn(); };
+  es.onerror = () => { Object.assign(conn, { down: conn.down || Date.now(), retrying: false }); showConn(); };
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.kind === "live") { showLive(ev); return; }
@@ -664,6 +666,11 @@ document.addEventListener("DOMContentLoaded", () => {
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query, r.page);
-  $("live-off").addEventListener("click", (e) => { if (e.target.id === "live-retry") connect(); });
+  $("live-off").addEventListener("click", (e) => {
+    if (e.target.id !== "live-retry") return;
+    conn.retrying = true;
+    showConn();
+    connect();
+  });
   connect();
 });

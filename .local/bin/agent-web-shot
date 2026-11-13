@@ -4,10 +4,11 @@
 usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height PX] [--scheme light|dark] --out DIR HASH...
 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
-as DIR/<hash>-<width>[-<scheme>].png, the whole page, in the system color scheme or the --scheme given. The cookie signs the browser in: `agent_web=dev` for the
-dev instance in .local/src/agent-web/README.md ("look at a change"). A page is shot once its tab
-element has drawn and no visible element on the page is only a placeholder ("Loading.", "Reading the
-tabs.", "reading..."), watched by a MutationObserver.
+as DIR/<hash>-<width>[-<scheme>].png, the whole page, in the system color scheme or the --scheme
+given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
+.local/src/agent-web/README.md ("look at a change"). A page is shot once its tab element has drawn
+and no visible element on the page is only a placeholder ("Loading.", "Reading the tabs.",
+"reading..."), watched by a MutationObserver.
 
 The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
 started is stopped, by its process group. Never point this at the live Firefox profile.
