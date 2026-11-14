@@ -774,9 +774,10 @@ struct AgentOut {
     /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<transcript::Question>,
-    /// When a `waiting` agent started waiting, unix seconds: its transcript's last write.
+    /// Its transcript's last write, unix seconds: when a `waiting` agent started waiting, and
+    /// what the page's new-output dot compares with when it was last opened (sessions.js).
     #[serde(skip_serializing_if = "Option::is_none")]
-    waiting_since: Option<u64>,
+    wrote: Option<u64>,
 }
 
 async fn collect() -> Vec<chooser::Agent> {
@@ -832,14 +833,13 @@ async fn agents() -> Json<Vec<AgentOut>> {
                     ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
                     _ => None,
                 },
-                waiting_since: match (a.status.as_str(), &a.jsonl) {
-                    ("waiting", Some(p)) => std::fs::metadata(p)
+                wrote: a.jsonl.as_ref().and_then(|p| {
+                    std::fs::metadata(p)
                         .and_then(|m| m.modified())
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs()),
-                    _ => None,
-                },
+                        .map(|d| d.as_secs())
+                }),
                 target: a.target,
                 short: a.short_target,
                 project: a.project,

@@ -24,7 +24,7 @@ for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "table.js", "actions.
 
 const now = () => Math.floor(Date.now() / 1000);
 const agent = (o) => ({ target: "lab:w-1", short: "w-1", session: "c1", project: "p", summary: "Wire the join", items: [], actions: [],
-  question: { kind: "tool", text: "Run `rm x`?" }, waiting_since: now() - 300, ...o });
+  question: { kind: "tool", text: "Run `rm x`?" }, wrote: now() - 300, ...o });
 const ask = (o) => ({ id: "a1", project: "p", kind: "question", question: "Ship it? CI is green.", title: "Ship it?", body: "CI is green.",
   options: ["yes", "no"], recommend: "no", session: "", agent: "shepherd", judge: "", created: now() - 3 * 3600, ...o });
 
