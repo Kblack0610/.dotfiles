@@ -352,7 +352,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             };
             let temp = match m.temp {
                 None => "-".into(),
-                Some(t) if t > 85.0 => cell(format!("{t:.0}C"), p.warn()),
+                Some(t) if t >= hub_core::host_now::HOT_C => cell(format!("{t:.0}C"), p.warn()),
                 Some(t) => format!("{t:.0}C").into(),
             };
             let power = m.power.as_ref().map_or("-".into(), |w| {

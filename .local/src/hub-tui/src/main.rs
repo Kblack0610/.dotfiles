@@ -756,10 +756,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     // The reds and the Alerts join are read off-thread in the live app; a printed page has no
     // next frame, so read them here or Alerts prints "reading".
     if matches!(tab, None | Some(Tab::Alerts)) {
-        let reds = hub_core::reds::read(&hub_core::session_actions::System);
-        let now = hub_core::jobs::now();
-        a.alerts = (a.infra.as_ref()).map(|i| hub_core::alerts::read(i, reds.clone(), now));
-        a.reds = Some(reds);
+        a.read_alerts_now();
         // Printed alone, any source Alerts could not read fails the run, as Prometheus does.
         failed |= tab.is_some() && a.alerts.as_ref().is_some_and(|x| !x.errors.is_empty());
         // `--tab 'alerts fixes'` prints that inner tab; with none named, every one prints.
@@ -772,6 +769,11 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.tab = Tab::Infra;
         a.infra_all = section.is_none();
         a.open_query(section.clone());
+        // `--tab 'infra machines/<host>'`: the live app reads a page off-thread, so it is read here.
+        if a.infra_page.is_some() {
+            a.read_infra_page_now();
+            failed |= !a.infra_page.as_ref().is_some_and(|p| p.read_whole());
+        }
     }
     // The live app reads Deliverables off-thread (about 10s); a printed page has no next frame,
     // so it waits for them here.
