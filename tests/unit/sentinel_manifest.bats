@@ -225,6 +225,40 @@ listprobe() {
   assert_success
 }
 
+@test "--strict finds the list read however the call ends" {
+  # $(...), a bare pipe, a ;, a query string, a path inside escaped quotes.
+  local c
+  for c in 'n=$(gh api orgs/O/actions/runners)' 'gh api orgs/O/actions/runners|jq .' \
+    'gh api orgs/O/actions/runners; true' 'gh api "repos/O/r/pulls?state=open" -q .[].number' \
+    "bash -c 'gh api \\\"repos/O/r/issues/5/comments\\\" -q .'"; do
+    listprobe "$c"
+    run "$SM" validate --strict "$M"
+    assert_failure
+    assert_output --partial 'no --paginate'
+  done
+}
+
+@test "--strict judges each gh api call on its own arguments" {
+  # A --paginate on a later call, or later in the line, does not cover an earlier one.
+  listprobe "gh api orgs/O/actions/runners -q .runners | jq .; gh api --paginate repos/O/r/pulls -q .[]"
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial 'orgs/O/actions/runners'
+}
+
+@test "--strict leaves writes and a .total_count read alone, but not a GET with fields" {
+  local c
+  for c in 'gh api --method POST repos/O/r/issues -f title=x' 'gh api repos/O/r/issues -f title=x' \
+    'gh api orgs/O/actions/runners -q .total_count'; do
+    listprobe "$c"
+    run "$SM" validate --strict "$M"
+    assert_success
+  done
+  listprobe 'gh api -X GET repos/O/r/pulls -f state=open -q .[].number'
+  run "$SM" validate --strict "$M"
+  assert_failure
+}
+
 @test "--strict still enforces the ordinary schema" {
   # It is additive, not a different validator. A manifest that is legible but broken is
   # still broken.
