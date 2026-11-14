@@ -3035,7 +3035,16 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running, background shell idle over 30m' ]
 
-  # negative controls: the shell is not a gate, the session has no shell open, or the red is real
+  # a gate red on an older commit is what the queued gate re-runs, so it still reads running
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$(git -C "$SANDBOX/wt" rev-parse HEAD~1)" 5)]"; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running, background shell idle over 30m' ]
+
+  # negative controls: a gate already red on the head, the shell is not a gate, the session has no
+  # shell open, or the red is real
+  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$(git -C "$SANDBOX/wt" rev-parse HEAD)" 5)]"; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
   PANEL_STATUS=shell PANEL_JOB=jobs panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   ledger feat/x '[]'; open_pr FAIL 77
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

@@ -713,12 +713,12 @@ branch_runs() {
 # a gate running on the head itself makes PENDING: that red is the gate line waiting on it (ar-82, #1692
 # read CI red mid-gate). A gate still running on an older commit leaves it red: the head has none.
 # <shell job> gate (the session's background shell is a gate: its open job, or live_wait) makes it PENDING
-# too: a ci-gate.sh queued for the landing slot has dispatched nothing yet, and Checks refuses the head
-# until it does (ar-2366: agent-15 #2546, agent-18 #2516 and agent-68 #2483, queued behind #2559 on
+# too, unless a gate already finished red on the head: a ci-gate.sh queued for the landing slot has
+# dispatched nothing yet, and Checks refuses the head until it does (ar-2366: agent-15 #2546, agent-18 #2516 and agent-68 #2483, queued behind #2559 on
 # 2026-11-13, each read STALLED CI red and was nudged).
 # The run list is branch_runs', and one the ledger cannot answer keeps <ci> and is named unreadable.
 gate_ci() {
-  local d="$1" br="$2" oid="$3" ci="$4" jobs="${5:--}" shell="${6:--}" runs wf st c sha seen="" pend=0 fail=0 pass=0 pendhead=0
+  local d="$1" br="$2" oid="$3" ci="$4" jobs="${5:--}" shell="${6:--}" runs wf st c sha seen="" pend=0 fail=0 pass=0 pendhead=0 failhead=0
   case "$ci" in
     PASS|NONE) ;;
     FAIL) [ "$jobs" != - ] && [ -n "$FLEET_GATE_LINE_STEPS" ] || { echo FAIL; return; } ;;
@@ -731,7 +731,7 @@ gate_ci() {
     seen+="$wf"$'\n'
     if [ "$st" != completed ]; then pend=1; [ "$sha" = "$oid" ] && pendhead=1
     elif [ "$c" = success ]; then pass=1
-    else fail=1; fi
+    else fail=1; [ "$sha" = "$oid" ] && failhead=1; fi
   done < <(jq -r --arg gates "$FLEET_GATE_WORKFLOWS" \
              'map(select(.event == "workflow_dispatch" and (.workflowName | test($gates))
                      and (.status != "completed"
@@ -740,7 +740,7 @@ gate_ci() {
                   | [.workflowPath, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
   if [ "$ci" = FAIL ]; then
-    if { [ "$pendhead" = 1 ] || [ "$shell" = gate ]; } && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
+    if { [ "$pendhead" = 1 ] || { [ "$shell" = gate ] && [ "$failhead" = 0 ]; }; } && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
   elif [ "$pend" = 1 ]; then echo PENDING
   elif [ "$fail" = 1 ]; then echo FAIL
   elif [ "$pass" = 1 ]; then echo PASS
