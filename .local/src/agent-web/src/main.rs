@@ -467,8 +467,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         targets.push((notes_state, flat));
     }
     // The nightly stage pass's stages.json, replaced by a rename: Projects' Ladder.
-    if let Some(dir) = hub_core::stages::Paths::from_env().stages.parent() {
-        std::fs::create_dir_all(dir)?;
+    if let Some(dir) = STAGES_FILE.parent().filter(|d| d.is_dir()) {
         targets.push((dir.to_path_buf(), flat));
     }
     // Sentinel's state files: a watch tripping, clearing or failing pushes the Alerts tab.
@@ -525,6 +524,8 @@ fn schedules_state() -> PathBuf {
 }
 /// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
 const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
+static STAGES_FILE: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| hub_core::stages::Paths::from_env().stages);
 /// fleet-dispatch wrote its Candidates snapshot: the Queue tab reads the counts afresh.
 const CANDIDATES_EVENT: &str = r#"{"kind":"candidates"}"#;
 /// A Sentinel watch changed state: the Alerts tab reads afresh.
@@ -550,7 +551,7 @@ fn classify(p: &Path) -> Option<String> {
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
     }
-    if p == hub_core::stages::Paths::from_env().stages {
+    if p == *STAGES_FILE {
         return Some(STAGES_EVENT.to_string());
     }
     // fleet-dispatch's ranked snapshot, replaced by a rename: the Queue tab's Candidates counts.

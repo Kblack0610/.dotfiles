@@ -113,6 +113,8 @@ impl Project {
         };
         self.met_says = match self.error {
             Some(_) => NOT_READ.into(),
+            // Nothing checkable on the next stage (every row human or not yet): no count to show.
+            None if self.total == 0 => String::new(),
             None => format!("{}/{}", self.met, self.total),
         };
         self.filed_says = format!("{}/{}", self.filed_open, self.filed_closed);
@@ -330,9 +332,14 @@ struct Reqs {
     requirements: Vec<Requirement>,
 }
 
+fn one() -> i64 {
+    1
+}
+
 #[derive(Deserialize)]
 struct KindConf {
-    #[serde(default)]
+    /// fleet-dispatch reads a missing rank as 1 (`.rank // 1`).
+    #[serde(default = "one")]
     rank: i64,
     #[serde(default)]
     enabled: bool,
@@ -583,6 +590,13 @@ mod tests {
             (NOT_READ, NOT_READ)
         );
         assert_eq!(l.projects[0].val("failing"), Val::None);
+        // Nothing checkable on the next stage is no count, never a met `0/0`.
+        let bare = Project {
+            name: "bare".into(),
+            ..Default::default()
+        }
+        .worded(&[]);
+        assert_eq!((bare.state, bare.met_says.as_str()), (MET, ""));
         assert_eq!(l.failing, 2);
         assert_eq!(
             l.filer_says,
@@ -681,13 +695,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hub-stages-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("kinds.json");
-        std::fs::write(&f, r#"{"feat":{"rank":1,"enabled":true},"fix":{"rank":0,"enabled":true},"legal":{"rank":1,"enabled":false},"chore":{"rank":1,"enabled":true}}"#).unwrap();
+        std::fs::write(&f, r#"{"feat":{"rank":1,"enabled":true},"fix":{"rank":0,"enabled":true},"legal":{"rank":1,"enabled":false},"chore":{"rank":1,"enabled":true},"docs":{"enabled":true}}"#).unwrap();
         let got = kinds(&f);
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(
             got.unwrap(),
             (
-                vec!["fix".into(), "chore".into(), "feat".into()],
+                // docs has no rank: fleet-dispatch reads it as 1, so it sorts among the 1s.
+                vec!["fix".into(), "chore".into(), "docs".into(), "feat".into()],
                 vec!["legal".into()]
             )
         );

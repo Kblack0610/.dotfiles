@@ -747,6 +747,19 @@ EOF2
   assert_output '[["app","store"],"not-yet",["docs-write"]]'
 }
 
+@test "--requirements keeps an empty cell in its column" {
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| beta |  | A row whose Applies cell is empty | `true` |
+EOF2
+  run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .requirement, .check]"' "$CHECK"
+  assert_success
+  # NEGATIVE CONTROL: read on tabs, the empty cell collapsed and the requirement became Applies.
+  assert_output '[[],"predicate","A row whose Applies cell is empty","`true`"]'
+}
+
 @test "--requirements takes no project, and a doc with no Requirements rows exits 2" {
   run "$CHECK" shooter --requirements
   assert_failure 2

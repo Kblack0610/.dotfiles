@@ -86,13 +86,14 @@ kind_of() {
 requirements() {
   local stage app req check skills s out=""
   local dir="${SKILLS_DIR:-$HOME/.claude/skills}"
-  while IFS=$'\t' read -r stage app req check _; do
+  # The unit separator, not tab: tab is IFS whitespace, so an empty cell would shift the rest.
+  while IFS=$'\037' read -r stage app req check _; do
     skills=""
     while IFS= read -r s; do
       [ -n "$s" ] && [ -f "$dir/$s/SKILL.md" ] && case " $skills " in *" $s "*) ;; *) skills="${skills:+$skills }$s" ;; esac
     done < <(grep -o '`[a-z][a-z0-9-]*`' <<<"$req" | tr -d '`')
     out+="$stage"$'\t'"$app"$'\t'"$(kind_of "$check")"$'\t'"$skills"$'\t'"$req"$'\t'"$check"$'\n'
-  done < <(rows "$STAGES_DOC" Requirements)
+  done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
   [ -n "$out" ] || { echo "project-stage-check: no Requirements rows in $STAGES_DOC" >&2; exit 2; }
   if [ -n "$JSON" ]; then
     printf '%s' "$out" | jq -R -s --arg from "$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)" '

@@ -12,7 +12,7 @@ const lShown = () => st.tab === "projects" && !pst.open && pTab() === "ladder";
 
 // The three lines under the head, each in its level's color, and the doc the tables read.
 const lLine = (name, says, level, href) =>
-  `<div class="cline${level === "bad" || level === "warn" ? " " + level : ""}"><b>${name}</b> ` +
+  `<div class="cline vital${level === "bad" || level === "warn" ? " " + level : ""}"><b>${name}</b> ` +
   (href ? `<a href="${esc(href)}">${esc(says)}</a>` : esc(says)) + "</div>";
 
 const ladst = tblTab({
@@ -20,8 +20,8 @@ const ladst = tblTab({
   shown: lShown, wait: "Reading the nightly stage pass...",
   got: (t) => pCountSet("ladder", t.data?.failing),
   head: (t) => secHead("stages", "Projects by stage", tblCount(t.data.table), t.data.failing ? "bad" : null) +
-    `<div class="vital">${lLine("Gate", t.data.gate_says, t.data.gate_level)}${lLine("Filer", t.data.filer_says, t.data.filer_level, t.data.filer_href)}` +
-    `${lLine("Kinds", t.data.kinds_says, t.data.kinds_level)}<div class="cline"><b>Doc</b> <code>${esc(t.data.doc)}</code></div></div>`,
+    `<div>${lLine("Gate", t.data.gate_says, t.data.gate_level)}${lLine("Filer", t.data.filer_says, t.data.filer_level, t.data.filer_href)}` +
+    `${lLine("Kinds", t.data.kinds_says, t.data.kinds_level)}<div class="cline vital"><b>Doc</b> <code>${esc(t.data.doc)}</code></div></div>`,
   body: (t) => lBody(t.data),
 });
 

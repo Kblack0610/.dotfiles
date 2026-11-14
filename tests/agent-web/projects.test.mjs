@@ -570,7 +570,7 @@ const ladder = (o = {}) => ({
     { name: "odd", profile: "personal", type: null, stage: "beta", next: "prod", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "0/0" },
   ],
   says: "", gate_says: "report only until 2026-11-19 (in 6 days)", gate_level: "warn",
-  filer_says: "nightly, last 04:30 today: 2 filed", filer_level: "", kinds_says: "on fix feat; off legal", kinds_level: "",
+  filer_says: "nightly, last 04:30 today: 2 filed", filer_level: "bad", kinds_says: "on fix feat; off legal", kinds_level: "",
   failing: 2, doc: "~/.local/src/docs/stages.md", filer_href: "#schedules?q=name:=project-index",
   table: ladTable(["project", "type", "stage", "next", "met", "failing", "filed"], 2, [{ name: "all", n: 2 }, { name: "failing", n: 1 }]),
   ...o,
@@ -590,8 +590,8 @@ const drawLadder = async (l) => {
 test("Ladder: the gate, filer and kinds lines, projects failing in red, a check that could not run, the requirements", async () => {
   const { stages, reqs: r } = await drawLadder(ladder());
   assert.match(stages, /<h2 class="sec bad" id="sec-stages">Projects by stage <span class="n">2<\/span><\/h2>/, "a failing project reddens the head");
-  assert.match(stages, /<div class="cline warn"><b>Gate<\/b> report only until 2026-11-19 \(in 6 days\)<\/div>/);
-  assert.match(stages, /<b>Filer<\/b> <a href="#schedules\?q=name:=project-index">nightly, last 04:30 today: 2 filed<\/a>/);
+  assert.match(stages, /<div class="cline vital warn"><b>Gate<\/b> report only until 2026-11-19 \(in 6 days\)<\/div>/);
+  assert.match(stages, /<div class="cline vital bad"><b>Filer<\/b> <a href="#schedules\?q=name:=project-index">nightly, last 04:30 today: 2 filed<\/a>/);
   assert.match(stages, /<b>Kinds<\/b> on fix feat; off legal/);
   assert.match(stages, /<code>~\/.local\/src\/docs\/stages.md<\/code>/);
   assert.match(stages, /data-open="bnb\/busy" data-inner="stage">.*<td class="n bad"[^>]*>2 <span class="muted">4 todo<\/span><\/td>/s, "failing is red, not-yet rows are a TODO");
