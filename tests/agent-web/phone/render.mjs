@@ -16,6 +16,7 @@
 // The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
 // a tap opens every group and tab, Escape closes it; at a desktop width the sidebar shows.
 // --no-kit answers kb-shell.js with a 404 and fails unless the nav check reports no menu button.
+// The cards check: Home at phone width shows every card, two across, inside the first screen.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -326,6 +327,35 @@ async function navCheck(browser, page0) {
   return errors;
 }
 
+// Home's cards at phone width: every card shown (none inside a closed fold), two across, and the
+// whole grid inside the first screen, so a phone opens on them (dashboards.md, the Home row).
+async function cardsCheck(browser, page0) {
+  const errors = [];
+  const { context, page, seen } = await openPage(browser, page0, VIEWPORT, true);
+  try {
+    await page.goto(`${ORIGIN}/#home`, { waitUntil: "load" });
+    await page.waitForLoadState("networkidle");
+    await page.waitForSelector("#home .kcard", { state: "attached", timeout: WAIT_MS });
+    await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
+    const c = await page.evaluate(() => {
+      const all = [...document.querySelectorAll("#home .kcard")];
+      const box = (e) => e.getBoundingClientRect();
+      const shown = all.filter((e) => box(e).height > 0 && !e.closest("details:not([open])"));
+      const tops = new Set(shown.map((e) => Math.round(box(e).top + window.scrollY)));
+      return { all: all.length, shown: shown.length, rows: tops.size, bottom: shown.length ? Math.round(Math.max(...shown.map((e) => box(e).bottom + window.scrollY))) : null };
+    });
+    if (c.shown < c.all || !c.all) errors.push(`${c.shown} of ${c.all} cards shown`);
+    if (c.shown && c.rows > Math.ceil(c.shown / 2)) errors.push(`${c.shown} cards take ${c.rows} rows, not two across`);
+    if (c.bottom > VIEWPORT.height) errors.push(`the cards end at ${c.bottom}px, past the first screen (${VIEWPORT.height}px)`);
+  } catch (e) {
+    errors.push(e.message.split("\n")[0]);
+  }
+  await page.screenshot({ path: join(out, "home-cards.png") }).catch((e) => errors.push(`screenshot: ${e.message}`));
+  errors.push(...seen.errors, ...seen.drift);
+  await context.close();
+  return errors;
+}
+
 function print(results) {
   const cols = ["tab", "pageOverflowX", "firstRowTop", "tableOverflowX", "leadVisible", "leadMethod"];
   const cells = [cols, ...results.map((r) => cols.map((c) => String(r[c])))];
@@ -345,11 +375,13 @@ async function main() {
   const results = [];
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
   const navErrors = control || wide ? [] : await navCheck(browser, page);
+  const cardErrors = control || wide || noKit ? [] : await cardsCheck(browser, page);
   if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   const heights = [];
   if (!noKit) for (const spec of TALL) heights.push(await heightOf(browser, spec, page));
   await browser.close();
   for (const e of navErrors) console.log(`NAV ${e}`);
+  for (const e of cardErrors) console.log(`CARDS ${e}`);
   if (noKit) {
     if (!navErrors.some((e) => e.includes("no menu button"))) { console.log("FAIL: --no-kit control: the nav check did not report the missing menu button"); process.exit(1); }
     console.log("no-kit control ok: the nav check reported the missing menu button");
@@ -358,6 +390,8 @@ async function main() {
   const fail = [];
   if (navErrors.length) fail.push(`nav check, ${navErrors.length} error(s)`);
   else if (!control && !wide) console.log("nav ok: phone menu opens and closes, wide sidebar shows");
+  if (cardErrors.length) fail.push(`Home cards check, ${cardErrors.length} error(s)`);
+  else if (!control && !wide) console.log("cards ok: Home's cards show two across inside the first screen");
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);
