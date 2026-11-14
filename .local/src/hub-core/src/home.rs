@@ -546,7 +546,7 @@ fn item_row(i: &Item) -> Option<&str> {
 }
 
 /// Unix seconds at the local start of a `YYYY-MM-DD` day, a sheet row's `since`.
-fn day_start(day: &str) -> Option<i64> {
+pub(crate) fn day_start(day: &str) -> Option<i64> {
     use chrono::TimeZone;
     let d = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
     chrono::Local

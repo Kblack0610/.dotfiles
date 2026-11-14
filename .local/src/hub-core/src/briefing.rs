@@ -147,6 +147,9 @@ pub struct Inputs {
     /// What the app stores and Steam made yesterday (`store-sales`); None when it could not run, or for
     /// a caller that renders no Money section.
     pub sales: Option<Vec<crate::money::Source>>,
+    /// What the trader's paper accounts made yesterday (`money::trader`); None for a caller that
+    /// renders no Money section.
+    pub trader: Option<Vec<crate::money::Source>>,
     pub errors: Vec<String>,
 }
 
@@ -1021,8 +1024,8 @@ fn overnight(i: &Inputs) -> Vec<String> {
     out
 }
 
-/// Money: what yesterday cost, then one line per store of what it made. A store that could not
-/// be read says so, never $0; the trader has no reader yet.
+/// Money: what yesterday cost, then one line per store and trader account of what it made. A
+/// source that could not be read says so, never $0.
 fn money_lines(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match yesterday_and_avg(i, spent) {
@@ -1043,7 +1046,14 @@ fn money_lines(i: &Inputs) -> Vec<String> {
         ),
         None => out.push("Stores: not read, store-sales could not run.".into()),
     }
-    out.push("Trader: not read yet, no reader is connected.".into());
+    match &i.trader {
+        Some(sources) => out.extend(
+            sources
+                .iter()
+                .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
+        ),
+        None => out.push("Trader: not read, its reader did not run.".into()),
+    }
     out
 }
 
@@ -1435,11 +1445,22 @@ fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
         .unwrap_or_else(|| home.join(d))
 }
 
+/// Could not read lines for the money sources that were not read.
+fn unread(sources: &[crate::money::Source]) -> impl Iterator<Item = String> + '_ {
+    sources
+        .iter()
+        .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name)))
+}
+
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
     // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
     // beside the other reads so their network waits overlap.
     let day = date_before(now, 1);
+    let trader = {
+        let day = day.clone();
+        std::thread::spawn(move || crate::money::trader_from_prom(&day))
+    };
     let sales =
         std::thread::spawn(move || crate::money::apps(&crate::session_actions::System, &day));
     let mut i = gather_from(since, now, || {
@@ -1458,14 +1479,17 @@ pub fn gather(since: i64, now: i64) -> Inputs {
         .unwrap_or_else(|_| Err("store-sales: panicked".into()))
     {
         Ok(sources) => {
-            i.errors.extend(
-                sources
-                    .iter()
-                    .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name))),
-            );
+            i.errors.extend(unread(&sources));
             i.sales = Some(sources);
         }
         Err(e) => i.errors.push(e),
+    }
+    match trader.join() {
+        Ok(sources) => {
+            i.errors.extend(unread(&sources));
+            i.trader = Some(sources);
+        }
+        Err(_) => i.errors.push("trader: panicked".into()),
     }
     i
 }
@@ -1582,6 +1606,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
             .ok()
             .filter(|s| !s.trim().is_empty()),
         sales: None,
+        trader: None,
         errors,
         home,
     }
@@ -2100,8 +2125,32 @@ mod tests {
             "Google Play: not read, no rbw entry store_sales_play."
         );
         assert_eq!(m[3], "Steam: not read, no rbw entry store_sales_steam.");
-        assert_eq!(m[4], "Trader: not read yet, no reader is connected.");
+        assert_eq!(m[4], "Trader: not read, its reader did not run.");
         assert_eq!(m.len(), 5, "{m:?}");
+        i.trader = Some(vec![
+            Source {
+                name: "Alpaca (paper)".into(),
+                basis: crate::money::PNL.into(),
+                made: Some(vec![Amount {
+                    currency: "USD".into(),
+                    amount: 12.5,
+                }]),
+                ..Default::default()
+            },
+            Source {
+                name: "Kalshi paper league".into(),
+                basis: crate::money::PNL.into(),
+                error: Some("no reading at 2026-11-13 00:00".into()),
+                ..Default::default()
+            },
+        ]);
+        let m = build(&i).money;
+        assert_eq!(m[4], "Alpaca (paper): made $12.50 yesterday.");
+        assert_eq!(
+            m[5],
+            "Kalshi paper league: not read, no reading at 2026-11-13 00:00."
+        );
+        assert_eq!(m.len(), 6, "{m:?}");
     }
 
     fn release(project: &str, channel: &str, last: Option<(&str, &str, i64)>) -> Release {
