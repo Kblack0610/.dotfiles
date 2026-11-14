@@ -251,6 +251,55 @@ load 'fleet_dispatch/common'
   assert_output ''
 }
 
+# 2026-11-14: codex sat 18% used at 71% of its week (codex-underuse red, ar-2432, ar-2433) because the
+# pace target counts every harness (26 of 25) and only a hand start passed it.
+@test "source floor: a fleet past its pace target starts work on a source whose week is going unused; a source that is not under-used starts nothing" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  # Negative control: codex is on pace for its week, so the full fleet starts nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  under_used codex
+  # The floor off: under-used, the same full fleet still starts nothing.
+  DISPATCH_SOURCE_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_equal "$(outcome)" WORKED
+  # One start a pass: the next item waits for the next pass.
+  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "source floor: past its pace target, a source with no room and a tier-3 item still start nothing" {
+  route_ready
+  acct main:ok
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  under_used codex
+  srcs codex:reserve:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  # Room, but the only item is tier 3: past the unattended ceiling, as a routed start.
+  srcs codex:ok:5
+  agent-queue move fix-menu done --status ok >/dev/null
+  agent-queue add --project game --slug ci-first "ci: the runner retries a dead batch" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  [ -n "$(qitem queued ci-first)" ] || fail "a tier-3 item left the queue on the source floor"
+}
+
 @test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
   idle_held_machine
   agent-queue add --project game --slug busy "game work" >/dev/null

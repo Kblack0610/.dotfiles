@@ -37,6 +37,10 @@ acct() {
   [ -e "$NOTES_FIXTURE/src.$3" ] && { cat "$NOTES_FIXTURE/src.$3"; exit 1; }
   echo "$3: room"; exit 0
 fi
+if [ "$1 ${2:-}" = "check underuse" ]; then
+  [ -e "$NOTES_FIXTURE/under.$3" ] || { echo "no source under-used near its reset (1 sources)"; exit 0; }
+  cat "$NOTES_FIXTURE/under.$3"; exit 1
+fi
 [ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 f="$NOTES_FIXTURE/acct.json"; [ ! -e "$NOTES_FIXTURE/acct.$n.json" ] || f="$NOTES_FIXTURE/acct.$n.json"
@@ -58,6 +62,9 @@ srcs() {
   done
   printf '%s\n' "$rows" > "$NOTES_FIXTURE/sources.json"
 }
+
+# under_used <source> -> claude-acct check underuse names it: its week is going unused near the reset.
+under_used() { echo "under-used near its reset: $1 18% used, 72% of its week gone, resets in 46h" > "$NOTES_FIXTURE/under.$1"; }
 
 # cpu <us> <sy> <ni> <id> -> each real idle sample window adds these jiffies to /proc/stat, and the
 # last sample is gone, so the next gate reads (ni + id) of the four as free. sleep is the window.
