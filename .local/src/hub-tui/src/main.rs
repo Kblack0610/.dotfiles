@@ -22,6 +22,7 @@ mod infrapage;
 mod infratables;
 mod innertabs;
 mod jobs;
+mod laddertab;
 mod logtab;
 mod machinetab;
 mod outboxtab;
@@ -634,6 +635,14 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         // its rows, what Enter shows: the Prefix+p preview.
         a.open_project(section);
         a.read_proj_page_now(&sys);
+        // `--tab 'projects ladder'` reads the Ladder here, the worker's read inline.
+        if a.ladder_shown() {
+            a.ladder = Some(hub_core::stages::read(
+                &sys,
+                &hub_core::stages::Paths::from_env(),
+                chrono::Local::now(),
+            ));
+        }
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -841,6 +850,7 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     let probe = app.paths.clone();
     let boards = app.files.clone();
     let queue = app.queue_dir.clone();
+    let stages = hub_core::stages::Paths::from_env().stages;
     let watcher = notify::recommended_watcher(move |r: notify::Result<notify::Event>| {
         let Ok(e) = r else { return };
         if !app::is_write(&e.kind) {
@@ -875,6 +885,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
         }
         if e.paths.iter().any(|p| boards.is_watch_file(p)) {
             let _ = files.send(Msg::WatchFiles);
+        }
+        if e.paths.contains(&stages) {
+            let _ = files.send(Msg::StagesFile);
         }
     });
     // Kept alive until hub exits; dropping it ends the watch.

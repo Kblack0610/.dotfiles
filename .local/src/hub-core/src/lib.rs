@@ -63,6 +63,7 @@ pub mod session_table;
 pub mod sheet_view;
 pub mod signals;
 pub mod spend_history;
+pub mod stages;
 pub mod table;
 pub mod tasks;
 pub mod text;
