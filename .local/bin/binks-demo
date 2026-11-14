@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# binks-demo: publish a single-file html page or game as a public binks demo link, and manage yours.
+#
+#   binks-demo check <file.html> [--shot <png>]   run it in a scratch Firefox under the demo sandbox
+#   binks-demo publish <file.html>                 publish it; prints the link
+#   binks-demo list                                your live demos: id, expires, link, title
+#   binks-demo delete <id>                         take one down
+#
+# The API is binks-api /api/demos at BINKS_API_URL (default https://binks.chat). The token is
+# BINKS_DEMO_TOKEN, or else the BINKS_DEMO_TOKEN key of the sops file that BINKS_DEMO_SECRET names
+# in ~/.config/binks-demo/env (BINKS_DEMO_ENV), decrypted at use. The quick-demo skill is the
+# procedure, the setup and the troubleshooting table.
+set -euo pipefail
+
+API="${BINKS_API_URL:-https://binks.chat}"
+ENV_FILE="${BINKS_DEMO_ENV:-$HOME/.config/binks-demo/env}"
+CONNECT_TIMEOUT=10 # seconds
+TIMEOUT=60         # seconds per request; a 1 MB upload fits well inside it
+# No retries: a 429 from /api/demos is a cap (per day or live demos), not a pace, and a POST
+# that may have landed must not publish twice.
+
+die() { echo "binks-demo: $*" >&2; exit "${2:-1}"; }
+usage() { sed -n 's/^#   \(binks-demo \)/\1/p' "$0" >&2; exit 2; }
+
+token() {
+  local t="${BINKS_DEMO_TOKEN:-}" from=BINKS_DEMO_TOKEN
+  if [ -z "$t" ]; then
+    [ -r "$ENV_FILE" ] || die "no token: set BINKS_DEMO_TOKEN, or BINKS_DEMO_SECRET in $ENV_FILE (quick-demo skill, Setup)"
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+    [ -n "${BINKS_DEMO_SECRET:-}" ] || die "$ENV_FILE sets no BINKS_DEMO_SECRET"
+    from="$BINKS_DEMO_SECRET (key BINKS_DEMO_TOKEN)"
+    t="$(sops -d --extract '["BINKS_DEMO_TOKEN"]' "$BINKS_DEMO_SECRET" 2>/dev/null)" || t=''
+  fi
+  # Only a value shaped like one token is sent: a partial read never reaches the API, and nothing
+  # in it can break out of the curl config line it rides in.
+  [[ "$t" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || die "no token could be read from $from"
+  printf '%s' "$t"
+}
+
+# call <method> <path> [curl args...]: prints the status code; the body is in $work/body.
+# The token goes to curl on stdin as config, never in argv where ps shows it.
+call() {
+  local method=$1 path=$2 tok
+  shift 2
+  tok="$(token)" || exit 1
+  printf 'header = "Authorization: Bearer %s"\n' "$tok" |
+    curl -sS -K - --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" -X "$method" \
+      -o "$work/body" -w '%{http_code}' "$@" "$API$path" ||
+    die "could not reach $API ($method $path)"
+}
+
+# refused <code> <what>: the API's own message, named by status.
+refused() {
+  local msg
+  msg="$(jq -r '.error // .message // empty' "$work/body" 2>/dev/null)" || msg=''
+  [ -n "$msg" ] || msg="$(head -c 200 "$work/body" 2>/dev/null)"
+  case "$1" in
+    401) die "the token was refused (401): ${msg:-unauthorized}" ;;
+    404) die "$2: not found (404): ${msg:-is publishing on at $API?}" ;;
+    *) die "$2 failed ($1): $msg" ;;
+  esac
+}
+
+page() { # <file>: the file publish and check take, or a usage error
+  [ -n "${1:-}" ] || usage
+  [ -f "$1" ] && [ -r "$1" ] || die "no readable file $1" 2
+  [ -s "$1" ] || die "$1 is empty" 2
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+if [ "$cmd" = check ]; then
+  page "${1:-}"
+  exec python3 -I "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/binks-demo-check.py" "$@"
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+case "$cmd" in
+publish)
+  [ $# -eq 1 ] || usage
+  page "$1"
+  code="$(call POST /api/demos -H 'Content-Type: text/html; charset=utf-8' --data-binary "@$1")"
+  [ "$code" = 201 ] || refused "$code" "publish"
+  jq -er '.url | strings' "$work/body" || die "publish got a 201 with no link in it: $(head -c 200 "$work/body")"
+  ;;
+list)
+  [ $# -eq 0 ] || usage
+  code="$(call GET /api/demos)"
+  [ "$code" = 200 ] || refused "$code" "list"
+  jq -r '.demos[] | [.id, .expires_at, .url, .title] | @tsv' "$work/body"
+  ;;
+delete)
+  [ $# -eq 1 ] || usage
+  [[ "$1" =~ ^[0-9A-Za-z]{10}$ ]] || die "a demo id is 10 letters and digits, not '$1'" 2
+  code="$(call DELETE "/api/demos/$1")"
+  [ "$code" = 204 ] || refused "$code" "delete $1"
+  echo "deleted $1"
+  ;;
+-h | --help | '') usage ;;
+*) die "unknown command '$cmd'" 2 ;;
+esac

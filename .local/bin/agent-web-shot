@@ -10,20 +10,16 @@ given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
 and no visible element on the page is only a placeholder ("Loading.", "Reading the tabs.",
 "reading..."), watched by a MutationObserver.
 
-The profile is a new one under ~/.cache/agent-web-shot/, removed on exit, and only the Firefox this
-started is stopped, by its process group. Never point this at the live Firefox profile.
+The browser is a scratch one from ../lib/marionette.py: a new profile under ~/.cache/agent-web-shot/,
+removed on exit, and only the Firefox it started is stopped.
 """
 import argparse
 import base64
-import json
 import os
-import shutil
-import signal
-import socket
-import subprocess
 import sys
-import tempfile
-import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+from marionette import scratch_firefox  # noqa: E402
 
 # The page has drawn when this holds; the observer re-checks it on every DOM change.
 READY = r"""
@@ -44,54 +40,6 @@ mo.observe(document.body, { childList: true, subtree: true, characterData: true 
 """
 # How long a page may take to draw before the shot is taken anyway, with a warning.
 DRAW_TIMEOUT_MS = 20000
-# Marionette has no readiness event: the port is tried at this cadence until Firefox listens.
-CONNECT_EVERY_S, CONNECT_TRIES = 0.25, 240
-# A guard on one Marionette reply, past the draw timeout a page is given.
-REPLY_TIMEOUT_S = DRAW_TIMEOUT_MS / 1000 + 30
-
-
-class Marionette:
-    def __init__(self, port):
-        for _ in range(CONNECT_TRIES):
-            try:
-                self.s = socket.create_connection(("127.0.0.1", port), timeout=REPLY_TIMEOUT_S)
-                break
-            except OSError:
-                time.sleep(CONNECT_EVERY_S)
-        else:
-            raise SystemExit("agent-web-shot: Firefox never opened its Marionette port")
-        self.buf, self.id = b"", 0
-        self._read()
-
-    def _recv(self):
-        chunk = self.s.recv(65536)
-        if not chunk:
-            raise SystemExit("agent-web-shot: Firefox closed its Marionette connection")
-        return chunk
-
-    def _read(self):
-        while b":" not in self.buf:
-            self.buf += self._recv()
-        n, rest = self.buf.split(b":", 1)
-        while len(rest) < int(n):
-            rest += self._recv()
-        self.buf = rest[int(n):]
-        return json.loads(rest[: int(n)])
-
-    def cmd(self, name, **params):
-        self.id += 1
-        msg = json.dumps([0, self.id, name, params]).encode()
-        self.s.sendall(str(len(msg)).encode() + b":" + msg)
-        r = self._read()
-        if r[2]:
-            raise RuntimeError(f"{name}: {r[2].get('message')}")
-        return r[3]
-
-
-def free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def main():
@@ -105,26 +53,10 @@ def main():
     ap.add_argument("hashes", nargs="+")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    root = os.path.expanduser("~/.cache/agent-web-shot")
-    os.makedirs(root, exist_ok=True)
-    prof = tempfile.mkdtemp(prefix="profile-", dir=root)
-    ff = None
-    try:
-        port = free_port()
-        with open(f"{prof}/user.js", "w") as f:
-            prefs = {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
-                     "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}
-            if a.scheme:  # what prefers-color-scheme reports to the page: 0 dark, 1 light
-                prefs["layout.css.prefers-color-scheme.content-override"] = 0 if a.scheme == "dark" else 1
-            for k, v in prefs.items():
-                f.write(f'user_pref("{k}", {json.dumps(v)});\n')
-        with open(f"{prof}/firefox.log", "w") as log:
-            ff = subprocess.Popen(["firefox", "--headless", "--no-remote", "--marionette", "--profile", prof],
-                                  stdout=log, stderr=log, start_new_session=True)
-        m = Marionette(port)
-        m.cmd("WebDriver:NewSession", capabilities={})
-        m.cmd("WebDriver:SetTimeouts", script=DRAW_TIMEOUT_MS)
-        m.cmd("WebDriver:SetWindowRect", width=a.width, height=a.height)
+    prefs = {}
+    if a.scheme:  # what prefers-color-scheme reports to the page: 0 dark, 1 light
+        prefs["layout.css.prefers-color-scheme.content-override"] = 0 if a.scheme == "dark" else 1
+    with scratch_firefox("agent-web-shot", a.width, a.height, prefs, DRAW_TIMEOUT_MS) as m:
         name, value = a.cookie.split("=", 1)
         m.cmd("WebDriver:Navigate", url=a.base + "/healthz")
         m.cmd("WebDriver:AddCookie", cookie={"name": name, "value": value, "path": "/"})
@@ -142,24 +74,6 @@ def main():
             with open(path, "wb") as f:
                 f.write(base64.b64decode(png))
             print(path)
-    finally:
-        if ff:
-            stop(ff)
-        shutil.rmtree(prof, ignore_errors=True)
-
-
-def stop(ff):
-    """Stop the Firefox this started and every process in its group; one already gone is fine."""
-    try:
-        os.killpg(ff.pid, signal.SIGTERM)
-        ff.wait(timeout=10)
-    except ProcessLookupError:
-        return
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(ff.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 if __name__ == "__main__":
