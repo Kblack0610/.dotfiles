@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
+/// The home-screen widget's page; its cards go in at `DATA_MARK` on each request.
+const WIDGET: &str = include_str!("widget.html");
+const DATA_MARK: &str = "{{data}}";
 /// Where the page and every CSS file name the asset version: web-kit's tokens.css versions the
 /// fonts with it (`css_names_the_fonts_at_the_current_version`).
 const VERSION_MARK: &str = "{{v}}";
@@ -26,7 +29,8 @@ const WOFF2: &str = "font/woff2";
 /// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
 /// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
 /// ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
+/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, cards.js the status card Home and
+/// the widget draw, home.js the Home tab, widget.js the home-screen widget page;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
     (
@@ -47,7 +51,9 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("convo.js", JS, include_bytes!("../static/convo.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("waiting.js", JS, include_bytes!("../static/waiting.js")),
+    ("cards.js", JS, include_bytes!("../static/cards.js")),
     ("home.js", JS, include_bytes!("../static/home.js")),
+    ("widget.js", JS, include_bytes!("../static/widget.js")),
     ("outbox.js", JS, include_bytes!("../static/outbox.js")),
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
@@ -96,6 +102,7 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
 struct Built {
     version: String,
     index: String,
+    widget: String,
     files: Vec<(&'static str, &'static str, Bytes)>,
 }
 
@@ -122,6 +129,7 @@ fn built() -> &'static Built {
             .collect();
         Built {
             index: page.replace(VERSION_MARK, &version),
+            widget: WIDGET.replace(VERSION_MARK, &version),
             version,
             files,
         }
@@ -162,6 +170,13 @@ fn fnv(h: u64, bytes: &[u8]) -> u64 {
 /// The app page, with the current asset version in its links.
 pub fn index() -> &'static str {
     &built().index
+}
+
+/// The widget page around `data`, JSON the page parses. `<` is escaped so no string in it can
+/// close the script element it sits in.
+pub fn widget(data: &serde_json::Value) -> String {
+    let json = data.to_string().replace('<', "\\u003c");
+    built().widget.replacen(DATA_MARK, &json, 1)
 }
 
 /// One asset. Only a request naming the current version may be cached for good; any other
@@ -225,6 +240,7 @@ mod tests {
             std::env::var("AGENT_WEB_INDEX_OUT").expect("AGENT_WEB_INDEX_OUT is the output path");
         std::fs::write(&out, index()).unwrap();
         std::fs::write(format!("{out}.csp"), CSP).unwrap();
+        std::fs::write(format!("{out}.widget"), &built().widget).unwrap();
         let roles = serde_json::to_string(&hub_core::table::phone_tables()).unwrap();
         std::fs::write(format!("{out}.roles"), roles).unwrap();
     }
@@ -693,24 +709,27 @@ mod tests {
     #[test]
     fn every_page_link_is_served_at_the_current_version() {
         let b = built();
-        assert!(!b.index.contains(VERSION_MARK));
-        for part in b.index.split("/static/").skip(1) {
-            let (name, rest) = part.split_once('?').expect("a versioned link");
-            assert!(
-                rest.starts_with(&format!("v={}\"", b.version)),
-                "{name} is not linked at the current version"
-            );
-            assert!(
-                b.files.iter().any(|(n, _, _)| *n == name),
-                "{name} is linked but not served"
-            );
+        for page in [&b.index, &b.widget] {
+            assert!(!page.contains(VERSION_MARK));
+            for part in page.split("/static/").skip(1) {
+                let (name, rest) = part.split_once('?').expect("a versioned link");
+                assert!(
+                    rest.starts_with(&format!("v={}\"", b.version)),
+                    "{name} is not linked at the current version"
+                );
+                assert!(
+                    b.files.iter().any(|(n, _, _)| *n == name),
+                    "{name} is linked but not served"
+                );
+            }
         }
-        // Every script and the stylesheet; a file nothing links is dead weight.
+        // Every script and the stylesheet; a file no page links is dead weight.
         for (name, ctype, _) in &b.files {
             if *ctype != WOFF2 {
+                let link = format!("/static/{name}?");
                 assert!(
-                    b.index.contains(&format!("/static/{name}?")),
-                    "{name} is served but the page never loads it"
+                    b.index.contains(&link) || b.widget.contains(&link),
+                    "{name} is served but no page loads it"
                 );
             }
         }

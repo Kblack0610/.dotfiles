@@ -42,6 +42,7 @@ mod sessions;
 mod shepherd;
 mod stages;
 mod suites;
+mod widget;
 mod worklog;
 
 use std::convert::Infallible;
@@ -214,7 +215,6 @@ async fn main() -> Result<()> {
         .route("/api/actions", get(feed::get))
         .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
-        .route("/static/{name}", get(static_file))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -223,6 +223,10 @@ async fn main() -> Result<()> {
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
+        // The assets are this public repo's code and carry no data, so the widget page loads them
+        // with no cookie; every read of data stays behind sign-in or the widget key.
+        .route("/static/{name}", get(static_file))
+        .route("/widget", get(widget::page))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
@@ -1344,6 +1348,14 @@ async fn home_board(
     State(s): State<Shared>,
     Query(q): Query<HomeQuery>,
 ) -> ApiResult<Json<HomeShown>> {
+    let home = home_read(&s)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(home_shown(home, &q)))
+}
+
+/// Home as `/api/home` builds it, before a view narrows it; the widget counts its needs too.
+async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
     let (infra, queue) = tokio::join!(s.infra.infra(), s.queue.queue());
     tokio::task::spawn_blocking(move || {
         let state = boards::state(&boards::fleet_state(), &actions::System);
@@ -1357,11 +1369,10 @@ async fn home_board(
             hub_core::jobs::now(),
         );
         home.set_proposals(&open);
-        home_shown(home, &q)
+        home
     })
     .await
-    .map(Json)
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    .map_err(|e| e.to_string())
 }
 
 /// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
