@@ -43,6 +43,40 @@ function sessionsHead() {
 
 const sessionAgent = (r) => st.agents.find((a) => a.target === r.target || (r.session_id && a.session === r.session_id));
 
+// New output: a session that wrote since this browser last had it open carries an accent dot. Per
+// browser by design: when each session was last seen sits in localStorage, and a session never
+// opened here has none, so the dot says "moved since you looked", not "is busy". The last write is
+// the agent's transcript mtime (`wrote`, /api/agents), kept current between reads by the stream's
+// transcript events.
+const SEEN_K = "agent-web:seen", SEEN_MS = 7 * 86400000;
+// Milliseconds, the browser's clock, except `wrote`, the server's mtime in seconds.
+const readSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_K) || "{}"); } catch { return {}; } };
+const seen = Object.fromEntries(Object.entries(readSeen()).filter(([, v]) => v > Date.now() - SEEN_MS));
+const wroteAt = {};
+// Being seen: open, on Sessions, in a tab in view. One left open behind another tab is not.
+const viewing = (id) => !!st.sel && st.sel.session === id && st.tab === "sessions" && !document.hidden;
+// Another browser tab's marks are merged in first, so neither drops the other's.
+function markSeen(id) {
+  if (!id) return;
+  for (const [k, v] of Object.entries(readSeen())) if (!(seen[k] >= v)) seen[k] = v;
+  seen[id] = Date.now();
+  try { localStorage.setItem(SEEN_K, JSON.stringify(seen)); } catch { /* storage off: the dots last the page */ }
+}
+function hasNew(a) {
+  if (!a || !seen[a.session] || viewing(a.session)) return false;
+  return Math.max((a.wrote || 0) * 1000, wroteAt[a.session] || 0) > seen[a.session];
+}
+// A transcript event: the session in view is being seen; another one seen before gets its dot,
+// drawn once, when it turns on.
+function noteWrite(id) {
+  if (viewing(id)) return markSeen(id);
+  if (!seen[id]) return;
+  const a = st.agents.find((x) => x.session === id), was = hasNew(a);
+  wroteAt[id] = Date.now();
+  if (a && !was) { sst.render(); renderSide(); }
+}
+const newDot = (a) => (hasNew(a) ? '<span class="newdot" title="new output since you last opened it"></span>' : "");
+
 // What the row is beyond its columns: the human's own session, parked, a pending ask, no session
 // here, and where an ended row came from.
 function sessionTags(r, a) {
@@ -73,7 +107,7 @@ function sessionRow(r) {
   const a = sessionAgent(r), tags = sessionTags(r, a);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
-  return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
+  return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
     `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
@@ -135,7 +169,7 @@ function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
   return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
-    `<span class="sn">${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
 function renderSide(scroll = false) {
