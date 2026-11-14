@@ -422,3 +422,18 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   "$PUB" --quiet
   assert_equal "$(jq -r .rows[0] <<< "$(payload agents/testhost/summary/overview)")" h2
 }
+
+# ar-2310: every hook re-ran fleet-dispatch stats (21s at load 6) under the lock, so the --full
+# timer run waited out its 20s lock budget and then crossed TimeoutStartSec=60.
+@test "dispatch: a run inside the TTL repeats the sent stats, an older one reads them again" {
+  printf '#!/usr/bin/env bash\necho x >> "$NOTES_FIXTURE/stats"\necho "{\\"state\\":1,\\"runnable\\":$(wc -l < "$NOTES_FIXTURE/stats")}"\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  "$PUB" --quiet
+  "$PUB" --full --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/stats")" 1
+  assert_equal "$(grep -c '^agents/testhost/summary/dispatch' "$PUBLOG")" 2
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 1
+  touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%dispatch"
+  "$PUB" --quiet
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 2
+}

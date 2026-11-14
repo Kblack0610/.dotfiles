@@ -26,7 +26,7 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
-OVERVIEW_TTL=45 # seconds: under fleet-state.timer's minute, so each tick's run renders afresh
+READER_TTL=45 # seconds: under fleet-state.timer's minute, so each tick's run renders the slow readers afresh
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
 [ -r "$_WATCH_LIB" ] || _WATCH_LIB="$(dirname "$(realpath "$0")")/../lib/sentinel-watch.sh"
@@ -125,23 +125,30 @@ hand_fired() {
     ! grep -qE '^(SCHEDULE=["'"'"']?[^"'"'"' ]|AUTOSTART=["'"'"']?yes)' "$1"
 }
 
-snapshot() {
-    local f name st dfd='' ofd='' sent
-    sent="$(tfile "agents/$HOST_ID/summary/overview")"
+# fresh_send <kind/id> <fd var> -> opens the last payload sent on that topic on a new fd when it is
+# younger than READER_TTL; fails when there is none that fresh.
+fresh_send() {
+    local sent fd; sent="$(tfile "agents/$HOST_ID/$1")"
+    [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < READER_TTL)) || return 1
+    exec {fd}< "$sent"
+    printf -v "$2" '%s' "$fd"
+}
 
-    # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle), start here and
-    # run while the runner and watch loops do, so a run costs the slowest part, not the sum.
-    # Serial, the --full run took 46-49s at load 63 and one crossed the timer unit's 60s (ar-1753).
-    # Each prints only on success, as the `$(...) &&` it replaces did.
-    command -v fleet-dispatch >/dev/null 2>&1 &&
-        exec {dfd}< <(out="$(fleet-dispatch stats 2>/dev/null)" && printf '%s' "$out")
-    # A run within OVERVIEW_TTL of the last send repeats it (see the Overview block below).
+snapshot() {
+    local f name st dfd='' ofd=''
+
+    # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle, 21s each at load 6
+    # with 600 queued items), start here and run while the runner and watch loops do, so a run costs
+    # the slowest part, not the sum (ar-1753). A run within READER_TTL of a reader's last send repeats
+    # that send instead: hooks (watch-companion-loop on each transition, agentctl's 5s status hook)
+    # fire many times a minute, and each one re-running the readers under the lock starved the --full
+    # timer run past its 60s (ar-2310). Each reader prints only on success.
+    if command -v fleet-dispatch >/dev/null 2>&1; then
+        fresh_send summary/dispatch dfd ||
+            exec {dfd}< <(out="$(fleet-dispatch stats 2>/dev/null)" && printf '%s' "$out")
+    fi
     if command -v hub >/dev/null 2>&1; then
-        if [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < OVERVIEW_TTL)); then
-            exec {ofd}< "$sent"
-        else
-            exec {ofd}< <(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)
-        fi
+        fresh_send summary/overview ofd || exec {ofd}< <(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)
     fi
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
@@ -238,9 +245,8 @@ snapshot() {
     fi
 
     # Overview: `hub phone --json`, the phone widget's rows. They ride as attributes because an HA
-    # state over 255 chars is rejected; the state is the worst row. A run within OVERVIEW_TTL of the
-    # last send repeats it: hooks fire many times a minute, and hub reads Prometheus, which must not
-    # cost a hooked run its budget (PROM_TIMEOUT keeps a dead one inside agentctl's five seconds).
+    # state over 255 chars is rejected; the state is the worst row. A run within READER_TTL of the
+    # last send repeats it (fresh_send), and PROM_TIMEOUT keeps a dead Prometheus out of a hooked run.
     if [ -n "$ofd" ]; then
         local overview
         overview="$(cat <&"$ofd")"; exec {ofd}<&-
