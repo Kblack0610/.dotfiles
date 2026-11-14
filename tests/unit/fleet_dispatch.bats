@@ -1935,6 +1935,12 @@ J
   run cmd_starved
   assert_failure
   assert_output --partial 'hot (urgent'
+  # An item with no project reads no line, never an unreadable queue.
+  queued_item loose high "$old"
+  sed -i '/^project:/d' "$AGENT_QUEUE_DIR/queued/20261103-100000-loose.md"
+  run cmd_starved
+  refute_output --partial 'agent-queue unreadable'
+  assert_output --partial 'loose (high'
 }
 
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
