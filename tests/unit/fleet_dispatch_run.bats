@@ -354,11 +354,16 @@ load 'fleet_dispatch/common'
   assert_success
   assert_output --partial 'started queue item g1'
   refute_output --partial 'started queue item a1'
-  # One waiter under the cap, the line holds nothing.
+  # The start's activity line shows the hold fired, though no pass settled "merge line full".
+  local log="$HOME/.local/state/agentctl/fleet-dispatch/activity.log"
+  grep -q 'started queue item g1.*; passed 1 item held by merge line: 6 app sessions wait their landing turn (DISPATCH_LINE_MAX=6)' "$log" ||
+    fail "$(cat "$log")"
+  # One waiter under the cap, the line holds nothing, and the start names no hold.
   agent-queue move g1 queued >/dev/null
   line_state 5 5 app
   DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item a1'
+  if grep 'started queue item a1' "$log" | grep -q 'passed'; then fail "$(cat "$log")"; fi
   # An urgent item of a full line still starts ahead of another project's high one.
   agent-queue move a1 queued >/dev/null
   agent-queue set a1 priority=urgent >/dev/null
