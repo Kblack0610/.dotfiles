@@ -110,6 +110,8 @@ mod tests {
             None,
             "a moved name is the tab's to open"
         );
+        let projects = layout::resolve("projects").unwrap();
+        assert_eq!(named(projects, "requirements"), Some("ladder"));
         assert_eq!(named(infra, "red"), None);
         assert_eq!(named(infra, "nope"), None);
         assert_eq!(step(infra, "machines", true), "jobs");
@@ -144,8 +146,8 @@ mod tests {
         let l = strip_totals(projects.inner, "list", total, Palette::default(), 80);
         let words: Vec<&str> = l.spans.iter().map(|s| s.content.trim()).collect();
         assert_eq!(
-            words[..3],
-            ["[Projects]", "All rows 12", "Deliverables"],
+            words[..4],
+            ["[Projects]", "All rows 12", "Deliverables", "Ladder"],
             "no number until read"
         );
         let amber = Palette::default().warn().fg;

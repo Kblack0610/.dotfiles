@@ -40,6 +40,7 @@ mod reqlog;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod stages;
 mod suites;
 mod worklog;
 
@@ -191,6 +192,8 @@ async fn main() -> Result<()> {
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/deliverables", get(deliverables::get))
+        .route("/api/stages", get(stages::get))
+        .route("/api/stages/requirements", get(stages::get_requirements))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
         .route("/api/focus", get(focus::get).put(focus::save))
@@ -358,7 +361,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 // Costs and Builds keep their read, so the task below drops it before it tells
                 // the page; a refresh that raced ahead would get the old snapshots back.
                 Some(msg)
-                    if [COSTS_EVENT, BUILDS_EVENT, PIPELINES_EVENT].contains(&msg.as_str()) =>
+                    if [COSTS_EVENT, BUILDS_EVENT, PIPELINES_EVENT, STAGES_EVENT]
+                        .contains(&msg.as_str()) =>
                 {
                     let _ = cached_events.send(msg);
                 }
@@ -462,6 +466,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if notes_state.is_dir() {
         targets.push((notes_state, flat));
     }
+    // The nightly stage pass's stages.json, replaced by a rename: Projects' Ladder.
+    if let Some(dir) = STAGES_FILE.parent().filter(|d| d.is_dir()) {
+        targets.push((dir.to_path_buf(), flat));
+    }
     // Sentinel's state files: a watch tripping, clearing or failing pushes the Alerts tab.
     let sentinel = hub_core::alerts::watch_dirs().1;
     if sentinel.is_dir() {
@@ -485,6 +493,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                         builds::forget().await;
                     } else if msg == PIPELINES_EVENT {
                         pipelines::forget().await;
+                    } else if msg == STAGES_EVENT {
+                        stages::forget().await;
                     } else {
                         costs::forget().await;
                     }
@@ -512,6 +522,10 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
 }
+/// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
+const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
+static STAGES_FILE: std::sync::LazyLock<PathBuf> =
+    std::sync::LazyLock::new(|| hub_core::stages::Paths::from_env().stages);
 /// fleet-dispatch wrote its Candidates snapshot: the Queue tab reads the counts afresh.
 const CANDIDATES_EVENT: &str = r#"{"kind":"candidates"}"#;
 /// A Sentinel watch changed state: the Alerts tab reads afresh.
@@ -536,6 +550,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    if p == *STAGES_FILE {
+        return Some(STAGES_EVENT.to_string());
     }
     // fleet-dispatch's ranked snapshot, replaced by a rename: the Queue tab's Candidates counts.
     if p == boards::candidates_file() {
@@ -1849,6 +1866,17 @@ mod tests {
         assert_eq!(
             classify(Path::new("/h/.agent/shepherd/watch.log")).as_deref(),
             Some(r#"{"kind":"watch"}"#)
+        );
+        // A new stages.json is Projects' Ladder; its .tmp and the filer's log beside it are not.
+        let stages = hub_core::stages::Paths::from_env().stages;
+        assert_eq!(classify(&stages).as_deref(), Some(STAGES_EVENT));
+        assert_ne!(
+            classify(&stages.with_extension("json.tmp")).as_deref(),
+            Some(STAGES_EVENT)
+        );
+        assert_ne!(
+            classify(&stages.with_file_name("stage-file.last")).as_deref(),
+            Some(STAGES_EVENT)
         );
         assert_eq!(
             classify(Path::new("/h/.agent/daylog/2026-10-29.json")).as_deref(),

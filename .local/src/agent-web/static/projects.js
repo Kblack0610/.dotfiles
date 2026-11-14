@@ -6,8 +6,8 @@
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, its Rows
 // with every row action board.js has, Build (Deliverables scoped to it), Stage and Activity.
 // Its inner tabs (INNER_TABS.projects) are this list, All rows (every project's rows, board.js
-// scoped to all) and Deliverables, each read only while it shows; an opened project's page sits
-// under the list's. The numbers are counted, never judged: every line is hub_core's, word for
+// scoped to all), Deliverables and Ladder (ladder.js), each read only while it shows; an opened
+// project's page sits under the list's. The numbers are counted, never judged: every line is hub_core's, word for
 // word. The list and the rows (All rows, or an opened project's) share st.views.projects, one at
 // a time, so a move between them leaves the view behind.
 
@@ -76,7 +76,7 @@ const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
 const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
 // Each inner tab's total, its table's once read: a count, not a flag, so it is never amber.
-const pCount = { all: null, deliverables: null };
+const pCount = { all: null, deliverables: null, ladder: null };
 function pStrip() {
   const tabs = INNER_TABS.projects.tabs.map(([id, title, secs]) =>
     [id, title + (pCount[id] == null ? "" : ` <span class="muted">${pCount[id]}</span>`), secs]);
@@ -336,6 +336,7 @@ function pRead() {
   if (top === "list") refreshProjects();
   if (top === "all" || pst.open) refreshBoard();
   if (dShown()) dst.refresh();
+  lRead();
 }
 
 // Deliverables is its own inner tab, and the opened page's Build pane.
@@ -352,11 +353,14 @@ function renderProjects() {
   innerHide("projects", "cards", $("p-cards"));
   innerHide("projects", "board", $("p-all"));
   innerHide("projects", "deliverables", $("p-dtop"));
+  innerHide("projects", "stages", $("p-lstages"));
+  innerHide("projects", "requirements", $("p-lreqs"));
   $("p-rows").hidden = !pst.open;
   if (!pst.open) {
     const top = pOn = pTab();
     if (top === "all") renderBoard();
     if (top === "list") pst.render(); else if (top === "deliverables") dst.render();
+    else if (top === "ladder") { ladst.render(); reqst.render(); }
     return;
   }
   $("p-cards").hidden = true;
@@ -393,7 +397,8 @@ function pSys(id) {
   pInner("build");
 }
 // On the list a row's project opens, a deliverable's at Build searched to its epic. On a
-// project's Build an epic's row opens Rows filtered to that epic's rows (tag of/<epic>).
+// project's Build an epic's row opens Rows filtered to that epic's rows (tag of/<epic>). A Ladder
+// row opens its project's Stage page (data-inner).
 function pOpenAt(o) {
   const epic = o.dataset.epic;
   if (pst.open && epic) {
@@ -402,9 +407,9 @@ function pOpenAt(o) {
     refreshBoard();
     return;
   }
-  pGo(o.dataset.open, epic ? "build" : "overview", epic ? tblSet("", { q: epic }, "d") : "");
+  pGo(o.dataset.open, epic ? "build" : o.dataset.inner || "overview", epic ? tblSet("", { q: epic }, "d") : "");
 }
-for (const id of ["p-deliv", "p-cards", "p-pane"]) $(id).addEventListener("keydown", (e) => {
+for (const id of ["p-deliv", "p-cards", "p-pane", "p-lstages"]) $(id).addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
   if (e.target.matches?.("tr[data-open]")) pOpenAt(e.target);
   else if (e.target.matches?.("tr[data-psys]")) pSys(e.target.dataset.psys);
@@ -438,5 +443,6 @@ TABS.projects = {
       if (dShown()) dst.refresh();
     }
     if (ev.kind === "resync") refreshBoard();
+    if (["stages", "resync"].includes(ev.kind)) lRead();
   },
 };
