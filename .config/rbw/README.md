@@ -74,6 +74,24 @@ If `rbw login` still returns silently, the account has 2FA and the device needs 
 - Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin`, `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
 - After a non-interactive `rbw add`, check that the entry is not empty: when stdin is not a terminal, rbw reads the secret from it, and empty stdin creates an entry with nothing in it.
 
+## Discord webhooks (`discord-post`)
+
+`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
+
+Add a channel (a person with Manage Webhooks on the server):
+
+1. Discord: channel settings -> Integrations -> Webhooks -> New Webhook, name it, Copy Webhook URL.
+2. `rbw add --folder discord webhook_<slug>` and paste the URL as the password, then `rbw sync`. The slug is the game channel's (`dodginballs`, `apociseum`) or `announcements`.
+3. `discord-post --channel <slug> "webhook check"` prints the message id, and the message shows in the channel.
+
+What it does with Discord's limits (docs.discord.com/developers/topics/rate-limits, read 2026-11-14: 50 requests/s global, per-route buckets in `X-RateLimit-*`, `retry_after` in seconds on a 429, never reuse a webhook that answers 404): every post on a machine goes through one `flock` in `$XDG_RUNTIME_DIR`, and a drained bucket (`X-RateLimit-Remaining: 0`) is waited out before the lock is released. A 429 is retried after `retry_after`, at most 3 attempts and never for a wait over 60 s. A 5xx, a timeout or a network error is never retried, because the message may already be in the channel. `@everyone` and `@here` never ping; role and user mentions do. Each request times out after 15 s. Messages over 2000 characters are refused.
+
+| Symptom | Fix |
+|---|---|
+| `no channel '<slug>'` | The entry is missing or the folder is not `discord`; `rbw list --fields folder,name \| grep webhook_`, then `rbw sync`. |
+| `webhook ... is gone (404)` | Someone deleted the webhook in Discord. Make a new one and replace the entry's password. |
+| `not retried, the message may have posted` | Look in the channel before running it again. |
+
 ## Reorganising the vault without losing anything
 
 `rbw-inventory` is read-only and never prints a value. Make each change in the web vault (it can move entries between folders; rbw cannot), then run `rbw-inventory snap <n>` and `rbw-inventory diff <prev> <n>`.
