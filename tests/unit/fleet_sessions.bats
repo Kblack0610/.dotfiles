@@ -666,7 +666,7 @@ ledger() {
   done
   LIVE_PIDS="-$root"   # teardown kills these, pass or fail
   run live_wait "$SANDBOX/wt" "$root"
-  assert_output 'gate'
+  assert_output 'queue'
   # negative controls: no claude pid, an unrelated one, and junk
   run live_wait "$SANDBOX/wt"
   assert_output ''
@@ -693,7 +693,7 @@ ledger() {
   # the process is the event: wait until /proc shows its exec, not for a delay
   until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
-  assert_output 'gate'
+  assert_output 'queue'
   # negative controls: another worktree, and a shell that only holds the script text after -c
   run live_wait "$SANDBOX/other"
   assert_output ''
@@ -708,6 +708,62 @@ ledger() {
   (cd "$SANDBOX/wt" && exec bash -c 'sleep 60; : scripts/test/ci-gate.sh') >/dev/null 2>&1 3>&- &
   pid=$!
   until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
+@test "a live landing-queue gate is WORKING past FLEET_SHELL_STALE_MIN, a gate that is not queued is idle (ar-2346)" {
+  # 2026-11-13 agents 25, 37, 40 and 68 each ran a gate-and-land.sh or ci-gate.sh waiting for its landing
+  # turn behind another PR (checks every 120s, gives up after 280m); the row read idle over 120m.
+  run b shell 0 0 0 200 1 0 0 875 MERGED PASS 1 - 2/3 x - queue
+  assert_output 'WORKING shell'
+  # negative controls: the same minutes on a plain gate, and a finished plan, still read as before
+  run b shell 0 0 0 200 1 0 0 875 MERGED PASS 1 - 2/3 x - gate
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell idle over 120m'
+  run b shell 0 0 0 200 1 0 0 875 MERGED PASS 1 - 3/3 - - queue
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
+}
+
+@test "live_wait reads a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck process as queue, and only those (ar-2346)" {
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  printf 'gate agent-land\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local pid
+  # a gate that is not queue-shaped stays a gate: agent-land is a conf gate line, not a queue gate
+  printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
+  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh agent-land) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q agent-land "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'gate'
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q gate-and-land.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'queue'
+  # the same process in another worktree is not this session's
+  mkdir -p "$SANDBOX/other"
+  run live_wait "$SANDBOX/other"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  # gate-line.py --recheck is one, and a list from FLEET_QUEUE_GATES replaces the default
+  printf 'sleep 60\n' > "$SANDBOX/wt/gate-line.py"
+  (cd "$SANDBOX/wt" && exec -a x bash gate-line.py --recheck) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q 'gate-line.py' "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'queue'
+  FLEET_QUEUE_GATES='nothing-like-it' run live_wait "$SANDBOX/wt"
+  assert_output ''
+  # gate-line.py without --recheck is not a queue wait
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  (cd "$SANDBOX/wt" && exec -a x bash gate-line.py --check) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q 'gate-line.py' "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
   assert_output ''
   kill "$pid"; wait "$pid" 2>/dev/null || true

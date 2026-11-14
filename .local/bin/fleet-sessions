@@ -74,6 +74,8 @@ set -uo pipefail
 : "${FLEET_CHAT_CLOSE_H:=24}"
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
+: "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck}" # processes that are a gate waiting for its landing turn
+                                  # behind another PR (checks every 120s, gives up after 280m): live, never idle
 : "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
@@ -130,7 +132,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|test|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
+#                <open job: gate|queue|test|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), or -;
@@ -201,7 +203,8 @@ session_bucket() {
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
         # "WORKING shell" sessions were one of those, idle up to 107m, and nothing looked at them.
         note=", background shell is not a gate or test"
-      elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ]; then
+      elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] || [ "$job" = queue ]; then
+        # queue: a live landing-queue gate outlasts the threshold by design and ends itself (ar-2346).
         echo "WORKING shell$cn"; return
       else
         # The threshold, not the minutes: a reason that changed every pass would re-nudge every pass.
@@ -211,7 +214,8 @@ session_bucket() {
   echo "$(bucket_facts "$@")$cn$note"
 }
 
-# live_wait <cwd> [<claude pid>]: gate or test when a process running in <cwd> (or below it), or
+# live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
+# landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate or test when a process running in <cwd> (or below it), or
 # descended from the session's claude whatever its cwd, matches a `gate` or `test` line of
 # agent-panel's time-use.conf, else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
@@ -244,6 +248,12 @@ live_wait() {
     cmds+=("$cmd")
   done < <(ls -l /proc/[0-9]*/cwd 2>/dev/null)
   [ "${#cmds[@]}" -gt 0 ] || return 0
+  local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
+  for text in "${qg[@]}"; do
+    for cmd in "${cmds[@]}"; do
+      case "$cmd" in *"$text"*) echo queue; return 0 ;; esac
+    done
+  done
   for want in gate test; do
     while read -r kind text; do
       [ "$kind" = "$want" ] && [ -n "$text" ] || continue
@@ -740,7 +750,7 @@ gate_ci() {
                   | [.workflowPath, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
   if [ "$ci" = FAIL ]; then
-    if { [ "$pendhead" = 1 ] || { [ "$shell" = gate ] && [ "$failhead" = 0 ]; }; } && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
+    if { [ "$pendhead" = 1 ] || { { [ "$shell" = gate ] || [ "$shell" = queue ]; } && [ "$failhead" = 0 ]; }; } && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
   elif [ "$pend" = 1 ]; then echo PENDING
   elif [ "$fail" = 1 ]; then echo FAIL
   elif [ "$pass" = 1 ]; then echo PASS
@@ -1159,7 +1169,7 @@ activity_line() {
     fi
   fi
   if [ -n "$ci" ]; then echo "$ci"; return; fi
-  [ "$ojob" = gate ] && { echo gating; return; }
+  { [ "$ojob" = gate ] || [ "$ojob" = queue ]; } && { echo gating; return; }
   echo "${status:--}"
 }
 
@@ -1347,7 +1357,7 @@ collect() {
     if [ "$plan" = 1 ] && { [ "$status" != waiting ] || [[ "$doing" != ExitPlanMode* ]]; }; then plan=0; fi
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     live=""
-    if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ]; }; then
+    if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ] || [ "$ojob" = gate ]; }; then
       live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
