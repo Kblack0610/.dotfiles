@@ -280,10 +280,14 @@ plan_row() {
   tmux_keys 2
   wait_until 'screen_has "send 2"'
   tmux_keys Enter
-  wait_until 'screen_has "sent 2"'
-  grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
   # The stub still says waiting, as a status file can for a moment after the pane moved on.
   wait_until 'screen_has "3 asks waiting"'
+  grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+  # The reload drops the answered row, so the cursor lands on another and fires focus: the
+  # result stays up through it, and moving off that row brings the keys back.
+  wait_until 'screen_has "sent 2"'
+  tmux_keys Up
+  wait_until 'screen_has "enter send" && ! screen_has "sent 2"'
 }
 
 @test "a state document a pass behind cannot list a dialog that is not open now" {

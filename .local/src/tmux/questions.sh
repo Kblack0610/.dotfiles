@@ -275,12 +275,13 @@ rows_saved() {
   cat "$QUESTIONS_STATE.rows"
 }
 
-# after <message>: reload the rows and say what happened, with the count in the header.
+# after <message>: reload the rows and say what happened, with the count in the header. The
+# message is the said state, so the focus the reload fires keeps it (see cmd_key focus).
 after() {
   local n
   rows_build
   n="$(rows_saved | rows_count)"
-  st_write ""
+  st_write said
   printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
   if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
@@ -377,7 +378,10 @@ cmd_key() {
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
     # With nothing armed the keys are fitted again, to whatever layout ctrl-/ left.
+    # A message after() put up stays through the focus its reload fires: that first focus
+    # records the row the cursor landed on, and moving off that row brings the keys back.
     if [ -z "$mode" ]; then footer "$QUESTIONS_KEYS"
+    elif [ "$mode" = said ] && [ -z "$opt" ]; then st_write said - "$id"
     elif [ "$mode" != typing ] && [ "$sid" != "$id" ]; then st_write ""; footer "$QUESTIONS_KEYS"; fi
     ;;
   fit)
@@ -385,7 +389,7 @@ cmd_key() {
     [ -n "$mode" ] || footer "$QUESTIONS_KEYS"
     ;;
   esc)
-    [ -n "$mode" ] || { printf 'abort'; return 0; }
+    case "$mode" in "" | said) printf 'abort'; return 0 ;; esac
     st_write ""
     printf 'hide-input+change-prompt~~+'
     [ "$mode" = typing ] && header_count
