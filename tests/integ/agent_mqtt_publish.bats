@@ -117,11 +117,11 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 @test "the dispatch queue is fleet-dispatch's own stats, published as they come" {
-  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":3,\"runnable_urgent\":1,\"starved\":false,\"flapping_items\":0,\"flapping\":[]}'" > "$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":3,\"runnable_urgent\":1,\"flapping_items\":0,\"flapping\":[]}'" > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
   run "$PUB" --quiet
   p="$(payload agents/testhost/summary/dispatch)"
-  assert_equal "$(jq -c '[.state, .runnable_urgent, .starved]' <<< "$p")" '[3,1,false]'
+  assert_equal "$(jq -c '[.state, .runnable_urgent]' <<< "$p")" '[3,1]'
   c="$(payload homeassistant/sensor/agent_testhost_summary_dispatch/config)"
   assert_equal "$(jq -r .name <<< "$c")" 'Dispatch queue'
 }

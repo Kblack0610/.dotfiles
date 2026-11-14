@@ -1999,9 +1999,8 @@ J
   assert_output --partial 'held by load (fleet-assess says HOLD)'
 }
 
-# 2026-11-07: stats reached real_idle through cmd_starved and slept out a 60s sample, so
-# agent-mqtt-publish --full hit its TimeoutStartSec=60 whenever no pass had sampled in the last minute.
-@test "starved reads the last pass's idle sample and never waits out a new one, and stats does not run it" {
+# 2026-11-07: the queue-starved watch's cmd_starved slept out a 60s idle sample under its probe timeout.
+@test "starved reads the last pass's idle sample and never waits out a new one" {
   queued_item stuck high "$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
   cpu 85 5 0 10
   rm -f "$FLEET_DISPATCH_DIR/idle" "$NOTES_FIXTURE/calls.log"
@@ -2010,8 +2009,6 @@ J
   assert_failure
   assert_output --partial 'stuck (high'
   refute_output --partial 'real idle'
-  run cmd_stats
-  jq -e '.runnable == 1 and (has("starved") | not)' <<<"$output"
   assert_not_called 'sleep'
   # A pass's sample ten minutes old is still the verdict's: under the floor, it holds by load.
   mkdir -p "$FLEET_DISPATCH_DIR"; echo "$(( $(date +%s) - 600 )) 10.0" > "$FLEET_DISPATCH_DIR/idle"
@@ -2181,6 +2178,8 @@ J
   run cmd_stats
   assert_success
   assert_equal "$(jq -c '[.runnable, .runnable_urgent]' <<<"$output")" '[2,1]'
+  # ar-2310: the starved verdict is the queue-starved watch's; recomputing it here cost 18s.
+  jq -e 'has("starved") | not' <<<"$output"
   assert_equal "$(jq -c '[.reaped_1h, .flapping_items, .flapping]' <<<"$output")" '[5,1,["b"]]'
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
