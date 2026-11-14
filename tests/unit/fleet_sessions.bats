@@ -1744,6 +1744,12 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+  # the row still reports the plan by the name the pane wrote
+  [ "$(jq -r .plan_file <<<"$output")" = "$SANDBOX/alias.md" ]
+  # an item that names the alias matches too
+  sed -i "s|^plan: .*|plan: $SANDBOX/alias.md|" "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
 @test "end to end: the requeued case: an own item whose plan is all ticked by other items reads after, close the item (ucp-agent-82)" {
