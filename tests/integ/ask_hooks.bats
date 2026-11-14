@@ -6,6 +6,7 @@
 # pending after its session was gone.
 
 setup() {
+  bats_require_minimum_version 1.5.0
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
@@ -109,6 +110,8 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   a="$(CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project demo 'ship #it?')"
   run "$AGENT_ASK" answer "$a" now
   assert_success
+  assert_not_called 'ptask demo'
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "ptask demo --agent add chore(ask): ship it? -> answered: now (ask $a) #size/s"
   [ "$(calls | grep -c 'ptask demo --agent add')" -eq 1 ]
   assert_not_called '#it'
@@ -123,6 +126,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   "$AGENT_ASK" answer "$live" yes 2>/dev/null
   AGENT_ASK_NO_RESUME=1 "$AGENT_ASK" answer "$resumed" yes 2>/dev/null
   "$AGENT_ASK" cancel "$dropped" 'on the human sheet' 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'ptask'
 }
 
@@ -130,11 +134,15 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   local a
   printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
   # The sandbox sets AGENT_ASK_NO_RESUME, which also skips typing into the session.
-  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" answer "$a" yes
+  assert_not_called "agent-panel send"
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
   assert_success
   assert_called "agent-panel send --pane lab/%1 Answer to ask $a: yes"
   refute_output --partial 'did not submit'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: done'; assert_line 'delivery_note: typed into dotfiles'
 }
 
 @test "an answer the pane did not take still records, and says where the text is" {
@@ -142,12 +150,107 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   : > "$NOTES_FIXTURE/agent-panel.unsent"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
   # The sandbox sets AGENT_ASK_NO_RESUME, which also skips typing into the session.
-  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" answer "$a" yes
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
   assert_success
   assert_output --partial "did not submit in dotfiles"
   run "$AGENT_ASK" show "$a"
-  assert_line 'status: answered'
+  assert_line 'status: answered'; assert_line 'delivery: failed'
+  assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box"
+}
+
+# -- delivery: the answer is recorded at once and delivered in the background --
+
+delivery() { sed -n 's/^delivery: //p' "$HOME/.agent/asks/demo/$1.md"; }
+
+@test "answer records and queues the delivery, rewrites its trigger, and delivers nothing itself" {
+  local a; a="$("$AGENT_ASK" post --project demo 'ship it?')"
+  rm -f "$HOME/.agent/asks/.deliver"
+  "$AGENT_ASK" answer "$a" now 2>/dev/null
+  assert [ -e "$HOME/.agent/asks/.deliver" ]
+  assert_equal "$(delivery "$a")" queued
+  assert_not_called 'ptask'
+  run "$AGENT_ASK" trace "$a"
+  assert_output --partial 'queued      waiting for agent-ask deliver'
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_equal "$(delivery "$a")" done
+  run "$AGENT_ASK" trace "$a"
+  assert_output --partial 'delivered   a board row'
+}
+
+@test "deliver runs an answer once: a second run, or one on an ask answered before deliveries, does nothing" {
+  local a old; a="$("$AGENT_ASK" post --project demo 'ship it?')"
+  old="$("$AGENT_ASK" post --project demo 'from before?')"
+  "$AGENT_ASK" answer "$a" now 2>/dev/null
+  "$AGENT_ASK" answer "$old" yes 2>/dev/null
+  sed -i '/^delivery/d' "$HOME/.agent/asks/demo/$old.md"
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  run --separate-stderr "$AGENT_ASK" deliver "$a"
+  assert_success; [[ "$stderr" == *"$a has no delivery waiting"* ]]
+  [ "$(calls | grep -c 'ptask demo --agent add')" -eq 1 ]
+  assert_not_called "(ask $old)"
+}
+
+@test "deliver leaves a fresh claim to its run, takes a stale one, and keeps an answer queued during its run" {
+  local a f; a="$("$AGENT_ASK" post --project demo 'ship it?')"; f="$HOME/.agent/asks/demo/$a.md"
+  "$AGENT_ASK" answer "$a" now 2>/dev/null
+  sed -i 's/^delivery: queued/delivery: delivering/' "$f"
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_not_called 'ptask'
+  AGENT_ASK_DELIVERY_STALE=0 "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_equal "$(delivery "$a")" done
+  [ "$(calls | grep -c 'ptask demo --agent add')" -eq 1 ]
+  # An answer queued while a run delivers stays queued for the next pass, which --all runs.
+  local real; real="$(command -v notes)"
+  printf '#!/usr/bin/env bash\n[ -e %q ] || { : > %q; sed -i "s/^delivery: delivering/delivery: queued/" %q; }\nexec %q "$@"\n' \
+    "$SANDBOX/once" "$SANDBOX/once" "$f" "$real" > "$SANDBOX/notes"; chmod +x "$SANDBOX/notes"
+  sed -i 's/^delivery: done/delivery: queued/' "$f"
+  PATH="$SANDBOX:$PATH" "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_equal "$(delivery "$a")" done
+  [ "$(calls | grep -c 'ptask demo --agent add')" -eq 3 ]
+}
+
+@test "a failed delivery stays on the record until the human reads it" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"waiting"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_not_called 'agent-panel send'
+  assert_equal "$(delivery "$a")" failed
+  run "$AGENT_ASK" show "$a"; assert_line 'delivery_note: its session is in a dialog, so the answer was not typed into it'
+  "$AGENT_ASK" delivery-seen "$a"
+  assert_equal "$(delivery "$a")" seen
+  run "$AGENT_ASK" trace "$a"; assert_output --partial 'the human read it'
+  # negative control: a delivered ask is not marked seen
+  local b; b="$("$AGENT_ASK" post --project demo 'two?')"
+  "$AGENT_ASK" answer "$b" yes 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  "$AGENT_ASK" delivery-seen "$b"
+  assert_equal "$(delivery "$b")" done
+}
+
+@test "a human answer beside a judge answer still queued delivers the judge's first, then the human's" {
+  local a; a="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' 'fix it?')"
+  "$AGENT_ASK" answer --by judge "$a" fix 2>/dev/null
+  "$AGENT_ASK" answer "$a" wait 2>/dev/null
+  assert_called "fix it? -> answered: fix (the judge; to override"
+  assert_not_called "fix it? -> answered: wait"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'answer: fix'; assert_line 'delivery_answer: wait'; assert_line 'delivery: queued'
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "fix it? -> answered: wait (ask $a)"
+  assert_equal "$(delivery "$a")" done
+  # The human's text is spent once it went, and the note names only the place it went.
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery_answer: '; assert_line 'delivery_note: a board row: no live session, resume or held item takes it'
+}
+
+@test "an answer typed in its own session queues no delivery" {
+  local a; a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' 'arm it?')"
+  printf '{"session_id":"sid-1","transcript_path":"%s","prompt":"yes"}' "$SANDBOX/t.jsonl" | bash "$SETTLE" answered
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'; refute_line --partial 'delivery'
 }
 
 @test "a board that refuses the row does not fail the answer" {
