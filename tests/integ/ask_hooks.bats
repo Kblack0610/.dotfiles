@@ -231,6 +231,41 @@ delivery() { sed -n 's/^delivery: //p' "$HOME/.agent/asks/demo/$1.md"; }
   assert_equal "$(delivery "$b")" done
 }
 
+@test "list --undelivered adds the answers still sending or not delivered, and none that went" {
+  local a b c d o f
+  a="$("$AGENT_ASK" post --project demo 'sending?')"; b="$("$AGENT_ASK" post --project demo 'failed?')"
+  c="$("$AGENT_ASK" post --project demo 'went?')"; d="$("$AGENT_ASK" post --project demo 'from before?')"
+  o="$("$AGENT_ASK" post --project demo 'open?')"
+  for f in "$a" "$b" "$c" "$d"; do "$AGENT_ASK" answer "$f" yes 2>/dev/null; done
+  sed -i 's/^delivery: queued/delivery: failed/' "$HOME/.agent/asks/demo/$b.md"
+  sed -i 's/^delivery: queued/delivery: done/' "$HOME/.agent/asks/demo/$c.md"
+  sed -i '/^delivery/d' "$HOME/.agent/asks/demo/$d.md"
+  run bash -c '"$AGENT_ASK" list demo --open --undelivered | cut -f1 | sort'
+  assert_output "$(printf '%s\n' "$a" "$b" "$o" | sort)"
+  # negative control: without the flag, only the open question
+  run bash -c '"$AGENT_ASK" list demo --open | cut -f1'
+  assert_output "$o"
+}
+
+@test "wait-delivered blocks while the answer is queued, returns where it ended, and its guard gives up" {
+  command -v inotifywait >/dev/null || skip 'no inotifywait'
+  local a pid; a="$("$AGENT_ASK" post --project demo 'ship it?')"
+  "$AGENT_ASK" answer "$a" now 2>/dev/null
+  AGENT_ASK_WAIT_TIMEOUT=1 run "$AGENT_ASK" wait-delivered "$a"
+  assert_output queued
+  AGENT_ASK_WAIT_TIMEOUT=30 "$AGENT_ASK" wait-delivered "$a" >"$BATS_TEST_TMPDIR/w" &
+  pid=$!
+  kill -0 "$pid"
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  wait "$pid"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/w")" done
+  local old; old="$("$AGENT_ASK" post --project demo 'from before?')"
+  run "$AGENT_ASK" wait-delivered "$old"
+  assert_output none
+  run "$AGENT_ASK" wait-delivered nosuch
+  assert_failure 2
+}
+
 @test "a human answer beside a judge answer still queued delivers the judge's first, then the human's" {
   local a; a="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' 'fix it?')"
   "$AGENT_ASK" answer --by judge "$a" fix 2>/dev/null
