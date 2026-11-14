@@ -218,6 +218,23 @@ plan_dialog() {
   assert_output --partial 'press a number, t, d or p first'
 }
 
+@test "a send's result outlasts the focus its reload fires; the next focus or esc moves on" {
+  plan_dialog
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  run "$Q" key enter @hub/demo:2
+  assert_output --partial 'sent 2 "Yes, manually approve edits" to hub/demo:2'
+  # The answered row leaves the list, so the cursor lands on another row: the result stays up.
+  run "$Q" key focus @hub/demo:3
+  assert_output ''
+  run "$Q" key focus @hub/demo:3
+  assert_output --partial 'change-footer~1-9 pick'
+  # Negative control: with a result up, esc closes the panel, as with nothing armed.
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  "$Q" key enter @hub/demo:2 >/dev/null
+  run "$Q" key esc @hub/demo:3
+  assert_output 'abort'
+}
+
 @test "a dialog that changed or closed before enter is refused, said, and the list reloads" {
   plan_dialog
   printf '4\nagent-panel answer: option 2 now reads "No"; nothing sent\n' >"$NOTES_FIXTURE/agent-panel.answer"

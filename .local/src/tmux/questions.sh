@@ -43,8 +43,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-# The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
-# picker makes it.
+# The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]", or "said"
+# while a send's result is in the footer. The picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 # The panel's parked toggle: a file reading "show" once P shows the parked asks. Unset (outside the
 # panel) rows lists them all; the picker makes it empty, so they start hidden.
@@ -280,7 +280,8 @@ after() {
   local n
   rows_build
   n="$(rows_saved | rows_count)"
-  st_write ""
+  # The reload drops the answered row and moves the cursor; "said" keeps the result through that focus.
+  st_write said
   printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
   if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
 }
@@ -377,7 +378,8 @@ cmd_key() {
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
     # With nothing armed the keys are fitted again, to whatever layout ctrl-/ left.
-    if [ -z "$mode" ]; then footer "$QUESTIONS_KEYS"
+    if [ "$mode" = said ]; then st_write ""
+    elif [ -z "$mode" ]; then footer "$QUESTIONS_KEYS"
     elif [ "$mode" != typing ] && [ "$sid" != "$id" ]; then st_write ""; footer "$QUESTIONS_KEYS"; fi
     ;;
   fit)
@@ -385,7 +387,7 @@ cmd_key() {
     [ -n "$mode" ] || footer "$QUESTIONS_KEYS"
     ;;
   esc)
-    [ -n "$mode" ] || { printf 'abort'; return 0; }
+    case "$mode" in "" | said) printf 'abort'; return 0 ;; esac
     st_write ""
     printf 'hide-input+change-prompt~~+'
     [ "$mode" = typing ] && header_count
