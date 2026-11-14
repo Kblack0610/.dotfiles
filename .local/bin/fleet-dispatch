@@ -72,6 +72,7 @@ unset _k _v
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
+: "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
@@ -760,8 +761,11 @@ live_units() { live_runs | units_on ''; }
 # DISPATCH_TARGET_AWAY: room still refuses an account past its line. TOTAL_LIVE is every
 # Claude session in the fleet state document, hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
-# verdict winds down) and the shepherd pass, which its own .counts leaves out too. It is empty when
+# verdict winds down), the shepherd pass, which its own .counts leaves out too, and ones waiting their
+# landing turn (open_job queue): they spend no tokens and no CPU while a train ahead of them gates, and
+# on 2026-11-14 22 of them held the present target of 30 while 618 items waited. It is empty when
 # the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
+# LINE_WAITS is {project: those landing waiters}, for the merge-line hold (line_why).
 pace_target() {
   if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
   else
@@ -773,8 +777,25 @@ pace_target() {
   fi
   TOTAL_LIVE=$(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
+    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
+        and .open_job != "queue")]
     | length' "$FLEET_STATE_FILE" 2>/dev/null)
+  LINE_WAITS=$(jq -c '[.sessions[] | select(.open_job == "queue" and .project != null) | .project]
+    | group_by(.) | map({key: .[0], value: length}) | from_entries' "$FLEET_STATE_FILE" 2>/dev/null) || LINE_WAITS='{}'
+  [ -n "$LINE_WAITS" ] || LINE_WAITS='{}'
+}
+
+# line_why <item json> -> why the item's project merge line holds it, or nothing: DISPATCH_LINE_MAX or
+# more of that project's sessions wait their landing turn (LINE_WAITS), so one more would only join the
+# line. An urgent or red item still starts: the human's urgent asks and a red's fix are never held here.
+line_why() {
+  [ "${DISPATCH_LINE_MAX:-0}" -gt 0 ] 2>/dev/null || return 0
+  local w="${LINE_WAITS:-}"; [ -n "$w" ] || w='{}'
+  jq -r --argjson w "$w" --argjson max "$DISPATCH_LINE_MAX" '
+    select(.priority != "urgent" and ((" " + (.tags // "") + " ") | contains(" red ") | not))
+    | ($w[.project] // 0) as $n | select($n >= $max)
+    | "merge line: \($n) \(.project) sessions wait their landing turn (DISPATCH_LINE_MAX=\($max))"' <<<"$1" 2>/dev/null
+  return 0
 }
 
 # floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
@@ -2880,7 +2901,7 @@ load_findings() {
 # 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
-  local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED=''
@@ -2896,6 +2917,7 @@ pick_item() {
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
+    if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=1; }; fi
     # The first urgent item that waits only on units, and could fit them all, keeps the free ones: a
     # later item that would use them waits too, or a stream of light items starves a heavy one.
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
@@ -2909,6 +2931,7 @@ pick_item() {
   done <<<"$items"
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$lhit" = 1 ]; then PICK_WHY="merge line full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
 }
@@ -3506,8 +3529,15 @@ cmd_starved() {
   local idle_focus; idle_focus=$(focus_idle)
   [ -z "$idle_focus" ] || { echo "$idle_focus"; dead+=$'\n'"$idle_focus"; }
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ]; then [ -z "$dead" ]; return; fi
-  items=$(runnable | jq -rs --argjson cut "$cut" '
-    [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)]
+  # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
+  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
+  human_here || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
+  local TARGET TARGET_WHEN TOTAL_LIVE LINE_WAITS
+  pace_target
+  # An item its project's merge line holds (line_why) waits on that line by design, not on a broken queue.
+  items=$(runnable | jq -rs --argjson cut "$cut" --argjson w "$LINE_WAITS" --argjson max "${DISPATCH_LINE_MAX:-0}" '
+    [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)
+      | select($max <= 0 or .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or ($w[.project] // 0) < $max)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"') || { echo "agent-queue unreadable"; return 1; }
   board=$(board_starved "$cut")
   low=$(low_starved "$(( cut - DISPATCH_STARVED_MIN * 60 ))")
@@ -3517,11 +3547,6 @@ cmd_starved() {
   # session there, and the red floor goes past the target, so a red item, a standing hold, board or
   # low water still trips. On 11-11 this tripped 4h at
   # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
-  # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
-  local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
-  human_here || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
-  local TARGET TARGET_WHEN TOTAL_LIVE
-  pace_target
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET), so nothing is starved"

@@ -335,6 +335,38 @@ load 'fleet_dispatch/common'
   assert_output --partial 'started game-agent-1'
 }
 
+# 2026-11-14: 22 playground sessions waiting their landing turn held the present target of 30; 618 items waited.
+@test "merge line: a landing waiter holds no pace slot; a full line holds its project's high item, not an urgent one or another project's" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "agent-1"'
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_PER_PASS=1
+  line_state 5 6 app
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project game --slug g1 "game work" >/dev/null
+  # Negative control first: no line cap; the 6 waiters still hold no slot, and the head of the queue starts.
+  DISPATCH_LINE_MAX=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'pace target: 5 of 6 live sessions'
+  assert_output --partial 'started queue item a1'
+  agent-queue move a1 queued >/dev/null
+  DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item g1'
+  refute_output --partial 'started queue item a1'
+  # One waiter under the cap, the line holds nothing.
+  agent-queue move g1 queued >/dev/null
+  line_state 5 5 app
+  DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1'
+  # An urgent item of a full line still starts ahead of another project's high one.
+  agent-queue move a1 queued >/dev/null
+  agent-queue set a1 priority=urgent >/dev/null
+  line_state 5 6 app
+  DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1'
+}
+
 @test "the pace target is the present one while the human is here and the away one while away" {
   export DISPATCH_TARGET_PRESENT=3 DISPATCH_TARGET_AWAY=10
   fleet_state 3
