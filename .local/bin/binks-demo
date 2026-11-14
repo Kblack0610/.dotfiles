@@ -83,7 +83,7 @@ publish)
   page "$1"
   code="$(call POST /api/demos -H 'Content-Type: text/html; charset=utf-8' --data-binary "@$1")"
   [ "$code" = 201 ] || refused "$code" "publish"
-  jq -r '.url' "$work/body"
+  jq -er '.url | strings' "$work/body" || die "publish got a 201 with no link in it: $(head -c 200 "$work/body")"
   ;;
 list)
   [ $# -eq 0 ] || usage

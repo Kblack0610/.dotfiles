@@ -24,9 +24,11 @@ CONNECT_EVERY_S, CONNECT_TRIES = 0.25, 240
 
 
 class Marionette:
-    def __init__(self, port, tool, reply_timeout_s):
+    def __init__(self, port, tool, reply_timeout_s, proc=None):
         self.tool = tool
         for _ in range(CONNECT_TRIES):
+            if proc and proc.poll() is not None:
+                raise SystemExit(f"{tool}: Firefox exited ({proc.returncode}) before its Marionette port opened")
             try:
                 self.s = socket.create_connection(("127.0.0.1", port), timeout=reply_timeout_s)
                 break
@@ -86,7 +88,7 @@ def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=
             ff = subprocess.Popen(["firefox", "--headless", "--no-remote", "--marionette", "--profile", prof],
                                   stdout=log, stderr=log, start_new_session=True)
         # A guard on one reply, past the longest script a caller lets a page run.
-        m = Marionette(port, tool, script_timeout_ms / 1000 + 30)
+        m = Marionette(port, tool, script_timeout_ms / 1000 + 30, proc=ff)
         m.profile = prof  # scratch space a caller can write into; removed with the profile
         m.cmd("WebDriver:NewSession", capabilities={})
         m.cmd("WebDriver:SetTimeouts", script=script_timeout_ms)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # binks-demo against a fake /api/demos: a curl stub that keeps demos in $FAKE, takes only the
 # token "good.token", and answers in the binks-api error shape ({"error": "..."}). No test reaches
-# binks.chat. The browser check is not run here: it starts Firefox (quick-demo skill, Verify).
+# binks.chat. `binks-demo check` is not run here: it starts Firefox, which the fast tier never does.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -39,6 +39,7 @@ case "$method $path" in
   "GET /api/demos")
     rows=$(for f in "$FAKE/demos"/*; do [ -e "$f" ] && printf '{"id":"%s","title":"Snake\\tgame","expires_at":"2026-12-14","url":"https://play.example/p/%s"},' "${f##*/}" "${f##*/}"; done)
     reply 200 "{\"demos\":[${rows%,}]}" ;;
+  "POST /nolink/api/demos") reply 201 '{"id":"AAAAAAAAAA"}' ;;
   "DELETE /api/demos/OTHERUSER1") reply 403 '{"error":"That demo is not yours"}' ;;
   "DELETE /api/demos/"*)
     id=${path##*/}
@@ -145,4 +146,12 @@ EOF
   run "$SUBJECT" publish "$SANDBOX/game.html"
   assert_failure
   assert_output --partial 'publish: not found (404)'
+}
+
+@test "a 201 with no link in it fails instead of printing null" {
+  export BINKS_DEMO_TOKEN=good.token BINKS_API_URL=https://api.example/nolink
+  run "$SUBJECT" publish "$SANDBOX/game.html"
+  assert_failure
+  assert_output --partial 'publish got a 201 with no link in it'
+  refute_output --partial 'null'
 }
