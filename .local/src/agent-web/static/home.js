@@ -289,14 +289,6 @@ function cardHtml(c) {
 // A refresh that failed while cards are held says so, so the last grid never reads as current.
 const staleSaid = () => `cards not refreshed: ${hst.cardsErr}`;
 const cardsHtml = (cards) => (hst.cardsErr ? `<div class="cline warn">${esc(staleSaid())}</div>` : "") + `<div class="kgrid">${cards.map(cardHtml).join("")}</div>`;
-// The phone's one status line: green collapses to one chip, only what is not green is named.
-function cardsLine(cards) {
-  if (!cards) return `<span class="muted">${esc(hst.cardsErr || "reading")}</span>`;
-  const bad = cards.filter((c) => c.level !== "ok");
-  const stale = hst.cardsErr ? ` <span class="warn">${esc(staleSaid())}</span>` : "";
-  if (!bad.length) return cchip("ok", `all green (${cards.length})`) + stale;
-  return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ") + stale;
-}
 
 const needsHead = (t) => secHead("needs", "Needs you", tblCount(t)) +
   (hst.gone ? `<div class="capline muted">Ask ${esc(hst.gone)} no longer waits on you: it was answered or withdrawn.</div>` : "");
@@ -354,12 +346,11 @@ function drawHome() {
   const body = tblBodyFirst(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
-  // Wide, the cards and vitals lead, so a long Needs list never buries them. On a phone they are
-  // one line saying whether anything is wrong, so Needs you comes first.
-  const warn = (t) => `<span class="warn">${esc(t)}</span>`;
-  const status = [cardsLine(hst.cards), h.vitals && !h.vitals.all_ok && warn(h.vitals.head)].filter(Boolean).join(" ");
+  // The cards lead at every width, so a long Needs list never buries them; a phone draws them two
+  // across and compact (app.css), and folds Vitals to its head line, its rows a tap away.
   const grid = hst.cards ? cardsHtml(hst.cards) : `<div class="empty">${esc(hst.cardsErr || "Reading the tabs.")}</div>`;
-  paint(el, errs + pfold("home-status", status, grid + vitals) + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
+  const vfold = v ? pfold("home-vitals", `<span class="${v.all_ok ? "muted" : "warn"}">Vitals: ${esc(v.head)}</span>`, vitals) : "";
+  paint(el, errs + grid + vfold + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.

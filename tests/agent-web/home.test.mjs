@@ -391,20 +391,22 @@ test("a card whose read failed says NO DATA and why, never an all-clear", () => 
   assert.doesNotMatch(html, /kbig ok/);
 });
 
-test("the phone line names only what is not green, all green is one chip, and unread says so", () => {
-  const line = (list) => { ctx.list = list; return vm.runInContext("cardsLine(list)", ctx); };
-  assert.equal(line(cards()), '<span class="cchip ok">all green (8)</span>');
-  assert.equal(line([card("alerts", { level: "red" }), card("infra"), card("costs", { level: "nodata" })]), '<span class="cchip bad">Alerts broken</span> <span class="cchip ">Costs no data</span>');
-  vm.runInContext("hst.cardsErr = null", ctx);
-  assert.match(line(null), /<span class="muted">reading<\/span>/);
+test("the cards lead Home ahead of Needs you, and Vitals sits in its own fold saying its state", () => {
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = null", ctx);
+  const html = draw(home({ vitals: vitals() }));
+  assert.ok(html.indexOf('<div class="kgrid">') < html.indexOf('id="home-need-head"'), "the grid comes before Needs you");
+  assert.match(html, /<details class="pfold" data-pf="home-vitals"[^>]*><summary><span class="warn">Vitals: 1 of 2 off target<\/span><\/summary><h2 class="sec warn" id="sec-vitals">/);
+  assert.match(draw(home({ vitals: vitals({ head: "2 of 2 on target", all_ok: true }) })), /<summary><span class="muted">Vitals: 2 of 2 on target<\/span><\/summary>/);
+  assert.doesNotMatch(draw(home({ vitals: null })), /home-vitals/, "no vitals, no fold");
+  assert.doesNotMatch(html, /home-status/, "the cards are no longer folded");
 });
 
-test("cards held after a failed refresh say they are stale, on the grid and the phone line", () => {
+test("cards held after a failed refresh say they are stale on the grid", () => {
   ctx.list = cards();
   vm.runInContext("hst.cards = list; hst.cardsErr = 'HTTP 502'", ctx);
   const html = draw(home());
   assert.match(html, /<div class="cline warn">cards not refreshed: HTTP 502<\/div><div class="kgrid">/);
-  assert.match(vm.runInContext("cardsLine(list)", ctx), /all green \(8\)<\/span> <span class="warn">cards not refreshed: HTTP 502<\/span>/);
   vm.runInContext("hst.cardsErr = null", ctx);
   assert.doesNotMatch(draw(home()), /not refreshed/, "a good refresh clears it");
 });
