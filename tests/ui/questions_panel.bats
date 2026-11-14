@@ -284,8 +284,9 @@ plan_row() {
   wait_until 'screen_has "3 asks waiting"'
   grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
   # The reload drops the answered row, so the cursor lands on another and fires focus: the
-  # result stays up through it, and moving off that row brings the keys back.
-  wait_until 'screen_has "sent 2"'
+  # result stays up through it, and moving off that row brings the keys back. The header
+  # changes as the reload starts, so the landing row's card is what says it finished.
+  wait_until 'screen_has "sent 2" && screen_has "gamma:3 . 0m ago"'
   tmux_keys Up
   wait_until 'screen_has "enter send" && ! screen_has "sent 2"'
 }
