@@ -70,7 +70,7 @@ def free_port():
 
 @contextlib.contextmanager
 def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=20000):
-    """A Marionette session on a new headless Firefox with a scratch profile; both go on exit."""
+    """A Marionette session on a new headless Firefox with a scratch profile (m.profile); both go on exit."""
     root = os.path.expanduser(f"~/.cache/{tool}")
     os.makedirs(root, exist_ok=True)
     prof = tempfile.mkdtemp(prefix="profile-", dir=root)
@@ -87,6 +87,7 @@ def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=
                                   stdout=log, stderr=log, start_new_session=True)
         # A guard on one reply, past the longest script a caller lets a page run.
         m = Marionette(port, tool, script_timeout_ms / 1000 + 30)
+        m.profile = prof  # scratch space a caller can write into; removed with the profile
         m.cmd("WebDriver:NewSession", capabilities={})
         m.cmd("WebDriver:SetTimeouts", script=script_timeout_ms)
         m.cmd("WebDriver:SetWindowRect", width=width, height=height)

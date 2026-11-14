@@ -16,7 +16,6 @@ import html
 import os
 import re
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from marionette import scratch_firefox  # noqa: E402
@@ -93,26 +92,22 @@ def main():
     if not re.search(r"<title[^>]*>\s*\S[\s\S]*?</title>", page[:TITLE_SCAN], re.I):
         fails.append(f"no <title> in the first {TITLE_SCAN} bytes: the demo would be named 'Untitled demo'")
 
-    cache = os.path.expanduser("~/.cache/binks-demo")
-    os.makedirs(cache, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", suffix=".html", dir=cache, delete=False) as f:
-        f.write(frame(page))
-    try:
-        with scratch_firefox("binks-demo", a.width, a.height, script_timeout_ms=REPORT_TIMEOUT_MS) as m:
-            m.cmd("WebDriver:Navigate", url="file://" + f.name)
-            el = m.cmd("WebDriver:FindElement", using="css selector", value="iframe")["value"]
-            m.cmd("WebDriver:SwitchToFrame", element=next(iter(el.values())))
-            r = m.cmd("WebDriver:ExecuteAsyncScript", script=REPORT)["value"]
-            if a.shot:
-                m.cmd("WebDriver:SwitchToParentFrame")
-                with open(a.shot, "wb") as out:
-                    out.write(base64.b64decode(m.cmd("WebDriver:TakeScreenshot")["value"]))
-    finally:
-        os.unlink(f.name)
+    with scratch_firefox("binks-demo", a.width, a.height, script_timeout_ms=REPORT_TIMEOUT_MS) as m:
+        wrapper = os.path.join(m.profile, "demo.html")
+        with open(wrapper, "w") as f:
+            f.write(frame(page))
+        m.cmd("WebDriver:Navigate", url="file://" + wrapper)
+        el = m.cmd("WebDriver:FindElement", using="css selector", value="iframe")["value"]
+        m.cmd("WebDriver:SwitchToFrame", element=next(iter(el.values())))
+        r = m.cmd("WebDriver:ExecuteAsyncScript", script=REPORT)["value"]
+        if a.shot:
+            m.cmd("WebDriver:SwitchToParentFrame")
+            with open(a.shot, "wb") as out:
+                out.write(base64.b64decode(m.cmd("WebDriver:TakeScreenshot")["value"]))
 
     fails += [f"error: {e}" for e in r["errors"]]
     fails += [f"csp: {c} (a demo has no network: inline it, or use data: URLs)" for c in r["csp"]]
-    if not (r["text"] or r["media"] or "drew" in r["canvases"] or "webgl" in r["canvases"]):
+    if not (r["text"] or r["media"] or any(c != "blank" for c in r["canvases"])):
         fails.append("the page drew nothing: no text, no image or svg, and every canvas is blank")
     print(f"canvases: {', '.join(r['canvases']) or 'none'}; text: {r['text']} chars")
     if a.shot:

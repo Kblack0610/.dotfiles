@@ -20,7 +20,7 @@ TIMEOUT=60         # seconds per request; a 1 MB upload fits well inside it
 # that may have landed must not publish twice.
 
 die() { echo "binks-demo: $*" >&2; exit "${2:-1}"; }
-usage() { sed -n '4,7p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n 's/^#   \(binks-demo \)/\1/p' "$0" >&2; exit 2; }
 
 token() {
   local t="${BINKS_DEMO_TOKEN:-}" from=BINKS_DEMO_TOKEN
