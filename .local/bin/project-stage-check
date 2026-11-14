@@ -96,7 +96,7 @@ requirements() {
   done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
   [ -n "$out" ] || { echo "project-stage-check: no Requirements rows in $STAGES_DOC" >&2; exit 2; }
   if [ -n "$JSON" ]; then
-    printf '%s' "$out" | jq -R -s --arg from "$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)" '
+    printf '%s' "$out" | jq -R -s --arg from "$(sed -n '/^Enforced from:/{s/^Enforced from: *\([0-9-]*\).*/\1/p;q;}' "$STAGES_DOC")" '
       {enforced_from: (if $from == "" then null else $from end),
        requirements: [split("\n")[] | select(length > 0) | split("\t")
          | {stage: .[0], applies: (.[1] | split(", ")), kind: .[2],
