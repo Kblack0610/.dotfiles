@@ -64,7 +64,7 @@ On return agent-web exchanges the code for the user's Forgejo login and checks i
 |---|---|---|
 | OAuth client id and secret | `~/.config/agent-web/oauth.json` (0600), also kept in the Bitwarden vault | none, agent-web will not start without it |
 | `AGENT_WEB_FORGEJO_URL` | env, Forgejo base URL | required |
-| `AGENT_WEB_BASE_URL` | env, the URL agent-web is served at; the OAuth callback is `<base>/oauth/callback` | required |
+| `AGENT_WEB_BASE_URL` | env, the URL agent-web is served at; the OAuth callback is `<base>/oauth/callback`. The unit reads it from `~/.config/agent-web/env`, which agent-notify also reads to link a page's `tmux:` and `ask:` refs here | required |
 | `AGENT_WEB_ALLOWED_USERS` | env, comma separated Forgejo logins | `kblack0610` |
 
 To recreate the OAuth app: Forgejo -> Settings -> Applications -> OAuth2, confidential client, redirect URI `<base>/oauth/callback`, then write `{"client_id": ..., "client_secret": ...}` to `oauth.json`.
