@@ -4,7 +4,7 @@
 //! A source that could not be read carries its reason and no amount, so it is said as not read,
 //! never as $0.
 
-use chrono::{Duration, Local, NaiveDate, TimeZone};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::queue::money;
@@ -81,21 +81,13 @@ const TRADER: [(&str, &str, &str); 2] = [
 
 /// `day`'s local midnight and the next one, in unix seconds; None for a date that does not parse.
 pub fn day_bounds(day: &str) -> Option<(i64, i64)> {
-    let d = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
-    let midnight = |d: NaiveDate| {
-        Local
-            .from_local_datetime(&d.and_hms_opt(0, 0, 0)?)
-            .earliest()
-            .map(|t| t.timestamp())
-    };
-    Some((midnight(d)?, midnight(d + Duration::days(1))?))
-}
-
-fn clock(t: i64) -> String {
-    Local
-        .timestamp_opt(t, 0)
-        .single()
-        .map_or_else(|| t.to_string(), |d| d.format("%Y-%m-%d %H:%M").to_string())
+    let next = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+        .ok()?
+        .succ_opt()?;
+    Some((
+        crate::home::day_start(day)?,
+        crate::home::day_start(&next.format("%Y-%m-%d").to_string())?,
+    ))
 }
 
 /// One instant query at a unix time: its value, None when it has no series then.
@@ -107,7 +99,7 @@ pub fn trader(at: &At, day: &str) -> Vec<Source> {
         let (start, end) = day_bounds(day).ok_or_else(|| format!("{day} is not a date"))?;
         let mut v = [0.0; 2];
         for (i, t) in [start, end].into_iter().enumerate() {
-            let when = clock(t);
+            let when = crate::fleet::local_minute(t);
             v[i] = at(value, t)?.ok_or_else(|| format!("no equity reading at {when}"))?;
             let old = at(age, t)?.ok_or_else(|| format!("no read age at {when}"))?;
             if old > TRADER_STALE_SECS {
@@ -428,7 +420,7 @@ mod tests {
     fn day_bounds_span_one_local_day() {
         let (a, b) = day_bounds("2026-11-13").unwrap();
         assert!((23 * 3600..=25 * 3600).contains(&(b - a)), "{a} {b}");
-        assert_eq!(clock(a), "2026-11-13 00:00");
+        assert_eq!(crate::fleet::local_minute(a), "2026-11-13 00:00");
         assert!(day_bounds("yesterday").is_none());
     }
 }
