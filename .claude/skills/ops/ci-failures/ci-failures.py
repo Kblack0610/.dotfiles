@@ -153,8 +153,7 @@ class Source:
                         "headBranch": r.get("branch"),
                         "headSha": r.get("sha"), "event": r.get("event"), "status": r["status"],
                         "conclusion": r.get("conclusion"), "createdAt": r["created_at"],
-                        "attempt": r.get("attempt") or 1, "url": r.get("url"),
-                        "_listed_as": [path] if path else []})
+                        "attempt": r.get("attempt") or 1, "url": r.get("url")})
         return out
 
     def sync(self, label, verb, *args):
@@ -405,7 +404,7 @@ def main(argv):
     runs = src.runs(since, until, bool(args.until))
     if args.workflow:
         want = set(args.workflow)
-        runs = [r for r in runs if r["workflowName"] in want or want & set(r.get("_listed_as", []))]
+        runs = [r for r in runs if r["workflowName"] in want or r["workflowKey"] in want]
     records = collect(src, runs)
     a = analyse(runs, records, args.base, set(args.branch))
     if args.json:
