@@ -757,6 +757,9 @@ ledger() {
   until grep -q 'gate-line.py' "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
   assert_output 'queue'
+  # the queue wait does not depend on time-use.conf being readable
+  FLEET_TIME_USE_CONF="$SANDBOX/missing.conf" run live_wait "$SANDBOX/wt"
+  assert_output 'queue'
   FLEET_QUEUE_GATES='nothing-like-it' run live_wait "$SANDBOX/wt"
   assert_output ''
   # gate-line.py without --recheck is not a queue wait
@@ -767,6 +770,19 @@ ledger() {
   run live_wait "$SANDBOX/wt"
   assert_output ''
   kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
+@test "queue_match takes a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
+  queue_match 'bash scripts/test/gate-and-land.sh 2102 ' gate-and-land.sh
+  queue_match 'bash ci-gate.sh ' ci-gate.sh
+  queue_match 'python3 gate-line.py --repo x --recheck ' 'gate-line.py --recheck'
+  queue_match 'python3 gate-line.py --recheck=1 ' 'gate-line.py --recheck'
+  # negative controls: no --recheck, a log or an editor that only names the script
+  ! queue_match 'python3 gate-line.py --check ' 'gate-line.py --recheck'
+  ! queue_match 'tail -f logs/ci-gate.sh.log ' ci-gate.sh
+  ! queue_match 'tail -f scripts/test/ci-gate.sh ' ci-gate.sh
+  ! queue_match 'vim scripts/test/ci-gate.sh ' ci-gate.sh
+  ! queue_match 'shellcheck gate-and-land.sh ' gate-and-land.sh
 }
 
 @test "self_wait finds a tail --pid on its own parent under the claude, and nothing else (ar-1118)" {

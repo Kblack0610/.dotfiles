@@ -214,6 +214,17 @@ session_bucket() {
   echo "$(bucket_facts "$@")$cn$note"
 }
 
+# queue_match <cmdline> <gate>: true when every word of <gate> is a whole argument of <cmdline> (a path
+# ending in it counts, `--recheck=1` for `--recheck`), so `gate-line.py --repo x --recheck` matches
+# and `tail -f ci-gate.sh.log` or an editor on the script do not.
+queue_match() {
+  local c=" $1" w
+  case "$c" in " vim "* | " vi "* | " nvim "* | " nano "* | " less "* | " cat "* | " bat "* | " head "* | " tail "* | " grep "* | " rg "* | " shellcheck "*) return 1 ;; esac
+  for w in $2; do
+    case "$c" in *" $w "* | *"/$w "* | *" $w="* | *"/$w="*) ;; *) return 1 ;; esac
+  done
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate or test when a process running in <cwd> (or below it), or
 # descended from the session's claude whatever its cwd, matches a `gate` or `test` line of
@@ -229,7 +240,7 @@ session_bucket() {
 # without .pid) only the worktree is read.
 live_wait() {
   local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
-  [ -r "$conf" ] && cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
+  cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
   local -A skip=() mine=()
   pid=$$; while [ "${pid:-0}" -gt 1 ]; do skip[$pid]=1; pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"; done
   if [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ]; then
@@ -251,9 +262,10 @@ live_wait() {
   local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
   for text in "${qg[@]}"; do
     for cmd in "${cmds[@]}"; do
-      case "$cmd" in *"$text"*) echo queue; return 0 ;; esac
+      queue_match "$cmd" "$text" && { echo queue; return 0; }
     done
   done
+  [ -r "$conf" ] || return 0
   for want in gate test; do
     while read -r kind text; do
       [ "$kind" = "$want" ] && [ -n "$text" ] || continue
@@ -1358,7 +1370,10 @@ collect() {
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     live=""
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ] || [ "$ojob" = gate ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"; ojob="${live:-$ojob}"
+      live="$(live_wait "$cwd" "$cpid")"
+      # a transcript job that already reads gate keeps its class: the probe only adds the queue case
+      [ "$ojob" != gate ] || [ "$live" = queue ] || live=""
+      ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
     # read as a gate. A live gate or test process found above outranks it.
