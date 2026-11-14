@@ -37,7 +37,8 @@ pub struct First {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Card {
-    /// The `hub_core::layout` tab id the card opens.
+    /// The card's id: the `hub_core::layout` tab it opens, or for a Home card (`needs`, `red`)
+    /// the Home list it counts. A widget's `?cards=` names cards by it.
     pub tab: &'static str,
     pub title: &'static str,
     /// The one big number or word, and what it counts.
@@ -420,8 +421,43 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         level: c.level,
         n: 1,
     }];
-    c.first(head.into_iter().chain(needs).collect::<Vec<_>>())
+    c.first(
+        // The top session comes last, so it never pushes a budget need off the card.
+        head.into_iter()
+            .chain(needs)
+            .chain(top_session(k))
+            .collect::<Vec<_>>(),
+    )
 }
+
+/// The session that has spent the most of those active in the last 24h: burn per session, on a
+/// card with room for one line. A session's cost is its whole run, so the line says so.
+fn top_session(k: &crate::costs::Costs) -> Option<First> {
+    let s = k
+        .sessions
+        .iter()
+        .filter(|s| s.updated_epoch.is_some_and(|t| t >= k.at - DAY))
+        .filter_map(|s| s.cost_usd.map(|c| (c, s)))
+        .max_by(|a, b| a.0.total_cmp(&b.0))?
+        .1;
+    let name = s
+        .title
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .unwrap_or(&s.project);
+    Some(row(
+        format!(
+            "${:.2} {}",
+            s.cost_usd.unwrap_or(0.0),
+            crate::text::cap(name, 40)
+        ),
+        "top session active in 24h, its whole run",
+        Level::Ok,
+        Some(Link::to(crate::links::Kind::Session, s.session_id.clone())),
+    ))
+}
+
+const DAY: i64 = 86_400;
 
 /// Releases: each app's worst channel, as release-state judged it.
 pub fn releases(r: &crate::releases::Releases) -> Card {
@@ -563,6 +599,100 @@ pub struct Reads<'a> {
     pub releases: Got<'a, crate::releases::Releases>,
     pub schedules: Got<'a, crate::schedules::Schedules>,
     pub projects: Got<'a, crate::projects::Projects>,
+}
+
+/// Needs you: what waits on the human (asks, sessions, queue items), oldest first.
+pub fn needs(home: &crate::home::Home, now: i64) -> Card {
+    use crate::home::Kind;
+    let waiting = crate::phone::waiting(home);
+    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();
+    let mut c = Card::new(
+        "needs",
+        "Needs you",
+        "Home's Needs you: open asks, sessions waiting on you, queue items held for you",
+    );
+    c.link = Link::tab("home");
+    c.big = waiting.len().to_string();
+    c.unit = "waiting on you".into();
+    c = c
+        .bar(0, waiting.len(), 0)
+        .part("Asks", of(Kind::Ask), lvl(of(Kind::Ask), Level::Warn))
+        .part(
+            "Sessions",
+            of(Kind::Session),
+            lvl(of(Kind::Session), Level::Warn),
+        )
+        .part("Queue", of(Kind::Queue), lvl(of(Kind::Queue), Level::Warn));
+    // Nothing waiting is a green zero, never no data: Home answered.
+    c.level = lvl(waiting.len(), Level::Warn);
+    if !home.errors.is_empty() {
+        c.error = Some(home.errors.join("; "));
+        if c.level == Level::Ok {
+            c.level = Level::Warn;
+        }
+    }
+    c.first_head = "Oldest";
+    let mut old = waiting.clone();
+    old.sort_by_key(|n| n.since.unwrap_or(i64::MAX));
+    c.first(old.into_iter().map(|n| {
+        let waited = n
+            .since
+            .map(|t| crate::text::age(now - t))
+            .unwrap_or_default();
+        let sub = [waited.as_str(), n.project.trim_start_matches('.')]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        row(crate::text::cap(&n.text, 60), sub, Level::Warn, None)
+    }))
+}
+
+/// Main red: the repos whose nightly on main is red.
+pub fn main_red(home: &crate::home::Home) -> Card {
+    let red = crate::phone::red_repos(home);
+    let mut c = Card::new(
+        "red",
+        "Main red",
+        "Home's needs: repos whose nightly on main is red",
+    );
+    c.link = Link::tab("home");
+    c.big = red.len().to_string();
+    c.unit = if red.len() == 1 {
+        "repo red on main"
+    } else {
+        "repos red on main"
+    }
+    .into();
+    c = c.bar(0, 0, red.len());
+    c.level = lvl(red.len(), Level::Red);
+    // Home's nightly reds come from reads that can fail: a zero then is unknown, never green.
+    if !home.errors.is_empty() {
+        c.error = Some(home.errors.join("; "));
+        if c.level == Level::Ok {
+            c.level = Level::Warn;
+        }
+    }
+    c.first_head = "Red";
+    c.first(red.iter().map(|r| row(*r, "nightly", Level::Red, None)))
+}
+
+/// The widget's cards when its URL names none: what needs the human, then fleet health.
+pub const WIDGET: &[&str] = &["needs", "red", "alerts", "sessions", "costs", "infra"];
+
+/// The cards `names` lists, in its order; a name no card has is skipped.
+pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
+    let mut cards: Vec<Option<Card>> = cards.into_iter().map(Some).collect();
+    names
+        .iter()
+        .filter_map(|n| {
+            cards
+                .iter_mut()
+                .find(|c| c.as_ref().is_some_and(|c| c.tab == *n))
+                .and_then(Option::take)
+        })
+        .collect()
 }
 
 /// The grid, in the order both surfaces draw it: a card per tab, `reading` until its read
@@ -854,5 +984,119 @@ mod tests {
         k.budget.needs.clear();
         k.errors = vec!["ccusage: timed out".into()];
         assert_eq!(costs(&k).level, Level::Warn);
+    }
+
+    fn need(kind: crate::home::Kind, text: &str, since: Option<i64>) -> crate::home::Need {
+        crate::home::Need {
+            kind,
+            need: crate::home::NeedKind::Turn,
+            rank: 0,
+            project: ".dotfiles".into(),
+            text: text.into(),
+            id: text.into(),
+            target: None,
+            since,
+            recommend: None,
+            score: None,
+        }
+    }
+
+    #[test]
+    fn needs_counts_what_waits_on_you_and_looks_first_at_the_oldest() {
+        use crate::home::{Home, Kind};
+        let home = Home {
+            needs: vec![
+                need(Kind::Ask, "new ask", Some(9_000)),
+                need(Kind::Session, "old session", Some(1_000)),
+                need(Kind::Queue, "held item", None),
+                // A condition and a red are not waits: they stay off this card.
+                need(Kind::Stopped, "stopped", Some(0)),
+                need(Kind::Nightly, "nightly", Some(0)),
+            ],
+            ..Home::default()
+        };
+        let c = needs(&home, 10_000);
+        assert_eq!((c.big.as_str(), c.level), ("3", Level::Warn));
+        let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(first, ["old session", "new ask", "held item"]);
+        assert_eq!(c.first[0].sub, "2h dotfiles");
+        // Negative control: nothing waiting is a green zero, and an unread Home is never green.
+        let mut empty = Home::default();
+        assert_eq!(needs(&empty, 0).level, Level::Ok);
+        empty.errors = vec!["asks: timed out".into()];
+        assert_eq!(needs(&empty, 0).level, Level::Warn);
+    }
+
+    #[test]
+    fn main_red_names_the_red_repos() {
+        use crate::home::{Home, Kind};
+        let home = Home {
+            needs: vec![
+                need(Kind::Nightly, "red", None),
+                need(Kind::Ask, "ask", None),
+            ],
+            ..Home::default()
+        };
+        let c = main_red(&home);
+        assert_eq!((c.big.as_str(), c.level), ("1", Level::Red));
+        assert_eq!(c.first[0].text, "dotfiles");
+        assert_eq!(main_red(&Home::default()).level, Level::Ok);
+        // Negative control: a Home whose reads failed is no all-clear on main.
+        let unread = Home {
+            errors: vec!["Prometheus: timed out".into()],
+            ..Home::default()
+        };
+        assert_eq!(main_red(&unread).level, Level::Warn);
+    }
+
+    #[test]
+    fn costs_names_the_top_session_active_in_24h() {
+        use crate::costs::Spent;
+        let spent = |id: &str, usd: f64, at: i64| Spent {
+            session_id: id.into(),
+            project: "p".into(),
+            title: Some(id.into()),
+            cost_usd: Some(usd),
+            updated_epoch: Some(at),
+            ..Default::default()
+        };
+        let mut k = crate::costs::Costs {
+            at: 100 * DAY,
+            ..Default::default()
+        };
+        k.burn.level = "ok";
+        k.sessions = vec![
+            spent("big-but-old", 90.0, 98 * DAY),
+            spent("top", 12.5, 100 * DAY - 60),
+            spent("small", 3.0, 100 * DAY - 60),
+        ];
+        let c = costs(&k);
+        assert!(
+            c.first.iter().any(|f| f.text == "$12.50 top"),
+            "{:?}",
+            c.first
+        );
+        // A budget need outranks it: with three rows to show, the need stays and the session goes.
+        k.burn.head = "burning 2x".into();
+        k.budget.needs = vec!["over cap".into(), "projected over".into()];
+        let rows: Vec<_> = costs(&k).first.into_iter().map(|f| f.text).collect();
+        assert_eq!(rows, ["burning 2x", "over cap", "projected over"]);
+        k.budget.needs.clear();
+        // Negative control: no session active in 24h is no line, never an old one.
+        k.sessions.truncate(1);
+        assert!(costs(&k).first.iter().all(|f| !f.text.starts_with('$')));
+    }
+
+    #[test]
+    fn pick_keeps_the_named_cards_in_the_named_order() {
+        let cards = vec![
+            Card::reading("sessions", "Sessions"),
+            Card::reading("alerts", "Alerts"),
+        ];
+        let got: Vec<_> = pick(cards, &["alerts", "nope", "sessions", "alerts"])
+            .iter()
+            .map(|c| c.tab)
+            .collect();
+        assert_eq!(got, ["alerts", "sessions"]);
     }
 }

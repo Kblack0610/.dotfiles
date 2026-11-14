@@ -26,6 +26,11 @@ fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> card
 }
 
 pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
+    Json(read(&s).await)
+}
+
+/// The grid as `/api/home/cards` sends it; the widget picks its cards from the same read.
+pub async fn read(s: &Shared) -> Vec<Card> {
     let (infra, queue, sessions, alerts, costs, schedules, projects) = tokio::join!(
         s.infra.infra(),
         s.queue.queue(),
@@ -42,7 +47,7 @@ pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
     );
     // A worker that died is a failed read, said on the Queue card, never no bottleneck.
     let pipeline = pipeline.and_then(|r| r);
-    Json(cards::grid(&cards::Reads {
+    cards::grid(&cards::Reads {
         sessions: Some(
             sessions
                 .as_ref()
@@ -57,5 +62,5 @@ pub async fn get(State(s): State<Shared>) -> Json<Vec<Card>> {
         releases: got(&releases),
         schedules: got(&schedules),
         projects: got(&projects),
-    }))
+    })
 }
