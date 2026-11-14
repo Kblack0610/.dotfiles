@@ -113,6 +113,8 @@ function powerCell(m) {
 
 // Each table's cells by column, in the order the summary's columns come (hub_core Row::COLUMNS);
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
+// hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
+const HOT_C = 85;
 const MACH_COLS = { machine: ["machine"], where: ["where"], state: ["state"], busy: ["busy", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
   mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], pools: ["pools"], running: ["running"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
 const MACH_CELLS = {
@@ -124,7 +126,7 @@ const MACH_CELLS = {
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
   mem: (m) => td("m", `${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}`),
-  temp: (m) => td(`n${m.temp > 85 ? " warn" : ""}`, m.temp == null ? "-" : Math.round(m.temp) + "C"),
+  temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
   disk: diskCell,
   pools: (m) => td("muted wrap", esc(m.pools.join("  ")) || "-"),
   running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
@@ -443,15 +445,78 @@ function cloudButtons(p) {
   return pageRow("Hold", btns) + (cst.msg && cst.host === p.host ? `<div class="err">${esc(cst.msg)}</div>` : "");
 }
 
+// Bytes as a reader says them, as hub_core::host_now::bytes does: 2.5G, 340M, 12K.
+function bytes(b) {
+  if (b == null) return "-";
+  const u = ["B", "K", "M", "G", "T"];
+  let v = Math.max(0, b), i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (v < 10 && i > 0 ? v.toFixed(1) : Math.round(v)) + u[i];
+}
+const cpuCores = (c) => (c == null ? "-" : c.toFixed(2));
+const degC = (c) => (c == null ? "-" : Math.round(c) + "C");
+
+const DEVICE_COLS = { device: ["device"], hottest: ["hottest", "n"], readings: ["readings"], chip: ["chip"] };
+const DEVICE_CELLS = {
+  device: (r) => td("", esc(r.device)),
+  hottest: (r) => td(`n${r.hottest >= HOT_C ? " warn" : ""}`, degC(r.hottest)),
+  readings: (r) => td("wrap", esc([...r.temps.map(([n, c]) => `${n} ${degC(c)}`), ...r.fans.map(([n, v]) => `${n} ${Math.round(v)}rpm`)].join("  ")) || "-"),
+  chip: (r) => td("muted", esc(r.chip)),
+};
+const POD_COLS = { pod: ["pod"], namespace: ["namespace"], cpu: ["cpu cores", "n"], mem: ["mem", "n"] };
+const POD_CELLS = {
+  pod: (r) => td("wrap", esc(r.pod)),
+  namespace: (r) => td("muted", esc(r.namespace)),
+  cpu: (r) => td("n", cpuCores(r.cpu)),
+  mem: (r) => td("n", bytes(r.mem)),
+};
+// A Docker container's row or a process name's (hub_core::host_now::Proc): the empty column hides.
+const PROC_COLS = { name: ["name"], image: ["image"], cpu: ["cpu cores", "n"], mem: ["mem", "n"], count: ["count", "n"] };
+const PROC_CELLS = {
+  name: (r) => td("wrap", esc(r.name)),
+  image: (r) => td("muted wrap", esc(r.image)),
+  cpu: (r) => td("n", cpuCores(r.cpu)),
+  mem: (r) => td("n", bytes(r.mem)),
+  count: (r) => td("n", r.count == null ? "-" : String(r.count)),
+};
+
+// One column per hour: the CPU's hottest sensor, amber from HOT_C.
+function tempChart(h) {
+  if (!h.hours.some((x) => x.temp != null)) return "";
+  const cols = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at),
+    tip: x.temp == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: hottest ${degC(x.temp)}`,
+    segs: [{ v: x.temp || 0, color: x.temp >= HOT_C ? "var(--b-stalled)" : OTHER }] }));
+  return `${columns(cols, { height: 80, yfmt: degC })}<div class="muted">the CPU's hottest sensor each hour, amber from ${HOT_C}C</div>`;
+}
+
+// A part of `live` whose query failed: unknown, so it says not read and why, never none.
+const unread = (l, part) => (l.unread[part] == null ? "" : `<div class="empty">${NOT_READ}: ${esc(l.unread[part])}</div>`);
+
+// What runs on it now (hub_core::host_now): pods, then what runs outside Kubernetes.
+function liveBody(d) {
+  const l = d.live, t = d.tables;
+  let h = secHead("", "Pods", t.pods.rows.length, "", "h3") + (unread(l, "pods") || pageTable(t.pods, POD_COLS, POD_CELLS, "No Kubernetes pod runs here."));
+  const inv = unread(l, "inventory");
+  if (inv) return h + secHead("", "Containers, processes, services", null, "", "h3") + inv;
+  if (!l.inventory) return h + secHead("", "Containers, processes, services", null, "", "h3") + `<div class="empty">Not collected: no node_inventory.prom on it (home-config role node-inventory-metrics).</div>`;
+  h += secHead("", "Containers", t.containers.rows.length, "", "h3") + pageTable(t.containers, PROC_COLS, PROC_CELLS, "No Docker container runs here.");
+  const of = l.processes_total == null ? "" : ` of ${l.processes_total}`;
+  h += secHead("", "Processes", `busiest ${t.processes.rows.length}${of}`, "", "h3") + pageTable(t.processes, PROC_COLS, PROC_CELLS, "No process reading.");
+  return h + secHead("", "Services", l.services.length, "", "h3") + `<div class="panel">${esc(l.services.join("   ")) || "none running"}</div>`;
+}
+
 function machineBody(d) {
   const colors = poolColors(d);
   let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
+  const hot = d.tables.devices.rows.some((r) => r.hottest >= HOT_C);
+  h += secHead("", "Sensors", d.tables.devices.rows.length, hot ? "warn" : "", "h3") + (!d.live ? `<div class="empty">${NOT_READ}.</div>` : unread(d.live, "sensors") || pageTable(d.tables.devices, DEVICE_COLS, DEVICE_CELLS, "Its node exporter publishes no hwmon reading."));
   h += secHead("", "Share", null, "", "h3") + shareBar(d, colors);
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
+  if (d.live) h += liveBody(d);
   const hist = d.history;
   if (hist) {
-    h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors);
+    h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors) + tempChart(hist);
     h += secHead("", "Downtime", d.tables.down?.rows.length, "", "h3") + pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No gap in the readings.");
     if (hist.power) h += powerHistory(hist.power);
   }

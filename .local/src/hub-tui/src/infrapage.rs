@@ -100,6 +100,15 @@ impl InfraPage {
         }
     }
 
+    /// It was read, and every part of it: a printed page that is not fails the run.
+    pub fn read_whole(&self) -> bool {
+        match self {
+            Self::Machine(_, Some(Ok(m))) => m.errors.is_empty(),
+            Self::Pool(_, Some(Ok(p))) => p.errors.is_empty(),
+            _ => false,
+        }
+    }
+
     /// The Grafana board it links, for `o`: the first part that leads outside the hub.
     pub fn grafana(&self) -> Option<String> {
         let parts: &[Part] = match self {

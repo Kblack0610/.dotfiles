@@ -26,6 +26,7 @@ pub mod focus;
 pub mod gateway;
 pub mod home;
 pub mod host_history;
+pub mod host_now;
 pub mod infra;
 pub mod item_history;
 pub mod jobs;
