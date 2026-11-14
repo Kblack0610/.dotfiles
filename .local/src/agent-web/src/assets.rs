@@ -64,6 +64,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
+    ("ladder.js", JS, include_bytes!("../static/ladder.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("work.js", JS, include_bytes!("../static/work.js")),

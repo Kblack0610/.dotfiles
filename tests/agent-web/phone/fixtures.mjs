@@ -114,6 +114,21 @@ const deliverables = {
   legend: "percent is the epic's rows by size (#size/s 1, m 3, l 8), then rows done/all",
 };
 
+// Ladder: hub_core::stages, each staged project against its next stage, then stages.md's Requirements.
+const STAGES = ["idea", "dev", "alpha", "beta", "prod"];
+const stages = {
+  table: table(5, ["project", "type", "stage", "next", "met", "failing", "filed"], ["all", "failing", "met", "not read"], { type: ["game", "app", "infra"], stage: STAGES.slice(1) }),
+  rows: rows(5, (i) => ({ name: pick(PROJECTS, i), profile: pick(["personal", "bnb"], i), type: pick(["game", "app", "infra"], i), stage: STAGES[1 + (i % 4)], next: STAGES[Math.min(4, 2 + (i % 4))], met: 4 + i, total: 9, fail: i < 3 ? 3 - i : 0, todo: 2, human: 1, filed_open: 3 - (i % 3), filed_closed: i, error: i === 4 ? "project-stage-check: no stage beta-2 in stages.md" : null, state: i === 4 ? "not read" : i < 3 ? "failing" : "met", met_says: i === 4 ? "" : `${4 + i}/9`, filed_says: `${3 - (i % 3)}/${i}` })),
+  says: "", gate_says: "report only until 2026-11-19 (in 6 days), then a failing row blocks a stage move", gate_level: "warn",
+  filer_says: "nightly, last 04:30 today: 6 filed, 1 met and closed, 0 epics opened", filer_level: "",
+  kinds_says: "on fix feat chore docs; off legal store", kinds_level: "", failing: 4, doc: "~/.local/src/docs/stages.md", filer_href: "#schedules?q=name:=project-index",
+};
+const stageReqs = {
+  table: table(6, ["stage", "applies", "requirement", "check", "by"], ["all", "test", "human", "not yet"], { stage: STAGES, applies: ["base", "game", "store"], check: ["test", "human", "not yet"] }),
+  rows: rows(6, (i) => ({ stage: STAGES[i % 5], applies: i % 3 ? ["game", "store"] : ["base"], requirement: TEXT[i], check: pick(["`test -f README.md`", "human", "not yet: a store check"], i), kind: pick(["predicate", "human", "not-yet"], i), skills: i % 2 ? ["fix-ci"] : [], says: pick(["test", "human", "not yet"], i) })),
+  says: "",
+};
+
 // A project page (hub_core::page) as big as unity-core-playground's on 2026-11-12, which read
 // 33,558 px before it had inner tabs: 16 systems, 1,000 items needing the human, a 29-check stage
 // and a long timeline. render.mjs holds each of its inner tabs to the height budget.
@@ -376,7 +391,7 @@ export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
-  "/api/projects": projects, "/api/deliverables": deliverables, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
+  "/api/projects": projects, "/api/deliverables": deliverables, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,

@@ -139,9 +139,9 @@ pub const TABS: [Tab; 11] = [
         group: "Projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &["cards", "board", "deliverables"],
+        sections: &["cards", "board", "deliverables", "stages", "requirements"],
         // The project list, every project's rows on one board (the Board tab until 2026-11-12),
-        // and the deliverables. A bare inner id or section after `#projects/` is the inner tab;
+        // the deliverables, and the stage ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
         // anything else is a project, and a project with such a name opens as `<profile>/<name>`.
         inner: &[
             Inner {
@@ -158,6 +158,11 @@ pub const TABS: [Tab; 11] = [
                 id: "deliverables",
                 title: "Deliverables",
                 sections: &["deliverables"],
+            },
+            Inner {
+                id: "ladder",
+                title: "Ladder",
+                sections: &["stages", "requirements"],
             },
         ],
     },
@@ -878,8 +883,10 @@ mod tests {
         assert_eq!(at(section("board")), Some("all"));
         assert_eq!(at(Some("all")), Some("all"));
         assert_eq!(at(Some("deliverables")), Some("deliverables"));
+        assert_eq!(at(Some("requirements")), Some("ladder"));
+        assert_eq!(at(Some("ladder")), Some("ladder"));
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Projects", "All rows", "Deliverables"]);
+        assert_eq!(titles, ["Projects", "All rows", "Deliverables", "Ladder"]);
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");
     }
 

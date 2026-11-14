@@ -49,6 +49,8 @@ const TABS = [
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "projects", name: "projects-all", inner: "all", row: `#p-all tr.jr` },
+  { tab: "projects", name: "projects-ladder", inner: "ladder", row: `#p-lstages tr.jr` },
+  { tab: "projects", name: "projects-requirements", inner: "ladder", row: `#p-lreqs ${DATA_ROW}` },
   { tab: "sessions", row: `#ov-sessions tr.click` },
   { tab: "sessions", inner: "runners", name: "sessions-runners", row: `#ov-runners tr.wr` },
   { tab: "alerts", row: `#alerts tr.jr` },

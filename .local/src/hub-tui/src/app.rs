@@ -399,6 +399,10 @@ pub enum Msg {
     Alerts(Box<hub_core::alerts::Alerts>),
     /// A Sentinel watch's state file changed (a trip, a clear, an error).
     WatchFiles,
+    /// The Projects tab's Ladder (hub_core::stages::read).
+    Ladder(Box<hub_core::stages::Ladder>),
+    /// The nightly stage pass wrote a new stages.json.
+    StagesFile,
     /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
     Deliverables(Result<hub_core::deliverables::Deliverables, String>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
@@ -513,6 +517,8 @@ pub struct App {
     /// The Alerts tab's table view, opened row and Watches fold.
     pub av: AlertsView,
     alerts_read: Read,
+    /// The Projects tab's Ladder; None until the first read.
+    pub ladder: Option<hub_core::stages::Ladder>,
     /// The Projects tab's Deliverables section; None until the first read.
     pub deliverables: Option<Result<hub_core::deliverables::Deliverables, String>>,
     /// The Costs tab's read; None until the first.
@@ -632,6 +638,9 @@ pub struct App {
     ranked_read: Read,
     reds_read: Read,
     deliverables_read: Read,
+    ladder_read: Read,
+    /// The Ladder showed at the last check, so coming into view again reads it afresh.
+    ladder_seen: bool,
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
@@ -702,6 +711,7 @@ impl App {
             av: AlertsView::default(),
             alerts_read: Read::default(),
             deliverables: None,
+            ladder: None,
             costs: None,
             cv: crate::coststab::CostsView::default(),
             fleet: None,
@@ -765,6 +775,8 @@ impl App {
             ranked_read: Read::default(),
             reds_read: Read::default(),
             deliverables_read: Read::default(),
+            ladder_read: Read::default(),
+            ladder_seen: false,
             schedules_read: Read::default(),
             releases_read: Read::default(),
             builds_read: Read::default(),
@@ -815,6 +827,14 @@ impl App {
             (self.files.watches.clone(), false),
         ];
         if let Some(d) = self.files.builds.ledger.parent() {
+            v.push((d.to_path_buf(), false));
+        }
+        // The nightly stage pass's stages.json, unless it is under agentctl's, watched already.
+        let stages = hub_core::stages::Paths::from_env().stages;
+        if let Some(d) = stages
+            .parent()
+            .filter(|d| !d.starts_with(&self.paths.agentctl))
+        {
             v.push((d.to_path_buf(), false));
         }
         for f in [&self.paths.unity_runs, &self.files.state] {
@@ -937,6 +957,35 @@ impl App {
                 .is_none_or(|t| t.elapsed() >= DELIVERABLES_REFRESH)
         {
             self.read_deliverables();
+        }
+    }
+
+    /// The Ladder reads when it comes into view, on `r`, and on a new stages.json while it shows;
+    /// its Requirements are stages.md read live, which nothing watches, so a visit reads them.
+    fn read_ladder_due(&mut self) {
+        let shown = self.ladder_shown();
+        if shown && !self.ladder_seen {
+            self.read_ladder();
+        }
+        self.ladder_seen = shown;
+    }
+
+    pub fn ladder_shown(&self) -> bool {
+        self.tab == Tab::Projects && self.pv.ladder_shown(&self.tv)
+    }
+
+    /// One `hub_core::stages::read` in a worker, unless one is already out.
+    pub fn read_ladder(&mut self) {
+        if self.ladder_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let l = hub_core::stages::read(
+                    runner.as_ref(),
+                    &hub_core::stages::Paths::from_env(),
+                    chrono::Local::now(),
+                );
+                let _ = tx.send(Msg::Ladder(Box::new(l)));
+            });
         }
     }
 
@@ -1791,6 +1840,7 @@ impl App {
             self.pv.go(&mut self.tv, &cards, &name);
             self.scroll = 0;
             self.read_deliverables_due();
+            self.read_ladder_due();
         }
     }
 
@@ -2001,6 +2051,17 @@ impl App {
             Msg::WatchFiles => {
                 if self.tab == Tab::Alerts {
                     self.read_alerts();
+                }
+            }
+            Msg::Ladder(l) => {
+                self.ladder = Some(*l);
+                if self.ladder_read.done() && self.ladder_shown() {
+                    self.read_ladder();
+                }
+            }
+            Msg::StagesFile => {
+                if self.ladder_shown() {
+                    self.read_ladder();
                 }
             }
             Msg::Deliverables(r) => {
@@ -2354,6 +2415,7 @@ impl App {
         if self.tab == Tab::Projects && self.projects_key(k) {
             self.want_proj_page();
             self.read_deliverables_due();
+            self.read_ladder_due();
             return;
         }
         if self.tab == Tab::Schedules && self.schedules_key(k) {
@@ -2414,6 +2476,9 @@ impl App {
                 }
                 if self.tab == Tab::Projects && self.pv.deliverables_shown(&self.tv) {
                     self.read_deliverables();
+                }
+                if self.ladder_shown() {
+                    self.read_ladder();
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
@@ -2800,6 +2865,7 @@ impl App {
             self.read_projects();
             self.read_deliverables_due();
         }
+        self.read_ladder_due();
         if t == Tab::Home {
             self.read_home();
             self.read_home_cards();
@@ -2810,8 +2876,11 @@ impl App {
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
         // The tab's own inner tabs (the list, All rows, Deliverables): Left/Right switch them.
-        let typing =
-            self.tv.typing() || self.pv.table.typing.is_some() || self.pv.dv.typing.is_some();
+        let typing = self.tv.typing()
+            || self.pv.table.typing.is_some()
+            || self.pv.dv.typing.is_some()
+            || self.pv.lv.typing.is_some()
+            || self.pv.rv.typing.is_some();
         if let (KeyCode::Left | KeyCode::Right, false) = (k.code, typing) {
             if self.pv.step_top(&mut self.tv, k.code == KeyCode::Left) {
                 self.scroll = 0;
@@ -2820,7 +2889,11 @@ impl App {
         }
         if !self.pv.open {
             let cards = self.cards().cards;
-            if k.code == KeyCode::Char('P') && self.pv.table.typing.is_none() && !self.pv.dfocus {
+            if k.code == KeyCode::Char('P')
+                && self.pv.table.typing.is_none()
+                && !self.pv.dfocus
+                && !self.pv.lfocus
+            {
                 if let Some(c) = self.pv.selected(&cards) {
                     self.prio_act(
                         c.profile.clone(),
@@ -2829,6 +2902,17 @@ impl App {
                     );
                 }
                 return true;
+            }
+            // The Ladder before its read says it is reading; Esc goes back.
+            if self.pv.lfocus {
+                if let Some(l) = &self.ladder {
+                    return self.pv.lkey(&mut self.tv, k, &cards, l, self.page);
+                }
+                if k.code == KeyCode::Esc {
+                    self.pv.lfocus = false;
+                    return true;
+                }
+                return false;
             }
             // Deliverables before its read says it is reading, or why it failed; d/Esc go back.
             if self.pv.dfocus {
@@ -4340,10 +4424,15 @@ impl App {
                 if self.tv.typing()
                     || self.pv.table.typing.is_some()
                     || self.pv.dv.typing.is_some()
-                    || self.pv.bv.typing.is_some() =>
+                    || self.pv.bv.typing.is_some()
+                    || self.pv.lv.typing.is_some()
+                    || self.pv.rv.typing.is_some() =>
             {
                 "type, Enter submits, Esc cancels".into()
             }
+            Tab::Projects if self.pv.lfocus && !self.pv.open => format!(
+                "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
             ),
@@ -4494,6 +4583,7 @@ impl App {
                         &self.cards(),
                         feed,
                         self.deliverables.as_ref(),
+                        self.ladder.as_ref(),
                         &self.pv,
                         self.p,
                         w,
@@ -4511,7 +4601,14 @@ impl App {
                         _ => None,
                     };
                     let dl = self.deliverables.as_ref();
-                    l.push(projtab::top_strip(feed, dl, "all", self.p, w));
+                    l.push(projtab::top_strip(
+                        feed,
+                        dl,
+                        self.ladder.as_ref(),
+                        "all",
+                        self.p,
+                        w,
+                    ));
                     l.push(Line::raw(""));
                 }
                 if let Some((profile, name)) = &self.tv.project {
@@ -8489,7 +8586,7 @@ mod tests {
     }
 
     #[test]
-    fn left_right_walk_the_list_all_rows_and_deliverables_and_board_opens_all_rows() {
+    fn left_right_walk_the_list_all_rows_deliverables_and_ladder_and_board_opens_all_rows() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Projects, tx);
         a.projects_read.busy = true;
@@ -8505,9 +8602,11 @@ mod tests {
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
         a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("ladder"));
+        a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("list"));
         a.handle(arrow(KeyCode::Left));
-        assert_eq!(on(&a), Some("deliverables"));
+        assert_eq!(on(&a), Some("ladder"));
         // typing in the list's search, an arrow is the search's
         a.handle(arrow(KeyCode::Right));
         a.handle(key('/'));

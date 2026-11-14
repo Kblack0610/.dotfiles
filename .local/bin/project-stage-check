@@ -5,6 +5,7 @@
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
 #   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file
 #   project-stage-check <name> --list [--json]
+#   project-stage-check --requirements [--json]
 #
 # Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
 # declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
@@ -26,12 +27,16 @@
 # --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),
 # one `id<TAB>doc|own<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an array of
 # {id, source, aliases, is}). A malformed `systems` entry exits 2.
+# --requirements prints every Requirements row of stages.md, for no project: stage, applies, the
+# check's kind (`predicate` runs, `human` is signed off, `not-yet` has no check), the requirement,
+# and the skills its text names in backticks that exist under ~/.claude/skills (--json: the
+# `Enforced from:` date and an array of {stage, applies, requirement, check, kind, skills}).
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
-NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST=""
+NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,15 +46,66 @@ while [ $# -gt 0 ]; do
     --json) JSON=1; shift ;;
     --file) FILE=1; shift ;;
     --list) LIST=1; shift ;;
+    --requirements) REQS=1; shift ;;
     -h|--help) usage 0 ;;
     -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
     *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
   esac
 done
-[ -n "$NAME" ] || usage
+[ -n "$NAME$REQS" ] || usage
+[ -z "$REQS" ] || [ -z "$NAME$TARGET$SYSTEMS$FILE$LIST" ] || { echo "project-stage-check: --requirements takes no project, only --json" >&2; usage; }
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
 [ -z "$FILE" ] || [ -z "$JSON" ] || { echo "project-stage-check: --file and --json do not mix" >&2; usage; }
 [ -z "$LIST" ] || [ -z "$FILE$TARGET$ONLY" ] || { echo "project-stage-check: --list takes only --json" >&2; usage; }
+
+# rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
+# A row starts with a lowercase id, so the header and the `---` line never match. `\|` is a
+# literal pipe inside a cell, as GitHub markdown spells it.
+rows() {
+  awk -v want="## $2" '
+    /^## / { intable = ($0 == want); next }
+    intable && /^\| *[a-z][a-z-]* *\|/ {
+      line = $0; gsub(/\\\|/, "\001", line)
+      n = split(line, c, "|"); out = ""
+      for (i = 2; i < n; i++) { gsub(/^ +| +$/, "", c[i]); gsub("\001", "|", c[i]); out = out (i > 2 ? "\t" : "") c[i] }
+      print out
+    }' "$1"
+}
+
+# kind_of <check>: `predicate` for a Check cell that is one whole code span (a cell like
+# "`regen-anchor.sh` marks it STALE" names a check and never runs), `human`, else `not-yet`.
+kind_of() {
+  case "$1" in
+    human) echo human ;;
+    \`*\`) case "${1:1:${#1}-2}" in *\`*) echo not-yet ;; *) echo predicate ;; esac ;;
+    *) echo not-yet ;;
+  esac
+}
+
+# requirements: the --requirements mode, the Requirements rows for no project.
+requirements() {
+  local stage app req check skills s out=""
+  local dir="${SKILLS_DIR:-$HOME/.claude/skills}"
+  # The unit separator, not tab: tab is IFS whitespace, so an empty cell would shift the rest.
+  while IFS=$'\037' read -r stage app req check _; do
+    skills=""
+    while IFS= read -r s; do
+      [ -n "$s" ] && [ -f "$dir/$s/SKILL.md" ] && case " $skills " in *" $s "*) ;; *) skills="${skills:+$skills }$s" ;; esac
+    done < <(grep -o '`[a-z][a-z0-9-]*`' <<<"$req" | tr -d '`')
+    out+="$stage"$'\t'"$app"$'\t'"$(kind_of "$check")"$'\t'"$skills"$'\t'"$req"$'\t'"$check"$'\n'
+  done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
+  [ -n "$out" ] || { echo "project-stage-check: no Requirements rows in $STAGES_DOC" >&2; exit 2; }
+  if [ -n "$JSON" ]; then
+    printf '%s' "$out" | jq -R -s --arg from "$(sed -n '/^Enforced from:/{s/^Enforced from: *\([0-9-]*\).*/\1/p;q;}' "$STAGES_DOC")" '
+      {enforced_from: (if $from == "" then null else $from end),
+       requirements: [split("\n")[] | select(length > 0) | split("\t")
+         | {stage: .[0], applies: (.[1] | split(", ")), kind: .[2],
+            skills: (.[3] | split(" ") | map(select(length > 0))), requirement: .[4], check: .[5]}]}'
+  else
+    printf '%s' "$out" | awk -F'\t' '{ printf "%-5s %-10s %-9s %s%s\n", $1, $2, $3, $5, ($4 == "" ? "" : " (by " $4 ")") }'
+  fi
+  exit 0
+}
 
 # sheet_rows: one `state<TAB>title` line per task row on both lanes' sheets and their frozen
 # version notes, the title from `notes row parse` (the grammar's home, so it reads as
@@ -213,6 +269,7 @@ STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
 SYSTEMS_DOC="${SYSTEMS_DOC:-$HOME/.local/src/docs/systems.md}"
 DOC="$STAGES_DOC"; [ -z "$SYSTEMS$LIST" ] || DOC="$SYSTEMS_DOC"
 [ -r "$DOC" ] || { echo "project-stage-check: $DOC not found" >&2; exit 2; }
+[ -z "$REQS" ] || requirements
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
@@ -259,20 +316,6 @@ ROOT="${REPO:+$REPO${sub:+/$sub}}"
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 [ -z "$FILE" ] || file_gaps
 
-# rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
-# A row starts with a lowercase id, so the header and the `---` line never match. `\|` is a
-# literal pipe inside a cell, as GitHub markdown spells it.
-rows() {
-  awk -v want="## $2" '
-    /^## / { intable = ($0 == want); next }
-    intable && /^\| *[a-z][a-z-]* *\|/ {
-      line = $0; gsub(/\\\|/, "\001", line)
-      n = split(line, c, "|"); out = ""
-      for (i = 2; i < n; i++) { gsub(/^ +| +$/, "", c[i]); gsub("\001", "|", c[i]); out = out (i > 2 ? "\t" : "") c[i] }
-      print out
-    }' "$1"
-}
-
 # applies <cell>: the Applies cell names one of TAGS.
 applies() {
   local t
@@ -287,12 +330,10 @@ CHECK_DIR="$ROOT"; [ -d "$CHECK_DIR" ] || CHECK_DIR="$EMPTY"
 # judge <check>: PASS, FAIL, HUMAN or TODO for one Check cell.
 judge() {
   local pred
-  case "$1" in
+  case "$(kind_of "$1")" in
     human) echo HUMAN ;;
-    \`*\`)
+    predicate)
       pred="${1#\`}"; pred="${pred%\`}"
-      # A cell like "`regen-anchor.sh` marks it STALE" names a check; only one whole code span runs.
-      case "$pred" in *\`*) echo TODO; return ;; esac
       # A predicate is plain shell: `ls a b | grep -q .` must not fail on this script's pipefail.
       if (set +o pipefail; STAGE=""; [ -n "$SYSTEMS" ] || STAGE="$TARGET"; export NAME TYPE REPO ROOT LAB STAGE; cd "$CHECK_DIR" || exit 1; eval "$pred") >/dev/null 2>&1; then
         echo PASS

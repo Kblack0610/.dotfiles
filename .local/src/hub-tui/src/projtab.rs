@@ -2,7 +2,8 @@
 //! switch them, as agent-web's strip), the list one table row per lab project with its open
 //! version's progress, built by `hub_core::projects` (the same rows and words as agent-web's), in
 //! flight first, on the shared `DataTable`. j/k pick a project, Enter opens its card over its rows
-//! (tasktab.rs, every row key works there), `a` opens All rows, `d` Deliverables; in the rows Esc
+//! (tasktab.rs, every row key works there), `a` opens All rows, `d` Deliverables (Ladder is
+//! laddertab.rs); in the rows Esc
 //! clears the view first and then comes back here, as Backspace does at once. `P` steps the selected project's
 //! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
 //! nothing.
@@ -12,6 +13,7 @@ use hub_core::layout::{self, Tab, PROJECT_PAGE};
 use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
+use hub_core::stages::Ladder;
 use hub_core::tasks::Feed;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
@@ -59,6 +61,12 @@ pub struct ProjView {
     pub bv: DataTable,
     /// The Deliverables inner tab is shown (`d`), not the project list.
     pub dfocus: bool,
+    /// The Ladder inner tab is shown (laddertab.rs), its tables' views, and whether the
+    /// Requirements table has the keys (`t`) rather than Projects by stage.
+    pub lfocus: bool,
+    pub lreqs: bool,
+    pub lv: DataTable,
+    pub rv: DataTable,
 }
 
 impl Default for ProjView {
@@ -73,6 +81,10 @@ impl Default for ProjView {
             dv: DataTable::default(),
             bv: DataTable::default(),
             dfocus: false,
+            lfocus: false,
+            lreqs: false,
+            lv: DataTable::default(),
+            rv: DataTable::default(),
         }
     }
 }
@@ -119,6 +131,7 @@ impl ProjView {
             (true, true) => None,
             (true, false) => Some(ALL),
             _ if self.dfocus => Some(DELIVERABLES),
+            _ if self.lfocus => Some(LADDER),
             _ => Some(LIST),
         }
     }
@@ -126,6 +139,7 @@ impl ProjView {
     /// Show the tab's inner tab `id`: All rows opens every project's rows, searched afresh.
     pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
         self.dfocus = id == DELIVERABLES;
+        self.lfocus = id == LADDER;
         if id != ALL {
             self.close(tv);
         } else if self.top(tv) != Some(ALL) {
@@ -137,6 +151,11 @@ impl ProjView {
     /// it reads only then).
     pub fn deliverables_shown(&self, tv: &TaskView) -> bool {
         self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == BUILD)
+    }
+
+    /// The Ladder shows, so it reads (dashboards rule 10).
+    pub fn ladder_shown(&self, tv: &TaskView) -> bool {
+        self.top(tv) == Some(LADDER)
     }
 
     /// Left/Right on the tab's own inner tabs; false on an opened project's page, whose are its.
@@ -347,8 +366,9 @@ fn warn_if(b: bool, p: Palette) -> ratatui::style::Style {
 const LIST: &str = "list";
 const ALL: &str = "all";
 const DELIVERABLES: &str = "deliverables";
+const LADDER: &str = "ladder";
 
-/// Projects in `layout`, whose `inner` is the list, All rows and Deliverables.
+/// Projects in `layout`, whose `inner` is the list, All rows, Deliverables and Ladder.
 fn projects_tab() -> &'static Tab {
     layout::resolve("projects").expect("layout has Projects")
 }
@@ -357,10 +377,11 @@ fn projects_tab() -> &'static Tab {
 /// every project's rows open and closed (the rows `Feed::board_rows` lists, agent-web's board
 /// total, counted without building them on every draw), and Deliverables its epics as of its
 /// last read: it reads only while it shows, so its count waits for the first visit and then
-/// stays at that read until the next.
+/// stays at that read until the next. Ladder counts its failing projects, as agent-web's does.
 pub fn top_strip(
     feed: Option<&Feed>,
     dl: Option<&Result<Deliverables, String>>,
+    ladder: Option<&Ladder>,
     on: &str,
     p: Palette,
     w: usize,
@@ -368,6 +389,7 @@ pub fn top_strip(
     let total = |i: &layout::Inner| match i.id {
         ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
+        LADDER => ladder.map(|l| l.failing),
         _ => None,
     };
     crate::innertabs::strip_totals(projects_tab().inner, on, total, p, w)
@@ -913,13 +935,22 @@ pub fn page(
     pr: &Projects,
     feed: Option<&Feed>,
     dl: Option<&Result<Deliverables, String>>,
+    ladder: Option<&Ladder>,
     pv: &ProjView,
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let on = if pv.dfocus { DELIVERABLES } else { LIST };
-    let mut out = vec![top_strip(feed, dl, on, p, w), Line::raw("")];
-    let (mut body, at) = if pv.dfocus {
+    let on = if pv.dfocus {
+        DELIVERABLES
+    } else if pv.lfocus {
+        LADDER
+    } else {
+        LIST
+    };
+    let mut out = vec![top_strip(feed, dl, ladder, on, p, w), Line::raw("")];
+    let (mut body, at) = if pv.lfocus {
+        crate::laddertab::page(ladder, pv, p, w)
+    } else if pv.dfocus {
         let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
         let hint = "  Enter opens the epic's project, Esc back";
         deliverables(dl, &pv.dv, true, hint, p, w)
@@ -1366,7 +1397,7 @@ pub(crate) mod tests {
             TaskView::default(),
         );
         assert_eq!(pv.selected(&pr.cards).unwrap().name, "demo");
-        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
         assert!(plain(&l[at.unwrap()]).starts_with("demo"));
         pv.key(&mut tv, key('k'), &pr.cards, 10);
         assert_eq!(pv.table.sel, 0, "k moves from the row on screen");
@@ -1404,12 +1435,12 @@ pub(crate) mod tests {
 
         pv.key(&mut tv, key('s'), &pr.cards, 10);
         assert_eq!(pv.table.view.sort, "project");
-        let (l, _) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, _) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
         assert!(s.iter().any(|l| l.starts_with("PROJECT v")), "{s:?}");
         pv.key(&mut tv, key('f'), &pr.cards, 10);
         assert_eq!(pv.shown(&pr.cards).len(), 0, "none is in flight");
-        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
         let s = l.iter().map(plain).collect::<Vec<_>>().join("\n");
         assert!(s.contains("0 of 2 projects"), "{s}");
         assert!(s.contains("No project matches."), "{s}");
@@ -1430,10 +1461,13 @@ pub(crate) mod tests {
             },
             ..Default::default()
         };
-        let (l, at) = page(&pr, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
         let s: Vec<String> = l.iter().map(plain).collect();
         // The strip is on top, nothing counted before its read; the list follows it.
-        assert_eq!(s[0], "[Projects] All rows  Deliverables   <- -> switch");
+        assert_eq!(
+            s[0],
+            "[Projects] All rows  Deliverables  Ladder   <- -> switch"
+        );
         let s = s[2..].to_vec();
         assert!(
             s[0].starts_with("PROJECTS  2 projects, 1 in flight"),
@@ -1462,7 +1496,7 @@ pub(crate) mod tests {
         );
         assert!(tail.ends_with("  dotfiles: fix the hook"), "{tail}");
 
-        let narrow = page(&pr, None, None, &pv, Palette { no_color: true }, 40).0;
+        let narrow = page(&pr, None, None, None, &pv, Palette { no_color: true }, 40).0;
         assert!(narrow.iter().all(|l| plain(l).len() <= 40));
         let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
         let head = head.expect("the header stays");
@@ -1511,10 +1545,18 @@ pub(crate) mod tests {
             dfocus: true,
             ..Default::default()
         };
-        let (l, at) = page(&pr, None, Some(&d), &pv, Palette { no_color: true }, 120);
+        let (l, at) = page(
+            &pr,
+            None,
+            Some(&d),
+            None,
+            &pv,
+            Palette { no_color: true },
+            120,
+        );
         let s = lines(&l);
         assert_eq!(
-            s[0], " Projects  All rows [Deliverables 2]  <- -> switch",
+            s[0], " Projects  All rows [Deliverables 2] Ladder   <- -> switch",
             "{s:?}"
         );
         let s = s[2..].to_vec();
@@ -1551,10 +1593,10 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let p = Palette { no_color: true };
-        let s = lines(&page(&pr, None, None, &pv, p, 120).0);
+        let s = lines(&page(&pr, None, None, None, &pv, p, 120).0);
         assert_eq!(s[2], "Deliverables  reading fleet-bench epics");
         let bad: Result<Deliverables, String> = Err("fleet-bench epics: exit 2".into());
-        let s = lines(&page(&pr, None, Some(&bad), &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&bad), None, &pv, p, 120).0);
         assert_eq!(s[2], "Deliverables");
         assert_eq!(s[3], "fleet-bench epics: exit 2");
         assert!(
@@ -1563,7 +1605,7 @@ pub(crate) mod tests {
             "{s:?}"
         );
         let none = Ok(Deliverables::default());
-        let s = lines(&page(&pr, None, Some(&none), &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&none), None, &pv, p, 120).0);
         assert!(s.iter().any(|l| l == "No open feature epics."), "{s:?}");
     }
 
@@ -1576,7 +1618,15 @@ pub(crate) mod tests {
         let key = |c| KeyEvent::from(c);
         assert!(pv.key(&mut tv, key(KeyCode::Char('d')), &pr.cards, 20));
         assert!(pv.dfocus);
-        let (l, at) = page(&pr, None, Some(&d), &pv, Palette { no_color: true }, 120);
+        let (l, at) = page(
+            &pr,
+            None,
+            Some(&d),
+            None,
+            &pv,
+            Palette { no_color: true },
+            120,
+        );
         let s = lines(&l);
         assert_eq!(s[at.unwrap()].split_whitespace().next(), Some("garden"));
         // j moves in the table, not the project list
@@ -1701,13 +1751,13 @@ pub(crate) mod tests {
             dfocus: true,
             ..Default::default()
         };
-        let s = lines(&page(&pr, None, Some(&d), &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&d), None, &pv, p, 120).0);
         assert!(
             s.iter().any(|l| l.contains("epic 00")) && !s.iter().any(|l| l.contains("epic 20"))
         );
         assert!(s.iter().any(|l| l.contains("0 above, 18 below")), "{s:?}");
         pv.dv.sel = 25;
-        let (l, at) = page(&pr, None, Some(&d), &pv, p, 120);
+        let (l, at) = page(&pr, None, Some(&d), None, &pv, p, 120);
         let s = lines(&l);
         assert!(s[at.unwrap()].contains("epic 25"), "{:?}", s[at.unwrap()]);
         assert!(!s.iter().any(|l| l.contains("epic 00")));
