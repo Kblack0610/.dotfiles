@@ -1326,6 +1326,35 @@ impl App {
         }
     }
 
+    /// The reds and the Alerts join read on this thread, unless read already: a printed page has
+    /// no next frame to receive them on.
+    pub fn read_alerts_now(&mut self) {
+        if self.alerts.is_some() {
+            return;
+        }
+        let reds = hub_core::reds::read(self.runner.as_ref());
+        let now = jobs::now();
+        self.alerts = (self.infra.as_ref()).map(|i| hub_core::alerts::read(i, reds.clone(), now));
+        self.reds = Some(reds);
+    }
+
+    /// The open page read on this thread, after the alerts it joins: a printed page has no next
+    /// frame to receive it on.
+    pub fn read_infra_page_now(&mut self) {
+        if self.infra_page.as_ref().is_some_and(|p| p.reads_alerts()) {
+            self.read_alerts_now();
+        }
+        let (Some(page), Some(infra)) = (self.infra_page.as_ref(), self.infra.as_ref()) else {
+            return;
+        };
+        let firing = (self.alerts.as_ref())
+            .filter(|_| page.reads_alerts())
+            .map(|a| a.pages().cloned().collect::<Vec<_>>());
+        let now = jobs::now().max(0) as u64;
+        let read = page.read(infra, firing.as_deref(), &self.files.builds.jobs, now);
+        self.infra_page = Some(read);
+    }
+
     /// Open `page` in place of Infra's tables, on the inner tab its link names; the same page
     /// already open keeps its last read while it reads again.
     pub fn open_infra_page(&mut self, page: InfraPage) {
@@ -8343,6 +8372,27 @@ mod tests {
     /// The open Infra page's kind and name.
     fn open(a: &App) -> Option<(Kind, &str)> {
         a.infra_page.as_ref().map(|p| (p.kind(), p.name()))
+    }
+
+    #[test]
+    fn a_printed_page_is_read_on_this_thread_not_left_reading() {
+        let mut a = infra_app();
+        a.go(Tab::Infra);
+        // No off-thread read: `--once` has no next frame to receive one on.
+        a.infra_page_read.busy = true;
+        a.open_query(Some("machines/nope".into()));
+        assert!(screen(&mut a, 160, 30).contains("Reading nope..."));
+        // An unknown name fails before any Prometheus query, so this reads offline.
+        a.read_infra_page_now();
+        let s = screen(&mut a, 160, 30);
+        assert!(
+            s.contains("no machine named nope") && !s.contains("Reading"),
+            "{s}"
+        );
+        assert!(
+            !a.infra_page.as_ref().unwrap().read_whole(),
+            "fails the run"
+        );
     }
 
     #[test]

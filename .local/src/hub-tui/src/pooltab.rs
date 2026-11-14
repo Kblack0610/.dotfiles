@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use crate::controls::page_field;
 use crate::fit::clip_line;
 use crate::fmt::{clock, Palette};
-use crate::machinetab::{heading, BLOCKS};
+use crate::machinetab::{block as share_block, heading, BLOCKS};
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all pools  o Grafana]";
@@ -91,7 +91,7 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     let per = h.hours.len().div_ceil(room).max(1);
     let block = |v: f64| match v {
         v if v <= 0.0 => BLOCKS[0],
-        v => BLOCKS[((v.clamp(0.0, 1.0) * 8.0).round() as usize).max(1)],
+        v => share_block(v),
     };
     let busy: String = h
         .hours

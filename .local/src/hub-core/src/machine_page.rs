@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::alerts::Alert;
 use crate::ci::Slot;
 use crate::host_history::{self, HostHistory};
+use crate::host_now::{self, HostNow};
 use crate::infra::{self, Infra};
 use crate::links::{Kind, Link};
 use crate::machines::Machine;
@@ -108,6 +109,8 @@ pub struct MachinePage {
     /// Its busy CI slots and local gates, as the slots table has them.
     pub running: Vec<Slot>,
     pub history: Option<HostHistory>,
+    /// Its sensors, fans, pods, services, containers and busiest processes now.
+    pub live: Option<HostNow>,
     pub recent: Vec<RecentJob>,
     pub alerts: Vec<Alert>,
     /// `<part>: <why>` for each part that could not be read; the rest still show.
@@ -155,17 +158,26 @@ pub fn read(
     let m = find(infra, host)?;
     let names = names(infra, &m.host);
     let powered = m.power.as_ref().map(|p| p.host.as_str());
-    let history = host_history::read(&names, powered, now);
+    let (history, live) = std::thread::scope(|s| {
+        let live = s.spawn(|| host_now::read(&names));
+        let history = host_history::read(&names, powered, now);
+        (
+            history,
+            live.join().unwrap_or_else(|_| Err("panicked".into())),
+        )
+    });
     let archive = std::fs::read_to_string(jobs).map_err(|e| format!("{}: {e}", jobs.display()));
-    Ok(build(infra, m, names, history, archive, alerts, now))
+    Ok(build(infra, m, names, history, live, archive, alerts, now))
 }
 
 /// The page from what was read: pure, for the tests.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     infra: &Infra,
     m: &Machine,
     names: Vec<String>,
     history: Result<HostHistory, String>,
+    live: Result<HostNow, String>,
     archive: Result<String, String>,
     alerts: Result<&[Alert], String>,
     now: u64,
@@ -179,6 +191,10 @@ pub fn build(
         })
         .map_err(|e| errors.push(format!("history: {e}")))
         .ok();
+    let live = live
+        .inspect(|h| errors.extend(h.unread.iter().map(|(part, why)| format!("{part}: {why}"))))
+        .map_err(|e| errors.push(format!("now: {e}")))
+        .ok();
     let recent = archive
         .map(|text| recent(&text, &runners, &names))
         .map_err(|e| errors.push(format!("ci jobs: {e}")))
@@ -191,7 +207,7 @@ pub fn build(
         host: m.host.clone(),
         at: now,
         head: format!("{}, {}, {}", m.host, m.place, m.state),
-        parts: parts(m, infra.grafana.as_deref()),
+        parts: parts(m, infra.grafana.as_deref(), now),
         cores: m.cores,
         share: share(m, &runners),
         running: infra
@@ -204,6 +220,7 @@ pub fn build(
         names,
         machine: m.clone(),
         history,
+        live,
         recent,
         alerts,
         errors,
@@ -243,7 +260,7 @@ fn why_no_reading(m: &Machine) -> String {
 }
 
 /// Its row as labelled parts: Now, Slots, Governor, Power, Up since, Grafana.
-fn parts(m: &Machine, grafana: Option<&str>) -> Vec<Part> {
+fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
     let mut out = vec![];
     let now = match m.cpu {
         Some(cpu) => {
@@ -304,7 +321,11 @@ fn parts(m: &Machine, grafana: Option<&str>) -> Vec<Part> {
         out.push(Part::new("Power", t).warn(!p.hold.is_empty()));
     }
     if let Some(b) = m.boot {
-        out.push(Part::new("Up since", when(b as i64)));
+        let up = crate::text::age(at as i64 - b as i64);
+        out.push(Part::new(
+            "Up since",
+            format!("{}, up {up}", when(b as i64)),
+        ));
     }
     if let Some(g) = grafana {
         out.push(
@@ -462,6 +483,7 @@ mod tests {
             m,
             names,
             Err("prometheus down".into()),
+            Err("prometheus down".into()),
             Ok(archive.into()),
             Ok(alerts),
             1000,
@@ -516,7 +538,10 @@ mod tests {
                 "https://grafana.example/d/kb-fleet?var-host=workstation".into()
             ))
         );
-        assert_eq!(p.errors, ["history: prometheus down"]);
+        assert_eq!(
+            p.errors,
+            ["history: prometheus down", "now: prometheus down"]
+        );
     }
 
     #[test]

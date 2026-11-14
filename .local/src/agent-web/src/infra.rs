@@ -132,16 +132,27 @@ pub struct Pages(ReadCache<String, CACHE_SECS, String>);
 fn page_json(p: &MachinePage) -> String {
     let none = ViewQuery::new();
     let down = p.history.as_ref().map_or(&[][..], |h| h.down.as_slice());
+    let empty = hub_core::host_now::HostNow::default();
+    let live = p.live.as_ref().unwrap_or(&empty);
     with_tables(
         p,
         [
             ("recent", shown(&p.recent, &none, "")),
             ("down", shown(down, &none, "")),
             ("alerts", shown(&p.alerts, &none, "")),
+            ("devices", shown(&live.devices, &none, "")),
+            ("pods", shown(&live.pods, &none, "")),
+            ("containers", shown(&live.containers, &none, "")),
+            ("processes", shown(&live.processes, &none, "")),
         ],
         |o| {
             if let Some(h) = o.get_mut("history").and_then(Value::as_object_mut) {
                 h.remove("down");
+            }
+            if let Some(l) = o.get_mut("live").and_then(Value::as_object_mut) {
+                for k in ["devices", "pods", "containers", "processes"] {
+                    l.remove(k);
+                }
             }
         },
     )
@@ -259,6 +270,29 @@ mod tests {
         assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
         assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
         assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());
+        assert!(v["live"].is_null(), "not read: no live part");
+        assert!(v["tables"]["pods"]["rows"].as_array().unwrap().is_empty());
+    }
+
+    /// Its sensors, pods, containers and processes ride once, as tables; services stay in `live`.
+    #[test]
+    fn a_machine_pages_live_lists_ride_as_tables() {
+        let p = MachinePage {
+            live: Some(hub_core::host_now::HostNow {
+                pods: vec![hub_core::host_now::Pod {
+                    pod: "frigate-0".into(),
+                    ..Default::default()
+                }],
+                services: vec!["nfs-server".into()],
+                inventory: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
+        assert!(v["live"].get("pods").is_none() && v["live"]["services"][0] == "nfs-server");
+        assert_eq!(v["tables"]["pods"]["rows"][0]["pod"], "frigate-0");
+        assert!(v["tables"]["devices"]["rows"].is_array());
     }
 
     /// A pool page sends its machines and waiting jobs once, as tables.

@@ -8,6 +8,7 @@
 //! | part   | series                                                                            |
 //! |--------|-----------------------------------------------------------------------------------|
 //! | cpu    | `cc:host_cpu_busy_ratio{host}`: node exporter's busy share; a missing sample is no reading |
+//! | temp   | `cc:host_temp_c{host}`: its hottest CPU sensor, the hour's largest sample              |
 //! | pools  | `cc:runner_cores_busy{host,runner}` joined to `github_runner_state{name,pool}`, summed by pool |
 //! | power  | the governor's own `ci_governor_power_state{host}` (home-config apps/ci-runner-governor); hours counted from the samples, not from its `hours_today` gauge (that gauge restarted at 0 on an override start, 2026-11-10) |
 
@@ -84,6 +85,8 @@ pub struct Hour {
     pub pools: BTreeMap<String, f64>,
     /// The share of the hour's steps with a CPU reading: 1 up all hour, 0 no reading.
     pub seen: f64,
+    /// Its CPU's hottest sample of the hour, degrees C; none when it gave no reading.
+    pub temp: Option<f64>,
 }
 
 /// A stretch with no CPU reading: the host down, asleep, powered off or not scraped.
@@ -165,12 +168,17 @@ pub(crate) fn range(base: &str, q: String, from: u64, now: u64) -> Result<Vec<Se
 
 /// A `host=~"a|b"` matcher over a machine's names, each checked by `valid_host`.
 fn hosts_matcher(names: &[String]) -> Result<String, String> {
+    Ok(format!(r#"host=~"{}""#, alternation(names)?))
+}
+
+/// `a|b\\.c`: a PromQL regex string matching any of `names`, refused unless each is a host name.
+pub(crate) fn alternation(names: &[String]) -> Result<String, String> {
     if let Some(bad) = names.iter().find(|h| !valid_host(h)) {
         return Err(format!("{bad:?} is not a host name"));
     }
     // A name holds only letters, digits, `-`, `_` and `.`: only the dot needs escaping.
     let alts: Vec<String> = names.iter().map(|h| h.replace('.', "\\\\.")).collect();
-    Ok(format!(r#"host=~"{}""#, alts.join("|")))
+    Ok(alts.join("|"))
 }
 
 /// Ask Prometheus for a machine's last `DAYS` days: `names` are every name it goes by (its host
@@ -184,37 +192,31 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
     }
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
+    let pools_q = format!(
+        r#"sum by (pool) (cc:runner_cores_busy{{{m}}} * on (runner) group_left (pool) group by (runner, pool) (label_replace(github_runner_state, "runner", "$1", "name", "(.+)")))"#
+    );
+    // Each range query reads 7 days; they run at once (power on this thread), so the page waits
+    // for the slowest only.
+    let base = base.as_str();
+    let (cpu, temp, pools, power) = std::thread::scope(|s| {
+        let q = |q: String| s.spawn(move || range(base, q, from, now));
+        let cpu = q(format!("max(cc:host_cpu_busy_ratio{{{m}}})"));
+        let temp = q(format!("max(cc:host_temp_c{{{m}}})"));
+        let pools = q(pools_q);
+        let power = powered.map(|p| power(base, p, from, now));
+        let join = |h: std::thread::ScopedJoinHandle<'_, _>| {
+            h.join().unwrap_or_else(|_| Err("panicked".to_string()))
+        };
+        (join(cpu), join(temp), join(pools), power)
+    });
     let mut errors = vec![];
     let mut part = |name: &str, r: Result<Vec<Series>, String>| {
         r.map_err(|e| errors.push(format!("{name}: {e}")))
             .unwrap_or_default()
     };
-    let cpu = part(
-        "cpu",
-        range(
-            &base,
-            format!("max(cc:host_cpu_busy_ratio{{{m}}})"),
-            from,
-            now,
-        ),
-    );
-    let pools = part(
-        "pools",
-        range(
-            &base,
-            format!(
-                r#"sum by (pool) (cc:runner_cores_busy{{{m}}} * on (runner) group_left (pool) group by (runner, pool) (label_replace(github_runner_state, "runner", "$1", "name", "(.+)")))"#
-            ),
-            from,
-            now,
-        ),
-    );
-    let power = powered.and_then(|p| {
-        power(&base, p, from, now)
-            .map_err(|e| errors.push(format!("power: {e}")))
-            .ok()
-    });
-    let mut h = history(&host, &cpu, &pools, power, from, now);
+    let (cpu, temp, pools) = (part("cpu", cpu), part("temp", temp), part("pools", pools));
+    let power = power.and_then(|r| r.map_err(|e| errors.push(format!("power: {e}"))).ok());
+    let mut h = history(&host, &cpu, &temp, &pools, power, from, now);
     h.errors = errors;
     Ok(h)
 }
@@ -287,10 +289,12 @@ impl Hours {
     }
 }
 
-/// The history from the CPU and pool series and the power history: pure, for the tests.
+/// The history from the CPU, temperature and pool series and the power history: pure, for the
+/// tests.
 pub fn history(
     host: &str,
     cpu: &[Series],
+    temp: &[Series],
     pools: &[Series],
     power: Option<PowerHistory>,
     from: u64,
@@ -300,10 +304,12 @@ pub fn history(
     let mut hours: Vec<Hour> = span
         .fold(cpu)
         .iter()
+        .zip(span.fold(temp))
         .enumerate()
-        .map(|(i, b)| Hour {
+        .map(|(i, (b, t))| Hour {
             at: span.at(i),
             cpu: b.mean(),
+            temp: t.most(),
             ..Default::default()
         })
         .collect();
@@ -629,7 +635,7 @@ mod tests {
     fn a_gap_in_the_readings_is_a_downtime_and_a_stop_at_the_end_is_open() {
         let mut t: Vec<u64> = (0..10).map(|i| T + i * STEP).collect();
         t.extend((20..25).map(|i| T + i * STEP));
-        let h = history("razer-laptop", &[cpu(&t)], &[], None, T, T + 40 * STEP);
+        let h = history("razer-laptop", &[cpu(&t)], &[], &[], None, T, T + 40 * STEP);
         let got: Vec<_> = h.down.iter().map(|d| (d.from, d.to, d.open)).collect();
         assert_eq!(
             got,
@@ -646,13 +652,13 @@ mod tests {
     #[test]
     fn one_missed_scrape_is_no_downtime() {
         let t: Vec<u64> = (0..10).filter(|i| *i != 4).map(|i| T + i * STEP).collect();
-        let h = history("razer-laptop", &[cpu(&t)], &[], None, T, T + 9 * STEP);
+        let h = history("razer-laptop", &[cpu(&t)], &[], &[], None, T, T + 9 * STEP);
         assert!(h.down.is_empty(), "{:?}", h.down);
     }
 
     #[test]
     fn a_host_with_no_reading_at_all_is_one_open_stretch_and_says_so() {
-        let h = history("aws-burst-1", &[], &[], None, T, T + 7200);
+        let h = history("aws-burst-1", &[], &[], &[], None, T, T + 7200);
         assert_eq!(h.readings, 0);
         assert_eq!(
             h.down,
@@ -680,6 +686,7 @@ mod tests {
         let h = history(
             "aws-burst-1",
             &[cpu(&[T, T + 20 * STEP])],
+            &[],
             &[],
             Some(p),
             T,
@@ -715,11 +722,12 @@ mod tests {
     }
 
     #[test]
-    fn each_hour_holds_its_mean_cpu_its_seen_share_and_each_pools_cores() {
+    fn each_hour_holds_its_mean_cpu_hottest_temp_seen_share_and_each_pools_cores() {
         let t: Vec<u64> = (0..15).map(|i| T + i * STEP).collect();
         let h = history(
             "razer-laptop",
             &[cpu(&t)],
+            &[pool("temp", &[(T, 70.0), (T + STEP, 82.0)])],
             &[pool("unity", &[(T, 3.0), (T + STEP, 3.0)])],
             None,
             T,
@@ -729,6 +737,8 @@ mod tests {
         assert_eq!(h.hours[0].cpu, Some(0.5));
         assert_eq!(h.hours[0].seen, 0.5, "15 of 30 steps");
         assert_eq!(h.hours[1].cpu, None);
+        assert_eq!(h.hours[0].temp, Some(82.0), "the hour's hottest sample");
+        assert_eq!(h.hours[1].temp, None);
         // Two steps at 3 cores of the hour's 30: a missing step used none.
         assert_eq!(h.hours[0].pools["unity"], 0.2);
     }

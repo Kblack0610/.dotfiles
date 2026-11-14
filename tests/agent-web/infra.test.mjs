@@ -235,8 +235,10 @@ const machinePage = (o = {}) => ({
   parts: [{ label: "Now", text: "no reading: the governor has it stopped", link: null, warn: true },
     { label: "Grafana", text: "its fleet board", link: "https://g.example/d/kb-fleet?var-host=aws-burst-1", warn: false }],
   machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, share: [], running: [], history: null,
-  tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]) }, ...o,
+  live: null, tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables() }, ...o,
 });
+// The tables a machine page's live part rides in (hub_core::host_now), empty unless given.
+const liveTables = (o = {}) => ({ devices: tbl([], ["device"]), pods: tbl([], ["pod"]), containers: tbl([], ["name"]), processes: tbl([], ["name"]), ...o });
 // The page `page` opens (INFRA_PAGES), drawn from the read `d` and the error `err`.
 const drawPage = (page, d, err) => {
   run(`st.tab = "infra"; st.page = ${JSON.stringify(page)}`);
@@ -271,7 +273,7 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
   const d = machinePage({ cores: 24, head: "workstation, local, up", machine: {},
     share: [{ what: "unity", cores: 6, link: "#infra/pools/unity" }, { what: "other", cores: 6, link: null }, { what: "idle", cores: 12, link: null }],
     history: { step: 120, readings: 1, hours, down: [], power: null },
-    tables: { down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no reading" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]) } });
+    tables: { down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no reading" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
   const h = drawPage("machines/workstation", d);
   assert.match(h, /<a class="tl" href="#infra\/pools\/unity">unity<\/a> 6\.0, other 6\.0, idle 12\.0 <span class="muted">of 24 cores/);
   assert.doesNotMatch(h, /data-cloud/, "no power, no buttons");
@@ -279,6 +281,36 @@ test("a machine page draws its share, its 7 days and its recent jobs with their 
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
   assert.match(h, /<a class="tl" href="#infra\/ci\/7">/);
   assert.match(h, /<td class="bad">failure<\/td>/);
+});
+
+test("a machine page draws its sensors hot in amber, its pods, containers, processes, services and hourly temperature", () => {
+  const devices = tbl([{ device: "cpu", chip: "k10temp", hottest: 96, temps: [["Tctl", 96], ["Tccd1", 91]], fans: [] },
+    { device: "gpu", chip: "amdgpu", hottest: 52, temps: [["edge", 52]], fans: [["fan1", 616]] }], ["device", "hottest", "readings", "chip"]);
+  const pods = tbl([{ namespace: "frigate", pod: "frigate-0", cpu: 0.7, mem: 2.5 * 2 ** 30 }], ["pod", "namespace", "cpu", "mem"]);
+  const containers = tbl([{ name: "mailpit", image: "axllent/mailpit", cpu: 0.01, mem: 3e7, count: null }], ["name", "image", "cpu", "mem"]);
+  const processes = tbl([{ name: "Unity", image: "", cpu: 3.5, mem: 8e9, count: 2 }], ["name", "cpu", "mem", "count"]);
+  const hours = [{ at: 1700000000, cpu: 0.5, pools: {}, seen: 1, temp: 97 }, { at: 1700003600, cpu: null, pools: {}, seen: 0, temp: null }];
+  const d = machinePage({ machine: {}, history: { step: 120, readings: 1, hours, down: [], power: null },
+    live: { services: ["nfs-server", "tailscaled"], processes_total: 612, inventory: true, unread: {} },
+    tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes }) } });
+  const h = drawPage("machines/workstation", d);
+  assert.match(h, /<h3 class="sec warn">Sensors <span class="n">2<\/span>/, "a sensor at 85C or more makes the heading amber");
+  assert.match(h, /<td class="n warn">96C<\/td>/);
+  assert.match(h, /Tctl 96C  Tccd1 91C/);
+  assert.match(h, /edge 52C  fan1 616rpm/);
+  assert.match(h, /frigate-0<\/td><td class="muted">frigate<\/td><td class="n">0\.70<\/td><td class="n">2\.5G<\/td>/);
+  assert.match(h, /axllent\/mailpit/);
+  assert.match(h, /Processes <span class="n">busiest 1 of 612<\/span>/);
+  assert.match(h, /<td class="n">7\.5G<\/td><td class="n">2<\/td>/);
+  assert.match(h, /nfs-server   tailscaled/);
+  assert.match(h, /data-tip="[^"]*hottest 97C"/);
+  const off = drawPage("machines/workstation", { ...d, live: { ...d.live, inventory: false } });
+  assert.match(off, /Not collected: no node_inventory\.prom/);
+  assert.doesNotMatch(off, /Services/);
+  assert.match(drawPage("machines/aws-burst-1", machinePage()), /Sensors[\s\S]*not read\./, "no live read says so");
+  const failed = drawPage("machines/workstation", { ...d, live: { ...d.live, inventory: false, unread: { sensors: "prometheus down", pods: "prometheus down", inventory: "prometheus down" } } });
+  assert.equal(failed.match(/not read: prometheus down/g).length, 3, "a failed part says not read, not none");
+  assert.doesNotMatch(failed, /Not collected|No Kubernetes pod/);
 });
 
 test("a failed refresh keeps the page on screen and says so, and a governor answer shows on its own host only", () => {

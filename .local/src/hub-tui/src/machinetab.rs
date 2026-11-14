@@ -1,14 +1,17 @@
 //! One machine's page in place of Infra's Machines tab, drawn from the page `hub_core` reads for
-//! both surfaces (`hub_core::machine_page`): its parts, the cores each pool uses there, the CI
-//! jobs running there, its last days of CPU and downtime, the CI jobs that ran there and the
-//! alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
+//! both surfaces (`hub_core::machine_page`): its parts, every temperature sensor and fan, the
+//! cores each pool uses there, the CI jobs running there, its pods, containers, busiest processes
+//! and services, its last days of CPU, temperature and downtime, the CI jobs that ran there and
+//! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
-use hub_core::host_history::{HostHistory, PowerHistory, DAYS};
+use hub_core::host_history::{HostHistory, Hour, PowerHistory, DAYS};
+use hub_core::host_now::{bytes, HostNow, Proc, HOT_C};
 use hub_core::machine_page::{MachinePage, RecentJob};
+use hub_core::table::Row as _;
 use ratatui::text::{Line, Span};
 
 use crate::controls::{dash, page_field};
-use crate::fit::{cell, clip_line, Table};
+use crate::fit::{self, cell, clip_line, Table};
 use crate::fmt::{bar, clock, dur, Palette};
 
 /// The page's own keys, as its heading says them.
@@ -18,6 +21,11 @@ pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
 const RECENT_ROWS: usize = 15;
 /// Power changes shown before "+N older".
 const POWER_ROWS: usize = 10;
+/// The temperature chart's empty block, degrees C: an idle CPU sits above it, so the chart
+/// spends its eight blocks on the range a machine works in.
+const TEMP_FLOOR: f64 = 30.0;
+/// Pods, containers or processes drawn before `+N more`.
+const LIVE_ROWS: usize = 20;
 
 /// Width of a share bar.
 const SHARE_BAR: usize = 30;
@@ -27,6 +35,11 @@ pub(crate) const BLOCKS: [char; 9] = [
     ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
     '\u{2588}',
 ];
+
+/// The block for a 0 to 1 share: the lowest one at least, so a reading never looks like none.
+pub(crate) fn block(v: f64) -> char {
+    BLOCKS[((v.clamp(0.0, 1.0) * 8.0).round() as usize).max(1)]
+}
 
 /// The page for `host`: reading, why it could not be read, or each of its parts.
 pub fn page(
@@ -68,10 +81,21 @@ pub fn page(
     }
     let blank = || Line::raw("");
     out.push(blank());
+    match &page.live {
+        Some(live) => out.extend(sensors(live, p, w)),
+        None => out.push(heading("SENSORS", hub_core::reading::NOT_READ, p)),
+    }
+    out.push(blank());
     out.extend(share(page, p, w));
     out.push(blank());
     out.extend(running(page, p, w));
     out.push(blank());
+    if let Some(live) = &page.live {
+        out.extend(pods(live, p, w));
+        out.push(blank());
+        out.extend(inventory(live, p, w));
+        out.push(blank());
+    }
     match &page.history {
         Some(h) => {
             out.extend(history(h, p, now, w));
@@ -217,21 +241,40 @@ fn history(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         return out;
     }
     // One column per bucket of hours, so the whole window fits the width.
-    let room = w.saturating_sub(4).max(1);
+    let room = w.saturating_sub(9).max(1);
     let per = h.hours.len().div_ceil(room).max(1);
-    let chart: String = h
-        .hours
-        .chunks(per)
-        .map(|c| {
+    out.push(Line::raw(format!(
+        "  cpu  {}",
+        chart(&h.hours, per, |c| {
             let read: Vec<f64> = c.iter().filter_map(|x| x.cpu).collect();
-            if read.is_empty() {
-                return '.';
-            }
-            let cpu = read.iter().sum::<f64>() / read.len() as f64;
-            BLOCKS[((cpu.clamp(0.0, 1.0) * 8.0).round() as usize).max(1)]
+            (!read.is_empty()).then(|| read.iter().sum::<f64>() / read.len() as f64)
         })
-        .collect();
-    out.push(Line::raw(format!("  {chart}")));
+    )));
+    let hottest = h
+        .hours
+        .iter()
+        .filter_map(|x| x.temp.map(|t| (t, x.at)))
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+    if let Some((peak, at)) = hottest {
+        // A column's hottest hour, from `TEMP_FLOOR` (an empty block) to 100C (a full one).
+        out.push(Line::raw(format!(
+            "  temp {}",
+            chart(&h.hours, per, |c| {
+                c.iter()
+                    .filter_map(|x| x.temp)
+                    .reduce(f64::max)
+                    .map(|t| (t - TEMP_FLOOR) / (100.0 - TEMP_FLOOR))
+            })
+        )));
+        let style = if peak >= HOT_C { p.warn() } else { p.dim() };
+        out.push(Line::styled(
+            format!(
+                "  temp {TEMP_FLOOR:.0} to 100C; hottest {peak:.0}C, the hour from {}",
+                clock(at as i64, now)
+            ),
+            style,
+        ));
+    }
     let gaps = h.hours.iter().filter(|x| x.seen < 1.0).count();
     out.push(Line::styled(
         format!(
@@ -241,6 +284,216 @@ fn history(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         ),
         p.dim(),
     ));
+    out
+}
+
+/// One block per `per` hours, each `f` of those hours (a 0 to 1 share), an hour with none a `.`.
+fn chart(hours: &[Hour], per: usize, f: impl Fn(&[Hour]) -> Option<f64>) -> String {
+    hours
+        .chunks(per)
+        .map(|c| match f(c) {
+            None => '.',
+            Some(v) => block(v),
+        })
+        .collect()
+}
+
+/// `not read: <why>` when the part's query failed: its section is unknown, not empty.
+fn unread(live: &HostNow, part: &str) -> Option<String> {
+    let why = live.unread.get(part)?;
+    Some(format!("{}: {why}", hub_core::reading::NOT_READ))
+}
+
+/// `0.70` cores, or `-`.
+fn cores(c: Option<f64>) -> String {
+    c.map_or("-".into(), |c| format!("{c:.2}"))
+}
+
+/// `+N more on the web page` when `n` rows were cut to `LIVE_ROWS`.
+fn more(n: usize, p: Palette) -> Option<Line<'static>> {
+    (n > LIVE_ROWS).then(|| {
+        Line::styled(
+            format!("  +{} more on the web page", n - LIVE_ROWS),
+            p.dim(),
+        )
+    })
+}
+
+/// Every device's temperatures and fans, a hot one in amber.
+fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if let Some(why) = unread(live, "sensors") {
+        return vec![heading("SENSORS", why, p)];
+    }
+    if live.devices.is_empty() {
+        return vec![heading(
+            "SENSORS",
+            "none: its node exporter publishes no hwmon reading",
+            p,
+        )];
+    }
+    let mut out = vec![heading(
+        "SENSORS",
+        format!(
+            "{} device{}, amber at {HOT_C:.0}C",
+            live.devices.len(),
+            if live.devices.len() == 1 { "" } else { "s" }
+        ),
+        p,
+    )];
+    out.extend(
+        Table {
+            header: vec!["DEVICE", "HOTTEST", "READINGS", "CHIP"],
+            rows: live
+                .devices
+                .iter()
+                .map(|d| {
+                    let hot = d.hottest.map_or("-".into(), |c| format!("{c:.0}C"));
+                    vec![
+                        dash(&d.device),
+                        if d.in_state("hot") {
+                            cell(hot, p.warn())
+                        } else {
+                            hot.into()
+                        },
+                        dash(&d.readings()),
+                        dash(&d.chip),
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 1, 2, 3],
+            right: vec![1],
+            flex: Some(2),
+            flexmin: 16,
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out
+}
+
+/// Its Kubernetes pods, busiest first.
+fn pods(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if let Some(why) = unread(live, "pods") {
+        return vec![heading("PODS", why, p)];
+    }
+    if live.pods.is_empty() {
+        return vec![heading("PODS", "none: no Kubernetes pod runs here", p)];
+    }
+    let cpu: f64 = live.pods.iter().filter_map(|x| x.cpu).sum();
+    let mem: f64 = live.pods.iter().filter_map(|x| x.mem).sum();
+    let mut out = vec![heading(
+        "PODS",
+        format!(
+            "{} running, {} cores, {} together",
+            live.pods.len(),
+            cores(Some(cpu)),
+            bytes(mem)
+        ),
+        p,
+    )];
+    out.extend(
+        Table {
+            header: vec!["POD", "NAMESPACE", "CPU", "MEM"],
+            rows: live
+                .pods
+                .iter()
+                .take(LIVE_ROWS)
+                .map(|x| {
+                    vec![
+                        dash(&x.pod),
+                        dash(&x.namespace),
+                        cores(x.cpu).into(),
+                        x.mem.map_or("-".into(), |m| bytes(m).into()),
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 2, 3, 1],
+            right: vec![2, 3],
+            flex: Some(0),
+            flexmin: 16,
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    out.extend(more(live.pods.len(), p));
+    out
+}
+
+/// A table of processes or containers: name, then image or count, then CPU and memory.
+fn procs(rows: &[Proc], image: bool, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = Table {
+        header: vec!["NAME", if image { "IMAGE" } else { "COUNT" }, "CPU", "MEM"],
+        rows: rows
+            .iter()
+            .take(LIVE_ROWS)
+            .map(|x| {
+                vec![
+                    dash(&x.name),
+                    if image {
+                        dash(&x.image)
+                    } else {
+                        x.count.map_or("-".into(), |n| format!("{n:.0}").into())
+                    },
+                    cores(x.cpu).into(),
+                    x.mem.map_or("-".into(), |m| bytes(m).into()),
+                ]
+            })
+            .collect(),
+        keep: vec![0, 2, 3, 1],
+        right: if image { vec![2, 3] } else { vec![1, 2, 3] },
+        flex: Some(if image { 1 } else { 0 }),
+        flexmin: 16,
+        ..Default::default()
+    }
+    .fit(w, p.head());
+    out.extend(more(rows.len(), p));
+    out
+}
+
+/// What runs outside Kubernetes: Docker containers, the busiest processes, running services.
+fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if let Some(why) = unread(live, "inventory") {
+        return vec![heading("CONTAINERS, PROCESSES, SERVICES", why, p)];
+    }
+    if !live.inventory {
+        return vec![heading(
+            "CONTAINERS, PROCESSES, SERVICES",
+            "not collected: no node_inventory.prom (home-config role node-inventory-metrics)",
+            p,
+        )];
+    }
+    let mut out = vec![];
+    if live.containers.is_empty() {
+        out.push(heading("CONTAINERS", "no Docker container runs here", p));
+    } else {
+        out.push(heading(
+            "CONTAINERS",
+            format!("{} running in Docker", live.containers.len()),
+            p,
+        ));
+        out.extend(procs(&live.containers, true, p, w));
+    }
+    out.push(Line::raw(""));
+    let of = live
+        .processes_total
+        .map_or(String::new(), |t| format!(" of {t:.0} processes"));
+    out.push(heading(
+        "PROCESSES",
+        format!(
+            "the busiest {} names{of}, by cpu and memory",
+            live.processes.len()
+        ),
+        p,
+    ));
+    out.extend(procs(&live.processes, false, p, w));
+    out.push(Line::raw(""));
+    out.push(heading(
+        "SERVICES",
+        format!("{} systemd services running", live.services.len()),
+        p,
+    ));
+    let lines = fit::wrap(&live.services, " ", w.saturating_sub(2));
+    out.extend(lines.into_iter().map(|l| Line::raw(format!("  {l}"))));
     out
 }
 
@@ -370,6 +623,7 @@ mod tests {
     use crate::infrapage::InfraPage;
     use hub_core::ci::Slot;
     use hub_core::host_history::{Change, Day, Down, Hour};
+    use hub_core::host_now::{Device, Pod};
     use hub_core::links::Link;
     use hub_core::machine_page::Share;
     use hub_core::session_page::Part;
@@ -428,6 +682,7 @@ mod tests {
                         at: i * 3600,
                         cpu: (i % 10 != 0).then_some(0.5),
                         seen: if i % 10 == 0 { 0.0 } else { 1.0 },
+                        temp: (i % 10 != 0).then_some(if i == 101 { 97.0 } else { 60.0 }),
                         ..Hour::default()
                     })
                     .collect(),
@@ -453,6 +708,39 @@ mod tests {
                     step: 120,
                 }),
                 ..HostHistory::default()
+            }),
+            live: Some(HostNow {
+                devices: vec![Device {
+                    device: "cpu".into(),
+                    chip: "k10temp".into(),
+                    hottest: Some(96.0),
+                    temps: vec![("Tctl".into(), 96.0), ("Tccd1".into(), 91.0)],
+                    fans: vec![],
+                }],
+                pods: vec![Pod {
+                    namespace: "frigate".into(),
+                    pod: "frigate-0".into(),
+                    cpu: Some(0.7),
+                    mem: Some(2.5 * 1024.0 * 1024.0 * 1024.0),
+                }],
+                services: vec!["nfs-server".into(), "tailscaled".into()],
+                containers: vec![Proc {
+                    name: "mailpit".into(),
+                    image: "axllent/mailpit".into(),
+                    cpu: Some(0.01),
+                    mem: Some(30e6),
+                    count: None,
+                }],
+                processes: vec![Proc {
+                    name: "Unity".into(),
+                    cpu: Some(3.5),
+                    mem: Some(8e9),
+                    count: Some(2.0),
+                    ..Proc::default()
+                }],
+                processes_total: Some(612.0),
+                inventory: true,
+                unread: Default::default(),
             }),
             recent: vec![RecentJob {
                 run_id: 7,
@@ -487,6 +775,20 @@ mod tests {
             "POWER",
             "11-10 3.5h",
             "queue",
+            "SENSORS",
+            "Tctl 96C  Tccd1 91C",
+            "PODS",
+            "frigate-0",
+            "2.5G",
+            "CONTAINERS",
+            "axllent/mailpit",
+            "PROCESSES",
+            "of 612 processes",
+            "Unity",
+            "SERVICES",
+            "nfs-server tailscaled",
+            "temp ",
+            "hottest 97C",
             "RECENT CI JOBS",
             "bats",
             "failure",
@@ -530,6 +832,43 @@ mod tests {
         );
         assert!(t.contains("no reading of its cores"), "{t}");
         assert!(t.contains("not read"), "no history read: {t}");
+        assert!(t.contains("SENSORS  not read"), "{t}");
+    }
+
+    #[test]
+    fn a_machine_without_the_inventory_collector_says_not_collected_not_none() {
+        let page = MachinePage {
+            host: "mac-mini".into(),
+            live: Some(HostNow::default()),
+            ..MachinePage::default()
+        };
+        let t = text(&page_lines(&page));
+        assert!(t.contains("SENSORS  none: its node exporter"), "{t}");
+        assert!(t.contains("PODS  none"), "{t}");
+        assert!(t.contains("not collected: no node_inventory.prom"), "{t}");
+        assert!(!t.contains("SERVICES  0"), "{t}");
+    }
+
+    #[test]
+    fn a_part_prometheus_failed_says_not_read_not_none() {
+        let why = |p: &str| (p.to_string(), "prometheus down".to_string());
+        let page = MachinePage {
+            host: "workstation".into(),
+            live: Some(HostNow {
+                unread: [why("sensors"), why("pods"), why("inventory")].into(),
+                ..HostNow::default()
+            }),
+            ..MachinePage::default()
+        };
+        let t = text(&page_lines(&page));
+        for h in ["SENSORS", "PODS", "CONTAINERS, PROCESSES, SERVICES"] {
+            assert!(
+                t.contains(&format!("{h}  not read: prometheus down")),
+                "{h}: {t}"
+            );
+        }
+        assert!(!t.contains("not collected"), "{t}");
+        assert!(!t.contains("none:"), "{t}");
     }
 
     fn page_lines(m: &MachinePage) -> Vec<Line<'static>> {
