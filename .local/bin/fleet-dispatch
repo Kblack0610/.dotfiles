@@ -2900,6 +2900,9 @@ load_findings() {
 # pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
 # holds, except that the first urgent item waiting only on run units (PICK_RESERVED, which
 # preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
+# PICK_LINE names the items ahead of PICKED that a full merge line held (line_why), so the start's
+# activity.log line shows the hold firing: once the hold sends the start to another project, no pass
+# settles "merge line full" (2026-11-14: 14 playground waiters, 9 starts elsewhere, 0 such lines).
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
@@ -2907,10 +2910,10 @@ load_findings() {
 # 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
-  local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 uwait=0 held=() waits="every queue item waits" reserved=''
+  local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 lfirst='' uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
-  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED=''
+  PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_LINE=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$TARGET}
   while IFS= read -r it; do
@@ -2923,7 +2926,7 @@ pick_item() {
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
-    if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=1; }; fi
+    if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=$(( lhit + 1 )); lfirst=${lfirst:-$why}; }; fi
     # The first urgent item that waits only on units, and could fit them all, keeps the free ones: a
     # later item that would use them waits too, or a stream of light items starves a heavy one.
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
@@ -2931,13 +2934,17 @@ pick_item() {
     elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
     fi
-    if [ -z "$why" ]; then PICKED=$it PLACE_HOST=$host; return 0; fi
+    if [ -z "$why" ]; then
+      PICKED=$it PLACE_HOST=$host
+      [ "$lhit" = 0 ] || PICK_LINE="; passed $lhit item$([ "$lhit" = 1 ] || echo s) held by $lfirst"
+      return 0
+    fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
-  elif [ "$lhit" = 1 ]; then PICK_WHY="merge line full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$lhit" -gt 0 ]; then PICK_WHY="merge line full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
 }
@@ -3430,7 +3437,7 @@ start_item() {
     [ "$harness" = claude ] || item_pinned "$it" || agent-queue set "$slug" "routed=$harness" >/dev/null ||
       say "could not record routed=$harness on queue item $slug"
     [ "$keep" = 0 ] || FLOOR_HELD=1
-    settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor"
+    settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor${PICK_LINE:-}"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
   else
