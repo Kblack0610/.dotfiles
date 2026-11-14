@@ -60,6 +60,6 @@ A day is not read when either midnight has no reading, or its reading is older t
 | Any store `HTTP 429` or `HTTP 5xx` | The store still refused after two retries (`STORE_RETRIES` in `.local/lib/store-auth.sh`, each after its Retry-After). The next run reads it again |
 | Steam `HTTP 403` | The key is not a Financial API Group key, or the group's IP allow list does not hold this machine's address. Check the group's page in Steamworks |
 | Steam `more than 20 pages of sales` | The day's sales cursor did not stop. `STEAM_PAGES` in `store-sales` is the cap; raise it only when a real day is that long |
-| Trader `no equity reading at <time>` | Prometheus had no series then: the trader's exporter or its scrape was down, or the series is newer than the day (they began 2026-11-12). Check `trader_db_up` and the trader-web pod |
-| Trader `the equity reading at <time> was Nh old` | The writer stopped: `trader-broker-read` for Alpaca, the markets recorder and paper league for Kalshi. Check those CronJobs in the trader's namespace |
+| Trader `no reading at <time>` | Prometheus had no series then: the trader's exporter or its scrape was down, or the series is newer than the day (they began 2026-11-12). Check `trader_db_up` and the trader-web pod |
+| Trader `the reading at <time> was Nh old` | The writer stopped: `trader-broker-read` for Alpaca, the markets recorder and paper league for Kalshi. Check those CronJobs in the trader's namespace |
 | Trader `CC_PROM_URL is not set` or `cannot read <url>` | The Prometheus endpoint is unset in `~/.config/command-center/env` or does not answer |

@@ -23,8 +23,8 @@ pub struct Amount {
 pub struct Source {
     pub name: String,
     /// What the amount is: `proceeds` (after the store's cut), `charged` (what buyers paid),
-    /// `net` (Steam: after refunds and tax, before Valve's cut) or `PNL` (a trader account's
-    /// change in equity over the day).
+    /// `net` (Steam: after refunds and tax, before Valve's cut) or `P&L` (`PNL`: a trader
+    /// account's change in equity over the day).
     #[serde(default)]
     pub basis: String,
     /// None when the source could not be read; empty when it was and nothing sold.
@@ -95,21 +95,23 @@ pub type At<'a> = dyn Fn(&str, i64) -> Result<Option<f64>, String> + 'a;
 
 /// What each trader account made over `day`, read through `at`.
 pub fn trader(at: &At, day: &str) -> Vec<Source> {
-    let read = |value: &str, age: &str| -> Result<f64, String> {
-        let (start, end) = day_bounds(day).ok_or_else(|| format!("{day} is not a date"))?;
-        let mut v = [0.0; 2];
-        for (i, t) in [start, end].into_iter().enumerate() {
-            let when = crate::fleet::local_minute(t);
-            v[i] = at(value, t)?.ok_or_else(|| format!("no equity reading at {when}"))?;
-            let old = at(age, t)?.ok_or_else(|| format!("no read age at {when}"))?;
-            if old > TRADER_STALE_SECS {
-                return Err(format!(
-                    "the equity reading at {when} was {:.0}h old",
-                    old / 3600.0
-                ));
-            }
+    let bounds = day_bounds(day).ok_or_else(|| format!("{day} has no local midnight"));
+    // The source's value at `t`, unless Prometheus has none then or it was read too long before.
+    let value_at = |value: &str, age: &str, t: i64| -> Result<f64, String> {
+        let when = crate::fleet::local_minute(t);
+        let v = at(value, t)?.ok_or_else(|| format!("no reading at {when}"))?;
+        let old = at(age, t)?.ok_or_else(|| format!("no read age at {when}"))?;
+        if old > TRADER_STALE_SECS {
+            return Err(format!(
+                "the reading at {when} was {:.0}h old",
+                old / 3600.0
+            ));
         }
-        Ok(v[1] - v[0])
+        Ok(v)
+    };
+    let read = |value: &str, age: &str| -> Result<f64, String> {
+        let (start, end) = bounds.clone()?;
+        Ok(value_at(value, age, end)? - value_at(value, age, start)?)
     };
     TRADER
         .iter()
@@ -381,7 +383,7 @@ mod tests {
         let v = trader(&at, "2026-11-13");
         assert_eq!(
             line(&v[0]),
-            "Alpaca (paper): not read, no equity reading at 2026-11-13 00:00."
+            "Alpaca (paper): not read, no reading at 2026-11-13 00:00."
         );
         assert!(!line(&v[0]).contains('$'));
         assert_eq!(line(&v[1]), "Kalshi paper league: flat yesterday.");
@@ -400,7 +402,7 @@ mod tests {
         );
         assert_eq!(
             line(&trader(&at, "2026-11-13")[0]),
-            "Alpaca (paper): not read, the equity reading at 2026-11-14 00:00 was 5h old."
+            "Alpaca (paper): not read, the reading at 2026-11-14 00:00 was 5h old."
         );
     }
 

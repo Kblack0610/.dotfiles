@@ -2140,7 +2140,7 @@ mod tests {
             Source {
                 name: "Kalshi paper league".into(),
                 basis: crate::money::PNL.into(),
-                error: Some("no equity reading at 2026-11-13 00:00".into()),
+                error: Some("no reading at 2026-11-13 00:00".into()),
                 ..Default::default()
             },
         ]);
@@ -2148,7 +2148,7 @@ mod tests {
         assert_eq!(m[4], "Alpaca (paper): made $12.50 yesterday.");
         assert_eq!(
             m[5],
-            "Kalshi paper league: not read, no equity reading at 2026-11-13 00:00."
+            "Kalshi paper league: not read, no reading at 2026-11-13 00:00."
         );
         assert_eq!(m.len(), 6, "{m:?}");
     }
