@@ -31,7 +31,7 @@ Do the four stages in order. End each one with its exit line in the reply. A sta
 - Read the real code path end to end before proposing anything. Cite `file:line`, and never reconstruct a function from its name.
 - List every reader and writer of what you will touch: callers, configs, tests, docs, dashboards.
 - Before you write a fix, grep for the one that already exists one file over.
-- For wide scope, use parallel Explore agents. For live systems, use `deep-research-code`. For a failure with an unclear cause, use `root-cause-analyst`.
+- For wide scope, use parallel Explore agents. For live systems, use `deep-research-code`. For a failure with an unclear cause, follow `debug`.
 - Exit line: `verified: ...` and `assumed: ...`, two separate lists.
 
 ### 2. Design
