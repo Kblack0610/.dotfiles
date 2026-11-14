@@ -44,7 +44,7 @@ For a watch, run `watch-companion-loop recheck <name>` with the Bash timeout set
 
 Name the cause in one sentence, with the evidence, before editing anything. A `fix(hold)` row names suspects, not a proven cause: find which merge did it, then revert that merge in a PR or fix forward, whichever is smaller. No merge did it: say so, and fix the red itself. A second red with the same cause is one fix. `fleet-bench triage --dry-run` lists what is red right now.
 
-Use `root-cause-analyst` when the cause is not clear after one pass over the evidence.
+When the cause is not clear after one pass over the evidence, work it through `debug` from Prove the target to Root cause (steps 2 to 6).
 
 ## 4. Fix it
 

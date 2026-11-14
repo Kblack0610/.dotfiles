@@ -746,6 +746,14 @@ listing_report() {
   refute_output --partial "LISTBUDGET"
 }
 
+@test "LISTBUDGET: a name-only override costs the name line, not the description" {
+  mkdeployed big "description: $(desc 200)"
+  mkdeployed bigger "description: $(desc 200)"
+  printf '{"skillOverrides": {"bigger": "name-only"}}' > "$HOME/empty/settings.json"
+  SKILL_SETTINGS="$HOME/empty/settings.json" listing_report 400
+  refute_output --partial "LISTBUDGET"
+}
+
 @test "LISTBUDGET stays out of --lint, which has no deployed tree" {
   mkskill ops one >/dev/null
   SKILL_LISTING_MAX=1 lint

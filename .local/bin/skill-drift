@@ -690,12 +690,19 @@ check_registration() {
 
 # The whole listing, measured the way it arrives: one `- name: description` line per
 # skill and command that is listed. Over the deployed tree because only that holds both
-# repos. A `paths:` or `disable-model-invocation: true` entry costs nothing until used.
+# repos. A `paths:` or `disable-model-invocation: true` entry costs nothing until used,
+# and a skill the toggle keeps "name-only" in SETTINGS costs its name line, not its description.
 check_listing() {
   local total=0 f name n
+  local -A nameonly=()
+  if [ -f "$SETTINGS" ]; then
+    while IFS= read -r name; do [ -n "$name" ] && nameonly[$name]=1; done \
+      < <(jq -r '.skillOverrides // {} | to_entries[] | select(.value == "name-only") | .key' "$SETTINGS" 2>/dev/null)
+  fi
   while IFS=$'\t' read -r name f; do
     fm "$f" | grep -E '^paths:|^disable-model-invocation:[[:space:]]*true' >/dev/null && continue
-    n=$(desc_bytes "$f")
+    n=0
+    [ -z "${nameonly[$name]:-}" ] && n=$(desc_bytes "$f")
     total=$((total + ${#name} + 5 + ${n:-0}))
   done < <(
     for f in "$SKILLS"/*/SKILL.md; do
