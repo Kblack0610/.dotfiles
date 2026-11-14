@@ -44,7 +44,7 @@ QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 # The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]", or "said"
-# while a send's result is in the footer. The picker makes it.
+# while a result (a send, a refusal, P's toggle) is in the footer. The picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 # The panel's parked toggle: a file reading "show" once P shows the parked asks. Unset (outside the
 # panel) rows lists them all; the picker makes it empty, so they start hidden.
@@ -280,7 +280,7 @@ after() {
   local n
   rows_build
   n="$(rows_saved | rows_count)"
-  # The reload drops the answered row and moves the cursor; "said" keeps the result through that focus.
+  # The reload may fire focus (the answered row went) or not; "said" keeps the result either way.
   st_write said
   printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
   if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
@@ -378,9 +378,12 @@ cmd_key() {
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
     # With nothing armed the keys are fitted again, to whatever layout ctrl-/ left.
-    if [ "$mode" = said ]; then st_write ""
-    elif [ -z "$mode" ]; then footer "$QUESTIONS_KEYS"
-    elif [ "$mode" != typing ] && [ "$sid" != "$id" ]; then st_write ""; footer "$QUESTIONS_KEYS"; fi
+    # A result stays until a key replaces it, so the focus a reload may fire cannot clear it.
+    case "$mode" in
+    "") footer "$QUESTIONS_KEYS" ;;
+    said | typing) ;;
+    *) [ "$sid" = "$id" ] || { st_write ""; footer "$QUESTIONS_KEYS"; } ;;
+    esac
     ;;
   fit)
     # start and resize: the keys sized to the list column, unless a key's message is up.
@@ -408,8 +411,9 @@ cmd_key() {
   P)
     if [ "$mode" = typing ]; then printf 'put(P)'; return 0; fi
     [ -n "$QUESTIONS_PARKED" ] || return 0
-    # A choice armed on a row P is about to hide must not ride a later enter.
-    st_write ""
+    # A choice armed on a row P is about to hide must not ride a later enter; the toggle's
+    # result outlasts the reload's focus.
+    st_write said
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
     # P is also the refresh: asks that came or went since the last build show now.
     rows_build

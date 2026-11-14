@@ -218,16 +218,21 @@ plan_dialog() {
   assert_output --partial 'press a number, t, d or p first'
 }
 
-@test "a send's result outlasts the focus its reload fires; the next focus or esc moves on" {
+@test "a send's result stays through focus and fit until a key replaces it; esc closes" {
   plan_dialog
   "$Q" key 2 @hub/demo:2 >/dev/null
   run "$Q" key enter @hub/demo:2
   assert_output --partial 'sent 2 "Yes, manually approve edits" to hub/demo:2'
-  # The answered row leaves the list, so the cursor lands on another row: the result stays up.
+  # The reload may fire focus or not, and the person may move on: the result stays up either way.
   run "$Q" key focus @hub/demo:3
   assert_output ''
-  run "$Q" key focus @hub/demo:3
-  assert_output --partial 'change-footer~1-9 pick'
+  run "$Q" key focus @hub/demo:2
+  assert_output ''
+  run "$Q" key fit
+  assert_output ''
+  # A key replaces it.
+  run "$Q" key 1 @hub/demo:2
+  assert_output --partial 'change-footer~send 1 '
   # Negative control: with a result up, esc closes the panel, as with nothing armed.
   "$Q" key 2 @hub/demo:2 >/dev/null
   "$Q" key enter @hub/demo:2 >/dev/null
@@ -579,7 +584,10 @@ transcript() {
   echo "armed 1 $parked" >"$QUESTIONS_STATE"
   run "$Q" key P "$parked"
   assert_output --partial 'parked asks hidden'
-  assert_equal "$(cat "$QUESTIONS_STATE")" ''
+  assert_equal "$(cat "$QUESTIONS_STATE")" 'said'
+  # Its message outlasts the focus the reload fires.
+  run "$Q" key focus "$live"
+  assert_output ''
   run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
   # The status bar count never counted parked asks, hidden or not.
