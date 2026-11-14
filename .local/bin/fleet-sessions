@@ -699,7 +699,7 @@ branch_runs() {
   cat "$one"
 }
 
-# gate_ci <dir> <PR head branch> <head_oid> <ci> [<red job ids>] -> <ci> with the branch's dispatched gate runs folded in.
+# gate_ci <dir> <PR head branch> <head_oid> <ci> [<red job ids>] [<shell job>] -> <ci> with the branch's dispatched gate runs folded in.
 # A pool gate is a workflow_dispatch run, which never appears in a PR's statusCheckRollup, so a PR
 # whose Checks passed read green while its gate was queued or red (#1175, #1180). Each
 # FLEET_GATE_WORKFLOWS workflow's newest dispatched run on a commit the PR head holds (a reused
@@ -712,9 +712,13 @@ branch_runs() {
 # Only a PASS or NONE can change, and a FAIL whose red jobs failed only in FLEET_GATE_LINE_STEPS, which
 # a gate running on the head itself makes PENDING: that red is the gate line waiting on it (ar-82, #1692
 # read CI red mid-gate). A gate still running on an older commit leaves it red: the head has none.
+# <shell job> gate (the session's background shell is a gate: its open job, or live_wait) makes it PENDING
+# too: a ci-gate.sh queued for the landing slot has dispatched nothing yet, and Checks refuses the head
+# until it does (ar-2366: agent-15 #2546, agent-18 #2516 and agent-68 #2483, queued behind #2559 on
+# 2026-11-13, each read STALLED CI red and was nudged).
 # The run list is branch_runs', and one the ledger cannot answer keeps <ci> and is named unreadable.
 gate_ci() {
-  local d="$1" br="$2" oid="$3" ci="$4" jobs="${5:--}" runs wf st c sha seen="" pend=0 fail=0 pass=0 pendhead=0
+  local d="$1" br="$2" oid="$3" ci="$4" jobs="${5:--}" shell="${6:--}" runs wf st c sha seen="" pend=0 fail=0 pass=0 pendhead=0
   case "$ci" in
     PASS|NONE) ;;
     FAIL) [ "$jobs" != - ] && [ -n "$FLEET_GATE_LINE_STEPS" ] || { echo FAIL; return; } ;;
@@ -736,7 +740,7 @@ gate_ci() {
                   | [.workflowPath, .status, ((.conclusion // "") | if . == "" then "-" else . end), .headSha]
                   | @tsv' <<<"$runs")  # "-": IFS tab would merge an empty field into the next
   if [ "$ci" = FAIL ]; then
-    if [ "$pendhead" = 1 ] && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
+    if { [ "$pendhead" = 1 ] || [ "$shell" = gate ]; } && gate_line_only "$d" "$jobs"; then echo PENDING; else echo FAIL; fi
   elif [ "$pend" = 1 ]; then echo PENDING
   elif [ "$fail" = 1 ]; then echo FAIL
   elif [ "$pass" = 1 ]; then echo PASS
@@ -1100,9 +1104,10 @@ pr_holding_head() {
 
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
-# "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names".
+# "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
+# open job of the session's background shell, for gate_ci (- when it has none).
 git_facts() {
-  local d="$1" edited="${2:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   fetch_once "$d"
@@ -1114,7 +1119,7 @@ git_facts() {
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch")
   [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d")
   # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
-  [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red")"
+  [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red" "$shell")"
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
     # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
@@ -1385,7 +1390,8 @@ collect() {
               | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
         irow="${irow:--}"; iorigin="${iorigin:--}" ;;
     esac
-    if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited")
+    local sjob=-; [ "$status" = shell ] && sjob="$ojob"
+    if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited" "$sjob")
     else read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names <<<"0 0 0 - - - 1 - - - - - -"; fi
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.

@@ -1001,11 +1001,12 @@ MD
 
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
-# (default idle) and context window $PANEL_WINDOW (default null, a model agent-panel does not know).
+# (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
+# open job $PANEL_JOB (default none known).
 panel() {
   local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -3019,6 +3020,36 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
   FLEET_GATE_LINE_STEPS='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
+@test "end to end: a red gate line is CI running while the session's own gate shell waits for the landing slot (ar-2366)" {
+  # 2026-11-13 agent-15 #2546, agent-18 #2516 and agent-68 #2483 read STALLED CI red: each one's
+  # gate-and-land.sh was queued behind #2559 for the landing slot, so no Tests run was on its head
+  # yet, and Checks' Merge gate line refused the head until one is.
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache" FLEET_SHELL_STALE_MIN=30
+  job 77 'Harness tests:success' 'Merge gate line:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  PANEL_STATUS=shell PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running, background shell idle over 30m' ]
+
+  # negative controls: the shell is not a gate, the session has no shell open, or the red is real
+  PANEL_STATUS=shell PANEL_JOB=jobs panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell is not a gate or test' ]
+  PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
+  PANEL_STATUS=shell PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  ledger feat/x '[]'; open_pr FAIL 78
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
