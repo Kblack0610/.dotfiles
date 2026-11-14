@@ -12,8 +12,10 @@ archive (`schedules-sync jobs`; an earlier attempt of a re-run is not in it, so 
 from gh and counted in jobs_from_gh), each failed job's check-run annotations and, when those say
 nothing but an exit code, its `--log-failed` output. Each failed job gets:
 
-- a signature: workflow / job / failed step :: the line that says what broke, with numbers,
-  SHAs and workspace paths normalized so the same failure on two branches groups as one;
+- a signature: workflow file / job / failed step :: the line that says what broke, with numbers,
+  SHAs and workspace paths normalized so the same failure on two branches groups as one. The file,
+  not the run's name: a workflow with a `run-name` names each run by its inputs (unity-core-playground's
+  "Tests (affected)", "Tests (all)"), so the name would split one failure into one signature per input;
 - a bucket: infra (runner lost or killed, disk, network, rate limit, host key), timeout,
   test (a test step or a FAIL/Failed line), check (any other step: lint, docs, build), or
   derived (failed only because an earlier job in the run did; listed, never counted), or
@@ -146,11 +148,13 @@ class Source:
         for r in got or []:
             if r.get("status") != "completed":
                 continue
-            out.append({"databaseId": r["id"], "workflowName": r.get("workflow"), "headBranch": r.get("branch"),
+            path = os.path.basename(r.get("path") or "")
+            out.append({"databaseId": r["id"], "workflowName": r.get("workflow"), "workflowKey": path or r.get("workflow"),
+                        "headBranch": r.get("branch"),
                         "headSha": r.get("sha"), "event": r.get("event"), "status": r["status"],
                         "conclusion": r.get("conclusion"), "createdAt": r["created_at"],
                         "attempt": r.get("attempt") or 1, "url": r.get("url"),
-                        "_listed_as": [os.path.basename(r.get("path") or "")] if r.get("path") else []})
+                        "_listed_as": [path] if path else []})
         return out
 
     def sync(self, label, verb, *args):
@@ -247,11 +251,11 @@ def record(src, run, attempt, job):
     step = failed[0] if failed else "(no failed step)"
     return {
         "run": run["databaseId"], "attempt": attempt, "url": job.get("html_url") or run.get("url"),
-        "workflow": run["workflowName"], "branch": run["headBranch"], "sha": run["headSha"],
+        "workflow": run["workflowName"], "workflow_key": run["workflowKey"], "branch": run["headBranch"], "sha": run["headSha"],
         "created": run["createdAt"], "job": job["name"], "job_key": normalize(job["name"]), "step": step,
         "runner": job.get("runner_name"), "started": job.get("started_at"), "completed": job.get("completed_at"),
         "line": line, "errors": errors, "exit_code": code, "why": why, "bucket": bucket,
-        "specific": bool(said or errors), "signature": f"{run['workflowName']} / {normalize(job['name'])} / {step} :: {normalize(line)}",
+        "specific": bool(said or errors), "signature": f"{run['workflowKey']} / {normalize(job['name'])} / {step} :: {normalize(line)}",
     }
 
 
@@ -280,12 +284,12 @@ def finish_buckets(records):
 def collect(src, runs):
     red = [r for r in runs if r["conclusion"] not in ("success", "cancelled", "skipped", "neutral", "action_required") or r.get("attempt", 1) > 1]
     red_ids = {r["databaseId"] for r in red}
-    red_shas = {(r["workflowName"], r["headSha"]) for r in red}
+    red_shas = {(r["workflowKey"], r["headSha"]) for r in red}
     records, greens = [], set()
     for run in runs:
         attempts = range(1, run.get("attempt", 1) + 1)
         is_red = run["databaseId"] in red_ids
-        if not is_red and (run["workflowName"], run["headSha"]) not in red_shas:
+        if not is_red and (run["workflowKey"], run["headSha"]) not in red_shas:
             continue
         for attempt in attempts:
             jobs = src.jobs(run, attempt)
@@ -294,23 +298,23 @@ def collect(src, runs):
             for job in jobs:
                 # The exact name: shards "PlayMode 1" and "PlayMode 2" share a job_key, and a
                 # green sibling shard is not the same job going green.
-                key = (run["workflowName"], run["headSha"], job["name"])
+                key = (run["workflowKey"], run["headSha"], job["name"])
                 if job.get("conclusion") == "success":
                     greens.add(key)
                 elif is_red and job.get("conclusion") in ("failure", "timed_out"):
                     records.append(record(src, run, attempt, job))
     finish_buckets(records)
     for r in records:
-        r["green_sha"] = (r["workflow"], r["sha"], r["job"]) in greens
+        r["green_sha"] = (r["workflow_key"], r["sha"], r["job"]) in greens
     return records
 
 
 def record_stub(run, attempt):
-    return {"run": run["databaseId"], "attempt": attempt, "url": run.get("url"), "workflow": run["workflowName"],
+    return {"run": run["databaseId"], "attempt": attempt, "url": run.get("url"), "workflow": run["workflowName"], "workflow_key": run["workflowKey"],
             "branch": run["headBranch"], "sha": run["headSha"], "created": run["createdAt"], "job": "(no jobs)",
             "job_key": "(no jobs)", "step": "(startup)", "runner": None, "started": None, "completed": None,
             "line": "startup failure", "errors": [], "exit_code": None, "specific": True,
-            "signature": f"{run['workflowName']} / (no jobs) / (startup) :: startup failure"}
+            "signature": f"{run['workflowKey']} / (no jobs) / (startup) :: startup failure"}
 
 
 def analyse(runs, records, base, branches):
@@ -346,9 +350,9 @@ def analyse(runs, records, base, branches):
         "runs": len(scope), "red_runs": len(first), "pending_runs": len(pending), "cancelled": sum(r["conclusion"] == "cancelled" for r in scope),
         "derived_jobs": sum(r["bucket"] == "derived" for r in shown), "buckets": buckets, "signatures": table,
         "where": sorted(where.items(), key=lambda kv: (-kv[1], kv[0])),
-        "by_workflow": {wf: [sum(r["workflowName"] == wf for r in scope),
-                             len({x for x, r in first.items() if r["workflow"] == wf})]
-                        for wf in sorted({r["workflowName"] for r in scope})},
+        "by_workflow": {wf: [sum(r["workflowKey"] == wf for r in scope),
+                             len({x for x, r in first.items() if r["workflow_key"] == wf})]
+                        for wf in sorted({r["workflowKey"] for r in scope})},
     }
 
 
@@ -365,7 +369,7 @@ def report(a, args, since, until, partial, logs_missing):
         if a["buckets"].get(b):
             print(f"{b:<9} {a['buckets'][b]:>4}  {pct(a['buckets'][b], a['red_runs']):>5}")
     print(f"derived jobs (failed only after another job did, not counted): {a['derived_jobs']}")
-    print("\nruns  where (workflow / job / failed step of each red run's first failed job)")
+    print("\nruns  where (workflow file / job / failed step of each red run's first failed job)")
     for w, n in a["where"][: args.top]:
         print(f"{n:>4}  {w}")
     print(f"\nruns  jobs  bucket   {args.base[:4]:<4}  green@sha  branches  first        last         signature")
