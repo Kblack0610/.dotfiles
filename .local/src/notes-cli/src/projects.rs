@@ -1490,12 +1490,12 @@ fn files_linking(root: &Path, prefixes: &[String]) -> usize {
             }
             match e.file_type() {
                 Ok(t) if t.is_dir() => stack.push(path),
-                Ok(_) if path.extension().and_then(|x| x.to_str()) == Some("md") => {
-                    if fs::read_to_string(&path)
-                        .is_ok_and(|c| needles.iter().any(|nd| c.contains(nd.as_str())))
-                    {
-                        n += 1;
-                    }
+                Ok(_)
+                    if path.extension().and_then(|x| x.to_str()) == Some("md")
+                        && fs::read_to_string(&path)
+                            .is_ok_and(|c| needles.iter().any(|nd| c.contains(nd.as_str()))) =>
+                {
+                    n += 1;
                 }
                 _ => {}
             }
