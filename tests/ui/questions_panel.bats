@@ -168,7 +168,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'side_by_side'
 }
 
-@test "a number then enter answers in place: the row leaves and the count drops" {
+@test "a number then enter answers at once: the row says sending, the next question is up, and the row leaves once delivered" {
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys 1
@@ -176,33 +176,39 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen armed_80x24
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
-  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?"'
-  screen_has 'sent "stacked" to'
+  # The answer is recorded before the key returns; the cursor is on the next question's card.
+  wait_until 'screen_has "2 asks waiting . 1 sending" && screen_has "drop it" && screen_lacks "list on top, card below"'
+  screen_has 'answered "stacked" . sending it to alpha:1'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
+  keep_screen sending_80x24
+  # What agent-ask-deliver.path runs on the workstation; the panel's wait sees it and reloads.
+  "$AGENT_ASK" deliver --all
+  wait_until 'screen_has "delivered to alpha:1" && screen_lacks "1 sending" && screen_lacks "Make stacked the default?"'
+  screen_has '2 asks waiting'
 }
 
-@test "enter shows sending in the footer and the card at once, and a second enter sends nothing more" {
-  # The answer blocks on a fifo until the test lets it through, so the screen in between is
-  # the one a slow send shows. Every answer call is logged.
-  local gate="$BATS_TEST_TMPDIR/gate" wrap="$SANDBOX/bin/slow-ask"
-  mkfifo "$gate"
-  printf '#!/usr/bin/env bash\n[ "$1" = answer ] && { echo "$*" >>%q; read -r _ <%q; }\nexec %q "$@"\n' \
-    "$BATS_TEST_TMPDIR/answers" "$gate" "$AGENT_ASK" >"$wrap"
-  chmod +x "$wrap"
-  QUESTIONS_ASK="$wrap" TM_WIDTH=80 TM_HEIGHT=24 open_panel
+@test "the next question answers while the last is still sending, and a key on a sending row sends nothing more" {
+  TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys 1
   wait_until 'screen_has "send 1 \"stacked\""'
   tmux_keys Enter
-  wait_until 'screen_has "sending \"stacked\" to alpha:1 ..." && screen_lacks "list on top, card below"'
-  keep_screen sending_80x24
+  wait_until 'screen_has "1 sending" && screen_has "drop it"'
+  tmux_keys 1
+  wait_until 'screen_has "send 1 \"keep\""'
   tmux_keys Enter
-  wait_until 'screen_has "wait for it"'
-  echo go >"$gate"
-  wait_until 'screen_has "2 asks waiting" && screen_has "sent \"stacked\" to"'
-  [ "$(status_of "$OLD")" = answered ]
-  [ "$(grep -c . "$BATS_TEST_TMPDIR/answers")" = 1 ]
+  wait_until 'screen_has "1 ask waiting . 2 sending" && screen_has "leave it"'
+  [ "$(status_of "$MID")" = answered ]
+  # Down to the first sending row: a number there only says the answer is on its way.
+  tmux_keys Down 1
+  wait_until 'screen_has "answered; sending it to alpha:1"'
+  tmux_keys Enter
+  wait_until 'screen_has "press a number, t, d or p first"'
+  [ "$(grep -c '^answer:' "$(ask_file "$OLD")")" = 1 ]
+  "$AGENT_ASK" deliver --all
+  wait_until 'screen_lacks "sending" && screen_lacks "Keep the merge queue?"'
+  screen_has '1 ask waiting'
 }
 
 @test "a number then esc sends nothing and keeps the panel open" {
@@ -236,15 +242,14 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until "screen_has 'answering alpha:1'"
   tmux_type 'stacked'
   tmux_keys Enter
-  # The next card on screen, not only the old one gone: while the send runs the card says sending.
-  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?" && screen_has "Keep the merge queue?"'
+  # The next question's card on screen; the answered one stays a sending row until delivered.
+  wait_until 'screen_has "2 asks waiting . 1 sending" && screen_has "drop it"'
   tmux_keys t
   wait_until "screen_has 'answering beta:2:'"
   screen_matches '^│ answer> +│'
-  screen_lacks 'stacked'
   tmux_type 'keep'
   tmux_keys Enter
-  wait_until 'screen_has "1 ask waiting" && screen_lacks "Keep the merge queue?" && screen_has "Ship the map?"'
+  wait_until 'screen_has "1 ask waiting . 2 sending" && screen_has "leave it"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
   # esc from typing puts the count back in the header.
   tmux_keys t

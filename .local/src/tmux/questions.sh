@@ -5,7 +5,10 @@
 # d then enter drops it, p then enter parks it until its revisit date (or puts a parked one back),
 # g goes to the asking session (reopening it when it has ended), P shows or hides the parked
 # asks (hidden when the panel opens: the human does not want them in view). Data and delivery are
-# agent-ask's (list, card, answer, cancel, park, target).
+# agent-ask's (list, card, answer, cancel, park, target). An answer is recorded at once and goes
+# out in the background (agent-ask deliver): its row stays, tagged sending, until it went, and a
+# delivery that failed stays tagged failed with why until d then enter clears it. Nothing locks:
+# the next question is answered while the last one sends, and closing the panel stops no send.
 #
 # Below the asks, one row per session the fleet state document has in NEEDS for a dialog open
 # in its own terminal (a plan to approve, an AskUserQuestion, a permission): agent-ask never
@@ -20,15 +23,16 @@
 # Verbs:
 #   rows              pending questions, NUL-ended "<id><TAB><row>": this tmux session's first,
 #                     then the live asks oldest first, then the sessions with a dialog open
-#                     (id @<target>), then the dead asks oldest first, then the parked asks
-#                     soonest back first; in the panel the parked ones only after P
+#                     (id @<target>), then the dead asks oldest first, then the answers still
+#                     sending or failed, then the parked asks soonest back first; in the panel
+#                     the parked ones only after P
 #   saved             the rows as the panel last built them (after an answer, P), not built again
 #   count             how many rows rows prints less the parked ones, one number: the pending asks
 #                     plus the open dialogs. The agents status bar's !N, so the bar and this panel
 #                     never disagree
 #   key <k> <id> [q]  what a key does, as fzf actions (the picker's one transform handler).
-#                     The panel's enter is `key submit`: it puts "sending ..." on screen and runs
-#                     `key enter`, the send itself, in the background
+#                     The panel's enter is `key submit`: an ask's answer is `key enter` at once (it
+#                     records and returns); a dialog's press runs in the background (`key dsend`)
 #   card <id>         the card for one row (agent-ask card, or agent-panel dialog)
 #   --help, -h        this text
 #   (no verb)         open the panel
@@ -57,7 +61,9 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P park
 # ask whose session has ended, none an ask no session filed (intake, headless), as its card says
 # "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts.
 # park is an ask parked until a revisit date (agent-ask park), shown last with that date in the
-# age column, so it is in reach but not in the count. Where an answer goes is on the card
+# age column, so it is in reach but not in the count. sending is an answer agent-ask deliver has
+# not sent yet and failed one it could not, its why under the question; both sort after the open
+# questions and stay out of the count. Where an answer goes is on the card
 # (agent-ask answer_route), not the row: the row has no room for it
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
 # item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
@@ -89,7 +95,7 @@ prompt_list() {
 
 cmd_rows() {
   local list prompts here live epochs names name slugs="" titles
-  list="$("$QUESTIONS_ASK" list --all --open)"
+  list="$("$QUESTIONS_ASK" list --all --open --undelivered)"
   prompts="$(prompt_list)"
   [ -n "$list$prompts" ] || return 0
   here="$(panel_in_tmux && tmux display-message -p '#{session_name}' 2>/dev/null)"
@@ -155,17 +161,27 @@ cmd_rows() {
         A[NR] = age($(NF - 1)); Q[NR] = $6
         # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
         # first, and its age column says how long until it comes back.
-        if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("4\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
+        if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("5\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
         S[NR] = (T[$16] != "") ? faint T[$16] off : ""
+        # An answered ask is here only while its answer is on its way ($28 delivery) or failed: under
+        # it, what was answered, or why it did not go ($29). $31 is a human answer given beside the
+        # judge answer ($30), the one being sent.
+        if ($4 == "answered") {
+          M[NR] = ($28 == "failed") ? 5 : 4; L[NR] = sprintf("4\t%s\t%s\t", $(NF - 1), $1)
+          S[NR] = (M[NR] == 5) ? faint "not delivered: " $29 off : faint "answer: " ($31 != "" ? $31 : $30) off
+        }
       }
-      # The name column is as wide as its longest name, up to 12. The second line starts under
-      # the question; \037 stands for its newline until the rows are sorted.
+      # The name column is as wide as its longest name, up to 12, and the tag column as its
+      # longest tag. The second line starts under the question; \037 stands for its newline until
+      # the rows are sorted.
       END {
         if (w > 12) w = 12
+        split("dead none LIVE park sending failed", G, " "); tw = 4
+        for (i in W) if (length(G[M[i] + 1]) > tw) tw = length(G[M[i] + 1])
         for (i in W) {
-          printf "%s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold "LIVE" off : M[i] == 1 ? faint "none" off : M[i] == 3 ? faint "park" off : faint "dead" off,
+          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold : faint, tw, G[M[i] + 1], off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
-          if (S[i] != "") printf "\037%*s%s", w + 11, "", S[i]
+          if (S[i] != "") printf "\037%*s%s", w + tw + 7, "", S[i]
           print ""
         }
       }' <(printf '%s\n' "$titles") <(printf '%s\n' "$prompts") - |
@@ -177,6 +193,8 @@ parked_shown() { [ -z "$QUESTIONS_PARKED" ] || [ "$(cat "$QUESTIONS_PARKED" 2>/d
 # joined by \037 (an ask row, not an @ dialog, whose first line's tag is park). parked_filter and
 # rows_count both read it, so the hidden rows and the header's parked count cannot disagree.
 PARK_ROW='{ t = $0; sub(/\037.*/, "", t); gsub(/\033\[[0-9;]*m/, "", t); park = !/^@/ && t ~ /^[^\t]*\tpark / }'
+# SENT_ROW: the same for an answer on its way (sending=1) or not delivered (failed=1).
+SENT_ROW='{ sending = !/^@/ && t ~ /^[^\t]*\tsending /; failed = !/^@/ && t ~ /^[^\t]*\tfailed / }'
 # parked_filter: the rows on stdin less the parked asks while the panel hides them.
 parked_filter() {
   if parked_shown; then cat; return 0; fi
@@ -195,14 +213,15 @@ cmd_count() {
   } | grep -c .)" || true
   echo $((${asks:-0} + ${prompts:-0}))
 }
-# rows_count: "<asks> <plans> <questions> <prompts> <parked>" in what cmd_rows printed (a row is
-# NUL-ended; a dialog's id starts with @ and its first line names its kind; a parked ask's tag is park).
+# rows_count: "<asks> <plans> <questions> <prompts> <parked> <sending> <failed>" in what cmd_rows
+# printed (a row is NUL-ended; a dialog's id starts with @ and its first line names its kind; a
+# parked ask's tag is park, an answer on its way sending, one not delivered failed).
 rows_count() {
-  tr '\n\000' '\037\n' | awk "$PARK_ROW"'{ split($0, L, "\037") }
-    park { k++; next }
+  tr '\n\000' '\037\n' | awk "$PARK_ROW$SENT_ROW"'{ split($0, L, "\037") }
+    park { k++; next } sending { s++; next } failed { f++; next }
     !/^@/ { a++; next } L[1] ~ /plan waiting for approval/ { p++; next }
     L[1] ~ /question waiting for an answer/ { q++; next } { o++ }
-    END { print a + 0, p + 0, q + 0, o + 0, k + 0 }'
+    END { print a + 0, p + 0, q + 0, o + 0, k + 0, s + 0, f + 0 }'
 }
 
 # One handler for every answer key. It prints fzf actions; the state file carries an armed
@@ -210,12 +229,6 @@ rows_count() {
 # ~...~, so a ~ in a question is dropped from the footer, never parsed as an action.
 st_read() { [ -n "$QUESTIONS_STATE" ] && cat "$QUESTIONS_STATE" 2>/dev/null; }
 st_write() { [ -n "$QUESTIONS_STATE" ] && printf '%s\n' "$*" >"$QUESTIONS_STATE"; }
-# The busy marker beside the state: while a send is on its way it holds what is being sent, the
-# card shows it, and every key says so instead of acting, so a second enter sends nothing.
-# submit writes it; enter, the send, removes it when it is through.
-busy_read() { [ -n "$QUESTIONS_STATE" ] && cat "$QUESTIONS_STATE.busy" 2>/dev/null; }
-busy_write() { [ -n "$QUESTIONS_STATE" ] && printf '%s\n' "$*" >"$QUESTIONS_STATE.busy"; }
-busy_clear() { [ -n "$QUESTIONS_STATE" ] && rm -f "$QUESTIONS_STATE.busy"; }
 tilde() { printf '%s' "${1//\~/}"; }
 footer() { printf 'change-footer~%s~' "$(tilde "$(fit "$1")")"; }
 
@@ -243,14 +256,16 @@ fit() {
   }' <<<"$1" | fold -s -w "$w" | sed 's/ *$//'
 }
 
-# ask_load <id>: the ask's options, question, status and who asked, from one `agent-ask show`.
+# ask_load <id>: the ask's options, question, status, delivery and who asked, from one `agent-ask show`.
 ask_load() {
   local line k project="" session=""
-  A_OPTS=() A_WHO="" A_Q="" A_STATUS="" A_PARKED=""
+  A_OPTS=() A_WHO="" A_Q="" A_STATUS="" A_PARKED="" A_DELIVERY="" A_NOTE=""
   while IFS= read -r line; do
     k="${line%%: *}"
     case "$k" in
     status) A_STATUS="${line#*: }" ;;
+    delivery) A_DELIVERY="${line#*: }" ;;
+    delivery_note) A_NOTE="${line#*: }" ;;
     parked_until) [[ "${line#*: }" > "$(now_utc)" ]] && A_PARKED="${line#*: }" ;;
     options) IFS='|' read -r -a A_OPTS <<<"${line#*: }" ;;
     question) A_Q="${line#*: }" ;;
@@ -275,19 +290,23 @@ rows_saved() {
   cat "$QUESTIONS_STATE.rows"
 }
 
-# after <message>: reload the rows and say what happened, with the count in the header.
+# after <message>: reload the rows and say what happened. The reload builds the rows in fzf's
+# background and its load event (key loaded) counts them into the header, so a key returns at
+# once. From a background send (QUESTIONS_BG) a choice armed meanwhile is left as it is, and so
+# is its footer. From a key, the cursor goes back to where it was once the rows load (FZF_POS into
+# .jump): --track would follow the answered row down to the sending ones, and the row now in its
+# place is the next question.
 after() {
-  local n
-  rows_build
-  n="$(rows_saved | rows_count)"
-  st_write ""
-  printf 'hide-input+change-prompt~~+reload(%q saved)+change-header~%s~+' "$SELF" "$(waiting $n)"
-  if [ "${n% *}" = "0 0 0 0" ]; then footer "$1 . no questions waiting . esc closes"; else footer "$1"; fi
+  printf 'reload(%s%q rows)' "${QUESTIONS_ANSWERED:+QUESTIONS_ANSWERED=$(printf '%q' "$QUESTIONS_ANSWERED") }" "$SELF"
+  if [ -z "${QUESTIONS_BG:-}" ]; then
+    [ -z "$QUESTIONS_STATE" ] || [ -z "${FZF_POS:-}" ] || printf '%s\n' "$FZF_POS" >"$QUESTIONS_STATE.jump"
+    st_write ""; printf '+hide-input+change-prompt~~+'; footer "$1"
+  elif [ -z "$(st_read)" ]; then printf '+'; footer "$1"; fi
 }
 # The header back to the count, once typing (which names the question there) is over.
 header_count() { printf 'change-header~%s~+' "$(waiting $(rows_saved | rows_count))"; }
-# waiting <asks> <plans> <questions> <prompts> [<parked>]: the header, "3 asks . 11 plans . 2
-# questions waiting . 5 parked", a kind with none left out.
+# waiting <asks> <plans> <questions> <prompts> [<parked> <sending> <failed>]: the header, "3 asks
+# . 11 plans . 2 questions waiting . 1 sending . 1 not delivered . 5 parked", a kind with none left out.
 waiting() {
   local n i out="" kinds=(ask plan question prompt) counts=("${1:-0}" "${2:-0}" "${3:-0}" "${4:-0}")
   for i in 0 1 2 3; do
@@ -296,7 +315,7 @@ waiting() {
   done
   local hint=""
   [ -n "$QUESTIONS_PARKED" ] && { parked_shown && hint=" (P hides)" || hint=" (P shows)"; }
-  echo "${out:-no questions} waiting$( ((${5:-0} > 0)) && echo " . $5 parked$hint")"
+  echo "${out:-no questions} waiting$( ((${6:-0} > 0)) && echo " . $6 sending")$( ((${7:-0} > 0)) && echo " . $7 not delivered")$( ((${5:-0} > 0)) && echo " . $5 parked$hint")"
 }
 
 # prompt_card <target>: the card for a dialog agent-panel cannot read (a permission prompt):
@@ -366,13 +385,8 @@ dialog_send() {
 }
 
 cmd_key() {
-  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid="" seen="" busy
+  local k="${1:-}" id="${2:-}" q="${3:-}" mode="" opt="" sid="" seen=""
   read -r mode opt sid seen <<<"$(st_read)"
-  busy="$(busy_read)"
-  if [ -n "$busy" ] && [ "$k" != enter ]; then
-    case "$k" in focus | fit) ;; *) footer "$busy . wait for it . ctrl-c closes" ;; esac
-    return 0
-  fi
   case "$k" in
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
@@ -420,7 +434,20 @@ cmd_key() {
     [ -n "$id" ] || return 0
     if [[ "$id" == @* ]]; then dialog_key "$k" "${id#@}"; return 0; fi
     ask_load "$id"
-    # A key pressed before the reload after a send lands on the row just answered: refresh.
+    # An answer on its way, or one that failed: g goes to its session, d then enter clears a
+    # failed one, and nothing else acts on it.
+    if [ "$A_STATUS" = answered ] && [ "$A_DELIVERY" = failed ]; then
+      if [ "$k" = d ]; then
+        st_write seen - "$id"
+        footer "clear the not-delivered note on $id? enter clears . esc cancels"
+      else footer "answered, not delivered: ${A_NOTE:-agent-ask deliver failed} . g goes there . d clears it"; fi
+      return 0
+    fi
+    if [ "$A_STATUS" = answered ] && { [ "$A_DELIVERY" = queued ] || [ "$A_DELIVERY" = delivering ]; }; then
+      footer "answered; sending it to $A_WHO . g goes there"
+      return 0
+    fi
+    # A key pressed before the reload after a send lands on a row closed meanwhile: refresh.
     if [ "$A_STATUS" != pending ]; then
       after "that question was just ${A_STATUS:-closed}; the list is refreshed"
       return 0
@@ -458,34 +485,61 @@ cmd_key() {
     esac
     ;;
   submit)
-    # The panel's enter: say what is being sent, in the footer and the card, at once, and send it
-    # in the background (bg-transform), so fzf stays responsive and the busy marker refuses a
-    # second enter. Nothing armed, or nothing typed, is enter's own message, sent at once.
-    local what=""
-    case "$mode" in
-    armed)
-      if [[ "$sid" == @* ]]; then what="sending $opt \"$seen\" to ${sid#@}"
-      else ask_load "$sid"; what="sending \"${A_OPTS[opt - 1]}\" to $A_WHO"; fi
-      ;;
-    typing) [ -z "$q" ] || what="sending your answer" ;;
-    drop) what="dropping $sid" ;;
-    park) what="parking $sid" ;;
-    unpark) what="unparking $sid" ;;
-    esac
-    [ -n "$what" ] || { key_enter; return 0; }
-    busy_write "$what ..."
-    footer "$what ..."
-    printf '+preview(cat %q)+bg-transform(%q key enter {1} {q})' "$QUESTIONS_STATE.busy" "$SELF"
+    # The panel's enter. An ask's answer, drop or park is key_enter at once: agent-ask records it
+    # and returns, and the delivery goes on in the background. A dialog's press waits for its pane,
+    # so it runs in the background (key dsend) from a snapshot of the choice, which is also that
+    # row's guard: a second enter on it while it sends sends nothing, and every other row is free.
+    if [[ "$sid" == @* ]] && { [ "$mode" = armed ] || { [ "$mode" = typing ] && [ -n "$q" ]; }; }; then
+      local snap; snap="$QUESTIONS_STATE.send.$(tr -c 'A-Za-z0-9' _ <<<"${sid#@}")"
+      if [ -e "$snap" ]; then footer "still sending to ${sid#@} . wait for it"; return 0; fi
+      printf '%s\n' "$mode $opt $sid $seen" >"$snap"
+      st_write ""
+      printf 'bg-transform(%q key dsend %q {q})+hide-input+change-prompt~~+' "$SELF" "${snap##*.}"
+      header_count
+      footer "sending $opt \"$seen\" to ${sid#@} ..."
+      return 0
+    fi
+    key_enter
     ;;
   enter)
-    # The send. From submit the card still says sending, so it is drawn again.
-    [ -z "$busy" ] || printf 'refresh-preview+'
+    # The send itself, at once (the tests drive it; the panel's enter is submit).
     key_enter
-    busy_clear
+    ;;
+  dsend)
+    # A dialog's press from submit's snapshot, in the background; then the snapshot goes.
+    local snap="$QUESTIONS_STATE.send.$id"
+    read -r mode opt sid seen <"$snap" 2>/dev/null || return 0
+    if [ "$mode" = typing ]; then QUESTIONS_BG=1 dialog_send "$opt" "$sid" "$seen" "$q"
+    else QUESTIONS_BG=1 dialog_send "$opt" "$sid" "$seen"; fi
+    rm -f "$snap"
+    ;;
+  delivered)
+    # In the background after an answer: once agent-ask deliver has sent it (or failed), the rows
+    # again, and what came of it when nothing else is armed.
+    local d; d="$("$QUESTIONS_ASK" wait-delivered "$id" 2>/dev/null)"
+    ask_load "$id"
+    case "$d" in
+    done) QUESTIONS_BG=1 after "delivered to $A_WHO: ${A_NOTE:-sent}" ;;
+    failed) QUESTIONS_BG=1 after "not delivered to $A_WHO: ${A_NOTE:-agent-ask deliver failed} . g goes there" ;;
+    queued | delivering) QUESTIONS_BG=1 after "still sending to $A_WHO . is agent-ask-deliver.path running?" ;;
+    *) QUESTIONS_BG=1 after "" ;;
+    esac
+    ;;
+  loaded)
+    # fzf's load event, after each reload: the cursor back where a key's after left it, and the
+    # header counts the rows just built, unless typing holds it for the question being answered.
+    local h="" p="" j=""
+    [ -z "$QUESTIONS_STATE" ] || { read -r p <"$QUESTIONS_STATE.jump"; rm -f "$QUESTIONS_STATE.jump"; } 2>/dev/null
+    [[ "$p" =~ ^[0-9]+$ ]] && j="pos($p)"
+    [ "$mode" = typing ] || { h="$(header_count)"; h="${h%+}"; }
+    printf '%s%s%s' "$j" "${j:+${h:++}}" "$h"
     ;;
   *) panel_die "unknown key: $k" ;;
   esac
 }
+
+# delivered <id>: after an answer's actions, the background wait for its delivery (key delivered).
+delivered() { printf '+bg-transform(%q key delivered %q)' "$SELF" "$1"; }
 
 # key_enter: send the armed choice. It reads cmd_key's mode, opt, sid, seen and q.
 key_enter() {
@@ -495,14 +549,18 @@ key_enter() {
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
     ask_load "$sid"
     if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
-      after "sent \"${A_OPTS[opt - 1]}\" to $A_WHO"
+      after "answered \"${A_OPTS[opt - 1]}\" . sending it to $A_WHO"; delivered "$sid"
     else st_write ""; footer "not sent: ${err:-agent-ask answer failed}"; fi
     ;;
   typing)
     [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
-    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "sent your answer"
+    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "answered . sending it"; delivered "$sid"
     else footer "not sent: ${err:-agent-ask answer failed}"; fi
+    ;;
+  seen)
+    if err="$("$QUESTIONS_ASK" delivery-seen "$sid" 2>&1 >/dev/null)"; then after "cleared $sid"
+    else st_write ""; footer "not cleared: ${err:-agent-ask delivery-seen failed}"; fi
     ;;
   drop)
     if err="$("$QUESTIONS_ASK" cancel "$sid" dropped by the human 2>&1 >/dev/null)"; then after "dropped $sid"
@@ -527,7 +585,7 @@ cmd_pick() {
   QUESTIONS_STATE="$(mktemp)"
   QUESTIONS_PARKED="$(mktemp)"
   export QUESTIONS_STATE QUESTIONS_PARKED
-  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_STATE.busy" "$QUESTIONS_STATE.rows" "$QUESTIONS_PARKED"' EXIT
+  trap 'rm -f "$QUESTIONS_STATE" "$QUESTIONS_STATE".* "$QUESTIONS_PARKED"' EXIT
   rows_build
   for k in 1 2 3 4 5 6 7 8 9 d p P t g; do binds+=("--bind=$k:transform($me key $k {1} {q})"); done
 
@@ -535,9 +593,11 @@ cmd_pick() {
   # t shows the input as the answer line. --no-wrap: a long question ends in .. on its row
   # and reads in full in the card. --read0: a row is two lines (question, then session).
   # The card scrolls on panel_fzf_layout's keys (C-d/C-u, pgup/pgdn), the same in every panel.
+  # --track --id-nth=1: a reload keeps the cursor on the same row by its id, so a row that leaves
+  # or moves (an answer going out) never shifts the one being read, nor disarms its choice.
   parked_filter <"$QUESTIONS_STATE.rows" |
   fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" "${PANEL_FZF_LAYOUT[@]}" \
-    --read0 --no-wrap --no-input --disabled --with-nth=2.. \
+    --read0 --no-wrap --no-input --disabled --with-nth=2.. --track --id-nth=1 \
     --border-label=' questions ' --border-label-pos=3 \
     --header="$(waiting $(rows_count <"$QUESTIONS_STATE.rows"))" \
     --footer="$QUESTIONS_KEYS" \
@@ -546,7 +606,8 @@ cmd_pick() {
     --bind="enter:transform($me key submit {1} {q})" \
     --bind="esc:transform($me key esc {1})" \
     --bind="focus:transform($me key focus {1})" \
-    --bind="start,resize:transform($me key fit)" >/dev/null
+    --bind="start,resize:transform($me key fit)" \
+    --bind="load:transform($me key loaded)" >/dev/null
   return 0
 }
 

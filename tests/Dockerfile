@@ -49,11 +49,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
 # nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
 # lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
+# inotify-tools: agent-ask wait-delivered, the questions panel's wait for an answer to go out.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 \
+      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 inotify-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
