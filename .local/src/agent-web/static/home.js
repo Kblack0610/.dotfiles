@@ -13,7 +13,7 @@ const HOME_REFRESH_MS = 60e3;
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, cards: null, cardsErr: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {} };
+const hst = { data: null, err: null, cards: null, cardsErr: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {}, want: null, gone: null, scroll: null };
 
 const refreshNight = async () => {
   try {
@@ -53,6 +53,8 @@ const propT = tblTab({
 const refreshHome = coalesce(async () => {
   const view = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)])).toString();
   const seq = ++homeSeq;
+  // Only a read that started after a page's link set `want` may say the ask is gone.
+  const want = hst.want;
   // The briefing read is the slower one: Home draws without it and again when it answers.
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
   const cards = refreshCards().then(() => { if (st.tab === "home") renderHome(); });
@@ -63,8 +65,10 @@ const refreshHome = coalesce(async () => {
     // A row that left the list closes, so a returning id never comes back open or holds the cap.
     const keys = new Set((d.needs || []).map(needKey));
     for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
+    if (want && hst.want === want) { const k = `ask:${want}`; if (keys.has(k)) { hst.open.add(k); hst.scroll = k; } else hst.gone = want; hst.want = null; }
   } catch (e) { hst.err = e.message; }
   if (st.tab === "home") renderHome();
+  if (hst.scroll) { document.querySelector(`#home tr[data-need="${CSS.escape(hst.scroll)}"]`)?.scrollIntoView({ block: "center" }); hst.scroll = null; }
   await Promise.all([night, cards]);
 });
 
@@ -294,7 +298,8 @@ function cardsLine(cards) {
   return bad.map((c) => cchip(HUE[c.level], `${esc(c.title)} ${LEVEL[c.level]}`)).join(" ") + stale;
 }
 
-const needsHead = (t) => secHead("needs", "Needs you", tblCount(t));
+const needsHead = (t) => secHead("needs", "Needs you", tblCount(t)) +
+  (hst.gone ? `<div class="capline muted">Ask ${esc(hst.gone)} no longer waits on you: it was answered or withdrawn.</div>` : "");
 
 // Since last night: the briefing's areas that are not ok, each linking to the tab that owns
 // its fact, a bad one with Queue a fix; the ok ones are one line (dashboards rule 4).
@@ -421,8 +426,16 @@ $("home").addEventListener("toggle", (e) => {
   if (e.target.dataset && e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open;
 }, true);
 
+// A page's link, `#home/ask/<id>` (agent-notify's ask: ref): the read show() starts opens that
+// ask's row on its answer card, or says it no longer waits, until Home is left.
+function takeAskArg() {
+  const m = /^ask\/(.+)$/.exec(st.arg || "");
+  hst.gone = null;
+  // The Needs you search or chip could hide it, so the link clears them.
+  if (m) { hst.want = m[1]; st.arg = ""; st.views.home = tblSet(st.views.home, { q: "", s: "" }, NEED_PRE); }
+}
 const pollHome = poll("home", refreshHome, HOME_REFRESH_MS);
 TABS.home = {
-  show() { renderHome(); pollHome(); },
+  show() { takeAskArg(); renderHome(); pollHome(); },
   onEvent(ev) { if (st.tab === "home" && ["watch", "queue", "asks", "proposals", "resync"].includes(ev.kind)) refreshHome(); },
 };
