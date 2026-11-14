@@ -1325,6 +1325,9 @@ collect() {
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
     [ "$host" = - ] || planf=-
+    # A plan symlinked to its canonical name (plan mode wrote one name, the phases were queued
+    # under the other) is read by the name it points at, since queue items match by file name.
+    [ -L "$planf" ] && planf="$(readlink -f "$planf")"
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
