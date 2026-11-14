@@ -179,7 +179,7 @@ so_transcript_metrics() {
 # name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
 # an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
 # every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
-# night (qmk_firmware, bnb-agents, binks-agent-orchestrator). With no registry to read
+# night (qmk_firmware, bnb-agents). With no registry to read
 # (project_known rc 2, or a resolver lib without it) the resolver's name stands.
 so_project_of() {
   local p rc=0

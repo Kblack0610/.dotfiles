@@ -30,7 +30,6 @@ daily_journal = true
 projects = [
     "gheegle",
     "shack",
-    "binks-agent",
     "bnb-platform",
     "dotfiles",
     "home-config"
