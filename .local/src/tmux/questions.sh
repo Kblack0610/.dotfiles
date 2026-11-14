@@ -490,7 +490,7 @@ cmd_key() {
     # so it runs in the background (key dsend) from a snapshot of the choice, which is also that
     # row's guard: a second enter on it while it sends sends nothing, and every other row is free.
     if [[ "$sid" == @* ]] && { [ "$mode" = armed ] || { [ "$mode" = typing ] && [ -n "$q" ]; }; }; then
-      local snap; snap="$QUESTIONS_STATE.send.$(tr -c 'A-Za-z0-9' _ <<<"${sid#@}")"
+      local snap; snap="$QUESTIONS_STATE.send.$(printf '%s' "$sid" | cksum | cut -d' ' -f1)"
       if [ -e "$snap" ]; then footer "still sending to ${sid#@} . wait for it"; return 0; fi
       printf '%s\n' "$mode $opt $sid $seen" >"$snap"
       st_write ""
@@ -509,6 +509,8 @@ cmd_key() {
     # A dialog's press from submit's snapshot, in the background; then the snapshot goes.
     local snap="$QUESTIONS_STATE.send.$id"
     read -r mode opt sid seen <"$snap" 2>/dev/null || return 0
+    # The snapshot goes however the press ends, so a press that died cannot hold the row.
+    trap "rm -f $(printf '%q' "$snap")" EXIT; trap 'exit 143' TERM HUP INT
     if [ "$mode" = typing ]; then QUESTIONS_BG=1 dialog_send "$opt" "$sid" "$seen" "$q"
     else QUESTIONS_BG=1 dialog_send "$opt" "$sid" "$seen"; fi
     rm -f "$snap"
@@ -522,7 +524,7 @@ cmd_key() {
     done) QUESTIONS_BG=1 after "delivered to $A_WHO: ${A_NOTE:-sent}" ;;
     failed) QUESTIONS_BG=1 after "not delivered to $A_WHO: ${A_NOTE:-agent-ask deliver failed} . g goes there" ;;
     queued | delivering) QUESTIONS_BG=1 after "still sending to $A_WHO . is agent-ask-deliver.path running?" ;;
-    *) QUESTIONS_BG=1 after "" ;;
+    *) QUESTIONS_BG=1 after "$QUESTIONS_KEYS" ;;
     esac
     ;;
   loaded)

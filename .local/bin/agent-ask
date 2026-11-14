@@ -898,8 +898,10 @@ cmd_wait_delivered() {
   f="$(find_ask "${1:-}")"
   [ -n "$f" ] || { echo "usage: agent-ask wait-delivered <id>" >&2; return 2; }
   end=$(( $(date +%s) + ${AGENT_ASK_WAIT_TIMEOUT:-120} ))
-  local W W_PID
   if command -v inotifywait >/dev/null 2>&1; then
+    # The watch dies with this wait, however it ends (the panel closing kills the wait), so the
+    # trap is set before it starts; W and W_PID are global for it.
+    trap '[ -z "${W_PID:-}" ] || { kill "$W_PID"; wait "$W_PID"; } 2>/dev/null' EXIT; trap 'exit 143' TERM HUP INT
     coproc W { exec inotifywait -m -e close_write,moved_to --format %f "$(dirname "$f")" 2>&1; }
     # inotifywait says "Watches established." once it is listening.
     while read -r -t "${AGENT_ASK_WAIT_TIMEOUT:-120}" -u "${W[0]}" ev && [ "$ev" != "Watches established." ]; do :; done

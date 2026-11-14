@@ -248,10 +248,11 @@ plan_dialog() {
 
 @test "the panel's enter on a dialog presses it in the background, guarded on that row alone" {
   plan_dialog
-  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  local id k; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  k="$(printf '%s' @hub/demo:2 | cksum | cut -d' ' -f1)"
   "$Q" key 2 @hub/demo:2 >/dev/null
   run "$Q" key submit @hub/demo:2
-  assert_output --regexp "^bg-transform\($Q key dsend hub_demo_2_ \{q\}\)"
+  assert_output --regexp "^bg-transform\($Q key dsend $k \{q\}\)"
   assert_output --partial 'sending 2 "Yes, manually approve edits" to hub/demo:2 ...'
   assert_equal "$(cat "$QUESTIONS_STATE")" ''
   run grep -c '^agent-panel answer' "$NOTES_FIXTURE/calls.log"
@@ -261,13 +262,13 @@ plan_dialog() {
   run "$Q" key submit @hub/demo:2
   assert_output 'change-footer~still sending to hub/demo:2 . wait for it~'
   "$Q" key 1 "$id" >/dev/null
-  run "$Q" key dsend hub_demo_2_ ''
+  run "$Q" key dsend "$k" ''
   assert_output --regexp '^reload\(QUESTIONS_ANSWERED=hub/demo:2 '
   # The choice armed on the ask meanwhile stays, and so does its footer.
   refute_output --partial 'change-footer'
   assert_equal "$(cat "$QUESTIONS_STATE")" "armed 1 $id"
   grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
-  [ ! -e "$QUESTIONS_STATE.send.hub_demo_2_" ]
+  [ ! -e "$QUESTIONS_STATE.send.$k" ]
 }
 
 @test "a dialog row refuses what it cannot do: no option, no text field, drop, or no dialog to read" {
