@@ -482,7 +482,7 @@ impl CostsView {
                 if st.is_empty() { "" } else { "    " },
                 b.table.shown,
                 b.table.total,
-                costs::usd(Some(b.shown_usd).filter(|_| b.unpriced.is_none()))
+                costs::usd(b.unpriced.is_none().then_some(b.shown_usd))
             ),
             p.dim(),
         ));
