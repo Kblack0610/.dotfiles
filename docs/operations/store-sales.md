@@ -1,6 +1,6 @@
 # store-sales
 
-`store-sales` answers "what did the app stores and Steam make yesterday". The morning briefing's Money section prints one line per store from it (hub-core `money.rs`).
+`store-sales` answers "what did the app stores and Steam make yesterday". The morning briefing's Money section prints one line per store from it (hub-core `money.rs`), then one line per trader account (Trader, below).
 
 ## Command
 
@@ -31,6 +31,17 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console account permissions, all read-only: "View financial data" and "View app information and download bulk reports (read-only)", which brings "View app quality information" with it. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 | `store_sales_steam` | The bare Web API key, one line | The key of a Steamworks Financial API Group (Users and Permissions, Manage Groups). Such a group has no users and no apps: the key reads sales and nothing else. It is not release-state's publisher key `release_state_steam` |
 
+## Trader
+
+The Money section's trader lines come from Prometheus (`CC_PROM_URL`). Each says what one of the trader's paper accounts made yesterday: its equity at today's local midnight less its equity at yesterday's. The trader repo's exporter publishes the series from its own tables. It exports only paper accounts, so every trader line says paper. A live account needs its own reader once the trader's live guard lifts.
+
+| Line | Series | Written by |
+|---|---|---|
+| Alpaca (paper) | `trader_broker_equity{broker="alpaca_paper"}`, age `trader_broker_read_age_seconds` | The hourly `trader-broker-read` CronJob (`broker_balances`) |
+| Kalshi paper league | Summed over accounts: `trader_paper_equity` less `trader_paper_capital`, age `trader_paper_marked_age_seconds` | The paper league after each Kalshi recorder sweep (`paper_accounts`) |
+
+A day is not read when either midnight has no reading, or its reading is older than `TRADER_STALE_SECS` (3h) in `money.rs`. Prometheus keeps 7 days.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
@@ -49,3 +60,6 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | Any store `HTTP 429` or `HTTP 5xx` | The store still refused after two retries (`STORE_RETRIES` in `.local/lib/store-auth.sh`, each after its Retry-After). The next run reads it again |
 | Steam `HTTP 403` | The key is not a Financial API Group key, or the group's IP allow list does not hold this machine's address. Check the group's page in Steamworks |
 | Steam `more than 20 pages of sales` | The day's sales cursor did not stop. `STEAM_PAGES` in `store-sales` is the cap; raise it only when a real day is that long |
+| Trader `no equity reading at <time>` | Prometheus had no series then: the trader's exporter or its scrape was down, or the series is newer than the day (they began 2026-11-12). Check `trader_db_up` and the trader-web pod |
+| Trader `the equity reading at <time> was Nh old` | The writer stopped: `trader-broker-read` for Alpaca, the markets recorder and paper league for Kalshi. Check those CronJobs in the trader's namespace |
+| Trader `CC_PROM_URL is not set` or `cannot read <url>` | The Prometheus endpoint is unset in `~/.config/command-center/env` or does not answer |
