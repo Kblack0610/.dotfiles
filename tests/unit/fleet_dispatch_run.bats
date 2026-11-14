@@ -363,7 +363,7 @@ load 'fleet_dispatch/common'
   line_state 5 5 app
   DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item a1'
-  ! grep 'started queue item a1' "$log" | grep -q 'passed' || fail "$(cat "$log")"
+  if grep 'started queue item a1' "$log" | grep -q 'passed'; then fail "$(cat "$log")"; fi
   # An urgent item of a full line still starts ahead of another project's high one.
   agent-queue move a1 queued >/dev/null
   agent-queue set a1 priority=urgent >/dev/null
