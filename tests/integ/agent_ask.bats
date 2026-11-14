@@ -655,10 +655,10 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 27 tab-separated fields per ask, parked_until last" {
+@test "list emits 31 tab-separated fields per ask, delivery and its answers after parked_until" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '27'
+  assert_output '31'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'

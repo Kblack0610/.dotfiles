@@ -28,7 +28,7 @@
 #   agent-ask live-sessions             the Claude session ids running now, one per line
 #   agent-ask titles                    Claude session ids on stdin -> "<id><TAB><title>" for
 #                                       each one the session registry has a title for
-#   agent-ask list [project|--all] [--pending|--parked|--open|--answered] [--since <n>d]
+#   agent-ask list [project|--all] [--pending|--parked|--open|--answered] [--undelivered] [--since <n>d]
 #                                       TSV rows for agent-web and the bridge. --pending is what
 #                                       waits on the human now (a parked ask is left out until
 #                                       its date), --parked only the parked ones, --open both
@@ -47,6 +47,8 @@
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
 #   agent-ask delivery-seen <id>        a failed delivery was read; take it off the boards
+#   agent-ask wait-delivered <id>       wait for the answer to go out (inotify, 120 s guard), then
+#                                       print done, failed or the state it is still in
 #   agent-ask cancel <id> [reason...]   flip to cancelled
 #   agent-ask count [project|--all]     number of pending asks, parked ones left out (for badges)
 #   agent-ask resumable [project|--all] answered asks whose `resume` has not run yet
@@ -609,10 +611,11 @@ ask_files() {
 }
 
 cmd_list() {
-  local key="" want="" since=""
+  local key="" want="" since="" undelivered=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pending)  want=pending; shift ;;
+      --undelivered) undelivered=1; shift ;;
       --parked)   want=parked; shift ;;
       --open)     want=open; shift ;;
       --answered) want=answered; shift ;;
@@ -633,24 +636,29 @@ cmd_list() {
   # tsv: id, project, profile, status, kind, question, options, task, answered_at,
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
-  #      answer_note, assume_at, resume, parked_until  (append new columns at the end only;
-  #      parked_until is filled only while the ask is parked, so no reader compares it with the clock)
+  #      answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
+  #      delivery_answer  (append new columns at the end only; parked_until is filled only while
+  #      the ask is parked, so no reader compares it with the clock)
+  # --undelivered adds the answered asks whose delivery has not gone out (queued, delivering) or
+  # failed unread, to the rows another filter picks, or alone lists just those.
   # One awk pass over every file: a field per key per file was two forks each, 2.4 s for
   # 368 asks. A key's first `key: ` line wins, as in `field`.
   local files=()
   mapfile -t files < <(ask_files "$key")
   [ "${#files[@]}" -gt 0 ] || return 0
-  awk -v want="$want" -v cutoff="$cutoff" -v now="$(now_utc)" '
+  awk -v want="$want" -v undelivered="$undelivered" -v cutoff="$cutoff" -v now="$(now_utc)" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer", K, " ")
     }
-    function flush(   i, d, p, row, parked) {
+    function flush(   i, d, p, row, parked, und) {
       if (cur == "") return
       parked = v["status"] == "pending" && v["parked_until"] > now
-      if (want == "pending" && (v["status"] != "pending" || parked)) return
-      if (want == "parked" && !parked) return
-      if (want == "open" && v["status"] != "pending") return
-      if (want == "answered" && v["status"] != "answered") return
+      und = undelivered && v["status"] == "answered" && v["delivery"] ~ /^(queued|delivering|failed)$/
+      if (!und && undelivered && want == "") return
+      if (!und && want == "pending" && (v["status"] != "pending" || parked)) return
+      if (!und && want == "parked" && !parked) return
+      if (!und && want == "open" && v["status"] != "pending") return
+      if (!und && want == "answered" && v["status"] != "answered") return
       if (!parked) v["parked_until"] = ""
       if (cutoff != "" && v["answered_at"] != "") {
         p = index(v["answered_at"], "T"); d = p ? substr(v["answered_at"], 1, p - 1) : v["answered_at"]
@@ -877,6 +885,34 @@ cmd_delivery_seen() {
   [ "$(field "$f" delivery)" = failed ] || return 0
   set_field "$f" delivery seen
   queue_changed
+}
+
+# cmd_wait_delivered <id>: wait until the ask's delivery is no longer queued or delivering, then
+# print where it ended (done, failed, seen; none for an ask with no delivery). The panel runs it in
+# the background after an answer, so its row changes once the answer went. It waits on the ask's
+# directory (write_fields replaces the file), the watch set up before the first read so no write
+# falls between them, and gives up after AGENT_ASK_WAIT_TIMEOUT seconds (120): a guard for a
+# delivery that never runs, which then prints the state it is still in.
+cmd_wait_delivered() {
+  local f d end left ev
+  f="$(find_ask "${1:-}")"
+  [ -n "$f" ] || { echo "usage: agent-ask wait-delivered <id>" >&2; return 2; }
+  end=$(( $(date +%s) + ${AGENT_ASK_WAIT_TIMEOUT:-120} ))
+  if command -v inotifywait >/dev/null 2>&1; then
+    # The watch dies with this wait, however it ends (the panel closing kills the wait), so the
+    # trap is set before it starts; W and W_PID are global for it.
+    trap '[ -z "${W_PID:-}" ] || { kill "$W_PID"; wait "$W_PID"; } 2>/dev/null' EXIT; trap 'exit 143' TERM HUP INT
+    coproc W { exec inotifywait -m -e close_write,moved_to --format %f "$(dirname "$f")" 2>&1; }
+    # inotifywait says "Watches established." once it is listening.
+    while read -r -t "${AGENT_ASK_WAIT_TIMEOUT:-120}" -u "${W[0]}" ev && [ "$ev" != "Watches established." ]; do :; done
+  fi
+  while d="$(field "$f" delivery)"; [ "$d" = queued ] || [ "$d" = delivering ]; do
+    left=$(( end - $(date +%s) ))
+    [ "$left" -gt 0 ] && [ -n "${W_PID:-}" ] || break
+    read -r -t "$left" -u "${W[0]}" ev || break
+  done
+  [ -z "${W_PID:-}" ] || kill "$W_PID" 2>/dev/null
+  echo "${d:-none}"
 }
 
 # --- live answers ----------------------------------------------------------
@@ -2044,6 +2080,7 @@ case "$sub" in
   assume-due)   cmd_assume_due ;;
   deliver)      cmd_deliver "$@" ;;
   delivery-seen) cmd_delivery_seen "$@" ;;
+  wait-delivered) cmd_wait_delivered "$@" ;;
   trace)        cmd_trace "$@" ;;
   -h|--help|help) usage ;;
   *) echo "agent-ask: unknown command '$sub'" >&2; usage; exit 1 ;;

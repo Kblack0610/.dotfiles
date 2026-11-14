@@ -268,6 +268,31 @@ plan_dialog() {
   assert_output --partial 'change-prompt~answer> ~'
 }
 
+@test "the panel's enter on a dialog presses it in the background, guarded on that row alone" {
+  plan_dialog
+  local id k; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  k="$(printf '%s' @hub/demo:2 | cksum | cut -d' ' -f1)"
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  run "$Q" key submit @hub/demo:2
+  assert_output --regexp "^bg-transform\($Q key dsend $k \{q\}\)"
+  assert_output --partial 'sending 2 "Yes, manually approve edits" to hub/demo:2 ...'
+  assert_equal "$(cat "$QUESTIONS_STATE")" ''
+  run grep -c '^agent-panel answer' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # While it sends, a second enter on that row sends nothing; another row arms as ever.
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  run "$Q" key submit @hub/demo:2
+  assert_output 'change-footer~still sending to hub/demo:2 . wait for it~'
+  "$Q" key 1 "$id" >/dev/null
+  run "$Q" key dsend "$k" ''
+  assert_output --regexp '^reload\(QUESTIONS_ANSWERED=hub/demo:2 '
+  # The choice armed on the ask meanwhile stays, and so does its footer.
+  refute_output --partial 'change-footer'
+  assert_equal "$(cat "$QUESTIONS_STATE")" "armed 1 $id"
+  grep -qx 'agent-panel answer hub/demo:2 2 --expect Yes, manually approve edits --' "$NOTES_FIXTURE/calls.log"
+  [ ! -e "$QUESTIONS_STATE.send.$k" ]
+}
+
 @test "a dialog row refuses what it cannot do: no option, no text field, drop, or no dialog to read" {
   printf '1\t0\tYes\n2\t0\tNo\n' >"$NOTES_FIXTURE/agent-panel.options"
   run "$Q" key 5 @hub/demo:2
@@ -320,7 +345,8 @@ plan_dialog() {
   run "$Q" key enter "$id"
   assert_success
   assert_output --partial 'reload('
-  assert_output --partial 'no questions waiting'
+  assert_output --partial 'answered "later" . sending it to demo:1'
+  assert_output --partial "key delivered $id)"
   assert_equal "$(status_of "$id")" answered
   run grep -c '^answer: later$' "$(ask_file "$id")"
   assert_output 1
@@ -329,48 +355,100 @@ plan_dialog() {
   assert_output --partial 'press a number, t, d or p first'
 }
 
-@test "the panel's enter says sending at once, sends in the background, and every key waits until it is through" {
-  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
-  "$Q" key 2 "$id" >/dev/null
-  run "$Q" key submit "$id"
+@test "the panel's enter answers at once and nothing locks: the row says sending until the answer went" {
+  local a b; a="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"; b="$(ask demo agent-2 'go=run it now|later=run it later' 'ship it?')"
+  "$Q" key 2 "$a" >/dev/null
+  FZF_POS=1 run "$Q" key submit "$a"
   assert_success
-  assert_output --partial 'change-footer~sending "later" to demo:1 ...~'
-  assert_output --partial "+preview(cat $QUESTIONS_STATE.busy)"
-  assert_output --partial 'key enter {1} {q})'
-  assert_output --regexp '\+bg-transform\('
-  assert_equal "$(cat "$QUESTIONS_STATE.busy")" 'sending "later" to demo:1 ...'
-  assert_equal "$(status_of "$id")" pending
-  # While it is on its way a second enter, a number, d and esc only say so.
-  local k
-  for k in submit 1 d esc; do
-    run "$Q" key "$k" "$id"
-    assert_output 'change-footer~sending "later" to demo:1 ... . wait for it . ctrl-c closes~'
-  done
-  run "$Q" key focus "$id"
+  assert_equal "$(status_of "$a")" answered
+  assert_output --partial 'answered "later" . sending it to demo:1'
+  # The reload comes last: under --track fzf drops every action after it until the rows load,
+  # which once lost this footer and the delivery wait.
+  assert_output --regexp "\+bg-transform\($Q key delivered $a\)\+reload\([^)]* rows\)\$"
+  refute_output --partial 'busy'
+  # The reload's rows: the answer below the open question, tagged sending, with what was answered.
+  run rows
+  assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$b $a "
+  assert_line --index 1 --regexp $'\tsending demo:1 +[0-9]+m  run the sweep[?]~ +answer: later$'
+  assert_line --index 0 --regexp $'\tnone    demo:2 '
+  # Once loaded, the cursor goes back to row 1, where the next question now is (--track would
+  # follow the answer down), and the header counts; the jump is spent on that one load.
+  run "$Q" key loaded
+  assert_output 'pos(1)+change-header~1 ask waiting . 1 sending~'
+  run "$Q" key loaded
+  assert_output 'change-header~1 ask waiting . 1 sending~'
+  # A key on the sending row only says so; the next question answers at once.
+  run "$Q" key 1 "$a"
+  assert_output 'change-footer~answered . sending it to demo:1 . g goes there~'
+  "$Q" key 1 "$b" >/dev/null
+  run "$Q" key submit "$b"
+  assert_equal "$(status_of "$b")" answered
+  # Once deliver sent it, the background wait reloads and says where it went; the row is gone.
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  FZF_POS=2 run "$Q" key delivered "$a"
+  assert_output --regexp 'reload\([^)]* rows\)$'
+  assert_output --partial 'delivered to demo:1: a board row'
+  # A background reload leaves the cursor where the human has it.
+  run "$Q" key loaded
+  refute_output --partial 'pos('
+  run rows
   assert_output ''
-  # The send itself: the card is drawn again, the marker goes, the keys work again.
-  run "$Q" key enter "$id"
-  assert_output --regexp '^refresh-preview\+'
-  assert_output --partial 'no questions waiting'
-  assert_equal "$(status_of "$id")" answered
-  [ ! -e "$QUESTIONS_STATE.busy" ]
-  run "$Q" key submit "$id"
-  assert_output --partial 'press a number, t, d or p first'
-  refute_output --partial bg-transform
+  # The status bar never counted an answer on its way.
+  run "$Q" count
+  assert_output 0
 }
 
-@test "the panel's enter with nothing typed, or a failed send, keeps no busy marker (negative control)" {
+@test "the background wait leaves a choice armed meanwhile alone, and gives up after its guard (negative control)" {
+  local a b; a="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"; b="$(ask demo agent-2 'go=run it now|later=run it later' 'ship it?')"
+  "$Q" key 2 "$a" >/dev/null
+  "$Q" key submit "$a" >/dev/null
+  # Nothing delivered it: after the guard it reloads and says the delivery has not run.
+  AGENT_ASK_WAIT_TIMEOUT=1 run "$Q" key delivered "$a"
+  assert_output --partial 'still sending to demo:1 . is agent-ask-deliver.path running?'
+  # With a choice armed on another row the reload comes, the footer and the choice stay.
+  "$Q" key 1 "$b" >/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  run "$Q" key delivered "$a"
+  assert_output "reload($Q rows)"
+  assert_equal "$(cat "$QUESTIONS_STATE")" "armed 1 $b"
+}
+
+@test "the panel's enter with nothing typed, or a failed answer, sends nothing and waits on nothing (negative control)" {
   local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
   "$Q" key t "$id" >/dev/null
   run "$Q" key submit "$id" ''
   assert_output --partial 'type an answer first'
-  [ ! -e "$QUESTIONS_STATE.busy" ]
-  run "$Q" key submit "$id" 'after lunch'
-  assert_output --partial 'sending your answer ...'
-  QUESTIONS_ASK=false run "$Q" key enter "$id" 'after lunch'
+  QUESTIONS_ASK=false run "$Q" key submit "$id" 'after lunch'
   assert_output --partial 'not sent'
-  [ ! -e "$QUESTIONS_STATE.busy" ]
+  refute_output --partial 'bg-transform'
   assert_equal "$(status_of "$id")" pending
+}
+
+@test "a delivery that failed stays a row with why, until d then enter clears it" {
+  local id; id="$(ask demo agent-1 'go=run it now|later=run it later' 'run the sweep?')"
+  "$AGENT_ASK" answer "$id" later 2>/dev/null
+  sed -i 's/^delivery: .*/delivery: failed/' "$(ask_file "$id")"
+  echo "delivery_note: its session is in a dialog, so the answer was not typed into it" >>"$(ask_file "$id")"
+  run rows
+  assert_line --index 0 --regexp $'\tfailed demo:1 +[0-9]+m  run the sweep[?]~ +not delivered: its session is in a dialog'
+  . "$Q"
+  assert_equal "$("$Q" rows | rows_count)" '0 0 0 0 0 0 1'
+  assert_equal "$(waiting 0 0 0 0 0 0 1)" 'no questions waiting . 1 not delivered'
+  run "$Q" key 1 "$id"
+  assert_output --partial 'answered, not delivered: its session is in a dialog'
+  # d then esc keeps it (negative control); d then enter clears it.
+  "$Q" key d "$id" >/dev/null
+  "$Q" key esc "$id" >/dev/null
+  run rows
+  assert_output --partial 'failed'
+  run "$Q" key d "$id"
+  assert_output --partial 'clear the not-delivered note'
+  run "$Q" key submit "$id"
+  assert_output --partial "cleared $id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'delivery: seen'
+  run rows
+  assert_output ''
 }
 
 @test "esc after a number sends nothing, and esc with nothing armed closes" {
@@ -424,7 +502,7 @@ plan_dialog() {
   assert_output --partial 'type an answer first'
   assert_equal "$(status_of "$id")" pending
   run "$Q" key enter "$id" 'go after lunch'
-  assert_output --partial 'sent your answer'
+  assert_output --partial 'answered . sending it'
   assert_equal "$(status_of "$id")" answered
   run grep -c '^answer: go after lunch$' "$(ask_file "$id")"
   assert_output 1
@@ -436,19 +514,30 @@ plan_dialog() {
   assert_output --regexp '^show-input\+clear-query\+'
   run "$Q" key enter "$a" 'one'
   assert_output --partial 'hide-input'
-  assert_output --partial 'change-header~1 ask waiting~'
-  # A t that beats the reload lands on the row just answered: it refreshes, types nothing.
+  # The reload, then its load event counts the rows into the header.
+  "$Q" rows >/dev/null
+  run "$Q" key loaded
+  assert_output 'change-header~1 ask waiting . 1 sending~'
+  # A t on the row just answered types nothing: its answer is on its way.
   run "$Q" key t "$a"
-  assert_output --partial 'reload('
-  assert_output --partial 'that question was just answered'
+  assert_output --partial 'sending it to demo:1'
   refute_output --partial 'show-input'
   run "$Q" key t "$b"
   assert_output --regexp '^show-input\+clear-query\+'
   assert_output --partial 'change-header~answering demo:2: second?~'
   # esc out of typing puts the count back and closes nothing.
+  # While typing, a reload leaves the header on the question being answered.
+  run "$Q" key loaded
+  assert_output ''
+  printf 'x\n' >"$QUESTIONS_STATE.jump"
+  run "$Q" key loaded
+  assert_output ''
+  printf '2\n' >"$QUESTIONS_STATE.jump"
+  run "$Q" key loaded
+  assert_output 'pos(2)'
   run "$Q" key esc "$b"
   assert_output --partial 'hide-input+change-prompt~~'
-  assert_output --partial 'change-header~1 ask waiting~'
+  assert_output --partial 'change-header~1 ask waiting . 1 sending~'
   refute_output --partial 'abort'
   run grep -c '^answer: one$' "$(ask_file "$a")"
   assert_output 1
@@ -553,7 +642,7 @@ transcript() {
   assert_line --index 1 --partial 'park demo:2  3d  wear the headset?'
   assert_equal "$(cut -f2 <<<"${lines[1]}" | grep -bo 'wear' | cut -d: -f1)" "$(cut -f2 <<<"${lines[0]}" | grep -bo 'live' | cut -d: -f1)"
   . "$Q"
-  assert_equal "$("$Q" rows | rows_count)" '1 0 0 0 1'
+  assert_equal "$("$Q" rows | rows_count)" '1 0 0 0 1 0 0'
   assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked'
   run "$Q" count
   assert_output 1
@@ -575,7 +664,8 @@ transcript() {
   . "$Q"
   assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked (P shows)'
   run "$Q" key P "$live"
-  assert_output --partial 'reload('
+  # The reload last, or fzf's --track drops the header and footer after it.
+  assert_output --regexp 'reload\([^)]* saved\)$'
   assert_output --partial '1 parked (P hides)'
   assert_output --partial 'parked asks shown'
   run rows
