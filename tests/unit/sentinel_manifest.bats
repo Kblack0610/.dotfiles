@@ -190,6 +190,41 @@ without() { sed -i "/^$1:/d" "$M"; }
   assert_success
 }
 
+# -- --strict: gh api list reads paginate (ar-2393) ----------------------------
+
+listprobe() {
+  legible; without probe; without target; without expect_status
+  printf 'probe: command\nexpect_cmd: >-\n  %s\n' "$1" >> "$M"
+}
+
+@test "--strict rejects a gh api list read without --paginate" {
+  # The unity-runners-online shape: page 1 of 54 runners held only offline slots.
+  listprobe "n=\$(gh api orgs/O/actions/runners -q '.runners | length'); [ \"\$n\" -ge 1 ]"
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial "orgs/O/actions/runners"
+}
+
+@test "--strict accepts the same list read with --paginate, before or after the path" {
+  listprobe "gh api --paginate orgs/O/actions/runners -q '.runners[].name' | grep -c ."
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "gh api repos/O/r/actions/runners --paginate -q '.runners[].name' | grep -qx m1"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "--strict leaves a gh api read of one object alone" {
+  listprobe 'gh api -H "Accept: application/vnd.github.raw" repos/O/r/contents/scripts/x.sh > /dev/null'
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "gh api repos/O/r/pulls/12 -q .state | grep -qx open"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
 @test "--strict still enforces the ordinary schema" {
   # It is additive, not a different validator. A manifest that is legible but broken is
   # still broken.
