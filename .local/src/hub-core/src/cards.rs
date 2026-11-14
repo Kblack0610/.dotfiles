@@ -422,9 +422,10 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         n: 1,
     }];
     c.first(
+        // The top session comes last, so it never pushes a budget need off the card.
         head.into_iter()
-            .chain(top_session(k))
             .chain(needs)
+            .chain(top_session(k))
             .collect::<Vec<_>>(),
     )
 }
@@ -666,6 +667,13 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     .into();
     c = c.bar(0, 0, red.len());
     c.level = lvl(red.len(), Level::Red);
+    // Home's nightly reds come from reads that can fail: a zero then is unknown, never green.
+    if !home.errors.is_empty() {
+        c.error = Some(home.errors.join("; "));
+        if c.level == Level::Ok {
+            c.level = Level::Warn;
+        }
+    }
     c.first_head = "Red";
     c.first(red.iter().map(|r| row(*r, "nightly", Level::Red, None)))
 }
@@ -1033,6 +1041,12 @@ mod tests {
         assert_eq!((c.big.as_str(), c.level), ("1", Level::Red));
         assert_eq!(c.first[0].text, "dotfiles");
         assert_eq!(main_red(&Home::default()).level, Level::Ok);
+        // Negative control: a Home whose reads failed is no all-clear on main.
+        let unread = Home {
+            errors: vec!["Prometheus: timed out".into()],
+            ..Home::default()
+        };
+        assert_eq!(main_red(&unread).level, Level::Warn);
     }
 
     #[test]
@@ -1062,6 +1076,12 @@ mod tests {
             "{:?}",
             c.first
         );
+        // A budget need outranks it: with three rows to show, the need stays and the session goes.
+        k.burn.head = "burning 2x".into();
+        k.budget.needs = vec!["over cap".into(), "projected over".into()];
+        let rows: Vec<_> = costs(&k).first.into_iter().map(|f| f.text).collect();
+        assert_eq!(rows, ["burning 2x", "over cap", "projected over"]);
+        k.budget.needs.clear();
         // Negative control: no session active in 24h is no line, never an old one.
         k.sessions.truncate(1);
         assert!(costs(&k).first.iter().all(|f| !f.text.starts_with('$')));

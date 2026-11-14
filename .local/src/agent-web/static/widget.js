@@ -5,7 +5,12 @@
 function drawWidget() {
   const d = JSON.parse($("widget-data").textContent);
   const at = new Date(d.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const cards = d.cards.length ? d.cards.map(cardHtml).join("") : `<div class="empty">No card matches the widget's cards= list.</div>`;
-  $("widget").innerHTML = `<div class="wgrid">${cards}</div><div class="wat muted">as of ${esc(at)}</div>`;
+  // The cards link the app's tabs by hash (#home), which from here would stay on this page; the
+  // CSP's base-uri 'none' rules out <base>, so each link is made the app's own.
+  const app = (l) => (typeof l === "string" && l.startsWith("#") ? "/" + l : l);
+  const own = (c) => ({ ...c, link: app(c.link), first: c.first.map((f) => ({ ...f, link: app(f.link) })) });
+  const cards = d.cards.length ? d.cards.map((c) => cardHtml(own(c))).join("") : `<div class="empty">No card matches the widget's cards= list.</div>`;
+  const unknown = (d.unknown || []).length ? `<span class="warn">no card named ${esc(d.unknown.join(", "))}</span> ` : "";
+  $("widget").innerHTML = `<div class="wgrid">${cards}</div><div class="wat muted">${unknown}as of ${esc(at)}</div>`;
 }
 drawWidget();

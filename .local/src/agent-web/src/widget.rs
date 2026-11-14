@@ -5,7 +5,7 @@
 //! or a keystroke route.
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use hub_core::cards::{self, Card};
 use serde::Deserialize;
@@ -54,9 +54,21 @@ pub async fn page(
     let (mut all, home) = tokio::join!(crate::cards::read(&s), crate::home_read(&s));
     let now = hub_core::jobs::now();
     all.extend(home_cards(home, now));
-    let shown = cards::pick(all, &names(q.cards.as_deref()));
-    let data = serde_json::json!({ "at": now, "cards": shown });
-    Html(crate::assets::widget(&data)).into_response()
+    let names = names(q.cards.as_deref());
+    // A name no card has (a typo in the URL) is said on the widget, never silently one card fewer.
+    let unknown: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| !all.iter().any(|c| c.tab == *n))
+        .collect();
+    let shown = cards::pick(all, &names);
+    let data = serde_json::json!({ "at": now, "cards": shown, "unknown": unknown });
+    // Asks, titles and costs: kept by no cache, browser history included.
+    (
+        [(header::CACHE_CONTROL, "no-store, private")],
+        Html(crate::assets::widget(&data)),
+    )
+        .into_response()
 }
 
 /// Needs you and Main red, from Home's read; a Home that could not be read is NO DATA on both.

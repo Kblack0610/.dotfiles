@@ -32,9 +32,13 @@ test("the widget draws each card it was sent, with its level word, and the time 
   assert.match(html, /needs a look/);
   assert.match(html, /as of /);
   assert.doesNotMatch(html, /undefined/);
+  // The links open the app, not a hash on the widget page.
+  assert.match(html, /href="\/#home"/);
+  assert.doesNotMatch(html, /href="#/);
 });
 
 test("a card that could not be read says why, and no card matching is said, never an empty widget", () => {
   assert.match(draw({ at: 0, cards: [card({ big: "NO DATA", level: "nodata", error: "fleet-sessions: timed out", first: [] })] }), /fleet-sessions: timed out/);
   assert.match(draw({ at: 0, cards: [] }), /No card matches/);
+  assert.match(draw({ at: 0, cards: [card()], unknown: ["redd"] }), /no card named redd/);
 });

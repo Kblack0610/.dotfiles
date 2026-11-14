@@ -701,7 +701,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 
 /* The home-screen widget (/widget): its cards fill the widget, two across, as many rows as it names
    cards, each clipped to its row so a tall card never pushes the grid past the widget's edge. */
-body.widget { height: 100vh; box-sizing: border-box; padding: 6px; overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
+body.widget { height: 100vh; height: 100dvh; box-sizing: border-box; padding: 6px; overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
 .widget main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .wgrid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); gap: 6px; }
 .wgrid .kcard { min-height: 0; overflow: hidden; padding: 6px 8px; container: wcard / size; }
