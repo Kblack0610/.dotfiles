@@ -190,6 +190,75 @@ without() { sed -i "/^$1:/d" "$M"; }
   assert_success
 }
 
+# -- --strict: gh api list reads paginate (ar-2393) ----------------------------
+
+listprobe() {
+  legible; without probe; without target; without expect_status
+  printf 'probe: command\nexpect_cmd: >-\n  %s\n' "$1" >> "$M"
+}
+
+@test "--strict rejects a gh api list read without --paginate" {
+  # The unity-runners-online shape: page 1 of 54 runners held only offline slots.
+  listprobe "n=\$(gh api orgs/O/actions/runners -q '.runners | length'); [ \"\$n\" -ge 1 ]"
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial "orgs/O/actions/runners"
+}
+
+@test "--strict accepts the same list read with --paginate, before or after the path" {
+  listprobe "gh api --paginate orgs/O/actions/runners -q '.runners[].name' | grep -c ."
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "gh api repos/O/r/actions/runners --paginate -q '.runners[].name' | grep -qx m1"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "--strict leaves a gh api read of one object alone" {
+  listprobe 'gh api -H "Accept: application/vnd.github.raw" repos/O/r/contents/scripts/x.sh > /dev/null'
+  run "$SM" validate --strict "$M"
+  assert_success
+  listprobe "gh api repos/O/r/pulls/12 -q .state | grep -qx open"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "--strict finds the list read however the call ends" {
+  # $(...), a bare pipe, a ;, a query string, a path inside escaped quotes.
+  local c
+  for c in 'n=$(gh api orgs/O/actions/runners)' 'gh api orgs/O/actions/runners|jq .' \
+    'gh api orgs/O/actions/runners; true' 'gh api "repos/O/r/pulls?state=open" -q .[].number' \
+    "bash -c 'gh api \\\"repos/O/r/issues/5/comments\\\" -q .'"; do
+    listprobe "$c"
+    run "$SM" validate --strict "$M"
+    assert_failure
+    assert_output --partial 'no --paginate'
+  done
+}
+
+@test "--strict judges each gh api call on its own arguments" {
+  # A --paginate on a later call, or later in the line, does not cover an earlier one.
+  listprobe "gh api orgs/O/actions/runners -q .runners | jq .; gh api --paginate repos/O/r/pulls -q .[]"
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial 'orgs/O/actions/runners'
+}
+
+@test "--strict leaves writes and a .total_count read alone, but not a GET with fields" {
+  local c
+  for c in 'gh api --method POST repos/O/r/issues -f title=x' 'gh api repos/O/r/issues -f title=x' \
+    'gh api orgs/O/actions/runners -q .total_count'; do
+    listprobe "$c"
+    run "$SM" validate --strict "$M"
+    assert_success
+  done
+  listprobe 'gh api -X GET repos/O/r/pulls -f state=open -q .[].number'
+  run "$SM" validate --strict "$M"
+  assert_failure
+}
+
 @test "--strict still enforces the ordinary schema" {
   # It is additive, not a different validator. A manifest that is legible but broken is
   # still broken.

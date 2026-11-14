@@ -32,8 +32,9 @@ Verbs
                  watches) carries an expect_cmd that is not valid bash.
   validate --strict FILE
                  the above, plus the four legibility fields (what/why/where/
-                 action) and an explicit expiry (`null` for a standing
-                 watch). This is a LINT, deliberately not part of plain
+                 action), an explicit expiry (`null` for a standing
+                 watch), and --paginate on a `gh api` read of a list
+                 endpoint in expect_cmd. This is a LINT, deliberately not part of plain
                  `validate`: the loop runs `validate` on every pass and sends a
                  manifest that fails it to ERROR *and notifies*, so promoting a
                  documentation gap to a runtime fault would have paged eleven
@@ -101,6 +102,24 @@ DURATION = re.compile(r"^[0-9]+[smhd]?$")
 # exactly what a mis-read `expect_cmd: >-` degrades into, and why four watches
 # reported OK for weeks. Syntax-checking alone does NOT catch it; this does.
 LEADING_REDIRECT = re.compile(r"^\s*[|<>]")
+
+# A `gh api` read of a GitHub list endpoint returns one page (30 items) unless it
+# passes --paginate. unity-runners-online read page 1 of 54 org runners, found only
+# offline slots there and tripped while 3 unity runners were online (ar-2393).
+# One call's own arguments: from `gh api` to the first command boundary. A jq filter's
+# own `|` also ends it, so a --paginate written after -q reads as missing (a false
+# error the writer fixes by moving the flag), never the other way round.
+GH_API_CALL = re.compile(r"\bgh api\b([^|;&)\n]*)")
+GH_LIST_PATH = re.compile(
+    r"[^\s'\"]*/(?:actions/runners|runs|jobs|artifacts|workflows|pulls|issues|comments|"
+    r"reviews|files|releases|commits|check-runs|check-suites|alerts|events|labels|"
+    r"branches|tags|contributors)(?:\?[^\s'\"\\]*)?(?=[\s'\"\\]|$)"
+)
+# A write (a method other than GET, or a field with no method, which makes gh POST)
+# and a count-only read of .total_count need no pagination.
+GH_METHOD = re.compile(r"\s(?:-X|--method)[\s=]*['\"]?([A-Za-z]+)")
+GH_FIELD = re.compile(r"\s(?:-f|-F|--field|--raw-field|--input)\b")
+GH_COUNT_ONLY = re.compile(r"\s(?:-q|--jq)[\s=]+['\"]?\.total_count\b")
 
 PROBES = ("http", "metric", "kubectl", "command", "agent")
 METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
@@ -254,6 +273,22 @@ def expiry_errors(path, doc):
     return ["missing 'expiry' -- write 'expiry: null' for a standing watch"]
 
 
+def pagination_errors(doc):
+    """--strict only: a `gh api` read of a list endpoint must pass --paginate."""
+    errors = []
+    for call in GH_API_CALL.finditer(scalar(doc.get("expect_cmd"))):
+        args = call.group(1)
+        path = GH_LIST_PATH.search(args)
+        method = GH_METHOD.search(args)
+        write = method.group(1).upper() != "GET" if method else bool(GH_FIELD.search(args))
+        if path and "--paginate" not in args and not write and not GH_COUNT_ONLY.search(args):
+            errors.append(
+                f"expect_cmd reads the list {path.group(0)!r} with gh api but no --paginate; "
+                "it sees page 1 only (30 items) and can trip on a fault that is not there"
+            )
+    return errors
+
+
 def cmd_validate(path, strict=False):
     try:
         doc = load(path)
@@ -265,6 +300,7 @@ def cmd_validate(path, strict=False):
     if strict:
         errors.extend(legibility_errors(doc))
         errors.extend(expiry_errors(path, doc))
+        errors.extend(pagination_errors(doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
