@@ -265,17 +265,19 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
+  assert_not_called 'agentctl start'
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'chore(ask)'
   assert_called 'agentctl start fleet-dispatch --no-block'
   # Negative control: no item waits on it and it has no resume, so the answer is filed where work is picked up.
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
-  "$AGENT_ASK" answer "$b" later 2>/dev/null
+  "$AGENT_ASK" answer "$b" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): free? -> answered: later (ask $b)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug picky --tags "ask:$c=go" "the go phase" >/dev/null
-  "$AGENT_ASK" answer "$c" later 2>/dev/null
+  "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
 }
@@ -286,7 +288,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   local a
   a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
-  "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null
+  "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agentctl start'
   assert_called "(the judge; to override: agent-ask answer $a <option>)"
   [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer released the held item"
@@ -507,7 +509,7 @@ traced_ask() {
   run "$AGENT_ASK" trace "$id" --json
   assert_success
   run jq -r '[.status, .judge, (.events | map(.event) | join(",")), .call.id, .langfuse] | join("|")' <<<"$output"
-  assert_output "answered|Judge: deferred (taste) - only you know|posted,judged,answered|c0ffee000001|https://lf.example/project/p/sessions/s-1"
+  assert_output "answered|Judge: deferred (taste) - only you know|posted,judged,answered,queued|c0ffee000001|https://lf.example/project/p/sessions/s-1"
 }
 
 @test "trace says when the call line is gone or no Langfuse link is configured, and lists overrides and closes" {
@@ -1300,6 +1302,7 @@ SH
   run "$AGENT_ASK" show "$shadow"; assert_line 'status: pending'
   run "$AGENT_ASK" show "$gate"; assert_line 'status: pending'
   # an ask with no live session and no resume is filed as a row, saying the judge answered
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "notes ptask"
   assert_equal "$("$AGENT_ASK" count --all)" 2
 }
@@ -1327,11 +1330,11 @@ SH
   printf '{"session_id":"sid-7","pane":"%%7","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix it here?')"
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
-  "$AGENT_ASK" sweep demo >/dev/null
+  "$AGENT_ASK" sweep demo >/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "agent-panel send --pane %7 Answer to ask $id: fix (the judge, ship_deploy: rules say fix failing CI yourself; the human can override in this session)"
   # negative control: a human answer keeps the plain text
   id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'a=a|b=b' 'pick?')"
-  "$AGENT_ASK" answer "$id" b 2>/dev/null
+  "$AGENT_ASK" answer "$id" b 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "agent-panel send --pane %7 Answer to ask $id: b"
 }
 
@@ -1763,6 +1766,7 @@ judged_ask() {
   assert_success
   run "$AGENT_ASK" show W1
   assert_line 'judge_override: wait'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called 'is W1 fixed here? -> answered: wait'
   # an answer naming no option reviews nothing (negative control)
   judged_ask N1 repo; "$AGENT_ASK" answer --by judge N1 fix 2>/dev/null
@@ -1992,6 +1996,7 @@ delay_setup() {
   due "$a"
   run "$AGENT_ASK" assume-due
   assert_success
+  "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
   assert_line 'assume_at: 2026-01-01T00:00:00+0000'
@@ -1999,7 +2004,7 @@ delay_setup() {
   assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
   # a second pass changes nothing and files nothing
   local at; at="$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")"
-  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" assume-due; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_equal "$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")" "$at"
   assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
 }
@@ -2111,7 +2116,7 @@ SH
   assert_not_called "agent-panel send --pane %9"
   # negative control: once idle, the next pass fires it into the session
   printf '{"session_id":"sid-w","pane":"%%9","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
-  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" assume-due; "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
   assert_called "agent-panel send --pane %9 Answer to ask $id: fix (the judge, ship_deploy"
 }
@@ -2191,7 +2196,7 @@ SH
   local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix this flake?')"
   due "$a"; due "$b"
   "$AGENT_ASK" assume-due
-  "$AGENT_ASK" answer "$a" wait 2>/dev/null
+  "$AGENT_ASK" answer "$a" wait 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge_override: wait'; assert_line 'judge_override_note: from a board: wait'
   assert_line 'answer: fix'; assert_line 'answered_by: judge'
