@@ -80,6 +80,24 @@ fn repo(name: &str) -> &str {
     name.trim_start_matches('.')
 }
 
+/// The needs that wait on the human (an ask, a session, a queue item), as the phone and the
+/// widget's Needs you card count them; a condition (Stopped, Budget) is not a wait.
+pub fn waiting(home: &Home) -> Vec<&Need> {
+    home.needs
+        .iter()
+        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
+        .collect()
+}
+
+/// The repos whose nightly on main is red, as Home's needs carry them.
+pub fn red_repos(home: &Home) -> Vec<&str> {
+    home.needs
+        .iter()
+        .filter(|n| n.kind == Kind::Nightly)
+        .map(|n| repo(&n.project))
+        .collect()
+}
+
 fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     if waiting.is_empty() {
         return vec![row(Level::Ok, "needs", "Needs you: nothing")];
@@ -402,12 +420,7 @@ fn ci(infra: &Infra) -> Option<Row> {
 /// not be read is a row of its own, so a short view never reads as an all-clear.
 pub fn build(home: &Home, i: &Inputs) -> Phone {
     let mut rows = vec![];
-    let nightly: Vec<&str> = home
-        .needs
-        .iter()
-        .filter(|n| n.kind == Kind::Nightly)
-        .map(|n| repo(&n.project))
-        .collect();
+    let nightly = red_repos(home);
     if !nightly.is_empty() {
         rows.push(row(
             Level::Red,
@@ -420,11 +433,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
             .iter()
             .map(|e| row(Level::Warn, "error", cap(e, ASK_MAX))),
     );
-    let waiting: Vec<&Need> = home
-        .needs
-        .iter()
-        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
-        .collect();
+    let waiting = waiting(home);
     if !i.state.is_null() {
         rows.extend(needs(&waiting, i.now));
     }

@@ -48,6 +48,15 @@ pub fn random_hex(bytes: usize) -> Result<String> {
     Ok(raw.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// The home-screen widget's key (`widget.token` beside the sessions file, mode 600): it opens
+/// `/widget` and nothing else. Read on each request, so a rewrite rotates it and a delete revokes
+/// it with no restart. None when the file is missing or empty.
+pub fn widget_token() -> Option<String> {
+    let t = fs::read_to_string(config_dir().join("widget.token")).ok()?;
+    let t = t.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 /// Constant-time equality, so response timing does not leak a prefix of the secret.
 pub fn matches(given: &str, secret: &str) -> bool {
     let (a, b) = (given.as_bytes(), secret.as_bytes());

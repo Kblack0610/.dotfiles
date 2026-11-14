@@ -387,6 +387,15 @@ const homeCards = [
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
 ];
 
+// The widget's default six (hub_core::cards::WIDGET), in its order: Home's two cards, then the grid's.
+const card = (tab) => homeCards.find((c) => c.tab === tab);
+export const WIDGET_CARDS = [
+  kcard("needs", "Needs you", "5", "waiting on you", "warn", [["warn", 5]], [["Asks", "3", "warn"], ["Sessions", "1", "warn"], ["Queue", "1", "warn"]],
+    [["Which model should settings.json pin for every account, opus or opus[1m]?", "2d dotfiles", "warn"], ["agent-web review", "3h dotfiles", "warn"]], { first_head: "Oldest" }),
+  kcard("red", "Main red", "2", "repos red on main", "red", [["red", 2]], [], [["unity-core-playground", "nightly", "red"], ["trader", "nightly", "red"]], { first_head: "Red" }),
+  card("alerts"), card("sessions"), card("costs"), card("infra"),
+];
+
 export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
