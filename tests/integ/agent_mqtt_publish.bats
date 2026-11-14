@@ -117,11 +117,11 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 @test "the dispatch queue is fleet-dispatch's own stats, published as they come" {
-  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":3,\"runnable_urgent\":1,\"starved\":false,\"flapping_items\":0,\"flapping\":[]}'" > "$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && echo %s\n' "'{\"state\":3,\"runnable\":3,\"runnable_urgent\":1,\"flapping_items\":0,\"flapping\":[]}'" > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
   run "$PUB" --quiet
   p="$(payload agents/testhost/summary/dispatch)"
-  assert_equal "$(jq -c '[.state, .runnable_urgent, .starved]' <<< "$p")" '[3,1,false]'
+  assert_equal "$(jq -c '[.state, .runnable_urgent]' <<< "$p")" '[3,1]'
   c="$(payload homeassistant/sensor/agent_testhost_summary_dispatch/config)"
   assert_equal "$(jq -r .name <<< "$c")" 'Dispatch queue'
 }
@@ -421,4 +421,19 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%overview"
   "$PUB" --quiet
   assert_equal "$(jq -r .rows[0] <<< "$(payload agents/testhost/summary/overview)")" h2
+}
+
+# ar-2310: every hook re-ran fleet-dispatch stats (21s at load 6) under the lock, so the --full
+# timer run waited out its 20s lock budget and then crossed TimeoutStartSec=60.
+@test "dispatch: a run inside the TTL repeats the sent stats, an older one reads them again" {
+  printf '#!/usr/bin/env bash\necho x >> "$NOTES_FIXTURE/stats"\necho "{\\"state\\":1,\\"runnable\\":$(wc -l < "$NOTES_FIXTURE/stats")}"\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  "$PUB" --quiet
+  "$PUB" --full --quiet
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/stats")" 1
+  assert_equal "$(grep -c '^agents/testhost/summary/dispatch' "$PUBLOG")" 2
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 1
+  touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%dispatch"
+  "$PUB" --quiet
+  assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 2
 }

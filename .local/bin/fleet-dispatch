@@ -3717,7 +3717,7 @@ last_run_start() {
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
 # all and by urgent (runnable_urgent, oldest_urgent_s: priority urgent only, and only what a start would
 # take, as next_items does) with the high ones counted apart (runnable_high, oldest_high_s); the low water and whether runnable is under it; the present trickle's rate
-# and its starts in the last hour; starved (the queue-starved verdict); the last pass and last run start;
+# and its starts in the last hour; the last pass and last run start;
 # reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times where reap made the same move twice in a row with no start
 # logged between: something else undid the first heal (11-04: running -> waiting twice). Moves that
@@ -3727,8 +3727,10 @@ last_run_start() {
 # the open board rows
 # by lane, left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
+# The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
+# recomputing it here made stats take 18s of the publisher's lock (ar-2310).
 cmd_stats() {
-  local now q aq since started pass=null starved=false hr=null board held_since
+  local now q aq since started pass=null hr=null board held_since
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   # The last pass's headroom, while it is younger than three passes: an old one is no answer.
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
@@ -3736,7 +3738,6 @@ cmd_stats() {
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.rows | {board_agent: map(select(.lane == "agent")) | length,
     board_human: map(select(.lane == "human")) | length, board_playtest: map(select(.lane == "playtest")) | length}' 2>/dev/null)
-  cmd_starved >/dev/null 2>&1 || starved=true
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -3749,7 +3750,7 @@ cmd_stats() {
     $4 == "reaped" { print "settle", "-"; next }
     $4 == "started" && match($0, /queue item [^ ,]+/) { split(substr($0, RSTART, RLENGTH), w, " "); print "start", w[3], "-", "running" }
     $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
-    jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") --argjson starved "$starved" \
+    jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
       --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_ONLY")" '
@@ -3762,7 +3763,7 @@ cmd_stats() {
         ($ev | map(select(.[0] == "move" or .[0] == "start") | {kind: .[0], slug: .[1], from: .[2], to: .[3]}) | group_by(.slug)
           | map(select((map(select(.kind == "move")) | length) >= $flap and undone) | .[0].slug)) as $flapping
       | {state: ($q | length), runnable: ($q | length), runnable_urgent: ($u | length), runnable_high: ($hi | length),
-         oldest_runnable_s: age($q), oldest_urgent_s: age($u), oldest_high_s: age($hi), starved: $starved,
+         oldest_runnable_s: age($q), oldest_urgent_s: age($u), oldest_high_s: age($hi),
          last_pass_epoch: $pass, last_run_start_epoch: $start,
          reaped_1h: ($ev | map(select(.[0] == "move" or .[0] == "settle")) | length),
          flapping_items: ($flapping | length), flapping: $flapping,
@@ -3960,7 +3961,7 @@ cpu_jiffies() { awk '$1 == "cpu" { printf "%.0f %.0f\n", $3 + $5, $2 + $3 + $4 +
 # The kernel has no idle event, so this samples: one sample serves every gate for a window, so a
 # pass and its headroom wait once. Prints nothing when /proc/stat cannot be read (or, for a reader, with no sample in its window).
 # IDLE_NOW: a reading this call already took, so a report and its gate agree on one sample.
-# IDLE_CACHED=<seconds>: a reader's call (cmd_starved, so stats and the queue-starved watch) takes the
+# IDLE_CACHED=<seconds>: a reader's call (cmd_starved, so the queue-starved watch) takes the
 # last sample up to that old and never waits out a new one, printing nothing without one: a reader
 # under a unit timeout (agent-mqtt-publish, 60s) cannot spend a whole window asleep.
 real_idle() {
