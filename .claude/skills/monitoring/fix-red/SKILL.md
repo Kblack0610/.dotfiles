@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [fleet, triage, watches, runners, reds]
-  reviewed: "2026-11-13"
+  reviewed: "2026-11-14"
 ---
 
 # fix-red
@@ -68,8 +68,9 @@ A red fix merges itself, at any hour, because a fix held at a PR keeps the fleet
 
 ## 6. When there is no fix
 
-A failed fix is not retried: triage skips a cause closed in the last 7 days, so an item closed as failed stays closed that long. Say what was tried and what is left, on the item.
+Triage counts a cause as owned only while an item tagged with its `cause:` is open (`cause_tries` in `fleet-bench`). Once that item closes with the red still there, it queues a retry, tagged `retry:<earlier slugs>`, up to `TRIAGE_FIX_TRIES` items in `TRIAGE_FIX_DAYS`, and after that it files a human-sheet row saying the fixes did not hold. Say what was tried and what is left, on the item.
 
+- Another queue item owns the fix (another project's work, or an item held on an ask): add this item's `cause:` tag to that item (`agent-queue set <owner> tags="<its tags> cause:<hash>"`), then close this one. Without the tag, triage cannot see the owner and files the red again.
 - The fix is a decision or needs hands: file an ask or a human-sheet row (`fleet-asks`).
 - The fix is larger than this session: a board row with its size, and leave the red open.
 - The route is wrong: the fix is a line in `~/.config/agentctl/triage-routes`, whose header lists the routes. Every standing watch and runner must keep a line: `fleet-bench triage --coverage` lists any that lost one.
