@@ -37,7 +37,7 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
 });
-for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
@@ -557,4 +557,68 @@ test("a page read that gets no answer says agent-web did not answer, never a bar
   ctx.answers["/api/projects/game/page?x=1"] = abort;
   await assert.rejects(vm.runInContext('api("/api/projects/game/page?x=1")', ctx), (e) => e === abort);
   delete ctx.answers["/api/projects/game/page?x=1"];
+});
+
+// Ladder: hub_core::stages' two tables (/api/stages, /api/stages/requirements), as the server sends them.
+const ladTable = (cols, total, states) => ({
+  q: "", state: "", sort: "", dir: "desc", total, shown: total, states,
+  columns: cols.map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })), facets: [],
+});
+const ladder = (o = {}) => ({
+  rows: [
+    { name: "busy", profile: "bnb", type: "game", stage: "dev", next: "alpha", met: 3, total: 5, fail: 2, todo: 4, human: 1, filed_open: 2, filed_closed: 1, error: null, state: "failing", met_says: "3/5", filed_says: "2/1" },
+    { name: "odd", profile: "personal", type: null, stage: "beta", next: "prod", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "0/0" },
+  ],
+  says: "", gate_says: "report only until 2026-11-19 (in 6 days)", gate_level: "warn",
+  filer_says: "nightly, last 04:30 today: 2 filed", filer_level: "bad", kinds_says: "on fix feat; off legal", kinds_level: "",
+  failing: 2, doc: "~/.local/src/docs/stages.md", filer_href: "#schedules?q=name:=project-index",
+  table: ladTable(["project", "type", "stage", "next", "met", "failing", "filed"], 2, [{ name: "all", n: 2 }, { name: "failing", n: 1 }]),
+  ...o,
+});
+const reqs = () => ({
+  rows: [{ stage: "dev", applies: ["base"], requirement: "CI runs on <every> PR", check: "`ci-green`", kind: "predicate", skills: ["fix-ci"], says: "test" },
+    { stage: "prod", applies: ["game", "store"], requirement: "Store page signed off", check: "human", kind: "human", skills: [], says: "human" }],
+  says: "", table: ladTable(["stage", "applies", "requirement", "check", "by"], 2, [{ name: "all", n: 2 }]),
+});
+const drawLadder = async (l) => {
+  ctx.answers = { "/api/stages": l, "/api/stages/requirements": reqs(), "/api/projects": list() };
+  vm.runInContext(`pCount.ladder = null; st.tab = "projects"; st.arg = "ladder"; st.views.projects = ""; pst.open = null; ladst.data = null; reqst.data = null; renderProjects(); pRead();`, ctx);
+  await settle(); await settle();
+  return { stages: box("p-lstages").innerHTML, reqs: box("p-lreqs").innerHTML };
+};
+
+test("Ladder: the gate, filer and kinds lines, projects failing in red, a check that could not run, the requirements", async () => {
+  const { stages, reqs: r } = await drawLadder(ladder());
+  assert.match(stages, /<h2 class="sec bad" id="sec-stages">Projects by stage <span class="n">2<\/span><\/h2>/, "a failing project reddens the head");
+  assert.match(stages, /<div class="cline vital warn"><b>Gate<\/b> report only until 2026-11-19 \(in 6 days\)<\/div>/);
+  assert.match(stages, /<div class="cline vital bad"><b>Filer<\/b> <a href="#schedules\?q=name:=project-index">nightly, last 04:30 today: 2 filed<\/a>/);
+  assert.match(stages, /<b>Kinds<\/b> on fix feat; off legal/);
+  assert.match(stages, /<code>~\/.local\/src\/docs\/stages.md<\/code>/);
+  assert.match(stages, /data-open="bnb\/busy" data-inner="stage">.*<td class="n bad"[^>]*>2 <span class="muted">4 todo<\/span><\/td>/s, "failing is red, not-yet rows are a TODO");
+  assert.match(stages, /<td class="n bad" title="no such stage">not read<\/td>/, "a check that could not run says so, never zero");
+  assert.match(box("p-strip").innerHTML, /data-itab="ladder" class="on"[^>]*>Ladder <span class="muted">2<\/span>/);
+  assert.match(r, /<h2 class="sec" id="sec-requirements">Requirements <span class="n">2<\/span><\/h2>/);
+  assert.match(r, /<td title="`ci-green`">test<\/td><td>fix-ci<\/td>/);
+  assert.match(r, /<td>game store<\/td>.*<td class="warn" title="human">human<\/td><td>-<\/td>/s);
+  assert.match(r, /CI runs on &lt;every&gt; PR/);
+  // NEGATIVE CONTROL: nothing failing, a plain head and no red cell.
+  const calm = await drawLadder(ladder({ failing: 0, rows: [{ ...ladder().rows[0], fail: 0, todo: 0, state: "met" }] }));
+  assert.match(calm.stages, /<h2 class="sec" id="sec-stages">/);
+  assert.doesNotMatch(calm.stages, /class="n bad"/);
+});
+
+test("Ladder: a project row opens its Stage page; a new stages.json re-reads both tables only while they show", async () => {
+  await drawLadder(ladder());
+  ctx.sent = [];
+  vm.runInContext(`TABS.projects.onEvent({ kind: "stages" });`, ctx);
+  await settle(); await settle();
+  assert.deepEqual(ctx.sent.map((s) => s.u).sort(), ["/api/stages", "/api/stages/requirements"]);
+  ctx.answers["/api/projects/busy/page"] = "not read here";
+  vm.runInContext(`pOpenAt({ dataset: { open: "bnb/busy", inner: "stage" } });`, ctx);
+  assert.equal(vm.runInContext(`st.arg`, ctx), "bnb/busy/stage");
+  ctx.sent = [];
+  vm.runInContext(`TABS.projects.onEvent({ kind: "stages" });`, ctx);
+  await settle();
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/stages")), "hidden, the ladder is not read");
+  vm.runInContext(`pGo(null);`, ctx);
 });

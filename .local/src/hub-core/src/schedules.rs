@@ -129,7 +129,7 @@ impl Schedule {
 
     /// Take `runs` as this row's history: its last result and its streak.
     fn settle(&mut self, mut runs: Vec<Run>) {
-        runs.sort_by(|a, b| b.at.cmp(&a.at));
+        runs.sort_by_key(|a| std::cmp::Reverse(a.at));
         if let Some(r) = runs.first() {
             self.last = r.at;
             self.result = r.result.clone();
@@ -1958,7 +1958,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             kind: kind.into(),
             name: name.into(),
             streak,
-            last: Some(AT - 60).filter(|_| streak != 0),
+            last: (streak != 0).then_some(AT - 60),
             purpose: purpose.into(),
             triage: "-".into(),
             ..Default::default()

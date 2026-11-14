@@ -163,7 +163,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
 .cchip.ok { color: var(--b-done); background: color-mix(in srgb, var(--b-done) 14%, transparent); }
 .cchip.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
-.cline.warn { color: var(--b-stalled); }
+.cline.warn { color: var(--b-stalled); } .cline.bad { color: var(--b-needs); }
 .cline.vital b { display: inline-block; min-width: 5em; }
 .cchip.prio.high { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
 .cline { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }

@@ -597,18 +597,19 @@ pub(crate) mod tests {
 
     pub fn fixture() -> Feed {
         let row = |profile: &str, project: Option<&str>, lane: &str, prio: &str, text: &str| Row {
-            section: Some(match prio {
-                "urgent" => "now",
-                "high" => "next",
-                _ => "backlog",
-            })
-            .filter(|_| lane != "playtest")
-            .map(String::from),
+            section: (lane != "playtest").then(|| {
+                match prio {
+                    "urgent" => "now",
+                    "high" => "next",
+                    _ => "backlog",
+                }
+                .to_string()
+            }),
             profile: profile.into(),
             project: project.map(String::from),
             lane: lane.into(),
-            version: Some("v0.1.0".into()).filter(|_| lane != "playtest"),
-            game: Some("demo".into()).filter(|_| lane == "playtest"),
+            version: (lane != "playtest").then(|| "v0.1.0".into()),
+            game: (lane == "playtest").then(|| "demo".into()),
             state: "open".into(),
             priority: prio.into(),
             text: text.into(),

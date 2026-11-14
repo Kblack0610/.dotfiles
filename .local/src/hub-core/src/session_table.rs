@@ -536,7 +536,7 @@ pub fn rows(
             ended.push(outcome_row(e));
         }
     }
-    ended.sort_by(|a, b| b.finished.cmp(&a.finished));
+    ended.sort_by_key(|a| std::cmp::Reverse(a.finished));
     live.append(&mut ended);
     live
 }

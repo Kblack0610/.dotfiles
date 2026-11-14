@@ -16,10 +16,11 @@
 # THE GATES
 # ---------
 # cargo test and cargo fmt (--all, so a workspace checks its member crates) block on every
-# run. cargo clippy blocks too, unless CLIPPY=0: the CI rust job sets that on pull
-# requests and runs clippy on main pushes, the schedule and a manual run, where a red stops
-# the line (docs/ci.md). Clippy is a full second compile, the slowest step of a PR's rust
-# job; a new lint that lands is caught on the next main push.
+# run. cargo clippy blocks too, unless CLIPPY=0, which the CI rust job sets on a pull
+# request. Clippy is a full second compile, the slowest step of a PR's rust job. It still
+# runs on a pull request that touches the rust gate or tests/rust-toolchain (pick.sh says
+# so; pick.bats pins that line), and on main pushes, the schedule and a manual run, where a
+# red stops the line (docs/ci.md).
 CLIPPY="${CLIPPY:-1}"
 
 # No `-e`: this script runs several gates over several crates and accumulates rc, so one
@@ -33,6 +34,19 @@ if ! command -v cargo >/dev/null 2>&1; then
   # must not turn into a red gate on one. CI installs the toolchain, so CI still runs it.
   echo "rust: cargo NOT INSTALLED (skipped)"
   exit 0
+fi
+
+# One Rust version for every run, local and CI: tests/rust-toolchain. Each release adds
+# clippy lints, so a gate on "whatever stable is installed" goes red when a runner image
+# moves, on a commit that changed no Rust (main, 2026-11-13: clippy 0.1.99 in CI, 0.1.93
+# here). Bump the file in a PR that fixes what the new version finds; it runs every crate.
+RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
+export RUSTUP_TOOLCHAIN
+# A cargo with no rustup (a distro package) cannot honor the pin, so it fails here rather
+# than checking with a different clippy.
+if ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1); then
+  printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
+  exit 1
 fi
 
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.

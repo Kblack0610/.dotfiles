@@ -177,7 +177,7 @@ impl Index {
         }
         for (lane, _, notes) in lanes {
             let mut found = projects::version_notes(&lane.join("versions"));
-            found.sort_by(|a, b| b.0.cmp(&a.0));
+            found.sort_by_key(|a| std::cmp::Reverse(a.0));
             texts.extend(found.into_iter().filter_map(|(v, path)| {
                 let t = fs::read_to_string(&path).ok()?;
                 Some((t, Some(v), format!("{notes}/{}.md", fmt_version(v))))
