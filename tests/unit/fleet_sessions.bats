@@ -1729,6 +1729,29 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
 }
 
+@test "end to end: a session plan symlinked to the plan its phases were queued under reads them as queued" {
+  # 2026-11-13 binks-front-doors: plan mode wrote id-liek-...md, a symlink to binks-front-doors.md,
+  # whose phases 2 to 5 were queue items; the row read keep, next phase, because names differed.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  ln -s plan.md "$SANDBOX/alias.md"
+  panel "$SANDBOX/wt" "$SANDBOX/alias.md"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+  # the row still reports the plan by the name the pane wrote
+  [ "$(jq -r .plan_file <<<"$output")" = "$SANDBOX/alias.md" ]
+  # an item that names the alias matches too
+  sed -i "s|^plan: .*|plan: $SANDBOX/alias.md|" "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
 @test "end to end: the requeued case: an own item whose plan is all ticked by other items reads after, close the item (ucp-agent-82)" {
   # 2026-11-11 ucp-agent-82: apo-120 stayed running after a partial landing while its phases 3 and
   # 4 landed as their own items in other sessions; the row read LANDED, queue the next phases.
