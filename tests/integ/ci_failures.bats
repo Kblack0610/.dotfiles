@@ -52,6 +52,19 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   assert_equal "$(sig PlayTests.Broken main)" "True"
 }
 
+@test "a run-name does not split a signature: main's \"Tests (all)\" red is the branch gate's \"Tests (affected)\" red (101, 102)" {
+  jq -c 'if .id == 101 then .workflow = "Tests (all)" elif .id == 102 then .workflow = "Tests (affected)" else . end' "$CACHE/runs.jsonl" > "$CACHE/l" && mv "$CACHE/l" "$CACHE/runs.jsonl"
+  assert_equal "$(sig PlayTests.Broken runs)" "2"
+  assert_equal "$(sig PlayTests.Broken main)" "True"
+  assert_equal "$(field "[s['signature'].split(' / ')[0] for s in d['signatures'] if 'PlayTests.Broken' in s['signature']]")" "['test.yml']"
+}
+
+@test "negative control: the same job and line in another workflow file is another signature, not main (101, 102)" {
+  jq -c 'if .id == 101 then .path = ".github/workflows/nightly.yml" else . end' "$CACHE/runs.jsonl" > "$CACHE/l" && mv "$CACHE/l" "$CACHE/runs.jsonl"
+  assert_equal "$(field "sorted(s['signature'].split(' / ')[0] for s in d['signatures'] if 'PlayTests.Broken' in s['signature'])")" "['nightly.yml', 'test.yml']"
+  assert_equal "$(field "[s['main'] for s in d['signatures'] if s['signature'].startswith('test.yml / ') and 'PlayTests.Broken' in s['signature']]")" "[False]"
+}
+
 @test "a green sibling shard in the same run is not green@sha: shard names stay distinct (102)" {
   assert_equal "$(sig PlayTests.Broken green_sha)" "False"
 }
@@ -74,7 +87,7 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
 @test "a docs check red then green on the same commit is flagged green@sha, with paths and numbers normalized (104, 105)" {
   assert_equal "$(sig 'words N > N' bucket)" "check"
   assert_equal "$(sig 'words N > N' green_sha)" "True"
-  assert_equal "$(sig 'words N > N' signature)" "Checks / Checks / Docs within their budgets :: <path>: words N > N"
+  assert_equal "$(sig 'words N > N' signature)" "checks.yml / Checks / Docs within their budgets :: <path>: words N > N"
 }
 
 @test "negative control: without the main run, the shared test red is no longer flagged main" {
