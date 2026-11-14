@@ -218,6 +218,28 @@ plan_dialog() {
   assert_output --partial 'press a number, t, d or p first'
 }
 
+@test "a send's result stays through focus and fit until a key replaces it; esc closes" {
+  plan_dialog
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  run "$Q" key enter @hub/demo:2
+  assert_output --partial 'sent 2 "Yes, manually approve edits" to hub/demo:2'
+  # The reload may fire focus or not, and the person may move on: the result stays up either way.
+  run "$Q" key focus @hub/demo:3
+  assert_output ''
+  run "$Q" key focus @hub/demo:2
+  assert_output ''
+  run "$Q" key fit
+  assert_output ''
+  # A key replaces it.
+  run "$Q" key 1 @hub/demo:2
+  assert_output --partial 'change-footer~send 1 '
+  # Negative control: with a result up, esc closes the panel, as with nothing armed.
+  "$Q" key 2 @hub/demo:2 >/dev/null
+  "$Q" key enter @hub/demo:2 >/dev/null
+  run "$Q" key esc @hub/demo:3
+  assert_output 'abort'
+}
+
 @test "a dialog that changed or closed before enter is refused, said, and the list reloads" {
   plan_dialog
   printf '4\nagent-panel answer: option 2 now reads "No"; nothing sent\n' >"$NOTES_FIXTURE/agent-panel.answer"
@@ -355,7 +377,7 @@ plan_dialog() {
   assert_output 'change-header~1 ask waiting . 1 sending~'
   # A key on the sending row only says so; the next question answers at once.
   run "$Q" key 1 "$a"
-  assert_output 'change-footer~answered; sending it to demo:1 . g goes there~'
+  assert_output 'change-footer~answered . sending it to demo:1 . g goes there~'
   "$Q" key 1 "$b" >/dev/null
   run "$Q" key submit "$b"
   assert_equal "$(status_of "$b")" answered
@@ -649,7 +671,10 @@ transcript() {
   echo "armed 1 $parked" >"$QUESTIONS_STATE"
   run "$Q" key P "$parked"
   assert_output --partial 'parked asks hidden'
-  assert_equal "$(cat "$QUESTIONS_STATE")" ''
+  assert_equal "$(cat "$QUESTIONS_STATE")" 'said'
+  # Its message outlasts the focus the reload fires.
+  run "$Q" key focus "$live"
+  assert_output ''
   run rows
   assert_equal "$(cut -f1 <<<"$output" | tr '\n' ' ')" "$live "
   # The status bar count never counted parked asks, hidden or not.

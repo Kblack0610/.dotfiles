@@ -169,7 +169,9 @@ $("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
 
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
+  if (st.sel) markSeen(st.sel.session);
   st.sel = a; st.start = null; st.end = null;
+  markSeen(a.session);
   showView("transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
@@ -183,6 +185,7 @@ function select(a) {
 // reads only the one shown. It draws only the empty boards: its one caller, TABS.sessions.show,
 // then calls inner(), whose render of the shown inner tab fills its board.
 function overview() {
+  if (st.sel) markSeen(st.sel.session);
   st.sel = null; st.start = null; st.end = null;
   $("d-dot").hidden = $("v-seg").hidden = true;
   $("d-name").textContent = "Sessions";
@@ -613,6 +616,9 @@ function dispatch(ev) {
     if (st.tab === "home") refreshHome();
   }
   if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
+  if (ev.kind === "transcript") noteWrite(ev.session);
+  // Back from a hidden tab with a session in view: the human is looking at it again.
+  if (ev.kind === "resync" && st.sel && viewing(st.sel.session)) markSeen(st.sel.session);
   if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
     if (st.view === "screen") loadScreen(); else loadNewer();
   }

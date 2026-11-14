@@ -17,6 +17,7 @@ const box = (id) => (boxes[id] ||= Object.assign(el(), { innerHTML: "", scrollTo
 const doc = { getElementById: box, addEventListener() {}, createElement: el, body: el(), querySelector: el, querySelectorAll: () => [] };
 // The split pane's media query (sessions.js SPLIT): narrow unless a test widens it.
 const mq = { matches: false, addEventListener() {} };
+const store = new Map();
 const ctx = vm.createContext({
   console,
   matchMedia: () => mq,
@@ -26,6 +27,7 @@ const ctx = vm.createContext({
   location: { hash: "", pathname: "/" },
   history: { replaceState() {} },
   fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [] }),
+  localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) },
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "watch.js", "table.js", "actions.js", "shepherd.js", "sessions.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
@@ -397,4 +399,33 @@ test("Log's Rundowns list the server's shown rows, every card shut until opened,
   assert.doesNotMatch(boxes["log-rundowns"].innerHTML, /older</);
   Object.assign(shst, { all: false, data: null });
   run('st.tab = "sessions"');
+});
+
+test("a session opened here that wrote since carries the accent dot; the one in view and one never opened have none", () => {
+  setup();
+  const rowOf = (key) => boxes["ov-sessions"].innerHTML.split('<tr class="click"').find((r) => r.includes(`data-key="${key}"`));
+  const b = `st.agents.find((a) => a.target === "hub/b:1")`;
+  run("sst.render()");
+  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /newdot/, "nothing opened here, no dots");
+  run(`markSeen("hub/b:1-id"); ${b}.wrote = Date.now() / 1000 - 60; sst.render()`);
+  assert.doesNotMatch(rowOf("hub/b:1"), /newdot/, "written before it was last seen");
+  assert.match(store.get("agent-web:seen"), /"hub\/b:1-id":\d+/, "kept in this browser");
+  run(`seen["hub/b:1-id"] -= 5; noteWrite("hub/b:1-id")`);
+  assert.match(rowOf("hub/b:1"), /<td><span class="newdot" title="new output since you last opened it"><\/span><span class="chip sm"/, "the stream's write draws it");
+  run(`noteWrite("lab/x:1-id"); sst.render()`);
+  assert.doesNotMatch(rowOf("lab/x:1"), /newdot/, "a session never opened here has none");
+  // Back from a hidden tab the stream's writes were dropped: the agents read's mtime carries it.
+  run(`wroteAt["hub/b:1-id"] = 0; seen["hub/b:1-id"] = Date.now() - 100000; ${b}.wrote = Date.now() / 1000 - 50; sst.render()`);
+  assert.match(rowOf("hub/b:1"), /newdot/);
+  run(`st.sel = ${b}`);
+  assert.equal(run(`hasNew(st.sel)`), false, "the session in view never has one");
+  run(`noteWrite("hub/b:1-id"); st.sel = null; sst.render()`);
+  assert.doesNotMatch(rowOf("hub/b:1"), /newdot/, "seen while in view, so no dot after leaving");
+  // Left open behind another tab it is not in view: its writes are new.
+  run(`st.sel = ${b}; st.tab = "home"; seen["hub/b:1-id"] -= 5; noteWrite("hub/b:1-id")`);
+  assert.equal(run(`hasNew(st.sel)`), true, "open behind Home, its output is unseen");
+  // Another browser tab's mark is kept, not overwritten.
+  store.set("agent-web:seen", JSON.stringify({ ...JSON.parse(store.get("agent-web:seen")), other: Date.now() }));
+  run(`markSeen("hub/b:1-id")`);
+  assert.ok(JSON.parse(store.get("agent-web:seen")).other, "the other tab's mark survives");
 });

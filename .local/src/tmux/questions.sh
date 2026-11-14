@@ -47,8 +47,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 QUESTIONS_ASK="${QUESTIONS_ASK:-$HOME/.local/bin/agent-ask}"
 # fleet-sessions' state document: a worker host's sessions, which no local read can see.
 FLEET_STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-# The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]". The
-# picker makes it.
+# The armed choice between a key and its enter: "<mode> <option> <id> [<option text>]", or "said"
+# while a result (a send, a refusal, P's toggle) is in the footer. The picker makes it.
 QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 # The panel's parked toggle: a file reading "show" once P shows the parked asks. Unset (outside the
 # panel) rows lists them all; the picker makes it empty, so they start hidden.
@@ -297,11 +297,21 @@ rows_saved() {
 # .jump): --track would follow the answered row down to the sending ones, and the row now in its
 # place is the next question.
 after() {
-  printf 'reload(%s%q rows)' "${QUESTIONS_ANSWERED:+QUESTIONS_ANSWERED=$(printf '%q' "$QUESTIONS_ANSWERED") }" "$SELF"
+  local mode=""
   if [ -z "${QUESTIONS_BG:-}" ]; then
     [ -z "$QUESTIONS_STATE" ] || [ -z "${FZF_POS:-}" ] || printf '%s\n' "$FZF_POS" >"$QUESTIONS_STATE.jump"
-    st_write ""; printf '+hide-input+change-prompt~~+'; footer "$1"
-  elif [ -z "$(st_read)" ]; then printf '+'; footer "$1"; fi
+    printf 'hide-input+change-prompt~~+'
+  else
+    read -r mode _ <<<"$(st_read)"
+  fi
+  printf 'reload(%s%q rows)' "${QUESTIONS_ANSWERED:+QUESTIONS_ANSWERED=$(printf '%q' "$QUESTIONS_ANSWERED") }" "$SELF"
+  case "$mode" in
+  "" | said)
+    # The reload may fire focus (the answered row went) or not; "said" keeps the result either way.
+    st_write said
+    printf '+'; footer "$1"
+    ;;
+  esac
 }
 # The header back to the count, once typing (which names the question there) is over.
 header_count() { printf 'change-header~%s~+' "$(waiting $(rows_saved | rows_count))"; }
@@ -391,15 +401,19 @@ cmd_key() {
   focus)
     # Moving to another question disarms a choice made on the last one; typing keeps going.
     # With nothing armed the keys are fitted again, to whatever layout ctrl-/ left.
-    if [ -z "$mode" ]; then footer "$QUESTIONS_KEYS"
-    elif [ "$mode" != typing ] && [ "$sid" != "$id" ]; then st_write ""; footer "$QUESTIONS_KEYS"; fi
+    # A result stays until a key replaces it, so the focus a reload may fire cannot clear it.
+    case "$mode" in
+    "") footer "$QUESTIONS_KEYS" ;;
+    said | typing) ;;
+    *) [ "$sid" = "$id" ] || { st_write ""; footer "$QUESTIONS_KEYS"; } ;;
+    esac
     ;;
   fit)
     # start and resize: the keys sized to the list column, unless a key's message is up.
     [ -n "$mode" ] || footer "$QUESTIONS_KEYS"
     ;;
   esc)
-    [ -n "$mode" ] || { printf 'abort'; return 0; }
+    case "$mode" in "" | said) printf 'abort'; return 0 ;; esac
     st_write ""
     printf 'hide-input+change-prompt~~+'
     [ "$mode" = typing ] && header_count
@@ -420,8 +434,9 @@ cmd_key() {
   P)
     if [ "$mode" = typing ]; then printf 'put(P)'; return 0; fi
     [ -n "$QUESTIONS_PARKED" ] || return 0
-    # A choice armed on a row P is about to hide must not ride a later enter.
-    st_write ""
+    # A choice armed on a row P is about to hide must not ride a later enter; the toggle's
+    # result outlasts the reload's focus.
+    st_write said
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
     # P is also the refresh: asks that came or went since the last build show now.
     rows_build
@@ -444,7 +459,7 @@ cmd_key() {
       return 0
     fi
     if [ "$A_STATUS" = answered ] && { [ "$A_DELIVERY" = queued ] || [ "$A_DELIVERY" = delivering ]; }; then
-      footer "answered; sending it to $A_WHO . g goes there"
+      footer "answered . sending it to $A_WHO . g goes there"
       return 0
     fi
     # A key pressed before the reload after a send lands on a row closed meanwhile: refresh.

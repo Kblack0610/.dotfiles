@@ -1420,9 +1420,12 @@ collect() {
     pq="$pnext"
     if [ "$phases" != - ] && [ "$phases" != none ] && [ "$pdone" -lt "$ptotal" ]; then
       local qd
-      qd="$(jq -rs --arg p "$planf" --arg own "${dsp#*: }" \
+      # Items match by file name: a plan symlinked to its canonical name (plan mode wrote one, the
+      # phases were queued under the other) matches either.
+      local canon; canon="$(realpath -q -- "$planf" 2>/dev/null)" || canon="$planf"
+      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$planf}" --arg own "${dsp#*: }" \
               --argjson open "$(plan_phase_list "$planf" | jq -c '[to_entries[] | select(.value.state == "open") | {n: (.key + 1 | tostring), name: .value.name}]')" \
-              "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and names_plan($p))
+              "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != "")))}] as $it
               | def holds($n): (.ph | length) == 0 or (.ph | index($n)) != null;
               [$it[] | select(. as $i | any($open[]; .n as $n | $i | holds($n)))] as $holders
