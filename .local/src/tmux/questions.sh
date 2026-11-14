@@ -290,12 +290,14 @@ rows_saved() {
   cat "$QUESTIONS_STATE.rows"
 }
 
-# after <message>: reload the rows and say what happened. The reload builds the rows in fzf's
-# background and its load event (key loaded) counts them into the header, so a key returns at
-# once. From a background send (QUESTIONS_BG) a choice armed meanwhile is left as it is, and so
-# is its footer. From a key, the cursor goes back to where it was once the rows load (FZF_POS into
-# .jump): --track would follow the answered row down to the sending ones, and the row now in its
-# place is the next question.
+# after <message> [<ask id>]: say what happened and reload the rows. The reload builds the rows
+# in fzf's background and its load event (key loaded) counts them into the header, so a key
+# returns at once. With an id, a background wait for that answer's delivery (key delivered). From
+# a background send (QUESTIONS_BG) a choice armed meanwhile is left as it is, and so is its footer.
+# From a key, the cursor goes back to where it was once the rows load (FZF_POS into .jump):
+# --track would follow the answered row down to the sending ones, and the row now in its place is
+# the next question. The reload goes last: under --track fzf drops every action after a reload in
+# the same chain until the rows load (trackBlocked in fzf 0.74's terminal.go).
 after() {
   local mode=""
   if [ -z "${QUESTIONS_BG:-}" ]; then
@@ -304,14 +306,15 @@ after() {
   else
     read -r mode _ <<<"$(st_read)"
   fi
-  printf 'reload(%s%q rows)' "${QUESTIONS_ANSWERED:+QUESTIONS_ANSWERED=$(printf '%q' "$QUESTIONS_ANSWERED") }" "$SELF"
   case "$mode" in
   "" | said)
     # The reload may fire focus (the answered row went) or not; "said" keeps the result either way.
     st_write said
-    printf '+'; footer "$1"
+    footer "$1"; printf '+'
     ;;
   esac
+  [ -z "${2:-}" ] || printf 'bg-transform(%q key delivered %q)+' "$SELF" "$2"
+  printf 'reload(%s%q rows)' "${QUESTIONS_ANSWERED:+QUESTIONS_ANSWERED=$(printf '%q' "$QUESTIONS_ANSWERED") }" "$SELF"
 }
 # The header back to the count, once typing (which names the question there) is over.
 header_count() { printf 'change-header~%s~+' "$(waiting $(rows_saved | rows_count))"; }
@@ -440,9 +443,10 @@ cmd_key() {
     if parked_shown; then : >"$QUESTIONS_PARKED"; else echo show >"$QUESTIONS_PARKED"; fi
     # P is also the refresh: asks that came or went since the last build show now.
     rows_build
-    printf 'reload(%s saved)+' "$(printf '%q' "$SELF")"
+    # The reload last: under --track fzf drops what follows it (see after).
     header_count
     if parked_shown; then footer "parked asks shown . P hides them"; else footer "parked asks hidden . P shows them"; fi
+    printf '+reload(%s saved)' "$(printf '%q' "$SELF")"
     ;;
   [1-9] | d | p | t)
     if [ "$mode" = typing ]; then printf 'put(%s)' "$k"; return 0; fi
@@ -555,8 +559,6 @@ cmd_key() {
   esac
 }
 
-# delivered <id>: after an answer's actions, the background wait for its delivery (key delivered).
-delivered() { printf '+bg-transform(%q key delivered %q)' "$SELF" "$1"; }
 
 # key_enter: send the armed choice. It reads cmd_key's mode, opt, sid, seen and q.
 key_enter() {
@@ -566,13 +568,13 @@ key_enter() {
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen"; return 0; fi
     ask_load "$sid"
     if err="$("$QUESTIONS_ASK" answer "$sid" "${A_OPTS[opt - 1]}" 2>&1 >/dev/null)"; then
-      after "answered \"${A_OPTS[opt - 1]}\" . sending it to $A_WHO"; delivered "$sid"
+      after "answered \"${A_OPTS[opt - 1]}\" . sending it to $A_WHO" "$sid"
     else st_write ""; footer "not sent: ${err:-agent-ask answer failed}"; fi
     ;;
   typing)
     [ -n "$q" ] || { footer "type an answer first . esc cancels"; return 0; }
     if [[ "$sid" == @* ]]; then dialog_send "$opt" "$sid" "$seen" "$q"; return 0; fi
-    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "answered . sending it"; delivered "$sid"
+    if err="$("$QUESTIONS_ASK" answer "$sid" "$q" 2>&1 >/dev/null)"; then after "answered . sending it" "$sid"
     else footer "not sent: ${err:-agent-ask answer failed}"; fi
     ;;
   seen)

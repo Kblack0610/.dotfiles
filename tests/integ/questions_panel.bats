@@ -362,7 +362,9 @@ plan_dialog() {
   assert_success
   assert_equal "$(status_of "$a")" answered
   assert_output --partial 'answered "later" . sending it to demo:1'
-  assert_output --partial "+bg-transform($Q key delivered $a)"
+  # The reload comes last: under --track fzf drops every action after it until the rows load,
+  # which once lost this footer and the delivery wait.
+  assert_output --regexp "\+bg-transform\($Q key delivered $a\)\+reload\([^)]* rows\)\$"
   refute_output --partial 'busy'
   # The reload's rows: the answer below the open question, tagged sending, with what was answered.
   run rows
@@ -384,7 +386,7 @@ plan_dialog() {
   # Once deliver sent it, the background wait reloads and says where it went; the row is gone.
   "$AGENT_ASK" deliver --all 2>/dev/null
   FZF_POS=2 run "$Q" key delivered "$a"
-  assert_output --regexp '^reload\('
+  assert_output --regexp 'reload\([^)]* rows\)$'
   assert_output --partial 'delivered to demo:1: a board row'
   # A background reload leaves the cursor where the human has it.
   run "$Q" key loaded
@@ -662,7 +664,8 @@ transcript() {
   . "$Q"
   assert_equal "$(waiting 1 0 0 0 1)" '1 ask waiting . 1 parked (P shows)'
   run "$Q" key P "$live"
-  assert_output --partial 'reload('
+  # The reload last, or fzf's --track drops the header and footer after it.
+  assert_output --regexp 'reload\([^)]* saved\)$'
   assert_output --partial '1 parked (P hides)'
   assert_output --partial 'parked asks shown'
   run rows

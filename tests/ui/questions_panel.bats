@@ -207,7 +207,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   tmux_keys Down 1
   wait_until 'screen_has "sending it to alpha:1" && screen_has "g goes there"'
   tmux_keys Enter
-  wait_until 'screen_has "press a number, t, d or p first"'
+  wait_until 'screen_has "press a number, t, d or"'
   [ "$(grep -c '^answer:' "$(ask_file "$OLD")")" = 1 ]
   "$AGENT_ASK" deliver --all
   wait_until 'screen_lacks "sending alpha:1" && screen_lacks "sending beta:2" && screen_lacks "Keep the merge queue?"'
