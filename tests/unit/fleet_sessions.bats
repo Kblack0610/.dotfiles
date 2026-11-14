@@ -1223,6 +1223,20 @@ SH
   [ "$(jq -r '"\(.context_tokens) \(.context_window)"' <<<"$output")" = "5 null" ]
 }
 
+@test "end to end: a row carries the open job its shell waits on, and null when none is known" {
+  # fleet-dispatch counts no open_job queue session toward its pace target (pipeline-eval-p2).
+  landed_fixture
+  PANEL_STATUS=shell PANEL_JOB=queue panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .open_job <<<"$output")" = "queue" ]
+  # Negative control: no open job known reads null, never the "-" placeholder.
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .open_job <<<"$output")" = "null" ]
+}
+
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
   landed_fixture
   PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"

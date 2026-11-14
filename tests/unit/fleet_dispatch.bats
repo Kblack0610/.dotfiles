@@ -1915,6 +1915,34 @@ J
   assert_output --partial 'hot (urgent'
 }
 
+@test "starved: a high item its project's full merge line holds is not starved; an urgent one, or the line under its cap, is" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item stuck high "$old"
+  acct main:pace
+  export DISPATCH_TARGET_PRESENT=10 DISPATCH_TARGET_AWAY=10 DISPATCH_LINE_MAX=6
+  line_state 2 6 game
+  run cmd_starved
+  assert_success
+  refute_output --partial 'stuck (high'
+  # Negative control: one waiter under the cap, the same item starves.
+  line_state 2 5 game
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (high'
+  # An urgent item of a full line is never held there, so it starves.
+  line_state 2 6 game
+  queued_item hot urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'hot (urgent'
+  # An item with no project reads no line, never an unreadable queue.
+  queued_item loose high "$old"
+  sed -i '/^project:/d' "$AGENT_QUEUE_DIR/queued/20261103-100000-loose.md"
+  run cmd_starved
+  refute_output --partial 'agent-queue unreadable'
+  assert_output --partial 'loose (high'
+}
+
 @test "starved: a hold standing the limit trips it, led by the Stopped line, and a run start does not clear it; a younger hold or none does not" {
   queued_item fresh low "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   acct main:pace

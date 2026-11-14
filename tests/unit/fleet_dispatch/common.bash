@@ -398,6 +398,14 @@ fleet_state() {
         + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
 }
 
+# line_state <working> <waiting> <project>: fleet_state's <working> sessions plus <waiting> of <project> whose
+# background shell is a gate waiting its landing turn (open_job queue, fleet-sessions live_wait).
+line_state() {
+  fleet_state "$1"
+  jq -c --argjson q "$2" --arg p "$3" '.sessions += [range($q) | {target: "lab/q:\(.)", bucket: "WORKING", project: $p, open_job: "queue"}]' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+}
+
 # outcome: what the pass told fleet-liveness, through the real agent-proof.sh the sandbox links.
 # agentctl calls a run that says nothing STALLED.
 outcome() { cat "$HOME/.local/state/agentctl/fleet-dispatch/last-outcome" 2>/dev/null; }
