@@ -868,6 +868,13 @@ project_floor_open() {
   [ "${PROJECT_STARTED:-0}" -lt "$DISPATCH_PROJECT_FLOOR" ]
 }
 
+# source_floor_open -- a source-floor start is due past real idle: SOURCE_PICK says the start is on a
+# source whose week is going unused (source_floor_start), and this pass's source-floor starts are under
+# DISPATCH_SOURCE_FLOOR. Load, fleet-assess, agent-hold and the source's own room still hold it.
+source_floor_open() {
+  [ -n "${SOURCE_PICK:-}" ] && [ "${SOURCE_STARTED:-0}" -lt "${DISPATCH_SOURCE_FLOOR:-0}" ]
+}
+
 # is_red <item json> -- the item carries the red tag.
 is_red() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" red "* ]]; }
 
@@ -2785,28 +2792,30 @@ project_floor_start() {
   return "$rc"
 }
 
-# source_floor_start <item json lines> <why> -- past a full pace target, start up to DISPATCH_SOURCE_FLOOR
-# items on each DISPATCH_SOURCE_PICKS source whose week is going unused (claude-acct check underuse, the
-# codex-underuse watch's probe): a flat plan loses what is left at its reset, and the target counts the
-# Claude sessions that cannot use it. Each item goes through route with that pick alone, so its tier,
-# excluded kinds, project allowlist and the source's room all hold; load, fleet-assess and agent-hold
-# still hold the pass (gate). Rc FLOOR_SHUT when nothing is due.
+# source_floor_start <item json lines> <why> -- past a full pace target and real idle, start up to
+# DISPATCH_SOURCE_FLOOR items in all on the DISPATCH_SOURCE_PICKS sources whose week is going unused
+# (claude-acct check underuse, the codex-underuse watch's probe): a flat plan loses what is left at its
+# reset, and the target counts the Claude sessions that cannot use it. Reds stay with the red floor.
+# Each item goes through route with that pick alone, so its tier, excluded kinds, project allowlist,
+# named model and the source's room all hold; load, fleet-assess and agent-hold still hold the pass.
+# Rc FLOOR_SHUT when nothing is due.
 source_floor_start() {
-  local pick src out rc=$FLOOR_SHUT before
-  [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null && [ -n "$1" ] && [ -z "$(gate)" ] || return "$FLOOR_SHUT"
+  local pick src out items rc
+  [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
+  items=$(jq -c 'select(((" " + (.tags // "") + " ") | contains(" red ")) | not)' <<<"$1")
+  [ -n "$items" ] || return "$FLOOR_SHUT"
+  [ -z "$(SOURCE_PICK=${DISPATCH_SOURCE_PICKS%% *} gate)" ] || return "$FLOOR_SHUT"
   for pick in $DISPATCH_SOURCE_PICKS; do
     [ "${SOURCE_STARTED:-0}" -lt "$DISPATCH_SOURCE_FLOOR" ] || break
     src=$(harness_source "${pick%%:*}"); [ -n "$src" ] || continue
     out=$(claude-acct check underuse "$src" 2>&1)
     [[ "$out" == under-used* ]] || continue   # not under-used, unread and not a paced source all say something else
     say "$2; $out, so ${pick%%:*} takes work on the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR)"
-    before=${STARTED:-0}
-    SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$1" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
-    SOURCE_PICK=''
+    SOURCE_PICK=$pick FLOOR_QUIET=1 UNITS_FREE=$(( DISPATCH_SOURCE_FLOOR * 2 )) start_items "$items" $(( DISPATCH_SOURCE_FLOOR - ${SOURCE_STARTED:-0} )); rc=$?
     [ "$rc" = 0 ] || return "$rc"
-    [ "${STARTED:-0}" -eq "$before" ] || rc=0
+    [ "${SOURCE_STARTED:-0}" -eq 0 ] || return 0
   done
-  return "$rc"
+  return "$FLOOR_SHUT"
 }
 
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
@@ -3371,6 +3380,9 @@ route() {
   # A source-floor start (source_floor_start) takes one harness and model, with no model-lane verdict:
   # the verdict offers Codex only for a class it was promoted or trialled for, so most work never asks.
   if [ -n "${SOURCE_PICK:-}" ]; then
+    # A model the human named, and cloud-ok routing, are choices a floor start does not override.
+    [ -z "$(claude_pin "$it")" ] && ! cloud_routed "$(jq -r .slug <<<"$it")" ||
+      { ROUTE_WHY="the item names its own model or routes to the cloud"; return 1; }
     [ "$pinned" = 0 ] || [ "$(jq -r .agent <<<"$it")" = "${SOURCE_PICK%%:*}" ] ||
       { ROUTE_WHY="pinned to $(jq -r .agent <<<"$it")"; return 1; }
     [ "$pinned" = 1 ] || cands=$(jq -cn --arg p "$SOURCE_PICK" '[{harness: ($p | split(":")[0]), model: ($p | split(":")[1]), fit: 0}]')
@@ -4102,7 +4114,7 @@ load_why() {
 # decides: a floor start goes past it and should not wait out a sample.
 idle_why() {
   local idle
-  if [ "$1" = 1 ] || floor_open || project_floor_open; then :
+  if [ "$1" = 1 ] || floor_open || project_floor_open || source_floor_open; then :
   # A reader with no sample in its window knows of no idle hold, which is not a hold.
   elif idle=$(real_idle) && [ -z "$idle" ]; then [ -n "${IDLE_CACHED:-}" ] || echo "real idle unreadable"
   elif awk -v i="$idle" -v m="$DISPATCH_MIN_IDLE" 'BEGIN { exit !(i < m) }'; then

@@ -257,7 +257,7 @@ load 'fleet_dispatch/common'
   route_ready
   acct main:ok
   srcs codex:ok:5
-  cpu 10 5 0 85
+  cpu 60 30 0 10   # real idle 10%: the floor goes past it, as the other floors do
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
   fleet_state 8
   # Negative control: codex is on pace for its week, so the full fleet starts nothing.
@@ -279,7 +279,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
 }
 
-@test "source floor: past its pace target, a source with no room and a tier-3 item still start nothing" {
+@test "source floor: past its pace target, a source with no room, a tier-3 item, a named model and a red still start nothing" {
   route_ready
   acct main:ok
   cpu 10 5 0 85
@@ -290,6 +290,18 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
   assert_not_called 'agent-codex'
+  # Room, but the item names its own model, or is a red (the red floor's): it stays queued.
+  srcs codex:ok:5
+  agent-queue set fix-menu model=opus >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  agent-queue set fix-menu model= >/dev/null
+  agent-queue set fix-menu "tags=red" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  agent-queue set fix-menu "tags=" >/dev/null
   # Room, but the only item is tier 3: past the unattended ceiling, as a routed start.
   srcs codex:ok:5
   agent-queue move fix-menu done --status ok >/dev/null
