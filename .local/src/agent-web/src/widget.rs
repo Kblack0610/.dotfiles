@@ -6,6 +6,7 @@
 //! nothing of a request that answered in time.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -64,13 +65,15 @@ pub async fn page(
     let shown = cards::pick(all, &names);
     let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
     // Only the key's hits: the widget app holds the key, and a signed-in browser opening the page
-    // would hide a widget that stopped refreshing.
+    // without it would hide a widget that stopped refreshing.
     if by_key {
-        let hit = serde_json::json!({
-            "at": now,
-            "cards": q.cards,
-            "ua": headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("-"),
-        });
+        let ua = headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok());
+        let ua: String = ua.unwrap_or("-").chars().take(UA_MAX).collect();
+        let hit = serde_json::json!({ "at": now, "cards": names, "ua": ua });
+        // Two hits a few seconds apart may land in either order: a skew of seconds against a 2h
+        // watch.
         tokio::task::spawn_blocking(move || {
             let f = last_hit_file();
             if let Err(e) = record(&f, &hit) {
@@ -91,13 +94,22 @@ fn last_hit_file() -> PathBuf {
     agent_panel::session::home().join(".local/state/agent-web/widget.json")
 }
 
-/// A plain overwrite: only the watch reads the file, and its `confirm: 2` rides out a read that
-/// lands mid-write.
+/// The most of a user agent kept: enough to tell the widget app from curl.
+const UA_MAX: usize = 200;
+
+/// Writes the hit whole, through a temp file of its own, so two widgets that refresh at once
+/// never leave a torn file.
 fn record(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = f.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(f, hit.to_string())
+    let tmp = f.with_extension(format!("tmp.{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+    let wrote = std::fs::write(&tmp, hit.to_string()).and_then(|()| std::fs::rename(&tmp, f));
+    if wrote.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    wrote
 }
 
 /// Needs you and Main red, from Home's read; a Home that could not be read is NO DATA on both.
@@ -143,17 +155,25 @@ mod tests {
     }
 
     #[test]
-    fn a_hit_makes_its_directory_and_the_next_one_replaces_it() {
+    fn a_hit_makes_its_directory_and_the_next_one_replaces_it_whole() {
         let dir = std::env::temp_dir().join(format!("agent-web-widget-{}", std::process::id()));
         let f = dir.join("state/widget.json");
-        let first = serde_json::json!({ "at": 10, "cards": "needs,red", "ua": "WebsiteWidget" });
-        let next = serde_json::json!({ "at": 20, "cards": null, "ua": "-" });
+        let first =
+            serde_json::json!({ "at": 10, "cards": ["needs", "red"], "ua": "WebsiteWidget" });
+        let next = serde_json::json!({ "at": 20, "cards": ["alerts"], "ua": "-" });
         record(&f, &first).unwrap();
         record(&f, &next).unwrap();
         let hit: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(hit, next);
+        let left = std::fs::read_dir(f.parent().unwrap()).unwrap().count();
+        assert_eq!(left, 1, "no temp file left behind");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_hit_file_is_the_path_the_watch_reads() {
+        assert!(last_hit_file().ends_with(".local/state/agent-web/widget.json"));
     }
 
     #[test]
