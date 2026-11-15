@@ -1528,10 +1528,8 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "origin/$branch" != "$(default_base "$cwd")" ]; then act_dir="$cwd"; fi
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$oid" "$now")"
     # A PR of this clone's repo riding an open landing train waits on that train's gate, not on its own Checks.
-    local train=-
-    if [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$oid" != - ]; then
-      train="$(train_of "$cwd" "$pr" "$oid")"; train="${train:--}"
-    fi
+    local train=""
+    [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$oid" != - ] && train="$(train_of "$cwd" "$pr" "$oid")"
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
