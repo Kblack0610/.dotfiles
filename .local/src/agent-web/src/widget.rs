@@ -56,13 +56,13 @@ pub async fn page(
     all.extend(home_cards(home, now));
     let names = names(q.cards.as_deref());
     // A name no card has (a typo in the URL) is said on the widget, never silently one card fewer.
-    let no_card: Vec<&str> = names
+    let missing: Vec<&str> = names
         .iter()
         .copied()
         .filter(|n| !all.iter().any(|c| c.tab == *n))
         .collect();
     let shown = cards::pick(all, &names);
-    let data = serde_json::json!({ "at": now, "cards": shown, "no_card": no_card });
+    let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
     // Asks, titles and costs: kept by no cache, browser history included.
     (
         [(header::CACHE_CONTROL, "no-store, private")],

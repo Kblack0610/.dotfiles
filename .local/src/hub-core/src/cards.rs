@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::home::Level;
 use crate::links::Link;
+use crate::reading::NO_DATA;
 
 /// How many "where to look first" rows a card shows; the rest are on its tab.
 pub const SHOWN_FIRST: usize = 3;
@@ -84,7 +85,7 @@ impl Card {
         why: impl Into<String>,
     ) -> Card {
         Card {
-            big: crate::reading::NO_DATA.to_uppercase(),
+            big: NO_DATA.to_uppercase(),
             error: Some(why.into()),
             ..Card::new(tab, title, counted)
         }
@@ -313,11 +314,7 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
         );
     }
     let up = i.machines.iter().filter(|m| m.state == "up").count();
-    let unread = i
-        .machines
-        .iter()
-        .filter(|m| m.state == crate::reading::NO_DATA)
-        .count();
+    let unread = i.machines.iter().filter(|m| m.state == NO_DATA).count();
     let down = i.runners_down().len();
     let stuck = i.ci.red.len();
     let mut c = Card::new("infra", "Infra", COUNTED)
@@ -336,7 +333,7 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
     c.big = format!("{up} of {}", i.machines.len());
     c.unit = "machines up".into();
     let machines = i.machines.iter().filter(|m| m.state != "up").map(|m| {
-        let level = if m.state == crate::reading::NO_DATA {
+        let level = if m.state == NO_DATA {
             Level::Red
         } else {
             Level::Warn

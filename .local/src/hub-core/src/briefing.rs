@@ -1228,7 +1228,7 @@ impl Briefing {
                 "{}, so this may be missing items: see {see}",
                 plural(self.errors.len(), "source", "sources")
             );
-            s += &format!("{}.\n\n", crate::reading::State::NotRead(why).sentence(""));
+            s += &format!("{}.\n\n", Reading::NotRead(why).sentence(""));
         }
         s
     }
@@ -2144,7 +2144,7 @@ mod tests {
             Source {
                 name: "Kalshi paper league".into(),
                 basis: crate::money::PNL.into(),
-                error: Some("no reading at 2026-11-13 00:00".into()),
+                error: Some("no data at 2026-11-13 00:00".into()),
                 ..Default::default()
             },
         ]);
@@ -2152,7 +2152,7 @@ mod tests {
         assert_eq!(m[4], "Alpaca (paper): made $12.50 yesterday.");
         assert_eq!(
             m[5],
-            "Kalshi paper league: not read, no reading at 2026-11-13 00:00."
+            "Kalshi paper league: not read, no data at 2026-11-13 00:00."
         );
         assert_eq!(m.len(), 6, "{m:?}");
     }

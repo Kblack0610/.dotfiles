@@ -11,6 +11,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use crate::reading::NO_DATA;
+
 /// Day rows shown before the "+N older" line.
 pub const DAY_ROWS: usize = 14;
 /// Calendar days the day chart covers, ending on the newest snapshot.
@@ -329,17 +331,17 @@ pub fn who(s: &Sess) -> String {
         ("queue", _) => "queue items".into(),
         ("shepherd", _) => "shepherd".into(),
         ("interactive", _) => "you, interactive".into(),
-        ("", _) => crate::reading::NO_DATA.into(),
+        ("", _) => NO_DATA.into(),
         (other, _) => format!("queue, {other}"),
     }
 }
 
-/// A session's value under a cut (`GROUPS`); a row that has none reads `unknown`.
+/// A session's value under a cut (`GROUPS`); a row that has none reads `NO_DATA`.
 fn cut(s: &Sess, group: &str) -> String {
     let some = |v: &Option<String>| {
         v.as_deref()
             .filter(|v| !v.is_empty())
-            .unwrap_or(crate::reading::NO_DATA)
+            .unwrap_or(NO_DATA)
             .to_string()
     };
     match group {
@@ -1125,7 +1127,7 @@ mod tests {
         assert_eq!(s(Some("runner"), None, None), "runner, unnamed");
         assert_eq!(
             s(None, None, None),
-            crate::reading::NO_DATA,
+            NO_DATA,
             "an old snapshot row has no origin"
         );
         assert_eq!(
@@ -1299,9 +1301,8 @@ mod tests {
         assert_eq!(p.total, v.total);
         let h = by("harness");
         assert_eq!(
-            h.groups[0].name,
-            crate::reading::NO_DATA,
-            "a row with no harness is unknown, not dropped"
+            h.groups[0].name, NO_DATA,
+            "a row with no harness reads no data, not dropped"
         );
         assert_eq!(by("account").groups.len(), 1);
         assert_eq!(by("nonsense").group, "who", "an unknown cut is the default");

@@ -72,7 +72,7 @@ pub struct Machine {
     /// `cloud` when any of its runners is, else `local`.
     #[serde(rename = "where")]
     pub place: String,
-    /// `up` with readings, `no reading` without, or the governor's power state when it is not
+    /// `up` with readings, `NO_DATA` without, or the governor's power state when it is not
     /// running.
     pub state: String,
     /// CI slots as `cc:pool_slots` counts them: a running runner, or an idle one not withheld;

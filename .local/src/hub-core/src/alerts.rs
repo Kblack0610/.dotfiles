@@ -54,7 +54,7 @@ pub struct Alert {
     pub since: Option<i64>,
     /// The fix item and its outcome (`ar-1601 fixing`), or `-`.
     pub owner: String,
-    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check), `unknown` (the
+    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check), `not read` (the
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,

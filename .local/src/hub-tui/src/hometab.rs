@@ -421,7 +421,7 @@ pub fn page(
             Span::styled("PROPOSALS  ", p.head()),
             Span::styled(
                 if h.proposals_failed {
-                    format!("{}, see above", hub_core::reading::NOT_READ)
+                    hub_core::reading::State::NotRead("proposals, see above".into()).words("")
                 } else if h.proposals_unread {
                     "reading".into()
                 } else {

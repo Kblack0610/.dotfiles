@@ -36,8 +36,7 @@ pub const BUCKET: u64 = 3600;
 pub struct Change {
     /// Unix seconds of the first sample in this state.
     pub at: u64,
-    /// stopped, starting, running, draining, stopping, or `NO_DATA` for a stretch with no sample at all (the governor
-    /// down or not yet run).
+    /// stopped, starting, running, draining, stopping, or `NO_DATA` for a gap.
     pub state: String,
     /// Why the governor last powered it (queue, idle, cap, override), "none" before it has.
     pub reason: String,
@@ -98,7 +97,7 @@ pub struct Down {
     pub to: u64,
     /// It lasts now.
     pub open: bool,
-    /// `powered off by the governor` when its power state said so, else `no reading`.
+    /// `powered off by the governor` when its power state said so, else `NO_DATA`.
     pub why: String,
 }
 

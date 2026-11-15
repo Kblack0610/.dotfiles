@@ -219,11 +219,11 @@ pub fn page(watch: &Watch, table: Vec<Line<'static>>, p: Palette, now: i64) -> V
         if let Some(u) = st["unreadable"].as_array().filter(|u| !u.is_empty()) {
             let names: Vec<&str> = u.iter().filter_map(Value::as_str).collect();
             out.push(Line::styled(
-                format!(
-                    "{}: {} on the last pass, its cells are the last good ones",
-                    hub_core::reading::NOT_READ,
+                hub_core::reading::State::NotRead(format!(
+                    "{} on the last pass, its cells are the last good ones",
                     names.join(", ")
-                ),
+                ))
+                .words(""),
                 p.warn(),
             ));
         }

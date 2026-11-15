@@ -237,13 +237,26 @@ mod tests {
         opens.chain(cells).collect()
     }
 
+    /// The line with the spaces after each opening quote or `>` dropped, so `"  no data in x"`
+    /// opens with its word as `"no data in x"` does.
+    fn squeezed(l: &str) -> String {
+        let mut out = String::with_capacity(l.len());
+        for c in l.chars() {
+            if c == ' ' && out.ends_with(['"', '\'', '`', '>']) {
+                continue;
+            }
+            out.push(c);
+        }
+        out
+    }
+
     fn count(path: &std::path::Path, needles: &[String]) -> usize {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         let body = text.split("#[cfg(test)]").next().unwrap_or("");
         body.lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .map(|l| {
-                let l = l.to_lowercase();
+                let l = squeezed(&l.to_lowercase());
                 needles
                     .iter()
                     .map(|n| l.matches(n.as_str()).count())
