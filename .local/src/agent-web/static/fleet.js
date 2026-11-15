@@ -28,8 +28,17 @@ const fst = tblTab({
 // Judges section (vst) and the ask-judge runner page, which keeps them in the Sessions URL.
 const VERDICTS_PRE = "v";
 
-// The open runner page: whose, what it read, and the run whose log is shown.
-const rst = { name: "", data: null, err: null, log: null, sel: "" };
+// The open runner page: whose, what it read, the run whose log is shown, and the lists whose
+// "+N more" was pressed.
+const rst = { name: "", data: null, err: null, log: null, sel: "", open: new Set() };
+
+// Each list on the runner page draws the server's `shown` rows (agent-web RUNNER_ROWS) until its
+// "+N more" (data-more, its key) is pressed, then every row the server sent.
+const pageRows = (list, key) => firstRows(list, rst.open.has(key) ? null : rst.data.shown);
+const pageMore = (list, key) => {
+  const n = list.length - pageRows(list, key).length;
+  return n > 0 ? `<button class="btn sm" data-more="${key}">+${n} more</button>` : "";
+};
 
 const refreshRunner = coalesce(async () => {
   const name = runnerName();
@@ -192,17 +201,19 @@ const RUNNER_TIME_KEYS = ["updated", "next"];
 function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
-      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
+      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) +
+        dispatchList({ ...x.dispatch, recent: pageRows(x.dispatch.recent, "extras") }) + pageMore(x.dispatch.recent, "extras");
     case "ask-judge":
-      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells(x.judge) + judgeWeek(x.judge) +
+      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells({ ...x.judge, cells: pageRows(x.judge.cells, "cells") }) +
+        pageMore(x.judge.cells, "cells") + judgeWeek(x.judge) +
         `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
-      const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
+      const rows = pageRows(x.steps, "extras").map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
       return secHead("", "Intake") +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>` + pageMore(x.steps, "extras");
     }
     case "sentinel-watches": {
       // Every watch, its state and owner are on Alerts; Runners keeps the count, and a tripped one
@@ -247,27 +258,28 @@ function renderRunner(el) {
   if (!r.runs.length) {
     h += `<div class="empty">no run in 14 days${g.kind === "call" ? ` <span class="muted">(${esc(g.trigger)}; its calls are below)</span>` : ""}</div>`;
   } else {
-    const rows = r.runs.map((j, i) => `<tr class="jr rr${jobKey(j) === rst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-i="${i}"><td class="n">${when(j.started)}</td><td class="n">${secs(j.secs)}</td>${resultCell(j)}<td class="muted">${esc(j.detail || "")}</td></tr>`).join("");
-    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">started</th><th class="n" data-role="glance" data-named>took</th><th data-role="glance">result</th><th data-role="glance">detail</th></tr>${rows}</table></div>` + older(r.runs_older);
+    const rows = pageRows(r.runs, "runs").map((j, i) => `<tr class="jr rr${jobKey(j) === rst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-i="${i}"><td class="n">${when(j.started)}</td><td class="n">${secs(j.secs)}</td>${resultCell(j)}<td class="muted">${esc(j.detail || "")}</td></tr>`).join("");
+    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">started</th><th class="n" data-role="glance" data-named>took</th><th data-role="glance">result</th><th data-role="glance">detail</th></tr>${rows}</table></div>` + pageMore(r.runs, "runs") + older(r.runs_older);
   }
   if (rst.log) h += `<h3 class="sub">Log <span class="muted">${esc(rst.log.title)}</span></h3><pre class="panel joblog">${esc(rst.log.text)}</pre>`;
 
   const status = Object.entries(r.status).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="wrap">${RUNNER_TIME_KEYS.includes(k) && /^\d+$/.test(v) ? when(+v) : esc(v)}</td></tr>`).join("");
-  const act = r.activity.map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
+  const act = pageRows(r.activity, "activity").map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
   h += secHead("", "Status and activity") +
     `<div class="panel scroll">${status ? `<table class="tbl">${status}</table>` : `<div class="empty">No status file.</div>`}</div>` +
-    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` : "");
+    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` + pageMore(r.activity, "activity") : "");
 
   const plus = r.calls.partial ? "+" : "";
   const trow = (l, t, p = "") => `<tr><td>${l}</td><td class="n">${t.calls}${p}</td><td class="n${t.errors ? " bad" : ""}">${t.errors}${p}</td><td class="n">${kTok(t.tokens)}${p}</td><td class="n">${usd(t.cost)}${t.cost == null ? "" : p}</td><td class="n">${secs(t.p50_ms && t.p50_ms / 1000)}</td></tr>`;
   h += secHead("", "Calls", null, day.errors ? "warn" : "") + (plus ? `<div class="cline warn">7d is a floor: the week starts past the tail read</div>` : "") +
     `<div class="panel scroll"><table class="tbl"><tr><th></th><th class="n">calls</th><th class="n">errors</th><th class="n">tokens</th><th class="n">$</th><th class="n">p50</th></tr>${trow("24h", day)}${trow("7d", week, plus)}</table>` +
-    (r.calls.recent.length ? callsTable(r.calls.recent) : "") + `</div>`;
+    (r.calls.recent.length ? callsTable(pageRows(r.calls.recent, "calls")) : "") + `</div>` + pageMore(r.calls.recent, "calls");
 
-  h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable(g.eval) : ""}</div>`;
+  h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable({ ...g.eval, rules: pageRows(g.eval.rules, "eval") }) : ""}</div>` +
+    (g.eval ? pageMore(g.eval.rules, "eval") : "");
   h += runnerExtras(r.extras);
-  const conf = r.conf.map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
-  h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>`;
+  const conf = pageRows(r.conf, "conf").map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
+  h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>` + pageMore(r.conf, "conf");
   paint(el, h);
 }
 
@@ -307,6 +319,8 @@ $("scroll").addEventListener("click", (e) => {
   }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
+  const more = t.closest("[data-more]");
+  if (more) { rst.open.add(more.dataset.more); renderRunners(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;
@@ -317,7 +331,7 @@ LOG_PARTS.push({ sec: "verdicts", show() { vst.render(); logFleetFeed.show(!vst.
 // TABS.sessions (sessions.js) calls these for the Runners inner tab.
 function runnersShow() {
   const name = runnerName();
-  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "" });
+  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "", open: new Set() });
   renderRunners();
   pollFleet();
 }

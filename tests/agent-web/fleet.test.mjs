@@ -433,6 +433,29 @@ test("a runner page draws its runs, status next, activity, 24h and 7d calls, ext
   assert.ok(asked.some((u) => u.startsWith("/api/jobs/log?ref=") && decodeURIComponent(u).includes('"out":[0,120]')), "the log is the run's byte range");
 });
 
+test("a runner page's lists stop at the server's shown, and each +N more opens only its own list", async () => {
+  const base = runnerPage("inbox-triage");
+  const act = (i) => ({ word: "WORKED", ok: true, at: 1793942000 - i, text: `line ${i}` });
+  const page = runnerPage("inbox-triage", { shown: 1, activity: [0, 1, 2].map(act), conf: base.conf, runs: base.runs });
+  const h = await openPage("inbox-triage", { "inbox-triage": page });
+  assert.match(h, /line 0/);
+  assert.doesNotMatch(h, /line 1/, "the activity stops at shown");
+  assert.match(h, /data-more="activity">\+2 more</);
+  assert.match(h, /data-more="runs">\+1 more</);
+  assert.match(h, /data-more="conf">\+2 more</);
+  assert.doesNotMatch(h, /data-more="calls"/, "a list at or under shown has no button");
+  click({ target: { closest: (sel) => (sel === "#ov-runners" ? box : sel === "[data-more]" ? { dataset: { more: "activity" } } : null), dataset: {} } });
+  const open = box.innerHTML;
+  assert.match(open, /line 2/, "+N more draws the rest with no read");
+  assert.doesNotMatch(open, /data-more="activity"/);
+  assert.match(open, /data-more="runs">\+1 more</, "the other lists stay cut");
+  assert.deepEqual(asked.filter((u) => u.includes("/runner")), ["/api/fleet/runner?name=inbox-triage"]);
+  // Negative control: a page that sends no shown draws every row.
+  const all = await openPage("inbox-triage", { "inbox-triage": { ...page, shown: undefined } });
+  assert.match(all, /line 2/);
+  assert.doesNotMatch(all, /data-more=/);
+});
+
 test("the sentinel page counts its watches, a tripped one a warn line linking to Alerts' Watches, never the watch table", async () => {
   const w = (name, state) => ({ name, state, severity: "normal", since: null, lastrun: null, lasttrip: null, place: "", what: "", action: "", evidence: "" });
   const h = await openPage("sentinel", { sentinel: runnerPage("sentinel", { extras: { kind: "sentinel-watches", watches: [w("a", "TRIP"), w("b", "OK"), w("c", "ERROR")] } }) });

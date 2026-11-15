@@ -11,7 +11,7 @@
 // --control forces body min-width 900px and fails unless every tab reports the overflow.
 // The height budget: at a desktop size each tab and each of its inner tabs (app.js INNER_TABS), and
 // each inner tab of a project page as big as the one that read 33,558 px (fixtures.mjs BIG_PROJECT),
-// stays under BUDGET_SCREENS screens.
+// and each runner page in fixtures.mjs RUNNER_PAGES stays under BUDGET_SCREENS screens.
 // --control opens every fold and shows every inner tab at once, the page before #1983, and fails
 // unless the big project page reports it.
 // The nav check (web-kit's <kb-shell>): at phone width the menu button shows, the list is hidden,
@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BIG_PROJECT, FIXTURES, NOW, WIDGET_CARDS } from "./fixtures.mjs";
+import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, WIDGET_CARDS } from "./fixtures.mjs";
 
 const VIEWPORT = { width: 390, height: 844 };
 const ORIGIN = "https://agent-web.invalid";
@@ -79,6 +79,7 @@ const TALL = [
     ? INNER[t.tab].tabs.map(([id]) => ({ name: `${t.tab}/${id}`, hash: `${t.tab}/${id}`, el: t.tab, ready: `#${t.tab} [data-in="${id}"]:not([hidden])` }))
     : [{ name: t.tab, hash: t.tab, el: t.tab, ready: t.row }]),
   ...Object.entries(PAGE_HEAD).map(([inner, sec]) => ({ name: `project/${inner}`, big: true, hash: `projects/${BIG_PROJECT.profile}/${BIG_PROJECT.name}/${inner}`, el: "projects", ready: `#sec-${sec}` })),
+  ...Object.keys(RUNNER_PAGES).map((name) => ({ name: `runner/${name}`, hash: `sessions/runners/${name}`, el: "sessions", ready: "#ov-runners .tiles" })),
 ];
 
 const args = process.argv.slice(2);
