@@ -302,9 +302,10 @@ pub struct FleetInfo {
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,
     /// What the session is waiting on right now, from the jobs still open at its last entry:
-    /// `human`, `gate`, `test`, `agent` (a background subagent), `jobs` (any other command) or
-    /// `none`. Only the class, never the command. fleet-sessions trusts a `gate`, `test` or
-    /// `agent` shell for longer than a `jobs` one, which is a sleep loop or a watch on a file.
+    /// `human`, `gate`, `test`, `build`, `agent` (a background subagent), `jobs` (any other
+    /// command) or `none`. Only the class, never the command. fleet-sessions trusts a `gate`,
+    /// `test`, `build` or `agent` shell for longer than a `jobs` one, which is a sleep loop or a
+    /// watch on a file.
     pub open_job: &'static str,
     /// The last main-thread tool call, `<Tool>: <description>`, empty when there is none.
     pub doing: String,
@@ -380,6 +381,9 @@ enum Wait {
     Jobs,
     Human,
     Parked,
+    /// Only a `build` line of the conf yields this, and `open_job` turns it into a `Jobs` job
+    /// with `build` set: time_use counts a build as `jobs`, so this is never a `secs` index.
+    Build,
 }
 
 /// A tool call still running. Holds what it counts as, never its command, which can hold a secret.
@@ -389,10 +393,12 @@ struct Job {
     wait: Wait,
     /// A background subagent: its session is idle while the subagent works.
     agent: bool,
+    /// A command a `build` line of `time-use.conf` names: counted as `jobs`, reported as `build`.
+    build: bool,
     since: u64,
 }
 
-/// `<gate|test> <text in the command>` lines. The first line that matches wins.
+/// `<gate|test|build> <text in the command>` lines. The first line that matches wins.
 fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
     conf.lines()
         .filter_map(|l| {
@@ -400,6 +406,7 @@ fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
             match kind {
                 "gate" => Some((Wait::Gate, text.trim())),
                 "test" => Some((Wait::Test, text.trim())),
+                "build" => Some((Wait::Build, text.trim())),
                 _ => None,
             }
         })
@@ -474,6 +481,8 @@ fn open_class(jobs: &[Job], last: u64) -> &'static str {
         "gate"
     } else if has(Wait::Test) {
         "test"
+    } else if live.iter().any(|j| j.build) {
+        "build"
     } else if live.iter().any(|j| j.agent) {
         "agent"
     } else if live.is_empty() {
@@ -561,6 +570,8 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
             .find(|(_, text)| command.contains(text))
             .map_or(Wait::Jobs, |(wait, _)| *wait)
     };
+    let build = wait == Wait::Build;
+    let wait = if build { Wait::Jobs } else { wait };
     if let Some(id) = call.get("id").and_then(Value::as_str) {
         let agent = name == "Agent" || name == "Task";
         jobs.push(Job {
@@ -568,6 +579,7 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
             task_id: None,
             wait,
             agent,
+            build,
             since: at,
         });
     }
@@ -1654,6 +1666,36 @@ mod tests {
     }
 
     #[test]
+    fn a_build_job_counts_as_jobs_in_time_use_and_reads_build_when_open() {
+        let patterns = [(Wait::Test, "run.sh"), (Wait::Build, "unity-method.sh")];
+        const BUILD: &str =
+            r#"{"command":"scripts/authoring/unity-method.sh RenderCli","run_in_background":true}"#;
+        let lines = [
+            call(0, "b", "Bash", BUILD),
+            launched(0, "b", "backgroundTaskId", "tb"),
+            peer(30),
+        ];
+        let (used, open) = walk(&lines.join("\n"), &patterns);
+        // The wait is `jobs`, never `test`: a build is not a test run, and no stat of its own.
+        assert_eq!(
+            used,
+            TimeUse {
+                jobs_min: 30,
+                ..TimeUse::default()
+            }
+        );
+        assert_eq!(open, "build");
+        // A test beside it still wins the open class, as a gate does over a test.
+        let both = [
+            call(0, "b", "Bash", BUILD),
+            launched(0, "b", "backgroundTaskId", "tb"),
+            call(1, "t", "Bash", TEST),
+            launched(1, "t", "backgroundTaskId", "tt"),
+        ];
+        assert_eq!(walk(&both.join("\n"), &patterns).1, "test");
+    }
+
+    #[test]
     fn time_use_splits_gate_test_and_other_jobs_and_ranks_them() {
         let got = buckets(&[
             call(0, "o", "Bash", OTHER),
@@ -1864,6 +1906,7 @@ mod tests {
             .1
         };
         assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
+        assert_eq!(open("scripts/authoring/unity-method.sh RenderCli"), "build");
         // A wrapper script of the session's own hides its gh run view: a plain job.
         assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
     }

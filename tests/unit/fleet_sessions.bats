@@ -713,6 +713,38 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "a shell running a Unity authoring build reads WORKING, a plain job STALLED (ar-2061)" {
+  # 2026-11-12 unity-core-playground agent-8 (37m) and agent-9 (29m) waited on the Unity slot flock in
+  # scripts/authoring/unity-method.sh and read "background shell is not a gate or test".
+  run b shell 0 0 0 37 1 0 0 875 MERGED PASS 1 - 2/3 x - build
+  assert_output 'WORKING shell'
+  # negative controls: the same minutes on a plain job, and a build past the stale threshold
+  run b shell 0 0 0 37 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
+  assert_output --partial 'background shell is not a gate or test'
+  run b shell 0 0 0 200 1 0 0 875 MERGED PASS 1 - 2/3 x - build
+  assert_output --partial 'background shell idle over 120m'
+}
+
+@test "live_wait reads a unity-method.sh process as build, after a gate and a test (ar-2061)" {
+  mkdir -p "$SANDBOX/wt/scripts/authoring" "$SANDBOX/other"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/authoring/unity-method.sh"
+  printf 'gate agent-land\ntest bats\nbuild unity-method.sh\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
+  local pid=$!
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'build'
+  # negative controls: another worktree, and a conf with no build line
+  run live_wait "$SANDBOX/other"
+  assert_output ''
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/time-use.conf"
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
 @test "a live landing-queue gate is WORKING past FLEET_SHELL_STALE_MIN, a gate that is not queued is idle (ar-2346)" {
   # 2026-11-13 agents 25, 37, 40 and 68 each ran a gate-and-land.sh or ci-gate.sh waiting for its landing
   # turn behind another PR (checks every 120s, gives up after 280m); the row read idle over 120m.

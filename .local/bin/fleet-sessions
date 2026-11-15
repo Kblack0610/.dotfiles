@@ -132,7 +132,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|queue|test|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
+#                <open job: gate|queue|test|build|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), or -;
@@ -199,7 +199,7 @@ session_bucket() {
         # 2026-11-09 agent-51 read WORKING for 100m on a shell waiting for its own parent to exit.
         note=", $HUNG_REASON"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
-        # Only a gate, a test or a subagent is work worth waiting 120m on. Anything else is a sleep
+        # Only a gate, a test, a build or a subagent is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
         # "WORKING shell" sessions were one of those, idle up to 107m, and nothing looked at them.
         note=", background shell is not a gate or test"
@@ -226,8 +226,8 @@ queue_match() {
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
-# landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate or test when a process running in <cwd> (or below it), or
-# descended from the session's claude whatever its cwd, matches a `gate` or `test` line of
+# landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
+# descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
 # agent-panel's time-use.conf, else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
 # but both stay children of the claude that started them. The transcript shows a gate detached
@@ -266,7 +266,7 @@ live_wait() {
     done
   done
   [ -r "$conf" ] || return 0
-  for want in gate test; do
+  for want in gate test build; do
     while read -r kind text; do
       [ "$kind" = "$want" ] && [ -n "$text" ] || continue
       for cmd in "${cmds[@]}"; do
