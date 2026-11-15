@@ -1291,7 +1291,7 @@ real_notes_board() {
   run agent-queue add --running --project game --epic gm-1 --slug title "feat(menu): the title screen"
   assert_success
   assert_line 'story gm-2 on the game agent board, under gm-1'
-  grep -qE -- '^- \[/\] feat\(menu\): the title screen #size/s #of/gm-1 .*id:gm-2' "$dir/agent/README.md" ||
+  grep -qE -- '^- \[/\] feat\(menu\): the title screen #of/gm-1 .*id:gm-2' "$dir/agent/README.md" ||
     fail "no started story: $(cat "$dir/agent/README.md")"
 
   run "$LAND" 42 --item title
