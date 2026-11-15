@@ -404,7 +404,7 @@ pub(crate) mod tests {
         i.instant.insert("gates", vec![]);
         i.instant.insert(
             "red",
-            series(vec![(json!({"item": "watch mac_studio_mlx"}), "1")]),
+            series(vec![(json!({"item": "watch gateway-errors"}), "1")]),
         );
         i
     }
