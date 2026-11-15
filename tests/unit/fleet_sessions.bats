@@ -713,6 +713,49 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "a silent agent-land waiting on its checks or the landing slot is a queue gate, whatever its output age (ar-2244)" {
+  # 2026-11-13 agent-1 (#2421 queued behind #2514), agent-13 (#2500) and agent-3 (#2448) were gating
+  # and read "background shell idle over 120m": agent-land waits on a queued run with no limit.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/other"
+  printf 'sleep 60\n' > "$SANDBOX/wt/agent-land"
+  printf 'gate agent-land\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local pid
+  (cd "$SANDBOX/wt" && exec -a x bash agent-land 2421 --item x) >/dev/null 2>&1 3>&- &
+  pid=$!
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  until grep -q agent-land "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output 'queue'
+  # and the row built from that class stays WORKING with the shell silent for 5h
+  run b shell 0 0 0 300 1 0 0 2421 OPEN PEND 1 - 2/3 x - queue
+  assert_output 'WORKING shell'
+  # negative controls: another worktree, and the session's own claude (its argv names agent-land)
+  run live_wait "$SANDBOX/other"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+  (cd "$SANDBOX/wt" && exec -a claude bash agent-land) >/dev/null 2>&1 3>&- &
+  pid=$!
+  until grep -q agent-land "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
+@test "a phase the session marked [-] counts as done: every phase done or queued holds the item open (ar-2244)" {
+  # 2026-11-13 agent-32, fuzzy-napping-music-p3: the session parked its phase with [-] under a board row.
+  cat > "$SANDBOX/plan.md" <<'MD'
+## Phases
+
+- [x] Phase 1: core night (#2337)
+- [-] Phase 2: prove: blocked on ucp-1949, queue item p3
+MD
+  run plan_phases "$SANDBOX/plan.md"
+  assert_output "$(printf '2\t2\t-')"
+  run b idle 0 0 0 30 1 0 0 2337 MERGED PASS 1 - 2/2 - - - - - 'own:fuzzy-napping-music-p3'
+  assert_output 'STALLED PR #2337 merged, tree clean, its item fuzzy-napping-music-p3 is still open with every phase done or queued'
+}
+
 @test "a shell running a Unity authoring build reads WORKING, a plain job STALLED (ar-2061)" {
   # 2026-11-12 unity-core-playground agent-8 (37m) and agent-9 (29m) waited on the Unity slot flock in
   # scripts/authoring/unity-method.sh and read "background shell is not a gate or test".
@@ -757,17 +800,17 @@ ledger() {
   assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
 }
 
-@test "live_wait reads a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck process as queue, and only those (ar-2346)" {
+@test "live_wait reads a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck process as queue, and only those (ar-2346)" {
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
-  printf 'gate agent-land\n' > "$SANDBOX/time-use.conf"
+  printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local pid
-  # a gate that is not queue-shaped stays a gate: agent-land is a conf gate line, not a queue gate
+  # a gate that is not queue-shaped stays a gate: gh-run-wait is a conf gate line, not a queue gate
   printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh agent-land) >/dev/null 2>&1 3>&- &
+  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh gh-run-wait) >/dev/null 2>&1 3>&- &
   pid=$!
-  until grep -q agent-land "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  until grep -q gh-run-wait "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
   assert_output 'gate'
   kill "$pid"; wait "$pid" 2>/dev/null || true
@@ -804,7 +847,7 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
-@test "queue_match takes a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
+@test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
   queue_match 'bash scripts/test/gate-and-land.sh 2102 ' gate-and-land.sh
   queue_match 'bash ci-gate.sh ' ci-gate.sh
   queue_match 'python3 gate-line.py --repo x --recheck ' 'gate-line.py --recheck'
@@ -815,6 +858,10 @@ ledger() {
   ! queue_match 'tail -f scripts/test/ci-gate.sh ' ci-gate.sh
   ! queue_match 'vim scripts/test/ci-gate.sh ' ci-gate.sh
   ! queue_match 'shellcheck gate-and-land.sh ' gate-and-land.sh
+  queue_match 'bash /home/u/.local/bin/agent-land 2421 --item x ' agent-land
+  ! queue_match 'ugrep agent-land logs ' agent-land
+  ! queue_match 'watch -n5 pgrep -f agent-land ' agent-land
+  ! queue_match 'git log --grep agent-land ' agent-land
 }
 
 @test "self_wait finds a tail --pid on its own parent under the claude, and nothing else (ar-1118)" {
