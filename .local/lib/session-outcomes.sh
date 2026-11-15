@@ -43,6 +43,33 @@ SO_PR_JQ='
   def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
 '
 
+# so_canon_claims MAP - stdin: JSON values with a `prs` list of {repo, number} (a transcript's metrics, a
+# registry row). stdout: the same with a Forgejo claim's host rewritten to the PR store's. A Forgejo repo
+# is keyed `host/owner/repo` and the store holds it under MAP's `forges.forgejo` host (schedules-sync
+# repos), but a transcript prints the host that serves html_url, the public ROOT_URL, so every host
+# so_forgejo_hosts lists is an alias of the store's. A host that list lacks is kept, and its claim is
+# dropped by the caller's store read. One alias source: SO_FORGEJO_HOSTS, the list that also gates where
+# the token goes.
+so_canon_claims() {
+  local store aliases
+  store="$(jq -r '.forges.forgejo // ""' "$1" 2>/dev/null)" || store=""
+  aliases="$(printf '%s\n' "$(so_forgejo_hosts)" | jq -Rc 'ascii_downcase | split(" ") | map(select(. != ""))')" || aliases='[]'
+  jq -c --arg store "$store" --argjson al "$aliases" '
+    def canon: if $store != "" and test("^[^/]+/[^/]+/[^/]+$") and (split("/")[0] | ascii_downcase | IN($al[]))
+               then ([$store] + split("/")[1:]) | join("/") else . end;
+    if type == "object" and (.prs | type) == "array" then .prs |= (map(.repo |= canon) | unique) else . end'
+}
+
+# so_mapped_repos MAP - the PR-store keys of the repos the project map lists, one per line, lower-cased:
+# a tracker's Forgejo slug on the `forges.forgejo` host, else its GitHub slug. A tracker with both is
+# Forgejo-canonical, so its GitHub slug is the mirror and is not expected in the store. A claim in a
+# repo named here that the store does not hold is a gap in the store's list, not a stray URL.
+so_mapped_repos() {
+  jq -r '(.forges.forgejo // "") as $h | (.trackers // {})[] | select(type == "object")
+         | if .forgejo then (if $h != "" then "\($h)/\(.forgejo)" else empty end) else (.github // empty) end
+         | ascii_downcase' "$1"
+}
+
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
 # A PR counts when a PR call's own result printed it (SO_PR_JQ), so a PR merely
 # viewed or pasted is not claimed, or when Claude Code wrote a pr-link record for it: that

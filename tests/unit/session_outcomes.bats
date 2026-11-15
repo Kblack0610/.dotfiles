@@ -397,6 +397,65 @@ EOF
   assert_equal "$(field e '.prs | length')" 0
 }
 
+# fj_alias_setup - the transcript prints the public ROOT_URL host (git.public.test), the PR store and the
+# project map's forges.forgejo hold the repo under git.example.test; both hosts are in SO_FORGEJO_HOSTS.
+fj_alias_setup() {
+  fj_setup
+  sed -i 's#git\.example\.test#git.public.test#g' "$TR/e.jsonl"
+  export SO_FORGEJO_HOSTS="git.example.test git.public.test"
+  jq -n '{forges: {forgejo: "git.example.test"}, trackers: {audio: {forgejo: "o/audio"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json"
+}
+
+@test "a Forgejo claim printed with the public ROOT_URL host reads the PR store's repo: one alias list, SO_FORGEJO_HOSTS" {
+  fj_alias_setup
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+  assert_equal "$(field e .prs_merged)" 1
+  refute_output --partial "claims dropped"
+  assert_equal "$(grep -c 'git.public.test' "$SANDBOX/ss.calls" || true)" 0
+}
+
+@test "a host SO_FORGEJO_HOSTS does not list is no alias: its claim is dropped and named" {
+  fj_alias_setup
+  export SO_FORGEJO_HOSTS="git.example.test"
+  touch "$GH_FIXTURE/prs.git.public.test-o-audio.unlisted"
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, not in the PR store: git.public.test/o/audio"
+}
+
+@test "so_canon_claims: only a listed alias host is rewritten; GitHub claims, other hosts and a null metrics pass through" {
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  export SO_FORGEJO_HOSTS="git.example.test GIT.public.test"
+  printf '{"forges":{"forgejo":"git.example.test"}}' > "$BATS_TEST_TMPDIR/m.json"
+  run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1},{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
+  assert_output '{"prs":[{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
+  run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'null'
+  assert_output null
+  run so_canon_claims "$BATS_TEST_TMPDIR/none.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
+  assert_output '{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
+}
+
+@test "a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo" {
+  fj_alias_setup
+  touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"
+  run "$SUBJECT" run
+  assert_failure
+  assert_output --partial "the PR store lacks repos the project map lists, their sessions held: git.example.test/o/audio"
+  assert_equal "$(outcome)" STALLED
+  assert_equal "$(field e .session_id)" null
+  assert_equal "$(field a .prs_merged)" 1
+  # negative control: the same drop for a repo the map does not list stays a note
+  jq 'del(.trackers.audio)' "$SANDBOX/map.json" > "$SANDBOX/map2.json"; export SO_PROJECT_MAP="$SANDBOX/map2.json"
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, not in the PR store: git.example.test/o/audio"
+}
+
 @test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
   # shellcheck source=/dev/null
   . "$SO_LIB_DIR/session-outcomes.sh"
