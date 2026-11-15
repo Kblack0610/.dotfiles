@@ -586,6 +586,28 @@ codex_end_item() {
   agent-queue set cx agent=codex lane_run=r-cx >/dev/null; agent-queue claim cx --sid "$1" >/dev/null
 }
 
+# oc_end_item <session> <last assistant row: finish|error type|-> [elapsed seconds] -- an opencode item (harness
+# go, timeout 7200s) on a gone session with no PR, whose session in a fixture opencode.db holds a user row, then
+# an assistant row ending as given ("-" is neither), and a model-lane run for it.
+oc_end_item() {
+  local db="$HOME/.local/share/opencode/opencode.db" finish etype
+  mkdir -p "$HOME/.local/lib" "${db%/*}"
+  cp "$REPO_ROOT/.local/lib/opencode-session.jq" "$HOME/.local/lib/opencode-session.jq"
+  OC_SESSION_JQ="$HOME/.local/lib/opencode-session.jq"; OC_DB="$db"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  IFS='|' read -r finish etype <<<"$2"
+  rm -f "$db"
+  sqlite3 "$db" "CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+    INSERT INTO session_message VALUES ('m1', '$1', 'user', 1, 1794200000000, 1794200000000, '{\"text\":\"brief\"}');
+    INSERT INTO session_message VALUES ('m2', '$1', 'assistant', 2, 1794200001000, $((1794200000000 + ${3:-60} * 1000)),
+      json_object('finish', nullif('${finish:--}', '-'), 'error', CASE WHEN '${etype:--}' = '-' THEN NULL ELSE json_object('type', '$etype') END));"
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  project game beta "$SANDBOX/repos/game"
+  started_item oc lab:game-agent-1 run
+  agent-queue set oc agent=go lane_run=r-oc >/dev/null; agent-queue claim oc --sid "$1" >/dev/null
+}
+
 # ── orphan rows: started with no queue item ─────────────────────────────────
 # orphan_seen <project> <key> <hours ago> -- reap first saw that agent row orphaned that long ago.
 orphan_seen() {
