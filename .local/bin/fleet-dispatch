@@ -3927,7 +3927,7 @@ cmd_starved() {
   started=$(last_run_start)
   dead=$(dead_holds)
   if [ -n "$dead" ]; then
-    echo "held on an ask that can never be answered:"
+    echo "held on an ask that can never be answered: (agent-queue set <slug> tags=<its tags without it, plus the ask that replaced it>, or agent-queue move <slug> done --status cancelled --why <why>)"
     sed 's/^/  /' <<<"$dead"
   fi
   # An empty focus counts like a dead hold: the pass did what it may, and nothing will change by itself.
@@ -3997,9 +3997,10 @@ focus_idle() {
 }
 
 # dead_holds -> one line per queued item held on an ask that was cancelled, no longer exists, or the
-# human answered with another option: no
-# answer can release it (agent-queue ask_pending), so it waits for good unless someone sees it. On
-# 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
+# human answered with another option: no answer can release it (agent-queue ask_pending), so it
+# waits for good unless someone sees it. A cancel leaves its items here by design (agent-queue
+# settle-ask): this is where they surface. On 2026-11-07 trader's Kalshi phases sat behind
+# cancelled ask ybXZIM and nothing named them.
 dead_holds() {
   agent-queue list --json --state queued 2>/dev/null |
     jq -r 'select((.hold // "") | test("^ask:[^ ]+ \\((cancelled|no such ask|answered [^,]*, not [^)]+)\\)")) | "\(.slug) (\(.project), \(.hold))"'
