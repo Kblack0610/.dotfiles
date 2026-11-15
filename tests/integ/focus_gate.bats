@@ -248,11 +248,12 @@ refute_blocks()  { [[ "$1" != *'"block"'* ]] || { echo "unexpected block: $1" >&
 # the environment version lie: a tree some other writer left dirty, and a notes-log window
 # shared by every session on the project.
 
-# tcall <session> <tool> [bash-command] -- append one assistant tool_use to that session's
+# tcall <session> <tool> [bash-command] [file-path] -- append one assistant tool_use to that session's
 # transcript, in the shape Claude Code writes it.
 tcall() {
   local input='{}'
   [ -n "${3:-}" ] && input=$(jq -cn --arg c "$3" '{command:$c}')
+  [ -n "${4:-}" ] && input=$(jq -cn --argjson i "$input" --arg p "$4" '$i + {file_path:$p}')
   jq -cn --arg n "$2" --argjson i "$input" \
     '{type:"assistant", message:{role:"assistant", content:[{type:"tool_use", id:"t", name:$n, input:$i}]}}' \
     >> "$SANDBOX/$1.jsonl"
@@ -276,6 +277,32 @@ gate_t() {
 
 @test "session: an Edit with nothing tracked blocks" {
   tcall s1 Edit
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: a Write to the plan file in plan mode is not work (ar-1342)" {
+  tcall s1 Write "" "$HOME/.claude/plans/some-slug.md"
+  tcall s1 Edit "" "$HOME/.claude-max4/plans/some-slug.md"
+  refute_blocks "$(gate_t s1)"
+}
+
+@test "session: a plan-file write does not hide a real Edit beside it" {
+  tcall s1 Write "" "$HOME/.claude/plans/some-slug.md"
+  tcall s1 Edit "" "$REPO/a.txt"
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: a repo's own .claude/plans file is committed work and counts (ar-1342)" {
+  tcall s1 Write "" "$REPO/.claude/plans/x.md"
+  assert_blocks "$(gate_t s1)"
+}
+
+@test "session: a plan-file NotebookEdit is not work, a malformed path does not hide later work (ar-1342)" {
+  jq -cn --arg p "$HOME/.claude/plans/n.ipynb" \
+    '{type:"assistant", message:{content:[{type:"tool_use", name:"NotebookEdit", input:{notebook_path:$p}}]}}' >> "$SANDBOX/s1.jsonl"
+  refute_blocks "$(gate_t s1)"
+  jq -cn '{type:"assistant", message:{content:[{type:"tool_use", name:"Edit", input:{file_path:7}}]}}' >> "$SANDBOX/s1.jsonl"
+  tcall s1 Bash 'git commit -qm x'
   assert_blocks "$(gate_t s1)"
 }
 
