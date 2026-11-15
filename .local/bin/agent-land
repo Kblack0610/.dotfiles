@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-land - land a gated PR and record it in one call, so a green gate costs no model call.
 #
-#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--admin] [--dry-run]
+#   agent-land <pr> [--repo <owner>/<repo>] [--item <slug>] [--plan <file> --phase "<text>"] [--partial] [--merge-commit] [--admin] [--ran-checks] [--dry-run]
 #
 # Which repo <pr> is in: --repo, else the repo of the item's own pr:<owner>/<repo>#<pr>, else gh's
 # default for this checkout. Either way the PR must be in this checkout's origin repo (git, the merge
@@ -15,7 +15,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
-# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now fast-forwards the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -147,6 +147,7 @@ wait_checks() {
 # unless one of these refuses.
 no_checks() {
   [ "$tier" != 3 ] || fail checks "none reported, and a tier-3 item lands only on checks that ran green"
+  [ -z "$ran_checks" ] || fail checks "none reported, and --ran-checks lands only on checks that ran green"
   # A head pushed by catch_up gets the runs the gate's head had; none yet means they have not
   # started, and landing it would merge a tree no check has seen (dotfiles #1504).
   [ -z "$had_checks" ] || fail checks "none reported on the pushed head $(git rev-parse --short HEAD), though the gate's head ran green: re-run once its checks start"
@@ -323,7 +324,7 @@ catch_up() {
   return 1
 }
 
-pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=()
+pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=() ran_checks=''
 implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -335,6 +336,7 @@ while [ $# -gt 0 ]; do
   --partial) partial=1 ;;
   --merge-commit) method=--merge ;;
   --admin) admin=(--admin) ;;
+  --ran-checks) ran_checks=1 ;;
   --dry-run) dry=1 ;;
   -h | --help) usage ;;
   -*) die "unknown flag: $1" ;;

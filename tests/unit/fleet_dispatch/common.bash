@@ -822,12 +822,16 @@ route_ready() {
   srcs
   sonnet_lane
 }
+# sonnet_lane -- model-lane stubbed: classify places LANE (sonnet) with lanes.yaml's fits; with LANE_PROMOTED=<harness:model>
+# the verdict promoted that pair for the class, as model-lane score does a trainee's: it leads the first fit, in `direct`.
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
 case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; classify)
   if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
   elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
-  echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
+  p="[]"; if [ -n "${LANE_PROMOTED:-}" ]; then p="[\"$LANE_PROMOTED\"]"
+    c="[{\"harness\":\"${LANE_PROMOTED%%:*}\",\"model\":\"${LANE_PROMOTED#*:}\",\"fit\":0},${c#[}"; fi
+  echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c,\"promoted\":[],\"direct\":$p}" ;; esac'; }
 
 # --- fleet workers -----------------------------------------------------------------------
 

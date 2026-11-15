@@ -704,6 +704,15 @@ EOF
   assert_output 3
 }
 
+@test "no checks reported with --ran-checks (a direct run's landing, which no review backs): stops at checks, as tier 3 does" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "no checks reported on a base whose protection requires checks: stops at checks, never tries the merge" {
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
