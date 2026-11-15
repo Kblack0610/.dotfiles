@@ -125,6 +125,15 @@ outcome() {
   assert_line 'gamma: PENDING but not running'
 }
 
+@test "BLOCKED and NOOP are not faults: a refused row or a budget stop (inbox-plan 2026-11-12) is not a failed run" {
+  runner beta 'SCHEDULE=hourly'
+  outcome alpha BLOCKED 0
+  outcome beta NOOP 0
+  run "$AGENTCTL_BIN" liveness
+  assert_success
+  assert_output ''
+}
+
 @test "a persistent AUTOSTART runner that is down is a fault" {
   runner delta 'AUTOSTART=yes'
   sed -i 's/^KIND=oneshot/KIND=persistent/' "$AGENTCTL_CONF_DIR/delta.conf"

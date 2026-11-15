@@ -201,7 +201,7 @@ outcome() { cat "$HOME/.local/state/agentctl/inbox-plan/last-outcome"; }
 # The review hold: a stub fleet-dispatch logs each start and keeps its brief; a stub agent-queue
 # lists $NOTES_FIXTURE/queue.jsonl as the open items.
 hold_stubs() {
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NOTES_FIXTURE/dispatch.log"\nwhile [ $# -gt 0 ]; do [ "$1" = --brief ] && cp "$2" "$NOTES_FIXTURE/brief.md"; shift; done\nexit "${DISPATCH_RC:-0}"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$NOTES_FIXTURE/dispatch.log"\nwhile [ $# -gt 0 ]; do [ "$1" = --brief ] && cp "$2" "$NOTES_FIXTURE/brief.md"; shift; done\n[ -z "${DISPATCH_OUT:-}" ] || echo "$DISPATCH_OUT"\nexit "${DISPATCH_RC:-0}"\n' >"$SANDBOX/bin/fleet-dispatch"
   printf '#!/usr/bin/env bash\n[ "${QUEUE_RC:-0}" = 0 ] || exit "$QUEUE_RC"\n[ "$1" = show ] && { cat "$NOTES_FIXTURE/show.json" 2>/dev/null; exit; }\ncat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null || true\n' >"$SANDBOX/bin/agent-queue"
   printf '#!/usr/bin/env bash\necho "$*" >> "$NOTES_FIXTURE/systemctl.log"\n' >"$SANDBOX/bin/systemctl"
   chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/systemctl"
@@ -294,4 +294,32 @@ hold_stubs() {
   sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(b): two #plan <!-- id:sc-2 -->\n'
   INBOX_PLAN_REVIEW_MAX=1 run "$PLAN" --kick
   grep -q 'agentctl@inbox-plan' "$NOTES_FIXTURE/systemctl.log" || fail "a row to plan did not start the unit"
+}
+
+@test "hold: a row whose own item already finished ok is a refusal, not a failure: BLOCKED, recorded, not tried again" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n'
+  export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: row left started for the orphan pass: sc-1 already finished ok (2026-11-12T21:00:23Z, PR o/r#1)'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'sc-1: not held, refused'
+  assert_output --partial 'refused 1'
+  assert_equal "$(outcome)" BLOCKED
+  run tail -n 1 "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_output --regexp 'outcome=BLOCKED .*why: scratch sc-1: not held, refused: .*already finished ok'
+  run record
+  assert_output --regexp '"action":"refused".*already finished ok'
+  run "$PLAN"
+  assert_success
+  assert_equal "$(wc -l <"$NOTES_FIXTURE/dispatch.log")" 1
+}
+
+@test "hold: a refused hold and a budget stop in one pass end BLOCKED with exit 75, not FAILED" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: row un-started, recorded failed: sc-1 already finished ok (x)'
+  rcs 75
+  run "$PLAN"
+  assert_failure 75
+  assert_equal "$(outcome)" BLOCKED
 }
