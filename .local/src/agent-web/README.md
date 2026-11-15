@@ -79,10 +79,13 @@ An Android widget cannot host a live web page, so a web-widget app (WebsiteWidge
 2. In the widget app, add a widget about 4x3 cells and give it `<base>/widget?t=<key>`; add `&cards=needs,red,alerts,costs` for a 4x2.
 3. Set its refresh to the shortest the app allows and tap-to-refresh on.
 
+Each hit the key opens rewrites `~/.local/state/agent-web/widget.json` (`at` in epoch seconds, the card ids shown, the user agent); a signed-in browser that opens `/widget` without the key is not recorded, so it cannot hide a dead widget, but any client using the key URL is. The Sentinel watch `agent-web-widget-fresh` trips when that file is missing or older than 2 hours.
+
 | Problem | Fix |
 |---|---|
 | The widget shows `unauthorized` | The key in the URL is not the one in `widget.token`; copy it again, with no trailing newline in the URL. |
 | A card says NO DATA | That card's reader failed; the error is on the card, and the same card on Home shows it too. |
+| `agent-web-widget-fresh` tripped | No hit with the key in 2 hours: `jq . ~/.local/state/agent-web/widget.json` says when the last one was. Tap the widget; if that writes a new `at`, the app's timer stopped (battery optimization on the widget app is the usual cause), and if it does not, the app gets `unauthorized` or cannot reach the base URL. A healthy widget with a stale file means the write failed: `journalctl --user -u agent-web | grep 'widget hit not recorded'`. |
 
 The two Forgejo calls (token exchange, `GET /api/v1/user`) run through `curl` with the secret on stdin, so no HTTP client library is linked in.
 
