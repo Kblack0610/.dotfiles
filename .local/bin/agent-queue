@@ -2,7 +2,7 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug[,slug...]] [--from human|shepherd|canary|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug[,slug...]] [--from human|shepherd|canary|trainee|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
@@ -1086,14 +1086,14 @@ cmd_add() {
   case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
-  case "$from" in human | shepherd | canary | research:?* | auto:?* | board:?*:?*) ;; *) die "--from is human, shepherd, canary, research:<facet>, auto:<filer> or board:<project>:<key>, not $from" ;; esac
+  case "$from" in human | shepherd | canary | trainee | research:?* | auto:?* | board:?*:?*) ;; *) die "--from is human, shepherd, canary, trainee, research:<facet>, auto:<filer> or board:<project>:<key>, not $from" ;; esac
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   local row_id='^[a-z0-9]+-[0-9]+$'
   [ -z "$epic" ] || [[ "$epic" =~ $row_id ]] || die "--epic is a row id, <code>-<N>, not $epic"
   if [ -n "$row" ]; then
     [[ "$row" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $row"
     [ -z "$epic$want" ] || die "--epic and --want shape a new story; --row links a row already filed"
-    case "$from" in board:* | canary) die "--row is for an item not promoted from the board and not a canary, not --from $from" ;; esac
+    case "$from" in board:* | canary | trainee) die "--row is for an item not promoted from the board and not a canary or trainee review, not --from $from" ;; esac
   fi
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
@@ -1155,8 +1155,9 @@ cmd_add() {
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
   local story='' sboard='' sprof='' srow=''
   # A canary item is an eval of the fleet, not work on the project: fleet-bench canary is its record.
+  # A trainee review (fleet-dispatch trainee-review) works the trainee's item, whose row is the record.
   case "$from" in
-    board:* | canary) ;;
+    board:* | canary | trainee) ;;
     *) if [ -n "$row" ]; then
          # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
          # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
@@ -1542,7 +1543,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
