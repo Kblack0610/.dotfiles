@@ -34,20 +34,20 @@ const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane
 // waits on it. A refetch of an answered path (a poll, a pushed event) does not count: on a busy
 // fleet those overlap and would hold the mark off forever. A first read of a new path takes it
 // off; setTab takes it off and checks again after show().
-const unread = new Set(), answered = new Set();
+const drawnWait = new Set(), drawnHeard = new Set();
 function drawnCheck() {
   if (typeof requestAnimationFrame !== "function") return;
   // The frame comes after every microtask, so a read chained on the last one (`await api(a);
   // await api(b)`) has started by then and holds the mark off.
-  requestAnimationFrame(() => { if (!unread.size) $("main").dataset.drawn = st.tab; });
+  requestAnimationFrame(() => { if (!drawnWait.size) $("main").dataset.drawn = st.tab; });
 }
 
 async function api(path, opts) {
-  if (!answered.has(path)) { unread.add(path); delete $("main").dataset.drawn; }
-  try { return await read(path, opts); }
-  finally { answered.add(path); if (unread.delete(path) && !unread.size) drawnCheck(); }
+  if (!drawnHeard.has(path)) { drawnWait.add(path); delete $("main").dataset.drawn; }
+  try { return await apiRead(path, opts); }
+  finally { drawnHeard.add(path); if (drawnWait.delete(path) && !drawnWait.size) drawnCheck(); }
 }
-async function read(path, opts) {
+async function apiRead(path, opts) {
   const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
