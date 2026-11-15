@@ -5910,16 +5910,17 @@ STUB
     "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1},{\"id\":\"ar-2\",\"size\":\"m\",\"weight\":5},{\"id\":\"ar-3\",\"size\":\"l\",\"weight\":8}]}]'" \
     > "$SANDBOX/bin/roadmap-stub"
   chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
-  items() {  # <row>:<work>:<finished hours ago> ...
+  items() {  # <row>:<work>:<finished hours ago>[:<status>] ...
     local a
     for a in "$@"; do
-      IFS=: read -r r w h <<<"$a"
-      jq -cn --arg r "ar:$r" --arg w "$w" --arg f "$(date -u -d "@$((T0 - h * 3600))" +%FT%TZ)" \
-        '{slug: "x", status: "ok", row: $r, work_min: $w, started: $f, finished: $f}'
+      IFS=: read -r r w h st <<<"$a"
+      jq -cn --arg r "ar:$r" --arg w "$w" --arg st "${st:-ok}" --arg f "$(date -u -d "@$((T0 - h * 3600))" +%FT%TZ)" \
+        '{slug: "x", status: $st, row: $r, work_min: $w, started: $f, finished: $f}'
     done > "$ITEMS"
   }
-  # climbs: s 10, m 30, l 90; the l item 8 days back is outside the 7-day window
-  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192
+  # climbs: s 10, m 30, l 90; the l item 8 days back is outside the 7-day window, and failed
+  # closes are not among the ok closes size_rule's minutes came from
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
   assert_output '- work p50 by #pts band, last 7d of closes: s 10 min (2), m 30 min (2), l 90 min (2): climbs'
@@ -5938,10 +5939,15 @@ STUB
   run env BENCH_NOW=$T0 "$SUBJECT" sizes
   assert_line '- work p50 by #pts band, last 7d of closes: s 30 min (2), m 30 min (2), l 20 min (2): inverted, m not slower than s, l not slower than m'
   # a band under BENCH_SIZES_MIN items orders nothing, so it does not trip
-  items ar-1:30:1 ar-1:30:2 ar-2:10:1 ar-2:10:2 ar-3:20:1
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:20:1
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
-  assert_output --partial 's 30 min (2), m 10 min (2), l 20 min (1): too few to order (l under 2)'
+  assert_output --partial 's 10 min (2), m 30 min (2), l 20 min (1): too few to order l (under 2)'
+  # but it does not hide an inversion between the two bands that have the items
+  items ar-1:30:1 ar-1:30:2 ar-2:10:1 ar-2:10:2 ar-3:20:1
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 1
+  assert_output --partial 'l 20 min (1): inverted, m not slower than s; too few to order l (under 2)'
   run env BENCH_DONE_ITEMS_CMD=false BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_failure 2
 }

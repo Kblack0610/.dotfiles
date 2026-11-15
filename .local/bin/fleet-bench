@@ -2799,10 +2799,11 @@ cmd_sources() {
 # A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
 # median work over the median of the calibrated weight-1 size with the most items. Percentiles
 # are nearest rank. .bands is the median work of each #pts band (s, m, l: notes-cli
-# epics::POINTS, the row's size) over the last BENCH_BANDS_DAYS of the same closes, and whether
-# they climb: inverted when l is not slower than m or m not slower than s, thin when a band has
-# fewer than BENCH_SIZES_MIN items, so no order is read off it. size_rule's minutes in
-# agentctl-inbox-triage are provisional on that order.
+# epics::POINTS, the row's size) over the items closed ok in the last BENCH_BANDS_DAYS, the
+# population size_rule's minutes came from, and whether they climb: inverted when l is not
+# slower than m or m not slower than s (a tie counts), each pair read only when both its bands
+# have BENCH_SIZES_MIN items; thin when no pair is out of order but a band is under that.
+# size_rule's minutes in agentctl-inbox-triage are provisional on that order.
 sizes_json() {
   local since bands_since rows projects p items
   since=$(( $1 - BENCH_SIZES_DAYS * 86400 )) bands_since=$(( $1 - BENCH_BANDS_DAYS * 86400 ))
@@ -2821,7 +2822,7 @@ sizes_json() {
     $rows[0] as $R
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
-       | {fin: $fin, size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+       | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
           landed: (.status == "ok" and (.pr // "") != ""),
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
@@ -2832,7 +2833,7 @@ sizes_json() {
        | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
               work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
     | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
-    | ($read | map(select(.fin >= $bsince and .work != null)) as $bt
+    | ($read | map(select(.fin >= $bsince and .ok and .work != null)) as $bt
        | ["s", "m", "l"] | map(. as $k | $bt | map(select(.size == $k) | .work) | {key: $k, value: {n: length, p50: pct(0.5)}})
        | from_entries) as $b
     | {days: $days, min_n: $min, base: ($base.size // null),
@@ -2846,18 +2847,18 @@ sizes_json() {
          lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind)),
        bands: ($b + {days: $bdays,
          thin: ["s", "m", "l"] | map(select($b[.].n < $min)),
-         flat: [if $b.m.p50 <= $b.s.p50 then "m not slower than s" else empty end,
-                if $b.l.p50 <= $b.m.p50 then "l not slower than m" else empty end]}
-         | .status = (if (.thin | length) > 0 then "thin" elif (.flat | length) > 0 then "inverted" else "ok" end))}'
+         out_of_order: [["s", "m"], ["m", "l"]] | map(. as [$lo, $hi]
+           | select($b[$lo].n >= $min and $b[$hi].n >= $min and $b[$hi].p50 <= $b[$lo].p50) | "\($hi) not slower than \($lo)")}
+         | .status = (if (.out_of_order | length) > 0 then "inverted" elif (.thin | length) > 0 then "thin" else "ok" end))}'
 }
 
 # bands_line <sizes json>: its .bands as the one scorecard and probe row
 bands_line() {
   jq -r '.min_n as $min | .bands | def b($k): "\($k) \(.[$k].p50 // "-") min (\(.[$k].n))";
     "- work p50 by #pts band, last \(.days)d of closes: \(b("s")), \(b("m")), \(b("l")): "
-    + if .status == "thin" then "too few to order (\(.thin | join(", ")) under \($min))"
-      elif .status == "inverted" then "inverted, " + (.flat | join(", "))
-      else "climbs" end' <<<"$1"
+    + if .status == "inverted" then "inverted, " + (.out_of_order | join(", ")) else "" end
+    + if (.thin | length) > 0 then (if .status == "inverted" then "; " else "" end) + "too few to order \(.thin | join(", ")) (under \($min))" else "" end
+    + if .status == "ok" then "climbs" else "" end' <<<"$1"
 }
 
 # sizes_section <now>: the size calibration, the band row and the per-kind cycle time, in the scorecard
@@ -2899,7 +2900,9 @@ cmd_sizes() {
   case "${1:-}" in
     '') sizes_tables "$j" ;;
     --json) printf '%s\n' "$j" ;;
-    --check) bands_line "$j"; [ "$(jq -r .bands.status <<<"$j")" != inverted ] ;;
+    --check)
+      bands_line "$j" || return 2
+      case "$(jq -r .bands.status <<<"$j")" in ok|thin) return 0 ;; inverted) return 1 ;; *) return 2 ;; esac ;;
   esac
 }
 
