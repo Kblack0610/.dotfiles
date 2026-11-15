@@ -95,6 +95,15 @@ allowed() { assert_success; assert_output ''; }
   allowed
   run at /tmp "rm -f /usr"
   allowed
+  run at /tmp "rm -rf /nonexistent-ucp734"
+  allowed
+  # On merged-usr /lib is a symlink to usr/lib, and lib/ with a slash removes that tree.
+  if [ -L /lib ]; then
+    run at /tmp "rm -rf /lib/"
+    denied
+    run at /tmp "rm -rf /usr/lib"
+    denied
+  fi
 }
 
 @test "a non-recursive rm, quoted text and a heredoc body pass" {

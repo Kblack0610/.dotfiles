@@ -17,7 +17,8 @@ subshells, bash -c, eval); brace lists and globs in a target are expanded. Not c
 -delete, xargs, a target built by $(...) or a shell variable the hook cannot see, rmtree from a
 script. Fail-open: any error allows the command.
 
-Also denied: an `rm -r` whose target is / or a top-level dir, which is what `rm -rf /*` expands to.
+Also denied: an `rm -r` whose target is / or what `rm -rf /*` expands to: each existing top-level
+entry, and the dir a top-level symlink reaches (`/bin/` on merged-usr is /usr/bin).
 Claude's built-in rm check refuses these targets itself; Codex has none, so this is its guard. The
 settings.json deny list holds no `Bash(rm -rf /*)`: Claude reads that `*` as a wildcard, so it would
 deny every rm -rf of an absolute path, a session's own scratch included (ucp-734).
@@ -161,11 +162,19 @@ def targets(argv, cwd):
     return out
 
 
+def roots():
+    """/, every entry `/*` expands to, and the dir each one resolves to."""
+    if "roots" not in STATE:
+        top = glob.glob("/*")
+        STATE["roots"] = {"/"} | set(top) | {os.path.realpath(p) for p in top}
+    return STATE["roots"]
+
+
 def check(head, argv, env, cwd):
     if head != "rm":
         return None
     for t in targets(argv, cwd) or ():
-        if os.path.dirname(t) == "/":
+        if t in roots():
             return ROOT_MSG.format(target=t)
         for cache in cache_roots():
             for d in owner_dirs(t, cache):
