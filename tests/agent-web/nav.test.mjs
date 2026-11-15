@@ -65,6 +65,13 @@ test("a section repainted away before the click leaves nothing pending", () => {
   assert.equal(vm.runInContext("st.section", ctx), null);
 });
 
+test("a section in a hidden pane of a record's page is left to its strip tab", () => {
+  const hid = Object.assign(anchor("sec-p-legal-needs", "Needs you"), { closest: (q) => (q === "[data-pin][hidden]" ? {} : null) });
+  show("projects", [anchor("sec-p-needs", "Needs you"), anchor("sec-p-flight", "In flight"), hid]);
+  assert.match(outline.innerHTML, /data-sec="p-flight">In flight</);
+  assert.doesNotMatch(outline.innerHTML, /p-legal-needs/);
+});
+
 test("one anchor is no outline", () => {
   show("releases", [anchor("sec-builds", "Builds")]);
   assert.equal(outline.innerHTML, "");

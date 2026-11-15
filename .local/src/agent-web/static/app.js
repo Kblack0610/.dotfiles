@@ -335,10 +335,16 @@ const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "
   "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","All rows",["board"]],["deliverables","Deliverables",["deliverables"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","All rows",["board"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
-const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
+const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["analytics","Analytics",["p-analytics-needs","p-analytics-numbers","p-analytics-pipes"]],["marketing","Marketing",["p-marketing-needs","p-marketing-numbers","p-marketing-pipes"]],["legal","Legal",["p-legal-needs","p-legal-checks","p-legal-numbers","p-legal-pipes"]],["support","Support",["p-support-needs","p-support-numbers","p-support-pipes"]],["money","Money",["p-money-needs","p-money-numbers","p-money-pipes"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
+// hub_core::layout::PROJECT_WORK, PROJECT_RETIRED and departments::PRODUCT_TYPES: the strip breaks before the
+// work tabs, an old inner id lands on its new one, and only a product has department tabs.
+// assets.rs `project_page_is_the_layout` fails when these lines drift.
+const PROJECT_WORK = "rows";
+const PROJECT_RETIRED = {"build":"deliverables"};
+const PRODUCT_TYPES = ["game","app"];
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
@@ -490,11 +496,12 @@ function innerGo(tab, id) {
 const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
 // A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
 // open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
-// comes from `flagged` (section ids) or from `counts` by id, and shows only above zero.
-function stripHtml(tabs, on, attr, flagged, counts) {
-  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs]) => {
+// comes from `flagged` (section ids) or from `counts` by id, and shows only above zero. A rule
+// goes before id `brk` (a product page's work tabs, PROJECT_WORK), splitting the strip in two groups.
+function stripHtml(tabs, on, attr, flagged, counts, brk) {
+  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs], i) => {
     const n = (counts && counts[id]) || secs.filter((s) => (flagged || []).includes(s)).length;
-    return `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
+    return (i && id === brk ? `<span class="isep" aria-hidden="true"></span>` : "") + `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
   }).join("") + `</div>`;
 }
 // Mark strip button `id` open among the `attr` buttons inside `root`, for a strip that flips in place.

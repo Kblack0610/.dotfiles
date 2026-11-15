@@ -71,6 +71,11 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
     ("ladder.js", JS, include_bytes!("../static/ladder.js")),
+    (
+        "departments.js",
+        JS,
+        include_bytes!("../static/departments.js"),
+    ),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("work.js", JS, include_bytes!("../static/work.js")),
@@ -567,16 +572,54 @@ mod tests {
         let got: serde_json::Value =
             serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
         assert_eq!(got, serde_json::Value::Array(want));
-        // Every section a group names is an anchor projects.js draws.
+        let retired: serde_json::Map<_, _> = hub_core::layout::PROJECT_RETIRED
+            .iter()
+            .map(|(o, n)| (o.to_string(), serde_json::json!(n)))
+            .collect();
+        for want in [
+            format!(
+                "const PROJECT_WORK = \"{}\";",
+                hub_core::layout::PROJECT_WORK
+            ),
+            format!(
+                "const PROJECT_RETIRED = {};",
+                serde_json::Value::Object(retired)
+            ),
+            format!(
+                "const PRODUCT_TYPES = {};",
+                serde_json::json!(hub_core::departments::PRODUCT_TYPES)
+            ),
+        ] {
+            assert!(APP_JS.contains(&want), "app.js lacks {want}");
+        }
+        // Every section a group names is an anchor projects.js draws, or a department section
+        // departments.js draws by its suffix (D_PART).
         let js = include_str!("../static/projects.js");
+        let depts = include_str!("../static/departments.js");
         for i in hub_core::layout::PROJECT_PAGE {
             for s in i.sections {
-                assert!(
-                    js.contains(&format!("\"{s}\"")),
-                    "projects.js never names {s}"
-                );
+                let dept = hub_core::departments::DEPARTMENTS
+                    .iter()
+                    .any(|d| d.id == i.id);
+                let drawn = if dept {
+                    s.strip_prefix(&format!("p-{}", i.id))
+                        .is_some_and(|suffix| depts.contains(&format!("\"{suffix}\": ")))
+                } else {
+                    js.contains(&format!("\"{s}\""))
+                };
+                assert!(drawn, "no script draws {s}");
             }
         }
+    }
+
+    #[test]
+    fn the_coverage_headers_are_hub_cores_columns() {
+        // Rule 8: Coverage draws every column hub_core::departments::Product sorts and filters.
+        use hub_core::table::Row;
+        assert_eq!(
+            col_keys(include_str!("../static/departments.js"), "const C_COLS = {"),
+            hub_core::departments::Product::COLUMNS
+        );
     }
 
     #[test]

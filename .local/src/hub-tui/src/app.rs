@@ -401,6 +401,8 @@ pub enum Msg {
     WatchFiles,
     /// The Projects tab's Ladder (hub_core::stages::read).
     Ladder(Box<hub_core::stages::Ladder>),
+    /// Projects > Coverage and the department tabs (hub_core::departments::read).
+    Coverage(Box<hub_core::departments::Coverage>),
     /// The nightly stage pass wrote a new stages.json.
     StagesFile,
     /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
@@ -519,6 +521,8 @@ pub struct App {
     alerts_read: Read,
     /// The Projects tab's Ladder; None until the first read.
     pub ladder: Option<hub_core::stages::Ladder>,
+    /// Coverage and every product's department tabs; None until the first read.
+    pub coverage: Option<hub_core::departments::Coverage>,
     /// The Projects tab's Deliverables section; None until the first read.
     pub deliverables: Option<Result<hub_core::deliverables::Deliverables, String>>,
     /// The Costs tab's read; None until the first.
@@ -641,6 +645,9 @@ pub struct App {
     ladder_read: Read,
     /// The Ladder showed at the last check, so coming into view again reads it afresh.
     ladder_seen: bool,
+    coverage_read: Read,
+    /// Coverage or a department tab showed at the last check, as `ladder_seen`.
+    coverage_seen: bool,
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
@@ -712,6 +719,7 @@ impl App {
             alerts_read: Read::default(),
             deliverables: None,
             ladder: None,
+            coverage: None,
             costs: None,
             cv: crate::coststab::CostsView::default(),
             fleet: None,
@@ -777,6 +785,8 @@ impl App {
             deliverables_read: Read::default(),
             ladder_read: Read::default(),
             ladder_seen: false,
+            coverage_read: Read::default(),
+            coverage_seen: false,
             schedules_read: Read::default(),
             releases_read: Read::default(),
             builds_read: Read::default(),
@@ -985,6 +995,34 @@ impl App {
                     chrono::Local::now(),
                 );
                 let _ = tx.send(Msg::Ladder(Box::new(l)));
+            });
+        }
+    }
+
+    /// Coverage reads when it or a department tab comes into view, and on `r`: its stores
+    /// (notes, stages.md, VictoriaMetrics, URL probes) have no one file to watch.
+    fn read_coverage_due(&mut self) {
+        let shown = self.coverage_shown();
+        if shown && !self.coverage_seen {
+            self.read_coverage();
+        }
+        self.coverage_seen = shown;
+    }
+
+    pub fn coverage_shown(&self) -> bool {
+        self.tab == Tab::Projects && self.pv.coverage_shown(&self.tv)
+    }
+
+    /// One `hub_core::departments::read` in a worker, unless one is already out.
+    pub fn read_coverage(&mut self) {
+        if self.coverage_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let c = hub_core::departments::read(
+                    runner.as_ref(),
+                    &hub_core::departments::Paths::from_env(),
+                );
+                let _ = tx.send(Msg::Coverage(Box::new(c)));
             });
         }
     }
@@ -1870,6 +1908,7 @@ impl App {
             self.scroll = 0;
             self.read_deliverables_due();
             self.read_ladder_due();
+            self.read_coverage_due();
         }
     }
 
@@ -2086,6 +2125,12 @@ impl App {
                 self.ladder = Some(*l);
                 if self.ladder_read.done() && self.ladder_shown() {
                     self.read_ladder();
+                }
+            }
+            Msg::Coverage(c) => {
+                self.coverage = Some(*c);
+                if self.coverage_read.done() && self.coverage_shown() {
+                    self.read_coverage();
                 }
             }
             Msg::StagesFile => {
@@ -2445,6 +2490,7 @@ impl App {
             self.want_proj_page();
             self.read_deliverables_due();
             self.read_ladder_due();
+            self.read_coverage_due();
             return;
         }
         if self.tab == Tab::Schedules && self.schedules_key(k) {
@@ -2508,6 +2554,9 @@ impl App {
                 }
                 if self.ladder_shown() {
                     self.read_ladder();
+                }
+                if self.coverage_shown() {
+                    self.read_coverage();
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
@@ -2895,6 +2944,7 @@ impl App {
             self.read_deliverables_due();
         }
         self.read_ladder_due();
+        self.read_coverage_due();
         if t == Tab::Home {
             self.read_home();
             self.read_home_cards();
@@ -2909,6 +2959,7 @@ impl App {
             || self.pv.table.typing.is_some()
             || self.pv.dv.typing.is_some()
             || self.pv.lv.typing.is_some()
+            || self.pv.cv.typing.is_some()
             || self.pv.rv.typing.is_some();
         if let (KeyCode::Left | KeyCode::Right, false) = (k.code, typing) {
             if self.pv.step_top(&mut self.tv, k.code == KeyCode::Left) {
@@ -2921,6 +2972,7 @@ impl App {
             if k.code == KeyCode::Char('P')
                 && self.pv.table.typing.is_none()
                 && !self.pv.dfocus
+                && !self.pv.cfocus
                 && !self.pv.lfocus
             {
                 if let Some(c) = self.pv.selected(&cards) {
@@ -2939,6 +2991,17 @@ impl App {
                 }
                 if k.code == KeyCode::Esc {
                     self.pv.lfocus = false;
+                    return true;
+                }
+                return false;
+            }
+            // Coverage before its read says it is reading; Esc goes back.
+            if self.pv.cfocus {
+                if let Some(c) = &self.coverage {
+                    return self.pv.ckey(&mut self.tv, k, &cards, c, self.page);
+                }
+                if k.code == KeyCode::Esc {
+                    self.pv.cfocus = false;
                     return true;
                 }
                 return false;
@@ -4455,12 +4518,16 @@ impl App {
                     || self.pv.dv.typing.is_some()
                     || self.pv.bv.typing.is_some()
                     || self.pv.lv.typing.is_some()
+                    || self.pv.cv.typing.is_some()
                     || self.pv.rv.typing.is_some() =>
             {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.lfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Projects if self.pv.cfocus && !self.pv.open => format!(
+                "<- -> inner tabs  j/k pick  Enter open the product's page  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
@@ -4469,7 +4536,7 @@ impl App {
                 "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
                 match self.pv.inner {
                     "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
-                    "build" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
+                    "deliverables" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
                     _ => "j/k scroll  Esc back  ",
                 }
             ),
@@ -4612,6 +4679,7 @@ impl App {
                         &self.cards(),
                         feed,
                         self.deliverables.as_ref(),
+                        self.coverage.as_ref(),
                         self.ladder.as_ref(),
                         &self.pv,
                         self.p,
@@ -4633,6 +4701,7 @@ impl App {
                     l.push(projtab::top_strip(
                         feed,
                         dl,
+                        self.coverage.as_ref(),
                         self.ladder.as_ref(),
                         "all",
                         self.p,
@@ -4647,7 +4716,8 @@ impl App {
                         .find(|c| c.profile == *profile && c.name == *name)
                     {
                         let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                        let (page, at) = projtab::open_lines(c, pg, &self.pv, self.p, w);
+                        let (page, at) =
+                            projtab::open_lines(c, pg, self.coverage.as_ref(), &self.pv, self.p, w);
                         if !self.pv.rows_shown(&self.tv) {
                             return (page, at.map(|a| ("", a)).into_iter().collect());
                         }
@@ -6650,7 +6720,7 @@ mod tests {
         assert_eq!(a.pv.inner, "rows");
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
+            at_line(&s, "Projects > demo  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
@@ -8628,7 +8698,8 @@ mod tests {
     }
 
     #[test]
-    fn left_right_walk_the_list_all_rows_deliverables_and_ladder_and_board_opens_all_rows() {
+    fn left_right_walk_the_list_all_rows_deliverables_coverage_and_ladder_and_board_opens_all_rows()
+    {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Projects, tx);
         a.projects_read.busy = true;
@@ -8643,6 +8714,11 @@ mod tests {
         assert!(s.contains(" Projects [All rows 5] Deliverables "), "{s}");
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
+        assert!(!a.coverage_read.busy, "Coverage reads only once it shows");
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("coverage"));
+        assert!(a.coverage_read.busy, "showing Coverage did not read it");
+        assert!(screen(&mut a, 140, 30).contains("Coverage  reading the department stores"));
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("ladder"));
         a.handle(arrow(KeyCode::Right));

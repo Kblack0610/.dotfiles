@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::home::{self, Running};
+use crate::links::{Kind, Link};
 use crate::queue::{Item, Queue, State};
 use crate::session_actions::Runner;
 use crate::table::Val;
@@ -300,6 +301,12 @@ impl crate::table::Row for Card {
                 .map_or(Val::None, |v| Val::Text(crate::tasks::release_order(v))),
             _ => self.val(col),
         }
+    }
+
+    /// The name opens the project's page.
+    fn link(&self, col: &str) -> Option<Link> {
+        (col == "project")
+            .then(|| Link::to(Kind::Project, format!("{}/{}", self.profile, self.name)))
     }
 }
 

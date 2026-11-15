@@ -22,7 +22,8 @@ use crate::{bad, ApiResult};
 /// claims and what failed are the whole tab's, so no view narrows them.
 fn shown(p: &Projects, q: &TableQuery) -> Value {
     let view = View::new::<Card>(&q.q, &q.s, &q.sort, &q.dir);
-    let (cards, table) = view.summary(&p.cards);
+    let (cards, mut table) = view.summary(&p.cards);
+    table.links = hub_core::table::links(&cards);
     let mut out = projects::to_json(&Projects {
         cards: cards.into_iter().cloned().collect(),
         unlinked: p.unlinked.clone(),

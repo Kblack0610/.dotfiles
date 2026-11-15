@@ -118,6 +118,15 @@ const deliverables = {
   legend: "percent is the epic's rows by size (#size/s 1, m 3, l 8), then rows done/all",
 };
 
+// Coverage: hub_core::departments, every product's five department cells, worst first.
+const DEPTS = [["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]];
+const CELLS = ["red", "amber", "off", "ok"];
+const coverage = {
+  table: { ...table(4, ["product", "type", "stage", ...DEPTS.map(([d]) => d)], ["all", "red", "amber", "off", "ok"], { type: ["game", "app"] }), legend: "red: a required department has a gap; amber: a gap before it is due; off: no source yet" },
+  rows: rows(4, (i) => ({ key: `bnb/${PROJECTS[i + 1]}`, profile: "bnb", name: PROJECTS[i + 1], type: pick(["game", "app"], i), stage: pick(["dev", "alpha", "beta"], i), cells: Object.fromEntries(DEPTS.map(([d], j) => [d, pick(CELLS, i + j)])) })),
+  head: "2 red  |  14 off", says: [], red: 2, amber: 4, off: 14, failing: 2, departments: DEPTS,
+};
+
 // Ladder: hub_core::stages, each staged project against its next stage, then stages.md's Requirements.
 const STAGES = ["idea", "dev", "alpha", "beta", "prod"];
 const stages = {
@@ -435,7 +444,7 @@ export const FIXTURES = {
   "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
-  "/api/projects": projects, "/api/deliverables": deliverables, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
+  "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
