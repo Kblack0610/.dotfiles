@@ -1106,9 +1106,9 @@ MD
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
-# open job $PANEL_JOB (default none known).
+# open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600).
 panel() {
-  local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
+  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
     > "$SANDBOX/bin/agent-panel"
@@ -3713,4 +3713,69 @@ verdict() {
   [[ "$stderr" == *"m old: is fleet-state.timer running?"* ]]
   [[ "$stderr" == *"1 session(s) carry no verdict"* ]]
   assert_line --index 0 "now 0, after 0, keep 0"
+}
+
+# api_error_transcript <file> [after]: the tail of a session that a transient Cloudflare 403 stopped
+# (2026-11-13 01:51 PST, 10 main-account sessions), as Claude Code writes it; "after" appends the
+# human's next message.
+api_error_transcript() {
+  cat > "$1" <<'JSONL'
+{"type":"assistant","timestamp":"2026-11-13T09:50:12.000Z","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"make test"}}]}}
+{"type":"user","timestamp":"2026-11-13T09:50:40.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-11-13T09:51:03.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 403 <html>Attention Required! | Cloudflare</html>"}]}}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-11-13T09:51:03.500Z"}
+JSONL
+  [ -z "${2:-}" ] || echo '{"type":"user","timestamp":"2026-11-13T09:58:00.000Z","message":{"content":"continue"}}' >> "$1"
+}
+
+@test "a turn that ended on an API Error at an idle prompt is STALLED, not WORKING (ar-2143)" {
+  landed_fixture
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  api_error_transcript "$SANDBOX/t.jsonl"
+  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'turn ended on API Error 403' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T09:51' ]
+  # Negative controls: a later message (the nudge worked), just stopped (under the grace), a busy
+  # row, and prose that quotes the text without the CLI's marker.
+  api_error_transcript "$SANDBOX/t.jsonl" after
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  api_error_transcript "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'busy' ]
+  # a background subagent running: its result wakes the session
+  PANEL_JOB=agent PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  # an error line with no code (a usage limit) is the limit watch's, not this row's
+  sed 's/API Error: 403/Usage limit reached/' "$SANDBOX/t.jsonl" > "$SANDBOX/t2.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t2.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  sed -i 's/"isApiErrorMessage":true,//' "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+@test "a second API Error at a later minute is a new fact, and a finished session is left to DONE (ar-2143)" {
+  landed_fixture
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  api_error_transcript "$SANDBOX/t.jsonl"
+  sed -i 's/09:51:03/10:12:03/' "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T10:12' ]
+  # every phase ticked and the PR merged: finished, so not this row's
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }

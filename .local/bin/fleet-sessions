@@ -72,6 +72,7 @@ set -uo pipefail
 # The close verdict (close_verdict): a CHAT session closes once quiet this long (the human set 24h,
 # 2026-11-05). It is the only rule that reads quiet; DONE's own FLEET_IDLE_MIN is the idle gate.
 : "${FLEET_CHAT_CLOSE_H:=24}"
+: "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
 : "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck}" # processes that are a gate waiting for its landing turn
@@ -310,6 +311,23 @@ self_wait() {
         }
       }
     }'
+}
+
+# api_error_stop <transcript>: "<code>\t<timestamp to the minute>" when the transcript's last message
+# is Claude Code's own `API Error: <code>` line (an assistant entry with isApiErrorMessage; a limit notice
+# with no code is the limit watch's), else nothing. The
+# CLI retries first, so that line means the turn is over and only a message restarts it. 2026-11-13
+# 01:46-01:51 PST a transient Cloudflare 403 stopped 10 sessions at an idle prompt; each read WORKING
+# until it tripped overdue, and three never moved without a nudge. Only the tail is read (a first
+# line cut by tail is skipped): a later message, a nudge or the human's, makes the error not last.
+api_error_stop() {
+  [ -s "${1:-}" ] || return 0
+  tail -n 100 "$1" | jq -Rr 'fromjson? | select(.type == "assistant" or .type == "user")
+      | if .isApiErrorMessage == true then
+          ([.message.content[]? | select(.type == "text") | .text] | join(" ")
+            | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c as $c
+          | if $c == "" then "" else "\($c)\t\((.timestamp // "-")[:16])" end
+        else "" end' 2>/dev/null | tail -n 1 | grep . || true
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -1518,6 +1536,15 @@ collect() {
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
+    # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
+    # (idle under FLEET_IDLE_MIN, a pending CI run): nothing in it wakes without a message. A finished
+    # one is left to DONE.
+    local apistop=""
+    if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
+       && [ "${bucket%% *}" = WORKING ] && [ "$idle" -ge "$FLEET_API_ERROR_IDLE_MIN" ]; then
+      apistop="$(api_error_stop "$transcript")"
+      [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
+    fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
     local elsewhere=""
@@ -1537,6 +1564,8 @@ collect() {
     # only a branch that took the base in (was clean) and conflicts again is a new one.
     # Carrying on is activity, not a fact: a session flipping between busy and idle must never page twice.
     fact="${bucket%, carrying on}"; [ "$pr" != - ] && fact="$fact @$branch"
+    # One error is one fact (its minute), so a second one after a nudge restarted the session is nudged again.
+    [ -z "$apistop" ] || fact="$fact at ${apistop#*$'\t'}"
     if [ "$bucket" = "STALLED PR #$pr conflicts with the default branch" ]; then
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
