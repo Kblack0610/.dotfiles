@@ -232,15 +232,12 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
   # 2026-11-13: cancelling yaZGII closed consoles-p3 unfinished. A cancel decides nothing, so the item
-  # stays queued and held, flagged, and the canceller is told; a second settle adds no second flag.
+  # stays queued and held, its live hold the flag, and the canceller is told how to re-gate or close it.
   run --separate-stderr "$AGENT_ASK" cancel "$b"
   assert_success
-  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b"* ]]
-  "$AGENT_ASK_QUEUE_CMD" settle-ask "$b" 2>/dev/null
+  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b: set its tags without ask:$b=go"*"--why <why>"* ]]
   run "$AGENT_ASK_QUEUE_CMD" show on-b --json
-  [ "$(jq -r '"\(.state) \(.hold)"' <<<"$output")" = "queued ask:$b=go (cancelled)" ]
-  [ "$(jq -r '.note | [scan("dead hold")] | length' <<<"$output")" = 1 ]
-  [[ "$(jq -r .note <<<"$output")" == "dead hold: ask:$b=go (cancelled), still queued: "* ]]
+  [ "$(jq -r '"\(.state) \(.hold) \(.note // "none")"' <<<"$output")" = "queued ask:$b=go (cancelled) none" ]
   # A judge answer is not the human's, who can still answer: the item stays queued.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
