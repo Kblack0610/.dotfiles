@@ -60,6 +60,7 @@ The `Check` cell is one of three things:
 | alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` |
 | alpha | store | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill. In the repo, the `store` system in `systems.md`: `store/<id>/<store>/listing.json` for a game, `mobile/metadata.yaml` for an app | `project-stage-check "$NAME" --system store` |
 | alpha | game, app | A go-to-market entry in the marketing lab project's `docs/channels.yaml`: shape, pitch, channels and posting mode per channel | not yet: needs a `channels.yaml` validator |
+| alpha | game, app | An event catalogue: each event the product sends and its properties, in one file the Analytics tab of its page reads | not yet: needs a catalogue generator; the PostHog event list is one const in `packages/game-platform/analytics/src/shared/types.ts` and the playground's opt-in events are in `online.md` |
 | beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
 | beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
 | beta | base | A Sentinel health watch | not yet |
@@ -72,10 +73,13 @@ The `Check` cell is one of three things:
 | beta | game, app | A version tag: versioned releases start here | `[ -n "$(project_release_version "$NAME")" ]` |
 | beta | game, app | A public page that collects wishlists or signups (a Steam Coming Soon page for a game), live early enough to build an audience before launch and before any Steam festival deadline | not yet: needs a store-page probe |
 | beta | game, app | Each version tag gets a marketing drafts batch, and outreach has started (creators and curators for a game; launch sites, directories and partners for an app). An app with regulated data does this inside the compliance check of the beta app row | not yet: needs the marketing drafter |
+| beta | game, app | A support intake: where store reviews, in-app feedback and crash reports land, and who reads them | not yet: a game's `playtest.md` rows (the `playtest-ops` skill) are the only intake today |
+| beta | game, app | Costs recorded per product: hosting, Edgegap, LLM and marketing spend, against the marketing cap | not yet: LLM cost per project is in `~/.agent/outcomes/`; the rest has no exporter |
 | prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet |
 | prod | base | Approval of the public publish | human |
 | prod | game, app | Live on a public channel (a store, Steam `default`, the prod cluster): a registry target on the `prod` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("prod")'` |
 | prod | game, app | The product's rows in the marketing lab project's `docs/metrics.md` scorecard dated within the last 30 days | not yet: needs the marketing scorecard |
+| prod | game, app | Revenue recorded per product, by provider (each store, Steam, Stripe) | not yet: no revenue exporter exists |
 
 Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their alpha means deployed by stow or Flux from main, and beta and prod mean others depend on it, so a health watch and a runbook.
 
