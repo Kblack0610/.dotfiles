@@ -43,6 +43,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
    <the project's gate command> && agent-land <N> --item <slug> --plan ~/.claude/plans/<slug>.md --phase "<task>"
    ```
    `agent-land` waits for the PR's checks, merges the validated head, records the PR on the item and moves it to done, closes the board row when the item came from the board, and ticks the plan phase. With no gate script the command is `agent-land` alone. A project doc that gives its own gate-and-land command wins; add `--item --plan --phase` to its `agent-land`.
+   - One item, two PRs (the dotfiles public and private split): land the first with `agent-land <N> --repo <owner>/<repo> --item <slug> --partial` from that repo's worktree, with no `--plan`/`--phase` (`--partial` refuses them), and the last with the full `--item --plan --phase`; each `agent-land` runs from its own repo's checkout. Chain them with `set -o pipefail`, or a refused first landing piped to `tail` still runs the second.
    - A Forgejo repo (home-config, bnb-game-servers): `gh` cannot see its PRs, so open the PR through the `forgejo-ops` PR API; `agent-land` lands it the same way, through that API.
    - `landed #N`: go to step 7.
    - A red gate: back to step 3, commit, push, and start the same command.
