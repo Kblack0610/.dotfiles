@@ -11,6 +11,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/store'
   sandbox_init basic
 
   RS="$REPO_ROOT/.local/bin/release-state"
@@ -731,35 +732,18 @@ EOF
   assert_line --regexp '^shop .* v1 +11-03 10:00 fail'
 }
 
-# --- store channels. rbw and curl are stubs; the curl stub logs its argv and its stdin config apart,
-# so a test can prove a credential reached curl only on stdin.
+# --- store channels. rbw and curl are the store stubs (helpers/store.bash); the curl stub's replies
+# here are the env vars below, printed the way store_get reads them.
 
 store_setup() {
-  mkdir -p "$SANDBOX/rbw"
-  cat > "$SANDBOX/bin/rbw" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/rbw.calls"
-case "$1" in
-  unlocked) [ "${RBW_LOCKED:-0}" != 1 ] ;;
-  get) cat "$SANDBOX/rbw/$2" 2>/dev/null ;;
-  *) exit 1 ;;
-esac
-STUB
-  cat > "$SANDBOX/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/curl.argv"
-cfg="$(cat)"
-printf '%s\n' "$cfg" >> "$SANDBOX/curl.config"
-[ "${CURL_FAIL:-0}" = 1 ] && exit 22
-case "$cfg" in
+  store_stubs <<'ROUTE'
+case "$url" in
   *GetAppBetas*) printf '%s' "${STEAM_BETAS:-}" ;;
   *GetAppBuilds*) [ "${STEAM_BUILDS_FAIL:-0}" = 1 ] && exit 22; printf '%s' "${STEAM_BUILDS_REPLY:-}" ;;
-  *oauth2.googleapis.com/token*) printf '%s' '{"access_token":"play-token"}' ;;
   */tracks/*/releases*) printf '%s' "${PLAY_REPLY:-}" ;;
   *appstoreconnect*) printf '%s' "${ASC_REPLY:-}" ;;
 esac
-STUB
-  chmod +x "$SANDBOX/bin/rbw" "$SANDBOX/bin/curl"
+ROUTE
   printf 'steam-secret-key\n' > "$SANDBOX/rbw/release_state_steam"
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
@@ -787,15 +771,9 @@ EOF
   reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z)"
 }
 
-play_key() {
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$SANDBOX/play.pem" 2>/dev/null
-  jq -nc --rawfile k "$SANDBOX/play.pem" '{client_email: "reader@acme.iam", private_key: $k}' > "$SANDBOX/rbw/release_state_play"
-}
+play_key() { store_play_key release_state_play; }
 
-asc_key() {
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$SANDBOX/asc.pem" 2>/dev/null
-  jq -nc --arg p "$(base64 -w0 < "$SANDBOX/asc.pem")" '{key_id: "KID1", issuer_id: "ISS1", p8: $p}' > "$SANDBOX/rbw/release_state_asc"
-}
+asc_key() { store_asc_key release_state_asc; }
 
 # unb64url <text> -> the decoded bytes of one JWT segment.
 unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 ]; do s="$s="; done; printf '%s' "$s" | base64 -d; }
@@ -895,9 +873,10 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
 
 @test "store: a locked vault never calls rbw get, and each row says why" {
   store_setup
-  RBW_LOCKED=1 run "$RS" refresh game
+  : > "$SANDBOX/rbw/locked"
+  run "$RS" refresh game
   assert_success
-  run grep -c '^get' "$SANDBOX/rbw.calls"
+  run grep -c '^rbw get' "$SANDBOX/rbw/calls.log"
   assert_output 0
   assert_equal "$(row game-steam-beta | jq -c '[.live.error, .status]')" '["rbw is locked","unknown"]'
   assert_equal "$(row game-testflight | jq -r .live.error)" "rbw is locked"
@@ -916,7 +895,7 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   export KUBE_IMAGE=reg/web:v1.0.0
   run "$RS" refresh web
   assert_success
-  [ ! -e "$SANDBOX/rbw.calls" ]
+  [ ! -e "$SANDBOX/rbw/calls.log" ]
 }
 
 @test "store: an api failure is unknown" {

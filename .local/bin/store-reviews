@@ -169,20 +169,11 @@ app_store() {
 APPS="$(apps)" || die "could not read the store targets from $(project_map_file)"
 # One token per store that has apps, made once; a locked vault or a missing entry is that store's
 # error for each of its apps.
-PLAY_TOKEN="" PLAY_WHY="" ASC_TOKEN="" ASC_WHY=""
 has() { grep -q "\"store\":\"$1\"" <<<"$APPS"; }
-if has play || has app_store; then
-  if store_rbw_ready; then
-    if has play; then
-      if store_google_token "$RBW_PLAY" "$PLAY_SCOPE"; then PLAY_TOKEN="$STORE_TOKEN"; else PLAY_WHY="$STORE_WHY"; fi
-    fi
-    if has app_store; then
-      if store_asc_jwt "$RBW_ASC"; then ASC_TOKEN="$STORE_TOKEN"; else ASC_WHY="$STORE_WHY"; fi
-    fi
-  else
-    PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
-  fi
-fi
+need=()
+has play && need+=(play "$RBW_PLAY" "$PLAY_SCOPE")
+has app_store && need+=(asc "$RBW_ASC")
+[ "${#need[@]}" -eq 0 ] || store_tokens "${need[@]}" || true
 
 # Stores run side by side; one store's apps run in turn. The store name is its reader function.
 grep -n . <<<"$APPS" > "$TMP/apps"
