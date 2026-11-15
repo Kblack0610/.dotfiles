@@ -156,7 +156,7 @@ pub fn get_json(base: &str, path: &str, params: &[(&str, String)]) -> Result<Val
     }
     let out = cmd.output().map_err(|e| format!("curl: {e}"))?;
     if !out.status.success() {
-        return Err(format!("{base}: curl {}", out.status));
+        return Err(format!("{base} did not answer (curl {})", out.status));
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("{base}: {e}"))
 }
