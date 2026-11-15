@@ -131,8 +131,11 @@
 #                                --by lane by the model-lane lane its run logged under, or both
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
 #                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
-#   fleet-bench sizes [--json]  work minutes per row size over BENCH_SIZES_DAYS against the weight
-#                                the rollups use, and cycle and lead time per row kind
+#   fleet-bench sizes [--json|--check]
+#                                work minutes per row size over BENCH_SIZES_DAYS against the weight
+#                                the rollups use, and cycle and lead time per row kind; --check is the
+#                                pts-bands watch's probe: exit 1 when, over BENCH_BANDS_DAYS of closes,
+#                                the median l is not slower than m or m not slower than s
 #   fleet-bench requests [--json] [--since T]
 #                                the human's urgent requests, one row each (a plan chain is one row),
 #                                then those finished since T: the head of every shepherd summary
@@ -188,6 +191,7 @@ set -uo pipefail
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
 : "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
+: "${BENCH_BANDS_DAYS:=7}"           # the closes sizes --check orders the #pts bands over
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
@@ -2794,34 +2798,44 @@ cmd_sources() {
 # which gives the size, the weight and the kind (the item's own `type:` when no row is found).
 # A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
 # median work over the median of the calibrated weight-1 size with the most items. Percentiles
-# are nearest rank.
+# are nearest rank. .bands is the median work of each #pts band (s, m, l: notes-cli
+# epics::POINTS, the row's size) over the items closed ok in the last BENCH_BANDS_DAYS, the
+# population size_rule's minutes came from, and whether they climb: inverted when l is not
+# slower than m or m not slower than s (a tie counts), each pair read only when both its bands
+# have BENCH_SIZES_MIN items; thin when no pair is out of order but a band is under that.
+# size_rule's minutes in agentctl-inbox-triage are provisional on that order.
 sizes_json() {
-  local since rows projects p items
-  since=$(( $1 - BENCH_SIZES_DAYS * 86400 ))
-  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null | jq -cs .) || return 1
+  local since bands_since rows projects p items
+  since=$(( $1 - BENCH_SIZES_DAYS * 86400 )) bands_since=$(( $1 - BENCH_BANDS_DAYS * 86400 ))
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$(( since < bands_since ? since : bands_since ))" +%F)" 2>/dev/null | jq -cs .) || return 1
   projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
   # the roadmaps go in as a file: a big project's is past the length of one argument
   rows=$(for p in $projects; do
       $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind}}'
     done | jq -cs 'from_entries')
-  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson min "$BENCH_SIZES_MIN" --argjson since "$since" \
+  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
+     --argjson since "$since" --argjson bsince "$bands_since" \
      --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
     def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
     def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
     def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
     $rows[0] as $R
-    | [$items[0][] | select(.status != "cancelled" and ((.finished | epoch) // 0) >= $since)
+    | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
-       | {size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+       | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
           landed: (.status == "ok" and (.pr // "") != ""),
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
-          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $all
+          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read
+    | ($read | map(select(.fin >= $since))) as $all
     | ($all | map(select(.work != null))) as $timed
     | ($timed | map(select(.size != "")) | group_by(.size)
        | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
               work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
     | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
+    | ($read | map(select(.fin >= $bsince and .ok and .work != null)) as $bt
+       | ["s", "m", "l"] | map(. as $k | $bt | map(select(.size == $k) | .work) | {key: $k, value: {n: length, p50: pct(0.5)}})
+       | from_entries) as $b
     | {days: $days, min_n: $min, base: ($base.size // null),
        sizes: ($sz | sort_by(.weight, .size) | map(. + {
          per_point: (if .calibrated then (.work_p50 / .weight * 10 | round / 10) else null end),
@@ -2830,10 +2844,24 @@ sizes_json() {
        kinds: ($all | group_by(.kind) | map({kind: .[0].kind, done: length, landed: (map(select(.landed)) | length),
          work_p50: (map(.work // empty) | pct(0.5)),
          cycle_p50_h: (map(.cycle // empty) | pct(0.5) | hours), cycle_p90_h: (map(.cycle // empty) | pct(0.9) | hours),
-         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind))}'
+         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind)),
+       bands: ($b + {days: $bdays,
+         thin: ["s", "m", "l"] | map(select($b[.].n < $min)),
+         out_of_order: [["s", "m"], ["m", "l"]] | map(. as [$lo, $hi]
+           | select($b[$lo].n >= $min and $b[$hi].n >= $min and $b[$hi].p50 <= $b[$lo].p50) | "\($hi) not slower than \($lo)")}
+         | .status = (if (.out_of_order | length) > 0 then "inverted" elif (.thin | length) > 0 then "thin" else "ok" end))}'
 }
 
-# sizes_section <now>: the size calibration and the per-kind cycle time, in the scorecard
+# bands_line <sizes json>: its .bands as the one scorecard and probe row
+bands_line() {
+  jq -r '.min_n as $min | .bands | def b($k): "\($k) \(.[$k].p50 // "-") min (\(.[$k].n))";
+    "- work p50 by #pts band, last \(.days)d of closes: \(b("s")), \(b("m")), \(b("l")): "
+    + if .status == "inverted" then "inverted, " + (.out_of_order | join(", ")) else "" end
+    + if (.thin | length) > 0 then (if .status == "inverted" then "; " else "" end) + "too few to order \(.thin | join(", ")) (under \($min))" else "" end
+    + if .status == "ok" then "climbs" else "" end' <<<"$1"
+}
+
+# sizes_section <now>: the size calibration, the band row and the per-kind cycle time, in the scorecard
 sizes_section() {
   local j
   echo "## Sizes and kinds"
@@ -2841,6 +2869,11 @@ sizes_section() {
   echo "Queue items finished in the last ${BENCH_SIZES_DAYS} days, joined through their \`row:\` to the row's size and kind on its roadmap. Work is the items' work_min (minutes a session was working). A size is calibrated at ${BENCH_SIZES_MIN} or more items; its measured weight is its median work over the base size's, to set beside the weight the rollups use. Cycle is started to finished, lead is queued to finished."
   echo
   j=$(sizes_json "$1") || { echo "- sizes: ? (the done queue items are unreadable)"; return 0; }
+  sizes_tables "$j"
+}
+
+# sizes_tables <sizes json>: the size table, the band row and the kind table
+sizes_tables() {
   jq -r 'def d: if . == null then "-" else tostring end;
     "| Size | Weight | Items | Work p50 min | Work p75 min | Min per point | Measured weight |",
     "|---|---|---|---|---|---|---|",
@@ -2848,18 +2881,29 @@ sizes_section() {
        then "\(.work_p50) | \(.work_p75) | \(.per_point) | \(.measured_weight | d) |"
        else "- | - | - | too few (\(.n) of \($m)) |" end)),
     "",
-    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)",
-    "",
+    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)"' <<<"$1"
+  bands_line "$1"
+  echo
+  jq -r 'def d: if . == null then "-" else tostring end;
     "| Kind | Done | Landed | Work p50 min | Cycle p50 h | Cycle p90 h | Lead p50 h |",
     "|---|---|---|---|---|---|---|",
-    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$j"
+    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$1"
 }
 
+# sizes [--json|--check]: --check prints the band row and exits 1 when it is inverted, 2 when the
+# closes are unreadable. A thin window (a band under BENCH_SIZES_MIN items) exits 0, unlike
+# startup --check's blind recorder: a quiet week leaves the rubric unmeasured, not wrong.
 cmd_sizes() {
   local j
-  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench sizes [--json]"; return 2 ;; esac
-  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; return 1; }
-  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else sizes_section "$(now)" | sed '1,4d'; fi
+  case "${1:-}" in ""|--json|--check) ;; *) say "usage: fleet-bench sizes [--json|--check]"; return 2 ;; esac
+  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; [ "${1:-}" = --check ] && return 2; return 1; }
+  case "${1:-}" in
+    '') sizes_tables "$j" ;;
+    --json) printf '%s\n' "$j" ;;
+    --check)
+      bands_line "$j" || return 2
+      case "$(jq -r .bands.status <<<"$j")" in ok|thin) return 0 ;; inverted) return 1 ;; *) return 2 ;; esac ;;
+  esac
 }
 
 wakes_lines() {

@@ -76,7 +76,7 @@ function openRows(file) {
 const QUEUE_ROWS = openRows("queue.rs");
 const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
 const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
-const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
+const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
 QUEUE_TABLE.states = [["active", 637], ["needs you", 6], ["running", 9], ["on a PR", 40], ["ready", 197], ["held", 385], ["done", 2370], ["all", 3007]].map(([name, n]) => ({ name, n, tone: TONE[name] }));
 // Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first CANDIDATES_SHOWN
 // rows on the shared table), and the counts its `?counts=1` read sends for the heading.
