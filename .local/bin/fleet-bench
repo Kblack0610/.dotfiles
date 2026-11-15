@@ -2812,7 +2812,7 @@ sizes_json() {
   projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
   # the roadmaps go in as a file: a big project's is past the length of one argument
   rows=$(for p in $projects; do
-      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind, pts}}'
+      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: ({size, weight, kind} + if has("pts") then {pts} else {} end)}'
     done | jq -cs 'from_entries')
   jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
      --argjson since "$since" --argjson bsince "$bands_since" \
@@ -2850,7 +2850,7 @@ sizes_json() {
          thin: ["s", "m", "l"] | map(select($b[.].n < $min)),
          out_of_order: [["s", "m"], ["m", "l"]] | map(. as [$lo, $hi]
            | select($b[$lo].n >= $min and $b[$hi].n >= $min and $b[$hi].p50 <= $b[$lo].p50) | "\($hi) not slower than \($lo)")}
-         | .status = (if (.out_of_order | length) > 0 then "inverted" elif (.thin | length) > 0 then "thin" else "ok" end))}'
+         | .status = (if ($R | length) > 0 and ($R | [.[] | has("pts")] | any | not) then "unreadable" elif (.out_of_order | length) > 0 then "inverted" elif (.thin | length) > 0 then "thin" else "ok" end))}'
 }
 
 # bands_line <sizes json>: its .bands as the one scorecard and probe row
@@ -2859,7 +2859,7 @@ bands_line() {
     "- work p50 by #pts band, last \(.days)d of closes: \(b("s")), \(b("m")), \(b("l")): "
     + if .status == "inverted" then "inverted, " + (.out_of_order | join(", ")) else "" end
     + if (.thin | length) > 0 then (if .status == "inverted" then "; " else "" end) + "too few to order \(.thin | join(", ")) (under \($min))" else "" end
-    + if .status == "ok" then "climbs" else "" end' <<<"$1"
+    + if .status == "ok" then "climbs" elif .status == "unreadable" then "unreadable, no roadmap row carries pts (the notes binary predates it)" else "" end' <<<"$1"
 }
 
 # sizes_section <now>: the size calibration, the band row and the per-kind cycle time, in the scorecard

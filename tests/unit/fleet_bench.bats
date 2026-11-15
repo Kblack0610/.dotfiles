@@ -5948,6 +5948,11 @@ STUB
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_failure 1
   assert_output --partial 'l 20 min (1): inverted, m not slower than s; too few to order l (under 2)'
+  # a roadmap with no pts key on any row (a notes binary from before it) is unreadable, never a quiet week
+  printf '#!/usr/bin/env bash\necho %s\n' "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1}]}]'" > "$SANDBOX/bin/roadmap-stub"
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 2
+  assert_output --partial 'unreadable, no roadmap row carries pts'
   run env BENCH_DONE_ITEMS_CMD=false BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_failure 2
 }
