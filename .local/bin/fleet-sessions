@@ -1157,7 +1157,7 @@ git_facts() {
 
 # activity_line <status> <open job> <doing> <dir|-> <branch> <head sha|-> <now epoch> -> what the
 # session is doing now, for the ACTIVITY column on Sessions (nc-41), first match wins:
-# parked; testing (a test command runs); editing (busy, its last tool call an edit); waiting on
+# parked; testing (a test command runs); building (a Unity authoring run); editing (busy, its last tool call an edit); waiting on
 # <workflow> <N>m (a run on its head still open in the run ledger, the oldest, N since it was
 # queued, +K for the others); red on <workflow>[, ...] (MAIN_STREAKS over its head's runs); gating
 # (a gate command runs); else the status word. CI is read only for a <dir> given (a branch off the
@@ -1166,6 +1166,7 @@ activity_line() {
   local status="$1" ojob="$2" doing="$3" d="$4" br="$5" head="$6" now="$7" runs ci=""
   [ "$status" = parked ] && { echo parked; return; }
   [ "$ojob" = test ] && { echo testing; return; }
+  [ "$ojob" = build ] && { echo building; return; }
   if [ "$status" = busy ] && [[ "$doing" =~ ^(Edit|Write|MultiEdit|NotebookEdit)(:|$) ]]; then echo editing; return; fi
   if [ "$d" != - ]; then
     [ "$head" != - ] || head="$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null || echo -)"

@@ -733,7 +733,7 @@ ledger() {
   (cd "$SANDBOX/wt" && exec -a x bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
   local pid=$!
   # the process is the event: wait until /proc shows its exec, not for a delay
-  until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the build stand-in exited before it started"; done
   run live_wait "$SANDBOX/wt"
   assert_output 'build'
   # negative controls: another worktree, and a conf with no build line
@@ -3327,6 +3327,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   echo "$open" > "$SANDBOX/runs"
   [ "$(activity_line parked test - "$SANDBOX" feat/x h "$now")" = parked ]
   [ "$(activity_line busy test Edit:x "$SANDBOX" feat/x h "$now")" = testing ]
+  [ "$(activity_line busy build Edit:x "$SANDBOX" feat/x h "$now")" = building ]
   [ "$(activity_line busy agent 'Edit: fleet-sessions' "$SANDBOX" feat/x h "$now")" = editing ]
   [ ! -e "$SANDBOX/asked" ]
   [ "$(activity_line busy agent 'Bash: make' "$SANDBOX" feat/x h "$now")" = 'waiting on Tests 20m +1' ]
