@@ -2172,12 +2172,12 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   { cells a s-a fail STALLED; cells b s-b pass DONE | sed 's/5m/9m/; s/1h0m/1h4m/'; cells c s-c - LANDED; cells d s-d pass DONE two; } > "$SANDBOX/cur"
   run transitions "$SANDBOX/prev" "$SANDBOX/cur"
   assert_line 's-a  ci pending -> fail, stage WORKING -> STALLED (why STALLED)'
-  assert_line 's-c  new: LANDED (why LANDED)'
+  assert_line 's-c  new: LANDED (why LANDED) sid=c'
   assert_line 's-c  project - -> proj'
   assert_line 's-d  project one -> two'
   [ "${#lines[@]}" -eq 4 ]
   run transitions "$SANDBOX/cur" "$SANDBOX/prev"
-  assert_line 's-c  gone'
+  assert_line 's-c  gone sid=c'
 }
 
 @test "end to end: tick writes the state document and logs a change once, on the next tick" {
