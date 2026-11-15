@@ -244,13 +244,14 @@ json_upstream() {
   printf '{\n  "b": [1, 2],\n  "a": 1\n}\n' >"$PUB/s.json"
   run "$PULL" --now "$PUB"
   assert_success
-  assert_line --index 0 '~/.dotfiles: s.json differed from HEAD only in key order or spacing, restored from HEAD'
+  assert_line --index 0 --regexp '^~/\.dotfiles: s\.json differed from HEAD only in key order or spacing, restored from HEAD \(copy in .*/dotfiles-autopull/restored/[0-9-]+\)$'
   assert_line --index 1 --regexp '^~/\.dotfiles: fast-forwarded main '
   assert_equal "$(head_of "$PUB")" "$(git -C "$SANDBOX/pub-up" rev-parse HEAD)"
   assert_equal "$(cat "$PUB/s.json")" '{"a": 1, "b": [1, 2], "c": 3}'
+  assert_equal "$(cat "$XDG_CACHE_HOME"/dotfiles-autopull/restored/*/s.json)" "$(printf '{\n  "b": [1, 2],\n  "a": 1\n}')"
 }
 
-@test "negative control: a JSON file in the way with a changed value stays put, and so does a dirty file beside a reordered one" {
+@test "negative control: a JSON file in the way with a changed value stays put, and a reordered one beside another dirty file is not reverted" {
   json_upstream '{"a": 1, "b": 2}'
   git -C "$PUB" pull -q
   json_upstream '{"a": 1, "b": 2, "c": 3}'
@@ -262,9 +263,11 @@ json_upstream() {
   printf '{"b": 2, "a": 1}\n' >"$PUB/s.json"
   printf 'local edit\n' >"$PUB/f"
   run "$PULL" --now "$PUB"
-  assert_line --index 0 '~/.dotfiles: s.json differed from HEAD only in key order or spacing, restored from HEAD'
-  assert_line --index 1 --regexp ': local files in the way: f$'
+  assert_output --regexp '^~/\.dotfiles: not fast-forwarded, main stays at [0-9a-f]{8}: local files in the way: f s\.json$'
   assert_equal "$(cat "$PUB/f")" 'local edit'
+  assert_equal "$(cat "$PUB/s.json")" '{"b": 2, "a": 1}'
+  run find "$XDG_CACHE_HOME/dotfiles-autopull" -path '*/restored/*'
+  assert_output ''
 }
 
 @test "a dirty file the merge does not touch does not block it, and keeps its edit" {

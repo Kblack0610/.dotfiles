@@ -20,11 +20,10 @@
 # persistent agentctl runner is one long-lived process that keeps the code it parsed at start, so
 # every pass also restarts a running one whose script is newer than its unit (inbox-triage).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
-# never touched; a refused or diverged checkout stays put and says why (logged too). The one
-# exception is a tracked .json file in the way that differs from HEAD only in key order or spacing
-# (Claude Code's rewrite of settings.json): it holds no local work, so it is restored and the merge
-# retried (restore_reordered). Fail-soft:
-# every path exits 0, so no network or repo state can break a shell start or a landing.
+# never touched; a refused or diverged checkout stays put and says why (logged too). A file that
+# differs from HEAD only in JSON key order or spacing holds no local work, so when every file in the
+# way is one, they are restored and the merge retried (restore_reordered). Fail-soft: every path
+# exits 0, so no network or repo state can break a shell start or a landing.
 
 set -uo pipefail
 
@@ -198,30 +197,41 @@ attach_all() {
   attach_runners
 }
 
-# restore_reordered <checkout> <name> <refused merge output> -> succeeds when it restored at least
-# one file in the way. Claude Code rewrites ~/.claude/settings.json (a stow link into the checkout)
-# with its keys in its own order, so the checkout reads dirty with no change in it, and every pull
-# that touches the file is refused (ar-2453). A tracked .json file with nothing staged, whose working
-# copy parses equal to HEAD's (jq -S), holds no value, so it is restored from HEAD, one line each;
-# any other file in the way, or no jq, stays put.
+# restore_reordered <checkout> <name> <refused merge output> -> succeeds when it restored every file
+# in the way, one line each. Claude Code rewrites ~/.claude/settings.json (a stow link into the
+# checkout) with its keys in its own order, so the checkout reads dirty with no change in it, and
+# every pull that touches the file is refused (ar-2453). A tracked .json file with nothing staged,
+# whose working copy parses equal to HEAD's (jq -S), holds no value. Only when every file in the way
+# is one does it restore them from HEAD, so a pull that stays refused reverts nothing; each copy is
+# kept under $CACHE_DIR/restored first, and one whose bytes changed since the check stays put.
 restore_reordered() {
-  local repo=$1 name=$2 f mine
-  local n=0
+  local repo=$1 name=$2 f keep mine
+  local -a files=()
   command -v jq >/dev/null 2>&1 || return 1
-  while IFS= read -r f; do
-    case $f in *.json) ;; *) continue ;; esac
-    git -C "$repo" cat-file -e "HEAD:$f" 2>/dev/null && git -C "$repo" diff --cached --quiet -- "$f" || continue
-    mine=$(jq -S . "$repo/$f" 2>/dev/null) && [ -n "$mine" ] || continue
-    [ "$mine" = "$(git -C "$repo" show "HEAD:$f" | jq -S . 2>/dev/null)" ] || continue
-    git -C "$repo" checkout -q -- "$f" 2>/dev/null || continue
-    say "$name: $f differed from HEAD only in key order or spacing, restored from HEAD"
-    n=$((n + 1))
-  done < <(printf '%s\n' "$3" | awk 'sub(/^\t/, "")')
-  [ "$n" -gt 0 ]
+  while IFS= read -r f; do files+=("$f"); done < <(printf '%s\n' "$3" | awk 'sub(/^\t/, "")')
+  [ "${#files[@]}" -gt 0 ] || return 1
+  for f in "${files[@]}"; do
+    case $f in *.json) ;; *) return 1 ;; esac
+    git -C "$repo" cat-file -e "HEAD:$f" 2>/dev/null && git -C "$repo" diff --cached --quiet -- "$f" || return 1
+  done
+  keep="$CACHE_DIR/restored/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$keep" || return 1
+  for f in "${files[@]}"; do
+    cp "$repo/$f" "$keep/${f//\//_}" 2>/dev/null &&
+      mine=$(jq -S . "$keep/${f//\//_}" 2>/dev/null) && [ -n "$mine" ] &&
+      [ "$mine" = "$(git -C "$repo" show "HEAD:$f" | jq -S . 2>/dev/null)" ] || {
+      rm -rf "$keep"
+      return 1
+    }
+  done
+  for f in "${files[@]}"; do
+    cmp -s "$repo/$f" "$keep/${f//\//_}" && git -C "$repo" checkout -q -- "$f" 2>/dev/null || return 1
+    say "$name: $f differed from HEAD only in key order or spacing, restored from HEAD (copy in ${keep/#"$HOME"/\~})"
+  done
 }
 
-# pull <checkout> -> one line on stdout saying what happened; every outcome but "already current" is
-# logged, so the silent shell pass leaves a trace of a checkout it could not move.
+# pull <checkout> -> one line on stdout saying what happened, after one line per file
+# restore_reordered restored; every outcome but "already current" is logged, so the silent shell pass leaves a trace of a checkout it could not move.
 pull() {
   local repo=$1 name branch head up out files
   name=${repo/#"$HOME"/\~}
