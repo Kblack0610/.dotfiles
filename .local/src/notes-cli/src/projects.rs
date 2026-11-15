@@ -3222,6 +3222,8 @@ pub(crate) struct LeafRow {
     /// The `#size/` word, empty when unsized.
     pub size: String,
     pub weight: u32,
+    /// The `#pts/<n>` effort estimate, null when unscored (a bare `#size/` is not points).
+    pub pts: Option<u32>,
     /// `open`, `started` or `done`.
     pub state: &'static str,
     /// The PRs its marker names.
@@ -3237,6 +3239,7 @@ impl LeafRow {
             parent: crate::epics::parent_of(line).unwrap_or_default(),
             size: size_name(line).unwrap_or_default(),
             weight: size_weight(line),
+            pts: points_of(line),
             state: match line.trim_start() {
                 l if l.starts_with("- [/]") => "started",
                 _ if md::is_checked(line) => "done",
@@ -4560,6 +4563,24 @@ Goal: the board reads itself
         // The open version's own note is not a shipped version.
         fs::write(dir.join("agent/versions/v1.4.0.md"), "## Notes\n").unwrap();
         dir
+    }
+
+    #[test]
+    fn a_leaf_row_carries_its_points_and_a_bare_size_tag_is_not_points() {
+        // NEGATIVE CONTROL: `size` and `weight` read #size/ when there are no points, so
+        // fleet-bench could not tell a scored row from a guessed band.
+        let scored = LeafRow::of("- [ ] feat(a): x #size/m #pts/5 <!-- id:ar-1 -->");
+        let banded = LeafRow::of("- [ ] feat(a): y #size/m <!-- id:ar-2 -->");
+        assert_eq!(
+            (scored.pts, scored.size.as_str(), scored.weight),
+            (Some(5), "m", 5)
+        );
+        assert_eq!(
+            (banded.pts, banded.size.as_str(), banded.weight),
+            (None, "m", 3)
+        );
+        let json = serde_json::to_value(&banded).unwrap();
+        assert!(json["pts"].is_null());
     }
 
     #[test]
