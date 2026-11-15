@@ -184,13 +184,25 @@ END {
 
 # chains: the correction chains in one file. A corrector is a block whose first line says it
 # corrects, retracts, refutes, amends, replaces or supersedes another. Its target is the block
-# it scores highest against among the blocks of each date it names (a full date, or MM-DD in
-# its own year), or, naming none ("above", "yesterday"), among every block dated before it.
-# A block's date is the first date on its first line, else its section's. A target found by
-# a named date is always printed; one found without needs CHAIN_MIN. One line per chain:
-# "<corrector line>\t<target line>\t<cosine>\t<corrector first line>".
+# it scores highest against among the blocks of each earlier date it names (a full date, or
+# MM-DD in the latest year that puts it on or before the corrector), or, naming none ("above",
+# "yesterday") or none that any block carries, among every block dated before it. A later
+# date ("rewritten 2026-11-10") names no target. A block's date is the first date on its
+# first line, else its section's. A target found by a named date is always printed; one found
+# without needs CHAIN_MIN. One line per chain: "<file>:<corrector line>\t<target line>\t<cosine>\t<first line>".
 # shellcheck disable=SC2016
 CHAINS='
+# The best-scoring candidate for corrector r into best and bc: the blocks of a named date
+# (by_name), else the blocks dated before r (or above it, when r has no date).
+function target(r, by_name,   q, c) {
+  best = 0; bc = 0
+  for (q = 1; q <= nb; q++) {
+    if (q == r || raw[bl[q]] ~ /^# /) continue
+    if (by_name) { if (!(bd[q] in named)) continue }
+    else if (bd[r] == "" ? q > r : (bd[q] == "" || bd[q] >= bd[r])) continue
+    c = cosine(r, q); if (!best || c > bc) { bc = c; best = q }   # a named date holds at cosine 0 too
+  }
+}
 END {
   build_blocks()
   for (r = 1; r <= nb; r++) {
@@ -200,24 +212,20 @@ END {
     if (h ~ /^##+ /) sd = bd[r]
   }
   for (r = 1; r <= nb; r++) {
-    h = tolower(substr(raw[bl[r]], 1, 300))
+    h = tolower(substr(raw[bl[r]], 1, 300)) " "
     if (h !~ /(correct(ion|s|ing)[^a-z]|supersed|retract|refut|amend(s|ment)|replaces the)/) continue
+    ref = bd[r] != "" ? bd[r] : today
     s = h; if (bd[r] != "" && (i = index(s, bd[r]))) s = substr(s, 1, i - 1) substr(s, i + 10)
-    yr = substr(bd[r] != "" ? bd[r] : today, 1, 4)
     delete named; nn = 0
     while (match(s, /(20[0-9][0-9]-)?[01][0-9]-[0-3][0-9]/)) {
       d = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
-      if (length(d) == 5) d = yr "-" d
-      if (d != bd[r] && !(d in named)) { named[d] = 1; nn++ }
+      if (length(d) == 5) { d = substr(ref, 1, 4) "-" d; if (d > ref) d = (substr(ref, 1, 4) - 1) substr(d, 5) }
+      if (d <= ref && !(d in named)) { named[d] = 1; nn++ }
     }
-    best = 0; bc = 0
-    for (q = 1; q <= nb; q++) {
-      if (q == r || raw[bl[q]] ~ /^# /) continue
-      if (nn) { if (!(bd[q] in named)) continue }
-      else if (bd[r] == "" ? q > r : (bd[q] == "" || bd[q] >= bd[r])) continue
-      c = cosine(r, q); if (!best || c > bc) { bc = c; best = q }   # a named date holds at cosine 0 too
-    }
-    if (best && (nn || bc >= min)) printf "%d\t%d\t%.2f\t%s\n", bl[r], bl[best], bc, substr(raw[bl[r]], 1, 100)
+    hit = 0
+    if (nn) { target(r, 1); hit = best > 0 }
+    if (!hit) target(r, 0)
+    if (best && (hit || bc >= min)) printf "%s:%d\t%d\t%.2f\t%s\n", ENVIRON["LESSONS_FILE"], bl[r], bl[best], bc, substr(raw[bl[r]], 1, 100)
   }
 }
 '
@@ -266,18 +274,19 @@ cmd_dup() {
 }
 
 # chains over each FILE, or each lessons file in a DIR (default ~/.agent/lessons; its _archive/
-# is not read), one "<file>:" prefix per line.
+# is not read). The file name reaches awk through the environment, which takes any byte as is.
 cmd_chains() {
-  local arg f files=()
+  local arg f today files=()
   [ $# -gt 0 ] || set -- "$LESSONS_DIR_DEFAULT"
   for arg; do
     case "$arg" in -h|--help) usage ;; esac
     if [ -d "$arg" ]; then files+=("$arg"/*.md); else files+=("$arg"); fi
   done
+  today=$(date +%F)
   for f in "${files[@]}"; do
     [ -f "$f" ] || continue
-    LC_ALL=C awk -v min="${CHAIN_MIN:-0.25}" -v today="$(date +%F)" "$TOK$PARSE$BLOCKS$CHAINS" "$f" |
-      sed "s|^|$(basename "$f"):|"
+    LESSONS_FILE="$(basename "$f")" LC_ALL=C awk -v min="${CHAIN_MIN:-0.25}" -v today="$today" \
+      "$TOK$PARSE$BLOCKS$CHAINS" "$f"
   done
 }
 

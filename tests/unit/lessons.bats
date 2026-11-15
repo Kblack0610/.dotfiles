@@ -170,6 +170,26 @@ EOF
   refute_output --partial "superseded"
 }
 
+@test "chains reads an MM-DD across a year boundary as last year" {
+  printf -- '- **2026-12-30** The backup mirror is alive at zero commits ahead.\n- **2027-01-03** Correction to the 12-30 bullet: zero commits ahead says the backup mirror is reachable.\n' > "$DIR/year.md"
+  run "$BIN" chains "$DIR/year.md"
+  assert_output --regexp $'^year.md:2\t1\t'
+}
+
+@test "chains falls back to older blocks when a named date has none, and a later date names nothing" {
+  printf -- '- **2026-08-18** The backup mirror is alive at zero commits ahead of the remote.\n- **2026-08-19** Waybar chips cost 54 px each.\n- **2026-08-20** (rewritten 2026-11-10) Correction to the 10-20 build: the backup mirror is alive only when zero commits ahead of the remote and reachable.\n' > "$DIR/fb.md"
+  run "$BIN" chains "$DIR/fb.md"
+  assert_output --regexp $'^fb.md:3\t1\t'
+}
+
+@test "chains prefixes a file name sed would choke on as is" {
+  chain_file
+  mv "$DIR/chain.md" "$DIR/a|b&c.md"
+  run "$BIN" chains "$DIR/a|b&c.md"
+  assert_success
+  assert_line --index 0 --partial 'a|b&c.md:7'
+}
+
 @test "pick ignores a stopword shared with a lesson" {
   run "$BIN" pick -n 1 "$F" "never since"
   assert_line --index 0 --partial "nothing matched"
