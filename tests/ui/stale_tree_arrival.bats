@@ -70,6 +70,8 @@ leave_tree_on_one() {
 }
 
 @test "S-Down in the tree swaps the window it is on and keeps the tree open" {
+  # S-Up/S-Down in tree mode are new in tmux 3.6 (its CHANGES), so 3.4 and 3.5a have no swap to keep.
+  printf '3.6\n%s\n' "$(t -V | cut -d' ' -f2)" | sort -VC || skip "tmux $(t -V | cut -d' ' -f2) has no S-Down in tree mode"
   t source-file "$HOME/tree.conf"
   attach_client
   pane="$(t display-message -p -t one:0.0 '#{pane_id}')"

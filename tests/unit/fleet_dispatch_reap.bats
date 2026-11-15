@@ -1555,7 +1555,7 @@ OUT
 
 @test "a server that dies again keeps the lost record a restore only part finished, and adds the new conversations once" {
   record_setup
-  PANE3=$'%3\037dotfiles\037fresh\037/fresh/dir'
+  PANE3=$'%3\tdotfiles\tfresh\t/fresh/dir'
   echo '{"pane":"hub/%3","session_id":"conv-3","cwd":"/fresh"}' >> "$NOTES_FIXTURE/panel.json"
   world '10 1000' "$PANE1" "$PANE2"
   "$REPO_ROOT/.local/bin/fleet-dispatch" record
