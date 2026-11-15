@@ -345,6 +345,12 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   [ "$(cat "$NOTES_FIXTURE/mqtt.calls")" = 3 ]
 }
 
+@test "broker miss: a non-integer backoff or retry count falls back to the default, not a crash" {
+  MQTT_STUB_MISSES=1 AGENT_MQTT_BACKOFF=0.5 AGENT_MQTT_RETRIES=x run "$PUB" --quiet
+  assert_success
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
 @test "dry-run prints the snapshot and never calls the broker" {
   run "$PUB" --dry-run
   assert_success
