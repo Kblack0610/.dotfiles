@@ -423,7 +423,7 @@ cmd_post() {
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       --audit-of) audit_of="$2"; shift 2 ;;
-      --preview) [ -f "$2" ] || { echo "agent-ask post: no preview file $2" >&2; return 2; }
+      --preview) [ -f "$2" ] && [[ "$2" != *"|"* ]] || { echo "agent-ask post: no preview file $2 (or its path has a |)" >&2; return 2; }
                  previews+="${previews:+|}$(realpath "$2")"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
