@@ -22,17 +22,26 @@ rows() { awk '!/^#/ && NF' "$1"; }
 # The one department list, from the catalog's own "# departments:" line.
 departments() { sed -n 's/^# departments: //p' "$CAT"; }
 
-# The checkout of a repo-key (a value of paths in project-map.json); empty when unmapped.
-repo_dir() { jq -r --arg k "$1" 'first(.paths | to_entries[] | select(.value == $k) | .key) // empty' "$MAP"; }
+# The checkout of a repo-key (a value of paths in project-map.json): the first mapped path that
+# is a directory here; empty when unmapped or not cloned.
+repo_dir() {
+  local p
+  while IFS= read -r p; do [ -d "$p" ] && { printf '%s\n' "$p"; return; }; done \
+    < <(jq -r --arg k "$1" '.paths | to_entries[] | select(.value == $k) | .key' "$MAP")
+  return 0
+}
 
 # source_state <kind> <source>: ok, missing, or notcloned (a repo the map names but this machine
-# has not cloned is not judged, the same rule project-stage-check follows).
+# has not cloned, or a ~/.notes path where the notes checkout is absent, is not judged, the same
+# rule project-stage-check follows).
 source_state() {
-  local kind=$1 src=$2 r d f tag path
+  local kind=$1 src=$2 r d f tag path m
+  local -a hits
   case "$kind" in
     runner) [ -f "$PRIV/.config/agentctl/agents/$src.conf" ] && echo ok || echo missing ;;
     skill)
       for r in "$PUB" "$PRIV"; do
+        compgen -G "$r/.claude/skills/$src/SKILL.md" >/dev/null && { echo ok; return; }
         compgen -G "$r/.claude/skills/*/$src/SKILL.md" >/dev/null && { echo ok; return; }
       done
       echo missing ;;
@@ -41,7 +50,7 @@ source_state() {
       echo missing ;;
     workflow)
       d=$(repo_dir "${src%%:*}")
-      [ -n "$d" ] && [ -d "$d" ] || { echo notcloned; return; }
+      [ -n "$d" ] || { echo notcloned; return; }
       f=${src#*:}
       for r in .github/workflows .forgejo/workflows; do [ -f "$d/$r/$f" ] && { echo ok; return; }; done
       echo missing ;;
@@ -50,27 +59,36 @@ source_state() {
       tag=
       [ "$path" = "$src" ] || tag=${src#*#}
       case "$path" in
-        '~/'*) path="$HOME/${path#\~/}" ;;
+        '~/'*)
+          case "$path" in '~/.notes/'*) [ -d "$HOME/.notes" ] || { echo notcloned; return; } ;; esac
+          path="$HOME/${path#\~/}" ;;
         *:*)
           d=$(repo_dir "${path%%:*}")
-          [ -n "$d" ] && [ -d "$d" ] || { echo notcloned; return; }
+          [ -n "$d" ] || { echo notcloned; return; }
           path="$d/${path#*:}" ;;
         *) echo missing; return ;;
       esac
-      compgen -G "$path" >/dev/null || { echo missing; return; }
-      [ -z "$tag" ] || grep -qF "\`$tag\`" $path || { echo missing; return; }
+      mapfile -t hits < <(compgen -G "$path")
+      [ "${#hits[@]}" -gt 0 ] || { echo missing; return; }
+      if [ -n "$tag" ]; then
+        for m in "${hits[@]}"; do grep -qF -- "\`$tag\`" "$m" || { echo missing; return; }; done
+      fi
       echo ok ;;
     *) echo missing ;;
   esac
 }
 
+# Rows of a catalog split on a unit separator, so an empty field stays a field (read with a tab
+# IFS collapses consecutive tabs).
+rows_us() { rows "$1" | tr '\t' '\037'; }
+
 # missing_rows <catalog>: each row whose source does not exist, as department/source (kind).
 missing_rows() {
   local dept src kind proj rec st
-  while IFS=$'\t' read -r dept src kind proj rec; do
+  while IFS=$'\037' read -r dept src kind proj rec; do
     st=$(source_state "$kind" "$src")
     [ "$st" = missing ] && printf '%s/%s (%s)\n' "$dept" "$src" "$kind"
-  done < <(rows "$1")
+  done < <(rows_us "$1")
   return 0
 }
 
@@ -114,27 +132,44 @@ missing_rows() {
   assert_output ''
 }
 
-@test "the check judges rows: most of the catalog resolves to a real source, not to a skipped repo" {
-  local ok=0 total=0 dept src kind proj rec
-  while IFS=$'\t' read -r dept src kind proj rec; do
+@test "the check judges rows: the catalog does not resolve mostly to skipped repos" {
+  local ok=0 skipped=0 total=0 dept src kind proj rec st
+  while IFS=$'\037' read -r dept src kind proj rec; do
     total=$((total + 1))
-    [ "$(source_state "$kind" "$src")" = ok ] && ok=$((ok + 1))
-  done < <(rows "$CAT")
-  echo "ok $ok of $total" >&2
-  [ "$total" -gt 0 ] && [ $((ok * 2)) -gt "$total" ]
+    st=$(source_state "$kind" "$src")
+    [ "$st" = ok ] && ok=$((ok + 1))
+    [ "$st" = notcloned ] && skipped=$((skipped + 1))
+  done < <(rows_us "$CAT")
+  echo "ok $ok, not judged $skipped, of $total" >&2
+  [ "$total" -gt 0 ]
+  [ $((skipped * 2)) -le "$total" ] || skip "most rows name repos not cloned here ($skipped of $total)"
+  [ "$ok" -gt 0 ]
 }
 
-@test "negative control: a catalog naming sources that do not exist is flagged, row by row" {
-  local t="$BATS_TEST_TMPDIR/bogus.tsv"
-  cp "$CAT" "$t"
-  printf 'analytics\tno-such-runner\trunner\t*\tx\nlegal\tno-such-skill\tskill\t*\tx\nmoney\tno-such-exporter\texporter\t*\tx\nmarketing\tbnb-platform:no-such.yml\tworkflow\t*\tx\nsupport\t~/no/such/file\tfile\t*\tx\nmarketing\t~/.notes/lab/bnb/projects/current/bnb-studios/docs/marketing/pipelines.md#no-such-tag\tfile\t*\tx\n' >>"$t"
+# The fixture is a tiny tree and project map, so no branch of source_state depends on this
+# machine's clones.
+@test "negative control: each kind flags a missing source and passes a present one" {
+  local fx="$BATS_TEST_TMPDIR/fx" t="$BATS_TEST_TMPDIR/bogus.tsv"
+  mkdir -p "$fx/repo/.github/workflows" "$fx/home/.notes" "$fx/priv/.config/agentctl/agents" "$fx/priv/.claude/skills/g/real-skill" "$fx/priv/.local/bin"
+  : >"$fx/repo/.github/workflows/real.yml"
+  : >"$fx/priv/.config/agentctl/agents/real-runner.conf"
+  : >"$fx/priv/.claude/skills/g/real-skill/SKILL.md"
+  : >"$fx/priv/.local/bin/real-exporter"; chmod +x "$fx/priv/.local/bin/real-exporter"
+  printf 'has `real-tag` here\n' >"$fx/home/.notes/doc.md"
+  printf '{"paths":{"%s":"fixture-repo"}}\n' "$fx/repo" >"$fx/map.json"
+  MAP="$fx/map.json" PRIV="$fx/priv" PUB="$fx/none" HOME="$fx/home"
+  local g b good bad
+  good='runner:real-runner skill:real-skill exporter:real-exporter workflow:fixture-repo:real.yml file:~/.notes/doc.md#real-tag file:fixture-repo:.github/workflows/real.yml'
+  bad='runner:no-such skill:no-such exporter:no-such workflow:fixture-repo:no-such.yml file:~/.notes/doc.md#no-such-tag file:~/no/such/file file:fixture-repo:no/such'
+  for g in $good; do assert_equal "$(source_state "${g%%:*}" "${g#*:}")" ok; done
+  for b in $bad; do assert_equal "$(source_state "${b%%:*}" "${b#*:}")" missing; done
+  # A repo the map does not give a checkout for, or an absent notes tree, is not judged.
+  assert_equal "$(source_state workflow other-repo:x.yml)" notcloned
+  rm -rf "$HOME/.notes"
+  assert_equal "$(source_state file '~/.notes/doc.md#real-tag')" notcloned
+  # missing_rows names the bad rows of a catalog, and only those.
+  printf '# departments: analytics\nanalytics\treal-runner\trunner\t*\tx\nanalytics\tno-such-runner\trunner\t*\tx\n' >"$t"
   run missing_rows "$t"
   assert_success
-  assert_line 'analytics/no-such-runner (runner)'
-  assert_line 'legal/no-such-skill (skill)'
-  assert_line 'money/no-such-exporter (exporter)'
-  assert_line 'support/~/no/such/file (file)'
-  # A workflow row is only judged where its repo is cloned.
-  [ -d "$(repo_dir bnb-platform)" ] && assert_line 'marketing/bnb-platform:no-such.yml (workflow)'
-  assert_line --partial '#no-such-tag (file)'
+  assert_output 'analytics/no-such-runner (runner)'
 }
