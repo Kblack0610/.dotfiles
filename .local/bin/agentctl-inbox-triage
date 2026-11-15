@@ -527,11 +527,10 @@ pt() {
 # reviewed an answer for them. The apply removes the file after.
 backlog_cache() { printf '%s/inbox-triage/backlog-%s.jsonl' "$STATE" "$1"; }
 
-# backlog <project> <lane> <board json> <project names> <homes> [kept] [reviewed]: one lane's open
-# rows, the cached answers in <kept> replayed first, the rest in batches; with <reviewed> 1 (an
-# apply after a dry run) the rest are left as they are.
+# backlog <project> <lane> <board json> <project names> <homes> [kept]: one lane's open rows, the
+# cached answers in <kept> replayed first, the rest in batches (or left, see answers_left).
 backlog() {
-  local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" reviewed="${7:-0}" rows ids mine total off=0 size r rc=0 epics
+  local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" rows ids mine total off=0 size r rc=0 epics
   local raw own state kids action id dest row why epic
   epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
@@ -555,11 +554,7 @@ backlog() {
   mine="$(jq -c --arg l "$lane" --slurpfile have <(printf '%s\n' "$kept") \
     '($have | map(select(.lane == $l) | .raw) | INDEX(.)) as $h | map(select($h[.raw] | not))' <<<"$rows")"
   total="$(jq length <<<"$mine")"
-  if [ "$reviewed" = 1 ] && [ "$total" -gt 0 ]; then
-    KEPT=$((KEPT + total))
-    say "$p ($lane): $total rows new or changed since the dry run left as they are; a dry run asks about them"
-    return 0
-  fi
+  answers_left "$(backlog_cache "$p")" "$p" "$lane" "$total" && { KEPT=$((KEPT + total)); return 0; }
   # Each call carries budget_batch rows; one stopped at the cap asks the same rows again at the
   # halved size, and a single row that caps alone is passed over.
   while [ "$off" -lt "$total" ]; do
@@ -608,13 +603,14 @@ $listing"
   ask "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT" cache="$(backlog_cache "$p")"
-  local n action id dest row why epic
+  local n action id dest row why epic all
   local -a seen=()
+  all="$(printf '%s\n' "${ids[@]}")"   # a dup names another row of this batch
   while IFS=$'\x1f' read -r n action id dest row why epic; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$(printf '%s\n' "${ids[@]}")" "$action" "$id" "$dest" "$row" "$why" "$epic"
+    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$all" "$action" "$id" "$dest" "$row" "$why" "$epic"
     # The verdict as printed, after backlog_row's guards, so the replay writes what the dry run showed.
     [ "$DRY" = 1 ] && jq -cn --arg l "$lane" --arg r "${raws[n - 1]}" --arg a "$VERDICT" --arg i "$id" --arg d "$VDEST" \
       --arg w "$row" --arg y "$why" --arg e "$epic" '{lane: $l, raw: $r, action: $a, id: $i, project: $d, row: $w, why: $y, epic: $e}' >>"$cache"
@@ -696,6 +692,14 @@ answers_kept() {
   printf '%s' "$kept"
 }
 
+# answers_left <cache> <project> <lane> <rows>: an apply after a dry run writes only the answers
+# that run kept, so the <rows> new or changed since are left for the next dry run, not asked
+# afresh with no one to review them. True when it left any.
+answers_left() {
+  [ "$DRY" = 0 ] && [ "$4" -gt 0 ] && [ -s "$1" ] || return 1
+  say "$2 ($3): $4 rows new or changed since the dry run left as they are; a dry run asks about them"
+}
+
 # answers_done <project> <cache> <refused before>: a dry run names its cache; an apply removes it,
 # unless a write was refused since, so the retry writes the same verdicts rather than new ones.
 answers_done() {
@@ -708,7 +712,7 @@ answers_done() {
 
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
-  local board names homes rc=0 p lane cache kept failed reviewed
+  local board names homes rc=0 p lane cache kept failed
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
@@ -717,11 +721,10 @@ backlog_pass() {
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(backlog_cache "$p")" failed="$FAILED" reviewed=0
-    [ "$DRY" = 0 ] && [ -e "$cache" ] && reviewed=1
+    cache="$(backlog_cache "$p")" failed="$FAILED"
     kept="$(jq -c '[.rows[] | select(.id != null and (.state == "open" or .state == "doing"))]' <<<"$board" | answers_kept "$cache" "$p")"
     for lane in human agent; do
-      backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" "$reviewed" || rc=1
+      backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" || rc=1
       [ "$BUDGET_STOP" = 0 ] || break 2
     done
     answers_done "$p" "$cache" "$failed"
@@ -1024,6 +1027,7 @@ link_pass() {
         '($have | map("\(.lane)\u0000\(.raw)") | INDEX(.)) as $h
         | [.[] | select(.project == $p and .lane == $l and ($h["\(.lane)\u0000\(.raw)"] | not))] | sort_by(.line)' <<<"$rows")"
       total="$(jq length <<<"$mine")"; off=0
+      answers_left "$cache" "$p" "$lane" "$total" && continue
       while [ "$off" -lt "$total" ]; do
         size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
         link_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$epics" "$tsv"; r=$?

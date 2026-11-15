@@ -1175,15 +1175,19 @@ ask_stub() {
   assert_output --partial 'link: feature 1, standing 1, new epics 1'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
   [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  # A row filed after the dry run has no reviewed answer, so the apply leaves it unlinked.
+  sed -i '/id:sc-3 -->/a - [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->' "$SHEET"
   answer '{"n": 1, "system": "docs"}'
   run "$TRIAGE" --backlog --link --project scratch
   assert_success
+  assert_output --partial 'scratch (human): 1 rows new or changed since the dry run left as they are'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
   [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
   assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
   assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+  assert_output --partial '- [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->'
 }
 
 @test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
