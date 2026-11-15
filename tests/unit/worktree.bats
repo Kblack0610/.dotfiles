@@ -34,6 +34,7 @@ setup() {
   # cut worktree the honest answer is "gone", so flip it. One test flips it back, which is
   # how the live-session refusal gets covered.
   : > "$NOTES_FIXTURE/tmux.no-session"
+  unset CLAUDE_CODE_SESSION_ID TMUX_PANE # a test run from inside a Claude session must not arm its own
 
   # Read at source time; lets a test match a gc line's shape.
   export PANEL_NO_COLOR=1
@@ -1031,6 +1032,43 @@ done_from_inside() {
   run cat "$HOME/.agent/wt/done.log"
   assert_output --partial 'reaped repo-agent-1'
   [ ! -d "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "done from a Claude session arms the wind-down for its Stop hook, no timed kill" {
+  # ar-152: the `sleep 1; kill-session` job landed mid-turn, before the session's Stop hooks
+  # ran. The Stop pipeline's own fire (95-wind-down.sh) kills last and reaps after.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.session"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  cd "$WT_ROOT/repo-agent-1"
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 STUB_PANE_PATH="$PWD" \
+    CLAUDE_CODE_SESSION_ID=0a1b2c3d-0000-4000-8000-000000000001 run cmd_done
+  assert_success
+  assert_output --partial 'armed repo-agent-1'
+  run cat "$HOME/.agent/spin-down/0a1b2c3d-0000-4000-8000-000000000001.request"
+  assert_output --partial 'scope=session'
+  assert_output --partial "worktree=$WT_ROOT/repo-agent-1"
+  [ ! -s "$NOTES_FIXTURE/tmux.jobs" ] # nothing scheduled on the server yet
+  [ -d "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "done from a Claude session in some other session keeps the timed kill" {
+  # The session id alone proves nothing: `wt done <other>` or a pane in another session
+  # has no Stop hook of the session being cleaned, so arming would close the wrong one.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  printf 'elsewhere\n' > "$NOTES_FIXTURE/tmux.session"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  cd "$WT_ROOT/repo-agent-1"
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 STUB_PANE_PATH="$PWD" \
+    CLAUDE_CODE_SESSION_ID=0a1b2c3d-0000-4000-8000-000000000001 run cmd_done
+  assert_success
+  assert_output --partial 'done: killing repo-agent-1'
+  [ -s "$NOTES_FIXTURE/tmux.jobs" ]
+  [ ! -e "$HOME/.agent/spin-down/0a1b2c3d-0000-4000-8000-000000000001.request" ]
 }
 
 @test "done keeps its tree while another session has a pane in it" {

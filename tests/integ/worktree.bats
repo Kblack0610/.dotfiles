@@ -26,6 +26,7 @@ setup() {
   export WT_ROOT="$SANDBOX/worktrees"
   export WT_PROJECT_MAP="$SANDBOX/no-such-map.json"
   export PANEL_NO_COLOR=1
+  unset CLAUDE_CODE_SESSION_ID TMUX_PANE # run from inside a Claude session, `wt done` would arm its sentinel
   mkdir -p "$WT_ROOT"
 
   # The stub answers has-session with EXISTS by default (wind-down.sh needs that shape).
