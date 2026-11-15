@@ -867,7 +867,7 @@ cmd_check() {
 # counts as Nm, and an overdue line's basis dropped: its `(project-median(274) x1.06 (n=1019))`
 # moves whenever a phase closes, so a skip stored under it stopped matching.
 due_key() {
-  sed -E 's/^unhandled: //; s/; then: .*$//; s#([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\2#
+  sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
           s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
 }
 
@@ -904,7 +904,7 @@ receipts() {
         # so its target is where the page points; other lines (pace, infra) point nowhere.
         ref=""
         [[ "$line" =~ ^(nudge|escalate)\ [A-Z]+:\ ([^ /]+/[^ ]+:[0-9]+) ]] && ref="tmux:${BASH_REMATCH[2]}"
-        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - handed) / 60 ))m: $key" >/dev/null 2>&1 || true
+        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - handed) / 60 ))m: ${line%%; then: *}" >/dev/null 2>&1 || true
         printf '%s\n' "$key" >> "$PAGED"
       fi
     else
@@ -1178,7 +1178,7 @@ lane_cols() {
     [[ "$k" =~ ^nudge\ (DONE|LANDED|STALLED|CHAT):\ ([^ ]+) ]] || continue
     grep -qxF -- "$k" <<<"$now_keys" && continue
     nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
-    awk -v t="$t" '{ sub(/^unhandled: /, "") } $1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"${SCORE_DUE:-}" &&
+    awk -v t="$t" '$1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"$now_keys" &&
       survived=$((survived + 1))
   done < <(tail -n +2 "$LEDGER/.lane-$id" 2>/dev/null)
   rm -f "$LEDGER/.lane-$id"

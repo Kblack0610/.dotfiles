@@ -1969,13 +1969,45 @@ paned() { row "$1" "$2" false false | jq -c --arg p "$3" '.pane = $p | .fact = "
   phase s1 shell 40 200
   sed -i 's/"fact":"f"/"fact":"f","pane":"%3"/' "$HOME/rows"
   sed -i 's/"basis":"b"/"basis":"project-median(274) x1.06 (n=1019)"/' "$HOME/eta"
+  sed -i "s/t-s1/hub\/demo:2/" "$HOME/rows" "$HOME/eta"
   phases_doc
   run checked
-  assert_output --partial "overdue: t-s1 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))"
-  "$SH" skip "overdue: t-s1 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))" 'moving'
+  assert_output --partial "overdue: hub/demo:2 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))"
+  "$SH" skip "overdue: hub/demo:2 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))" 'moving'
   # a phase closed elsewhere: n grows, the age moves, the line is the same one
   sed -i 's/n=1019/n=1020/; s/x1.06/x1.07/' "$HOME/eta"
+  sed -i 's/demo:2/demo:1/' "$HOME/rows" "$HOME/eta"   # renumber-windows closed an earlier window
   phases_doc
   run checked
   assert_failure 1
+}
+
+@test "canary lane: a nudge to a pane-tagged session that is due an escalation now still scores as survived" {
+  export MODEL=claude-opus-5-5 CANARY_MODEL=claude-sonnet-5-5 CANARY_EVERY=1
+  doc "[$(paned lab/c:3 STALLED %4)]"
+  run "$SH" run
+  doc "[$(paned lab/c:2 STALLED %4 | jq -c '.nudged = true')]"
+  run "$SH" run
+  assert_output --partial 'escalate STALLED: lab/c:2 [%4]'
+  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+}
+
+@test "a pane tag inside a fact is part of the fact: only the target's tag is rewritten in the key" {
+  doc "[$(paned hub/demo:2 LANDED %7 | jq -c '.fact = "see foo/bar [%9]"')]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]'
+  "$SH" skip 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]' 'waits'
+  assert_equal "$(cut -f1 "$FLEET_SHEPHERD_DIR/.skipped")" 'nudge LANDED: hub/%7 see foo/bar [%9]'
+}
+
+@test "an unhandled page names the window the line is about, not only its pane id" {
+  doc "[$(paned hub/demo:2 NEEDS %7)]"
+  export STUB_TRIPPED=''
+  "$SH" check >/dev/null
+  "$SH" check >/dev/null
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
+  "$SH" check >/dev/null
+  run grep 'escalate NEEDS' "$HOME/pages"
+  assert_output --partial '-r tmux:hub/demo:2 unhandled'
+  assert_output --partial 'escalate NEEDS: hub/demo:2 [%7]'
 }
