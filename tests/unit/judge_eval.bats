@@ -490,6 +490,52 @@ SH
   assert_output --partial 'no labelled asks'
 }
 
+@test "replay --ids: named asks in any state, one row each with what the leveled judge would do and what you did" {
+  replay_stub
+  ask kept judge=human answer=yes
+  ask other judge=human answer=no
+  ask dropped judge=human status=cancelled answer= 'closed_reason=superseded: merged'
+  ask later judge=human status=pending answer= parked_until=2026-11-26T00:00:00Z parked_at=2026-11-12T09:00:00-0800
+  ask approved kind=approval judge=human answer=yes
+  ask unnamed judge=human answer=yes
+  local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids kept,other,dropped,later,approved --out "$HOME/replay" --json
+  assert_success
+  assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
+  # in the order named, the unnamed ask left out; the approval never reaches the model
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["kept","other","dropped","later","approved"]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 4
+  # ship_deploy is no DELAY_RULES row here, so the judge would have taken the recommendation in shadow only
+  assert_equal "$(jq -c '.[0] | [.judge, .want, .type, .level, .acts, .why, .status, .human, .same]' <<<"$output")" \
+    '["take-recommend","yes","ship_deploy","repo",false,"cell ship_deploy@repo is shadow","answered","yes",true]'
+  assert_equal "$(jq -c '.[1].same' <<<"$output")" false
+  assert_equal "$(jq -c '.[2] | [.status, .human, .same]' <<<"$output")" '["cancelled","superseded: merged",null]'
+  assert_equal "$(jq -c '.[3] | [.status, .human]' <<<"$output")" '["parked","2026-11-26T00:00:00Z"]'
+  assert_equal "$(jq -c '.[4] | [.judge, .acts, .why]' <<<"$output")" '["human",false,"an approval is the human'"'"'s"]'
+  # the parked and cancelled copies were judged as pending, with nothing of the human's left on them
+  run grep -cE '^(parked_until|closed_reason): .' "$HOME/replay/blind/demo/later.md" "$HOME/replay/blind/demo/dropped.md"
+  assert_output --partial 'later.md:0'
+  assert_output --partial 'dropped.md:0'
+  # with the type live at its level, the same call acts
+  AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 run --separate-stderr "$JUDGE_EVAL" replay --ids dropped
+  assert_success
+  assert_output --partial 'acts: yes'
+  assert_output --partial 'you: cancelled superseded: merged'
+}
+
+@test "replay --ids: an id the store does not hold fails before any call, and --limit leaves no row for an unreplayed ask" {
+  replay_stub
+  ask kept judge=human answer=yes
+  ask other judge=human answer=no
+  run "$JUDGE_EVAL" replay --ids kept,nope
+  assert_failure
+  assert_output --partial "no ask 'nope'"
+  [ ! -e "$HOME/replay.calls" ]
+  run --separate-stderr "$JUDGE_EVAL" replay --ids other,kept --limit 1 --json
+  assert_success
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["other"]'
+}
+
 # --- the registry and the runner lanes ------------------------------------------------------
 
 @test "the lanes are the confs that name a SCORE: one without it is not a lane" {
