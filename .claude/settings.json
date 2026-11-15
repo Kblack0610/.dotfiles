@@ -380,6 +380,7 @@
   ],
   "skillOverrides": {
     "bitbucket-ops": "name-only",
+    "blind-review": "name-only",
     "bug-bash-wrapup": "name-only",
     "changelog-draft": "name-only",
     "clickup-ops": "name-only",
@@ -403,8 +404,10 @@
     "marp-slide": "name-only",
     "meeting-ingest": "name-only",
     "pipeline-eval": "name-only",
+    "playtest-ops": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
+    "quick-demo": "name-only",
     "reaper-ops": "name-only",
     "run": "name-only",
     "runn-log-time": "name-only",
