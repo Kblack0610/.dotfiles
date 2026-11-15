@@ -651,31 +651,6 @@ by_rows() {
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c"]'
 }
 
-@test "costs lists the window's sessions with the runners, each with its kind and runner" {
-  mkdir -p "$AGENTCTL_STATE_DIR"
-  printf '%s\n' '{"id":"c1","agent":"dream","session_id":"sess-d"}' > "$AGENTCTL_STATE_DIR/calls.jsonl"
-  AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl" "$SUBJECT" run
-  run "$SUBJECT" costs --days 3650
-  assert_success
-  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.project == "_runner")) | map([.runner, .kind])')" '[["dream","automated"]]'
-  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | [.runner, .kind]')" '[null,"human"]'
-  assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0] | keys')" \
-    '["account","cost_by_model","cost_usd","harness","kind","models","observed","pr","project","provider","runner","session_id","title","tokens_total","updated_epoch"]'
-  assert_equal "$(printf '%s\n' "$output" | jq -s 'map(.updated_epoch) == (map(.updated_epoch) | sort | reverse)')" true
-  SO_NOW=$((SO_NOW + 3651 * 86400)) run "$SUBJECT" costs --days 1
-  assert_success
-  assert_output ''
-}
-
-@test "costs --days takes a whole number, and says so instead of a jq error" {
-  run "$SUBJECT" costs --days abc
-  assert_failure 2
-  assert_output --partial 'costs: --days takes a whole number of days'
-  run "$SUBJECT" costs --days
-  assert_failure 2
-  assert_output --partial '--days takes a whole number'
-}
-
 # bench_fx: fleet-bench stats rows for A (2 nudges, 1 CI red before merge, 30 lines) and for
 # a session the registry does not know, which must not become a row.
 bench_fx() {
@@ -1229,16 +1204,14 @@ EOF
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl")" claude
 }
 
-@test "an opencode session on Lazer direct says so: provider lazer on the row and in costs" {
+@test "an opencode session on Lazer direct says so: provider lazer on its row, with its cost" {
   oc_db
   sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET model = '{\"id\":\"claude-sonnet-5.5\",\"providerID\":\"lazer\"}' WHERE id = 'ses_root'"
   run "$SUBJECT" run
   assert_success
-  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .provider')" lazer
-  run "$SUBJECT" costs --days 3650
-  assert_equal "$(printf '%s\n' "$output" | jq -rs 'map(select(.session_id == "ses_root"))[0] | "\(.provider) \(.cost_usd)"')" 'lazer 1.75'
+  assert_equal "$(cat "$SO_OUT"/*/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | "\(.provider) \(.cost_usd)"')" 'lazer 1.75'
   # negative control: a Claude transcript's row has no provider
-  assert_equal "$(printf '%s\n' "$output" | jq -rs 'map(select(.session_id == "sess-a"))[0].provider')" null
+  assert_equal "$(cat "$SO_OUT"/*/*.jsonl | jq -rs 'map(select(.session_id == "sess-a")) | last | .provider')" null
 }
 
 @test "backfill-harness: a month's rows with no harness get the run's rule, nothing else changes, and the old file stays as .bak" {

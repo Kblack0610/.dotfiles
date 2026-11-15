@@ -1628,7 +1628,7 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hub_core::costs::{Eval, Spent};
+    use hub_core::costs::Eval;
 
     fn costs() -> Costs {
         let s = |id: &str, h: &str, m: &str, usd: f64| hub_core::spend_history::Sess {
@@ -2200,6 +2200,7 @@ mod tests {
                 usd: 100.0,
                 estimated: 40.0,
                 sessions: vec![sess("b", 5.0, "shepherd"), sess("c", 90.0, "big run")].into(),
+                ..Day::default()
             },
         ];
         let c = Costs {
@@ -2546,14 +2547,13 @@ mod tests {
     #[test]
     fn the_direct_line_shows_what_direct_cannot_see_and_the_pool_is_no_tile() {
         let mut c = costs();
-        c.sessions.push(Spent {
-            session_id: "oc-direct".into(),
+        c.spend_days[0].unpriced = vec![hub_core::spend_history::Sess {
+            sid: "oc-direct".into(),
             provider: Some("lazer".into()),
-            cost_usd: Some(0.0),
-            tokens_total: Some(900.0),
-            updated_epoch: Some(c.at - 60),
-            ..Spent::default()
-        });
+            tokens: Some(900.0),
+            ..Default::default()
+        }]
+        .into();
         let s = screen_of(&c, &on("spend"), 80);
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         let direct = s.lines().find(|l| l.starts_with("DIRECT")).unwrap();

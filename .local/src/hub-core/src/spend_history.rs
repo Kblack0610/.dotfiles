@@ -34,6 +34,7 @@ struct Snap {
 struct Fc {
     total: Option<Total>,
     by_session: Vec<Sess>,
+    unpriced_sessions: Vec<Sess>,
 }
 
 #[derive(Deserialize, Default)]
@@ -60,6 +61,8 @@ pub struct Sess {
     /// Its dollars by model; empty on a row written before the rows carried it.
     pub models: std::collections::BTreeMap<String, f64>,
     pub tokens: Option<f64>,
+    /// A non-Claude harness's provider: `lazer` went to Lazer direct, past the gateway.
+    pub provider: Option<String>,
 }
 
 /// One priced day. `sessions` is empty for a day snapshotted before the rows were kept; it is
@@ -70,6 +73,8 @@ pub struct Day {
     pub usd: f64,
     pub estimated: f64,
     pub sessions: Arc<Vec<Sess>>,
+    /// The snapshot's `unpriced_sessions`: non-Claude sessions with tokens and no price, so no row.
+    pub unpriced: Arc<Vec<Sess>>,
 }
 
 /// One bar of a chart: a day (`key` 2026-11-09) or a month (2026-11). `usd` is None for a day
@@ -156,6 +161,7 @@ pub fn read(dir: &Path) -> Vec<Day> {
                 usd: t.usd.max(0.0),
                 estimated: t.estimated,
                 sessions: Arc::new(fc.by_session),
+                unpriced: Arc::new(fc.unpriced_sessions),
             };
             if let Some((at, len)) = stamp {
                 kept.insert(path, (at, len, d.clone()));
@@ -516,6 +522,7 @@ pub fn live(f: crate::fleet_cost::File) -> Day {
         usd: usd.max(0.0),
         estimated,
         sessions: Arc::new(f.by_session),
+        ..Day::default()
     }
 }
 

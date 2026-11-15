@@ -693,12 +693,15 @@ def runner_calls(state_dir):
     return out
 
 
-def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, *, models, tokens):
-    """One by_session row: what one session cost in the window, on which models, and who it was."""
+def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, *, models, tokens,
+                provider=None):
+    """One by_session row: what one session cost in the window, on which models, and who it was. A non-Claude
+    harness's row names its provider."""
     return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
             "origin": origin, "harness": harness, "agent": agent, "account": account,
             "project": project, "title": title, "item": item,
-            "models": {m: round(v, 3) for m, v in sorted(models.items()) if v > 0}, "tokens": tokens}
+            "models": {m: round(v, 3) for m, v in sorted(models.items()) if v > 0}, "tokens": tokens,
+            **({"provider": provider} if provider else {})}
 
 
 def outcome_models(r):
@@ -714,7 +717,8 @@ def outcome_models(r):
 
 def other_harnesses(start, end, root):
     """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
-    Sessions that went through the gateway are left out: its metered line already has their dollars."""
+    Sessions that went through the gateway are left out: its metered line already has their dollars. A session
+    with tokens and no price gets no row (never a $0 one) and is listed as unpriced instead."""
     newest = {}
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         try:
@@ -732,7 +736,7 @@ def other_harnesses(start, end, root):
                     and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
                 newest[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
-    rows = []
+    rows, unpriced = [], []
     for sid, r in newest.items():
         b = out[r["harness"]]
         b["sessions"] += 1
@@ -740,11 +744,13 @@ def other_harnesses(start, end, root):
             b["usd"] += r["cost_usd"]
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-            if sid and r["cost_usd"] > 0:   # priced from a table or the harness's own sum: estimated, as in total
-                rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
-                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                        models=outcome_models(r), tokens=r.get("tokens_total")))
-    return out, rows
+        if sid and (r.get("cost_usd") or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
+            rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
+                                    r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
+                                    models=outcome_models(r), tokens=r.get("tokens_total"), provider=r.get("provider")))
+        elif sid and (r.get("tokens_total") or 0) > 0:
+            unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": r["tokens_total"]})
+    return out, rows, unpriced
 
 
 def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
@@ -832,7 +838,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     top = max([billed[o] / priced[o] - 1 for o in billed if billed[o] >= HELPER_MIN_BILLED] + [0.0])
 
     gateway = sum(float(r["value"][1]) for r in prom(f"sum(increase(litellm_spend_metric_total[{int(end - start)}s]))", end))
-    other, other_rows = other_harnesses(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
+    other, other_rows, other_unpriced = other_harnesses(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     other = {k: {"usd": round(v["usd"], 2), "sessions": v["sessions"], "priced": v["priced"], "source": ",".join(sorted(v["sources"])) or None}
              for k, v in other.items()}
     by_session += other_rows
@@ -870,6 +876,8 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         # can be charged with.
         "by_session": [{**r, **{k: round(r[k], 3) for k in ("usd", "measured", "estimated")}}
                        for r in sorted(by_session, key=lambda r: (-r["usd"], r["sid"]))],
+        # Non-Claude sessions with tokens and no price: spend unknown, never $0. Lazer direct counts them.
+        "unpriced_sessions": sorted(other_unpriced, key=lambda r: r["sid"]),
     }
 
 

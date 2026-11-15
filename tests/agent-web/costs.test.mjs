@@ -62,7 +62,7 @@ const board = (o = {}) => ({
   totals: [{ window: "7d", usd: 40, estimated: 0, sessions: 9, days: 7, through: "2026-11-14" }, { window: "30d", usd: 90, estimated: 0, sessions: 20, days: 0, through: "" }],
   live: { claude_24h: 11 },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
-  sources: [{ name: "outcomes", as_of: 1793990000, stale: false }, { name: "token snapshot", as_of: 1793000000, stale: true }, { name: "calls", as_of: null, stale: true }],
+  sources: [{ name: "token snapshot", as_of: 1793990000, stale: false }, { name: "calls", as_of: null, stale: true }],
   errors: [], columns: MODEL_COLS, source: "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d", eval_days: 7, unpriced: null,
   rows: [
     line({ model: "gpt-5-codex", harness: "codex", sessions: 2, tokens: 1500000, cost: 4, share: 0.1, landed: 0.5, redo: 1, reverts: 0, per_pr: 4, src: "mixed" }),
@@ -101,9 +101,8 @@ test("the head says spend, the live gauges and how old each source is", () => {
   assert.match(h, /SPEND 30D<\/span><span class="tv">-<\/span><span class="ts1"><span class="warn">no nightly day in 30d</, "a window with no nightly day says so, never \$0");
   assert.doesNotMatch(h, /LAZER (POOL|RESERVE|GLM)/, "the pool and its keys are Burn rows, not tiles");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">\$1\.25<\/span><span class="ts1"><span class="warn">\+1 unpriced<\/span>, opencode lazer\/\*, nightly; other direct use unseen</);
-  assert.match(h, /<span class="warn">token snapshot /, "a stale source is amber");
-  assert.match(h, /<span class="warn">calls no data<\/span>/);
-  assert.match(h, /<span class="muted">outcomes /);
+  assert.match(h, /<span class="warn">calls no data<\/span>/, "a stale source is amber");
+  assert.match(h, /<span class="muted">token snapshot /);
 });
 
 test("with no direct rows the direct tile says unknown, never $0 or blank", () => {
