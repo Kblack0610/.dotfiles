@@ -112,7 +112,7 @@ judge_ask_docs() {
 # judge_verdicts <asks root> <verdicts.jsonl>: every verdict that names its call, one JSON line
 # each: {agent, subject, project, value, rule, reason, level, judge_call, at}. The level is
 # the ask's judge_level, or the dispatch verdict's tier ("tier 2"), empty when none was
-# recorded. A gate the ask judge never sent to the model has no call and is left out; so is
+# recorded. An approval the ask judge never sent to the model has no call and is left out; so is
 # every verdict written before judge_call existed.
 judge_verdicts() {
   local asks="$1" verdicts="$2"

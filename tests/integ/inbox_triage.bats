@@ -1178,7 +1178,7 @@ the_ask() { find "$HOME/.agent/asks" -name '*.md' -type f; }
 # ask_about <words>: the id of the ask whose question holds <words>.
 ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)" .md; }
 
-@test "outbox: a line the router cannot place asks the human which project, as a gate, once" {
+@test "outbox: a line the router cannot place asks the human which project, as an approval, once" {
   ask_setup
   sheet '' ''
   outbox '- [ ] the menu flickers after a match\n- [ ] the logo is too dark\n'
@@ -1190,7 +1190,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -q 'ask: an \[outbox\] line that is a task, but neither it nor its neighbours say which project' "$NOTES_FIXTURE/prompt.txt" || fail "the ask action never reached the model"
   [ "$(the_ask | wc -l)" = 1 ] || fail "asks: $(the_ask)"
   f="$(the_ask)"
-  grep -qx 'kind: gate' "$f" || fail "$(cat "$f")"
+  grep -qx 'kind: approval' "$f" || fail "$(cat "$f")"
   grep -qx 'question: Which project is this outbox line for: "the menu flickers after a match"?' "$f" || fail "$(cat "$f")"
   # Only board projects, in the model's order, then drop.
   grep -qx 'options: other|scratch|drop' "$f" || fail "$(cat "$f")"

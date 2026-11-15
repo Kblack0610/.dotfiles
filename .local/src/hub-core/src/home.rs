@@ -319,11 +319,11 @@ impl Score {
     }
 }
 
-/// An ask the judge said a machine could answer (`take-recommend`, `answer:<text>`). A gate or
-/// an approval is the human's whatever the verdict says; an error or no verdict is the human's.
+/// An ask the judge said a machine could answer (`take-recommend`, `answer:<text>`). An approval
+/// is the human's whatever the verdict says, and a gate is judged like a question; an error or no
+/// verdict is the human's.
 fn machine_can_answer(kind: &str, judge: &str) -> bool {
-    !matches!(kind, "gate" | "approval")
-        && (judge == "take-recommend" || judge.starts_with("answer:"))
+    kind != "approval" && (judge == "take-recommend" || judge.starts_with("answer:"))
 }
 
 /// One running queue item, with its plan's progress when its session has a checklist, and each
@@ -1434,9 +1434,12 @@ mod tests {
             // Ten days old, but the judge said a machine can answer it: below every human row.
             {"id": "auto", "question": "q", "kind": "question", "judge": "take-recommend",
              "recommend": "yes", "created": "2026-10-26T09:00:00-0800"},
-            // A gate is the human's whatever the judge said.
-            {"id": "gate", "question": "q", "kind": "gate", "judge": "take-recommend",
+            // An approval is the human's whatever the judge said.
+            {"id": "appr", "question": "q", "kind": "approval", "judge": "take-recommend",
              "created": "2026-11-05T08:50:00-0800"},
+            // A gate is judged like a question: below every human row too.
+            {"id": "gate", "question": "q", "kind": "gate", "judge": "take-recommend",
+             "recommend": "approve", "created": "2026-10-27T09:00:00-0800"},
             {"id": "old", "question": "q", "created": "2026-11-05T08:00:00-0800"},
             {"id": "undated", "question": "q"},
         ]);
@@ -1466,9 +1469,10 @@ mod tests {
                 "lab/big-agent-1:1",
                 "old",
                 "parent",
-                "gate",
+                "appr",
                 "undated",
-                "auto"
+                "auto",
+                "gate"
             ]
         );
         // The project is the one the row carries: a freqtrade_trading_attempt worktree is trader.

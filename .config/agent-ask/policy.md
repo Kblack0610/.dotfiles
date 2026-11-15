@@ -90,7 +90,7 @@ Pick the one that fits the whole ask, or the main decision of a bundle. A type s
 
 ## Gates
 
-- (gate) Not scored: a gate or approval is the human's by rule and never reaches you.
+- (gate) Not scored: an approval is the human's by rule and never reaches you.
 
 ## Answer
 

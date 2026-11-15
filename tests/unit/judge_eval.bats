@@ -438,14 +438,17 @@ SH
   replay_stub
   ask right judge=human assume_at=2026-11-06T10:00:00-0800 assume_answer=yes assume_disarmed=2026-11-06T09:00:00-0800 answer=yes
   ask wrong judge=human answer=no
+  # An approval never reaches the judge, so replay leaves it out; a session's gate is replayed.
+  ask approved kind=approval judge=human answer=yes
   ask gated kind=gate judge=human answer=yes
   ask freetext judge=human 'answer=do something else entirely'
   local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
   run --separate-stderr "$JUDGE_EVAL" replay --out "$HOME/replay" --json
   assert_success
-  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[2,1]'
   assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
-  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 3
+  refute [ -e "$HOME/replay/blind/demo/approved.md" ]
   # the copy the judge saw has the question and no answer
   run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
   assert_output 0

@@ -1230,9 +1230,9 @@ SH
   refute_output --partial 'Always `human`'
 }
 
-@test "judge never sends a gate to the model, and the gate's judge is the human" {
+@test "judge never sends an approval to the model, and the approval's judge is the human" {
   fake_judge '{"call":"answer","answer":"approve","reason":"x"}'
-  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #1?')"
+  local id; id="$("$AGENT_ASK" post --project demo --kind approval 'merge #1?')"
   run "$AGENT_ASK" judge "$id"
   assert_success
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
@@ -1275,7 +1275,7 @@ SH
   local live shadow gate done
   live="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   shadow="$("$AGENT_ASK" post --project other --options 'a=one|b=two' --recommend a 'which mic?')"
-  gate="$("$AGENT_ASK" post --project demo --kind gate 'merge #9?')"
+  gate="$("$AGENT_ASK" post --project demo --kind approval 'merge #9?')"
   done="$("$AGENT_ASK" post --project demo --options 'x=x|y=y' --recommend x 'old?')"
   "$AGENT_ASK" answer "$done" y 2>/dev/null
   # the stale verdict an older policy left on the live one
@@ -1529,8 +1529,8 @@ ASK-JUDGE-END'
   done
 }
 
-@test "judge: a gate names the gate rule and no call" {
-  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #2?')"
+@test "judge: an approval names the gate rule and no call" {
+  local id; id="$("$AGENT_ASK" post --project demo --kind approval 'merge #2?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
   assert_line 'judge_rule: gate'
@@ -1626,6 +1626,11 @@ ASK-JUDGE-END'
   run "$AGENT_ASK" show "$id"
   assert_line 'kind: approval'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # a gate naming one is raised to an approval the same way
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  id="$("$AGENT_ASK" post --project demo --kind gate --options 'a=raise the cap in ask-judge.conf|b=leave it' --recommend a --context 'ask-judge.conf is the judge settings file' 'raise the judge cap?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'judge_rule: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
   # negative control: an ask naming no authority name goes to the judge as a question
   id="$("$AGENT_ASK" post --project demo --options 'a=add the test|b=leave it' --recommend a 'add the missing test?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"
@@ -1666,7 +1671,7 @@ live_post() {
   assert_equal "$("$AGENT_ASK" count demo)" 0
 }
 
-@test "live answers: a shadow rule, an empty DELAY_RULES, a gate and a human call all stay with the human" {
+@test "live answers: a shadow rule, an empty DELAY_RULES, an approval and a human call all stay with the human" {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge "$(score engineering_design)"
@@ -1677,7 +1682,7 @@ live_post() {
   id="$(live_post sid-b 'nothing live?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
-  id="$("$AGENT_ASK" post --project demo --kind gate 'merge #4?')"
+  id="$("$AGENT_ASK" post --project demo --kind approval 'merge #4?')"
   assert [ "$(grep -c 'merge #4' "$BATS_TEST_TMPDIR/judge.calls")" = 0 ]
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   fake_judge "$(score knowledge)"
@@ -1713,6 +1718,39 @@ live_post() {
   export AGENT_ASK_DELAY_RULES=engineering_design@fleet=0
   id="$(live_post sid-f2 'at fleet again?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
+}
+
+# ar-1766: a stop a session chose for itself goes to the judge like a question; approvals do not.
+@test "live answers: a session's gate is judged and answered under its cell's ceiling, a fleet one stays human" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  local gate=(--project demo --kind gate --options 'approve=merge the PR|hold=leave it open' --recommend approve
+    --context 'the PR is the change under test')
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy "" "landing is standing authorization")"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-g1 "$AGENT_ASK" post "${gate[@]}" 'merge #5?' 2>/dev/null)"
+  assert [ "$(grep -c 'merge #5' "$BATS_TEST_TMPDIR/judge.calls")" = 1 ]
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: gate'; assert_line 'answered_by: judge'; assert_line 'answer: approve'
+  assert_line 'judge_rule: ship_deploy'; assert_line 'judge_level: repo'
+  # Rated fleet, the same gate under an @repo row stays with the human, and a sweep keeps it there.
+  fake_judge "$(SCORE_LEVEL=fleet score ship_deploy)"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g2 "$AGENT_ASK" post "${gate[@]}" 'merge #6?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'; assert_line 'judge: take-recommend'; assert_line 'judge_level: fleet'
+  "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  # A human criterion on a gate is the human's, as on a question.
+  fake_judge "$(SCORE_LEVEL=repo score knowledge)"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g3 "$AGENT_ASK" post "${gate[@]}" 'merge #7?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge_rule: knowledge'
+  # Negative control: the same repo verdict on an approval never reaches the model.
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  local approval=(--project demo --kind approval --options 'approve=merge the PR|hold=leave it open' --recommend approve
+    --context 'the PR is the change under test')
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g4 "$AGENT_ASK" post "${approval[@]}" 'merge #8?' 2>/dev/null)"
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'status: pending'; assert_line 'judge_rule: gate'
 }
 
 # judged_ask <id> <level>: a pending ship_deploy ask the judge would answer `fix`, at <level>.
@@ -2025,14 +2063,12 @@ delay_setup() {
   }
   errored() { sed -i 's/^judge: .*/judge: error/' "$1"; }
   empty() { sed -i 's/^judge: .*/judge: /' "$1"; }
-  gate() { sed -i 's/^kind: .*/kind: gate/' "$1"; }
   approval() { sed -i 's/^kind: .*/kind: approval/' "$1"; }
   disarmed() { printf 'assume_disarmed: 2026-11-06T10:00:00-0800\n' >> "$1"; }
   rerecommended() { sed -i 's/^recommend: .*/recommend: wait/' "$1"; }
   unleveled() { sed -i '/^judge_level: /d' "$1"; }
   check errored errored
   check empty empty
-  check gate gate
   check approval approval
   check disarmed disarmed
   check rerecommended rerecommended
