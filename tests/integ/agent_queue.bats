@@ -942,6 +942,41 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output "pr:Org/game#9 not merged"
 }
 
+# 2026-11-14: the pr: holds on home-config PRs asked gh, which sees only the GitHub mirror, on every
+# pass, uncached: 5,241 failed REST calls that day, and the hold never released.
+@test "a pr: tag on a Forgejo-canonical repo reads Forgejo's API, never gh, and releases on its merge" {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache" AGENT_QUEUE_PR_TTL=0
+  mkdir -p "$REPO/.forgejo/workflows"; : > "$REPO/.forgejo/workflows/mirror-to-github.yaml"
+  git -C "$REPO" remote add forgejo https://git.example.test/o/game.git
+  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  printf '#!/usr/bin/env bash\necho sekret\n' > "$SANDBOX/bin/rbw-fj"
+  printf '#!/usr/bin/env bash\nurl=${*: -1}; echo "$url" >> "%s/fj.urls"\ncase "$url" in */pulls/5) cat "%s/fj.pr" ;; */status) echo "{\\"statuses\\": []}" ;; *) exit 22 ;; esac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/curl-fj"
+  chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
+  export SO_CURL=curl-fj SO_RBW=rbw-fj SO_FORGEJO_HOSTS=git.example.test
+  echo '{"number": 5, "state": "open", "merged": false, "head": {"sha": "h1"}}' > "$SANDBOX/fj.pr"
+  "$AQ" add --project game --slug blocked --tags "pr:kblack0610/game#5" "a"
+  run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "pr:kblack0610/game#5 not merged"
+  # Read, not failed: a failed read would cache an empty state.
+  [ "$(cat "$SANDBOX/pr-cache/kblack0610_game_5")" = OPEN ] || fail "open PR read as '$(cat "$SANDBOX/pr-cache/kblack0610_game_5")'"
+  echo '{"number": 5, "state": "closed", "merged": true, "merge_commit_sha": "m1", "head": {"sha": "h1"}}' > "$SANDBOX/fj.pr"
+  [ "$("$AQ" next --json | jq -r .slug)" = blocked ]
+  grep -qx 'https://git.example.test/api/v1/repos/o/game/pulls/5' "$SANDBOX/fj.urls" || fail "Forgejo not asked"
+  ! grep -q '/status$' "$SANDBOX/fj.urls" || fail "a state read also read the head's statuses"
+  [ ! -e "$SANDBOX/gh.log" ] || fail "gh was asked: $(cat "$SANDBOX/gh.log")"
+}
+
+@test "a pr: read that fails is cached for the TTL, so a pass of lists costs one call (negative control: TTL 0 asks again)" {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
+  for _ in 1 2 3; do "$AQ" list --json >/dev/null; done
+  [ "$(wc -l < "$SANDBOX/gh.log")" -eq 1 ] || fail "gh asked $(wc -l < "$SANDBOX/gh.log") times"
+  AGENT_QUEUE_PR_TTL=0 "$AQ" list --json >/dev/null
+  [ "$(wc -l < "$SANDBOX/gh.log")" -eq 2 ] || fail "TTL 0 did not ask again"
+}
+
 @test "a pr: tag on a PR closed unmerged holds and says it never releases" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"

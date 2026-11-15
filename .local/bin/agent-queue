@@ -74,6 +74,9 @@ PROJECT_MAP_FILE="$AQ_MAP"
 . "${MACHINE_MODE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh}"
 # shellcheck source=../lib/end-reasons.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+# so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
+# shellcheck source=../lib/session-outcomes.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
 # The night window a `night` item may start in, local time, which may wrap midnight: the `night`
 # part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
 AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
@@ -642,9 +645,11 @@ nightly_pending() {
   printf '%s\n' "${out:-schedules state unreadable}"
 }
 
-# pr_state <owner/repo#N> -> the PR's state from gh (MERGED, OPEN, CLOSED), or nothing when gh
-# cannot say, which holds the item. MERGED never changes, so it is cached for good; any other
-# state for AQ_PR_TTL seconds, so a list or a dispatch pass costs one gh call per PR.
+# pr_state <owner/repo#N> -> the PR's state (MERGED, OPEN, CLOSED) from its forge (so_pr_view: a
+# Forgejo-canonical repo, home-config, from Forgejo's API, else gh), or nothing when it cannot say,
+# which holds the item. MERGED never changes, so it is cached for good; any other answer, a failed
+# read included, for AQ_PR_TTL seconds, so a list or a dispatch pass costs one call per PR. Why: a
+# Forgejo PR read through gh failed on every pass, uncached: 5,241 REST calls on 2026-11-14.
 pr_state() {
   local ref="$1" f state
   f="$AQ_PR_CACHE/$(printf '%s' "$ref" | tr '/#' '__')"
@@ -654,7 +659,7 @@ pr_state() {
       echo "$state"; return
     fi
   fi
-  state="$(gh pr view "${ref##*#}" -R "${ref%#*}" --json state -q .state 2>/dev/null)" || return 0
+  state="$(so_pr_view "$ref" "$(so_pr_dir "$ref")" state .state)" || state=""
   mkdir -p "$AQ_PR_CACHE" && printf '%s\n' "$state" > "$f"
   echo "$state"
 }

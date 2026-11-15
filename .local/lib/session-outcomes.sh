@@ -360,6 +360,38 @@ so_forgejo_checks() {
   jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
 }
 
+# so_pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
+# prints it; fails when its forge cannot be read. The one forge rule for reading a recorded PR
+# (fleet-dispatch item_pr_state, agent-queue pr_state). A checkout whose canonical forge is Forgejo
+# (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
+# so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, so fix-traefik's reap logged
+# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10), and agent-queue's pr:
+# holds spent 5,241 failed REST calls on 2026-11-14. There <fields> is fixed: <jq> sees only what
+# so_forgejo_pr gives, plus statusCheckRollup when <fields> names it (else the status read is skipped).
+# The PR is the number on the checkout's own Forgejo remote: the ref names the GitHub mirror, whose
+# owner may differ. Else gh reads the repo the ref names, or a bare number from the checkout.
+so_pr_view() {
+  local n=${1##*#} repo pr ci
+  if forge_canonical "$2"; then
+    # Authed in this shell, so the token is read once and both reads below carry it (each $(...) is a subshell).
+    repo=$(so_forgejo_repo "$2") && so_forgejo_auth "$repo" && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) || return 1
+    [[ ",$3," == *,statusCheckRollup,* ]] || { jq -r "$4" <<<"$pr"; return; }
+    ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
+    jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
+  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
+  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
+  fi
+}
+
+# so_pr_dir <pr ref> [project] -> the checkout a recorded PR's repo lives in, for so_pr_view: the repo
+# an <owner>/<repo>#<N> ref names, through the project map (one project spans repos: agent-runtime
+# lands in .dotfiles, .dotfiles-private and home-config), else, for a bare number, the project's own.
+# Needs project-name.sh, which each caller sources.
+so_pr_dir() {
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { [ -z "$2" ] || project_repo_path "$2"; return; }
+  project_repo_path "$(project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
+}
+
 # so_forgejo_remote CHECKOUT [REMOTE...] - "<remote> HOST/OWNER/REPO" of the first REMOTE (default:
 # each of the checkout's remotes) whose URL is on a host so_forgejo_hosts lists; rc 1 when none is.
 so_forgejo_remote() {
