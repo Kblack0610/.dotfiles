@@ -52,6 +52,15 @@ The hour the budget ran out (2026-11-13 05:35Z to 06:35Z, 4,651 calls, all on th
 
 The gate pollers are the largest and are not deferrable: a tournament gate is a decision. Cutting them is queued as its own item in the playground repo.
 
+The reserve has held since it landed (2026-11-13 19:04Z): on 2026-11-14 the budget dipped under it once (03Z, 58 deferred reads) and no night logged a 403. The day still spent 3,000 to 5,100 an hour, so it runs close. The top callers on the user token that day:
+
+| Caller | Calls/day | What | Owner |
+|---|---|---|---|
+| playground gate pollers (`bash`, `ci-gate.sh`) | 27,371 | `pr view` per branch 3,219; `gh_rate_wait`'s two header probes after every failed call, limit or not, 4,326 | playground items for `gh_rate_wait` and the `gate-line.py` start path |
+| `schedules-sync` | 21,107 | one `runs/N` read per run, 8,127 for the playground | its own item: cache finished runs, batch per repo |
+| `agent-queue` | 6,625 | 5,241 failed `pr view` of home-config PRs on the GitHub mirror, uncached | this change (re-measure on the next day's log): `pr_state` reads a Forgejo-canonical PR from Forgejo (`so_pr_view`), off the GitHub budget, and caches a failed read for `AGENT_QUEUE_PR_TTL` (120 s) |
+| `fleet-assess` | 3,011 | the `-i actions/workflows` header probe, every pass (it reads `X-Ratelimit-Resource: core` now, the bucket `rate_limit` already shows for free) | its own item: cache the probe for the cadence |
+
 ## Reading the log
 
 ```sh
