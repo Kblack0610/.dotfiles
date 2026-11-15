@@ -20,6 +20,15 @@
 #       how often a floor raised the judge's level. A live answer you never reviewed
 #       is not scored, so silence never counts as agreement.
 #
+#   judge-eval promote [--any-prompt] [--ask] [--json]
+#       each shadow cell of the answer judge against the bar for its level: PROMOTE_BARS in
+#       ask-judge.conf, `<level>=<percent>`, the Wilson 95% lower bound its precision must reach.
+#       A level with no bar (fleet), critical and a hard-stop type are never candidates, and a
+#       cell is held while a narrower cell of its type is shadow with scored answers under its
+#       own bar, since a row's level is a ceiling that opens every level under it. --ask posts
+#       one approval ask per candidate (the briefing runs it on Mondays), unless one for that
+#       cell is pending or was answered in the last PROMOTE_QUIET_DAYS days.
+#
 #   judge-eval replay [--limit N] [--out DIR] [--json]
 #       the answer judge's current policy over the asks the human answered with an option, newest
 #       first: the real `agent-ask judge` on blind copies, by its own agent `ask-judge-replay`,
@@ -61,6 +70,9 @@ MISSES=10
 # Verdicts one read carries to the dashboards: about a week of asks, so a filter still has rows.
 VERDICTS=200
 LOG_LIMIT=50
+# How long an answered promotion ask keeps its cell from being asked again: four Monday briefings, so
+# a hold stands for a month and the cell comes back with a month more answers behind it.
+PROMOTE_QUIET_DAYS=28
 
 say() { printf 'judge-eval: %s\n' "$*" >&2; }
 
@@ -477,6 +489,92 @@ cells() {
         + (.pending | lpad(5)) + (if .live then "yes" else "no" end | lpad(5)) + (.audited | lpad(8)) + (.level_raised_pct | p | lpad(7))) end' <<<"$out"
 }
 
+# promote_json <any-prompt 0|1>: every rated shadow cell of the answer judge with its bar, its
+# status (candidate, below, held) and why. The bars are the conf's; none set promotes nothing.
+promote_json() {
+  local bars
+  bars="$(jq -cn --arg s "$(judge_conf PROMOTE_BARS "" | tr ',' ' ')" --arg l "${JUDGE_LEVELS% critical}" '
+    [$s | splits(" +") | select(test("^[a-z]+=[0-9]+$")) | split("=") | select(.[0] as $x | $l | split(" ") | index($x))
+     | {(.[0]): (.[1] | tonumber)}] | add // {}')"
+  VERDICTS=0 eval_json ask-judge "$1" "" | jq -c --argjson bars "$bars" --arg hard "$JUDGE_HARD_STOPS" \
+    --argjson levels "$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')" \
+    --arg demoted " $(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null | tr '\n' ' ') " '
+    [.agents[] | select(.score == "ask-answers") | .cells[] | select(.type != "" and .level != "")] as $cells
+    | ($cells | map({("\(.type)@\(.level)"): .}) | add // {}) as $by
+    # A cell under its bar: no bar for its level, no right or wrong answer yet, or a low bound under it.
+    | def under: ($bars[.level]) as $b | $b == null or (.tp + .fp) == 0 or (.precision_lo // 0) < $b;
+    [$cells[] | select(.live | not) | . as $c
+      | ($levels | index($c.level)) as $i
+      | [$levels[0:$i][] | $by["\($c.type)@\(.)"] // empty | select((.live | not) and (.tp + .fp) > 0 and under)] as $narrow
+      | {type, level, tp, fp, precision, precision_lo, precision_hi, bar: $bars[.level],
+         demoted: ($demoted | contains(" \($c.type)@\($c.level) "))}
+      | . + (if ($hard | split(" ") | index($c.type)) then {status: "held", why: "a hard stop: the human answers it by rule"}
+             elif .level == "critical" then {status: "held", why: "critical: always the human"}
+             elif .bar == null then {status: "held", why: "no bar for \(.level): only the human promotes it"}
+             elif ($c | under) then {status: "below", why: (if .tp + .fp == 0 then "no scored answers yet"
+               else "low bound \(.precision_lo)% under the \(.bar)% bar" end)}
+             elif ($narrow | length) > 0 then {status: "held", why: "\($narrow | map(.level) | join(", ")) of this type is under its bar, and the row would open it"}
+             else {status: "candidate", why: "low bound \(.precision_lo)% past the \(.bar)% bar over \(.tp + .fp) scored"} end)]'
+}
+
+# promote_ask <cell json>: one approval ask for a candidate cell, posted as a runner's ask (no
+# session owns it, so the one-open-question rule never folds it into another). Prints its id.
+promote_ask() {
+  local type level tp n lo bar demoted approve ctx
+  IFS=$'\t' read -r type level tp n lo bar demoted < <(jq -r '[.type, .level, .tp, .tp + .fp, .precision_lo, .bar, .demoted] | @tsv' <<<"$1")
+  if [ "$demoted" = true ]; then
+    approve="a session deletes the $type@$level line in the demote list, so the judge answers that cell on its own again"
+  else
+    approve="a session sets the $type row in DELAY_RULES to $type@$level by PR (a new row waits 0 minutes, an existing one keeps its wait)"
+  fi
+  ctx="DELAY_RULES is the table in ask-judge.conf (the private dotfiles) of the ask types the answer judge answers on its own, each up to an impact level (self: the asking session's own work; repo: one repo others rely on; a row at repo also answers self); $type is one of the policy's ask types. In shadow the judge only records what it would answer, and that cell's would-be answers matched yours on $tp of $n scored asks, a Wilson 95% lower bound of $lo%, past the $bar% bar for $level (PROMOTE_BARS in ask-judge.conf).$([ "$demoted" = true ] && printf ' The cell was demoted after overrides: its line is in %s.' "$AGENT_ASK_DEMOTED") Once live, 1 in N of its answers comes back to you as an audit (AUDIT_RATES), and enough overrides demote it again. Every answer it would have given: judge-eval log."
+  ( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE
+    cmd_post --project agent-runtime --agent judge-eval --kind approval \
+      --task "promote ask-judge cell $type@$level" \
+      --options "approve=$approve|hold=the cell stays shadow, asked again in $PROMOTE_QUIET_DAYS days if it still meets the bar" \
+      --recommend approve --why "its would-be answers have a $lo% Wilson low bound over $n scored, past the $bar% bar for $level" \
+      --context "$ctx" "Let the answer judge answer $type asks at $level level on its own?" )
+}
+
+# promote [--any-prompt] [--ask] [--json]: see the header.
+promote() {
+  local any=0 ask=0 json=0 out c task asked posted=0 failed=0 id
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --any-prompt) any=1; shift ;;
+      --ask) ask=1; shift ;;
+      --json) json=1; shift ;;
+      *) say "usage: judge-eval promote [--any-prompt] [--ask] [--json]"; return 2 ;;
+    esac
+  done
+  out="$(promote_json "$any")" || { say "could not read the sources"; return 1; }
+  if [ "$ask" = 1 ]; then
+    # The cells already asked: a promotion ask pending, or answered inside the quiet window.
+    asked="$(judge_ask_docs "$ASKS_ROOT" | jq -r --argjson since "$(( $(date +%s) - PROMOTE_QUIET_DAYS * 86400 ))" "$JQ_EPOCH"'
+      select((.task // "") | startswith("promote ask-judge cell "))
+      | select(.status == "pending" or (.status == "answered" and ((.answered_at | epoch) // 0) >= $since))
+      | .task | ltrimstr("promote ask-judge cell ")')"
+    while IFS= read -r c; do
+      [ -n "$c" ] || continue
+      task="$(jq -r '"\(.type)@\(.level)"' <<<"$c")"
+      grep -qxF -- "$task" <<<"$asked" && { say "$task: already asked"; continue; }
+      if id="$(promote_ask "$c")" && [ -n "$id" ]; then say "$task: asked $id"; posted=$((posted + 1))
+      else say "$task: the ask did not post"; failed=$((failed + 1)); fi
+    done < <(jq -c '.[] | select(.status == "candidate")' <<<"$out")
+    say "posted $posted promotion ask(s)$([ "$failed" = 0 ] || echo ", $failed failed")"
+    [ "$failed" = 0 ]; return
+  fi
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
+  jq -r 'def pad($w): tostring | if length >= $w then .[0:$w] else . + " " * ($w - length) end;
+    def lpad($w): tostring | if length >= $w then . else " " * ($w - length) + . end;
+    if length == 0 then "no shadow cells in scope" else
+      ("type" | pad(24)) + ("level" | pad(9)) + ("right" | lpad(7)) + ("precision [95%]" | lpad(18)) + ("bar" | lpad(5)) + "  status",
+      (sort_by(.status != "candidate", .status != "below") | .[] | (.type | pad(24)) + (.level | pad(9)) + ("\(.tp)/\(.tp + .fp)" | lpad(7))
+        + ((if .precision == null then "-" else "\(.precision)% [\(.precision_lo)-\(.precision_hi)]" end) | lpad(18))
+        + ((if .bar == null then "-" else "\(.bar)%" end) | lpad(5))
+        + "  \(.status)\(if .demoted then " (demoted)" else "" end): \(.why)") end' <<<"$out"
+}
+
 # replay_labelled: the id and project of each ask the human answered with one option, newest
 # first, gates and approvals out. Free text and bare settle-session stamps carry no label.
 replay_labelled() {
@@ -544,6 +642,7 @@ main() {
   if [ "${1:-}" = replay ]; then shift; replay "$@"; return; fi
   if [ "${1:-}" = log ]; then shift; log "$@"; return; fi
   if [ "${1:-}" = cells ]; then shift; cells "$@"; return; fi
+  if [ "${1:-}" = promote ]; then shift; promote "$@"; return; fi
   if [ "${1:-}" = kpi ]; then
     shift
     case "${1:-}" in --json) kpi_json ;; "") kpi_json | jq -r 'to_entries[] | "\(.key)\t7d \(.value["7d"] // "-")\t28d \(.value["28d"] // "-")"' ;;

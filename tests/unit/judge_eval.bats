@@ -310,6 +310,71 @@ ask_fixture() {
   assert_failure 2
 }
 
+# cell <type> <level> <right> [wrong]: that many scored shadow answers of the type at the level
+cell() {
+  local i
+  for ((i = 0; i < $3; i++)); do ask "$1-$2-r$i" judge=take-recommend "judge_type=$1" "judge_rule=$1" "judge_level=$2" answer=yes; done
+  for ((i = 0; i < ${4:-0}; i++)); do ask "$1-$2-w$i" judge=take-recommend "judge_type=$1" "judge_rule=$1" "judge_level=$2" answer=no; done
+}
+
+@test "promote: the bar scales with level; fleet, critical, a hard stop, a live cell and a cell over a weak narrower one are not candidates" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  cell slow self 10        # Wilson low bound 72.2: past 70
+  cell mid repo 10         # 72.2: under 85
+  cell wide repo 25        # 86.7: past 85
+  cell wide fleet 25       # no bar for fleet
+  cell human_fact self 10  # a hard stop, whatever its precision
+  cell fast repo 10        # live: fast@repo is in DELAY_RULES
+  cell nar self 5 5        # scored and under 70 ...
+  cell nar repo 25         # ... so the repo row that would open it waits
+  run "$JUDGE_EVAL" promote --json
+  assert_success
+  run jq -c 'map([.type, .level, .precision_lo, .bar, .status]) | sort' <<<"$output"
+  assert_output '[["human_fact","self",72.2,70,"held"],["mid","repo",72.2,85,"below"],["nar","repo",86.7,85,"held"],["nar","self",23.7,70,"below"],["slow","self",72.2,70,"candidate"],["wide","fleet",86.7,null,"held"],["wide","repo",86.7,85,"candidate"]]'
+  run "$JUDGE_EVAL" promote
+  assert_success
+  assert_line --regexp '^wide +repo +25/25 +100% \[86.7-100\] +85% +candidate: low bound 86.7% past the 85% bar over 25 scored$'
+  assert_line --regexp '^nar +repo .* held: self of this type is under its bar, and the row would open it$'
+  # negative control: with no bars in the conf, nothing is a candidate
+  sed -i '/^PROMOTE_BARS=/d' "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  run "$JUDGE_EVAL" promote --json
+  assert_equal "$(jq '[.[] | select(.status == "candidate")] | length' <<<"$output")" 0
+  run "$JUDGE_EVAL" promote --sideways
+  assert_failure 2
+}
+
+@test "promote --ask: one approval ask per candidate, never sent to the judge, and not asked again while pending or lately answered" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  cell slow self 10
+  cell wide_scope repo 25
+  unset AGENT_ASK_NO_JUDGE
+  printf '#!/usr/bin/env bash\ntouch "%s"\n' "$BATS_TEST_TMPDIR/judged" > "$BATS_TEST_TMPDIR/judge"; chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge" CLAUDE_CODE_SESSION_ID=the-briefing-caller
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'posted 2 promotion ask(s)'
+  run grep -lx 'task: promote ask-judge cell wide_scope@repo' -r "$HOME/.agent/asks/agent-runtime"
+  assert_success
+  local f="$output"
+  run grep -E '^(kind|status|judge|judge_rule|recommend|claude_session|question): ' "$f"
+  assert_output "$(printf '%s\n' 'claude_session: ' 'kind: approval' 'status: pending' 'question: Let the answer judge answer wide_scope asks at repo level on its own?' 'recommend: approve' 'judge: human' 'judge_rule: gate')"
+  [ ! -e "$BATS_TEST_TMPDIR/judged" ]
+  # pending: not asked again
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'wide_scope@repo: already asked'
+  assert_output --partial 'posted 0 promotion ask(s)'
+  # answered hold today: still quiet; answered 29 days ago: asked again
+  sed -i "s/^status: pending/status: answered/; s/^answer: $/answer: hold/; s/^answered_at: $/answered_at: $NOW_ISO/" "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_output --partial 'wide_scope@repo: already asked'
+  sed -i "s/^answered_at: .*/answered_at: $(date -d '-29 days' +%Y-%m-%dT%H:%M:%S%z)/" "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'wide_scope@repo: asked '
+  assert_output --partial 'posted 1 promotion ask(s)'
+}
+
 @test "log --level keeps one impact level, and every row names its level and call" {
   ask lv_self judge=take-recommend judge_level=self answer=yes
   ask lv_repo judge=take-recommend judge_level=repo judge_level_raised=true answer=yes
