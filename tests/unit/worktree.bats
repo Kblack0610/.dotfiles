@@ -1170,6 +1170,26 @@ done_from_inside() {
   assert_line --regexp $'^husk\twould reap\trepo-agent-2\t[^\t]+\t$'
 }
 
+@test "gc keeps a landed tree another tool git-locked as claimed, and reaps one under wt's own lock" {
+  # agentctl-playground-train reuses one tree every pass; gc reaping it under a starting pass
+  # failed that run (ar-1830). Its lock is git's own "do not remove this", so reap honors it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-train" origin/main
+  git -C "$MAIN" worktree lock --reason 'the train reuses it' "$WT_ROOT/repo-train"
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  wt_hold "$WT_ROOT/repo-agent-1"
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^claimed\tkept\trepo-train\t[^\t]+\tgit-locked: the train reuses it$'
+  assert_line --regexp $'^landed\treaped\trepo-agent-1\t'
+  [ -d "$WT_ROOT/repo-train" ]
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+  run cmd_reap "$WT_ROOT/repo-train"
+  assert_failure
+  assert_output --partial 'git-locked: the train reuses it'
+  [ -f "$WT_ROOT/repo-train/.git" ]
+}
+
 @test "gc a main checkout and an unresolvable .git are not-a-worktree, not held" {
   mkdir -p "$WT_ROOT/clone/.git" "$WT_ROOT/broken"
   git init --quiet "$WT_ROOT/clone"

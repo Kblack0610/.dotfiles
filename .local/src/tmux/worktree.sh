@@ -599,6 +599,15 @@ wt_occupied_reason() {
     printf 'a running process is inside it\n'
     return 1
   fi
+  # Another tool's git lock is git's own "do not remove this": a runner that reuses one tree
+  # every pass (agentctl-playground-train) holds it so gc does not reap it between passes.
+  # reap unlocks only wt's own hold.
+  local gd reason
+  if gd=$(git -C "$1" rev-parse --absolute-git-dir 2>/dev/null) && [ -f "$gd/locked" ] &&
+    reason=$(<"$gd/locked") && [ "$reason" != "$WT_HOLD_REASON" ]; then
+    printf 'git-locked: %s\n' "${reason:-no reason given}"
+    return 1
+  fi
 
   return 0
 }
