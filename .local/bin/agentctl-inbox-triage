@@ -523,13 +523,15 @@ pt() {
 # backlog_cache <project>: the answers a plain --backlog --dry-run got, one `{lane, raw, action, id,
 # project, row, why, epic}` per line, as link_cache is for --link: the next run replays each whose
 # row is still byte for byte the same, so the apply writes what the dry run printed (and a person
-# checked), and only rows changed since go to the model. The apply removes the file after.
+# checked). A dry run asks the model about the rest; an apply leaves them as they are, since no one
+# reviewed an answer for them. The apply removes the file after.
 backlog_cache() { printf '%s/inbox-triage/backlog-%s.jsonl' "$STATE" "$1"; }
 
-# backlog <project> <lane> <board json> <project names> <homes> [kept]: one lane's open rows, the
-# cached answers in <kept> replayed first, the rest in batches.
+# backlog <project> <lane> <board json> <project names> <homes> [kept] [reviewed]: one lane's open
+# rows, the cached answers in <kept> replayed first, the rest in batches; with <reviewed> 1 (an
+# apply after a dry run) the rest are left as they are.
 backlog() {
-  local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" rows ids mine total off=0 size r rc=0 epics
+  local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" reviewed="${7:-0}" rows ids mine total off=0 size r rc=0 epics
   local raw own state kids action id dest row why epic
   epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
@@ -553,6 +555,11 @@ backlog() {
   mine="$(jq -c --arg l "$lane" --slurpfile have <(printf '%s\n' "$kept") \
     '($have | map(select(.lane == $l) | .raw) | INDEX(.)) as $h | map(select($h[.raw] | not))' <<<"$rows")"
   total="$(jq length <<<"$mine")"
+  if [ "$reviewed" = 1 ] && [ "$total" -gt 0 ]; then
+    KEPT=$((KEPT + total))
+    say "$p ($lane): $total rows new or changed since the dry run left as they are; a dry run asks about them"
+    return 0
+  fi
   # Each call carries budget_batch rows; one stopped at the cap asks the same rows again at the
   # halved size, and a single row that caps alone is passed over.
   while [ "$off" -lt "$total" ]; do
@@ -701,7 +708,7 @@ answers_done() {
 
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
-  local board names homes rc=0 p lane cache kept failed
+  local board names homes rc=0 p lane cache kept failed reviewed
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
@@ -710,10 +717,11 @@ backlog_pass() {
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(backlog_cache "$p")" failed="$FAILED"
+    cache="$(backlog_cache "$p")" failed="$FAILED" reviewed=0
+    [ "$DRY" = 0 ] && [ -e "$cache" ] && reviewed=1
     kept="$(jq -c '[.rows[] | select(.id != null and (.state == "open" or .state == "doing"))]' <<<"$board" | answers_kept "$cache" "$p")"
     for lane in human agent; do
-      backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" || rc=1
+      backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" "$reviewed" || rc=1
       [ "$BUDGET_STOP" = 0 ] || break 2
     done
     answers_done "$p" "$cache" "$failed"

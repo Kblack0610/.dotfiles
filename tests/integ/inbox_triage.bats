@@ -466,7 +466,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
 }
 
-@test "--backlog --dry-run keeps its answers; a second dry run and the apply reuse them, and only a row new since goes to the model" {
+@test "--backlog --dry-run keeps its answers; a second dry run and the apply reuse them, and the apply leaves a row new since alone" {
   cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
   sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [ ] audio pass <!-- id:sc-2 -->\n    - [ ] the gun is late\n- [ ] jump is floaty <!-- id:sc-3 -->\n'
   # sorted by text: sc-2, sc-3, sc-5, sc-7, sc-4; a heading (sc-2) is never dropped, and the cache keeps it a keep
@@ -486,22 +486,22 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 2'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
   [ "$(wc -l <"$cache")" = 5 ]
-  # The apply writes what the dry run printed, though the model would now say drop; only the rows new
-  # or changed since go to the model, and the heading whose child went stays.
+  # The apply writes what the dry run printed, though the model would now say drop. A row new or
+  # changed since has no reviewed answer, so it is left as it is with no model call, and the heading
+  # whose child went stays.
   sed -i -e '/the gun is late/d' -e 's/jump is floaty/jump is too floaty/' "$SHEET"
   printf '%s\n' '- [ ] zebra row <!-- id:sc-9 -->' >>"$SHEET"
-  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}'
+  answer '{"n": 1, "action": "drop", "why": "never asked"}' '{"n": 2, "action": "drop", "why": "never asked"}'
   run "$TRIAGE" --backlog --project scratch
   assert_success
   assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 3'
-  [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "the apply asked the model $(wc -l <"$NOTES_FIXTURE/model.log") times"
-  grep -qx '1. \[sc-3\] jump is too floaty' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
-  grep -qx '2. \[sc-9\] zebra row' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
-  refute grep -q 'sc-4' "$NOTES_FIXTURE/prompt.txt"
+  assert_output --partial 'scratch (human): 2 rows new or changed since the dry run left as they are'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model $(wc -l <"$NOTES_FIXTURE/model.log") times"
   [ ! -e "$cache" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
   assert_output --partial '- [ ] audio pass <!-- id:sc-2 -->'
+  assert_output --partial 'jump is too floaty'
   refute_output --partial 'menu flicker again'
   assert_output --partial 'zebra row'
   run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
