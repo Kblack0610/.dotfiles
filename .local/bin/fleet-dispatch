@@ -1204,7 +1204,10 @@ There are $n rows above. Return exactly $n verdicts in the structured output, on
   # Claude Code checks the reply against this schema and hands a short one back to the model in
   # the same call, so a dropped row is usually answered there; judge asks once more for the rest.
   if [ -n "$DISPATCH_SCHEMA" ]; then
-    jq --argjson n "$n" '.properties.verdicts += {minItems: $n, maxItems: $n}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
+    # The rule is held to the policy's ids too: "(stage)", copied with the policy's parentheses, was
+    # an error verdict on 2026-11-14 that kept runner-score red for a day.
+    jq --argjson n "$n" --argjson rules "$3" '.properties.verdicts += {minItems: $n, maxItems: $n}
+        | .properties.verdicts.items.properties.rule += {enum: $rules}' "$DISPATCH_SCHEMA" > "$wd/schema.json" ||
       { rm -rf -- "$wd"; JUDGE_WHY="could not read the schema at $DISPATCH_SCHEMA"; return 1; }
     schema=(--schema "$wd/schema.json")
   fi
