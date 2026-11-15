@@ -90,7 +90,7 @@ const apiAt = args.indexOf("--api");
 const api = apiAt >= 0 ? args[apiAt + 1].replace(/\/$/, "") : null;
 if (api && !process.env.AGENT_WEB_SESSION) throw new Error("--api needs AGENT_WEB_SESSION, the agent_web cookie of that instance");
 const outAt = args.indexOf("--out");
-const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, control ? "control" : noKit ? "no-kit" : wide ? "wide" : "out");
+const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, (control ? "control" : noKit ? "no-kit" : wide ? "wide" : "out") + (dark ? "-dark" : ""));
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {

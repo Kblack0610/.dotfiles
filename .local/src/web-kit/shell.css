@@ -14,9 +14,9 @@ kb-shell { display: flex; align-items: center; gap: 12px; padding: 10px 16px; pa
 .kb-nav { display: flex; flex-direction: column; gap: 1px; }
 .kb-group { font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 8px 2px; }
 .kb-nav > a, .kb-nav > button { flex: none; display: block; border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 4px 10px; border-radius: var(--radius); cursor: pointer; font: inherit; font-size: var(--fs-md); text-decoration: none; }
-.kb-nav > :is(a, button):hover { background: var(--fill); }
+@media (hover: hover) { .kb-nav > :is(a, button):hover { background: var(--fill); } }
 /* The open tab: the accent's light fill with accent text (ui.md rule 3), never a solid block. */
-.kb-nav > [aria-current], .kb-nav > [aria-current]:hover { background: var(--accent-bg); border-color: transparent; color: var(--accent); font-weight: 600; }
+.kb-nav > [aria-current] { background: var(--accent-bg); border-color: transparent; color: var(--accent); font-weight: 600; }
 
 @media (max-width: 899px) {
   kb-shell { position: relative; flex-wrap: wrap; gap: 10px; padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px)); }

@@ -10,9 +10,9 @@
   /* type scale: everything is one of these; --head is the top bar's height */
   --head: 49px; --fs-xs: 11px; --fs-sm: 12px; --fs-md: 14px; --fs-lg: 16px;
   /* surface (ui.md rule 2): a white page and panels, cool neutral greys, hairline borders. --fill is
-     the one quiet fill (hover, inputs, code); --page-max caps the content beside the sidebar. */
+     the one quiet fill (hover, inputs, buttons, code); --page-max caps the content beside the sidebar. */
   --bg: #ffffff; --panel: #ffffff; --fill: #f4f5f7; --ink: #1a1d23; --muted: #646b78; --line: #e4e6ea;
-  --radius: 6px; --radius-card: 8px; --page-max: 1600px;
+  --radius: 6px; --page-max: 1600px;
   /* one accent (ui.md rule 3); --accent-bg is the selected item's fill */
   --accent: #2563d6;
   /* status hues: ok, needs attention, broken (dashboards.md rule 5), and each one's soft tint for a

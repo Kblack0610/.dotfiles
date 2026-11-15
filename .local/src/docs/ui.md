@@ -27,4 +27,4 @@ Each rule has its why. A rule a test checks names the test.
 
 ## Not met yet
 
-`tokens.css` has no spacing scale (rule 10). agent-web misses rules 4, 5, 7, 8 and 9 (solid badges and chips, mono headers, wrapping cells, striped KPI tiles: the restyle plan's P2), and its sign-in page carries its own copy of the old palette instead of loading `tokens.css` (rule 1). Delete this section when all are met.
+`tokens.css` has no spacing scale (rule 10). agent-web misses rules 4, 5, 7, 8 and 9 (solid badges and chips, mono headers, wrapping cells, striped KPI tiles: the restyle plan's P2), and its sign-in page carries its own copy of the old palette instead of loading `tokens.css` (rule 1). Board row ar-1988 tracks the agent-web part (plan `are-we-reaching-to-eventual-charm.md`). Delete this section when all are met.

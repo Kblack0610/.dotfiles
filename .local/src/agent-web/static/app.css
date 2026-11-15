@@ -45,7 +45,7 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .acts .btn.danger { border-color: var(--wait); color: var(--wait); }
 .acts .btn.danger.primary { background: var(--wait); color: #fff; }
-.acts select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.acts select { font: inherit; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .acts .q { font-size: 13px; }
 .acts .msg { font: 12px var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; width: 100%; }
 .acts .msg.err { color: var(--wait); }
@@ -98,10 +98,10 @@ main.open #back { display: inline-block; }
 .older { display: block; margin: 0 auto 12px; min-height: 30px; }
 .compose { border-top: 1px solid var(--line); background: var(--panel); padding: 8px 16px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
 .keys { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.keys button, .btn { border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 6px; padding: 5px 10px; font: 12px var(--mono); cursor: pointer; }
+.keys button, .btn { border: 1px solid var(--line); background: var(--fill); color: var(--ink); border-radius: 6px; padding: 5px 10px; font: 12px var(--mono); cursor: pointer; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-family: inherit; font-size: 14px; }
 .send { display: flex; gap: 8px; }
-textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+textarea { flex: 1; min-height: 40px; max-height: 160px; resize: vertical; font: inherit; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .empty { color: var(--muted); padding: 24px 16px; }
 .err { color: var(--wait); font-size: 12px; min-height: 1em; }
 .cstat { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; }
@@ -124,7 +124,7 @@ h2.sec, h3.sec { font-size: var(--fs-lg); font-weight: 650; color: var(--ink); m
 h3.sec { font-size: var(--fs-md); font-weight: 600; margin-top: 14px; }
 .sec .n { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
 .sec.warn { color: var(--b-stalled); } .sec.bad { color: var(--b-needs); }
-.card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.card input { flex: 1; min-width: 140px; font: inherit; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 /* Board tabs */
 #b-root summary { cursor: pointer; }
 #b-root summary h2.sec { display: inline-flex; margin: 12px 0 8px; }
@@ -151,13 +151,13 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 2px; }
 .ctitle { flex: 1 1 240px; min-width: 0; font-weight: 600; font-size: var(--fs-lg); overflow-wrap: anywhere; }
 .cchip { font-size: var(--fs-xs); font-weight: 600; padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--fill); color: var(--muted); }
-.cchip.waiting, .cchip.bad, .cchip.prio.urgent { color: var(--b-needs); background: color-mix(in srgb, var(--b-needs) 14%, transparent); }
+.cchip.waiting, .cchip.bad, .cchip.prio.urgent { color: var(--b-needs); background: var(--bad-bg); }
 .cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
-.cchip.ok { color: var(--b-done); background: color-mix(in srgb, var(--b-done) 14%, transparent); }
-.cchip.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.cchip.ok { color: var(--b-done); background: var(--ok-bg); }
+.cchip.warn { color: var(--b-stalled); background: var(--warn-bg); }
 .cline.warn { color: var(--b-stalled); } .cline.bad { color: var(--b-needs); }
 .cline.vital b { display: inline-block; min-width: 5em; }
-.cchip.prio.high { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
+.cchip.prio.high { color: var(--b-stalled); background: var(--warn-bg); }
 .cline { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }
 .cline a { color: var(--accent); }
 details.cfold { margin: 8px 0; }
@@ -196,8 +196,8 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .kf > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kf small { margin-left: 6px; color: var(--muted); font-size: var(--fs-xs); }
 .kf em { flex: none; font-style: normal; font-size: var(--fs-xs); padding: 0 8px; border-radius: 999px; color: var(--muted); background: color-mix(in srgb, var(--muted) 14%, transparent); }
-.kf em.warn { color: var(--b-stalled); background: color-mix(in srgb, var(--b-stalled) 14%, transparent); }
-.kf em.bad { color: var(--b-needs); background: color-mix(in srgb, var(--b-needs) 14%, transparent); }
+.kf em.warn { color: var(--b-stalled); background: var(--warn-bg); }
+.kf em.bad { color: var(--b-needs); background: var(--bad-bg); }
 .kf:hover b, .kp:hover b { text-decoration: underline; }
 /* The pipeline line: one point per step on a rail; a phone stacks them, the detail under its step. */
 .rail { display: flex; flex-wrap: wrap; }
@@ -225,7 +225,7 @@ details.cfold[open] > summary { margin-bottom: 6px; }
 .more { padding: 4px 8px; }
 .qitem .btn.quiet { margin-left: auto; border-color: transparent; background: none; color: var(--muted); }
 .qadd textarea { width: 100%; box-sizing: border-box; min-height: 90px; margin-bottom: 8px; }
-.qadd select, .qitem select, .tqbar select, .tqbar input[data-tsearch] { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.qadd select, .qitem select, .tqbar select, .tqbar input[data-tsearch] { font: inherit; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qhint { font-size: 12px; margin-top: 4px; }
 .board { grid-column: 1 / -1; overflow-y: auto; padding: 16px; }
 /* Sessions (static/watch.js, shepherd.js, sessions.js): the overview row, the open session's folded
@@ -597,7 +597,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 /* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
 .actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
 .aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
+.aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--fill); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
 .aopt:hover { border-color: var(--accent); }
 .aopt.rec { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
 .aok { font: 600 var(--fs-sm) var(--mono); color: var(--accent); }
@@ -616,7 +616,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .dn .dlc { margin-left: auto; }
 .dng { flex: none; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 @media (min-width: 900px) {
-  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, calc(var(--page-max) - 218px)); justify-content: center; align-items: start; gap: 28px; }
+  #daily:not([hidden]) { display: grid; grid-template-columns: 190px minmax(0, 1fr); align-items: start; gap: 28px; }
   #daily > * { margin: 0; max-width: none; }
   #d-nav { position: sticky; top: 0; flex-direction: column; max-height: calc(100vh - 100px); overflow-y: auto; }
   .dng { margin: 14px 10px 4px; padding-top: 12px; border-top: 1px solid var(--line); }
