@@ -260,7 +260,7 @@ cmd_list() {
   shopt -s nullglob
   for f in "$dir"/*.md; do
     is_deck "$f" || continue
-    theme="$(sed -n 's/^theme: *//p' "$f" | head -1)"
+    theme="$(sed -n '/^theme: */{s///p;q;}' "$f")"
     printf '%-30s %s\n' "$(basename "$f")" "${theme:+[$theme]}"
   done
 }

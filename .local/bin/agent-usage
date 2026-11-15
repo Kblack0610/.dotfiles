@@ -122,7 +122,7 @@ _from_transcript() { # $1=transcript path
   local t="$1" first last d=0
   [ -f "$t" ] || { echo "0 0 0 0 0 0 -"; return 0; }
 
-  first="$(grep -m1 -o '"timestamp":"[^"]*"' "$t" 2>/dev/null | head -1 | sed 's/.*:"//;s/"$//')"
+  first="$(grep -m1 -o '"timestamp":"[^"]*"' "$t" 2>/dev/null | awk 'NR==1' | sed 's/.*:"//;s/"$//')"
   last="$(tac "$t" 2>/dev/null | grep -m1 -o '"timestamp":"[^"]*"' | sed 's/.*:"//;s/"$//')"
   if [ -n "$first" ] && [ -n "$last" ]; then
     local a b
@@ -699,7 +699,7 @@ cmd_export() {
       read -ra st < <(sed 's/.*) //' "$AU_PROC/$pid/stat" 2>/dev/null) || continue
       [ "${st[0]:-Z}" != Z ] || continue  # stat after "comm) ": [0] state, [19] starttime
       [ -z "$pstart" ] || [ "${st[19]:-}" = "$pstart" ] || continue
-      item=$(tr '\0' '\n' 2>/dev/null < "$AU_PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
+      item=$(tr '\0' '\n' 2>/dev/null < "$AU_PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | awk 'NR==1')
       [ -n "$item" ] && live+=("$sid$TAB$item$TAB$pid$TAB$started$TAB${d%/sessions}")
     done
   done

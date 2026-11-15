@@ -157,7 +157,7 @@ sweep_board() {
   ASKED=$((ASKED + 1))
   text="$(cut -f3 <<<"$msgs" | awk '!seen[$0]++')"
   open_rows="$({ notes ptask "$board" --agent list 2>/dev/null; notes ptask "$board" list 2>/dev/null; } | cut -f4 | cut -c1-90)"
-  floor="$(cut -f2 <<<"$msgs" | sort | head -1)"
+  floor="$(cut -f2 <<<"$msgs" | sort | awk 'NR==1')"
   prs="$(while IFS= read -r r; do
       [ -d "$r" ] && (cd "$r" && gh pr list --state merged --limit 200 --search "merged:>=${floor:0:10}" --json title -q '.[].title' 2>/dev/null)
     done <<<"$repos")"

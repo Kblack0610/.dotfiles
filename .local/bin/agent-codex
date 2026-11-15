@@ -65,7 +65,7 @@ salvage() {
   [ -n "$(git rev-list -n 1 HEAD --not "$trunk" 2>/dev/null)" ] || return 0
   sha=$(git rev-parse HEAD)
   # A branch the run pushed itself (its PR's) already holds the work: point at it, push no copy.
-  on=$(git for-each-ref --contains HEAD --format='%(refname:lstrip=3)' refs/remotes/origin | grep -vx HEAD | head -n 1) || on=''
+  on=$(git for-each-ref --contains HEAD --format='%(refname:lstrip=3)' refs/remotes/origin | grep -vx HEAD | awk 'NR==1') || on=''
   if [ -n "$on" ]; then branch=$on
   else
     git push -q origin "HEAD:refs/heads/$branch" ||

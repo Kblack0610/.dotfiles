@@ -217,7 +217,7 @@ pin_value() {
       /^[[:space:]]*-[[:space:]]*name:/ { n = $0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", n); gsub(/"/, "", n); on = (n == img); next }
       on && /^[[:space:]]*newTag:/ { t = $0; sub(/^[[:space:]]*newTag:[[:space:]]*/, "", t); gsub(/"/, "", t); sub(/[[:space:]].*/, "", t); print t; exit }
       /^[^[:space:]-]/ { on = 0 }' <<<"$blob")"
-    [ -n "$v" ] || v="$(grep -m1 -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
+    [ -n "$v" ] || v="$(grep -m1 -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | awk 'NR==1' | sed -E 's/.*:([^:]+)$/\1/')"
   else
     v="$(grep -m1 -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" \
       | sed -E "s/^[[:space:]-]*${key}:[[:space:]]*\"?([^\"[:space:]#]+).*/\1/")"

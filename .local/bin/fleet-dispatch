@@ -431,7 +431,7 @@ nobody_why() {
   done <<<"$1"
   if [ "$covers" = 0 ]; then
     if [[ " $DISPATCH_NIGHT_PROJECTS " == *" $project "* ]]; then
-      m=$(grep -oiE -m1 -- "$DISPATCH_NIGHT_SKIP" <<<"${text%%<!--*}" | head -1)
+      m=$(grep -oiE -m1 -- "$DISPATCH_NIGHT_SKIP" <<<"${text%%<!--*}" | awk 'NR==1')
       if [ -n "$m" ]; then echo "night skip: $m"; else echo "night only: no day worker covers $project"; fi
     else
       echo "no worker covers $project"
@@ -1966,7 +1966,7 @@ cmd_direct_land() {
   ! git diff --cached --quiet || { direct_back "it left no diff"; return; }
   guard=$DIRECT_GUARDED
   hp=$(git config core.hooksPath) && guard="$guard|^${hp%/}/"
-  bad=$(git diff --cached --name-only | grep -E "$guard" | head -3 | paste -sd, -)
+  bad=$(git diff --cached --name-only | grep -E "$guard" | awk 'NR<=3' | paste -sd, -)
   [ -z "$bad" ] || { direct_back "its diff touches hook or CI paths ($bad), which a direct run may not"; return; }
   # The board's trailing tags (#pts/3 #size/s) are no part of a commit or PR title.
   title=$(item_headline "$it" | sed -E 's/([[:space:]]+#[^[:space:]]+)+[[:space:]]*$//')
@@ -3394,8 +3394,8 @@ unpark_preempted() {
   [ "$DISPATCH_PREEMPT" = 1 ] || return 0
   local ledgers f free key sess server w units out items urgent
   ledgers=$(for f in "$PARKED_DIR"/*; do
-              [ -f "$f" ] && [ "$(sed -n 's/^why=//p' "$f" | head -n 1)" = preempt ] || continue
-              printf '%s\t%s\n' "$(sed -n 's/^parked=//p' "$f" | head -n 1)" "$f"
+              [ -f "$f" ] && [ "$(sed -n '/^why=/{s///p;q;}' "$f")" = preempt ] || continue
+              printf '%s\t%s\n' "$(sed -n '/^parked=/{s///p;q;}' "$f")" "$f"
             done | sort -n)
   [ -n "$ledgers" ] || return 0
   agent-hold check dispatch >/dev/null 2>&1 || return 0
@@ -3404,7 +3404,7 @@ unpark_preempted() {
   items=$(item_sessions)
   while IFS=$'\t' read -r _ f; do
     key=${f##*/}
-    sess=$(sed -n 's/^session=//p' "$f" | head -n 1); server=$(sed -n 's/^server=//p' "$f" | head -n 1)
+    sess=$(sed -n '/^session=/{s///p;q;}' "$f"); server=$(sed -n '/^server=/{s///p;q;}' "$f")
     w=$(awk -F'\x1f' -v v="$server" -v s="$sess" '$2 == v && $3 == s { print $8; exit }' <<<"$items")
     units=$(weight_units "${w:-light}")
     [ "$units" -le "$free" ] || break

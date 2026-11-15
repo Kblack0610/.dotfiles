@@ -22,7 +22,7 @@ PROFILE="$(readlink -f "${1:-$HOME/.config/agentctl/sandbox/lane.json}")"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/../../.local/src/agent-run/lib/sandbox.sh"
 # The pin the installer puts on this host, so the proof runs the srt a lane runs.
-SRT_VERSION="${SRT_VERSION:-$(grep -oE 'sandbox-runtime@[0-9.]+' "$HERE/../../.local/src/installation_scripts/packages.conf" | head -n1 | cut -d@ -f2 || true)}"
+SRT_VERSION="${SRT_VERSION:-$(grep -oE 'sandbox-runtime@[0-9.]+' "$HERE/../../.local/src/installation_scripts/packages.conf" | awk 'NR==1' | cut -d@ -f2 || true)}"
 [ -n "$SRT_VERSION" ] || { echo "no sandbox-runtime pin in packages.conf; set SRT_VERSION" >&2; exit 2; }
 IMAGE="lane-sandbox-proof:srt$SRT_VERSION"
 DOCKER="${DOCKER:-docker}"

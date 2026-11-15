@@ -60,7 +60,7 @@ resolve_value() {
 # Extract a key=value from an env file
 env_get() {
     local file="$1" key="$2"
-    grep -E "^${key}=" "$file" 2>/dev/null | head -1 | cut -d'=' -f2- || true
+    grep -m1 -E "^${key}=" "$file" 2>/dev/null | cut -d'=' -f2- || true
 }
 
 # ── Scan .env files ─────────────────────────────────────────────

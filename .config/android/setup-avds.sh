@@ -48,7 +48,7 @@ for avd_dir in "$AVD_HOME"/*.avd; do
         value="$(echo "$value" | xargs)"
 
         # Check current value (handle both "key = value" and "key=value" formats)
-        current="$(grep -E "^${key}\s*=" "$config" 2>/dev/null | head -1 | sed 's/^[^=]*=\s*//' | xargs)" || true
+        current="$(grep -m1 -E "^${key}\s*=" "$config" 2>/dev/null | sed 's/^[^=]*=\s*//' | xargs)" || true
 
         if [[ "$current" == "$value" ]]; then
             continue

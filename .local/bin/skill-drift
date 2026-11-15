@@ -344,9 +344,9 @@ check_name() {
 # cannot answer.
 check_meta() {
   local skill="$1" f="$2" parent="$3" cat tags rev
-  cat=$(fm "$f"  | sed -n 's/^  category:[[:space:]]*//p' | head -1 | tr -d ' ')
-  tags=$(fm "$f" | sed -n 's/^  tags:[[:space:]]*//p'     | head -1)
-  rev=$(fm "$f"  | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+  cat=$(fm "$f"  | sed -n 's/^  category:[[:space:]]*//p' | awk 'NR==1' | tr -d ' ')
+  tags=$(fm "$f" | sed -n 's/^  tags:[[:space:]]*//p'     | awk 'NR==1')
+  rev=$(fm "$f"  | sed -n 's/^  reviewed:[[:space:]]*//p' | awk 'NR==1' | tr -d ' "')
 
   if [ -z "$cat" ]; then
     add BADMETA "$skill" category "missing metadata.category"
@@ -598,7 +598,7 @@ check_undeployed() {
 # is not false, it is unsupported - nobody has looked.
 check_stale() {
   local skill="$1" f="$2" rev age
-  rev=$(fm "$f" | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+  rev=$(fm "$f" | sed -n 's/^  reviewed:[[:space:]]*//p' | awk 'NR==1' | tr -d ' "')
   [ -n "$rev" ] || return 0
   age=$(( ( $(date +%s) - $(date -d "$rev" +%s 2>/dev/null || echo 0) ) / 86400 ))
   [ "$age" -gt "$STALE_DAYS" ] && add STALE "$skill" "$rev" "${age}d since last verified (limit ${STALE_DAYS}d)"
