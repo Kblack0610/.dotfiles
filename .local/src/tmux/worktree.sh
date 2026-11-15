@@ -1226,6 +1226,21 @@ cmd_reap() {
   printf 'reaped %s\n' "$name"
 }
 
+# wt_other_claude <session> -- print "<window index> <pane id>" for each Claude agent in <session>
+# other than the pane `done` was run from ($TMUX_PANE, on the caller's own server), nothing when
+# there is none; rc 2 when agent-panel cannot say. `done` kills the whole session by name, so a
+# second window running claude dies with it. agent-panel finds an agent by its session file in
+# the pane's process tree, which holds where pane_current_command shows a version string, `node`
+# or the wrapper; a read it could not finish is refused, not read as "no agent".
+wt_other_claude() {
+  local srv rows me=''
+  srv=$(wt_session_server "$1") || return 0
+  [ -z "${TMUX_PANE:-}" ] || me="$(wt_current_server)/$TMUX_PANE"
+  rows=$(agent-panel list --json 2>/dev/null) || return 2
+  jq -r --arg s "$srv" --arg t "$1" --arg me "$me" \
+    'select(.server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
+}
+
 # wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was
 # run from, when that is the session being cleaned up: a Claude session (its id is in the
 # env) whose pane is in <name>'s session, at <path>. Anything else (the keybinding, a plain
@@ -1254,7 +1269,7 @@ wt_done_arm() {
 # terminal left to print a refusal to. A worktree holding real work must be refused while
 # you can still read why.
 cmd_done() {
-  local target="${1:-$PWD}" path name reason
+  local target="${1:-$PWD}" path name reason other
 
   case "$target" in
   */*) path="$(realpath "$target" 2>/dev/null)" ;;
@@ -1273,6 +1288,14 @@ cmd_done() {
   # Ask about the WORK, not the session -- the session is the thing we are about to kill, so
   # wt_reap_reason would refuse every time by design.
   reason=$(wt_work_reason "$path") || panel_die "kept $name: $reason"
+
+  # The kill below is by session name, and a session can hold more than the window `done` was
+  # run from: a second window running claude would die with it, mid-turn. Refused here, while
+  # the reason can still be read; close this window alone (wind-down, no --session) and run
+  # `done` from the last one.
+  other=$(wt_other_claude "$name") || panel_die "kept $name: agent-panel could not say whether another window runs claude"
+  other=${other%%$'\n'*}
+  [ -z "$other" ] || panel_die "kept $name: window ${other% *} (pane ${other#* }) still runs claude; close only this window, then run done from the last one"
 
   if ! panel_in_tmux && ! wt_session_exists "$name"; then
     # Nothing to defer around: no session to kill and no shell to lose.
