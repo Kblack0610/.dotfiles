@@ -1047,6 +1047,49 @@ OUT
   assert_output 'model-lane outcome r-cx failed'   # only the timeout rated: it is the run's own length
 }
 
+@test "reap: an opencode run's last assistant row is classified: a quota end is limit and requeues, a key refusal is refused and still fails" {
+  oc_end_item ses_evalq 'error|provider.quota'
+  run cmd_reap
+  assert_output --partial 'requeued queue item oc'
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-oc.md)
+  assert_equal "$(qfield "$f" end_reason)" limit
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  rm -rf "$AGENT_QUEUE_DIR/queued"
+  oc_end_item ses_evala 'error|provider.auth'
+  run cmd_reap
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed refused'
+}
+
+@test "reap: an opencode run that finished its turn and never closed is stopped, failed and still reported to model-lane (negative control)" {
+  oc_end_item ses_evals 'stop'
+  run cmd_reap
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-oc failed'
+}
+
+@test "reap: an opencode run killed mid-work is a cut, or a timeout once the launcher's timeout has run; a provider fault is provider; a request the provider rejects is stopped" {
+  local reason
+  for spec in 'tool-calls|-|600|cut' 'tool-calls|-|7100|timeout' '-|aborted|600|cut' 'error|provider.rate-limit|60|provider' 'error|provider.error|60|provider' 'error|provider.invalid-request|60|stopped' 'error|provider.unheard-of|60|stopped'; do
+    IFS='|' read -r finish etype secs reason <<<"$spec"
+    rm -rf "$AGENT_QUEUE_DIR/done" "$AGENT_QUEUE_DIR/queued"
+    oc_end_item ses_evalk "$finish|$etype" "$secs"
+    run cmd_reap
+    assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" "$reason"
+  done
+}
+
+@test "reap: an opencode item whose sessions are in no database records no end_reason" {
+  oc_end_item ses_evalx 'stop'
+  sqlite3 "$OPENCODE_DB" "UPDATE session_message SET session_id = 'ses_elsewhere'"   # its session is in no database
+  agent-queue claim oc --sid ses_nothere >/dev/null
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" ''
+}
+
 @test "reap: a Claude item, and a Codex item whose rollout is missing, record no end_reason" {
   started_item cl lab:game-agent-2 run
   agent-queue set cl lane_run=r-cl >/dev/null
