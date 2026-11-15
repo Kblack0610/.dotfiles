@@ -1642,7 +1642,7 @@ where
 /// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
 /// every non-blank line after it indented deeper than it is. A child row sits two spaces in
 /// (the writers' step), so a task row indented only one space deeper is a sibling with a
-/// stray space, and ends the block.
+/// stray space, and ends the block (a tab is a child's indent, not a stray space).
 pub fn row_block_end(lines: &[&str], i: usize) -> usize {
     let depth = |l: &str| l.len() - l.trim_start().len();
     let own = depth(lines[i]);
@@ -1650,7 +1650,9 @@ pub fn row_block_end(lines: &[&str], i: usize) -> usize {
     while end < lines.len()
         && !lines[end].trim().is_empty()
         && depth(lines[end]) > own
-        && !(is_task(lines[end]) && depth(lines[end]) == own + 1)
+        && !(is_task(lines[end])
+            && depth(lines[end]) == own + 1
+            && lines[end][own..].starts_with(' '))
     {
         end += 1;
     }
@@ -2883,6 +2885,9 @@ after
             out,
             "## Tasks\n- [ ] Square\n  keep\n  was: x\n - [ ] all game\n   - [ ] child\n- [ ] z\n"
         );
+        // a tab-indented child row is still a child
+        let tabbed = ["- [ ] p", "\t- [ ] c", "- [ ] q"];
+        assert_eq!(row_block_end(&tabbed, 0), 2);
         // the stray-space row still owns its own deeper lines
         assert_eq!(row_block_end(&lines, 3), 5);
         let (rest, row, block) =
