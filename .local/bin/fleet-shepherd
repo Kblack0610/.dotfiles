@@ -1145,14 +1145,16 @@ lane_cols() {
   missed="$(grep -c '^unhandled: ' <<<"${SCORE_DUE:-}")"
   end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
   # the targets (<server>/<session>:<window>) the pace line calls parked on a clear machine, and
-  # each one's session alone, since a park file is named <session> or <session>:<window>
+  # each one's session alone, since a park file is named <session> or <session>:%<pane>, and a window
+  # ledger by the window its target recorded
   clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
     tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
-    [ -z "$clear" ] || ! grep -qxF -- "${p##*/}" <<<"$clear" || wrong=$((wrong + 1))
+    [ -z "$clear" ] || ! { grep -qxF -- "${p##*/}" <<<"$clear" ||
+      grep -qxF -- "$(sed -n 's/^target=[^/]*\///p' "$p" | head -n 1)" <<<"$clear"; } || wrong=$((wrong + 1))
   done
   printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }

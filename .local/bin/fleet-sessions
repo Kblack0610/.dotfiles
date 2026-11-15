@@ -1186,19 +1186,21 @@ activity_line() {
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
-# ledger whose tmux session (a session:window ledger: whose window) has no live claude again, so a
+# ledger whose tmux session (a session:%pane ledger: whose pane) has no live claude again, so a
 # parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
 # is stale: the live row wins. A window ledger is one claude of a shared session (hub/dotfiles),
-# whose other windows stay live.
+# whose other windows stay live; it is stale only when a claude lives in its own pane, since the
+# window index its target recorded renumbers.
 parked_lines() {
-  local f live
+  local f live panes
   live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
+  panes="$(jq -r '.pane' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
     [ -f "$f" ] || continue
-    jq -cn --rawfile l "$f" --arg live "$live" --arg key "${f##*/}" '
+    jq -cn --rawfile l "$f" --arg live "$live" --arg panes "$panes" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
-      | (if ($key | contains(":")) then [$t, ($live | split("\n"))]
+      | (if ($key | contains(":")) then ["\($p.server)/\($p.pane)", ($panes | split("\n"))]
          else [($t | sub(":[^:]*$"; "")), ($live | split("\n") | map(sub(":[^:]*$"; "")))] end) as [$me, $all]
       | select($all | index($me) | not)
       | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
