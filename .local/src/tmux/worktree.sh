@@ -599,8 +599,30 @@ wt_occupied_reason() {
     printf 'a running process is inside it\n'
     return 1
   fi
+  # Another tool's git lock is git's own "do not remove this": a runner that reuses one tree
+  # every pass (agentctl-playground-train) holds it so gc does not reap it between passes.
+  local reason
+  if reason=$(wt_foreign_lock "$1"); then
+    printf 'git-locked: %s\n' "${reason:-no reason given}"
+    return 1
+  fi
 
   return 0
+}
+
+# wt_foreign_lock <path> -- print the reason of a git lock on linked worktree <path> that is not
+# wt's own hold; rc 1 when it has no lock or only wt's. wt's is told by the prefix of
+# WT_HOLD_REASON, so rewording the rest of it, or a slot an older wt locked, still reads as wt's.
+wt_foreign_lock() {
+  local gd reason
+  [ -f "$1/.git" ] || return 1
+  gd=$(<"$1/.git")
+  gd=${gd#gitdir: }
+  case "$gd" in /*) ;; *) gd="$1/$gd" ;; esac
+  [ -f "$gd/locked" ] || return 1
+  reason=$(<"$gd/locked") || return 1
+  [[ "$reason" != "${WT_HOLD_REASON%%:*}:"* ]] || return 1
+  printf '%s' "$reason"
 }
 
 # The one state word gc prints per tree, derived each pass and never stored. The states table
@@ -1167,9 +1189,10 @@ cmd_reap() {
   # calls clean is safe to remove with --force; the count is taken again right before.
   #
   # The policy passed above, so wt_hold's lock comes off here, and a refusal puts it back: the
-  # tree is staying. A tree that never had one fails the unlock harmlessly.
+  # tree is staying. A tree that never had one fails the unlock harmlessly. Another tool's lock
+  # stays on even if it appeared after the policy check, so git refuses the removal below.
   local out
-  git -C "$main" worktree unlock "$path" 2>/dev/null || :
+  wt_foreign_lock "$path" >/dev/null || git -C "$main" worktree unlock "$path" 2>/dev/null || :
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
