@@ -1764,3 +1764,94 @@ EOF
   run grep -c '^gh \|^curl ' "$LOG"
   assert_output 0
 }
+
+# sub_fixture: real git, no stubs. A superproject on branch pr pins sub at c1 with its checkout there,
+# then merges a main that pins c2, a commit pushed to sub's origin only after sub was cloned, so the
+# move has to fetch it, as a merge of a busy base does. PRE is the head before that merge. c1 brings
+# a.txt, so a test can dirty the checkout.
+sub_fixture() {
+  export PATH="${PATH#"$SANDBOX/bin:"}"
+  # file:// submodules are refused by default since git 2.38.1; this sandbox is all local.
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  local w="$SANDBOX/subwork"
+  git init -q --bare -b main "$SANDBOX/sub.git"
+  git clone -q "$SANDBOX/sub.git" "$w" 2>/dev/null
+  echo one >"$w/a.txt" && git -C "$w" add a.txt && git -C "$w" commit -q -m c1
+  C1=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  SUP="$SANDBOX/super"
+  git init -q -b main "$SUP"
+  cd "$SUP"
+  git submodule add -q "$SANDBOX/sub.git" sub
+  git commit -q -m 'sub at c1'
+  git -C "$w" commit -q --allow-empty -m c2
+  C2=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  git checkout -q -b pr
+  git commit -q --allow-empty -m 'pr work'
+  PRE=$(git rev-parse HEAD)
+  git update-index --cacheinfo "160000,$C2,sub"
+  git commit -q -m 'sub at c2'
+  git branch -q -f main HEAD
+  git reset -q --hard "$PRE"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  export C1 C2 PRE SUP
+}
+
+follow() { git merge -q --no-edit main && . "$REPO_ROOT/.local/lib/submodule-follow.sh" && submodule_follow "$PRE"; }
+
+@test "submodule: a clean checkout on the old pin moves to the merged pin, fetching it (ucp-671 #2506)" {
+  sub_fixture
+  run follow
+  assert_success
+  assert_output "submodule: moved sub from ${C1:0:8} to the new pin ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$C2" ]
+  run git status --porcelain
+  assert_output ''
+}
+
+@test "submodule: a checkout with uncommitted changes stays on the old pin and says so" {
+  sub_fixture
+  echo two >sub/a.txt
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on the old pin ${C1:0:8}: it has uncommitted changes"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  [ "$(cat sub/a.txt)" = two ]
+}
+
+@test "submodule: a checkout on a commit of its own stays there and says so" {
+  sub_fixture
+  git -C sub commit -q --allow-empty -m local-only
+  local mine
+  mine=$(git -C sub rev-parse HEAD)
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on ${mine:0:8}, neither the old pin ${C1:0:8} nor the new ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$mine" ]
+}
+
+@test "submodule: an uninitialized submodule and an unchanged pin print nothing" {
+  sub_fixture
+  git submodule deinit -q -f sub
+  run follow
+  assert_success
+  assert_output ''
+  [ ! -e sub/.git ]
+}
+
+@test "submodule: a checkout already on the new pin is left alone, silently" {
+  sub_fixture
+  git -C sub fetch -q origin && git -C sub checkout -q "$C2"
+  run follow
+  assert_success
+  assert_output ''
+}
+
+@test "a catch-up merge runs submodule_follow from the pre-merge head before the push" {
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  [ "$(grep -n '^git diff --raw -z --no-abbrev --no-renames --diff-filter=M 0123456789abcdef HEAD$' "$LOG" | cut -d: -f1)" -lt "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" ]
+}

@@ -12,7 +12,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten), review (a tier-3 item's body has a
 # "Review:" line, review_gate), checks (the PR's checks pass: CI, a required check; a tier-3 item, or one landed with --ran-checks, needs checks that ran), merge (--squash, or with --merge-commit a merge commit,
@@ -58,6 +58,8 @@ usage() {
 }
 # shellcheck source=../lib/chain-event.sh
 . "${CHAIN_EVENT_LIB:-$(dirname "$(readlink -f "$0")")/../lib/chain-event.sh}"
+# shellcheck source=../lib/submodule-follow.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/submodule-follow.sh"
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 die() {
@@ -297,12 +299,17 @@ catch_up() {
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
   [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
+  local pre
+  pre=$(git rev-parse HEAD)
   if ! out=$(git merge -q --no-edit "$remote/$base" 2>&1); then
     git merge --abort >/dev/null 2>&1 || true
     printf 'agent-land: behind %s/%s by %s and merging it conflicts: resolve the merge and re-run\n' "$remote" "$base" "$behind" >&2
     land_failed conflict "behind $remote/$base by $behind and merging it conflicts"
     exit 3
   fi
+  # The merge moved the gitlinks, not the submodule checkouts: a clean one on its old pin follows,
+  # so the next local build compiles the merged code (ucp-671 #2506).
+  submodule_follow "$pre"
   # Push HEAD to the PR's own head branch: a bare `git push` under push.default=simple refuses when
   # the local branch name differs from its upstream (agent-11 -> feat/x, PR #1252), and the upstream
   # itself can be the base (a worktree cut from origin/main tracks it).
