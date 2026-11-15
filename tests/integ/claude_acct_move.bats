@@ -96,6 +96,7 @@ case "$verb" in
   capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
   display-message)
     if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
+    if [ "$last" = '#{window_index} #{window_name}' ]; then cat "$FIX/window.$target" 2>/dev/null; exit 0; fi   # a test's renumbered window
     if [ "$last" = '#{pane_dead}' ]; then [ -f "$FIX/pane_dead" ] && echo 1 || echo 0; fi
     if [ "$last" = '#{session_name}' ]; then
       for f in "$FIX/panes.$server".*; do
@@ -348,9 +349,9 @@ tmux_calls() { cat "$FIX/calls.log"; }
   assert_failure; assert_output --partial 'more than one claude in its panes; name the window (dotfiles:N) or the pane'
   run "$ACCT" move hub/dotfiles:2
   assert_success
-  assert_output --partial 'claude-acct: move dotfiles:2 (hub %5, claude 51, idle) from main to alt'
-  assert_output --partial 'claude-acct: moved dotfiles:2 to alt: claude 900, busy'
-  assert_called 'agent-notify -p low -t park: dotfiles:2 moved from main to alt (by '
+  assert_output --partial 'claude-acct: move dotfiles:%5 (hub %5, claude 51, idle) from main to alt'
+  assert_output --partial 'claude-acct: moved dotfiles:%5 to alt: claude 900, busy'
+  assert_called 'agent-notify -p low -t park: dotfiles:%5 moved from main to alt (by '
   [ ! -d "$CLAUDE_ACCT_PROC/51" ]
   [ -d "$CLAUDE_ACCT_PROC/61" ]
   run tmux_calls
@@ -361,10 +362,10 @@ tmux_calls() { cat "$FIX/calls.log"; }
   # a window by name, and a pane id found on whichever server has it
   rm -f "$FIX/calls.log" "$HOME/.claude/sessions/900.json"; rm -rf "$CLAUDE_ACCT_PROC/900"
   run "$ACCT" move dotfiles:w3 --server hub --dry-run
-  assert_success; assert_output --partial 'move dotfiles:3 (hub %6, claude 61'
+  assert_success; assert_output --partial 'move dotfiles:%6 (hub %6, claude 61'
   socket hub
   run "$ACCT" move %6 --dry-run
-  assert_success; assert_output --partial 'move dotfiles:3 (hub %6, claude 61'
+  assert_success; assert_output --partial 'move dotfiles:%6 (hub %6, claude 61'
 }
 
 @test "a window or pane target is refused when it does not name one live claude" {
@@ -379,7 +380,7 @@ tmux_calls() { cat "$FIX/calls.log"; }
   run "$ACCT" move hub/dotfiles:4
   assert_failure; assert_output --partial 'more than one claude in that window; name the pane'
   run "$ACCT" move %8 --server hub --dry-run
-  assert_success; assert_output --partial 'move dotfiles:4 (hub %8, claude 81'
+  assert_success; assert_output --partial 'move dotfiles:%8 (hub %8, claude 81'
   run "$ACCT" move %42 --server hub
   assert_failure; assert_output --partial 'no such pane on server hub'
   run "$ACCT" move lab/dotfiles:2 --server hub
@@ -392,13 +393,13 @@ tmux_calls() { cat "$FIX/calls.log"; }
   refute_output --partial 'send-keys'
 }
 
-@test "park and unpark one window of a shared session: its ledger is session:window, and the other claudes do not block the resume" {
+@test "park and unpark one window of a shared session: its ledger is session:%pane, and the other claudes do not block the resume" {
   WIN=2 session hub dotfiles %5 50 51 idle ""
   WIN=3 session hub dotfiles %6 60 61 idle ""
   run "$ACCT" park hub/dotfiles:2
   assert_success
-  assert_output --partial "claude-acct: parked dotfiles:2: $(PARKED_LEDGER dotfiles:2); claude-acct unpark dotfiles:2 resumes it"
-  run cat "$(PARKED_LEDGER dotfiles:2)"
+  assert_output --partial "claude-acct: parked dotfiles:%5: $(PARKED_LEDGER dotfiles:%5); claude-acct unpark dotfiles:%5 resumes it"
+  run cat "$(PARKED_LEDGER dotfiles:%5)"
   assert_line 'session=dotfiles'
   assert_line 'target=hub/dotfiles:2'
   assert_line 'pane=%5'
@@ -408,12 +409,12 @@ tmux_calls() { cat "$FIX/calls.log"; }
   # a server prefix must be the ledger's server
   run "$ACCT" unpark lab/dotfiles:2
   assert_failure; assert_output --partial 'parked on server hub, not lab'
-  [ -e "$(PARKED_LEDGER dotfiles:2)" ]
+  [ -e "$(PARKED_LEDGER dotfiles:%5)" ]
   # the claude in window 3 is live, and does not count against window 2's resume
   run "$ACCT" unpark hub/dotfiles:2
   assert_success
-  assert_output --partial 'claude-acct: unparked dotfiles:2 on alt'
-  [ ! -e "$(PARKED_LEDGER dotfiles:2)" ]
+  assert_output --partial 'claude-acct: unparked dotfiles:%5 on alt'
+  [ ! -e "$(PARKED_LEDGER dotfiles:%5)" ]
   [ -d "$CLAUDE_ACCT_PROC/61" ]
   run tmux_calls
   refute_line --partial 'send-keys -t %6'
@@ -421,11 +422,45 @@ tmux_calls() { cat "$FIX/calls.log"; }
   # by pane id: the ledger that holds that pane
   rm -f "$HOME/.claude/sessions/900.json"; rm -rf "$CLAUDE_ACCT_PROC/900"
   run "$ACCT" park %6 --server hub
-  assert_success; [ -e "$(PARKED_LEDGER dotfiles:3)" ]
+  assert_success; [ -e "$(PARKED_LEDGER dotfiles:%6)" ]
   run "$ACCT" unpark %7
   assert_failure; assert_output --partial 'not parked: no ledger holds that pane'
   run "$ACCT" unpark %6
-  assert_success; assert_output --partial 'claude-acct: unparked dotfiles:3 on alt'
+  assert_success; assert_output --partial 'claude-acct: unparked dotfiles:%6 on alt'
+}
+
+@test "a window ledger follows its pane when a window closes and the index renumbers; its name is the pane id" {
+  WIN=3 session hub dotfiles %6 60 61 idle ""
+  run "$ACCT" park hub/dotfiles:3
+  assert_success
+  [ -e "$(PARKED_LEDGER dotfiles:%6)" ]
+  [ ! -e "$(PARKED_LEDGER dotfiles:3)" ]
+  # window 2 closed: the pane is window 2 now, the ledger still says 3. tmux answers for the pane.
+  echo "2 w2" > "$FIX/window.%6"
+  run "$ACCT" unpark hub/dotfiles:3
+  assert_failure; assert_output --partial 'not parked'
+  [ -e "$(PARKED_LEDGER dotfiles:%6)" ]
+  # a new claude parks in what is now window 3: a different pane, so a different ledger
+  WIN=3 session hub dotfiles %8 80 81 idle ""
+  echo "3 w3" > "$FIX/window.%8"
+  run "$ACCT" park %8 --server hub
+  assert_success
+  [ -e "$(PARKED_LEDGER dotfiles:%6)" ]; [ -e "$(PARKED_LEDGER dotfiles:%8)" ]
+  run "$ACCT" unpark hub/dotfiles:2
+  assert_success; assert_output --partial 'claude-acct: unparked dotfiles:%6 on alt'
+  [ ! -e "$(PARKED_LEDGER dotfiles:%6)" ]; [ -e "$(PARKED_LEDGER dotfiles:%8)" ]
+  # unpark takes the ledger's own name, which fleet-dispatch's preempt resume passes
+  run "$ACCT" unpark hub/dotfiles:%8
+  assert_success; assert_output --partial 'claude-acct: unparked dotfiles:%8 on alt'
+}
+
+@test "a legacy session:window ledger still unparks by that name" {
+  session hub dotfiles %6 60 61 idle ""
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=dotfiles server=hub target=hub/dotfiles:2 pane=%6 direct=0 pid=1 session_id=sid-1 "cwd=$HOME/wt" status=idle why=park 'resume=claude --resume sid-1' > "$(PARKED_LEDGER dotfiles:2)"
+  rm -f "$REG"/*.json; rm -rf "$CLAUDE_ACCT_PROC/61"
+  run "$ACCT" unpark hub/dotfiles:2
+  assert_success; assert_output --partial 'claude-acct: unparked dotfiles:2 on alt'
 }
 
 @test "move takes one session and known flags only" {
