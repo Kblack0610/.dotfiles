@@ -215,7 +215,7 @@ END {
       if (q == r || raw[bl[q]] ~ /^# /) continue
       if (nn) { if (!(bd[q] in named)) continue }
       else if (bd[r] == "" ? q > r : (bd[q] == "" || bd[q] >= bd[r])) continue
-      if ((c = cosine(r, q)) > bc) { bc = c; best = q }
+      c = cosine(r, q); if (!best || c > bc) { bc = c; best = q }   # a named date holds at cosine 0 too
     }
     if (best && (nn || bc >= min)) printf "%d\t%d\t%.2f\t%s\n", bl[r], bl[best], bc, substr(raw[bl[r]], 1, 100)
   }

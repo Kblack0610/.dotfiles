@@ -10,7 +10,7 @@ setup() {
   BIN="$HOME/.local/bin"
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
-  cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BIN/"
+  cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BIN/"
   printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   printf '#!/usr/bin/env bash\necho "{}"\n' > "$BIN/agent-queue"
@@ -39,6 +39,16 @@ STUB
   assert_output --partial 'no drift (skills 0, global docs 0, restated pairs 60 (baseline 60)'
   run jq .pairs "$AGENTCTL_INBOX"/*/dups.json
   assert_output 60
+}
+
+@test "the correction chains are in the baseline and its summary, and are not drift" {
+  printf -- '- **2026-08-18** The backup mirror is alive at zero commits ahead.\n- **2026-08-20** Correction to the 08-18 bullet: zero commits ahead says the backup mirror is reachable.\n' > "$HOME/.agent/lessons/p.md"
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'no drift ('
+  assert_output --partial 'correction chains 1)'
+  run cut -f1,2 "$AGENTCTL_INBOX"/*/chains.tsv
+  assert_output $'p.md:2\t1'
 }
 
 @test "a lost baseline row is a failure, not a quiet night" {
