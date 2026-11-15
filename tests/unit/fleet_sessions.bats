@@ -3706,8 +3706,31 @@ JSONL
   PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'busy' ]
+  # a background subagent running: its result wakes the session
+  PANEL_JOB=agent PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  # an error line with no code (a usage limit) is the limit watch's, not this row's
+  sed 's/API Error: 403/Usage limit reached/' "$SANDBOX/t.jsonl" > "$SANDBOX/t2.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t2.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   sed -i 's/"isApiErrorMessage":true,//' "$SANDBOX/t.jsonl"
   PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+@test "a second API Error at a later minute is a new fact, and a finished session is left to DONE (ar-2143)" {
+  landed_fixture
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  api_error_transcript "$SANDBOX/t.jsonl"
+  sed -i 's/09:51:03/10:12:03/' "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T10:12' ]
+  # every phase ticked and the PR merged: finished, so not this row's
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }
