@@ -5849,7 +5849,7 @@ STUB
 @test "sizes: work minutes per row size from the item's row on its roadmap, calibrated at BENCH_SIZES_MIN, and cycle time per kind" {
   export ITEMS="$SANDBOX/done.jsonl" BENCH_SIZES_MIN=2
   export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
-  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" >> "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
   # two projects' roadmaps; ar-9 is unsized, ar-4 sits in an older version
   cat > "$SANDBOX/bin/roadmap-stub" <<'STUB'
 #!/usr/bin/env bash
@@ -5882,8 +5882,7 @@ STUB
   } > "$ITEMS"
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --json
   assert_success
-  # the size table reads 28 days of closes, then its .bands the last 7
-  assert_equal "$(paste -sd' ' "$ITEMS.since")" "$(date -d "@$((T0 - 28 * 86400))" +%F) $(date -d "@$((T0 - 7 * 86400))" +%F)"
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
   # s: 10 and 30 (the cancelled 999 and the item past the window left out); m: 60 and 90, failed included
   assert_equal "$(jq -c '[.sizes[] | [.size, .n, .calibrated, .work_p50, .work_p75, .per_point, .measured_weight]]' <<<"$output")" \
     '[["s",2,true,10,30,10,1],["m",2,true,60,90,20,6],["l",1,false,200,200,null,null]]'
@@ -5924,6 +5923,10 @@ STUB
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
   assert_output '- work p50 by #pts band, last 7d of closes: s 10 min (2), m 30 min (2), l 90 min (2): climbs'
+  # one read covers both windows, the size table's 28 days and the bands' 7
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
+  run env BENCH_NOW=$T0 BENCH_SIZES_DAYS=3 "$SUBJECT" sizes --check
+  assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   # m no slower than s, l faster than m
   items ar-1:30:1 ar-1:30:2 ar-2:30:1 ar-2:30:2 ar-3:20:1 ar-3:20:2
