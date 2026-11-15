@@ -1186,7 +1186,7 @@ time_section() {
   merges=$(merge_rows "$t" "$since")
   echo "## Where the time went"
   echo
-  jq -rn --argjson since "$since" --argjson t "$t" --argjson spend "$spend" --arg m "$merges" --arg win "${BENCH_WINDOW_H}h" \
+  jq -rn --argjson since "$since" --argjson t "$t" --argjson spend "$spend" --rawfile m <(printf '%s\n' "$merges") --arg win "${BENCH_WINDOW_H}h" \
       --slurpfile w <(window_stats "$t") --rawfile r <(runs_between "$since" "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60 | round1;
     def cost: if $spend == null then "-" else "$\(map($spend[.session_id] // 0) | add // 0 | round2)" end;
@@ -4172,7 +4172,7 @@ finding_facts() {
   [ -s "$PROGRESS" ] && src=$PROGRESS
   live=$(jq -c --argjson since $((t - 86400)) --argjson t "$t" \
     'select(.epoch > $since and .epoch <= $t and (.bucket == "WORKING" or .bucket == "STALLED")) | {epoch, project}' "$src") || return 1
-  jq -cn --argjson t "$t" --argjson s0 "$s0" --argjson s1 "$s1" --argjson s2 "$s2" --arg m "$merges" \
+  jq -cn --argjson t "$t" --argjson s0 "$s0" --argjson s1 "$s1" --argjson s2 "$s2" --rawfile m <(printf '%s\n' "$merges") \
       --argjson every "$FINDING_SAMPLE_S" --slurpfile p <(printf '%s\n' "$live") '
     def avg_live($span): map(select(.epoch > $t - $span)) | length * $every / $span;
     ($m | split("\n") | map(select(. != "") | split("\t"))) as $rows
@@ -4391,9 +4391,10 @@ cmd_throughput() {
   merges=$(merge_rows "$to" "$from" | grep -v '^!')
   # The exporter's own quantiles over the jobs finished in 24h; a recorded fixture has none.
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
-  jq -rn --argjson a "$from" --argjson b "$to" --argjson s "$snap" --arg m "$merges" --arg q "$queue" \
-      --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
-    (($b - $a) / 3600) as $h
+  # Merges and the snapshot grow with the window and the fleet, so they go by file, never --arg (128 KB each).
+  jq -rn --argjson a "$from" --argjson b "$to" --slurpfile sf <(printf '%s\n' "$snap") --rawfile m <(printf '%s\n' "$merges") \
+      --arg q "$queue" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
+    $sf[0] as $s | (($b - $a) / 3600) as $h
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
