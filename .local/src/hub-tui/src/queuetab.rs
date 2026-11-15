@@ -342,9 +342,9 @@ fn state(r: &QueueRow, p: Palette) -> Cell {
 
 /// hub-core `QueueRow::COLUMNS` in capitals, the web table's columns: the sort mark is an index
 /// into that list. The title leads; `#` is the start order of the ready items.
-const HEADER: [&str; 17] = [
+const HEADER: [&str; 18] = [
     "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN", "PR", "ROW",
-    "KIND", "SIZE", "ACCT", "MODE", "PLAN",
+    "KIND", "SIZE", "PTS", "ACCT", "MODE", "PLAN",
 ];
 
 fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
@@ -382,6 +382,7 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
         or_dash(r.val("row").shown().as_deref()).into(),
         or_dash(i.kind.as_deref()).into(),
         or_dash(i.size.as_deref()).into(),
+        i.points.map_or("-".into(), |n| n.to_string()).into(),
         or_dash(i.account.as_deref()).into(),
         or_dash(Some(&i.mode)).into(),
         or_dash(i.plan_label.as_deref()).into(),
@@ -487,6 +488,7 @@ fn detail(
         ("mode", mode),
         ("kind", some(&i.kind).unwrap_or("").to_string()),
         ("size", some(&i.size).unwrap_or("").to_string()),
+        ("points", i.points.map_or(String::new(), |n| n.to_string())),
         ("acct", some(&i.account).unwrap_or("").to_string()),
         ("harness", i.harness_label()),
         ("session", some(&i.session).unwrap_or("").to_string()),
@@ -567,17 +569,17 @@ fn detail(
 }
 
 /// The table's lines (header first), one per drawn row, columns dropped by priority to fit `w`:
-/// PLAN, MODE, ACCT, SIZE and KIND go first, then WAIT, ROW, FROM, RUN, PR and IN; STATE, TITLE,
+/// PLAN, MODE, ACCT, PTS, SIZE and KIND go first, then WAIT, ROW, FROM, RUN, PR and IN; STATE, TITLE,
 /// `#`, PROJECT, PRIORITY and HOLD stay longest.
 fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'static>> {
     Table {
         header: HEADER.to_vec(),
         rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![4, 0, 2, 3, 5, 7, 10, 9, 6, 11, 8, 12, 13, 14, 15, 16],
+        keep: vec![4, 0, 2, 3, 5, 7, 10, 9, 6, 11, 8, 12, 13, 14, 15, 16, 17],
         flex: Some(1),
         flexmin: 20,
         flexkeep: true,
-        right: vec![0, 7, 8, 9],
+        right: vec![0, 7, 8, 9, 14],
         cap: vec![
             (2, 18),
             (5, 18),
@@ -586,8 +588,8 @@ fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'st
             (10, 20),
             (11, 10),
             (12, 8),
-            (14, 10),
-            (16, 20),
+            (15, 10),
+            (17, 20),
         ],
         mark: v.table.mark::<QueueRow>(),
     }
@@ -1041,7 +1043,7 @@ pub(crate) mod tests {
     fn at_80_columns_the_columns_drop_by_priority_and_the_title_stays() {
         let mut q = fixture();
         q.items.extend(hub_core::queue::parse(concat!(
-            r#"{"slug":"wide","project":"unity-core-playground","type":"feat","size":"m","account":"claude-lazer","queued":"2026-11-03T12:00:00Z","state":"done","status":"ok","pr":"owner/repo#1234","finished":"2026-11-03T12:30:00Z","task":"Wide row"}"#,
+            r#"{"slug":"wide","project":"unity-core-playground","type":"feat","size":"m","points":5,"account":"claude-lazer","queued":"2026-11-03T12:00:00Z","state":"done","status":"ok","pr":"owner/repo#1234","finished":"2026-11-03T12:30:00Z","task":"Wide row"}"#,
             "\n",
         )));
         let heads = |w: usize| -> Vec<String> {
@@ -1055,10 +1057,19 @@ pub(crate) mod tests {
             heads(160),
             [
                 "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN",
-                "PR", "ROW", "KIND", "SIZE", "ACCT", "MODE", "PLAN"
+                "PR", "ROW", "KIND", "SIZE", "PTS", "ACCT", "MODE", "PLAN"
             ]
         );
-        // PLAN, MODE, ACCT, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
+        let wide = text(&q, &all(), 160);
+        // Each value sits in its own column: the cell under the header's own span.
+        let (head, row) = (line(&wide, "STATE"), line(&wide, "Wide row"));
+        let under = |h: &str, len: usize| {
+            let at = head.find(h).unwrap();
+            row[at..at + len].trim().to_string()
+        };
+        assert_eq!(under("SIZE", 4), "m", "{wide}");
+        assert_eq!(under("PTS", 3), "5", "{wide}");
+        // PLAN, MODE, ACCT, PTS, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
         assert_eq!(
             heads(80),
             ["#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "IN"],

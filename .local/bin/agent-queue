@@ -15,7 +15,10 @@
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
-#   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
+#   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
+#       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
+#       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
+#       only with --points, which adds `points` and the row's current `size`, so a caller that reads neither pays no board read
 #   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
@@ -951,25 +954,25 @@ project_board() {
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
-# file_story <project> <title> <priority> <weight> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
+# file_story <project> <title> <priority> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
-# `notes ptask` links, `#size/s` for a light item and `#size/m` for a heavy one, at the item's
-# priority, on the board project_board names. Started, so dispatch never promotes it a second time. An open
+# `notes ptask` links, at the item's priority, on the board project_board names, with no size: the
+# machine load the item runs at was no estimate, so the nightly `agentctl-inbox-triage --backlog --size`
+# scores the row. The row is started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 file_story() {
-  local project text="$2" prio="$3" size=s of="" lab code row out rc=0 id detail=() want=()
-  [ -z "${6:-}" ] || want=(--want "$6")
-  [ "$4" = heavy ] && size=m
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=()
+  [ -z "${5:-}" ] || want=(--want "$5")
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
   [ -n "$lab" ] && [ -n "$code" ] || return 0
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
-  [ "${5%-*}" = "$code" ] && of=" #of/$5"
+  [ "${4%-*}" = "$code" ] && of=" #of/$4"
   # The row's words: no markers or #tags of the task's own. The board refuses untyped text, so the
   # row is `notes`'s typed form of them, cut to the board's 80; past that the whole line is its detail.
   text="$(sed -E 's/<!--[^>]*-->//g; s/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$text")"
@@ -977,7 +980,7 @@ file_story() {
   row="$(notes --profile "$lab" ptask "$project" --agent propose -- "$text" 2>&1)" ||
     { echo "agent-queue: no story row filed on $project: ${row##*$'\n'}" >&2; return 0; }
   [ "${#text}" -le 80 ] || detail=(--detail "$text")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #size/$size #$prio$of" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of" 2>&1)" || rc=$?
   id="$(sed -nE 's/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/\1/p' <<<"$out" | head -1)"
   case "$rc" in
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
@@ -1172,7 +1175,7 @@ cmd_add() {
            project="$named_project"
            echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
          fi
-         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$weight" "$epic" "$want")"
+         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want")"
        fi ;;
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
@@ -1327,11 +1330,29 @@ add_plan() {
 # One item through cmd_add, in a subshell so its die stops only that item.
 cmd_add_one() { (cmd_add "$@"); }
 
+# sizing_join <items json array> -> the array with each item's `points` and `size` band read from the
+# board row it works (item_row's "<board>:<key>"), the one size store: `notes board --json` names
+# both on every row, open or closed in the last SIZING_DONE_DAYS. An item with no row, or whose row
+# is gone, keeps the `size:` it was started with and has no points. A board that cannot be read joins
+# nothing: the list is still the queue.
+SIZING_DONE_DAYS=60
+sizing_join() {
+  local joined
+  command -v notes >/dev/null && joined="$(jq -c --slurpfile b <(notes board --json --done-days "$SIZING_DONE_DAYS" 2>/dev/null |
+    jq -c '[(.rows + .done)[] | select(.id != null) | {key: (.project + ":" + .id), value: {points, size}}] | from_entries' 2>/dev/null) '
+    ($b[0] // {}) as $m
+    | map(($m[.row // ""] // {}) as $r
+      | (if $r.size then .size = $r.size else . end) + (if $r.points then {points: $r.points} else {} end))' <<<"$1" 2>/dev/null)" &&
+    [ -n "$joined" ] && { printf '%s\n' "$joined"; return 0; }
+  printf '%s\n' "$1"
+}
+
 cmd_list() {
-  local json="" state=active date="" since=""
+  local json="" state=active date="" since="" points=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
+      --points) points=1; shift ;;
       --state) state="${2:?}"; shift 2 ;;
       --date) date="${2:?}"; shift 2 ;;
       --since) since="${2:?}"; shift 2 ;;
@@ -1350,6 +1371,8 @@ cmd_list() {
   # A queue that cannot be read is a failure, never an empty list: a reader that acts on what is
   # missing (plans_orphaned) would read every item as gone.
   local items; items="$(collect $states ${date:+--date "$date"} ${since:+--since "$since"})" || die "could not read the queue"
+  [ -n "$points" ] || [ -n "$json" ] || points=1
+  [ -z "$points" ] || items="$(sizing_join "$items")"
   if [ -n "$json" ]; then
     jq -c '.[]' <<<"$items"
     return 0
@@ -1359,7 +1382,8 @@ cmd_list() {
   jq -r '(["waiting","review","running","queued","done"]) as $o
     | sort_by(.state as $s | $o | index($s)) | .[]
     | [.state, .priority, .slug, .project, .mode,
-       (.hold // .status // .session // ""), (.tags // ""), .from] | map(if . == "" then "-" else . end) | @tsv' <<<"$items"
+       (.hold // .status // .session // ""), (.tags // ""), .from,
+       (if .size and .points then "\(.size)/\(.points)" else (.size // "") end)] | map(if . == "" then "-" else . end) | @tsv' <<<"$items"
 }
 
 cmd_next() {
