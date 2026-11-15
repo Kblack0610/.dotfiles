@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# store-reviews - what users say about each product on Steam, Google Play and the App Store.
+#
+#   store-reviews [--json]   one JSON document on stdout (the default)
+#   store-reviews publish    also write store_reviews.prom for Prometheus, then print the document
+#
+# The apps are each product's store targets in project-map.json (`trackers.<p>.targets[].live`:
+# steam.app, play.package, testflight.app), the same list release-state probes. Per app it reads
+# the newest reviews and counts the last 7 days and how many of them were positive (a Steam thumbs
+# up, 4 or 5 stars elsewhere), plus the lifetime total where the store gives one (Steam, App
+# Store). An app that could not be read carries `error` and no counts, never a 0. Kb-project
+# recording rules in home-config turn the series into `kb_project_number{dept="support"}`.
+# Credentials, series and statuses: docs/operations/store-reviews.md.
+set -uo pipefail
+
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/store-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+
+# Timeout guard on every external call, in seconds.
+PROBE_TIMEOUT="${STORE_REVIEWS_TIMEOUT:-15}"
+# release-state's read-only app keys: reviews are app information, not sales. Formats:
+# docs/operations/release-state.md, "Store credentials". Never the release keys.
+RBW_ASC=release_state_asc
+RBW_PLAY=release_state_play
+PLAY_SCOPE=https://www.googleapis.com/auth/androidpublisher
+PLAY_API=https://androidpublisher.googleapis.com/androidpublisher/v3
+ASC_API=https://api.appstoreconnect.apple.com/v1
+# Steam's public review endpoint: no key. It answers 302 to the store front for an app with no
+# Steam's public review endpoint: no key. It answers 302 to the store front for an app with no
+# public page yet. Valve publishes no limit for it (read 2026-11-15).
+STEAM_REVIEWS=https://store.steampowered.com/appreviews
+# The window the recent counts cover, in days.
+WINDOW_DAYS=7
+# Reviews are read newest first, a page at a time, until a page reaches past the window. PAGES
+# bounds each app; a window that needs more is that app's error, never a short count. Page sizes
+# are each store's maximum: Steam 100, the App Store 200, Play 100. Play: 200,000 calls a day per
+# project; App Store Connect: 3,600 an hour per key (both read 2026-11-15). Each store's apps are
+# read one after another, so a run holds at most one call open per provider.
+STEAM_PAGE=100
+ASC_PAGE=200
+PLAY_PAGE=100
+PAGES=5
+
+die() { echo "store-reviews: $*" >&2; exit 2; }
+usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+for t in jq curl openssl; do
+  command -v "$t" >/dev/null 2>&1 || die "$t is not installed"
+done
+
+MODE=json
+case "${1:-}" in
+  ""|--json) ;;
+  publish) MODE=publish ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac
+
+TMP="$(mktemp -d)" || die "cannot make a scratch dir"
+trap 'rm -rf "$TMP"' EXIT
+NOW="$(now_epoch)"
+SINCE=$((NOW - WINDOW_DAYS * 86400))
+
+# apps -> one {project, store, app} per line: every product's store targets, each app once.
+apps() {
+  local map
+  map="$(project_map_file)"
+  [ -f "$map" ] || die "no registry at $map"
+  project_machine_profile >/dev/null
+  jq -c --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map" "$PROJECT_VISIBLE_JQ"'
+    [(.trackers // {}) | to_entries[]
+     | select(.value | type == "object") | .key as $p | select($p | visible($m))
+     | (.value.targets // [])[] | objects | .live // {}
+     | ({project: $p, store: "steam", app: .steam.app},
+        {project: $p, store: "play", app: .play.package},
+        {project: $p, store: "app_store", app: .testflight.app})
+     | select(.app != null) | .app |= tostring] | unique[]' "$map"
+}
+
+# row <app-json> <error> | row <app-json> "" <counts-json>: an app's record. A row with an error
+# has no counts, and counts that could not be computed are an error.
+row() {
+  if [ -n "$2" ]; then jq -c --arg e "$2" '. + {error: $e}' <<<"$1"
+  elif [ -n "${3:-}" ]; then jq -c --argjson c "$3" '. + $c' <<<"$1"
+  else jq -c '. + {error: "review answer could not be counted"}' <<<"$1"; fi
+}
+http_why() { local d; d="$(store_api_error "$2")"; printf 'HTTP %s%s' "$1" "${d:+: $d}"; }
+uri() { jq -rn --arg v "$1" '$v | @uri'; }
+# createdDate carries an offset ("2026-11-14T09:30:00-08:00"), which fromdateiso8601 does not take.
+ASC_EPOCH_JQ='def epoch: capture("^(?<t>[0-9-]+T[0-9:]+)(\\.[0-9]+)?(?<z>Z|(?<s>[+-])(?<h>[0-9]{2}):(?<m>[0-9]{2}))$")
+  | (.t + "Z" | fromdateiso8601) - (if .z == "Z" then 0 else (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end);'
+
+steam() {
+  local a="$1" app f n=0 cur='*' code
+  app="$(jq -r .app <<<"$a")"
+  while :; do
+    n=$((n + 1))
+    [ "$n" -le "$PAGES" ] || { row "$a" "more than $PAGES pages of reviews in the window"; return; }
+    f="$TMP/steam.$2.$n"
+    code="$(store_fetch "$STEAM_REVIEWS/$app?json=1&filter=recent&language=all&purchase_type=all&review_type=all&num_per_page=$STEAM_PAGE&cursor=$(uri "$cur")" "" "$f")" \
+      || { row "$a" "review request failed"; return; }
+    case "$code" in
+      200) ;;
+      302) row "$a" "" '{"listed": false}'; return ;;
+      *) row "$a" "$(http_why "$code" "$f")"; return ;;
+    esac
+    # Only the first page carries the lifetime summary.
+    jq -e --argjson n "$n" '.success == 1 and ($n > 1 or (.query_summary.total_reviews | type == "number"))' "$f" >/dev/null 2>&1 \
+      || { row "$a" "review answer has no query_summary"; return; }
+    cur="$(jq -r --argjson since "$SINCE" --argjson per "$STEAM_PAGE" \
+      'select((.reviews | length) == $per and .reviews[-1].timestamp_created >= $since) | .cursor // empty' "$f" 2>/dev/null)"
+    [ -n "$cur" ] || break
+  done
+  row "$a" "" "$(jq -sc --argjson since "$SINCE" '
+    .[0].query_summary as $s | [.[].reviews[]? | select(.timestamp_created >= $since)] as $r
+    | {listed: true, total: $s.total_reviews, total_positive: $s.total_positive,
+       recent: ($r | length), recent_positive: ($r | map(select(.voted_up)) | length)}' "$TMP"/steam."$2".* 2>/dev/null)"
+}
+
+play() {
+  local a="$1" app f n=0 tok="" code
+  app="$(jq -r .app <<<"$a")"
+  [ -n "$PLAY_TOKEN" ] || { row "$a" "$PLAY_WHY"; return; }
+  # Play keeps only the last week of reviews in this list, and only those with text: every page is
+  # inside the window.
+  while :; do
+    n=$((n + 1))
+    [ "$n" -le "$PAGES" ] || { row "$a" "more than $PAGES pages of reviews in the window"; return; }
+    f="$TMP/play.$2.$n"
+    code="$(store_fetch "$PLAY_API/applications/$app/reviews?maxResults=$PLAY_PAGE${tok:+&token=$(uri "$tok")}" "$PLAY_TOKEN" "$f")" \
+      || { row "$a" "review request failed"; return; }
+    [ "$code" = 200 ] || { row "$a" "$(http_why "$code" "$f")"; return; }
+    tok="$(jq -r '.tokenPagination.nextPageToken // empty' "$f" 2>/dev/null)" || { row "$a" "review answer is not JSON"; return; }
+    [ -n "$tok" ] || break
+  done
+  row "$a" "" "$(jq -sc --argjson since "$SINCE" '
+    [.[].reviews[]? | .comments[0].userComment // empty | select((.lastModified.seconds | tonumber) >= $since)] as $r
+    | {listed: true, recent: ($r | length), recent_positive: ($r | map(select(.starRating >= 4)) | length)}' "$TMP"/play."$2".* 2>/dev/null)"
+}
+
+app_store() {
+  local a="$1" app f n=0 code url
+  app="$(jq -r .app <<<"$a")"
+  [ -n "$ASC_TOKEN" ] || { row "$a" "$ASC_WHY"; return; }
+  url="$ASC_API/apps/$app/customerReviews?sort=-createdDate&limit=$ASC_PAGE&fields%5BcustomerReviews%5D=rating,createdDate"
+  while :; do
+    n=$((n + 1))
+    [ "$n" -le "$PAGES" ] || { row "$a" "more than $PAGES pages of reviews in the window"; return; }
+    f="$TMP/asc.$2.$n"
+    code="$(store_fetch "$url" "$ASC_TOKEN" "$f")" || { row "$a" "review request failed"; return; }
+    [ "$code" = 200 ] || { row "$a" "$(http_why "$code" "$f")"; return; }
+    [ "$n" -gt 1 ] || jq -e '.meta.paging.total | type == "number"' "$f" >/dev/null 2>&1 \
+      || { row "$a" "review answer has no paging total"; return; }
+    url="$(jq -r --argjson since "$SINCE" "$ASC_EPOCH_JQ"'
+      select((.data | length) > 0 and (.data[-1].attributes.createdDate | epoch) >= $since) | .links.next // empty' "$f" 2>/dev/null)" \
+      || { row "$a" "review answer could not be counted"; return; }
+    [ -n "$url" ] || break
+  done
+  row "$a" "" "$(jq -sc --argjson since "$SINCE" "$ASC_EPOCH_JQ"'
+    .[0].meta.paging.total as $t | [.[].data[]?.attributes | select((.createdDate | epoch) >= $since)] as $r
+    | {listed: true, total: $t, recent: ($r | length), recent_positive: ($r | map(select(.rating >= 4)) | length)}' "$TMP"/asc."$2".* 2>/dev/null)"
+}
+
+APPS="$(apps)" || die "could not read the store targets from $(project_map_file)"
+# One token per store that has apps, made once; a locked vault or a missing entry is that store's
+# error for each of its apps.
+PLAY_TOKEN="" PLAY_WHY="" ASC_TOKEN="" ASC_WHY=""
+has() { grep -q "\"store\":\"$1\"" <<<"$APPS"; }
+if has play || has app_store; then
+  if store_rbw_ready; then
+    if has play; then
+      if store_google_token "$RBW_PLAY" "$PLAY_SCOPE"; then PLAY_TOKEN="$STORE_TOKEN"; else PLAY_WHY="$STORE_WHY"; fi
+    fi
+    if has app_store; then
+      if store_asc_jwt "$RBW_ASC"; then ASC_TOKEN="$STORE_TOKEN"; else ASC_WHY="$STORE_WHY"; fi
+    fi
+  else
+    PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
+  fi
+fi
+
+# Stores run side by side; one store's apps run in turn. The store name is its reader function.
+grep -n . <<<"$APPS" > "$TMP/apps"
+for s in steam play app_store; do
+  while IFS=: read -r i a; do
+    "$s" "$a" "$i" > "$TMP/row.$i"
+  done < <(grep -F "\"store\":\"$s\"" "$TMP/apps") &
+done
+wait
+
+doc="$(cat "$TMP"/row.* 2>/dev/null | jq -sc --argjson now "$NOW" --argjson w "$WINDOW_DAYS" \
+  '{generated_epoch: $now, window_days: $w, apps: sort_by(.project, .store)}')"
+
+# prom_lines <doc>: per product and store the recent and lifetime counts, summed over its apps (a
+# game and its demo), and per store whether every app read. A product and store with an unread app
+# write no count, and hold the store at 0; an app with no public page yet adds nothing.
+prom_lines() {
+  jq -r "$PROM_JQ"'
+    def per($k; $w): .apps | group_by([.project, .store])[] | select(all(.error == null))
+      | map(select(.listed and .[$k] != null)) | select(length > 0)
+      | [{project: .[0].project, store: .[0].store, window: $w}, (map(.[$k]) | add)];
+    gauge("store_reviews"; "Store reviews of a product, in the last window_days (window=\"7d\") or all time (window=\"all\").";
+      per("recent"; "7d"), per("total"; "all")),
+    gauge("store_reviews_positive"; "Positive store reviews (Steam thumbs up, 4 or 5 stars elsewhere), windows as store_reviews.";
+      per("recent_positive"; "7d"), per("total_positive"; "all")),
+    gauge("store_reviews_up"; "1 when store-reviews read every app of the store on its last run.";
+      .apps | group_by(.store)[] | [{store: .[0].store}, all(.error == null)]),
+    gauge("store_reviews_generated_seconds"; "When store-reviews last ran, unix seconds.";
+      [{}, .generated_epoch])' <<<"$1"
+}
+
+if [ "$MODE" = publish ]; then
+  prom_textfile store_reviews.prom prom_lines "$doc" || echo "store-reviews: could not write store_reviews.prom" >&2
+fi
+printf '%s\n' "$doc"
