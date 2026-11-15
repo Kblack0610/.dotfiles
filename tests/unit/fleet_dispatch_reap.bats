@@ -1507,12 +1507,14 @@ OUT
   echo '{"pane":"hub/%3","session_id":"conv-3","cwd":"/fresh"}' >> "$NOTES_FIXTURE/panel.json"
   world '10 1000' "$PANE1" "$PANE2"
   "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  sed -i 's|/work/tree|/moved/tree|' "$NOTES_FIXTURE/panel.json"
   world '11 2000' "$PANE1" "$PANE3" "$PANE2"
   "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1",""]'
   world ''
   "$REPO_ROOT/.local/bin/fleet-dispatch" record
-  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1","","conv-3"]'
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["","conv-1","conv-3"]'
+  assert_equal "$(jq -r '.panes[] | select(.claude == "conv-1") | .cwd' "$LOST")" /moved/tree
   [ ! -f "$RECORD" ] || fail "the dead record stayed"
 }
 
