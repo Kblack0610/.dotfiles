@@ -17,6 +17,8 @@
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
+#   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch, a review item queued
+#   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
@@ -168,6 +170,7 @@ MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench'
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
+TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch: the diff a trainee run left, which its review item applies (cmd_trainee_review)
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
 # worker, whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
@@ -1531,7 +1534,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc
+  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1568,7 +1571,7 @@ gateway_launch() {
   sbx=$(harness_sandbox "$harness")
   if [ -n "$sbx" ]; then
     [ "$(harness_launcher "$harness")" = opencode ] || { say "start: $harness names lane sandbox '$sbx', which only an opencode harness holds; nothing started"; return 2; }
-    pwhy=$(sandbox_item_why "$it") || { say "start: $harness $pwhy, and $slug is not one"; return 2; }
+    pwhy=$(sandbox_item_why "$it" "$harness") || { say "start: $harness $pwhy ($slug)"; return 2; }
   fi
   case "$(harness_launcher "$harness")" in
     claude-lazer)
@@ -1615,18 +1618,25 @@ gateway_launch() {
         cmd="$jail AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
         cmd="$cmd OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$(printf '%q' "$run/data") XDG_CACHE_HOME=$(printf '%q' "$run/cache")"
         cmd="$cmd XDG_STATE_HOME=$(printf '%q' "$run/state") $srtc"
-        # The canary steps the brief leaves out read and write fleet state, so they run here, outside
+        # A canary's steps the brief leaves out read and write fleet state, so they run here, outside
         # the sandbox, before and after it; the run can neither reach its oracle nor write its score.
         # The oracle runs the code the model wrote, so the score runs that command back inside the jail.
         # A start that fails skips the run and the score: the tree was never put at base, so a score
-        # there would grade the merged code.
-        cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
+        # there would grade the merged code. A trainee's run is followed by its review hand-off
+        # (cmd_trainee_review), which reads the diff the run left whatever way the run ended.
+        if is_canary "$it"; then
+          cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
+          tail="BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok"
+        else
+          cmd="{ timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
+          tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
+        fi
       else
         cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m"
       fi
       cmd="$cmd opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
-      [ -z "$sbx" ] || cmd="$cmd; BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
+      [ -z "$sbx" ] || cmd="$cmd; $tail; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
@@ -1720,13 +1730,144 @@ harness_tier_why() {
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
-# sandbox_item_why <item json> -> why a sandboxed harness cannot run the item, or nothing. Its run sees
-# its worktree alone (no skills, queue, gh or push), so it takes only a canary item that names its task
-# (`canary`, fleet-bench canary queue sets it): fleet-dispatch runs the canary steps around the run.
+# sandbox_item_why <item json> <harness> -> why a sandboxed harness cannot run the item, or nothing. Its
+# run sees its worktree alone (no skills, queue, gh or push), so it takes a canary item that names its
+# task (`canary`, fleet-bench canary queue sets it), or a trainee row (trainee_why): fleet-dispatch runs
+# the canary steps, or the trainee's review hand-off, around the run (gateway_launch).
 sandbox_item_why() {
+  local why
   is_canary "$1" && [ -n "$(jq -r '.canary // empty' <<<"$1")" ] && return 0
-  echo "runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:)"
+  why=$(trainee_why "$1" "$2") && return 0
+  echo "runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:) or a trainee row, and $why"
   return 1
+}
+
+# trainee_load -- the trainee block of lanes.yaml (`model-lane trainee`) in TRAINEE_CONF, read once in
+# this shell so the checks route() runs in subshells reuse it; {} (no trainee lane) when it cannot be read.
+trainee_load() {
+  [ -z "${TRAINEE_CONF:-}" ] || return 0
+  TRAINEE_CONF=$(model-lane trainee 2>/dev/null) && jq -e 'type == "object"' <<<"$TRAINEE_CONF" >/dev/null 2>&1 || TRAINEE_CONF='{}'
+}
+
+# item_points <item json> -> the item's board points (#pts/N in its task), or nothing.
+item_points() { jq -r '[(.task // "") | match("#pts/([0-9]+)\\b"; "i").captures[0].string][0] // empty' <<<"$1"; }
+
+# trainee_why <item json> [harness] -> why no trainee takes the item, rc 1, or nothing. A trainee (the
+# training ladder's second rung, lanes.yaml `trainee:`) takes a row of at most `points` at tier 1 whose
+# kind opens a PR, not a plan, a canary, a verify or review item, one that names its own model, or one a
+# trainee ran before (`trainee:`, so a rejected row goes to claude); with a harness, one of its
+# `candidates` holding fewer than `max_open` trainee rows (running, waiting or in review). Its project
+# is the harness's `projects` allowlist (harness_project_why), checked beside this.
+trainee_why() {
+  local it="$1" h="${2:-}" pts tags tier kind max open
+  pts=$(item_points "$it")
+  [ -n "$pts" ] || { echo "it carries no #pts/N"; return 1; }
+  tags=" $(jq -r '.tags // ""' <<<"$it") "
+  ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* ]] ||
+    { echo "it is a canary, verify or review item"; return 1; }
+  [ -z "$(jq -r '.trainee // empty' <<<"$it")" ] || { echo "a trainee ran it once already ($(jq -r .trainee <<<"$it"))"; return 1; }
+  [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
+  [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
+  tier=$(item_tier "$it")
+  [ "$tier" = 1 ] || { echo "it is tier $tier, and a trainee takes tier 1 only"; return 1; }
+  load_kinds; kind=$(item_kind "$it")
+  [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
+  trainee_load
+  max=$(jq -r '.points // empty' <<<"$TRAINEE_CONF")
+  [ -n "$max" ] || { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
+  [ "$pts" -le "$max" ] || { echo "it is $pts points, and a trainee takes $max at most"; return 1; }
+  [ -n "$h" ] || return 0
+  jq -e --arg h "$h" 'any(.candidates[]?; .harness == $h)' <<<"$TRAINEE_CONF" >/dev/null ||
+    { echo "$h is no trainee in lanes.yaml"; return 1; }
+  open=$(agent-queue list --json --state active 2>/dev/null |
+    jq -se --arg h "$h" '[.[] | select(.state != "queued" and .agent == $h and ((.trainee // "") | startswith($h + ":")))] | length') ||
+    { echo "the queue is unreadable, so $h's open trainee rows are unknown"; return 1; }
+  max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
+  [ "$open" -lt "$max" ] || { echo "$h holds $open trainee rows, its max_open in lanes.yaml"; return 1; }
+}
+
+# trainee_brief <item json> -- a trainee's run: the task, done in its worktree and left there. The
+# sandbox lets it neither commit nor reach the queue, gh or the human, so its diff goes to review.
+trainee_brief() {
+  jq -r .task <<<"$1"
+  echo
+  echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
+  echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Do not commit, push or open a pull request: leave your edits in the working tree. A reviewer reads the diff and lands it or sends the task back."
+  echo "If the task cannot be done without a decision from the human, change nothing and stop."
+}
+
+# cmd_trainee_review <slug> -- the tail of a trainee's run (gateway_launch), outside its sandbox, in its
+# worktree. The diff it left becomes TRAINEE_DIR/<slug>.patch, the worktree goes back to its base so wt
+# reaps it, and a review item `review-<slug>` pinned to claude on the reviewer lane's model (lanes.yaml
+# trainee:) is queued to land it or send the row back; the row waits in review, where reap leaves an
+# item with a note. No diff, or no reviewer, is a reject (cmd_trainee_reject).
+cmd_trainee_review() {
+  local slug="${1:?trainee-review: needs a slug}" it trn base patch model key rev
+  it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-review: no queue item $slug"; return 1; }
+  trn=$(jq -r '.trainee // empty' <<<"$it")
+  [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
+  [ "$(jq -r .state <<<"$it")" = running ] || { say "trainee-review: $slug is $(jq -r .state <<<"$it"), not running"; return 2; }
+  # The reset below discards what the diff saved, so it runs only in a linked worktree, never a main checkout.
+  base=$(git rev-parse HEAD 2>/dev/null) && [ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] ||
+    { say "trainee-review: $PWD is no linked worktree"; return 1; }
+  mkdir -p "$TRAINEE_DIR" || { say "trainee-review: no $TRAINEE_DIR"; return 1; }
+  patch="$TRAINEE_DIR/$slug.patch"
+  git add -A && git diff --cached --binary "$base" >"$patch" || { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
+  [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$trn left no diff"; return; }
+  # The worktree goes back to its base only once the review is queued: until then it holds the diff too.
+  trainee_load
+  model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
+  if [ -z "$model" ]; then
+    cmd_trainee_reject "$slug" --why "lanes.yaml names no trainee reviewer" || return
+  else
+    key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
+    rev="review-$slug"
+    agent-queue add --from trainee --project "$(jq -r .project <<<"$it")" --priority "$(jq -r '.priority // "low"' <<<"$it")" \
+      --tags "trainee-review tier1" --slug "$rev" -- "$(trainee_review_task "$it" "$trn" "$base" "$patch" "$key" "$rev")" >/dev/null &&
+      agent-queue set "$rev" "model=$model" >/dev/null ||
+      { say "trainee-review: could not queue $rev; $slug stays running, its diff in $patch and in $PWD"; return 1; }
+    agent-queue set "$slug" "note=trainee $trn left a diff; $rev lands it or sends the row back" >/dev/null &&
+      agent-queue move "$slug" review >/dev/null || { say "trainee-review: could not move $slug to review; $rev is queued"; return 1; }
+    say "trainee-review: $slug's diff is $patch; $rev reviews it on $model"
+  fi
+  git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
+}
+
+# trainee_review_task <item json> <trainee> <base> <patch> <task key> <review slug> -> the review
+# item's whole brief (item_brief passes it as it stands).
+trainee_review_task() {
+  local slug
+  slug=$(jq -r .slug <<<"$1")
+  cat <<EOF
+Review the diff a trainee left for queue item $slug, then land it or send the row back.
+
+The trainee $2 ran this row in a sandbox, on base $3, and could not commit. Its whole change is the patch $4.
+
+The row it was given:
+$(jq -r .task <<<"$1")
+
+Approve only when the diff does the row correctly and fully and needs at most small fixes; anything more is a reject, so the trainee's record stays true.
+- Approve: cut a worktree off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Land with \`agent-land <N> --item $slug\`, then \`agent-queue move $6 done --status ok\`.
+- Reject: \`fleet-dispatch trainee-reject $slug --why "<one line: what was wrong>"\`, then \`agent-queue move $6 done --status ok\`. The row goes back to the normal queue, on claude.
+EOF
+}
+
+# cmd_trainee_reject <slug> --why <text> -- the row goes back to the normal queue on claude (its outcome
+# a redo on the trainee's run, agent-queue move), with the reason as its note; its `trainee:` stays, so
+# no trainee takes it again (trainee_why).
+cmd_trainee_reject() {
+  local slug="${1:?trainee-reject: needs a slug}" why='' it trn
+  shift
+  [ "${1:-}" = --why ] && [ -n "${2:-}" ] || { say "trainee-reject: needs --why \"<one line>\""; return 2; }
+  why=$2
+  it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-reject: no queue item $slug"; return 1; }
+  trn=$(jq -r '.trainee // empty' <<<"$it")
+  [ -n "$trn" ] || { say "trainee-reject: no trainee ran $slug"; return 2; }
+  agent-queue set "$slug" agent=claude model= routed= "note=trainee $trn rejected: $why" >/dev/null &&
+    agent-queue move "$slug" queued >/dev/null || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  rm -f "$TRAINEE_DIR/$slug.patch"
+  say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
 
 # takes_plan <harness> -- it can run a plan item: a pane that waits on the human at its plan, or a
@@ -1772,7 +1913,7 @@ resume_thread() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' \
+  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1956,12 +2097,18 @@ cmd_start() {
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
-    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} >/dev/null &&
+    # A sandboxed run of anything but a canary is a trainee's (sandbox_item_why): `trainee:` marks the
+    # row as trained once, counts toward its harness's cap, and its review hand-off reads it.
+    trn=''; [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
+    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
+    # A trainee run logs under lane trainee, with the class of the verdict that routed it when one did.
+    elif [ -n "$trn" ]; then
+      lane_log "$item" "$(item_headline "$it")" "$(jq -cn --argjson v "${verdict:-null}" --arg m "$model" '($v // {}) + {lane: "trainee", by: "rule", model: $m}')" "$model" "$harness"
     # A routed start is not an experiment: it logs under the lane model-lane picked, with its harness.
     elif [ -n "$verdict" ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
     elif [ "$harness" = claude-cloud ]; then :   # not a pairing the human picked, and no model of ours ran
@@ -2166,11 +2313,14 @@ ask_decisions() {
 # on one plans first (plan_stage). A start that resumes the item's last run (resume_thread) gets
 # resume_brief instead, and one that does not, of an item with salvaged work, is told where it is
 # (salvage_line). A Forgejo repo lands with agent-land too, which merges through that forge's API.
-# A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief.
+# A `canary` item (fleet-bench canary queue) opens no PR: its task is the whole brief, as is a trainee's
+# review item's (cmd_trainee_review writes it). A trainee's run (a sandboxed harness on anything but a
+# canary) gets trainee_brief: it cannot commit, so it leaves its change in the worktree.
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
-  if is_canary "$it"; then jq -r .task <<<"$it"; return 0; fi
+  if is_canary "$it" || [[ "$tags" == *" trainee-review "* ]]; then jq -r .task <<<"$it"; return 0; fi
+  if [ -n "$(harness_sandbox "$harness")" ]; then trainee_brief "$it"; return 0; fi
   if [ "$harness" = claude-cloud ]; then
     key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
     jq -r .task <<<"$it"
@@ -3394,13 +3544,13 @@ item_pinned() {
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
 # all while that list is unreadable), an item of a project its `projects` allowlist names when it has
 # one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
-# its `max_tier` unless a canary (harness_tier_why, pinned or not), only a canary item when
-# it runs in its own lane sandbox (sandbox_item_why), and, when routed rather
+# its `max_tier` unless a canary (harness_tier_why, pinned or not), only a canary or trainee item when
+# it runs in its own lane sandbox (sandbox_item_why; a trainee row offers the trainees first), and, when routed rather
 # than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
-  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl pwhy project why=()
+  local it="$1" verdict="$2" cands h m src tier pinned=0 overflow excl='' erc='' hl pwhy project trn why=()
   ROUTE_HARNESS='' ROUTE_MODEL='' ROUTE_WHY=''
   project=$(jq -r '.project // ""' <<<"$it")
   item_pinned "$it" && pinned=1
@@ -3418,6 +3568,15 @@ route() {
   elif [ "$pinned" = 1 ]; then cands=$(jq -c '[{harness: .agent, model: (.model // ""), fit: 0}]' <<<"$it")
   else cands=$(jq -c '.candidates // empty | select(length > 0)' <<<"${verdict:-null}" 2>/dev/null); fi
   [ -n "$cands" ] || cands='[{"harness": "claude", "model": "", "fit": 0}]'
+  # A trainee row (trainee_why) offers the trainees ahead of every other fit, one model per harness picked
+  # by the slug, so a trainee takes it whenever its source has room, the Claude hold or not; a trainee
+  # past its cap or with no room falls to the verdict's own candidates. Only a harness in a lane sandbox
+  # trains: that is where its cap and review hand-off are applied (sandbox_item_why, gateway_launch).
+  if [ "$pinned" = 0 ] && [ -z "${SOURCE_PICK:-}" ] && trainee_why "$it" >/dev/null &&
+    trn=$(jq -c --argjson t "$TRAINEE_CONF" --slurpfile H "$HARNESSES" --argjson n "$(cksum <<<"$(jq -r .slug <<<"$it")" | cut -d' ' -f1)" \
+      '. as $c | [$t.candidates[] | select(($H[0].harnesses[.harness].sandbox // "") != "")] | [group_by(.harness)[] | .[$n % length] | . + {fit: -1}] + $c' <<<"$cands"); then
+    cands=$trn
+  fi
   tier=$(item_tier "$it")
   while read -r h m; do
     if [ "$h" = claude ]; then
@@ -3431,7 +3590,7 @@ route() {
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
     elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
-    elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it"); then why+=("$h: $pwhy")
+    elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
@@ -3501,6 +3660,7 @@ start_item() {
     START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
     if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
+    elif [ -n "$(harness_sandbox "$harness")" ]; then floor=" on $harness ($ROUTE_MODEL), a trainee run (lanes.yaml trainee:) its review item lands or sends back"
     else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
     # A start past the account hold leaves it standing, like a floor start.
     [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
@@ -4737,8 +4897,10 @@ main() {
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
     item-tier) shift; cmd_item_tier "$@" ;;
+    trainee-review) shift; cmd_trainee_review "$@" ;;
+    trainee-reject) shift; cmd_trainee_reject "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
-    -h | --help) sed -n '2,37p' "$0" ;;
+    -h | --help) sed -n '2,39p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
 }

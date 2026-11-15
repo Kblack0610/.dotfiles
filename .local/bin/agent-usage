@@ -33,10 +33,12 @@
 # is always flagged `partial: true` / rendered with a trailing `~`. Do not "simplify"
 # this by dropping the Prometheus path - it silently understates every fan-out session.
 #
-# DEDUPE BY requestId. A streamed response writes one transcript record per chunk and
-# every one of them repeats the SAME cumulative usage object (verified: 542 assistant
-# records, 272 distinct requestIds, identical usage within a requestId). Summing rows
-# instead of requests roughly doubles the total.
+# DEDUPE BY requestId, or message.id when a record has no requestId (a gateway session).
+# A streamed response writes one transcript record per chunk and every one of them repeats
+# the SAME cumulative usage object (verified: 542 assistant records, 272 distinct
+# requestIds, identical usage within a requestId). Summing rows instead of requests roughly
+# doubles the total. A record with neither id, or a `<synthetic>` stub (an interrupt or API
+# error, zero usage), is not a response and is not counted.
 #
 # WHICH VERBS ARE ON A RENDER PATH. `rows` and `rollup` ARE: the cockpit calls them from
 # _project_agents / _usage_view, which run on every fzf reload and keypress. They read the
@@ -129,15 +131,21 @@ _from_transcript() { # $1=transcript path
   fi
 
   # Stream (no `jq -s`: these files reach hundreds of MB), then fold in awk keyed by
-  # requestId so repeated chunk records of one response are counted once.
-  jq -rc 'select(.type=="assistant" and .requestId != null)
-          | [ .requestId, (.message.model // "-"),
+  # requestId (else message.id, see the header) so repeated chunk records of one response
+  # are counted once.
+  jq -rc 'select(.type=="assistant" and .message.model != "<synthetic>")
+          | (((.requestId // "") | select(. != "")) // .message.id // empty) as $k
+          | [ $k, (.message.model // "-"),
               (.message.usage.input_tokens // 0),
               (.message.usage.output_tokens // 0),
               (.message.usage.cache_creation_input_tokens // 0),
               (.message.usage.cache_read_input_tokens // 0) ] | @tsv' "$t" 2>/dev/null \
   | awk -F'\t' -v d="$d" '
-      { k=$1; mdl[$2]=1; i[k]=$3; o[k]=$4; cc[k]=$5; cr[k]=$6 }
+      { k=$1; mdl[$2]=1
+        # usage is cumulative per response: the largest value seen is the response total
+        if (!(k in i)) { i[k]=0; o[k]=0; cc[k]=0; cr[k]=0 }
+        if ($3+0 > i[k]) i[k]=$3+0; if ($4+0 > o[k]) o[k]=$4+0
+        if ($5+0 > cc[k]) cc[k]=$5+0; if ($6+0 > cr[k]) cr[k]=$6+0 }
       END {
         for (k in i) { I+=i[k]; O+=o[k]; CC+=cc[k]; CR+=cr[k]; n++ }
         ms=""; for (m in mdl) ms = (ms=="" ? m : ms "," m)
