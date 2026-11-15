@@ -1606,7 +1606,7 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -1617,7 +1617,7 @@ watch() {
   : > "$NLOG"
   run "$SUBJECT" triage
   assert_success
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run outcome
   assert_output NOOP
@@ -1629,7 +1629,7 @@ watch() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
@@ -1647,7 +1647,7 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_success
   assert_line 'retire: check(watch): drift tripped since'
   assert_line 'retire: fix(hold): liveness-179 went red'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -2166,6 +2166,21 @@ fix_item() {
   run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
   assert_output 1
   run grep -c -- '--agent drop check(watch): puck tripped since --why moved to the home-config sheet' "$NLOG"
+  assert_output 1
+}
+
+@test "triage: a twin left on the human's sheet by an earlier route is dropped on a pass that adds nothing" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  printf 'board.md\t9\t%s\t- [ ] %s\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c . "$BOARD.agent-runtime"
+  assert_output 0
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
   assert_output 1
 }
 

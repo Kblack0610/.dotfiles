@@ -99,6 +99,14 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output 1
 }
 
+@test "a board that cannot be listed files nothing: unreadable is not 'no row'" {
+  plan unread '1 day ago 1 hour ago' "$OPEN"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = list ] && exit 1; exit 0'
+  run "$SWEEP" run
+  assert_success
+  assert_not_called ' add '
+}
+
 @test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
   plan recent '1 hour ago' "$OPEN"

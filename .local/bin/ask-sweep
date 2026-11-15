@@ -87,7 +87,7 @@ sweep_plans() {
     [ -n "$board" ] || continue
     # A variable, not a pipe: under pipefail `grep -q` quits at its match, `notes` dies of SIGPIPE on a
     # long list and the 141 reads as "no row" (2026-11-10..14: one plan filed seven times).
-    rows="$(notes ptask "$board" --agent list 2>/dev/null)"
+    rows="$(notes ptask "$board" --agent list 2>/dev/null)" || continue   # unreadable is not "no row"
     grep -qF "$slug" <<<"$rows" && continue
     file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #tier/2 #size/m"
   done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
