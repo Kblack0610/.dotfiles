@@ -1539,10 +1539,12 @@ pub fn reopen(
         Lane::Human => Lane::Agent,
         Lane::Agent => Lane::Human,
     };
+    let mut sheets = 0;
     for lane in [lane, other] {
         let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
             continue;
         };
+        sheets += 1;
         let done = |verb: &str, row: &str, from: &Path| {
             log.info(
                 "ptask",
@@ -1587,7 +1589,12 @@ pub fn reopen(
             }
         }
     }
-    eprintln!("no closed task with id {id} in {name}");
+    if sheets == 0 {
+        bail!("'{name}' has no task sheet yet");
+    }
+    eprintln!(
+        "no closed task with id {id} in {name}, on its sheet, its agent board or their archives"
+    );
     Ok(1)
 }
 
@@ -3677,13 +3684,14 @@ Version: v0.0.1
             "an open row is not closed"
         );
         assert_eq!(
-            reopen(&p, &log, "demo", "dm-2", "wrong PR", Lane::Agent).unwrap(),
-            0
+            reopen(&p, &log, "demo", "dm-2", "wrong PR", Lane::Human).unwrap(),
+            0,
+            "an agent board row reopens without --agent: the id names one row in either lane"
         );
         assert_eq!(
-            reopen(&p, &log, "demo", "dm-4", "wrong PR", Lane::Human).unwrap(),
+            reopen(&p, &log, "demo", "dm-4", "wrong PR", Lane::Agent).unwrap(),
             0,
-            "an agent row reopens without --agent: the id names one row in either lane"
+            "an archived row reopens on its own lane"
         );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(

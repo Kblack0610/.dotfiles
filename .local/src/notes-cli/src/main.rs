@@ -1882,4 +1882,12 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn agent_parses_after_the_verb() {
+        let after = [
+            "notes", "ptask", "demo", "reopen", "--agent", "--why", "x", "dm-1",
+        ];
+        assert!(Cli::try_parse_from(after).is_ok());
+    }
 }
