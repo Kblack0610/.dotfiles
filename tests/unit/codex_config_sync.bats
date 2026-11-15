@@ -116,27 +116,31 @@ T
   assert_output 1
 }
 
-# OPENCODE_HOME stands in for the stow symlink into the private overlay: a real repo whose
-# AGENTS.md is tracked, so a regenerated copy that differs leaves it dirty (ar-1397).
+# OPENCODE_HOME itself is a stow symlink in the real deployment: it names a subdirectory
+# of the private overlay's repo root, not the root itself. A check that mixes the resolved
+# root with the unresolved symlink path (the bug this pins) only breaks on that mismatch,
+# so the repo root here is deliberately a different, separately-named directory.
 init_opencode_repo() {
-  mkdir -p "$OPENCODE_HOME"
-  git -C "$OPENCODE_HOME" init -q
-  git -C "$OPENCODE_HOME" config user.name test
-  git -C "$OPENCODE_HOME" config user.email test@example.invalid
-  printf '%s\n' "$1" > "$OPENCODE_HOME/AGENTS.md"
-  git -C "$OPENCODE_HOME" add AGENTS.md
-  git -C "$OPENCODE_HOME" commit -q -m base
+  repo="$T/private-overlay"
+  mkdir -p "$repo/.config/opencode" "$(dirname "$OPENCODE_HOME")"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name test
+  git -C "$repo" config user.email test@example.invalid
+  printf '%s\n' "$1" > "$repo/.config/opencode/AGENTS.md"
+  git -C "$repo" add .config/opencode/AGENTS.md
+  git -C "$repo" commit -q -m base
+  ln -s "$repo/.config/opencode" "$OPENCODE_HOME"
 }
 
 @test "opencode: a regenerated AGENTS.md that differs from the tracked copy warns and names the repo, but still syncs" {
   init_opencode_repo "old tracked rules"
   run "$SUBJECT"
   assert_success
-  assert_output --partial "note: $OPENCODE_HOME/AGENTS.md changed and left $OPENCODE_HOME dirty"
+  assert_output --partial "note: $OPENCODE_HOME/AGENTS.md changed and left $T/private-overlay dirty"
   assert_output --partial 'agent-land cannot otherwise'
   assert_equal "$(cat "$OPENCODE_HOME/AGENTS.md")" rules
   run git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md
-  assert_output --partial 'M AGENTS.md'
+  assert_output --partial 'M .config/opencode/AGENTS.md'
 }
 
 @test "opencode: a regenerated AGENTS.md that matches the tracked copy stays quiet" {
