@@ -57,6 +57,9 @@ pub struct Sess {
     pub project: Option<String>,
     pub title: Option<String>,
     pub item: Option<String>,
+    /// Its dollars by model; empty on a row written before the rows carried it.
+    pub models: std::collections::BTreeMap<String, f64>,
+    pub tokens: Option<f64>,
 }
 
 /// One priced day. `sessions` is empty for a day snapshotted before the rows were kept; it is

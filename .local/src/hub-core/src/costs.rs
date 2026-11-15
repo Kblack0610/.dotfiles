@@ -5,14 +5,14 @@
 //!
 //! | figure | store | read through |
 //! |---|---|---|
-//! | per session: cost, models, harness, project, runner, kind | outcomes rows | `agentctl-session-outcomes costs` |
+//! | per session: cost, models, tokens, harness, project, runner, kind | `fleet-cost.json`'s `by_session` rows (24h), each nightly snapshot's (7d, 30d) | `spend_history::live` and `spend_history::read` |
 //! | per runner call | `calls.jsonl` | `fleet::parse_call`, the runners' parser |
 //! | per tool and per skill, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
 //! | every LLM consumer: priority, what it runs on, budget, spend, fallback (Consumers) | `claude-acct gateway`'s snapshot and `agentctl list --json` | `gateway::read` |
-//! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | the outcomes read above |
+//! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | `agentctl-session-outcomes costs` |
 //!
 //! The query filters slices (a session's cost on one model) before grouping, so `-model:opus`
 //! narrows every outcomes cut; runner and tool cuts filter their own rows; the sort is over groups.
@@ -58,20 +58,12 @@ pub const UNPRICED: &str =
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
 
-/// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it.
+/// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it: only the
+/// Lazer direct figure reads these; every cut reads the fleet-cost session rows.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Spent {
     pub session_id: String,
-    pub project: String,
-    pub title: Option<String>,
-    pub harness: Option<String>,
-    /// The runner that made the call, for a headless run; none for a session.
-    pub runner: Option<String>,
-    /// `automated` (a runner call or a queue item's session) or `human`, as the outcomes CLI says.
-    pub kind: Option<String>,
-    pub account: Option<String>,
-    pub models: Vec<String>,
     pub cost_usd: Option<f64>,
     pub cost_by_model: Option<BTreeMap<String, f64>>,
     /// An opencode session's provider: `lazer` went to Lazer direct, past the gateway.
@@ -80,8 +72,6 @@ pub struct Spent {
     pub updated_epoch: Option<i64>,
     /// When the nightly writer last looked at the session, RFC 3339.
     pub observed: Option<String>,
-    /// Its first merged PR as `owner/repo#N`.
-    pub pr: Option<String>,
 }
 
 /// One `fleet-bench models --json` row: a model on a harness, and how its queue items went.
@@ -232,6 +222,7 @@ pub struct Costs {
     pub at: i64,
     /// `<part>: <why>` for each source that could not be read; the rest still show.
     pub errors: Vec<String>,
+    /// The outcomes rows, for the Lazer direct figure only.
     pub sessions: Vec<Spent>,
     pub evals: Vec<Eval>,
     /// fleet-bench's own window for the evaluation columns.
@@ -304,10 +295,8 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         grafana: crate::infra::grafana(),
         ..Costs::default()
     };
-    // The longest window, or back to the 1st when the month is longer: the direct figure's period.
-    let days = (longest() / DAY)
-        .max((now - month_start(now)) / DAY + 1)
-        .to_string();
+    // Back to the 1st: the direct figure's period, the only one the outcomes rows serve.
+    let days = ((now - month_start(now)) / DAY + 1).to_string();
     let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match runner.run(&argv(&[
         "agentctl-session-outcomes",
@@ -510,8 +499,6 @@ pub struct Slice {
     pub account: String,
     pub cost: f64,
     pub tokens: f64,
-    pub at: i64,
-    pub pr: Option<String>,
 }
 
 impl Row for Slice {
@@ -549,41 +536,8 @@ impl Row for Slice {
     }
 }
 
-/// Each model a session spent on and its share of the cost. The writer's `cost_by_model` split
-/// wins; a session with no split books its whole cost on its one model, or on all of them joined
-/// (`opus-5-5+haiku-4-5`) when it names several, since there is nothing to split them by.
-fn shares(s: &Spent) -> Vec<(String, f64)> {
-    let real = |m: &&String| !m.is_empty() && !m.starts_with('<');
-    if let Some(by) = &s.cost_by_model {
-        let pos: Vec<(&String, f64)> = by
-            .iter()
-            .filter(|(m, v)| real(m) && **v > 0.0)
-            .map(|(m, v)| (m, *v))
-            .collect();
-        let sum: f64 = pos.iter().map(|x| x.1).sum();
-        if sum > 0.0 {
-            return pos.into_iter().map(|(m, v)| (m.clone(), v / sum)).collect();
-        }
-    }
-    let mut seen = BTreeSet::new();
-    let names: Vec<&String> = s
-        .models
-        .iter()
-        .filter(|m| real(m) && seen.insert(*m))
-        .collect();
-    match names.as_slice() {
-        [] => vec![("unrecorded".into(), 1.0)],
-        [one] => vec![((*one).clone(), 1.0)],
-        many => {
-            let joined = many.iter().map(|m| short(m)).collect::<Vec<_>>().join("+");
-            vec![(format!("claude-{joined}"), 1.0)]
-        }
-    }
-}
-
-/// The window's sessions as slices.
-/// What a session cost: its `cost_usd`, else the sum of its split, which is what it measured;
-/// none when it records neither. The tiles and the table both price a session by this.
+/// What a session's lazer row cost: its `cost_usd`, else the sum of its split; none when it
+/// records neither.
 fn cost(s: &Spent) -> Option<f64> {
     s.cost_usd.or_else(|| {
         s.cost_by_model
@@ -592,37 +546,78 @@ fn cost(s: &Spent) -> Option<f64> {
     })
 }
 
-pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
+/// The session rows a window reads: the live last 24h from `fleet-cost.json`, else the window's
+/// nightly snapshot days by the tool and skill cuts' rule (`in_window`). A whole day only, so the
+/// live 24h never overlaps the newest day it would otherwise double count.
+pub fn window_days(c: &Costs, secs: i64) -> Vec<&crate::spend_history::Day> {
+    if secs <= DAY {
+        return c.live.iter().collect();
+    }
+    let oldest = chrono::DateTime::from_timestamp(c.at - secs - DAY, 0)
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_default();
+    c.spend_days
+        .iter()
+        .rev()
+        .take((secs / DAY) as usize)
+        .filter(|d| d.date >= oldest)
+        .collect()
+}
+
+/// Each model a session row spent on and its share of the row. A row written before the rows
+/// carried `models` (or with no priced model) books its whole cost as `unrecorded`.
+fn shares(s: &crate::spend_history::Sess) -> Vec<(String, f64)> {
+    let pos: Vec<(&String, f64)> = s
+        .models
+        .iter()
+        .filter(|(m, v)| !m.is_empty() && !m.starts_with('<') && **v > 0.0)
+        .map(|(m, v)| (m, *v))
+        .collect();
+    let sum: f64 = pos.iter().map(|x| x.1).sum();
+    if sum <= 0.0 {
+        return vec![("unrecorded".into(), 1.0)];
+    }
+    pos.into_iter().map(|(m, v)| (m.clone(), v / sum)).collect()
+}
+
+/// The window's session rows as slices, one per session per model per day.
+pub fn slices(days: &[&crate::spend_history::Day]) -> Vec<Slice> {
     let mut out = Vec::new();
-    for s in sessions {
-        let at = s.updated_epoch.unwrap_or(0);
-        if at < since {
-            continue;
-        }
-        let whole = cost(s).unwrap_or(0.0);
+    for s in days.iter().flat_map(|d| d.sessions.iter()) {
+        let some = |v: &Option<String>| v.clone().unwrap_or_default();
+        let origin = s.origin.as_deref().unwrap_or("");
         for (model, frac) in shares(s) {
-            let alias = if model.contains('+') {
-                String::new()
-            } else {
-                alias(&model)
-            };
             out.push(Slice {
-                session: s.session_id.clone(),
-                title: s.title.clone().unwrap_or_default(),
-                project: s.project.clone(),
+                session: s.sid.clone(),
+                title: s
+                    .title
+                    .clone()
+                    .or_else(|| s.item.clone())
+                    .unwrap_or_default(),
+                project: some(&s.project),
                 harness: queue::harness_of(
                     s.harness.as_deref().unwrap_or(""),
                     s.account.as_deref().unwrap_or(""),
                 ),
                 model: short(&model),
-                alias,
-                runner: s.runner.clone().unwrap_or_default(),
-                kind: s.kind.clone().unwrap_or_default(),
-                account: s.account.clone().unwrap_or_default(),
-                cost: whole * frac,
-                tokens: s.tokens_total.unwrap_or(0.0) * frac,
-                at,
-                pr: s.pr.clone(),
+                alias: if model.contains('+') {
+                    String::new()
+                } else {
+                    alias(&model)
+                },
+                runner: if matches!(origin, "runner" | "shepherd") {
+                    some(&s.agent)
+                } else {
+                    String::new()
+                },
+                kind: match origin {
+                    "" => String::new(),
+                    "interactive" => "human".into(),
+                    _ => "automated".into(),
+                },
+                account: some(&s.account),
+                cost: s.usd * frac,
+                tokens: s.tokens.unwrap_or(0.0) * frac,
             });
         }
     }
@@ -655,15 +650,13 @@ pub struct Line {
     pub per_pr: Option<f64>,
     /// What priced the evaluation's cost: `list`, `gateway` or `mixed`.
     pub src: Option<String>,
-    pub pr: Option<String>,
-    pub at: Option<i64>,
 }
 
 impl Row for Line {
     const COLUMNS: &'static [&'static str] = &[
         "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "title",
         "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr",
-        "src", "pr", "at",
+        "src",
     ];
     const STATES: &'static [&'static str] = &["all"];
     const FACETS: &'static [&'static str] = &["model", "runner"];
@@ -683,7 +676,6 @@ impl Row for Line {
             "model" => text(&self.model),
             "runner" => text(&self.runner),
             "src" => text(&self.src),
-            "pr" => text(&self.pr),
             "sessions" => int(self.sessions),
             "calls" => int(self.calls),
             "tokens" => num(self.tokens),
@@ -693,7 +685,6 @@ impl Row for Line {
             "redo" => int(self.redo),
             "reverts" => int(self.reverts),
             "per_pr" => num(self.per_pr),
-            "at" => num(self.at.map(|a| a as f64)),
             _ => Val::None,
         }
     }
@@ -709,8 +700,7 @@ pub const CUT_GLANCE: &[&str] = &["cost", "share", "tokens"];
 pub fn columns(cut: &str) -> &'static [&'static str] {
     match cut {
         "session" => &[
-            "session", "project", "harness", "model", "runner", "tokens", "cost", "share", "pr",
-            "at",
+            "session", "project", "harness", "model", "runner", "tokens", "cost", "share",
         ],
         "harness" => &[
             "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts",
@@ -738,7 +728,7 @@ pub fn source(cut: &str) -> &'static str {
             "token-usage snapshots; a skill's span runs from its call to the next typed prompt, dollars allocated by each session's weighted tokens, not metered"
         }
         "runner" => "agentctl-run calls.jsonl",
-        _ => "outcomes rows",
+        _ => "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d",
     }
 }
 
@@ -817,8 +807,6 @@ fn outcome_lines(cut: &str, kept: &[&Slice], evals: &[Eval]) -> Vec<Line> {
                 harness: of(&s.harness),
                 runner: of(&s.runner),
                 kind: of(&s.kind),
-                pr: s.pr.clone(),
-                at: Some(s.at),
                 ..Line::default()
             };
             (l, s.session.clone())
@@ -980,37 +968,47 @@ fn skill_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
     lines
 }
 
-/// One window's total from the outcomes rows: what the tile prints and the 7d check sums.
+/// One window's total from its nightly days (`window_days`): what the 7D and 30D tiles print.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Total {
     pub window: &'static str,
+    /// The days' whole-fleet figure, gateway and helper calls included.
     pub usd: f64,
+    /// The part of `usd` priced from tokens, not billed.
+    pub estimated: f64,
+    /// Distinct sessions across the days' rows.
     pub sessions: usize,
-    /// Sessions with no cost recorded, which count as $0.
-    pub unpriced: usize,
+    /// The nightly days found, and the newest of them (`YYYY-MM-DD`).
+    pub days: usize,
+    pub through: String,
 }
 
-pub fn totals(sessions: &[Spent], now: i64) -> Vec<Total> {
+/// The 7D and 30D tiles; the 24h answer is the fleet tile.
+pub fn totals(c: &Costs) -> Vec<Total> {
     WINDOWS
         .iter()
+        .filter(|(_, secs)| *secs > DAY)
         .map(|(w, secs)| {
-            let inw: Vec<&Spent> = sessions
+            let days = window_days(c, *secs);
+            let ids: BTreeSet<&str> = days
                 .iter()
-                .filter(|s| s.updated_epoch.unwrap_or(0) >= now - secs)
+                .flat_map(|d| d.sessions.iter().map(|s| s.sid.as_str()))
                 .collect();
             Total {
                 window: w,
-                usd: inw.iter().filter_map(|s| cost(s)).sum(),
-                sessions: inw.len(),
-                unpriced: inw.iter().filter(|s| cost(s).is_none()).count(),
+                usd: days.iter().map(|d| d.usd).sum(),
+                estimated: days.iter().map(|d| d.estimated).sum(),
+                sessions: ids.len(),
+                days: days.len(),
+                through: days.first().map(|d| d.date.clone()).unwrap_or_default(),
             }
         })
         .collect()
 }
 
-/// Under the 7D and 30D tiles: outcomes rows carry a session's whole life, not the window's share.
+/// Under the 7D and 30D tiles: what a window is, so a tile never reads as the live 24h.
 pub const TOTALS_NOTE: &str =
-    "whole-life cost of the sessions touched in the window, from outcomes";
+    "7d and 30d are whole nightly days to the newest snapshot; the cut table's 24h is the live file";
 
 /// One source's freshness, as the tab's head lists them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -1176,7 +1174,7 @@ pub fn board(
             (kept.into_iter().cloned().collect::<Vec<_>>(), s, n)
         }
         _ => {
-            let all = slices(&c.sessions, since);
+            let all = slices(&window_days(c, secs));
             let v = View::new::<Slice>(q, "", "", "");
             let (kept, s) = v.summary(&all);
             let lines = outcome_lines(by, &kept, &c.evals);
@@ -1245,10 +1243,7 @@ pub fn board(
         window: w.into(),
         cuts: &CUTS,
         windows: WINDOWS.iter().map(|w| w.0).collect(),
-        totals: totals(&c.sessions, c.at)
-            .into_iter()
-            .filter(|t| t.window != "24h")
-            .collect(),
+        totals: totals(c),
         fleet_cost: c.fleet_cost.clone(),
         budget: c.budget.clone(),
         history: c.history.clone(),
@@ -1456,66 +1451,87 @@ mod tests {
         assert_eq!(super::held(&p), None, "a missing file is no hold");
     }
 
-    fn spent(
-        id: &str,
-        project: &str,
-        harness: &str,
-        cost: f64,
-        by: &[(&str, f64)],
-        ago: i64,
-    ) -> Spent {
-        Spent {
-            session_id: id.into(),
-            project: project.into(),
+    use crate::spend_history::{Day, Sess};
+    use std::sync::Arc;
+
+    /// A fleet-cost session row: `by` is its dollars by model, whose sum is its cost.
+    fn sess(id: &str, project: &str, harness: &str, origin: &str, by: &[(&str, f64)]) -> Sess {
+        Sess {
+            sid: id.into(),
+            usd: by.iter().map(|x| x.1).sum(),
+            origin: Some(origin.into()),
             harness: Some(harness.into()),
-            kind: Some(
-                if project == "_runner" {
-                    "automated"
-                } else {
-                    "human"
-                }
-                .into(),
-            ),
-            models: by.iter().map(|(m, _)| m.to_string()).collect(),
-            cost_usd: Some(cost),
-            cost_by_model: (by.len() > 1)
-                .then(|| by.iter().map(|(m, v)| (m.to_string(), *v)).collect()),
-            tokens_total: Some(1000.0),
-            updated_epoch: Some(NOW - ago),
-            ..Spent::default()
+            agent: (origin == "runner").then(|| "dream".into()),
+            project: Some(project.into()),
+            title: Some(format!("{id} title")),
+            models: by.iter().map(|(m, v)| (m.to_string(), *v)).collect(),
+            tokens: Some(1000.0),
+            ..Sess::default()
         }
     }
 
+    /// A nightly day whose fleet figure is its rows' sum.
+    fn day(date: &str, rows: Vec<Sess>) -> Day {
+        Day {
+            date: date.into(),
+            usd: rows.iter().map(|s| s.usd).sum(),
+            estimated: 0.0,
+            sessions: Arc::new(rows),
+        }
+    }
+
+    fn s1() -> Sess {
+        sess(
+            "s1",
+            "dotfiles",
+            "claude",
+            "interactive",
+            &[("claude-opus-5-5", 8.0), ("claude-haiku-4-5", 2.0)],
+        )
+    }
+
     fn costs() -> Costs {
+        let live = Day {
+            date: crate::spend_history::LIVE.into(),
+            ..day("", vec![s1()])
+        };
         Costs {
             at: NOW,
-            sessions: vec![
-                spent(
-                    "s1",
-                    "dotfiles",
-                    "claude",
-                    10.0,
-                    &[("claude-opus-5-5", 8.0), ("claude-haiku-4-5", 2.0)],
-                    3600,
+            // NOW is 2027-01-15: s4's day is 20 days back, outside 7d and inside 30d.
+            spend_days: vec![
+                day(
+                    "2026-12-26",
+                    vec![sess(
+                        "s4",
+                        "_runner",
+                        "claude-lazer",
+                        "runner",
+                        &[("claude-sonnet-5-5", 0.5)],
+                    )],
                 ),
-                spent(
-                    "s2",
-                    "playground",
-                    "claude",
-                    4.0,
-                    &[("claude-opus-5-5", 0.0)],
-                    2 * DAY,
+                day(
+                    "2027-01-12",
+                    vec![sess(
+                        "s3",
+                        "dotfiles",
+                        "codex",
+                        "interactive",
+                        &[("gpt-5.4", 1.5)],
+                    )],
                 ),
-                spent("s3", "dotfiles", "codex", 1.5, &[("gpt-5.4", 0.0)], 3 * DAY),
-                spent(
-                    "s4",
-                    "_runner",
-                    "claude-lazer",
-                    0.5,
-                    &[("claude-sonnet-5-5", 0.0)],
-                    20 * DAY,
+                day(
+                    "2027-01-13",
+                    vec![sess(
+                        "s2",
+                        "playground",
+                        "claude",
+                        "queue",
+                        &[("claude-opus-5-5", 4.0)],
+                    )],
                 ),
+                day("2027-01-14", vec![s1()]),
             ],
+            live: Some(live),
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
@@ -1588,15 +1604,18 @@ mod tests {
     }
 
     #[test]
-    fn the_totals_are_the_outcomes_cost_per_window() {
-        let t = totals(&costs().sessions, NOW);
-        let usd: Vec<f64> = t.iter().map(|t| t.usd).collect();
-        assert_eq!(usd, [10.0, 15.5, 16.0]);
-        assert_eq!(t[1].sessions, 3);
-        // A row with a split and no cost_usd is priced by its split, as the table prices it.
+    fn the_totals_are_the_nightly_days_fleet_figure_per_window() {
         let mut c = costs();
-        c.sessions[0].cost_usd = None;
-        c.sessions[0].cost_by_model = Some(BTreeMap::from([("claude-opus-5-5".into(), 4.0)]));
+        let t = totals(&c);
+        let got: Vec<(&str, f64, usize, usize)> = t
+            .iter()
+            .map(|t| (t.window, t.usd, t.sessions, t.days))
+            .collect();
+        assert_eq!(got, [("7d", 15.5, 3, 3), ("30d", 16.0, 4, 4)]);
+        assert_eq!(
+            t[0].through, "2027-01-14",
+            "the newest day, not the live 24h"
+        );
         let b = board(
             &c,
             "session",
@@ -1608,9 +1627,13 @@ mod tests {
             &Default::default(),
         );
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
-        assert_eq!(b.totals[0].unpriced, 0);
-        let windows: Vec<&str> = b.totals.iter().map(|t| t.window).collect();
-        assert_eq!(windows, ["7d", "30d"], "the fleet figure is the 24h answer");
+        // A day's figure past its rows (the gateway, helper calls) is in the tile, not the table.
+        Arc::make_mut(&mut c.spend_days[3].sessions).clear();
+        c.spend_days[3].usd = 3.0;
+        assert_eq!(totals(&c)[0].usd, 8.5);
+        // Negative control: a day older than the window is not in it, however few there are.
+        c.spend_days.drain(1..);
+        assert_eq!((totals(&c)[0].usd, totals(&c)[0].days), (0.0, 0));
     }
 
     #[test]
@@ -1633,7 +1656,7 @@ mod tests {
         assert_eq!(opus.per_pr, Some(5.0));
         assert_eq!(opus.src.as_deref(), Some("list"));
         assert_eq!(b.rows[2].landed, None, "codex has no fleet-bench row");
-        // Every cut of the outcomes sums to the window's total.
+        // Every cut of the session rows sums to the window's total.
         assert!((b.shown_usd - 15.5).abs() < 1e-9);
         let share: f64 = b.rows.iter().map(|r| r.share).sum();
         assert!((share - 1.0).abs() < 1e-9);
@@ -1642,10 +1665,11 @@ mod tests {
     #[test]
     fn a_row_with_no_harness_is_claude_and_on_the_gateway_claude_lazer() {
         let mut c = costs();
-        c.sessions.truncate(2);
-        c.sessions[0].harness = None;
-        c.sessions[1].harness = Some(" ".into());
-        c.sessions[1].account = Some(agent_panel::account::GATEWAY.into());
+        c.spend_days.drain(..2);
+        Arc::make_mut(&mut c.spend_days[1].sessions)[0].harness = None;
+        let gw = &mut Arc::make_mut(&mut c.spend_days[0].sessions)[0];
+        gw.harness = Some(" ".into());
+        gw.account = Some(agent_panel::account::GATEWAY.into());
         let b = board(
             &c,
             "harness",
@@ -1674,6 +1698,23 @@ mod tests {
         );
         assert_eq!(names(&b, "session"), ["s1", "s2", "s3", "s4"]);
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5, haiku-4-5"));
+        assert_eq!(b.rows[0].title.as_deref(), Some("s1 title"));
+        assert_eq!(names(&b, "runner"), ["-", "-", "-", "dream"]);
+        // 24h is the live file: s1 alone, though yesterday's day has it too.
+        let b = board(
+            &c,
+            "session",
+            "24h",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
+        assert_eq!(
+            (names(&b, "session"), b.shown_usd),
+            (vec!["s1".into()], 10.0)
+        );
         let b = board(
             &c,
             "harness",
@@ -1925,25 +1966,37 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_no_split_books_its_models_whole() {
-        let mut s = spent("x", "p", "claude", 3.0, &[], 0);
-        s.models = vec![
-            "claude-opus-5-5".into(),
-            "claude-haiku-4-5".into(),
-            "<synthetic>".into(),
-        ];
-        let v = slices(&[s.clone()], 0);
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].model, "opus-5-5+haiku-4-5");
-        assert_eq!(v[0].alias, "", "a joined model has no evaluation");
-        s.models.push("claude-opus-5-5".into());
+    fn a_row_with_no_models_books_its_whole_cost_unrecorded() {
+        let mut row = sess("x", "p", "claude", "queue", &[]);
+        row.usd = 3.0;
+        let d = day("2027-01-14", vec![row.clone()]);
+        let v = slices(&[&d]);
         assert_eq!(
-            slices(&[s.clone()], 0)[0].model,
-            "opus-5-5+haiku-4-5",
-            "a model named twice is joined once"
+            (v.len(), v[0].model.as_str(), v[0].cost),
+            (1, "unrecorded", 3.0)
         );
-        s.models.clear();
-        assert_eq!(slices(&[s], 0)[0].model, "unrecorded");
+        assert_eq!(v[0].kind, "automated", "a queue item's session");
+        row.models.insert("claude-opus-5-5".into(), 0.0);
+        let d = day("2027-01-14", vec![row]);
+        assert_eq!(
+            slices(&[&d])[0].model,
+            "unrecorded",
+            "a model with no dollars splits nothing"
+        );
+        let odd = sess(
+            "y",
+            "p",
+            "codex",
+            "interactive",
+            &[("<synthetic>", 1.0), ("gpt-5.4+gpt-5.4-mini", 4.0)],
+        );
+        let d = day("2027-01-14", vec![odd]);
+        let v = slices(&[&d]);
+        assert_eq!(
+            (v.len(), v[0].model.as_str(), v[0].alias.as_str(), v[0].cost),
+            (1, "gpt-5.4+gpt-5.4-mini", "", 5.0),
+            "a <synthetic> name is no model, and a joined name takes the whole row with no alias"
+        );
         assert_eq!(alias("claude-opus-5-5"), "opus");
         assert_eq!(alias("gpt-5.4"), "gpt-5.4");
         let sol = Eval {
@@ -1961,7 +2014,11 @@ mod tests {
     #[test]
     fn the_sources_say_how_old_they_are() {
         let mut c = costs();
-        c.sessions[0].observed = Some("2020-01-01T00:00:00Z".into());
+        c.sessions.push(Spent {
+            session_id: "lazer".into(),
+            observed: Some("2020-01-01T00:00:00Z".into()),
+            ..Spent::default()
+        });
         let s = sources(&c);
         assert!(s[0].stale, "outcomes from 2020");
         assert!(!s[1].stale, "a snapshot an hour old");
@@ -2112,7 +2169,6 @@ not json
         assert_eq!(since, 1_798_761_600); // 2027-01-01T00:00:00Z
         let oc = |id: &str, provider: &str, cost: f64, tokens: f64, at: i64| Spent {
             session_id: id.into(),
-            harness: Some("opencode".into()),
             provider: Some(provider.into()),
             cost_usd: Some(cost),
             tokens_total: Some(tokens),
@@ -2141,7 +2197,6 @@ not json
         let mut c = costs();
         c.sessions.push(Spent {
             session_id: "oc-direct".into(),
-            harness: Some("opencode".into()),
             provider: Some("lazer".into()),
             cost_usd: Some(2.5),
             tokens_total: Some(10.0),

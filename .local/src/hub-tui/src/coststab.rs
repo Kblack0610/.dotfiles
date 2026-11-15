@@ -139,8 +139,6 @@ pub fn header(col: &str) -> &'static str {
         "reverts" => "REV",
         "per_pr" => "$/PR",
         "src" => "SRC",
-        "pr" => "PR",
-        "at" => "UPDATED",
         _ => "",
     }
 }
@@ -1473,7 +1471,7 @@ fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<L
     out
 }
 
-/// The window's spend from the outcomes rows.
+/// The 7d and 30d spend from their nightly days.
 fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let mut s = vec![];
     for t in &b.totals {
@@ -1484,7 +1482,19 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
             p.dim()
         };
         s.push(Span::styled(label, style));
-        s.push(Span::raw(format!("{}  ", costs::usd(Some(t.usd)))));
+        if t.days == 0 {
+            s.push(Span::styled(
+                format!("- no nightly day in {}  ", t.window),
+                p.warn(),
+            ));
+            continue;
+        }
+        s.push(Span::raw(format!("{} ", costs::usd(Some(t.usd)))));
+        let through = t.through.get(5..).unwrap_or(&t.through);
+        s.push(Span::styled(
+            format!("({}d to {through})  ", t.days),
+            p.dim(),
+        ));
     }
     s.push(Span::styled(b.totals_note, p.dim()));
     s
@@ -1529,7 +1539,7 @@ fn text(v: Val) -> String {
 }
 
 /// One cell as both surfaces print it.
-pub fn show(l: &costs::Line, col: &str, now: i64) -> String {
+pub fn show(l: &costs::Line, col: &str) -> String {
     use hub_core::table::Row;
     match col {
         "cost" => costs::usd(Some(l.cost)),
@@ -1537,7 +1547,6 @@ pub fn show(l: &costs::Line, col: &str, now: i64) -> String {
         "tokens" => costs::tokens(l.tokens),
         "share" => format!("{:.0}%", l.share * 100.0),
         "landed" => l.landed.map_or("-".into(), |x| format!("{x:.2}")),
-        "at" => crate::hometab::age(l.at, now),
         "session" => l
             .session
             .as_deref()
@@ -1557,7 +1566,7 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
                     let t = if b.unpriced.is_some() && matches!(*c, "cost" | "share") {
                         "-".to_string()
                     } else {
-                        show(l, c, b.at)
+                        show(l, c)
                     };
                     if *c == "src" && t == "mixed" {
                         cell(t, p.warn())
@@ -1570,13 +1579,12 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
         .collect();
     let at = |k: &str| cols.iter().position(|c| *c == k);
     let num = [
-        "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "at",
+        "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr",
     ];
     // The key column and its cost never drop; the evaluation goes before the share.
     let order = [
         "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "cost",
-        "landed", "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src", "pr",
-        "at",
+        "landed", "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src",
     ];
     let mut keep: Vec<usize> = vec![0];
     keep.extend(order.iter().filter_map(|k| at(k)).filter(|i| *i != 0));
@@ -1604,7 +1612,6 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
             ("runner", 22),
             ("tool", 28),
             ("skill", 28),
-            ("pr", 22),
         ]
         .iter()
         .filter_map(|(k, n)| at(k).map(|i| (i, *n)))
@@ -1624,22 +1631,29 @@ mod tests {
     use hub_core::costs::{Eval, Spent};
 
     fn costs() -> Costs {
-        let s = |id: &str, h: &str, m: &str, usd: f64| Spent {
-            session_id: id.into(),
-            project: "dotfiles".into(),
+        let s = |id: &str, h: &str, m: &str, usd: f64| hub_core::spend_history::Sess {
+            sid: id.into(),
+            usd,
+            project: Some("dotfiles".into()),
             harness: Some(h.into()),
-            kind: Some("human".into()),
-            models: vec![m.into()],
-            cost_usd: Some(usd),
-            updated_epoch: Some(1_000_000 - 60),
-            ..Spent::default()
+            origin: Some("interactive".into()),
+            models: [(m.to_string(), usd)].into(),
+            ..Default::default()
         };
-        Costs {
-            at: 1_000_000,
+        // at is 1970-01-12: the 7d cut reads the day before.
+        let day = hub_core::spend_history::Day {
+            date: "1970-01-11".into(),
+            usd: 15.5,
             sessions: vec![
                 s("aaaaaaaa1", "claude", "claude-opus-5-5", 12.5),
                 s("bbbbbbbb2", "codex", "gpt-5.6-sol", 3.0),
-            ],
+            ]
+            .into(),
+            ..Default::default()
+        };
+        Costs {
+            at: 1_000_000,
+            spend_days: vec![day],
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
@@ -1778,6 +1792,19 @@ mod tests {
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn a_spend_tile_names_its_nightly_days_and_a_window_with_none_says_so_never_zero() {
+        let s = screen_of(&costs(), &CostsView::default(), 200);
+        assert!(s.contains("7D $15.50 (1d to 01-11)"), "{s}");
+        let none = Costs {
+            spend_days: vec![],
+            ..costs()
+        };
+        let s = screen_of(&none, &CostsView::default(), 200);
+        assert!(s.contains("7D - no nightly day in 7d"), "{s}");
+        assert!(!s.contains("7D $0.00"), "{s}");
     }
 
     #[test]
@@ -2521,7 +2548,6 @@ mod tests {
         let mut c = costs();
         c.sessions.push(Spent {
             session_id: "oc-direct".into(),
-            harness: Some("opencode".into()),
             provider: Some("lazer".into()),
             cost_usd: Some(0.0),
             tokens_total: Some(900.0),

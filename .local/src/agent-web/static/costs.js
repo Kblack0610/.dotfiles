@@ -54,7 +54,7 @@ const COST_COLS = {
   session: ["session"], tool: ["tool"], skill: ["skill"], kind: ["kind"], project: ["project"], harness: ["harness"],
   model: ["model"], runner: ["runner"], sessions: ["sess", "n"], calls: ["calls", "n"], tokens: ["tokens", "n"],
   cost: ["cost", "n"], share: ["share of table", "n"], landed: ["landed", "n"], redo: ["redo", "n"], reverts: ["rev", "n"],
-  per_pr: ["$/PR", "n"], src: ["src"], pr: ["PR"], at: ["updated", "n"],
+  per_pr: ["$/PR", "n"], src: ["src"],
 };
 
 
@@ -68,7 +68,6 @@ function costCell(r, key, d) {
   else if (key === "tokens") html = kfmt(v == null ? null : Math.round(v));
   else if (key === "share") html = pct(v);
   else if (key === "landed") html = v == null ? "-" : v.toFixed(2);
-  else if (key === "at") html = when(v);
   else if (key === "session") html = v ? `<span title="${esc(r.title || v)}">${esc(v.slice(0, 8))}</span>` : "-";
   else html = v == null || v === "" ? "-" : esc(String(v));
   const warn = key === "src" && v === "mixed" ? " warn" : "";
@@ -99,10 +98,11 @@ function directTile(dr) {
 }
 
 // The Spend tile row on the shared tile(): the whole fleet's 24h (hub_core::fleet_cost, the TUI's
-// `fleet_head`), then the outcomes windows and direct Lazer use, each sub saying what it counts.
+// `fleet_head`), then the 7d and 30d nightly days and direct Lazer use, each sub saying what it counts.
 function costsTiles(d) {
   return `<div class="tiles roomy" id="sec-totals">` + fleetTile(d.fleet_cost || { why: "nothing read" }) + (d.totals || []).map((t) =>
-    tile(`SPEND ${t.window.toUpperCase()}`, usd(t.usd), t.window === d.window ? "var(--c1)" : "var(--c-other)", `outcomes, ${t.sessions} sessions${t.unpriced ? `, ${t.unpriced} unpriced` : ""}`)).join("") +
+    tile(`SPEND ${t.window.toUpperCase()}`, t.days ? usd(t.usd) : "-", t.window === d.window ? "var(--c1)" : "var(--c-other)",
+      t.days ? `${t.days} nightly days to ${esc(t.through.slice(5))}, ${t.sessions} sessions` : `<span class="warn">no nightly day in ${esc(t.window)}</span>`)).join("") +
     directTile(d.direct || {}) + `</div>` + (d.totals_note ? `<div class="muted fold">${esc(d.totals_note)}</div>` : "");
 }
 

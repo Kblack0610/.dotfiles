@@ -430,34 +430,28 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
     )
 }
 
-/// The session that has spent the most of those active in the last 24h: burn per session, on a
-/// card with room for one line. A session's cost is its whole run, so the line says so.
+/// The session that spent the most in the last 24h, from the live fleet-cost session rows: burn
+/// per session, on a card with room for one line.
 fn top_session(k: &crate::costs::Costs) -> Option<First> {
     let s = k
+        .live
+        .as_ref()?
         .sessions
         .iter()
-        .filter(|s| s.updated_epoch.is_some_and(|t| t >= k.at - DAY))
-        .filter_map(|s| s.cost_usd.map(|c| (c, s)))
-        .max_by(|a, b| a.0.total_cmp(&b.0))?
-        .1;
-    let name = s
-        .title
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .unwrap_or(&s.project);
+        .filter(|s| s.usd > 0.0)
+        .max_by(|a, b| a.usd.total_cmp(&b.usd))?;
+    let name = [&s.title, &s.item, &s.project]
+        .into_iter()
+        .flatten()
+        .find(|t| !t.is_empty())
+        .map_or(s.sid.as_str(), |t| t.as_str());
     Some(row(
-        format!(
-            "${:.2} {}",
-            s.cost_usd.unwrap_or(0.0),
-            crate::text::cap(name, 40)
-        ),
-        "top session active in 24h, its whole run",
+        format!("${:.2} {}", s.usd, crate::text::cap(name, 40)),
+        "top session of the last 24h",
         Level::Ok,
-        Some(Link::to(crate::links::Kind::Session, s.session_id.clone())),
+        Some(Link::to(crate::links::Kind::Session, s.sid.clone())),
     ))
 }
-
-const DAY: i64 = 86_400;
 
 /// Releases: each app's worst channel, as release-state judged it.
 pub fn releases(r: &crate::releases::Releases) -> Card {
@@ -1050,26 +1044,26 @@ mod tests {
     }
 
     #[test]
-    fn costs_names_the_top_session_active_in_24h() {
-        use crate::costs::Spent;
-        let spent = |id: &str, usd: f64, at: i64| Spent {
-            session_id: id.into(),
-            project: "p".into(),
+    fn costs_names_the_top_session_of_the_live_24h() {
+        use crate::spend_history::{Day, Sess};
+        let sess = |id: &str, usd: f64| Sess {
+            sid: id.into(),
+            usd,
+            project: Some("p".into()),
             title: Some(id.into()),
-            cost_usd: Some(usd),
-            updated_epoch: Some(at),
             ..Default::default()
         };
-        let mut k = crate::costs::Costs {
-            at: 100 * DAY,
-            ..Default::default()
-        };
+        let mut k = crate::costs::Costs::default();
         k.burn.level = "ok";
-        k.sessions = vec![
-            spent("big-but-old", 90.0, 98 * DAY),
-            spent("top", 12.5, 100 * DAY - 60),
-            spent("small", 3.0, 100 * DAY - 60),
-        ];
+        // A nightly day is not the last 24h: its dearer session is no line.
+        k.spend_days = vec![Day {
+            sessions: std::sync::Arc::new(vec![sess("big-but-old", 90.0)]),
+            ..Default::default()
+        }];
+        k.live = Some(Day {
+            sessions: std::sync::Arc::new(vec![sess("small", 3.0), sess("top", 12.5)]),
+            ..Default::default()
+        });
         let c = costs(&k);
         assert!(
             c.first.iter().any(|f| f.text == "$12.50 top"),
@@ -1082,8 +1076,8 @@ mod tests {
         let rows: Vec<_> = costs(&k).first.into_iter().map(|f| f.text).collect();
         assert_eq!(rows, ["burning 2x", "over cap", "projected over"]);
         k.budget.needs.clear();
-        // Negative control: no session active in 24h is no line, never an old one.
-        k.sessions.truncate(1);
+        // Negative control: no live file is no line, never an old one.
+        k.live = None;
         assert!(costs(&k).first.iter().all(|f| !f.text.starts_with('$')));
     }
 

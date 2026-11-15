@@ -37,11 +37,11 @@ const cost = run("cost");
 const tick = () => new Promise((r) => setImmediate(r));
 
 const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort: next[0], next_dir: next[1] });
-const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, pr: null, at: null, ...o });
+const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, ...o });
 // The shape hub_core::costs::Board serializes to: the model cut over 7d, sorted by cost ascending.
 const MODEL_COLS = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 // The table's columns are every Line column in Line::COLUMNS order, whatever the cut.
-const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
+const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 // hub_core::burn::Burn as serialized: the 2026-11-06 fleet, 3.3x over what the weeks carry.
 // A source row: a Claude account unless `o` says otherwise; used_text is what burn::used_text prints.
 const acct = (name, o) => {
@@ -59,11 +59,11 @@ const burn = (o = {}) => ({
 const board = (o = {}) => ({
   at: 1794000000, by: "model", window: "7d",
   cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
-  totals: [{ window: "24h", usd: 12.5, sessions: 3, unpriced: 0 }, { window: "7d", usd: 40, sessions: 9, unpriced: 2 }, { window: "30d", usd: 90, sessions: 20, unpriced: 2 }],
+  totals: [{ window: "7d", usd: 40, estimated: 0, sessions: 9, days: 7, through: "2026-11-14" }, { window: "30d", usd: 90, estimated: 0, sessions: 20, days: 0, through: "" }],
   live: { claude_24h: 11 },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
   sources: [{ name: "outcomes", as_of: 1793990000, stale: false }, { name: "token snapshot", as_of: 1793000000, stale: true }, { name: "calls", as_of: null, stale: true }],
-  errors: [], columns: MODEL_COLS, source: "outcomes rows", eval_days: 7, unpriced: null,
+  errors: [], columns: MODEL_COLS, source: "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d", eval_days: 7, unpriced: null,
   rows: [
     line({ model: "gpt-5-codex", harness: "codex", sessions: 2, tokens: 1500000, cost: 4, share: 0.1, landed: 0.5, redo: 1, reverts: 0, per_pr: 4, src: "mixed" }),
     line({ model: "opus-5-5", harness: "claude", sessions: 7, tokens: 9e9, cost: 36, share: 0.9, landed: 0.875, redo: 0, reverts: 1, per_pr: 5.14, src: "outcomes" }),
@@ -97,7 +97,8 @@ test("the model cut draws the server's columns, order and sort, with its evaluat
 
 test("the head says spend, the live gauges and how old each source is", () => {
   const h = show(board());
-  assert.match(h, /SPEND 7D[\s\S]*\$40\.00[\s\S]*9 sessions, 2 unpriced/);
+  assert.match(h, /SPEND 7D[\s\S]*\$40\.00[\s\S]*7 nightly days to 11-14, 9 sessions/);
+  assert.match(h, /SPEND 30D<\/span><span class="tv">-<\/span><span class="ts1"><span class="warn">no nightly day in 30d</, "a window with no nightly day says so, never \$0");
   assert.doesNotMatch(h, /LAZER (POOL|RESERVE|GLM)/, "the pool and its keys are Burn rows, not tiles");
   assert.match(h, /LAZER DIRECT<\/span><span class="tv">\$1\.25<\/span><span class="ts1"><span class="warn">\+1 unpriced<\/span>, opencode lazer\/\*, nightly; other direct use unseen</);
   assert.match(h, /<span class="warn">token snapshot /, "a stale source is amber");
@@ -548,7 +549,7 @@ test("the fleet figure is Spend's first tile, and its coverage words sit under t
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
     foot: "% is of the whole fleet's figure for the day. \"est.\" is priced from tokens at rates fitted to measured sessions." };
   const h = show(board({ fleet_cost, day: liveDay() }));
-  assert.ok(h.indexOf("FLEET 24H") < h.indexOf("SPEND 24H") && h.indexOf("sec-sessions") < h.indexOf("sec-burn"), "the whole figure is the first answer");
+  assert.ok(h.indexOf("FLEET 24H") < h.indexOf("SPEND 7D") && h.indexOf("sec-sessions") < h.indexOf("sec-burn"), "the whole figure is the first answer");
   assert.match(h, /<span class="tl">FLEET 24H<\/span><span class="tv">about \$849<\/span><span class="ts1">whole fleet, measured \$310, estimated \$538, as of /, "a shared tile");
   assert.match(h, /<div class="muted">71% of tokens estimated: 280 of 458 sessions/, "the live day carries the coverage words");
   assert.match(h, /not in the total/);
