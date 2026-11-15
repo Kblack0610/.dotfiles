@@ -3,7 +3,8 @@
 #
 # Two invariants carry this file:
 #
-#   1. DEDUPE BY requestId. A streamed response writes one transcript record per
+#   1. DEDUPE BY requestId, or message.id when a record has no requestId (a gateway
+#      session, which wrote zero tokens before). A streamed response writes one transcript record per
 #      chunk and every chunk repeats the SAME cumulative usage object. Summing rows
 #      instead of requests roughly doubles every number. Measured against a real
 #      session: 542 assistant records, 272 distinct requestIds.
@@ -59,6 +60,31 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   # honest: the assertions above would also pass on a subtly different bug.
   refute [ "$(usage_field .tokens.input)" = '301' ]
   assert_equal "$(usage_field .requests)" '2'
+}
+
+@test "a gateway transcript with no requestId is counted once per message.id" {
+  # claude-lazer and glm sessions write no requestId; before this they read as zero tokens.
+  GW="$HOME/.claude/projects/-x/gateway.jsonl"
+  {
+    for _ in 1 2; do
+      echo '{"type":"assistant","timestamp":"2026-01-01T00:00:00.000Z","message":{"id":"msgA","model":"g1","usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}'
+    done
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:01:00.000Z","message":{"id":"msgB","model":"g1","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}'
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:02:00.000Z","message":{"model":"g1","usage":{"input_tokens":999}}}'
+    # an empty requestId falls back to message.id, not one shared "" key
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:03:00.000Z","requestId":"","message":{"id":"msgC","model":"g1","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}'
+    # an interrupt stub is not a response
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:04:00.000Z","message":{"id":"stub","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}'
+    # chunks of one response that split the usage: the fold keeps the largest of each field
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:05:00.000Z","message":{"id":"msgD","model":"g1","usage":{"input_tokens":5,"output_tokens":0}}}'
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:05:01.000Z","message":{"id":"msgD","model":"g1","usage":{"input_tokens":0,"output_tokens":7}}}'
+  } > "$GW"
+  run "$AU" session gateway --json
+  assert_success
+  assert_equal "$(jq -r .requests <<<"$output")" '4'
+  refute_output --partial 'synthetic'
+  assert_equal "$(jq -r .tokens.input <<<"$output")" '116'
+  assert_equal "$(jq -r .tokens.output <<<"$output")" '229'
 }
 
 @test "non-assistant records are ignored" {
