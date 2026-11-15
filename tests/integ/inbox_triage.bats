@@ -466,6 +466,44 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
 }
 
+@test "--backlog --dry-run keeps its answers; a second dry run and the apply reuse them, and only a row new since goes to the model" {
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] scratch <!-- id:sc-7 -->\n'
+  # sorted by text: sc-5, sc-7, sc-4
+  answer '{"n": 1, "action": "dup", "id": "sc-4"}' '{"n": 2, "action": "drop", "why": "a header, not a task"}' \
+    '{"n": 3, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 0'
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$cache")" = 3 ] || fail "$(cat "$cache")"
+  # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 0'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
+  [ "$(wc -l <"$cache")" = 3 ]
+  # The apply writes what the dry run printed, though the model would now say keep; only the new row is asked.
+  printf '%s\n' '- [ ] zebra row <!-- id:sc-9 -->' >>"$SHEET"
+  answer '{"n": 1, "action": "keep"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "keep"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 1'
+  [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "the apply asked the model $(wc -l <"$NOTES_FIXTURE/model.log") times"
+  grep -qx '1. \[sc-9\] zebra row' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  refute grep -q 'sc-4' "$NOTES_FIXTURE/prompt.txt"
+  [ ! -e "$cache" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
+  refute_output --partial 'menu flicker again'
+  assert_output --partial 'zebra row'
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
+  assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
+  assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+}
+
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
   mkdir -p "$HOME/.notes/lab/inbox"   # the capture inbox: a machine without one publishes no page
