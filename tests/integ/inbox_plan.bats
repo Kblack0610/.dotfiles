@@ -302,11 +302,11 @@ hold_stubs() {
   export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: row left started for the orphan pass: sc-1 already finished ok (2026-11-12T21:00:23Z, PR o/r#1)'
   run "$PLAN"
   assert_success
-  assert_output --partial 'sc-1: not held, refused'
+  assert_output --partial '(not held: fleet-dispatch: skip scratch'
   assert_output --partial 'refused 1'
   assert_equal "$(outcome)" BLOCKED
   run tail -n 1 "$HOME/.local/state/agentctl/inbox-plan/activity.log"
-  assert_output --regexp 'outcome=BLOCKED .*why: scratch sc-1: not held, refused: .*already finished ok'
+  assert_output --regexp 'outcome=BLOCKED .*why: scratch: not held: .*already finished ok'
   run record
   assert_output --regexp '"action":"refused".*already finished ok'
   run "$PLAN"
@@ -322,4 +322,17 @@ hold_stubs() {
   run "$PLAN"
   assert_failure 75
   assert_equal "$(outcome)" BLOCKED
+}
+
+@test "hold: a refused hold beside a planned row still ends BLOCKED, with the refusal in the outcome" {
+  hold_stubs
+  sheet '- [ ] feat(a): one #plan #requested <!-- id:sc-1 -->\n- [ ] fix(ui): the menu #plan <!-- id:sc-2 -->\n'
+  answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
+  export DISPATCH_RC=1 DISPATCH_OUT='fleet-dispatch: skip scratch: row left started for the orphan pass: sc-1 already finished ok (x)'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1'
+  assert_equal "$(outcome)" BLOCKED
+  run tail -n 1 "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_output --regexp 'outcome=BLOCKED .*why: scratch: not held: .*already finished ok'
 }
