@@ -14,6 +14,8 @@
 # Each of those three was verified to FAIL against the old logic before being
 # committed. A test that cannot fail is not a test.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -333,6 +335,21 @@ ss_stub() {
   assert_output 'v1.9.0'
   run git_prev_tag "$REPO" proj 0 '' v1.9.0
   assert_output ''
+}
+
+@test "git_prev_tag, git_latest_tag: a long tag list writes no broken pipe when SIGPIPE is ignored, as under systemd" {
+  # The agentctl unit runs with IgnoreSIGPIPE=yes: a `printf | head -1` over more tags than one
+  # write holds left printf an EPIPE, logged into release-state.stderr.log (ar-2384).
+  commit a; sha=$(git -C "$REPO" rev-parse HEAD)
+  for i in $(seq 1 20000); do printf '%s refs/tags/v1.0.%s\n' "$sha" "$i"; done > "$REPO/.git/packed-refs"
+  commit b; tag v2.0.0
+  trap '' PIPE
+  run --separate-stderr git_prev_tag "$REPO" proj 0 '' v2.0.0
+  assert_output 'v1.0.20000'
+  assert_equal "$stderr" ''
+  run --separate-stderr git_latest_tag "$REPO" proj
+  assert_output 'v2.0.0'
+  assert_equal "$stderr" ''
 }
 
 @test "git_first_tag: the oldest tag of the line that holds the commit, by creation; none yet is empty" {
