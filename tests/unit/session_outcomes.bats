@@ -1131,6 +1131,19 @@ EOF
   assert_equal "$(field a '.class|tojson')" '{"size":"m","kind":"fix"}'
 }
 
+@test "projects: a session's queue items' projects count, so worst --project reaches a project that shares the checkout" {
+  queue_stub
+  jq -cn '{slug: "x", project: "sibling", sessions: "sess-b"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field b '.projects | join(",")')" "proj,sibling"
+  assert_equal "$(field b .project)" "proj"
+  run "$SUBJECT" worst --project sibling --days 7 -n 5
+  assert_success
+  assert_output --partial '`sess-b`'
+  refute_output --partial 'sess-c'
+}
+
 @test "class: an unreadable roadmap does not stop the run; the kind falls back to the item's type" {
   queue_stub
   export SO_ROADMAP=false
