@@ -552,9 +552,10 @@ pub fn history(dir: &Path, n: usize) -> Vec<DayRow> {
 }
 
 /// One line of `~/.agent/shepherd/watch.log`, written by `fleet-sessions` `transitions()`:
-/// `YYYY-MM-DD HH:MM  <target>  new: <BUCKET> (<why>)`, `... <target>  gone`, or
+/// `YYYY-MM-DD HH:MM  <target>  new: <BUCKET> (<why>) sid=<id>`, `... <target>  gone sid=<id>`, or
 /// `... <target>  <field> <old> -> <new>[, <field> <old> -> <new>...][ (<why>)]`, where the
-/// reason is present only when the stage changed. Times are the host's local time.
+/// reason is present only when the stage changed. Rows from before the id was logged end without
+/// ` sid=<id>`. Times are the host's local time.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Transition {
     pub ts: String,
@@ -569,6 +570,11 @@ pub struct Transition {
     pub to: Option<String>,
     /// Every field the line changed (`sync`, `ci`, `stage`, ...), for filtering.
     pub fields: Vec<String>,
+    /// The session id a `new` or `gone` row ends in; absent on older rows. A target is reused
+    /// within a day, so only this ties a close to the nudge before it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<String>,
+    /// The row's text without the ` sid=<id>` suffix.
     pub text: String,
 }
 
@@ -580,6 +586,17 @@ pub fn parse_transition(line: &str) -> Option<Transition> {
     if ts.len() != 16 || target.is_empty() || text.is_empty() {
         return None;
     }
+    // Only a new or gone row ends in the id; a change row's last cell is never read for one.
+    let (text, sid) = match text.rsplit_once(" sid=") {
+        Some((body, id))
+            if !id.is_empty()
+                && !id.contains(char::is_whitespace)
+                && (body == "gone" || body.starts_with("new: ")) =>
+        {
+            (body, Some(id.to_string()))
+        }
+        _ => (text, None),
+    };
     let mut t = Transition {
         ts: ts.into(),
         target: target.into(),
@@ -587,6 +604,7 @@ pub fn parse_transition(line: &str) -> Option<Transition> {
         from: None,
         to: None,
         fields: vec![],
+        sid,
         text: text.into(),
     };
     if text == "gone" {
@@ -1028,7 +1046,25 @@ mod tests {
         .unwrap();
         assert_eq!((n.kind, n.to.as_deref()), ("new", Some("UNCLEAR")));
         let g = parse_transition("2026-10-29 10:52  dotfiles:5  gone").unwrap();
-        assert_eq!(g.kind, "gone");
+        assert_eq!((g.kind, g.sid), ("gone", None));
+    }
+
+    #[test]
+    fn new_and_gone_rows_carry_their_session_id_apart_from_the_text() {
+        let n =
+            parse_transition("2026-10-29 11:17  dotfiles:2  new: WORKING (busy) sid=c5f42bb7-69d2")
+                .unwrap();
+        assert_eq!((n.kind, n.to.as_deref()), ("new", Some("WORKING")));
+        assert_eq!(n.sid.as_deref(), Some("c5f42bb7-69d2"));
+        assert_eq!(n.text, "new: WORKING (busy)");
+        let g = parse_transition("2026-10-29 10:52  dotfiles:5  gone sid=abc").unwrap();
+        assert_eq!(
+            (g.kind, g.sid.as_deref(), g.text.as_str()),
+            ("gone", Some("abc"), "gone")
+        );
+        // a change row is never read for an id
+        let c = parse_transition("2026-10-29 10:52  dotfiles:5  stage A -> B (x sid=abc)").unwrap();
+        assert_eq!((c.kind, c.sid), ("change", None));
     }
 
     #[test]

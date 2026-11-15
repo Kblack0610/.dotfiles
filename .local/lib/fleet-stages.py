@@ -33,7 +33,7 @@ LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d)  (\S+)  (.*)$")
 STAGE = re.compile(r"stage ([A-Z]+) -> ([A-Z]+)(?:,.*?)?(?: \((.*)\))?$")
 FIELDS = "sync|conflicts|tree|pr|ci|plan|quality|labels|project"
 FIELD = re.compile(rf"({FIELDS}) (.+?) -> (.*?)(?=, (?:{FIELDS}|stage) |$| \()")
-SID = re.compile(r" sid=\S+$")   # the session id the new: and gone rows end in; the replay keys on the target
+SID = re.compile(r"^(new: .*|gone) sid=\S+$")   # the session id the new: and gone rows end in; the replay keys on the target
 PLAN = re.compile(r"^(\d+)/(\d+)$")
 PR = re.compile(r"^#(\d+) (open|merged)$")
 # Why a session waits, first match wins: the reasons fleet-sessions writes (fleet_stages.bats pins each one),
@@ -246,7 +246,7 @@ def replay(lines, w):
         if not m:
             continue
         stamp, name, body = m.groups()
-        body = SID.sub("", body)
+        body = SID.sub(r"\1", body)
         t = epoch(stamp)
         if t >= w.end:
             break
