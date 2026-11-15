@@ -221,6 +221,46 @@ fn each_ptask_verb_writes_one_event_with_the_row_id() {
 }
 
 #[test]
+fn a_multi_line_add_stamps_its_id_on_the_row_line_so_done_finds_it() {
+    let h = Home::new("multi-line");
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "fix(tests): menu fails some nights #size/s\n  Quarantined for the nightly.",
+        ],
+    ));
+    let board = h.board();
+    let row = board.lines().find(|l| l.starts_with("- [ ]")).unwrap();
+    assert!(row.ends_with("<!-- id:dm-1 -->"), "{board}");
+    assert!(
+        board.contains("\n  Quarantined for the nightly.\n"),
+        "{board}"
+    );
+    ok(&agent(&h, &["done", "--proof", "pr:9", "dm-1"]));
+    assert!(
+        h.board()
+            .contains("- [x] fix(tests): menu fails some nights"),
+        "{}",
+        h.board()
+    );
+
+    // The human's own words still go to the inbox as typed, every line of them.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "add",
+        "buy milk\n\n  - eggs\n    - a dozen",
+    ]));
+    assert!(
+        h.sheet()
+            .contains("- [ ] buy milk\n\n  - eggs\n    - a dozen"),
+        "{}",
+        h.sheet()
+    );
+}
+
+#[test]
 fn the_agent_board_refuses_untyped_sizeless_and_near_duplicate_rows() {
     let h = Home::new("refuse");
     let before = h.board();

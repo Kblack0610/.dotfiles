@@ -387,6 +387,12 @@ honestly, because the session it would have objected to is the one just killed. 
 waived. Its outcome lands in `~/.agent/wt/done.log`, since by then there is nowhere else to
 print it.
 
+Run from a Claude session in its own worktree session, `wt done` does not schedule the kill
+itself: it arms the wind-down below (`wind-down.sh arm --session`), because a timed kill
+lands mid-turn, before that session's Stop hooks have run. The Stop pipeline fires it last
+and the outcome lands in `~/.agent/spin-down/fire.log`. A pane in another session, the
+keybinding and a plain shell take the timed kill above.
+
 `wind-down` closes the loop: `arm` records the worktree in its sentinel, and `fire` runs
 `wt reap` **after** the kill, in the same backgrounded chain. Before the kill it would always
 refuse, correctly.

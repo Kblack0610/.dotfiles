@@ -39,7 +39,8 @@
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --partial records a merged PR with partial: yes and leaves the item and row open, for a final
-# agent-land without --partial, which clears the marker and closes the item. If the session ends first,
+# agent-land without --partial, which clears the marker and closes the item; that PR may be in a repo
+# the item already carries, so a brief asking for two PRs in one repo is one item. If the session ends first,
 # reap requeues the item and the next run makes that final landing.
 # A PR on Forgejo (a checkout that commits the mirror marker, forge_canonical, or whose origin is on a
 # host SO_FORGEJO_HOSTS lists: home-config, bnb-game-servers) runs the same steps through that host's
@@ -461,10 +462,15 @@ once_done() {
     return 0
   done
   [[ "$pr_ref" == */*#* ]] || die "queue item $item is done, and #$pr names no repo to add it under"
+  # An open item can still say it carries more PRs; a done one cannot.
+  local out="" state=done
+  if [ "$(jq -r .state <<<"$it")" != done ]; then
+    state=open out="; if both are this item's work, agent-queue set $item partial=yes and re-run"
+  fi
   for ref in "${refs[@]}"; do
-    [[ "$ref" == */*#* ]] || die "queue item $item is done with a bare pr:$ref, which names no repo to tell #$pr apart from"
+    [[ "$ref" == */*#* ]] || die "queue item $item is $state with a bare pr:$ref, which names no repo to tell #$pr apart from"
     [[ "$ref" != "${pr_ref%#*}#"* ]] ||
-      die "queue item $item is done with $ref, and an item carries one PR per repo: give #$pr its own item (agent-queue add --running), then --item <that slug>"
+      die "queue item $item is $state with $ref, and an item carries one PR per repo: give #$pr its own item (agent-queue add --running), then --item <that slug>$out"
   done
   echo more
 }
@@ -669,8 +675,10 @@ own_repo
 own_project
 if [ "$(jq -r .state <<<"$it")" = done ]; then
   done_as=$(once_done) || exit $?
-elif [ -n "$it_pr" ]; then
-  # Apply the same one-PR-per-repo rule while the item is still open.
+elif [ -n "$it_pr" ] && [ "$partial" -eq 0 ] && [ "$(jq -r '.partial // ""' <<<"$it")" != yes ]; then
+  # An open item takes the same one-PR-per-repo rule, unless a --partial landing (this one, or an
+  # earlier one that left partial: yes) says it carries more PRs: a brief that asks for two PRs in one
+  # repo lands both on its one item. Why: release-windows-only had to file ucp-1987 for #2397 (2026-11-12).
   once_done >/dev/null || exit $?
 fi
 # settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
