@@ -190,9 +190,10 @@ load_queue_asks() {
   QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
 }
 
-# settle_queue <id>: once the human answered or cancelled this ask, the queue fails each item it can
-# no longer release (agent-queue settle-ask), so none waits for good behind it (2026-11-10: three
-# items behind vmToL3 and VOEW9i). Its failure must not fail the answer or the cancel.
+# settle_queue <id>: once the human answered or cancelled this ask, agent-queue settle-ask settles
+# the items it can no longer release: an answer against an item's gate fails it, a cancel leaves it
+# queued and flagged, naming it here so the canceller re-gates it. Its failure must not fail the
+# answer or the cancel.
 settle_queue() {
   queue_waits "$1" || return 0
   $AGENT_ASK_QUEUE_CMD settle-ask "$1" >&2 || echo "agent-ask: items held on $1 not settled: agent-queue settle-ask $1" >&2

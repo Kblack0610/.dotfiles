@@ -34,8 +34,9 @@
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back in the queue, held on that agent-hold or ask
-#   settle-ask <id>    fail each queued item that ask can no longer release (cancelled, or answered another option);
-#       agent-ask runs it on every cancel and human answer, and the item's board row stays open
+#   settle-ask <id>    fail each queued item the human answered that ask against (another option), its board row
+#       left open; one held on a cancelled ask stays queued and held, named on stderr and in queue-starved.
+#       agent-ask runs it on every cancel and human answer
 #   ask-holds [<id>]   `<slug><TAB><ask id><TAB><releasing options>` per active item held on an ask (that ask only, given one)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
@@ -1951,14 +1952,17 @@ cmd_ask_holds() {
     END { flush() }' "${FILES[@]}"
 }
 
-# settle-ask <id> -- fail every queued item held on that ask that it can no longer release, now that
-# the human answered or cancelled it: cancelled, or answered with an option its tag does not name
-# (ask_pending decides). agent-ask runs this on each cancel and human answer. The board row stays
-# open and `note:` names the ask, so re-gating it is one add. On 2026-11-10 three items sat behind
-# vmToL3 (answered a, gate wanted b) and VOEW9i (cancelled) and tripped queue-starved; dead_holds in
-# fleet-dispatch reports what this missed.
+# settle-ask <id> -- once the human answered or cancelled that ask, settle each queued item held on it
+# that it can no longer release (ask_pending decides). An answer naming an option its tag does not is
+# the human's no: the item closes failed, `note:` naming the ask, and its board row stays open, so
+# re-gating it is one add (2026-11-10: three items sat behind vmToL3, answered a, gate wanted b).
+# A cancel decides nothing (the ask was superseded, folded into another or moot), so the item stays
+# queued and held: its hold reads `ask:<id> (cancelled)` in list and the hub, stderr tells the
+# canceller how to re-gate or close it, and fleet-dispatch dead_holds names it in queue-starved until
+# someone does (no note: the live hold is the flag, and a note would outlive a re-gate). Why: cancelling yaZGII (2026-11-13) closed consoles-p3 with its
+# work unfinished, and consoles-p5, after it, went dead with it.
 cmd_settle_ask() {
-  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note
+  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note flag
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
   lock
   local AQ_LOCKED=1
@@ -1969,8 +1973,12 @@ cmd_settle_ask() {
       # A judge or shepherd answer ("answered by judge, not the human") is not dead: the human can still answer.
       case "$why" in "answered by "*) continue ;; cancelled | "answered "*", not "*) ;; *) continue ;; esac
       slug="$(fm_get "$f" slug)" note="$(fm_get "$f" note)"
-      header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
-      cmd_move "$slug" done --status failed
+      if [ "$why" = cancelled ]; then
+        echo "agent-queue: $slug stays queued behind cancelled ask $id: set its tags without $tag (plus the ask that replaced it), or move it done --status cancelled --why <why>" >&2
+      else
+        header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
+        cmd_move "$slug" done --status failed
+      fi
       break
     done
   done < <(items_in "$AQ_DIR/queued")
