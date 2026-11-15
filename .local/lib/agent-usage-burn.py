@@ -693,7 +693,7 @@ def runner_calls(state_dir):
     return out
 
 
-def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, models, tokens):
+def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, *, models, tokens):
     """One by_session row: what one session cost in the window, on which models, and who it was."""
     return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
             "origin": origin, "harness": harness, "agent": agent, "account": account,
@@ -702,12 +702,14 @@ def session_row(sid, measured, estimated, origin, harness, agent, account, proje
 
 
 def outcome_models(r):
-    """An outcomes row's dollars by model: its own split, else its whole cost on its one model."""
-    split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if m and (v or 0) > 0}
+    """An outcomes row's dollars by model: its own split, else its whole cost on its models joined
+    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model."""
+    real = lambda m: m and not m.startswith("<")
+    split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if real(m) and (v or 0) > 0}
     if split:
         return split
-    names = sorted({m for m in r.get("models") or [] if m and not m.startswith("<")})
-    return {names[0]: r["cost_usd"]} if len(names) == 1 else {}
+    names = sorted({m for m in r.get("models") or [] if real(m)})
+    return {"+".join(names): r["cost_usd"]} if names else {}
 
 
 def other_harnesses(start, end, root):
@@ -741,7 +743,7 @@ def other_harnesses(start, end, root):
             if sid and r["cost_usd"] > 0:   # priced from a table or the harness's own sum: estimated, as in total
                 rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
                                         r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                        outcome_models(r), r.get("tokens_total")))
+                                        models=outcome_models(r), tokens=r.get("tokens_total")))
     return out, rows
 
 
@@ -820,7 +822,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
             agent = name if origin in ("runner", "shepherd") else ((it or {}).get("tmux") or os.path.basename(cwd.rstrip("/")) or None)
             by_session.append(session_row(sid, s["measured"], s["estimated"], origin, reg.get("harness") or "claude",
                                           agent, account, (it or {}).get("project") or reg.get("project"),
-                                          reg.get("title"), (it or {}).get("slug"), s["models"], s["tokens"]))
+                                          reg.get("title"), (it or {}).get("slug"), models=s["models"], tokens=s["tokens"]))
         if s["measured"] > 0 and s["priced"] > 0 and s["whole"]:
             billed[origin] += s["measured"]
             priced[origin] += s["priced"]

@@ -1482,7 +1482,19 @@ fn tiles(b: &Board, p: Palette) -> Vec<Span<'static>> {
             p.dim()
         };
         s.push(Span::styled(label, style));
-        s.push(Span::raw(format!("{}  ", costs::usd(Some(t.usd)))));
+        if t.days == 0 {
+            s.push(Span::styled(
+                format!("- no nightly day in {}  ", t.window),
+                p.warn(),
+            ));
+            continue;
+        }
+        s.push(Span::raw(format!("{} ", costs::usd(Some(t.usd)))));
+        let through = t.through.get(5..).unwrap_or(&t.through);
+        s.push(Span::styled(
+            format!("({}d to {through})  ", t.days),
+            p.dim(),
+        ));
     }
     s.push(Span::styled(b.totals_note, p.dim()));
     s
@@ -1780,6 +1792,19 @@ mod tests {
             .map(crate::fit::plain)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn a_spend_tile_names_its_nightly_days_and_a_window_with_none_says_so_never_zero() {
+        let s = screen_of(&costs(), &CostsView::default(), 200);
+        assert!(s.contains("7D $15.50 (1d to 01-11)"), "{s}");
+        let none = Costs {
+            spend_days: vec![],
+            ..costs()
+        };
+        let s = screen_of(&none, &CostsView::default(), 200);
+        assert!(s.contains("7D - no nightly day in 7d"), "{s}");
+        assert!(!s.contains("7D $0.00"), "{s}");
     }
 
     #[test]

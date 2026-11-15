@@ -570,7 +570,7 @@ fn shares(s: &crate::spend_history::Sess) -> Vec<(String, f64)> {
     let pos: Vec<(&String, f64)> = s
         .models
         .iter()
-        .filter(|(m, v)| !m.is_empty() && **v > 0.0)
+        .filter(|(m, v)| !m.is_empty() && !m.starts_with('<') && **v > 0.0)
         .map(|(m, v)| (m, *v))
         .collect();
     let sum: f64 = pos.iter().map(|x| x.1).sum();
@@ -600,7 +600,11 @@ pub fn slices(days: &[&crate::spend_history::Day]) -> Vec<Slice> {
                     s.account.as_deref().unwrap_or(""),
                 ),
                 model: short(&model),
-                alias: alias(&model),
+                alias: if model.contains('+') {
+                    String::new()
+                } else {
+                    alias(&model)
+                },
                 runner: if matches!(origin, "runner" | "shepherd") {
                     some(&s.agent)
                 } else {
@@ -1978,6 +1982,20 @@ mod tests {
             slices(&[&d])[0].model,
             "unrecorded",
             "a model with no dollars splits nothing"
+        );
+        let odd = sess(
+            "y",
+            "p",
+            "codex",
+            "interactive",
+            &[("<synthetic>", 1.0), ("gpt-5.4+gpt-5.4-mini", 4.0)],
+        );
+        let d = day("2027-01-14", vec![odd]);
+        let v = slices(&[&d]);
+        assert_eq!(
+            (v.len(), v[0].model.as_str(), v[0].alias.as_str(), v[0].cost),
+            (1, "gpt-5.4+gpt-5.4-mini", "", 5.0),
+            "a <synthetic> name is no model, and a joined name takes the whole row with no alias"
         );
         assert_eq!(alias("claude-opus-5-5"), "opus");
         assert_eq!(alias("gpt-5.4"), "gpt-5.4");
