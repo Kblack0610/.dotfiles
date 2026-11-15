@@ -4391,9 +4391,10 @@ cmd_throughput() {
   merges=$(merge_rows "$to" "$from" | grep -v '^!')
   # The exporter's own quantiles over the jobs finished in 24h; a recorded fixture has none.
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
-  jq -rn --argjson a "$from" --argjson b "$to" --argjson s "$snap" --arg m "$merges" --arg q "$queue" \
-      --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
-    (($b - $a) / 3600) as $h
+  # Merges and the snapshot grow with the window and the fleet, so they go by file, never --arg (128 KB each).
+  jq -rn --argjson a "$from" --argjson b "$to" --slurpfile sf <(printf '%s\n' "$snap") --rawfile m <(printf '%s\n' "$merges") \
+      --arg q "$queue" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
+    $sf[0] as $s | (($b - $a) / 3600) as $h
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
