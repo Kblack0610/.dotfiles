@@ -61,21 +61,21 @@ reply() {
   if [ -n "${4:-}" ]; then printf '%s' "$4" > "$SANDBOX/reply/$1.link"; fi
 }
 issues() { jq -nc --argjson n "$1" '[range($n) | {id: (. | tostring)}]'; }
-project() { jq -nc --arg f "${1:-}" '{id: "1", slug: "x", firstEvent: (if $f == "" then null else $f end)}'; }
+project() { jq -nc --arg i "$1" --arg f "${2:-}" '{id: $i, slug: "x", firstEvent: (if $f == "" then null else $f end)}'; }
 row() { jq -c --arg p "$1" --arg s "$2" '.projects[] | select(.project == $p and .sentry == $s) | del(.project, .sentry)' <<<"$output"; }
 
 NEXT='<https://sentry.io/x>; rel="previous"; results="false"; cursor="0:0:1", <https://sentry.io/x>; rel="next"; results="true"; cursor="0:100:0"'
 LAST='<https://sentry.io/x>; rel="previous"; results="true"; cursor="0:0:1", <https://sentry.io/x>; rel="next"; results="false"; cursor="0:200:0"'
 
 @test "counts unresolved and new issues per slug, following the Link cursor; a missing project is unlisted" {
-  reply project.dodginballs 200 "$(project 2026-11-01T00:00:00Z)"
-  reply issues.u.dodginballs 200 "$(issues 100)" "$NEXT"
-  reply issues.u.dodginballs.0%3A100%3A0 200 "$(issues 7)" "$LAST"
-  reply issues.n.dodginballs 200 "$(issues 3)"
+  reply project.dodginballs 200 "$(project 11 2026-11-01T00:00:00Z)"
+  reply issues.u.11 200 "$(issues 100)" "$NEXT"
+  reply issues.u.11.0%3A100%3A0 200 "$(issues 7)" "$LAST"
+  reply issues.n.11 200 "$(issues 3)"
   reply project.dodginballs-server 404 '{"detail": "The requested resource does not exist"}'
-  reply project.shapecity 200 "$(project)"
-  reply issues.u.shapecity 200 '[]'
-  reply issues.n.shapecity 200 '[]'
+  reply project.shapecity 200 "$(project 12)"
+  reply issues.u.12 200 '[]'
+  reply issues.n.12 200 '[]'
   run "$SI"
   assert_success
   assert_equal "$(row dodginballs dodginballs)" '{"listed":true,"first_event":true,"unresolved":107,"new":3}'
@@ -101,9 +101,9 @@ LAST='<https://sentry.io/x>; rel="previous"; results="true"; cursor="0:0:1", <ht
 }
 
 @test "publish: an unread slug writes no count and holds the source down; a read zero is written" {
-  reply project.dodginballs 200 "$(project 2026-11-01T00:00:00Z)"
-  reply issues.u.dodginballs 200 "$(issues 2)"
-  reply issues.n.dodginballs 200 "$(issues 1)"
+  reply project.dodginballs 200 "$(project 11 2026-11-01T00:00:00Z)"
+  reply issues.u.11 200 "$(issues 2)"
+  reply issues.n.11 200 "$(issues 1)"
   reply project.dodginballs-server 404 '{}'
   reply project.shapecity 403 '{"detail": "You do not have permission to perform this action."}'
   run "$SI" publish
@@ -122,19 +122,55 @@ LAST='<https://sentry.io/x>; rel="previous"; results="true"; cursor="0:0:1", <ht
 }
 
 @test "more than the page bound is that slug's error, never a short count" {
-  reply project.shapecity 200 "$(project 2026-11-01T00:00:00Z)"
+  reply project.shapecity 200 "$(project 12 2026-11-01T00:00:00Z)"
   # every page answers a full page with a next cursor
-  reply issues.u.shapecity 200 "$(issues 100)" "$NEXT"
-  reply issues.u.shapecity.0%3A100%3A0 200 "$(issues 100)" "$NEXT"
+  reply issues.u.12 200 "$(issues 100)" "$NEXT"
+  reply issues.u.12.0%3A100%3A0 200 "$(issues 100)" "$NEXT"
   run "$SI"
   assert_success
-  assert_equal "$(row shape-city shapecity)" '{"error":"more than 10 pages of issues"}'
+  assert_equal "$(row shape-city shapecity)" '{"error":"more than 30 pages of issues"}'
 }
 
 @test "an issue answer that is not a list is an error" {
-  reply project.shapecity 200 "$(project)"
-  reply issues.u.shapecity 200 '{"detail": "odd"}'
+  reply project.shapecity 200 "$(project 12)"
+  reply issues.u.12 200 '{"detail": "odd"}'
   run "$SI"
   assert_success
   assert_equal "$(row shape-city shapecity)" '{"error":"issue answer is not a list"}'
+}
+
+@test "a full page with no Link header is an error, a short last page is not" {
+  reply project.shapecity 200 "$(project 12 2026-11-01T00:00:00Z)"
+  reply issues.u.12 200 "$(issues 100)"
+  reply issues.n.12 200 "$(issues 4)"
+  run "$SI"
+  assert_success
+  assert_equal "$(row shape-city shapecity)" '{"error":"full page of issues with no Link header"}'
+  reply issues.u.12 200 "$(issues 100)" "$LAST"
+  run "$SI"
+  assert_equal "$(row shape-city shapecity)" '{"listed":true,"first_event":true,"unresolved":100,"new":4}'
+}
+
+@test "a 404 on every project is a wrong org, never off" {
+  reply project.dodginballs 404 '{}'
+  reply project.dodginballs-server 404 '{}'
+  reply project.shapecity 404 '{}'
+  run "$SI" publish
+  assert_success
+  assert_equal "$(row shape-city shapecity)" '{"error":"every project answered 404: wrong sentry_org or a token for another org"}'
+  run grep -F 'sentry_issues_up 0' "$PROM_TEXTFILE_DIR/sentry_issues.prom"
+  assert_success
+}
+
+@test "store_fetch keeps the response headers only when asked" {
+  reply project.shapecity 200 "$(project 12)"
+  export PATH="$SANDBOX/bin:$PATH"
+  . "$BATS_TEST_DIRNAME/../../.local/lib/store-auth.sh"
+  url=https://sentry.io/api/0/projects/testorg/shapecity/
+  run store_fetch "$url" tok "$SANDBOX/a"
+  assert_output 200
+  assert [ ! -f "$SANDBOX/a.h" ]
+  STORE_KEEP_HEADERS=1 run store_fetch "$url" tok "$SANDBOX/b"
+  assert_output 200
+  assert [ -f "$SANDBOX/b.h" ]
 }
