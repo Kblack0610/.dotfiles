@@ -5902,6 +5902,56 @@ STUB
   assert_failure 1
 }
 
+@test "sizes --check: median work by #pts band over BENCH_BANDS_DAYS of closes, exit 1 when l is not slower than m or m not slower than s" {
+  export ITEMS="$SANDBOX/done.jsonl" BENCH_SIZES_MIN=2
+  export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  printf '#!/usr/bin/env bash\necho %s\n' \
+    "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1},{\"id\":\"ar-2\",\"size\":\"m\",\"weight\":5},{\"id\":\"ar-3\",\"size\":\"l\",\"weight\":8}]}]'" \
+    > "$SANDBOX/bin/roadmap-stub"
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
+  items() {  # <row>:<work>:<finished hours ago>[:<status>] ...
+    local a
+    for a in "$@"; do
+      IFS=: read -r r w h st <<<"$a"
+      jq -cn --arg r "ar:$r" --arg w "$w" --arg st "${st:-ok}" --arg f "$(date -u -d "@$((T0 - h * 3600))" +%FT%TZ)" \
+        '{slug: "x", status: $st, row: $r, work_min: $w, started: $f, finished: $f}'
+    done > "$ITEMS"
+  }
+  # climbs: s 10, m 30, l 90; the l item 8 days back is outside the 7-day window, and failed
+  # closes are not among the ok closes size_rule's minutes came from
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_success
+  assert_output '- work p50 by #pts band, last 7d of closes: s 10 min (2), m 30 min (2), l 90 min (2): climbs'
+  # one read covers both windows, the size table's 28 days and the bands' 7
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
+  run env BENCH_NOW=$T0 BENCH_SIZES_DAYS=3 "$SUBJECT" sizes --check
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
+  # m no slower than s, l faster than m
+  items ar-1:30:1 ar-1:30:2 ar-2:30:1 ar-2:30:2 ar-3:20:1 ar-3:20:2
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 1
+  assert_output --partial 'inverted, m not slower than s, l not slower than m'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --json
+  assert_equal "$(jq -c '.bands | [.status, .s.p50, .m.p50, .l.p50, .days]' <<<"$output")" '["inverted",30,30,20,7]'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes
+  assert_line '- work p50 by #pts band, last 7d of closes: s 30 min (2), m 30 min (2), l 20 min (2): inverted, m not slower than s, l not slower than m'
+  # a band under BENCH_SIZES_MIN items orders nothing, so it does not trip
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:20:1
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_success
+  assert_output --partial 's 10 min (2), m 30 min (2), l 20 min (1): too few to order l (under 2)'
+  # but it does not hide an inversion between the two bands that have the items
+  items ar-1:30:1 ar-1:30:2 ar-2:10:1 ar-2:10:2 ar-3:20:1
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 1
+  assert_output --partial 'l 20 min (1): inverted, m not slower than s; too few to order l (under 2)'
+  run env BENCH_DONE_ITEMS_CMD=false BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 2
+}
+
 # start_rows <count> <ready ms> [epoch] -> that many startup rows, the shape startup-telemetry.sh writes
 start_rows() {
   local i
