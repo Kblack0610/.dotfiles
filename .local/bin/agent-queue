@@ -1827,7 +1827,7 @@ check_tags() {
         case "$why" in
           "" | pending) ;;
           "no such ask") die "$tag: no agent-ask has that id; post the ask first" ;;
-          *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind gate, which the judge never answers" ;;
+          *) die "$tag: that ask can never release it ($why); post a new one with agent-ask post --kind approval, which the judge never answers" ;;
         esac
         # With no option named, every answer releases the item, a "stop" among them.
         # A name the ask does not offer can never match an answer, so the item would wait for good.

@@ -108,8 +108,10 @@
 # AGENT_ASK_NO_RESUME=1 records the answer only (the test sandbox sets it, so no test
 # can start a real run by answering a gate).
 #
-# A gate/approval is just an ask with kind=gate (options default approve|hold), e.g.
-# "PR #1036 is green, merge it?".
+# A gate/approval is just an ask with kind=gate or kind=approval (options default approve|hold),
+# e.g. "PR #1036 is green, merge it?". A gate is a session's own stop, and the judge rules on it as
+# on a question; an approval (a plan, an outbox line's project, an audit, the judge's own
+# authority) is the human's by rule.
 
 # PARKED is not a status. A pending ask with `parked_until` still ahead waits on something the
 # human will do later (plug in a headset, order parts): `list --pending` and `count` leave it out,
@@ -136,7 +138,7 @@
 # (`precedents`) go in with the ask, so a past answer changes the next verdict. A type listed in
 # the conf's DELAY_RULES, at or under that row's impact level, is answered live (`answered_by:
 # judge`, see "live answers" below), at once or after its wait, and a sample of those answers goes
-# back to the human as an audit; every other rule is shadow, and the human answers. A gate or approval
+# back to the human as an audit; every other rule is shadow, and the human answers. An approval
 # is never sent to the model; it is the human's by rule. AGENT_ASK_NO_JUDGE=1 skips the call (the
 # test sandbox sets it), AGENT_ASK_JUDGE_CMD replaces it, and AGENT_ASK_DELAY_RULES replaces the
 # conf's table (tests).
@@ -499,7 +501,7 @@ cmd_post() {
   # An ask about the judge's own authority is the human's by rule: the judge never rules on its
   # own reach (the policy's "Judge authority" list).
   local authority
-  if [ "$kind" = question ] && authority="$(judge_floor_hit "$(judge_conf PROMPT "")" \
+  if [ "$kind" != approval ] && authority="$(judge_floor_hit "$(judge_conf PROMPT "")" \
        "$task $question $context $options $option_notes $why" "Judge authority")"; then
     kind=approval
     echo "agent-ask post: the ask names $authority, the judge's own authority, so it is an approval for the human" >&2
@@ -976,11 +978,11 @@ live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l && !found { print $3; found = 1 } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
-# anything else: a gate, a human or error call, a shadow rule, an ask the human disarmed. The one
-# place that decides.
+# anything else: an approval, a human or error call, a shadow rule, an ask the human disarmed. The
+# one place that decides; a gate is answered like a question, under its cell's level ceiling.
 live_answer() {
   local f="$1" judge rule ans
-  case "$(field "$f" kind)" in gate|approval) return 1 ;; esac
+  [ "$(field "$f" kind)" != approval ] || return 1
   [ -z "$(field "$f" assume_disarmed)" ] || return 1
   ! queue_waits "$(field "$f" id)" || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
@@ -1827,7 +1829,7 @@ cmd_precedents() {
   local before="${1:-}"; [ -n "$before" ] || { echo "usage: agent-ask precedents <before>" >&2; return 2; }
   local asks
   asks="$(judge_ask_docs "${AGENT_ASK_PRECEDENTS_ROOT:-$ASKS_ROOT}" | jq -c 'select(.status == "answered"
-    and (.options // "") != "" and (.recommend // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
+    and (.options // "") != "" and (.recommend // "") != "" and (.kind // "") != "approval")')"
   [ -n "$asks" ] || return 0
   jq -sr --argjson picks "$(answer_picks "$asks")" --arg before "$before" --argjson cap "$(judge_conf PRECEDENTS 30)" "$JQ_EPOCH"'
     def note($o): . as $a | ($a.options | split("|") | index($o)) as $i
@@ -1847,7 +1849,7 @@ cmd_precedents() {
 }
 
 # judge <id>: what the answer judge would do with this ask. Shadow only: it records its call
-# and never answers. Runs once per ask; a gate is the human's without a model call. Every
+# and never answers. Runs once per ask; an approval is the human's without a model call. Every
 # outcome is recorded: `judge` is human, take-recommend, answer:<text>, or error when the call
 # failed or its reply was not a full score; `judge_rule` is what decided it, `judge_type` the
 # kind of question, `judge_met` the criteria that held, `judge_reason` the why, `judge_evidence`
@@ -1860,12 +1862,11 @@ cmd_judge() {
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
   drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised
-  case "$(field "$f" kind)" in
-    gate|approval)
-      judge_record "$f" human gate "a gate is the human's by rule; not sent to the judge" ""
-      return 0 ;;
-  esac
-  # A question posted before the authority floor, judged again, is held to it all the same.
+  if [ "$(field "$f" kind)" = approval ]; then
+    judge_record "$f" human gate "an approval is the human's by rule; not sent to the judge" ""
+    return 0
+  fi
+  # A question or gate posted before the authority floor, judged again, is held to it all the same.
   local policy authority; policy="$(judge_conf PROMPT "")"
   if authority="$(judge_floor_hit "$policy" "$(ask_text "$f")" "Judge authority")"; then
     judge_record "$f" human gate "the ask names $authority, the judge's own authority; not sent to the judge" ""

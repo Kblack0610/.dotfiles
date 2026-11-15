@@ -478,11 +478,11 @@ cells() {
 }
 
 # replay_labelled: the id and project of each ask the human answered with one option, newest
-# first, gates and approvals out. Free text and bare settle-session stamps carry no label.
+# first, approvals out (the judge never sees one). Free text and bare settle-session stamps carry no label.
 replay_labelled() {
   local asks
   asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered" and (.answered_by // "human") == "human"
-    and (.options // "") != "" and ((.kind // "") == "gate" or (.kind // "") == "approval" | not))')"
+    and (.options // "") != "" and (.kind // "") != "approval")')"
   jq -sr --argjson picks "$(answer_picks "$asks")" '
     map(select(.answer as $a | $picks[.id] or (.options | split("|") | index($a))))
     | sort_by(.created // "") | reverse | .[] | [.id, .project] | @tsv' <<<"$asks"

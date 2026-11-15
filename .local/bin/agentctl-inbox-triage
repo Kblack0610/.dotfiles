@@ -9,7 +9,7 @@
 # line leaves the outbox (`notes outbox answer`), so it is never a row.
 # `#p:` outbox lines naming a project exactly, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
 # call (the conf's MODEL; it also gets a `#p:` word that names no project, as a hint), which only proposes rows, a dup, a skip, and whether to plan first.
-# An outbox line it cannot place becomes one question to the human (`agent-ask post --kind gate`, which
+# An outbox line it cannot place becomes one question to the human (`agent-ask post --kind approval`, which
 # the judge never answers): which project, or drop it. The answer runs `--answer <id>`, which moves the
 # line to that project's inbox (the next sweep files it) or takes it out of the outbox.
 # Every write is the CLI's (`notes outbox move`, `notes ptask --exact file`), so this script never
@@ -177,7 +177,7 @@ note() {
 left() { KEPT=$((KEPT + 1)); note left "$1" "$3" "$2" "${4:-}"; }
 
 # ask_project <text> <why> <context> <project...>: the human asked which project an outbox line is
-# for, or to drop it, as a gate (the judge never answers one: only the human knows what they meant).
+# for, or to drop it, as an approval (the judge never answers one: only the human knows what they meant).
 # Recorded as `asked` with the ask's id, which keeps the line out of later routing and is how
 # --answer finds it. Over the sweep's cap the line is not recorded, only held for the rest of the
 # sweep (DEFERRED), so the next sweep asks it: answering an ask moves a line, and that save wakes
@@ -199,7 +199,7 @@ ask_project() {
   # Not this runner's session or pane: the ask is the line's, and the triage runner must not read
   # as blocked on it.
   errf="$(mktemp)"
-  if id="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind gate --project "$1" \
+  if id="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind approval --project "$1" \
       --options "$opts" --recommend "$1" --why "${why:-the likeliest of the projects it could be}" --context "$context" \
       --resume 'run:agentctl-inbox-triage --answer' -- "$q" 2>"$errf" | tail -n 1)" && [ -n "$id" ]; then
     rm -f -- "$errf"
