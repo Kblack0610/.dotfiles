@@ -3323,7 +3323,7 @@ cmd_retro() {
 # #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
 board_upsert() {
   local board p text pri have rc added=0 edited=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_NEW=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
@@ -3332,7 +3332,7 @@ board_upsert() {
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
       case $rc in
-        0) added=$((added + 1)) ;;
+        0) added=$((added + 1)); UPSERT_NEW+="$p"$'\n' ;;
         3) ;;
         *) report_outcome FAILED "add failed for $p"; return 1 ;;
       esac
@@ -3577,13 +3577,40 @@ triage_filed() {
   done <<<"$1"
 }
 
+# row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
+row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
+
+# triage_twins <rows> <kept>: a row lives in one lane, the one its route names. A route that
+# changed lanes left the old lane's row open beside the new one (ar-1092/ar-1674, ar-1650/ar-2068: one
+# watch, two rows), so once the new lane holds the row, the old lane's twin on the KPI_BOARD sheet is
+# dropped with the reason in its marker. <rows> is every row; board_upsert names the agent rows it just
+# added in UPSERT_NEW; <kept> is the keys of a spent cause, whose human row stands beside its agent row.
+triage_twins() {
+  local key route sheet have twin
+  while IFS=$'\t' read -r key _ _ route _; do
+    [ -n "$key" ] || continue
+    case "$route" in human:?*) ;; *) continue ;; esac
+    sheet=${route#human:}
+    have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
+    row_open "$have" "$key" || continue
+    twin=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null) || continue
+    row_open "$twin" "$key" && { $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent drop "$key" --why "moved to the $sheet sheet" >/dev/null 2>&1 || say "twin: could not drop the agent row for $key"; }
+  done <<<"$1"
+  while IFS=$'\t' read -r key _; do
+    [ -n "$key" ] || continue
+    grep -qxF -- "$key" <<<"$2" && continue
+    twin=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || continue
+    row_open "$twin" "$key" && { $BENCH_NOTES_CMD ptask "$KPI_BOARD" drop "$key" --why "moved to the agent board" >/dev/null 2>&1 || say "twin: could not drop the sheet row for $key"; }
+  done <<<"$UPSERT_NEW"
+}
+
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
   local key text pri route sheet have n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
-    awk -F'\t' -v p="${key,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$have" && continue
+    row_open "$have" "$key" && continue
     $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
@@ -4071,7 +4098,7 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key extra
+  local rows filed dry=0 q h text re route skill fix tags key extra spent
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -4112,8 +4139,10 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
-  h=$(triage_human "$rows"$'\n'"$(triage_spent "$rows")")
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_NEW=; fi
+  spent=$(triage_spent "$rows")
+  h=$(triage_human "$rows"$'\n'"$spent")
+  triage_twins "$rows" "$(cut -f1 <<<"$spent")"
   q=$(triage_promote "$rows")
   extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
   upsert_report "$rows" "$extra"
