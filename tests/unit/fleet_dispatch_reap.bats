@@ -557,6 +557,46 @@ real_epic_board() {
   grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "row still started"
 }
 
+@test "reap: a recorded session restore has not reopened yet is not reaped, until restore consumes its record (ar-2140)" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
+  row game human 'fix crash' '- [/] fix crash'
+  started_item fix-crash lab:game-agent-1 run '' 'board:game:fix crash'
+  started_item other lab:game-agent-2 run
+  # A hub item records no tmux session, only the Claude that works it.
+  started_item hub-work '' run
+  sed -i 's/^agent: claude$/agent: claude\nsessions: conv-hub/' "$AGENT_QUEUE_DIR"/running/*-hub-work.md
+  mkdir -p "$FLEET_DISPATCH_DIR/panes"
+  jq -n '{server: "lab", instance: "1 1", panes: [{session: "game-agent-1", window: "w", cwd: "/x", claude: "conv-1"}]}' \
+    > "$FLEET_DISPATCH_DIR/panes/lab.lost.json"
+  jq -n '{server: "hub", instance: "2 2", panes: [{session: "dotfiles", window: "h", cwd: "/x", claude: "conv-hub"}]}' \
+    > "$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  # A record that will not read holds every session of its server.
+  started_item odd default:game-agent-5 run
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  echo '{"server": "default", "pan' > "$FLEET_DISPATCH_DIR/panes/default.lost.json"
+  # A miss from before the death is no witness once the record holds the item.
+  mkdir -p "$FLEET_DISPATCH_DIR/reap-miss" && date +%s > "$FLEET_DISPATCH_DIR/reap-miss/hub-work"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"someone-else\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap; run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "reaped a session its lost record still owes a reopen"
+  grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "un-started the row of a session owed a reopen"
+  [ -n "$(qitem running hub-work)" ] || fail "reaped a hub conversation its lost record still owes a reopen"
+  [ ! -e "$FLEET_DISPATCH_DIR/reap-miss/hub-work" ] || fail "kept a miss mark while the record held the item"
+  [ -n "$(qitem running odd)" ] || fail "an unreadable lost record let reap settle its server's session"
+  # Negative control: a session no record holds is gone as before.
+  [ -z "$(qitem running other)" ] || fail "kept a gone session no lost record holds"
+
+  # Restore consumed the records: a session still missing now is gone.
+  mv "$FLEET_DISPATCH_DIR/panes/lab.lost.json" "$FLEET_DISPATCH_DIR/panes/lab.restored.json"
+  mv "$FLEET_DISPATCH_DIR/panes/hub.lost.json" "$FLEET_DISPATCH_DIR/panes/hub.restored.json"
+  run cmd_reap; run cmd_reap
+  [ -z "$(qitem running fix-crash)" ] || fail "kept a gone session after restore finished"
+  [ -z "$(qitem running hub-work)" ] || fail "kept a gone hub conversation after restore finished"
+}
+
 @test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and night rows are not" {
   night_ready
   export AGENT_QUEUE_NIGHT=01:00-06:00 AGENT_QUEUE_NOW=12:00
@@ -1427,6 +1467,18 @@ OUT
   [ ! -f "$RECORD" ] || fail "an empty record stayed"
 }
 
+@test "restore keeps a record that grew during its walk, so a rerun reopens the new death's conversations" {
+  restore_setup
+  lost_pane one "$SANDBOX/repos/game" conv-1
+  # A death world_lost adds while the restore walks the record.
+  stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"
+    f="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; jq ".panes += [{session: \"dotfiles\", window: \"two\", cwd: \"/x\", claude: \"conv-2\"}]" "$f" > "$f.n" && mv "$f.n" "$f"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_output --partial 'hub: its record grew during the restore'
+  assert_equal "$(jq -r '.panes[1].claude' "$FLEET_DISPATCH_DIR/panes/hub.lost.json")" conv-2
+}
+
 @test "restore reopens each conversation in its last mode and skips what must not come back" {
   restore_setup
   G="$SANDBOX/repos/game"
@@ -1442,16 +1494,20 @@ OUT
   transcript conv-work '{"permissionMode":"bypassPermissions"}'
   : > "$HOME/.agent/spin-down/conv-armed.request"
   : > "$HOME/.agent/spin-down/conv-closed.fired"
+  lost_pane otheracct "$G" conv-other
+  mkdir -p "$HOME/.claude-work/sessions"
+  printf '{"pid":%s,"sessionId":"conv-other"}' "$$" > "$HOME/.claude-work/sessions/$$.json"
   printf '{"pid":%s,"sessionId":"conv-alive"}' "$$" > "$HOME/.claude/sessions/$$.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_called 'tmx ensure hub'
   assert_called "-n planned -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called "-n working -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
-  for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
+  for skipped in conv-armed conv-closed conv-alive conv-other conv-moved; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:alive: already running, skipped'
+  assert_output --partial 'hub:dotfiles:otheracct: already running, skipped'
   assert_output --partial 'claude --resume conv-moved'
   assert_output --partial 'hub:dotfiles:shell: no conversation, not reopened'
   assert_output --partial 'hub: reopened 2, failed 0'
@@ -1495,6 +1551,23 @@ OUT
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+@test "a server that dies again keeps the lost record a restore only part finished, and adds the new conversations once" {
+  record_setup
+  PANE3=$'%3\037dotfiles\037fresh\037/fresh/dir'
+  echo '{"pane":"hub/%3","session_id":"conv-3","cwd":"/fresh"}' >> "$NOTES_FIXTURE/panel.json"
+  world '10 1000' "$PANE1" "$PANE2"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  sed -i 's|/work/tree|/moved/tree|' "$NOTES_FIXTURE/panel.json"
+  world '11 2000' "$PANE1" "$PANE3" "$PANE2"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1",""]'
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["","conv-1","conv-3"]'
+  assert_equal "$(jq -r '.panes[] | select(.claude == "conv-1") | .cwd' "$LOST")" /moved/tree
+  [ ! -f "$RECORD" ] || fail "the dead record stayed"
 }
 
 @test "reap settles a claude-lazer item whose claude exited, like claude's; an opencode one waits for its session to end" {

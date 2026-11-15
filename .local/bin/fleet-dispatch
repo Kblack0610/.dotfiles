@@ -727,6 +727,27 @@ reap_confirm() {
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
+# restoring <server> <tmux session> <session ids> -- exit 0 when a lost pane record (world_lost) still
+# holds a conversation in that tmux session, or one of those Claude sessions: restore has not reopened
+# it yet. A record that will not read holds every session of its server, since cannot-tell is live.
+# REAP_LOST caches one read per pass.
+restoring() {
+  if [ -z "${REAP_LOST+set}" ]; then
+    local f srv held
+    REAP_LOST=''
+    for f in "$PANES"/*.lost.json; do
+      [ -e "$f" ] || continue
+      srv=${f##*/}; srv=${srv%.lost.json}
+      held=$(jq -r --arg s "$srv" '.panes[] | select(.claude != "") | "\($s)/\(.session)", "sid:\(.claude)"' "$f" 2>/dev/null) ||
+        held="$srv/*"
+      REAP_LOST+="$held"$'\n'
+    done
+  fi
+  [ -n "$REAP_LOST" ] || return 1
+  { [ -n "$2" ] && grep -qxF -e "$1/$2" -e "$1/*" <<<"$REAP_LOST"; } ||
+    { [ -n "$3" ] && grep -qxF -f <(printf 'sid:%s\n' $3) <<<"$REAP_LOST"; }
+}
+
 # parked <tmux session> -- a claude-acct park ledger names the session, or one of its windows: its
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
@@ -1979,7 +2000,7 @@ cmd_start() {
   fi
   if [ -n "$resume" ]; then
     # One writer per transcript: a second claude on a live conversation would also take its item.
-    ! conversation_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+    ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
     # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
     if [ -z "$item" ]; then
       item=$(agent-queue mine --sid "$resume" 2>&1)
@@ -2143,12 +2164,28 @@ planned_reboot() {
 }
 
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
-# A record with no conversations has nothing to restore, so it never replaces one that does.
+# A record with no conversations has nothing to restore, so it never replaces one that does. A
+# restore that reopened only some keeps its lost record (a rerun finishes it), so when the server dies
+# again the new record's conversations join that one instead of replacing it. A conversation in both
+# takes the new record's window and cwd (the newer); shell panes of the old record stay, listed only.
 world_lost() {
-  local srv=$1 n
+  local srv=$1 n lost="$PANES/$1.lost.json"
   n=$(jq '[.panes[] | select(.claude != "")] | length' "$PANES/$srv.json" 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
+  if [ "$n" -eq 0 ]; then
+    rm -f "$PANES/$srv.json"
+  elif [ ! -s "$lost" ]; then
+    mv -f "$PANES/$srv.json" "$lost"
+  elif jq --slurpfile old "$lost" '
+      [.panes[] | select(.claude != "")] as $new
+      | .panes = ([$old[0].panes[] | select(.claude as $c | $c == "" or ($new | map(.claude) | index($c) | not))] + $new)' \
+      "$PANES/$srv.json" > "$lost.new"; then
+    mv -f "$lost.new" "$lost"; rm -f "$PANES/$srv.json"
+  else
+    # An unreadable old record restores nothing (restore reads it with jq too), so it is replaced, said aloud.
+    rm -f "$lost.new"; mv -f "$PANES/$srv.json" "$lost"
+    logline "tmux server $srv: the earlier lost record was unreadable and is replaced"
+  fi
   logline "tmux server $srv died with $n conversation(s) on it"
   # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
   ! planned_reboot || return 0
@@ -2189,15 +2226,6 @@ cmd_record() {
   exec 8>&-
 }
 
-# conversation_live <id> -- a claude with that id is running now, so reopening it would be a second.
-conversation_live() {
-  local pid
-  for pid in $(awk 1 "$HOME/.claude/sessions"/*.json 2>/dev/null |
-    jq -Rr --arg id "$1" 'fromjson? | select(.sessionId == $id) | .pid'); do
-    kill -0 "$pid" 2>/dev/null && return 0
-  done
-  return 1
-}
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
@@ -2207,15 +2235,17 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # it was in, through start, with the running or waiting queue item that lists its Claude session
 # (`agent-queue mine --sid`), so the item records where it runs again. The manifest brings back the
 # declared sessions and windows first; a plain shell is listed, not reopened. Consumed only when
-# every reopen worked, so a rerun finishes.
+# every reopen worked, so a rerun finishes, and only as read at the start, under record's lock: a
+# death world_lost adds to it meanwhile stays owed.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0
+  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0 walked
+  walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
-    if conversation_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
+    if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
     item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
     mode=$(resume_mode "$id" "$([ -z "$item" ] || agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')")
@@ -2231,7 +2261,11 @@ restore_world() {
   [ "$dry" = 1 ] && return 0
   echo "$srv: reopened $opened, failed $failed"
   [ "$failed" = 0 ] || return 1
-  mv -f "$f" "${f%.lost.json}.restored.json"
+  (
+    flock 7 || exit 1
+    [ "$(sha256sum < "$f")" = "$walked" ] || { echo "$srv: its record grew during the restore; rerun fleet-dispatch restore"; exit 1; }
+    mv -f "$f" "${f%.lost.json}.restored.json"
+  ) 7>"$PANES/.lock"
 }
 
 # cmd_restore -- the one verb after a lost server or a reboot. A record first, so a death the
@@ -4070,7 +4104,7 @@ cmd_stats() {
 # A session neither read can see is left where it is.
 cmd_reap() {
   local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
-  unset REAP_PANEL
+  unset REAP_PANEL REAP_LOST
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -4088,9 +4122,13 @@ cmd_reap() {
     # A fleet worker that does not answer says nothing, so its item stays as it is (fleet-liveness
     # pages a session that stops moving), and a live one there is beyond this agent-panel's sight:
     # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
+    # A session or conversation a lost pane record still holds is owed a reopen by restore, so its
+    # absence is no witness, and clears any miss, until restore consumes the record (ar-2140). One
+    # whose tmux session is back is read as usual.
     gone='' live=0
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
-    if [ "$live" = 1 ]; then gone=1
+    if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then reap_seen "$slug"; continue
+    elif [ "$live" = 1 ]; then gone=1
     elif [ -n "$host" ]; then continue
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1

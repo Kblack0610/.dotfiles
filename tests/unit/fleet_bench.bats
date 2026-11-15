@@ -5965,7 +5965,7 @@ STUB
   export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
   printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
   printf '#!/usr/bin/env bash\necho %s\n' \
-    "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1},{\"id\":\"ar-2\",\"size\":\"m\",\"weight\":5},{\"id\":\"ar-3\",\"size\":\"l\",\"weight\":8}]}]'" \
+    "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1,\"pts\":1},{\"id\":\"ar-2\",\"size\":\"m\",\"weight\":5,\"pts\":5},{\"id\":\"ar-3\",\"size\":\"l\",\"weight\":8,\"pts\":8},{\"id\":\"ar-4\",\"size\":\"s\",\"weight\":1,\"pts\":null}]}]'" \
     > "$SANDBOX/bin/roadmap-stub"
   chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
   items() {  # <row>:<work>:<finished hours ago>[:<status>] ...
@@ -5976,9 +5976,9 @@ STUB
         '{slug: "x", status: $st, row: $r, work_min: $w, started: $f, finished: $f}'
     done > "$ITEMS"
   }
-  # climbs: s 10, m 30, l 90; the l item 8 days back is outside the 7-day window, and failed
+  # climbs: s 10, m 30, l 90; ar-4 has a #size/s and no #pts, so its slow closes are not in s; the l item 8 days back is outside the 7-day window, and failed
   # closes are not among the ok closes size_rule's minutes came from
-  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed ar-4:500:1 ar-4:500:2 ar-4:500:3
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_success
   assert_output '- work p50 by #pts band, last 7d of closes: s 10 min (2), m 30 min (2), l 90 min (2): climbs'
@@ -6006,6 +6006,11 @@ STUB
   run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_failure 1
   assert_output --partial 'l 20 min (1): inverted, m not slower than s; too few to order l (under 2)'
+  # a roadmap with no pts key on any row (a notes binary from before it) is unreadable, never a quiet week
+  printf '#!/usr/bin/env bash\necho %s\n' "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1}]}]'" > "$SANDBOX/bin/roadmap-stub"
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 2
+  assert_output --partial 'unreadable, no roadmap row carries pts'
   run env BENCH_DONE_ITEMS_CMD=false BENCH_NOW=$T0 "$SUBJECT" sizes --check
   assert_failure 2
 }
