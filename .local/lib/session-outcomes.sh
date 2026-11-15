@@ -383,10 +383,29 @@ so_forgejo_auth() {
 
 # so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API call, after so_forgejo_auth; on
 # an HTTP error it fails and still prints the body, which carries Forgejo's reason (.message).
+# A plain-text "Forbidden" is not Forgejo's (its API errors are JSON): the proxy in front refused the
+# request before Forgejo saw it, so even a write is sent again, SO_FORGEJO_GATE_TRIES in all, waits
+# doubling from SO_FORGEJO_GATE_WAIT seconds. On the home cluster that proxy is the CrowdSec bouncer (home-config
+# apps/crowdsec, a Traefik forwardAuth), which fails closed when its LAPI lookup times out (5 s): 239
+# such 403s on 2026-11-12/13, every one a timeout, in bursts of 0 to 31 s (Loki). A refused try's curl
+# line is dropped; still refused, it prints nothing and stderr names the proxy. Seams: SO_CURL SO_FORGEJO_GATE_WAIT.
+SO_FORGEJO_GATE_TRIES=4
+SO_FORGEJO_GATE_WAIT=${SO_FORGEJO_GATE_WAIT:-5}
 so_forgejo_get() {
-  local repo="$1" path="$2"; shift 2
-  printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-    "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
+  local repo="$1" path="$2" out err rc try=1 wait="$SO_FORGEJO_GATE_WAIT"; shift 2
+  err=$(mktemp) || return 1
+  while :; do
+    rc=0
+    out=$(printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+      "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path" 2>"$err") || rc=$?
+    [ "$rc" -eq 22 ] && [ "$out" = Forbidden ] || { cat "$err" >&2; rm -f "$err"; printf '%s' "$out"; return "$rc"; }
+    [ "$try" -lt "$SO_FORGEJO_GATE_TRIES" ] || break
+    sleep "$wait"
+    try=$((try + 1)) wait=$((wait * 2))
+  done
+  rm -f "$err"
+  printf '%s: the proxy in front of Forgejo refused %s %d times with a plain-text 403 "Forbidden", not Forgejo'"'"'s (the CrowdSec bouncer in home-config apps/crowdsec fails closed when its LAPI is slow)\n' "${repo%%/*}" "${path%%\?*}" "$try" >&2
+  return 1
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:

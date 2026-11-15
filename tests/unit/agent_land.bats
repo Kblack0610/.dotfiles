@@ -1594,7 +1594,11 @@ case "$method $path" in
       base: {ref: "main", repo: {full_name: "o/r"}}, head: {sha: $h, ref: "pr-42", repo: {full_name: "o/r"}},
       html_url: "https://forgejo.example/o/r/pulls/42", mergeable: true,
       merge_commit_sha: (if $st == "MERGED" then $m else null end)}' ;;
-'PATCH pulls/42') jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
+# fj.gate: the next N body edits are refused by the CrowdSec bouncer in front of Forgejo, a plain
+# "Forbidden" with --fail-with-body's exit 22, before Forgejo sees them
+'PATCH pulls/42') n=$(cat "$F/fj.gate" 2>/dev/null || echo 0)
+  [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
+  jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
 # fj.status.reset: the next status read loses its connection, once
 'GET commits/'*'/status') [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
   cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
@@ -1699,6 +1703,33 @@ EOF
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'Forgejo: Please try again later'
+}
+
+@test "a body edit the proxy's bouncer refuses (a plain Forbidden, not Forgejo's) is sent again and lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 2 >"$NOTES_FIXTURE/fj.gate"
+  SO_FORGEJO_GATE_WAIT=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'item-line: added "Item: ship" to the body'
+  assert_line --index -1 'landed #42'
+  run grep -c '^curl PATCH pulls/42 ' "$LOG"
+  assert_output 3
+}
+
+@test "a body edit the bouncer refuses every time fails at item-line naming the proxy, not Forgejo; nothing merged" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 9 >"$NOTES_FIXTURE/fj.gate"
+  SO_FORGEJO_GATE_WAIT=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'item-line failed: Forgejo pr edit: forgejo.example: the proxy in front of Forgejo refused pulls/42 4 times with a plain-text 403 "Forbidden", not Forgejo'"'"'s'
+  refute_output --partial 'curl: (22)'
+  refute_output --partial 'Forgejo: Forbidden'
+  run grep -c '^curl PATCH pulls/42 ' "$LOG"
+  assert_output 4
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
 }
 
 @test "a Forgejo dry run reads no token and calls nothing" {
