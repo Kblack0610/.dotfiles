@@ -439,13 +439,8 @@ pub(crate) fn add_via(
         refuse_behind(v, cur)?;
     }
     refuse_epic_on_board(lane, &[text])?;
-    if lane == Lane::Agent {
-        if !projects::is_typed(text) {
-            bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
-        }
-        if projects::size_of(&format!("- [ ] {text}")).is_none() {
-            bail!("an agent board row needs its #pts/<n> or #size/s, #size/m or #size/l, so nothing was added");
-        }
+    if lane == Lane::Agent && !projects::is_typed(text) {
+        bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;

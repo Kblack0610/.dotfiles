@@ -261,20 +261,19 @@ fn a_multi_line_add_stamps_its_id_on_the_row_line_so_done_finds_it() {
 }
 
 #[test]
-fn the_agent_board_refuses_untyped_sizeless_and_near_duplicate_rows() {
+fn the_agent_board_refuses_untyped_and_near_duplicate_rows_and_takes_an_unsized_one() {
     let h = Home::new("refuse");
     let before = h.board();
     let untyped = agent(&h, &["add", "menu flickers #size/s"]);
     assert_eq!(untyped.status.code(), Some(1));
-    let sizeless = agent(&h, &["add", "fix(ui): menu flickers"]);
-    assert_eq!(sizeless.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&sizeless.stderr).contains("#size/"));
     assert_eq!(h.board(), before, "a refused add writes nothing");
 
+    // No size: the nightly `agentctl-inbox-triage --backlog --size` pass scores it.
     ok(&agent(
         &h,
-        &["add", "fix(ui): the pause menu flickers on resume #size/s"],
+        &["add", "fix(ui): the pause menu flickers on resume"],
     ));
+    assert!(!h.board().contains("#size/"), "{}", h.board());
     let twin = agent(
         &h,
         &["add", "fix(ui): pause menu flickers on resume #size/m"],
