@@ -248,6 +248,9 @@ pub struct Costs {
     /// Every snapshot day with its session rows, for the day table; too big to send whole.
     #[serde(skip)]
     pub spend_days: Vec<crate::spend_history::Day>,
+    /// The last 24h as a day of its own, from `fleet-cost.json`: the spend table's default day.
+    #[serde(skip)]
+    pub live: Option<crate::spend_history::Day>,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
     /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
@@ -361,7 +364,11 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     c.spend_days = crate::spend_history::read(&paths.tokens);
     c.history = crate::spend_history::build(&c.spend_days, &today);
     c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
-        Ok(f) => crate::fleet_cost::build(&f, now),
+        Ok(f) => {
+            let block = crate::fleet_cost::build(&f, now);
+            c.live = Some(crate::spend_history::live(f));
+            block
+        }
         Err(e) => crate::fleet_cost::missing(e),
     };
     c.budget = match crate::budget::load(&paths.budget) {
@@ -1245,7 +1252,7 @@ pub fn board(
         fleet_cost: c.fleet_cost.clone(),
         budget: c.budget.clone(),
         history: c.history.clone(),
-        day: crate::spend_history::day_view(&c.spend_days, spend),
+        day: crate::spend_history::day_view(&c.spend_days, c.live.as_ref(), spend),
         totals_note: TOTALS_NOTE,
         direct: direct(&c.sessions, c.at),
         burn: c.burn.clone(),
@@ -2063,7 +2070,7 @@ not json
             .as_deref()
             .unwrap()
             .starts_with("nothing read: "));
-        assert!(c.fleet_cost.rows.is_empty());
+        assert!(c.live.is_none(), "no file, no live day");
         std::fs::write(
             d.join("2027-01-14.json"),
             r#"{"errors":[],"fleet_cost":{"total":{"usd":738.4}}}"#,
@@ -2072,7 +2079,9 @@ not json
         std::fs::write(d.join("2027-01-13.json"), r#"{"errors":[]}"#).unwrap();
         std::fs::write(
             &paths.fleet_cost,
-            format!(r#"{{"as_of_epoch":{NOW},"total":{{"usd":5.0,"measured":5.0}}}}"#),
+            format!(
+                r#"{{"as_of_epoch":{NOW},"total":{{"usd":5.0,"measured":5.0}},"by_session":[{{"sid":"s1","usd":5.0,"measured":5.0,"origin":"queue"}}]}}"#
+            ),
         )
         .unwrap();
         let mut c = Costs::default();
@@ -2088,6 +2097,11 @@ not json
             (1, "01-14", "$738"),
             "a day with no fitted rate is not a $0 day"
         );
+        let live = c
+            .live
+            .as_ref()
+            .expect("the file's session rows are the live day");
+        assert_eq!((live.date.as_str(), live.sessions.len()), ("24h", 1));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -2147,6 +2161,6 @@ not json
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));
         let j = serde_json::to_value(&b).unwrap();
         assert_eq!(j["direct"]["note"], DIRECT_NOTE);
-        assert!(j["fleet_cost"]["rows"].is_array());
+        assert!(j["fleet_cost"]["usd"].is_string());
     }
 }
