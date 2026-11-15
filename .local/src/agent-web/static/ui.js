@@ -28,7 +28,23 @@ const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, becau
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
 const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
 
+// Whether the shown tab has drawn: #main carries data-drawn="<tab>" while no read is out and the
+// frame after the last answer started none, so every read the tab asked for has painted (a
+// placeholder shows only while its read is out). agent-web-shot waits on it. A read starting
+// takes it off; setTab takes it off and checks again after show().
+let reading = 0;
+function drawnCheck() {
+  if (typeof requestAnimationFrame !== "function") return;
+  // The frame comes after every microtask, so a read chained on the last one (`await api(a);
+  // await api(b)`) has started by then and holds the mark off.
+  requestAnimationFrame(() => { if (!reading) $("main").dataset.drawn = st.tab; });
+}
+
 async function api(path, opts) {
+  if (!reading++) delete $("main").dataset.drawn;
+  try { return await read(path, opts); } finally { if (!--reading) drawnCheck(); }
+}
+async function read(path, opts) {
   const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {

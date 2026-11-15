@@ -559,7 +559,9 @@ function setTab(t, arg, query, page) {
     if (n !== "sessions") $(n).hidden = t !== n;
   }
   $("detail").hidden = t !== "sessions";
+  delete $("main").dataset.drawn;
   if (TABS[t]) TABS[t].show();
+  drawnCheck();
   showUrl();
 }
 function showUrl() {

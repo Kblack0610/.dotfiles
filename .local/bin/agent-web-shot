@@ -6,9 +6,10 @@ usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
 as DIR/<hash>-<width>[-<scheme>].png, the whole page, in the system color scheme or the --scheme
 given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
-.local/src/agent-web/README.md ("look at a change"). A page is shot once its tab element has drawn
-and no visible element on the page is only a placeholder ("Loading.", "Reading the tabs.",
-"reading..."), watched by a MutationObserver.
+.local/src/agent-web/README.md ("look at a change"). A page is shot once it says its tab has drawn:
+#main carries data-drawn="<tab>" when every read the tab started has answered and painted
+(static/ui.js drawnCheck), watched by a MutationObserver. A hash the page opens on another tab
+(a retired name, or no tab at all) is shot as drawn there, with a note naming that tab.
 
 The browser is a scratch one from ../lib/marionette.py: a new profile under ~/.cache/agent-web-shot/,
 removed on exit, and only the Firefox it started is stopped.
@@ -21,22 +22,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 from marionette import scratch_firefox  # noqa: E402
 
-# The page has drawn when this holds; the observer re-checks it on every DOM change.
+# Answers the tab the page says it has drawn (#main's data-drawn), once it says so.
 READY = r"""
-const [tab, done] = [arguments[0], arguments[arguments.length - 1]];
-// Busy while a visible element's whole text is a placeholder: "Loading.", "Reading the tabs.",
-// "reading...". A row that merely mentions reading, or a closed fold that reads on open, is not one.
-const PLACEHOLDER = /^(loading|reading)\b[^.]{0,80}(\.\.\.|\.)$/i;
-const busy = (el) => [...el.querySelectorAll("*")].some((e) =>
-  !e.children.length && PLACEHOLDER.test(e.textContent.trim()) && e.checkVisibility());
-// A tab draws into its own section (#home), except Sessions, which draws into #scroll; a hash
-// with neither is never ready, so the shot waits out the timeout and says so. The placeholder
-// scan covers all of #main, where a hidden tab is not visible.
-const DRAWS_INTO = { sessions: "scroll" };
-const ok = () => { const el = document.getElementById(DRAWS_INTO[tab] || tab); return el && el.innerHTML.trim() && !busy(document.getElementById("main")); };
-if (ok()) return done(true);
-const mo = new MutationObserver(() => { if (ok()) { mo.disconnect(); done(true); } });
-mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+const done = arguments[arguments.length - 1], main = document.getElementById("main");
+if (main.dataset.drawn) return done(main.dataset.drawn);
+const mo = new MutationObserver(() => { if (main.dataset.drawn) { mo.disconnect(); done(main.dataset.drawn); } });
+mo.observe(main, { attributes: true, attributeFilter: ["data-drawn"] });
 """
 # How long a page may take to draw before the shot is taken anyway, with a warning.
 DRAW_TIMEOUT_MS = 20000
@@ -66,7 +57,9 @@ def main():
             m.cmd("WebDriver:Navigate", url=f"{a.base}/#{h}")
             tab = h.split("/")[0].split("?")[0]
             try:
-                m.cmd("WebDriver:ExecuteAsyncScript", script=READY, args=[tab])
+                drawn = m.cmd("WebDriver:ExecuteAsyncScript", script=READY)["value"]
+                if drawn != tab:
+                    print(f"agent-web-shot: #{h} opened the {drawn} tab", file=sys.stderr)
             except RuntimeError as e:
                 print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e}); shooting it as it is", file=sys.stderr)
             png = m.cmd("WebDriver:TakeScreenshot", full=True)["value"]
