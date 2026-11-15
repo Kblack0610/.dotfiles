@@ -129,9 +129,9 @@ Deterministic, no model. schedules-sync.timer runs it every 10 minutes: GitHub s
 machine no event when a run ends, so it samples.
 
 gh cost per GitHub repo per pass: one workflows listing, one conditional night.json read (a
-304 when unchanged; none for a day once it is missing), one blob per changed workflow file, one
-status listing per open status its stale open runs hold plus a read by id per run that left it,
-and the job calls above. The last sync and the last error per
+304 when unchanged; none for a day once it is missing), one blob per changed workflow file, a
+status listing per open status its stale open runs hold (paged, 100 a page, at most LIST_PAGES,
+until it has them all) plus a read by id per run that left it, and the job calls above. The last sync and the last error per
 repo are in ci/sync.json beside the ledger. The previous state is the cache: a workflow whose
 blob sha is unchanged is not re-read, a finished run's failed jobs are not re-asked.
 
@@ -1008,20 +1008,21 @@ def stale_open(repo, last, fed, exporter, t):
     """An exporter repo's runs the ledger holds open since before the feed's window: the feed only
     serves a run whose state moved in its window, so this is how such a run closes. Only each run's
     newest attempt counts (a rerun's older one is history), and the reads are batched per repo: one
-    actions/runs?status=<s> listing, every page, per status those runs hold. A run still listed
-    costs nothing more; only one that left its status is read by id. A run GitHub no longer has
-    is left as it is."""
+    actions/runs?status=<s> listing per status those runs hold, paged until it has them all. A run
+    still listed costs nothing more; only one that left its status (or holds none) is read by id.
+    A run GitHub no longer has is left as it is."""
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
     newest = newest_attempts(r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower())
     old = [r for r in newest.values() if r.get("status") != "completed" and r["id"] not in fed
            and (when(r.get("created_at")) or t) < edge]
     listed = {}
-    for status in sorted({r.get("status") for r in old}):
+    for status in sorted({r["status"] for r in old if r.get("status")}):
+        want = {r["id"] for r in old if r.get("status") == status}
         for page in range(1, LIST_PAGES + 1):
             got = gh(f"repos/{repo}/actions/runs?status={status}&per_page=100&page={page}")
-            batch = got.get("workflow_runs") or []
+            batch = (got.get("workflow_runs") if isinstance(got, dict) else None) or []
             listed.update((r["id"], r) for r in batch)
-            if len(batch) < 100:
+            if len(batch) < 100 or want <= listed.keys():
                 break
     return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))]
 

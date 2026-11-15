@@ -842,6 +842,25 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   [ "$(wc -l < "$LEDGER")" = "$rows" ]
 }
 
+@test "feed runs: a status listing stops paging once it has every stale run; a stale row with no status is read by id" {
+  game_files
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+    "$(gh_run 25 .github/workflows/test.yml 2025-11-04T10:20:00Z queued null | jq -c 'del(.status)')"
+  run "$SUBJECT"
+  assert_success
+  jq -nc "{workflow_runs: ([$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)] + [range(1000;1099) | {id: ., status: \"queued\"}])}" \
+    | serve 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  feed 1 e1 1 false ''
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  run cat "$GHD/calls"
+  assert_line 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  refute_line --partial 'page=2'
+  assert_line 'repos/o/game/actions/runs/25'
+  refute_line 'repos/o/game/actions/runs/20'
+}
+
 @test "feed runs: a repo's runs come from the feed alone, and its scheduled runs reach the state; actions/runs is never listed" {
   game_files
   R30="$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z in_progress null)"
