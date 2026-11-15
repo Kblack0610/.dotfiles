@@ -71,7 +71,7 @@ const TONES: &[(&str, Level)] = &[
     ("mismatch", Level::Warn),
     ("no owner", Level::Warn),
     ("blocked", Level::Warn),
-    ("no reading", Level::Warn),
+    (crate::reading::NO_DATA, Level::Warn),
     ("no session", Level::Warn),
     ("late", Level::Warn),
     ("red", Level::Bad),

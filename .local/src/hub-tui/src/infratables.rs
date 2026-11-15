@@ -332,7 +332,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
         |m| {
             let state = match m.state.as_str() {
                 "up" => Style::default(),
-                "no reading" => p.dim(),
+                hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
             };
             let busy = match m.off {
