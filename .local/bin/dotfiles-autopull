@@ -203,16 +203,29 @@ attach_all() {
 # then exit 0. Two agent-land live steps at once each built and each restarted agent-web (2026-11-15
 # 06:14 and 06:48, ar-7); under the lock the second finds the work done (checkout current, cargo a
 # no-op, the unit newer than its binary) and restarts nothing. flock -o keeps the lock off the
-# children, so a detached `git gc` cannot hold it. A pass that could not take it says so, unless it is
-# the silent shell pass. No flock (macOS): the pass runs unlocked.
+# children, so a detached `git gc` cannot hold it; the marker is inherited, so a pass started inside a
+# pass runs under the lock already held instead of waiting on it. A pass that could not take the lock
+# says so, unless it is the silent shell pass. The script always exits 0, so any other non-zero exit
+# is flock itself failing: that one says so and runs unlocked. No flock (macOS): runs unlocked.
 run_locked() {
   local -a wait=()
+  local rc
   while [ "$1" != -- ]; do wait+=("$1") && shift; done
   shift
-  [ -z "${DOTFILES_AUTOPULL_LOCKED:-}" ] && command -v flock >/dev/null 2>&1 && mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
-  DOTFILES_AUTOPULL_LOCKED=1 flock -o "${wait[@]}" -E 75 "$CACHE_DIR/pass.lock" "${BASH_SOURCE[0]}" "$@"
-  [ "$?" -ne 75 ] || [ "${wait[0]}" = -n ] ||
-    say "~: another dotfiles-autopull pass held the lock past ${LOCK_SECS}s, nothing done; rerun: dotfiles-autopull --now ${2:-.}"
+  [ -z "${DOTFILES_AUTOPULL_LOCKED:-}" ] || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  mkdir -p "$CACHE_DIR" 2>/dev/null
+  DOTFILES_AUTOPULL_LOCKED=1 flock -o "${wait[@]}" -E 75 "$CACHE_DIR/pass.lock" bash "${BASH_SOURCE[0]}" "$@"
+  rc=$?
+  case $rc in
+    0) ;;
+    75) [ "${wait[0]}" = -n ] ||
+      say "~: another dotfiles-autopull pass held the lock past ${LOCK_SECS}s, nothing done; rerun: dotfiles-autopull --now ${2:-.}" ;;
+    *)
+      say "~: the pass lock failed (flock exit $rc), this pass runs unlocked"
+      return 0
+      ;;
+  esac
   exit 0
 }
 
