@@ -342,7 +342,7 @@ status_write() {
     # timeout, so fleet-dispatch failed to start until it hit start-limit. A cut run loses
     # nothing: the publisher caches each topic as it sends, and its 5-min timer catches up.
     if command -v agent-mqtt-publish >/dev/null 2>&1; then
-        AGENT_MQTT_TIMEOUT=2 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
+        AGENT_MQTT_TIMEOUT=2 AGENT_MQTT_RETRIES=0 timeout -k 1 "${AGENTCTL_MQTT_BUDGET:-5}" \
             agent-mqtt-publish --quiet </dev/null >/dev/null 2>&1 || true
     fi
 }
