@@ -37,6 +37,21 @@ plan_phases() {
 PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
 
+# plan_pointer <plan file> -> "<canonical plan path> TAB <N>" when the file is a pointer stub, whose
+# opening lines say `Phase N of <path>.md` (a phase plan agent-queue wrote into ~/.claude*/plans/),
+# and that plan exists; else nothing. The queue items name the canonical plan, not the stub, and
+# hold its phase numbers, so a stub's open phase is the canonical's phase N. 2026-11-14: three
+# sessions with a stub read LANDED, next phase, while their phases were queue items.
+plan_pointer() {
+  [ -f "$1" ] || return 0
+  local path n
+  IFS=$'\t' read -r n path < <(head -n 8 "$1" | sed -nE 's/^Phase ([0-9]+) of ((~|\/)[^(:]*\.md)([ :(].*)?$/\1\t\2/p' | head -n 1)
+  [ -n "${path:-}" ] || return 0
+  path="${path/#\~/$HOME}"
+  [ -f "$path" ] || return 0
+  printf '%s\t%s\n' "$(realpath -q -- "$path" || printf '%s' "$path")" "$n"
+}
+
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
 plan_epic() { _epic_line epic "$1"; }
 
