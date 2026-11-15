@@ -15,6 +15,7 @@ const cls = () => { const on = new Set(); return { on, add: (c) => on.add(c), re
 const parts = {
   conn: Object.assign(el(), { classList: cls(), title: "" }),
   "live-off": Object.assign(el(), { innerHTML: "", hidden: true, className: "", title: "", heard: {}, addEventListener(ev, f) { this.heard[ev] = f; } }),
+  main: Object.assign(el(), { dataset: {} }),
 };
 const heard = {};
 const doc = {
@@ -119,4 +120,12 @@ test("coalesce: a call while a read runs returns that run, its trailing refetch 
   assert.equal(n, 2);
   // NEGATIVE CONTROL: a call after the run ends starts a new one.
   assert.notEqual(read(), first);
+});
+
+test("setTab takes the last tab's mark off and marks the new one once its reads land, a path heard before included", async () => {
+  assert.equal(parts.main.dataset.drawn, "home", "the stream is open and every read landed");
+  vm.runInContext('TABS.costs = { show() { api("/api/agents"); } }; setTab("costs")', ctx);
+  assert.equal(parts.main.dataset.drawn, undefined, "the sessions read was heard on Home, and counts again");
+  await land();
+  assert.equal(parts.main.dataset.drawn, "costs");
 });
