@@ -567,10 +567,12 @@ gh_callers() {
 # The read spends one call of that bucket, so the last reading is kept for FLEET_GH_PROBE_TTL_S; a
 # reading whose reset has passed is stale however young. No event announces a spend, so this ages out.
 wf_bucket() {
-  local f="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}/actions-budget" at r t now out
+  local f="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}/actions-budget" repo at r t now out
   now="$(date +%s)"
-  if read -r at r t 2>/dev/null < "$f" && [ "$(( now - at ))" -ge 0 ] \
-    && [ "$(( now - at ))" -lt "$FLEET_GH_PROBE_TTL_S" ] && [ "${t:-0}" -gt "$now" ]; then
+  # A line is "<repo> <read at> <remaining> <reset>"; one of another repo or with a non-number is a miss.
+  if read -r repo at r t 2>/dev/null < "$f" && [ "$repo" = "$FLEET_GH_PROBE_REPO" ] \
+    && [[ "$at $r $t" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] && [ "$(( now - at ))" -ge 0 ] \
+    && [ "$(( now - at ))" -lt "$FLEET_GH_PROBE_TTL_S" ] && [ "$t" -gt "$now" ]; then
     echo "$r $t"
     return
   fi
@@ -578,7 +580,9 @@ wf_bucket() {
     | tr -d '\r' | awk -F': ' 'tolower($1) == "x-ratelimit-remaining" { r = $2 }
                               tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }')"
   [ -n "$out" ] || return 0
-  mkdir -p "${f%/*}" 2>/dev/null && printf '%s %s\n' "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  # Only a whole reading is kept; the cache is an optimisation, so a failed write just costs a call.
+  [[ "$out" =~ ^[0-9]+\ [0-9]+$ ]] && mkdir -p "${f%/*}" 2>/dev/null \
+    && printf '%s %s %s\n' "$FLEET_GH_PROBE_REPO" "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
   echo "$out"
 }
 

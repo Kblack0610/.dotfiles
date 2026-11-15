@@ -533,13 +533,23 @@ gh_stub() {
   assert_equal "$(wc -l < "$SANDBOX/probes")" 1
   # a reading older than the TTL is read again
   local f="${XDG_STATE_HOME}/gh-calls/actions-budget"
-  printf '%s 3000 %s\n' "$(( now - 301 ))" "$(( now + 2000 ))" > "$f"
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$(( now - 301 ))" "$(( now + 2000 ))" > "$f"
   run gh_budget
   assert_equal "$(wc -l < "$SANDBOX/probes")" 2
   # a young reading whose reset has passed is read again
-  printf '%s 3000 %s\n' "$now" "$(( now - 1 ))" > "$f"
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$now" "$(( now - 1 ))" > "$f"
   run gh_budget
   assert_equal "$(wc -l < "$SANDBOX/probes")" 3
+  # another repo's reading, and a corrupt line, are misses that the next read overwrites
+  printf '%s %s 3000 %s\n' other/repo "$now" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 4
+  printf '%s abc 3000 %s\n' "$FLEET_GH_PROBE_REPO" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_output --partial '3000/5000'
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
 }
 
 # fake_proc <pid> <ppid> <comm> [cgroup] -- one process in a fake /proc under $FLEET_PROC.
