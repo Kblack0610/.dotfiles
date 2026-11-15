@@ -1062,6 +1062,11 @@ pub fn without_look_tag(line: &str) -> String {
     without_words(line, |w| look_word(w).is_some())
 }
 
+/// `line` without its look tag and every routing word.
+pub fn without_look_and_routing_tags(line: &str) -> String {
+    without_words(line, |w| look_word(w).is_some() || is_routing_word(w))
+}
+
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
     // Only the dropped words and the space before each go; every other byte stays, so a line
     // with a double space or a tab is still found by its raw text after the move.

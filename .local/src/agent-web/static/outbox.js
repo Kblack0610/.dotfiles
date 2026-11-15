@@ -153,7 +153,8 @@ function tagsHtml(tags) {
     `<li><code>${esc(t.tag)}</code> <span class="muted">${esc(t.does)}</span></li>`).join("")}</ul></details>`;
 }
 function renderTags() {
-  if (obx.tagsDrawn || !obx.view) return;
+  // A doc with no tags (a notes older than the table) leaves the fold for a later read.
+  if (obx.tagsDrawn || !obx.view || !(obx.view.doc.tags || []).length) return;
   obx.tagsDrawn = true;
   $("o-tags").innerHTML = tagsHtml(obx.view.doc.tags);
 }

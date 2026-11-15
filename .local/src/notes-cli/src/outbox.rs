@@ -339,9 +339,10 @@ pub fn move_line(
     Ok(0)
 }
 
-/// A look line's question: its text without the `#p:` and look tags.
+/// A look line's question: its text without its look and routing tags (`#p:`, `#high`, ...),
+/// which file nothing on a line that is answered.
 fn question(text: &str) -> String {
-    md::without_look_tag(&md::without_project_tag(text))
+    md::without_look_and_routing_tags(text)
 }
 
 /// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
@@ -541,7 +542,7 @@ mod tests {
     #[test]
     fn an_investigate_answer_is_captured_under_its_own_word() {
         let (root, p, log) = vault("investigate");
-        let raw = "- [ ] #p:demo #investigate why is the nas slow";
+        let raw = "- [ ] #p:demo #high #investigate why is the nas slow";
         fs::write(&p.outbox, format!("{}{raw}\n", skeleton())).unwrap();
         assert_eq!(answer(&p, &log, raw, "Disk 3 is resyncing.").unwrap(), 0);
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();

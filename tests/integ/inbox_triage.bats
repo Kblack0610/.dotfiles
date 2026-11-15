@@ -917,11 +917,11 @@ ask_stub() {
   assert_success
   assert_output --partial 'answered 1'
   run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
-  assert_output --regexp '- [0-9]{2}:[0-9]{2} investigate: #high why is the nas slow - Disk 3 is resyncing\.'
+  assert_output --regexp '- [0-9]{2}:[0-9]{2} investigate: why is the nas slow - Disk 3 is resyncing\.'
   # negative control: a #ask reply stops at 12 lines, so line 14 is the longer look's alone
   assert_output --partial '  evidence 14'
   grep -qx -- 'investigate -p' "$NOTES_FIXTURE/ask.log" || fail "not the investigate call: $(cat "$NOTES_FIXTURE/ask.log")"
-  grep -q 'Question: #high why is the nas slow' "$NOTES_FIXTURE/ask-prompt.txt" || fail "$(cat "$NOTES_FIXTURE/ask-prompt.txt")"
+  grep -q 'Question: why is the nas slow' "$NOTES_FIXTURE/ask-prompt.txt" || fail "$(cat "$NOTES_FIXTURE/ask-prompt.txt")"
   grep -q 'the next step you would take' "$NOTES_FIXTURE/ask-prompt.txt" || fail "not the investigate prompt"
   grep -q 'Change nothing' "$NOTES_FIXTURE/ask-prompt.txt" || fail "the prompt never said read-only"
   run tasks
