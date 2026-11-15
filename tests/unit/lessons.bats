@@ -120,6 +120,76 @@ covered_log() {
   assert_failure 2
 }
 
+# A file with two chains and a decoy on each side: a second block on the named date, a
+# correction-shaped line about the human, and an undated restatement below the corrector.
+chain_file() {
+  cat > "$DIR/chain.md" <<'EOF'
+# chain lessons
+
+## Dreaming sweep 2026-08-18
+- Waybar chips cost about 54 px each on the laptop bar.
+- The backup mirror is alive when rev-list counts zero commits ahead of the backup remote.
+
+- **2026-08-20** CORRECTION to the 08-18 bullet: a zero rev-list count says the backup mirror is reachable, not that the backup remote holds every commit.
+- **2026-08-21** Correction: the human corrected me, I listed packages instead of the dotfiles.
+- **2026-08-22** Amendment to the waybar bullet above: chips cost 60 px each on the laptop bar now.
+- Waybar chips cost 60 px each on the laptop bar.
+EOF
+}
+
+@test "chains names the block of the named date the corrector restates, not its sibling" {
+  chain_file
+  run "$BIN" chains "$DIR/chain.md"
+  assert_success
+  assert_line --index 0 --regexp $'^chain.md:7\t5\t0\\.[0-9]+\t- \\*\\*2026-08-20\\*\\* CORRECTION to the 08-18 bullet'
+}
+
+@test "chains without a named date takes an older block above CHAIN_MIN, never a newer one" {
+  chain_file
+  run "$BIN" chains "$DIR/chain.md"
+  assert_line --index 1 --regexp $'^chain.md:9\t4\t'
+  refute_output --partial $'\t10\t'
+  CHAIN_MIN=0.99 run "$BIN" chains "$DIR/chain.md"
+  refute_output --partial "chain.md:9"
+}
+
+@test "chains skips a correction with no older block it restates" {
+  chain_file
+  run "$BIN" chains "$DIR/chain.md"
+  refute_output --partial "chain.md:8"
+  assert_equal "${#lines[@]}" 2
+}
+
+@test "chains over a directory reads each lessons file and not _archive" {
+  chain_file
+  mkdir -p "$DIR/_archive"
+  cp "$DIR/chain.md" "$DIR/_archive/chain-superseded.md"
+  run "$BIN" chains "$DIR"
+  assert_success
+  assert_equal "${#lines[@]}" 2
+  refute_output --partial "superseded"
+}
+
+@test "chains reads an MM-DD across a year boundary as last year" {
+  printf -- '- **2026-12-30** The backup mirror is alive at zero commits ahead.\n- **2027-01-03** Correction to the 12-30 bullet: zero commits ahead says the backup mirror is reachable.\n' > "$DIR/year.md"
+  run "$BIN" chains "$DIR/year.md"
+  assert_output --regexp $'^year.md:2\t1\t'
+}
+
+@test "chains falls back to older blocks when a named date has none, and a later date names nothing" {
+  printf -- '- **2026-08-18** The backup mirror is alive at zero commits ahead of the remote.\n- **2026-08-19** Waybar chips cost 54 px each.\n- **2026-08-20** (rewritten 2026-11-10) Correction to the 10-20 build: the backup mirror is alive only when zero commits ahead of the remote and reachable.\n' > "$DIR/fb.md"
+  run "$BIN" chains "$DIR/fb.md"
+  assert_output --regexp $'^fb.md:3\t1\t'
+}
+
+@test "chains prefixes a file name sed would choke on as is" {
+  chain_file
+  mv "$DIR/chain.md" "$DIR/a|b&c.md"
+  run "$BIN" chains "$DIR/a|b&c.md"
+  assert_success
+  assert_line --index 0 --partial 'a|b&c.md:7'
+}
+
 @test "pick ignores a stopword shared with a lesson" {
   run "$BIN" pick -n 1 "$F" "never since"
   assert_line --index 0 --partial "nothing matched"

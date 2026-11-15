@@ -10,7 +10,7 @@ setup() {
   BIN="$HOME/.local/bin"
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
-  cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BIN/"
+  cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BIN/"
   printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   cat > "$BIN/agent-queue" <<'STUB'
