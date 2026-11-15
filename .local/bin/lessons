@@ -7,6 +7,10 @@
 #   lessons dup MEMORY_FILE FILE
 #       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
 #       (TF-IDF cosine over its bullets and headings); agentctl-dream refuses a new memory file at 0.38.
+#   lessons chains [FILE|DIR...]
+#       "<file>:<line>\t<target line>\t<cosine>\t<first line>" per correction chain: a bullet or
+#       heading that corrects, retracts or supersedes an older one, and the one it names. The
+#       worklist docs-cleanup collapses; DIR defaults to ~/.agent/lessons.
 #   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
 #   lessons archive [--days N] [--dry-run] [DIR]
 #       Move dated lessons older than N days (90) that no pick matched to a session and no session
@@ -20,7 +24,7 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
@@ -123,7 +127,35 @@ END {
 }
 '
 
-# dup: TF-IDF cosine of one memory file (mfile, front matter skipped) against each lesson.
+# The blocks dup and chains score: every "- " bullet and "#" heading with its continuation
+# lines, finer than lessons, so a long section does not dilute the score of one bullet
+# (MEMORY_DUP_MIN in agentctl-dream was set on them). build_blocks fills bl[r] (first line),
+# the TF-IDF terms (uw, nu, tf, idf) and bnorm[r]; a sig regex is not the lesson text.
+# shellcheck disable=SC2016
+BLOCKS='
+function build_blocks(   l, t, r, k, i, w, s) {
+  for (l = 1; l <= NR; l++) {
+    if (raw[l] ~ /^(- |#+ )/) bl[++nb] = l
+    t = raw[l]; gsub(/<!--.*-->/, "", t)
+    if (nb) bt[nb] = bt[nb] " " t
+  }
+  for (r = 1; r <= nb; r++) {
+    k = toks(bt[r], T)
+    for (i = 1; i <= k; i++) { w = T[i]; if (!tf[r, w]++) { uw[r, ++nu[r]] = w; df[w]++ } }
+    delete T
+  }
+  for (w in df) idf[w] = log((nb + 1) / (df[w] + 1))
+  for (r = 1; r <= nb; r++) { s = 0; for (i = 1; i <= nu[r]; i++) { w = uw[r, i]; s += (tf[r, w] * idf[w]) ^ 2 }; bnorm[r] = sqrt(s) }
+}
+function cosine(a, b,   x, y, i, w, dot) {
+  if (!bnorm[a] || !bnorm[b]) return 0
+  if (nu[a] <= nu[b]) { x = a; y = b } else { x = b; y = a }
+  for (i = 1; i <= nu[x]; i++) { w = uw[x, i]; if ((y, w) in tf) dot += tf[x, w] * tf[y, w] * idf[w] ^ 2 }
+  return dot / (bnorm[a] * bnorm[b])
+}
+'
+
+# dup: TF-IDF cosine of one memory file (mfile, front matter skipped) against each block.
 # shellcheck disable=SC2016
 DUP='
 BEGIN {
@@ -136,29 +168,57 @@ BEGIN {
   if (fm == 1) mtext = whole   # an unterminated front matter is body, not a skipped file
 }
 END {
-  # Blocks are finer than lessons: every "- " bullet and "#" heading, with its continuation
-  # lines, so a long section does not dilute the score of one bullet (MEMORY_DUP_MIN in agentctl-dream was set on them).
-  for (l = 1; l <= NR; l++) {
-    if (raw[l] ~ /^(- |#+ )/) bl[++nb] = l
-    t = raw[l]; gsub(/<!--.*-->/, "", t)   # a sig regex is not the lesson text
-    if (nb) bt[nb] = bt[nb] " " t
-  }
-  for (r = 1; r <= nb; r++) {
-    k = toks(bt[r], T)
-    for (i = 1; i <= k; i++) { w = T[i]; if (!tf[r, w]++) { uw[r, ++nu[r]] = w; df[w]++ } }
-    delete T
-  }
-  for (w in df) idf[w] = log((nb + 1) / (df[w] + 1))
+  build_blocks()
   nm = toks(mtext, M)
   for (i = 1; i <= nm; i++) mw[M[i]]++
   mn = 0; for (w in mw) { mw[w] *= (w in idf ? idf[w] : log(nb + 1)); mn += mw[w] ^ 2 }
   best = 0; bb = 0
   for (r = 1; r <= nb && mn > 0; r++) {
-    dot = 0; bn = 0
-    for (i = 1; i <= nu[r]; i++) { w = uw[r, i]; v = tf[r, w] * idf[w]; bn += v ^ 2; if (w in mw) dot += v * mw[w] }
-    if (bn > 0 && (c = dot / sqrt(bn * mn)) > best) { best = c; bb = r }
+    dot = 0
+    for (i = 1; i <= nu[r]; i++) { w = uw[r, i]; if (w in mw) dot += tf[r, w] * idf[w] * mw[w] }
+    if (bnorm[r] > 0 && (c = dot / (bnorm[r] * sqrt(mn))) > best) { best = c; bb = r }
   }
   printf "%.2f %d %s\n", best, bl[bb], bb ? substr(raw[bl[bb]], 1, 100) : ""
+}
+'
+
+# chains: the correction chains in one file. A corrector is a block whose first line says it
+# corrects, retracts, refutes, amends, replaces or supersedes another. Its target is the block
+# it scores highest against among the blocks of each date it names (a full date, or MM-DD in
+# its own year), or, naming none ("above", "yesterday"), among every block dated before it.
+# A block's date is the first date on its first line, else its section's. A target found by
+# a named date is always printed; one found without needs CHAIN_MIN. One line per chain:
+# "<corrector line>\t<target line>\t<cosine>\t<corrector first line>".
+# shellcheck disable=SC2016
+CHAINS='
+END {
+  build_blocks()
+  for (r = 1; r <= nb; r++) {
+    h = raw[bl[r]]
+    if (h ~ /^# /) sd = ""
+    bd[r] = match(h, /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) ? substr(h, RSTART, RLENGTH) : (h ~ /^- / ? sd : "")
+    if (h ~ /^##+ /) sd = bd[r]
+  }
+  for (r = 1; r <= nb; r++) {
+    h = tolower(substr(raw[bl[r]], 1, 300))
+    if (h !~ /(correct(ion|s|ing)[^a-z]|supersed|retract|refut|amend(s|ment)|replaces the)/) continue
+    s = h; if (bd[r] != "" && (i = index(s, bd[r]))) s = substr(s, 1, i - 1) substr(s, i + 10)
+    yr = substr(bd[r] != "" ? bd[r] : today, 1, 4)
+    delete named; nn = 0
+    while (match(s, /(20[0-9][0-9]-)?[01][0-9]-[0-3][0-9]/)) {
+      d = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+      if (length(d) == 5) d = yr "-" d
+      if (d != bd[r] && !(d in named)) { named[d] = 1; nn++ }
+    }
+    best = 0; bc = 0
+    for (q = 1; q <= nb; q++) {
+      if (q == r || raw[bl[q]] ~ /^# /) continue
+      if (nn) { if (!(bd[q] in named)) continue }
+      else if (bd[r] == "" ? q > r : (bd[q] == "" || bd[q] >= bd[r])) continue
+      if ((c = cosine(r, q)) > bc) { bc = c; best = q }
+    }
+    if (best && (nn || bc >= min)) printf "%d\t%d\t%.2f\t%s\n", bl[r], bl[best], bc, substr(raw[bl[r]], 1, 100)
+  }
 }
 '
 
@@ -202,7 +262,23 @@ END {
 cmd_dup() {
   local mem="${1:-}" file="${2:-}"
   [ -r "$mem" ] && [ -r "$file" ] || usage 2
-  LC_ALL=C awk -v mfile="$mem" "$TOK$PARSE$DUP" "$file"
+  LC_ALL=C awk -v mfile="$mem" "$TOK$PARSE$BLOCKS$DUP" "$file"
+}
+
+# chains over each FILE, or each lessons file in a DIR (default ~/.agent/lessons; its _archive/
+# is not read), one "<file>:" prefix per line.
+cmd_chains() {
+  local arg f files=()
+  [ $# -gt 0 ] || set -- "$LESSONS_DIR_DEFAULT"
+  for arg; do
+    case "$arg" in -h|--help) usage ;; esac
+    if [ -d "$arg" ]; then files+=("$arg"/*.md); else files+=("$arg"); fi
+  done
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    LC_ALL=C awk -v min="${CHAIN_MIN:-0.25}" -v today="$(date +%F)" "$TOK$PARSE$BLOCKS$CHAINS" "$f" |
+      sed "s|^|$(basename "$f"):|"
+  done
 }
 
 cmd_pick() {
@@ -313,6 +389,7 @@ cmd_archive() {
 case "${1:-}" in
   pick) shift; cmd_pick "$@" ;;
   dup) shift; cmd_dup "$@" ;;
+  chains) shift; cmd_chains "$@" ;;
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   -h|--help|'') usage ;;
