@@ -37,7 +37,7 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
 });
-for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "departments.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
@@ -207,7 +207,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(head, /<div class="cline">checks: <a class="bad" href="#releases\/apps\/demo">Partial outage: api<\/a><\/div><div class="cline">alerts:/);
   assert.match(head, /<div class="cline warn">next stage: <a href="#" data-pgo="stage">beta  4 of 12 met, 1 failing/);
   // The strip: Overview open, its count what needs the human (1 verify, 2 plans, 2 checks), Stage's the failing checks.
-  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="build"[^>]*>Build<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
+  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
   const over = pinOf(pane, "overview");
   assert.match(over, /^<div data-pin="overview">/, "Overview shows");
   for (const id of ["rows", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
@@ -218,7 +218,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(over, /data-k="pg:need:stage"><summary><b>1 beta check failing, 1 for a human<\/b> <a href="#" data-pgo="stage">open Stage<\/a><\/summary><div>HUMAN sign off<\/div><div>FAIL a soak test<\/div>/);
   assert.doesNotMatch(over, /<details[^>]* open/, "a group's items are per-row detail and start shut");
   assert.match(over, /id="sec-p-flight">In flight <span class="n">1<\/span><\/h2>.*wire the bar.*<div class="cline muted">1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox<\/div><div class="cline"><a href="#queue\?q=project%3Ademo"/s);
-  // Systems: one row each, the head's numbers as columns; a system opens Build.
+  // Systems: one row each, the head's numbers as columns; a system opens Deliverables.
   assert.match(over, /id="sec-p-systems">Systems <span class="n">2<\/span><\/h2>/);
   assert.match(over, /<tr class="jr" tabindex="0" data-psys="ui"><td>ui<\/td><td class="n">25%<\/td><td class="n">0 of 1<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n warn">1<\/td><td class="n">5 of 7<\/td><td class="wrap">Menus 25% <span class="muted">\+2<\/span><\/td><\/tr>/);
   assert.match(over, /data-psys="ci"><td>ci<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">1 of 2<\/td><td class="wrap">-<\/td>/);
@@ -234,7 +234,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
 });
 
-test("an inner tab is in the URL, a deep link opens on it, and a system opens Build filtered to it", async () => {
+test("an inner tab is in the URL, a deep link opens on it, and a system opens Deliverables filtered to it", async () => {
   ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list() };
   await drawn(list(), "bnb/demo");
   vm.runInContext(`pInner("stage")`, ctx);
@@ -254,10 +254,10 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens Bu
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-psys]" ? { dataset: { psys: "ui" } } : null) };
   for (const f of box("projects").on.click) f({ type: "click", target });
   await settle(); await settle();
-  assert.equal(vm.runInContext(`st.views.projects + "|" + st.arg`, ctx), "dq=sys%3Aui|bnb/demo/build");
-  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"), "Build reads this project's epics");
-  assert.match(box("p-deliv").innerHTML, /<h2 class="sec warn" id="sec-p-build">Build <span class="n">2<\/span><\/h2>/);
-  // An epic's row on Build opens Rows filtered to that epic's rows.
+  assert.equal(vm.runInContext(`st.views.projects + "|" + st.arg`, ctx), "dq=sys%3Aui|bnb/demo/deliverables");
+  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"), "Deliverables reads this project's epics");
+  assert.match(box("p-deliv").innerHTML, /<h2 class="sec warn" id="sec-p-build">Deliverables <span class="n">2<\/span><\/h2>/);
+  // An epic's row on Deliverables opens Rows filtered to that epic's rows.
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
   const row = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
   for (const f of box("projects").on.click) f({ type: "click", target: row });
@@ -277,7 +277,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   ctx.sent = [];
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
-  assert.match(head, /Back to projects.*>demo<.*v0\.1\.0 25%/s);
+  assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 25%/s, "the breadcrumb, then the card");
   assert.match(shown, /1 of 1 rows/);
   assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
@@ -531,13 +531,13 @@ test("the Deliverables view keys are d-prefixed, so the project list keeps the p
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")), "the list's view is not the deliverables'");
 });
 
-test("a Deliverables row opens its project's Build searched to its epic", async () => {
+test("a Deliverables row opens its project's Deliverables searched to its epic", async () => {
   await drawDeliv(deliv());
   ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
   for (const f of box("projects").on.click) f({ type: "click", target });
-  assert.equal(vm.runInContext(`pst.open + "|" + pst.inner + "|" + st.arg + "|" + st.views.projects`, ctx), "bnb/demo|build|bnb/demo/build|dq=de-9");
+  assert.equal(vm.runInContext(`pst.open + "|" + pst.inner + "|" + st.arg + "|" + st.views.projects`, ctx), "bnb/demo|deliverables|bnb/demo/deliverables|dq=de-9");
 });
 
 test("a failed Deliverables read says so and never shows an empty table", async () => {
@@ -621,4 +621,96 @@ test("Ladder: a project row opens its Stage page; a new stages.json re-reads bot
   await settle();
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/stages")), "hidden, the ladder is not read");
   vm.runInContext(`pGo(null);`, ctx);
+});
+
+// hub_core::departments for one product, as /api/projects/{key}/departments sends it.
+const dept = (id, title, o = {}) => ({ id, title, question: `Is ${title} in hand?`, cell: "off", due_at: null, required: false, needs: [], numbers: [], numbers_says: "no kb_project_number series for it", pipes: [], checks: [], grafana: null, ...o });
+const depts = () => ({
+  says: "",
+  product: {
+    profile: "bnb", name: "demo", stage: "beta", type: "game", stage_rank: 3,
+    depts: [dept("analytics", "Analytics"), dept("marketing", "Marketing"),
+      dept("legal", "Legal", {
+        cell: "red", required: true, due_at: "beta",
+        needs: [{ level: "bad", says: "privacy policy: no privacyUrl in game.json" }],
+        checks: [{ item: "privacy policy", state: "gap", level: "bad", says: "no privacyUrl in game.json", evidence: "game.json" },
+          { item: "support URL", state: "ok", level: "ok", says: "answers 200", evidence: "https://example.com/support" }],
+        numbers: [{ metric: "reviews", value: 3, says: "3 store reviews" }], grafana: "https://grafana.example/d/kb-project?var-project=demo",
+        pipes: [{ source: "store-reviews", kind: "runner", record: "~/.agent/state/store-reviews", shared: true, found: "missing", last: null, last_says: "never ran", verdict: "", level: "warn" }],
+      }),
+      dept("support", "Support"), dept("money", "Money")],
+  },
+});
+const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
+
+test("a product's page has the five department tabs before the work tabs, and Legal says what is missing", async () => {
+  // A list read an earlier test left in flight lands first, so it cannot replace this card.
+  await settle(); await settle();
+  ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
+  draw(list([card({ product: true })]), "bnb/demo");
+  await settle(); await settle();
+  const { head, pane } = read();
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing<\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
+  const legal = pinOf(pane, "legal");
+  assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
+  assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
+  assert.match(legal, /id="sec-p-legal-checks">Checklist <span class="n">1 of 2<\/span>.*<td class="bad">gap<\/td>.*<a class="tl" href="https:\/\/example.com\/support" target="_blank"/s, "a required gap is red, a probed URL its evidence");
+  assert.match(legal, /id="sec-p-legal-numbers">Numbers <span class="n">1<\/span>.*<b>reviews<\/b> 3 store reviews.*trends in Grafana/s);
+  assert.match(legal, /id="sec-p-legal-pipes">Pipelines <span class="n">1<\/span>.*every product.*<td class="warn">never ran<\/td>/s, "a shared pipeline missing here is amber");
+  assert.match(pinOf(pane, "analytics"), /<div class="card muted">Nothing\.<\/div>.*no kb_project_number series for it.*No pipeline in departments.tsv feeds Analytics\./s, "an empty department says so, section by section");
+  // The retired inner id lands on Deliverables, in the URL too.
+  vm.runInContext(`pInner("build")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables" });
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("an infra project keeps five tabs with no break, and a department link on it lands on Overview", async () => {
+  await settle(); await settle();
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card({ product: false })]) };
+  ctx.sent = [];
+  draw(list([card({ product: false })]), "bnb/demo");
+  await settle();
+  const { head } = read();
+  assert.doesNotMatch(head, /data-ptab="(analytics|marketing|legal|support|money)"|isep/);
+  assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "infra reads no departments");
+  vm.runInContext(`pInner("legal")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "overview|bnb/demo");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("the list's project names are links to their pages, and a click on one is left to the link", () => {
+  const t = listTable([card()], 1, { links: [{ project: "#projects/bnb%2Fdemo" }] });
+  const { cards } = draw(list([card()], { table: t }));
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td>/);
+  const a = { id: "", dataset: {}, closest: (sel) => (sel === "a" ? {} : sel === "[data-open]" ? { dataset: { open: "bnb/demo" } } : null) };
+  for (const f of box("projects").on.click) f({ type: "click", target: a, preventDefault() {} });
+  assert.equal(vm.runInContext(`pst.open`, ctx), null, "the href navigates; the row's own open does not run too");
+});
+
+// hub_core::departments' grid, as /api/coverage sends it.
+const coverage = () => ({
+  rows: [{ key: "bnb/demo", profile: "bnb", name: "demo", type: "game", stage: "beta", cells: { analytics: "off", marketing: "off", legal: "red", support: "amber", money: "ok" } }],
+  head: "1 red  |  1 amber  |  2 off", says: [], red: 1, amber: 1, off: 2, failing: 1,
+  departments: [["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]],
+  table: { ...listTable([]), total: 1, shown: 1, legend: "red: a required department has a gap", links: [{ product: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Flegal" }],
+    columns: ["product", "type", "stage", "analytics", "marketing", "legal", "support", "money"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })) },
+});
+
+test("Coverage is one row per product, a cell its department's word linked to that tab, the head red when one is", async () => {
+  ctx.answers = { "/api/coverage": coverage(), "/api/projects": list() };
+  ctx.sent = [];
+  vm.runInContext(`pCount.coverage = null; st.tab = "projects"; st.arg = "coverage"; st.views.projects = ""; pst.open = null; covst.data = null; renderProjects(); pRead();`, ctx);
+  await settle(); await settle();
+  const cov = box("p-cov").innerHTML;
+  assert.ok(ctx.sent.some((s) => s.u === "/api/coverage"), "Coverage reads only while it shows");
+  assert.match(cov, /<h2 class="sec bad" id="sec-coverage">Coverage <span class="n">1 red  \|  1 amber  \|  2 off<\/span><\/h2>/);
+  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td><td class="muted">off<\/td><td class="muted">off<\/td><td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
+  assert.match(cov, /red: a required department has a gap/);
+  assert.match(box("p-strip").innerHTML, /data-itab="coverage" class="on"[^>]*>Coverage <span class="muted">1<\/span>/, "the strip counts products with a red cell");
+  // NEGATIVE CONTROL: on another inner tab Coverage is not read.
+  ctx.sent = [];
+  vm.runInContext(`st.arg = ""; renderProjects(); pRead();`, ctx);
+  await settle();
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/coverage")));
 });

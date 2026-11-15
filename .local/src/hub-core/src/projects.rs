@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::home::{self, Running};
+use crate::links::{Kind, Link};
 use crate::queue::{Item, Queue, State};
 use crate::session_actions::Runner;
 use crate::table::Val;
@@ -188,6 +189,8 @@ pub struct Card {
     pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
+    /// A game or app in project-map (`departments::is_product`): its page has department tabs.
+    pub product: bool,
 }
 
 impl Card {
@@ -206,6 +209,9 @@ impl Card {
             eta_days: eta_days(&s.progress),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
+            product: project_map::cached()
+                .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
+                .is_some_and(|k| crate::departments::is_product(&k)),
             ..Card::default()
         }
     }
@@ -295,6 +301,12 @@ impl crate::table::Row for Card {
                 .map_or(Val::None, |v| Val::Text(crate::tasks::release_order(v))),
             _ => self.val(col),
         }
+    }
+
+    /// The name opens the project's page.
+    fn link(&self, col: &str) -> Option<Link> {
+        (col == "project")
+            .then(|| Link::to(Kind::Project, format!("{}/{}", self.profile, self.name)))
     }
 }
 

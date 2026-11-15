@@ -348,7 +348,11 @@ struct KindConf {
 /// Reads the three stores and words the tab; never fails as a whole, each part says its own state.
 pub fn read(runner: &dyn Runner, paths: &Paths, now: DateTime<Local>) -> Ladder {
     let snap = std::fs::read_to_string(&paths.stages);
-    let reqs = runner
+    build(snap, reqs(runner), kinds(&paths.kinds), now)
+}
+
+fn reqs(runner: &dyn Runner) -> Result<Reqs, String> {
+    runner
         .run(&[
             "project-stage-check".into(),
             "--requirements".into(),
@@ -357,8 +361,13 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: DateTime<Local>) -> Ladder 
         .and_then(|out| {
             serde_json::from_str::<Reqs>(&out)
                 .map_err(|e| format!("project-stage-check --requirements: {e}"))
-        });
-    build(snap, reqs, kinds(&paths.kinds), now)
+        })
+}
+
+/// Every Requirements row of stages.md, unworded, from the one parser: what
+/// `hub_core::departments` reads to tell which stage requires a department.
+pub fn requirements(runner: &dyn Runner) -> Result<Vec<Requirement>, String> {
+    reqs(runner).map(|r| r.requirements)
 }
 
 /// The kinds on and off, lowest rank first, then by name.

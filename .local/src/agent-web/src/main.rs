@@ -23,6 +23,7 @@ mod cli;
 mod cloud;
 mod costs;
 mod deliverables;
+mod departments;
 mod epics;
 mod feed;
 mod fleet;
@@ -197,6 +198,11 @@ async fn main() -> Result<()> {
         .route("/api/stages/requirements", get(stages::get_requirements))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
+        .route(
+            "/api/projects/{name}/departments",
+            get(departments::get_project),
+        )
+        .route("/api/coverage", get(departments::get))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
