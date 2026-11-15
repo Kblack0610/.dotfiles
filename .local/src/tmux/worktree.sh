@@ -1224,6 +1224,20 @@ cmd_reap() {
   printf 'reaped %s\n' "$name"
 }
 
+# wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was
+# run from, when that is the session being cleaned up: a Claude session (its id is in the
+# env) whose pane is in <name>'s session, at <path>. Anything else (the keybinding, a plain
+# shell, `done <other>`) has no Stop hook to wait for and takes the timed kill below.
+wt_done_arm() {
+  local sess cwd top
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 1
+  sess="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)"
+  cwd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}' 2>/dev/null)"
+  [ "$sess" = "$2" ] && [ -n "$cwd" ] || return 1
+  top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" = "$1" ] || return 1
+  "${SELF%/*}/wind-down.sh" arm --session >/dev/null
+}
+
 # done [<name|path>] -- the whole cleanup, from INSIDE the session it is cleaning up.
 #
 # You cannot do this by hand, and that is the entire reason this verb exists: `tmux
@@ -1259,6 +1273,16 @@ cmd_done() {
   if ! panel_in_tmux && ! wt_session_exists "$name"; then
     # Nothing to defer around: no session to kill and no shell to lose.
     cmd_reap "$path"
+    return
+  fi
+
+  # Run from a Claude session in its own worktree session, the kill is the Stop hook's, not
+  # a timer's: a `sleep 1` kill lands mid-turn, before the session's Stop hooks (register,
+  # plan sync, spend, the wind-down fire) have run. Arming the wind-down sentinel hands the
+  # kill and the reap to the Stop pipeline, last in line, and `fire` runs `reap --after-kill`.
+  if wt_done_arm "$path" "$name"; then
+    printf 'done: armed %s; its session closes at the end of this turn, then its worktree is reaped unless something still holds it (log: %s)\n' \
+      "$name" "$HOME/.agent/spin-down/fire.log"
     return
   fi
 
