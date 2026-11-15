@@ -778,19 +778,23 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[null,[40]]'
 }
 
-@test "feed runs: a run the ledger holds open since before the feed's window is read by id and closes; a fresh open one is not" {
+@test "feed runs: a run the ledger holds open since before the feed's window, gone from its status's list, is read by id and closes; a fresh open one is not" {
   game_files
   feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z in_progress null)" \
     "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)"
   gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z completed success | serve 'repos/o/game/actions/runs/20'
+  runs "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)" \
+    | serve 'repos/o/game/actions/runs?status=in_progress&per_page=100&page=1'
   run "$SUBJECT"
   assert_success
-  run grep -c 'actions/runs/2[01]$' "$GHD/calls"
+  run grep -c 'actions/runs' "$GHD/calls"
   assert_output 0   # served this pass by the feed: not asked
   feed 1 e1 1 false ''
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
   assert_success
+  run grep -c 'actions/runs?status=in_progress' "$GHD/calls"
+  assert_output 1
   run grep -c 'actions/runs/20$' "$GHD/calls"
   assert_output 1
   run grep -c 'actions/runs/21$' "$GHD/calls"
@@ -798,6 +802,44 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run "$SUBJECT" runs o/game
   run jq -c 'map([.id, .status])' <<<"$output"
   assert_output '[[20,"completed"],[21,"in_progress"]]'
+}
+
+@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is not read" {
+  game_files
+  # 20 and 22 stay queued, 23 is in progress; 24's attempt 1 was superseded by a finished attempt 2
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+    "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
+    "$(gh_run 23 .github/workflows/test.yml 2025-11-04T10:10:00Z in_progress null)" \
+    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z in_progress null)" \
+    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed success 2)"
+  echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/24/attempts/2/jobs?per_page=100"
+  runs "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+       "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
+    | serve 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  runs "$(gh_run 23 .github/workflows/test.yml 2025-11-04T10:10:00Z in_progress null)" \
+    | serve 'repos/o/game/actions/runs?status=in_progress&per_page=100&page=1'
+  run "$SUBJECT"
+  assert_success
+  feed 1 e1 1 false ''
+  rows=$(wc -l < "$LEDGER")
+  for pass in 1762431000 1762431600; do
+    : > "$GHD/calls"
+    SCHEDULES_NOW=$pass run "$SUBJECT"
+    assert_success
+    run grep -c 'actions/runs' "$GHD/calls"
+    assert_output 2   # one listing per open status, nothing by id
+  done
+  [ "$(wc -l < "$LEDGER")" = "$rows" ]   # an unchanged run writes no row
+  # negative control: a listing that fails errors the repo; nothing is read by id or closed
+  touch "$GHD/$(key 'repos/o/game/actions/runs?status=queued&per_page=100&page=1').fail"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762432200 run "$SUBJECT"
+  assert_failure 1
+  run jq -r '.repos["github:o/game"].error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output 'HTTP 502'
+  run grep -c 'actions/runs/' "$GHD/calls"
+  assert_output 0
+  [ "$(wc -l < "$LEDGER")" = "$rows" ]
 }
 
 @test "feed runs: a repo's runs come from the feed alone, and its scheduled runs reach the state; actions/runs is never listed" {
