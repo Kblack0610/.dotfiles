@@ -158,8 +158,9 @@ enum Cmd {
         /// Project name (case-insensitive)
         name: String,
         /// Act on the project's AGENT sheet (`agent/README.md`) - the working board where
-        /// subtasks and in-flight state live - instead of the queue on its own README.
-        #[arg(long)]
+        /// subtasks and in-flight state live - instead of the queue on its own README. Goes
+        /// before or after the verb (`ptask <name> reopen --agent ...` parses too)
+        #[arg(long, global = true)]
         agent: bool,
         /// Act on the project's `playtest.md`: one row is one thing to play and check off.
         /// Takes `list`, `add` (with `--game`, `--pr`), `done`, `drop` and `pass` only
@@ -679,7 +680,8 @@ enum PtaskCmd {
         id: String,
     },
     /// Undo a false close: the closed row with this id back to todo, its done or drop stamp
-    /// off the marker. An agent board row already archived moves back onto the board
+    /// off the marker. A row already archived moves back onto its sheet. The id finds the row in
+    /// either lane, so `--agent` is not needed
     Reopen {
         /// What made the close false (the log keeps it)
         #[arg(long, value_name = "WHY")]
