@@ -987,7 +987,7 @@ fn settled(item: &'static str, state: &'static str, says: &str, evidence: &str) 
 
 /// A URL item: probed when the key is set, a gap naming the key when it is not.
 fn url_item(item: &'static str, key: &str, url: Option<String>, file: &str) -> Pending {
-    match url.filter(|u| u.starts_with("http")) {
+    match url.filter(|u| u.starts_with("https://") || u.starts_with("http://")) {
         Some(url) => Pending::Probe { item, url },
         None => settled(item, GAP, &format!("no {key} in {file}"), file),
     }
@@ -1046,10 +1046,12 @@ fn legal_checks(reg: &Registry, key: &str, kind: &str) -> Vec<Pending> {
             let Some(dir) = (!repo.is_empty()).then(|| reg.checkout(&repo)).flatten() else {
                 return vec![];
             };
-            let rel = format!("{path}/mobile/metadata.yaml");
+            // An empty path is the repo root, where a format! would make the path absolute.
+            let rel = Path::new(&path).join("mobile/metadata.yaml");
             let Ok(text) = std::fs::read_to_string(dir.join(&rel)) else {
                 return vec![];
             };
+            let rel = rel.to_string_lossy();
             let url = |k: &str| yaml_scalar(&text, k);
             vec![
                 url_item("privacy", "privacyUrl", url("privacyUrl"), &rel),
@@ -1062,10 +1064,12 @@ fn legal_checks(reg: &Registry, key: &str, kind: &str) -> Vec<Pending> {
     }
 }
 
-/// A top-level `key: value` of a YAML file, quotes dropped; enough for metadata.yaml's URLs.
+/// A top-level `key: value` of a YAML file, a ` #` comment and quotes dropped; enough for
+/// metadata.yaml's URLs.
 fn yaml_scalar(text: &str, key: &str) -> Option<String> {
     text.lines().find_map(|l| {
-        let v = l.strip_prefix(key)?.strip_prefix(':')?.trim();
+        let v = l.strip_prefix(key)?.strip_prefix(':')?;
+        let v = v.split(" #").next().unwrap_or(v).trim();
         let v = v.trim_matches(|c| c == '\'' || c == '"');
         (!v.is_empty()).then(|| v.to_string())
     })
@@ -1335,6 +1339,28 @@ mod tests {
                 assert_eq!(n, 1, "{}: `{p}` names {n} stages.md rows", d.id);
             }
         }
+    }
+
+    #[test]
+    fn a_yaml_url_drops_its_comment_and_only_a_web_url_is_probed() {
+        let text =
+            "privacyUrl: 'https://x.test/p'  # moved in May\ntermsUrl: https://x.test/t#top\n";
+        assert_eq!(
+            yaml_scalar(text, "privacyUrl").as_deref(),
+            Some("https://x.test/p")
+        );
+        assert_eq!(
+            yaml_scalar(text, "termsUrl").as_deref(),
+            Some("https://x.test/t#top")
+        );
+        let probed = |u: &str| {
+            matches!(
+                url_item("privacy", "privacyUrl", Some(u.into()), "f"),
+                Pending::Probe { .. }
+            )
+        };
+        assert!(probed("https://x.test/p"));
+        assert!(!probed("httpx://x.test/p"));
     }
 
     #[test]

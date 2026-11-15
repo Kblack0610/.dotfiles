@@ -1002,10 +1002,12 @@ impl App {
         }
     }
 
-    /// Coverage reads when it or a department tab shows, at most every `COVERAGE_REFRESH`, and on
-    /// `r`: its stores (notes, stages.md, VictoriaMetrics, URL probes) have no one file to watch.
+    /// Coverage reads when it or a department tab shows, unless a read is out or the last is
+    /// newer than `COVERAGE_REFRESH`, and on `r`: its stores (notes, stages.md, VictoriaMetrics,
+    /// URL probes) have no one file to watch.
     fn read_coverage_due(&mut self) {
         if self.coverage_shown()
+            && !self.coverage_read.busy
             && self
                 .coverage_at
                 .is_none_or(|t| t.elapsed() >= COVERAGE_REFRESH)
@@ -8725,9 +8727,15 @@ mod tests {
         assert_eq!(on(&a), Some("coverage"));
         assert!(a.coverage_read.busy, "showing Coverage did not read it");
         assert!(screen(&mut a, 140, 30).contains("Coverage  reading the department stores"));
+        a.handle(arrow(KeyCode::Left));
+        a.handle(arrow(KeyCode::Right));
+        a.handle(Msg::Coverage(Box::default()));
+        assert!(
+            !a.coverage_read.busy,
+            "showing Coverage again during its read queued a second one"
+        );
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("ladder"));
-        a.handle(Msg::Coverage(Box::default()));
         a.handle(arrow(KeyCode::Left));
         assert!(
             !a.coverage_read.busy,

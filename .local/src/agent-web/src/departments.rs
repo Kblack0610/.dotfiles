@@ -1,4 +1,4 @@
-//! Projects > Coverage an        failing: c.failing(), a product's department tabs, from `hub_core::departments` (the grid
+//! Projects > Coverage and a product's department tabs, from `hub_core::departments` (the grid
 //! and words the hub TUI draws). `/api/coverage` is the grid (`cq`, `cs`, `csort`, `cdir`);
 //! `/api/projects/{name}/departments` is one product's five tabs. Both narrow one kept read.
 
@@ -74,11 +74,7 @@ fn grid(c: &Coverage, q: &CoverageQuery) -> serde_json::Value {
         red: c.red,
         amber: c.amber,
         off: c.off,
-        failing: c
-            .products
-            .iter()
-            .filter(|p| p.depts.iter().any(|d| d.cell == departments::Cell::Red))
-            .count(),
+        failing: c.failing(),
         departments: departments::DEPARTMENTS.map(|d| [d.id, d.title]).to_vec(),
         table,
     })
@@ -103,10 +99,17 @@ fn tabs<'a>(c: &'a Coverage, key: &str) -> Tabs<'a> {
 }
 
 async fn current() -> Arc<Coverage> {
+    // No product means the catalog read failed (its reason is in `says`): show that, and read
+    // again next time; that read is cheap, as it probes nothing.
     let read = READ
-        .get((), async {
-            off(|| departments::read(&hub_core::session_actions::System, &Paths::from_env())).await
-        })
+        .get_if(
+            (),
+            async {
+                off(|| departments::read(&hub_core::session_actions::System, &Paths::from_env()))
+                    .await
+            },
+            |c| !c.products.is_empty(),
+        )
         .await;
     // `off` fails only when the blocking task panicked; each store's own failure is in `says`.
     read.unwrap_or_else(|e| {

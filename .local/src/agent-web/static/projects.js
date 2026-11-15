@@ -426,7 +426,7 @@ function pOpenAt(o) {
     refreshBoard();
     return;
   }
-  pGo(o.dataset.open, epic ? "deliverables" :o.dataset.inner || "overview", epic ? tblSet("", { q: epic }, "d") : "");
+  pGo(o.dataset.open, epic ? "deliverables" : o.dataset.inner || "overview", epic ? tblSet("", { q: epic }, "d") : "");
 }
 for (const id of ["p-deliv", "p-cards", "p-pane", "p-lstages", "p-cov"]) $(id).addEventListener("keydown", (e) => {
   if (e.key !== "Enter") return;
