@@ -33,8 +33,12 @@
 # goes on the item as gateway_cost_usd (gateway_push).
 # A PR's state, merge and body facts come from the PR store (`schedules-sync prs`, one read per repo
 # per run), a Forgejo PR (repo `host/owner/repo`, session-outcomes.sh SO_PR_JQ) as a GitHub one. A
-# failed Forgejo read holds back the sessions naming that repo until a later run reads it; a repo the
-# store does not list has its claims dropped. The report says which.
+# transcript prints the public ROOT_URL host and the store keys the repo under the project map's
+# `forges.forgejo` host, so a claim's host is first mapped to the store's (so_canon_claims, aliases
+# SO_FORGEJO_HOSTS). A failed Forgejo read holds back the sessions naming that repo until a later run
+# reads it; a repo the store does not list has its claims dropped and named, unless the project map
+# lists that repo (so_mapped_repos): then the store's list has a gap, those sessions are held and the
+# run ends STALLED after writing the rest. The report says which.
 # Seams: SO_SESSIONS SO_OUT SO_NOW SCHEDULES_SYNC SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
 # SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
@@ -233,6 +237,9 @@ cmd_run() {
           .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
+  so_canon_init "$PROJECT_MAP" || die_stalled "could not read the Forgejo host and aliases from $PROJECT_MAP"
+  so_canon_claims "$PROJECT_MAP" < "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
+    die_stalled "could not key the due sessions' Forgejo claims to the PR store's host"
 
   # Transcript metrics, one file per due session. A pruned transcript yields null
   # metrics rather than a skipped session: the registry row (cost, edits) still counts.
@@ -245,11 +252,11 @@ cmd_run() {
     sid="$(jq -r .session_id <<<"$row")"
     tr="$(jq -r '.transcript // ""' <<<"$row")"
     if [ -n "$tr" ] && [ -f "$tr" ]; then
-      so_transcript_metrics "$tr" "$sigs" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
+      so_transcript_metrics "$tr" "$sigs" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
       so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
     elif jq -e '.harness == "codex" and .metrics' <<<"$row" >/dev/null 2>&1; then
-      jq -c '.metrics' <<<"$row" > "$work/m.$sid.json"
+      jq -c '.metrics' <<<"$row" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       jq -c '.metrics.time_use' <<<"$row" > "$work/t.$sid.json"
     else
       null_metrics "$work" "$sid"
@@ -290,6 +297,22 @@ cmd_run() {
       || die_stalled "could not index PRs for $repo"
   done < "$work/repos"
   jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
+  # A due claim in a repo the project map lists is no stray URL: the store's list lacks a repo the map
+  # says it holds (or the claim's host is no alias), so its sessions are held, not recorded without
+  # the PR, and the run ends STALLED once the rest is written (a GitHub-only repo the map lists counts too).
+  : > "$work/repos.unstored"
+  if [ -s "$work/repos.gone" ]; then
+    : > "$work/repos.mapped"
+    [ ! -e "$PROJECT_MAP" ] || so_mapped_repos "$PROJECT_MAP" > "$work/repos.mapped" || die_stalled "could not read the repos $PROJECT_MAP lists"
+    while IFS= read -r repo; do
+      grep -qixF -- "$repo" "$work/repos.mapped" && grep -ixF -- "$repo" "$work/repos.due" >> "$work/repos.unstored"
+    done < "$work/repos.gone"
+    if [ -s "$work/repos.unstored" ]; then
+      grep -vixFf "$work/repos.unstored" "$work/repos.gone" > "$work/repos.gone.next"
+      mv "$work/repos.gone.next" "$work/repos.gone"
+      cat "$work/repos.unstored" >> "$work/fj.held"
+    fi
+  fi
   if [ -s "$work/repos.gone" ]; then
     list_note="$list_note; claims dropped, not in the PR store: $(paste -sd, "$work/repos.gone")"
   fi
@@ -508,7 +531,14 @@ cmd_run() {
   done < "$work/lines.jsonl"
 
   echo "$NAME: observed $written session(s) ($n due), $(wc -l < "$work/repos") repo(s) checked$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note"
-  proof_report "$NAME" WORKED "observed $written$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  local detail="observed $written$bench_note$oc_note$queue_note$forge_note$rework_note$attr_note$cloud_note$list_note; $(lessons_note); $(ledger_push); $(gateway_push); $(lf_push "" "$work")"
+  if [ -s "$work/repos.unstored" ]; then
+    local gap="the PR store lacks repos the project map lists, their sessions held: $(paste -sd, "$work/repos.unstored") (add the repo to the store's list, or its host to SO_FORGEJO_HOSTS)"
+    echo "$NAME: $gap" >&2
+    proof_outcome "$NAME" STALLED "$gap; $detail"
+    return 1
+  fi
+  proof_report "$NAME" WORKED "$detail"
 }
 
 # ledger_push - the work ledger's cost and time (~/.config/agentctl/QUEUE.md): every queue item
