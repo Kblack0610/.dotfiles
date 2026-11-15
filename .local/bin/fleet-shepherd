@@ -964,19 +964,18 @@ last_working() {
 # skip_known <key>: 0 when the key is a line due now. Anything else is refused with the nearest due
 # lines, because a skip stored under a shortened or reworded line never matches the due line, which
 # then comes back as unhandled (2026-11-09: a pass skipped 'overdue: lab/...-agent-58:1' and the
-# next check reported agent-58 and agent-59 unhandled). The due lines are cmd_due's, read live
-# (it writes nothing), not the ledger a check last wrote, which a line that appeared since is not in.
+# next check reported agent-58 and agent-59 unhandled). The due lines are the ones the last check
+# wrote to $DUE_LAST: cmd_due rebuilds them in full (about 80s a call, one hung past 120s on
+# 2026-11-13), and a pass is only ever handed lines a check wrote. A line that came due since is
+# refused here and reaches the next check's pass.
 skip_known() {
-  local key="$1" due rc=0 k n best="" bestn=-1 near="" cnt=0 pre="" suf=""
+  local key="$1" k n bestn=-1 near="" cnt=0 pre="" suf="" keys
   [ -n "$key" ] || { echo "fleet-shepherd: not skipped: the line is empty" >&2; return 1; }
-  due="$(cmd_due)" || rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "fleet-shepherd: not skipped: the due lines could not be read (cmd_due exit $rc)" >&2; return 1; }
-  local keys
-  keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"$due")"
+  keys="$(cut -f4 "$DUE_LAST" 2>/dev/null | while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done)"
   # exact, whole-line compare: grep would treat a multi-line key as several patterns
   KEY="$key" awk 'ENVIRON["KEY"] == $0 { f = 1 } END { exit !f }' <<<"$keys" && return 0
   if [ -z "$keys" ]; then
-    echo "fleet-shepherd: not skipped: '$key' is not a due line, and nothing is due now" >&2
+    echo "fleet-shepherd: not skipped: '$key' is not a due line, and the last check found nothing due" >&2
     return 1
   fi
   # an elided line ('lab/...-agent-58:1') matches a due line holding both ends of it
