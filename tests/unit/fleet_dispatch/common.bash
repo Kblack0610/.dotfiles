@@ -823,7 +823,7 @@ route_ready() {
   sonnet_lane
 }
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
-case "$1" in log) echo run-9 ;; classify)
+case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; classify)
   if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
   elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
