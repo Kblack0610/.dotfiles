@@ -66,21 +66,30 @@ esac
 call() {
   local rc=0 content code
   jq -c '.[:-1]' <<<"$1" >"$hist"
+  : >"$status"
+  # What a calling agent exported (its name, model, schema) must not reach this call: it would
+  # be recorded and budgeted as that agent's, on its model. The temperature is llama-server's
+  # own default, which the call sent before it went through the raw harness.
   jq -j '.[-1].content' <<<"$1" \
-    | env -u AGENT_PROMPT AGENT_MAX_TOKENS="$MAX_TOKENS" RAW_TIMEOUT_S="$TIMEOUT" RAW_TAGS="$tags" \
+    | env -u AGENT_PROMPT -u AGENT_SCHEMA -u AGENTCTL_AGENT -u AGENTCTL_NAME -u AGENTCTL_MODEL -u MODEL \
+        AGENT_MAX_TOKENS="$MAX_TOKENS" AGENT_TEMPERATURE=0.8 RAW_TIMEOUT_S="$TIMEOUT" RAW_TAGS="$tags" \
         RAW_MESSAGES="$hist" RAW_RESPONSE_FORMAT="$response_format" RAW_STATUS_FILE="$status" \
         RAW_REPLY="$([ "$RAW" = 1 ] && echo json)" \
         "${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$ROUTE" --harness raw -p >"$out" 2>"$err" || rc=$?
   code="$(cat "$status")"
-  # agentctl-run exits 78 before any call when the route, the key or the request will not do.
-  [ "$rc" != 78 ] || die "$(tr '\n' ' ' <"$err")"
+  # Nothing was asked of the model: the route, the key or the request will not do (78, 69), or
+  # the gateway turned away a call that carried no key.
+  case "$rc" in 69|78) die "$(tr '\n' ' ' <"$err")" ;; esac
+  if [ "$rc" != 0 ] && grep -q 'route sent no key' "$err"; then die "$(tr '\n' ' ' <"$err")"; fi
   if [ "$rc" != 0 ]; then
     sed 's/^agentctl-run: raw: /ask-local: /' "$err" >&2
-    case "$code" in
-      200)         echo "ask-local: raise --max-tokens?" >&2 ;;
-      401|403|000) ;;
-      *)           echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
-    esac
+    if grep -q 'has no content' "$err"; then echo "ask-local: raise --max-tokens?" >&2
+    else
+      case "$code" in
+        ""|000|200|401|403) ;;
+        *) echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
+      esac
+    fi
     return 1
   fi
   [ "$RAW" = 1 ] && { cat "$out"; return 0; }

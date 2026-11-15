@@ -137,9 +137,9 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   assert_equal "$(jq -r '.choices[0].finish_reason' <<<"$output")" "stop"
 }
 
-@test "a route with no key still calls, and the refusal says no key was sent" {
+@test "a route with no key stops with exit 2 once the gateway turns the call away, and says no key was sent" {
   run "$ASK_LOCAL" hi </dev/null
-  assert_failure 1
+  assert_failure 2
   assert_output --partial "the route sent no key (401)"
 }
 
@@ -156,6 +156,7 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   run "$ASK_LOCAL" hi </dev/null
   assert_failure 1
   assert_output --partial "refused the key (401)"
+  refute_output --partial "systemctl"
 }
 
 @test "a route whose model is down fails with the gateway's error and where to look" {
@@ -228,4 +229,21 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   assert_failure 2
   assert_output --partial "the key has a quote, backslash or newline"
   [ ! -e "$STUB_DIR/$KEY.json" ]
+}
+
+@test "--raw prints the response of an empty answer too" {
+  key empty
+  run "$ASK_LOCAL" --raw hi </dev/null
+  assert_success
+  assert_equal "$(jq -r '.choices[0].finish_reason' <<<"$output")" "length"
+}
+
+@test "the name, model and schema of a calling agent do not reach the call" {
+  key good
+  AGENTCTL_NAME=outer AGENTCTL_AGENT=outer AGENTCTL_MODEL=other MODEL=other AGENT_SCHEMA=/nope \
+    run "$ASK_LOCAL" --raw hi </dev/null
+  assert_success
+  assert_equal "$(jq -r '.choices[0].message.content' <<<"$output")" "echo: hi"
+  assert_equal "$(sent .body.model)" "local (qwen3.5-9b)"
+  [ ! -s "$HOME/.local/state/agentctl/calls.jsonl" ]
 }

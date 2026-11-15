@@ -88,38 +88,41 @@ raw_print() {
 
 # raw_chat -> the response JSON on stdout. The input goes through a file, never argv: a
 # version's whole changelog outgrew ARG_MAX once (notes-version-summary, #264). The key goes to
-# curl as a config line on stdin, never argv, where any `ps` would show it.
+# curl as a config line on stdin, never argv, where any `ps` would show it. Its files live in one
+# directory that goes when the call ends, a signal included.
 raw_chat() {
-  local body out err resp code msg rc=0 tags=() keyopt=()
+  local resp code msg rc=0 tags=() cargs
   [ -n "${LLM_BASE_URL:-}" ] || { echo "agentctl-run: raw: route '${ROUTE_NAME:-}' set no LLM_BASE_URL" >&2; return 69; }
   # In a curl config line a quote or backslash would be parsed, and a newline would end the line.
   case "${LLM_API_KEY:-}" in *[\"\\$'\n']*) echo "agentctl-run: raw: the key has a quote, backslash or newline" >&2; return 78 ;; esac
   [ -z "${RAW_MESSAGES:-}" ] || [ -r "$RAW_MESSAGES" ] || { echo "agentctl-run: raw: cannot read RAW_MESSAGES $RAW_MESSAGES" >&2; return 78; }
-  [ -z "${LLM_API_KEY:-}" ] || keyopt=(-K -)
   [ -z "${RAW_TAGS:-}" ] || tags=(-H "x-litellm-tags: $RAW_TAGS")
-  body="$(mktemp)" out="$(mktemp)" err="$(mktemp)" || return 1
-  printf '%s' "$RAW_INPUT" >"$out"
-  jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$out" \
+  RAW_TMP="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$RAW_TMP"' EXIT
+  printf '%s' "$RAW_INPUT" >"$RAW_TMP/in"
+  jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$RAW_TMP/in" \
       --slurpfile h "${RAW_MESSAGES:-/dev/null}" --argjson rf "${RAW_RESPONSE_FORMAT:-null}" \
       --argjson mt "${AGENT_MAX_TOKENS:-1024}" --argjson t "${AGENT_TEMPERATURE:-0}" \
       '{model: $m, temperature: $t, max_tokens: $mt, stream: false}
        + (if $rf then {response_format: $rf} else {} end)
        + {messages: ((if $s == "" then [] else [{role: "system", content: $s}] end)
-                     + ($h[0] // []) + [{role: "user", content: $u}])}' >"$body" \
-    || { rm -f "$body" "$out" "$err"; echo "agentctl-run: raw: RAW_MESSAGES or RAW_RESPONSE_FORMAT is not JSON" >&2; return 78; }
+                     + ($h[0] // []) + [{role: "user", content: $u}])}' >"$RAW_TMP/body" \
+    || { echo "agentctl-run: raw: RAW_MESSAGES or RAW_RESPONSE_FORMAT is not JSON" >&2; return 78; }
   # curl prints the -w status even when the transfer fails (000), so a caller can tell which.
-  code="$(printf 'header = "Authorization: Bearer %s"\n' "${LLM_API_KEY:-}" \
-    | curl -sS "${keyopt[@]}" --max-time "${RAW_TIMEOUT_S:-240}" -o "$out" -w '%{http_code}' \
-        -H 'Content-Type: application/json' "${tags[@]}" --data-binary @"$body" \
-        "${LLM_BASE_URL%/}/chat/completions" 2>"$err")" || rc=$?
+  cargs=(-sS --max-time "${RAW_TIMEOUT_S:-240}" -o "$RAW_TMP/out" -w '%{http_code}' -H 'Content-Type: application/json'
+         "${tags[@]}" --data-binary @"$RAW_TMP/body" "${LLM_BASE_URL%/}/chat/completions")
+  if [ -n "${LLM_API_KEY:-}" ]; then
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "$LLM_API_KEY" | curl -K - "${cargs[@]}" 2>"$RAW_TMP/err")" || rc=$?
+  else
+    code="$(curl "${cargs[@]}" </dev/null 2>"$RAW_TMP/err")" || rc=$?
+  fi
   code="${code:-000}"
   [ -z "${RAW_STATUS_FILE:-}" ] || printf '%s\n' "$code" >"$RAW_STATUS_FILE"
-  resp="$(cat "$out")"
   if [ "$code" = 000 ]; then
-    echo "agentctl-run: raw: no answer from ${LLM_BASE_URL%/}/chat/completions: $(tr '\n' ' ' <"$err")" >&2
-    rm -f "$body" "$out" "$err"; return "$((rc > 0 ? rc : 1))"
+    echo "agentctl-run: raw: no answer from ${LLM_BASE_URL%/}/chat/completions: $(tr '\n' ' ' <"$RAW_TMP/err")" >&2
+    return "$((rc > 0 ? rc : 1))"
   fi
-  rm -f "$body" "$out" "$err"
+  resp="$(cat "$RAW_TMP/out")"
   printf '%s\n' "$resp"
   if [ "$code" != 200 ] || jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
     msg="$(jq -r '(.error.message // .detail // .error // empty) | tostring | .[:600]' <<<"$resp" 2>/dev/null)"
@@ -131,6 +134,8 @@ raw_chat() {
     esac
     return 1
   fi
+  # RAW_REPLY=json hands the whole response over, an empty answer included: that is what it is for.
+  [ "${RAW_REPLY:-}" != json ] || return 0
   jq -e '(.choices[0].message.content // "") != ""' <<<"$resp" >/dev/null 2>&1 || {
     printf 'agentctl-run: raw: the reply has no content (%s, finish_reason %s)\n' "${LLM_MODEL:-}" \
       "$(jq -r '.choices[0].finish_reason // "none"' <<<"$resp" 2>/dev/null)" >&2; return 1; }
