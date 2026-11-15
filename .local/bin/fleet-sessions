@@ -228,7 +228,7 @@ session_bucket() {
 # and `tail -f ci-gate.sh.log` or an editor on the script do not.
 queue_match() {
   local c=" $1" w
-  case "$c" in " vim "* | " vi "* | " nvim "* | " nano "* | " less "* | " cat "* | " bat "* | " head "* | " tail "* | " grep "* | " rg "* | " shellcheck "*) return 1 ;; esac
+  case "$c" in " vim "* | " vi "* | " nvim "* | " nano "* | " less "* | " cat "* | " bat "* | " head "* | " tail "* | " grep "* | " rg "* | " shellcheck "* | " ugrep "* | " ag "* | " watch "* | " pgrep "* | " pkill "* | " man "* | " git "*) return 1 ;; esac
   for w in $2; do
     case "$c" in *" $w "* | *"/$w "* | *" $w="* | *"/$w="*) ;; *) return 1 ;; esac
   done

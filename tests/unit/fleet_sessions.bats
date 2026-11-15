@@ -800,7 +800,7 @@ MD
   assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, background shell still running'
 }
 
-@test "live_wait reads a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck process as queue, and only those (ar-2346)" {
+@test "live_wait reads a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck process as queue, and only those (ar-2346)" {
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
   printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
@@ -847,7 +847,7 @@ MD
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
-@test "queue_match takes a gate-and-land.sh, ci-gate.sh or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
+@test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
   queue_match 'bash scripts/test/gate-and-land.sh 2102 ' gate-and-land.sh
   queue_match 'bash ci-gate.sh ' ci-gate.sh
   queue_match 'python3 gate-line.py --repo x --recheck ' 'gate-line.py --recheck'
@@ -858,6 +858,10 @@ MD
   ! queue_match 'tail -f scripts/test/ci-gate.sh ' ci-gate.sh
   ! queue_match 'vim scripts/test/ci-gate.sh ' ci-gate.sh
   ! queue_match 'shellcheck gate-and-land.sh ' gate-and-land.sh
+  queue_match 'bash /home/u/.local/bin/agent-land 2421 --item x ' agent-land
+  ! queue_match 'ugrep agent-land logs ' agent-land
+  ! queue_match 'watch -n5 pgrep -f agent-land ' agent-land
+  ! queue_match 'git log --grep agent-land ' agent-land
 }
 
 @test "self_wait finds a tail --pid on its own parent under the claude, and nothing else (ar-1118)" {
