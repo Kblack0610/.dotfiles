@@ -4346,6 +4346,16 @@ live_merges() {
   assert_output --partial 'merges: none'
 }
 
+@test "throughput: a multi-day window with over 128 KB of merge rows still reads (ar-2446)" {
+  use_fixture
+  export BENCH_MERGES_TSV="$SANDBOX/merges-big.tsv"
+  awk -v t="$T0" 'BEGIN { for (i = 0; i < 20000; i++) printf "notes\t%d\n", t - 3600 - i }' > "$BENCH_MERGES_TSV"
+  [ "$(wc -c < "$BENCH_MERGES_TSV")" -gt 131072 ]
+  run "$SUBJECT" throughput --from $((T0 - 432000)) --to "$T0"
+  assert_success
+  assert_output --partial 'merges/h: notes 166.7'
+}
+
 # --- the scorecard's breakdown
 
 # stub_breakdown: prometheus answers the three range questions the scorecard asks
