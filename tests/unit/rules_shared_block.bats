@@ -83,6 +83,41 @@ MD
   assert_output "$(printf '<!-- shared: Gone -->\nmine')"
 }
 
+@test "check: a generated file with the spliced body, blank lines aside, passes and nothing is written" {
+  printf -- '---\nroot: true\n---\n# Top\n<!-- shared: Core Principles -->\n' >"$T/o.md"
+  printf '# Top\n## Core Principles\n    Simplicity First.\n\n' >"$T/AGENTS.md"
+  run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
+  assert_success
+  run grep -c '^<!-- shared: ' "$T/o.md"
+  assert_output 1
+}
+
+@test "check: a changed shared line exits 3, showing both sides and not the frontmatter" {
+  printf -- '---\nroot: true\n---\n<!-- shared: Core Principles -->\n' >"$T/o.md"
+  printf '## Core Principles\n    Simplicity Last.\n' >"$T/AGENTS.md"
+  run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
+  assert_failure 3
+  assert_output --partial '+    Simplicity First.'
+  assert_output --partial '-    Simplicity Last.'
+  refute_output --partial 'root: true'
+}
+
+@test "check: a line deleted from the source and still in the generated file exits 3" {
+  printf -- '---\nroot: true\n---\n<!-- shared: Core Principles -->\n' >"$T/o.md"
+  printf '## Core Principles\n    Simplicity First.\n- A rule since removed.\n' >"$T/AGENTS.md"
+  run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
+  assert_failure 3
+  assert_output --partial '-- A rule since removed.'
+}
+
+@test "splice: an overview with no marker is not rewritten" {
+  printf '# Top\r\nmine' >"$T/o.md"
+  cp "$T/o.md" "$T/before"
+  run "$SPLICE" "$T/o.md" "$T/CLAUDE.md"
+  assert_success
+  cmp "$T/before" "$T/o.md"
+}
+
 # Headings of the real files, by their words before any bracket.
 headings() { grep -E '^##+ ' "$1" | sed -E 's/^#+ //; s/ \(.*//'; }
 
@@ -180,11 +215,7 @@ uncovered() {
   local o="$PRIV/.config/rulesync-global/.rulesync/rules/overview.md" a="$PRIV/.config/opencode/AGENTS.md"
   [ -f "$o" ] || skip "no private overlay at $PRIV"
   grep -q '^<!-- shared: ' "$o" || skip "overview.md has no markers yet"
-  cp "$o" "$T/o.md"
-  "$SPLICE" "$T/o.md" "$PRIV/.claude/CLAUDE.md"
-  # rulesync drops the frontmatter and keeps the body, so each spliced line must be in the output.
-  awk '/^---$/ && f<2 {f++; next} f>=2 && NF' "$T/o.md" > "$T/body"
-  [ -s "$T/body" ]
-  run grep -vxFf "$a" "$T/body"
-  assert_output ''
+  # The private pre-commit runs the same check on the staged files.
+  run "$SPLICE" --check "$o" "$PRIV/.claude/CLAUDE.md" "$a"
+  assert_success
 }
