@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse(Bash) guard: an rm -r may not remove another live session's cache scratch.
+"""PreToolUse(Bash) guard: an rm -r may not remove another live session's cache scratch, or a root dir.
 
 A session keeps large scratch in ~/.cache/<tool>/<session-id>/ (global CLAUDE.md, scratch rule),
 so a whole ~/.cache/<tool> dir can hold several sessions' work. 2026-11-10 16:54: session 207ca085
@@ -16,6 +16,11 @@ live session owns, and files by name pass. Each command is walked with forge-gua
 subshells, bash -c, eval); brace lists and globs in a target are expanded. Not covered: find
 -delete, xargs, a target built by $(...) or a shell variable the hook cannot see, rmtree from a
 script. Fail-open: any error allows the command.
+
+Also denied: an `rm -r` whose target is / or a top-level dir, which is what `rm -rf /*` expands to.
+Claude's built-in rm check refuses these targets itself; Codex has none, so this is its guard. The
+settings.json deny list holds no `Bash(rm -rf /*)`: Claude reads that `*` as a wildcard, so it would
+deny every rm -rf of an absolute path, a session's own scratch included (ucp-734).
 """
 import glob
 import json
@@ -31,6 +36,10 @@ MSG = (
     "scratch-rm-guard: `rm -r {target}` would remove {victim}, the scratch of live session {sid}: "
     "pid {pid} ({comm}) still carries that id. Remove only your own <cache>/<tool>/<your session "
     "id>/ or the files you wrote, by name. If pid {pid} is not that session's work, ask the human."
+)
+ROOT_MSG = (
+    "scratch-rm-guard: `rm -r {target}` would remove {target}, a root dir (what `rm -rf /*` "
+    "expands to). Name the path below it you mean; if it really is this dir, ask the human."
 )
 
 
@@ -156,6 +165,8 @@ def check(head, argv, env, cwd):
     if head != "rm":
         return None
     for t in targets(argv, cwd) or ():
+        if os.path.dirname(t) == "/":
+            return ROOT_MSG.format(target=t)
         for cache in cache_roots():
             for d in owner_dirs(t, cache):
                 sid = os.path.basename(d)
