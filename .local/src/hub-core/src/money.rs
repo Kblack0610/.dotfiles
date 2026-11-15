@@ -99,7 +99,7 @@ pub fn trader(at: &At, day: &str) -> Vec<Source> {
     // The source's value at `t`, unless Prometheus has none then or it was read too long before.
     let value_at = |value: &str, age: &str, t: i64| -> Result<f64, String> {
         let when = crate::fleet::local_minute(t);
-        let v = at(value, t)?.ok_or_else(|| format!("no reading at {when}"))?;
+        let v = at(value, t)?.ok_or_else(|| format!("{} at {when}", crate::reading::NO_DATA))?;
         let old = at(age, t)?.ok_or_else(|| format!("no read age at {when}"))?;
         if old > TRADER_STALE_SECS {
             return Err(format!(
@@ -383,7 +383,7 @@ mod tests {
         let v = trader(&at, "2026-11-13");
         assert_eq!(
             line(&v[0]),
-            "Alpaca (paper): not read, no reading at 2026-11-13 00:00."
+            "Alpaca (paper): not read, no data at 2026-11-13 00:00."
         );
         assert!(!line(&v[0]).contains('$'));
         assert_eq!(line(&v[1]), "Kalshi paper league: flat yesterday.");

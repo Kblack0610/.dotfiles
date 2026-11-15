@@ -40,5 +40,5 @@ test("the widget draws each card it was sent, with its level word, and the time 
 test("a card that could not be read says why, and no card matching is said, never an empty widget", () => {
   assert.match(draw({ at: 0, cards: [card({ big: "NO DATA", level: "nodata", error: "fleet-sessions: timed out", first: [] })] }), /fleet-sessions: timed out/);
   assert.match(draw({ at: 0, cards: [] }), /No card matches/);
-  assert.match(draw({ at: 0, cards: [card()], unknown: ["redd"] }), /no card named redd/);
+  assert.match(draw({ at: 0, cards: [card()], missing: ["redd"] }), /no card named redd/);
 });

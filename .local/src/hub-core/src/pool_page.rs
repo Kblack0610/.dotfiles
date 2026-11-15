@@ -163,7 +163,7 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
             t
         }
         Some(_) => "none".into(),
-        None => "no reading".into(),
+        None => crate::reading::NO_DATA.into(),
     };
     out.push(Part::new("Waiting", wait).warn(stuck > 0));
     if p.done.is_some() || p.pass.is_some() {
