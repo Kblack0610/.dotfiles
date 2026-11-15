@@ -130,6 +130,49 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'no checklist 1'
 }
 
+@test "the summary says what it read, so a clean read never looks like no read" {
+  plan bare '1 day ago 1 hour ago' 'just text'
+  message 'add a slide'
+  message 'and a swing'
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial 'read 1 plans and 1 transcripts (0 unreadable, 2 new messages), asked 1 boards, filed 0'
+  # the same run again: the transcript is read, its messages are past the watermark
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial 'read 1 plans and 1 transcripts (0 unreadable, 0 new messages), asked 0 boards'
+}
+
+@test "a missing transcripts or plans dir is FAILED with why, not a clean zero" {
+  rmdir "$ASK_SWEEP_TRANSCRIPTS"
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial 'no transcripts dir'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
+  mkdir "$ASK_SWEEP_TRANSCRIPTS"; rmdir "$ASK_SWEEP_PLANS"
+  run "$SWEEP" run
+  assert_failure
+  run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
+  assert_output --partial 'why: no plans dir'
+}
+
+@test "a bad line hides no message after it, and a transcript with no cwd is counted unreadable" {
+  local f="$ASK_SWEEP_TRANSCRIPTS/x-board/s.jsonl"
+  message 'before the cut'
+  printf '{"type":"user","trunc\n' >> "$f"
+  message 'after the cut'
+  mkdir -p "$ASK_SWEEP_TRANSCRIPTS/x-nocwd"
+  echo '{"type":"summary"}' > "$ASK_SWEEP_TRANSCRIPTS/x-nocwd/s.jsonl"
+  touch -d '1 hour ago' "$ASK_SWEEP_TRANSCRIPTS/x-nocwd/s.jsonl"
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial '1 transcripts (1 unreadable, 2 new messages)'
+  run cat "$NOTES_FIXTURE/prompt.board"
+  assert_output --partial 'after the cut'
+}
+
 @test "a missed ask is filed with its quote, and a small clear one joins the downtime queue" {
   message 'add a slide to the gym' board '40 hours ago'
   message 'and something else'
