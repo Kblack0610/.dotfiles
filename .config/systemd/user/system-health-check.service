@@ -1,9 +1,11 @@
 [Unit]
 Description=System Health Check
-After=network-online.target
 
 [Service]
 Type=oneshot
+# The boot catch-up (Persistent=true) pings 8.8.8.8, so before the network is up it records a false
+# WARNING that stands until the next run. Wait the way session-snapshot-up.service does and says why.
+ExecStartPre=-/usr/bin/nm-online -q -x -t 120
 ExecStart=%h/.local/src/system/system-health-check.sh
 
 [Install]

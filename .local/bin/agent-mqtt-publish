@@ -38,6 +38,17 @@ MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
 # whole run (the snapshot scan and lock wait are outside it); agentctl's status hook does
 # that with its own timeout, since it runs inside a runner's lifecycle.
 PUB_TIMEOUT="${AGENT_MQTT_TIMEOUT:-3}"
+# A broker miss (a restart, a dropped connection) is retried on the same message before the
+# run gives up: RETRIES more attempts, BACKOFF whole seconds before the first, doubling. A
+# retained publish is idempotent, so a repeat cannot act twice. Any failed call is retried: a
+# refused connection and a timeout look alike. A dead broker still fails, after
+# (RETRIES+1) x PUB_TIMEOUT plus the backoffs (about 12s at the defaults); the 5-min timer
+# catches up on what was not sent. agentctl's status hook sets RETRIES=0: its 5s budget is
+# shorter than that window.
+PUB_RETRIES="${AGENT_MQTT_RETRIES:-2}"
+PUB_BACKOFF="${AGENT_MQTT_BACKOFF:-1}"
+[[ "$PUB_RETRIES" =~ ^[0-9]+$ ]] || PUB_RETRIES=2
+[[ "$PUB_BACKOFF" =~ ^[0-9]+$ ]] || PUB_BACKOFF=1
 # 3x the timer cadence (agent-mqtt-publish.timer, 5 min): a workstation that is off or
 # asleep turns its sensors `unavailable` instead of leaving them stale-but-green.
 EXPIRE_AFTER=900
@@ -303,8 +314,14 @@ snapshot() {
 tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
 
 publish() {
-    timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
-        -t "$1" -m "$2" 2>/dev/null
+    local i
+    for ((i = 0; i <= PUB_RETRIES; i++)); do
+        # Backoff, not a wait on a signal: the broker has no event to await.
+        [ "$i" -gt 0 ] && sleep $((PUB_BACKOFF << (i - 1)))
+        timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
+            -t "$1" -m "$2" 2>/dev/null && return 0
+    done
+    return 1
 }
 
 main() {
@@ -339,7 +356,8 @@ main() {
             continue
         fi
         case "$topic" in */config) reloaded=1 ;; *) reloaded=0 ;; esac
-        # Stop at the first failure: a dead broker would otherwise cost PUB_TIMEOUT per topic.
+        # Stop at the first failed publish (after its retries): a dead broker would otherwise cost
+        # that whole window per topic.
         publish "$topic" "$payload" || { say "publish failed ($MQTT_HOST:$MQTT_PORT)"; return 1; }
         printf '%s' "$payload" > "$f"
         sent=$((sent + 1))
