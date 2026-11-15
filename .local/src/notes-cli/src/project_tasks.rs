@@ -418,10 +418,17 @@ pub(crate) fn add_via(
     lane: Lane,
     systems: Option<&str>,
 ) -> Result<i32> {
+    // The text's first line is the row and any later lines are its details, so the tags and
+    // id marker stamped below land on the row line, the only line a pick or the board reads.
+    let (text, more) = text.trim().split_once('\n').unwrap_or((text.trim(), ""));
     let text = text.trim();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
+    let details: Vec<String> = std::iter::once(more.to_string())
+        .chain(details.iter().cloned())
+        .collect();
+    let details = &details[..];
     let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
     let to = to_arg.map(parse_to).transpose()?;
