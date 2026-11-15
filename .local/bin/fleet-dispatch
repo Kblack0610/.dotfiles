@@ -2000,7 +2000,7 @@ cmd_start() {
   fi
   if [ -n "$resume" ]; then
     # One writer per transcript: a second claude on a live conversation would also take its item.
-    ! conversation_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+    ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
     # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
     if [ -z "$item" ]; then
       item=$(agent-queue mine --sid "$resume" 2>&1)
@@ -2164,25 +2164,29 @@ planned_reboot() {
 }
 
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
-# A record with no conversations has nothing to restore, so it never replaces one that does. A lost
-# record restore has not consumed still owes its conversations, so a later death (a reboot during
-# the boot restore) adds its own to them and never replaces them (ar-2140). One that will not parse
-# owes nothing restore could read, so the new record replaces it. Callers hold $PANES/.lock.
+# A record with no conversations has nothing to restore, so it never replaces one that does. A
+# restore that reopened only some keeps its lost record (a rerun finishes it), so when the server dies
+# again the new record's conversations join that one instead of replacing it. A conversation in both
+# takes the new record's window and cwd (the newer); shell panes of the old record stay, listed only.
 world_lost() {
-  local srv=$1 n lost="$PANES/$1.lost.json" owed=''
+  local srv=$1 n lost="$PANES/$1.lost.json"
   n=$(jq '[.panes[] | select(.claude != "")] | length' "$PANES/$srv.json" 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -gt 0 ] && [ -e "$lost" ] && jq -s '.[1] as $new | [$new.panes[].claude | select(. != "")] as $ids
-      | $new + {panes: ($new.panes + [.[0].panes[] | select(.claude != "" and (.claude | IN($ids[]) | not))])}' \
-      "$lost" "$PANES/$srv.json" > "$lost.tmp" 2>/dev/null; then
-    mv -f "$lost.tmp" "$lost" && rm -f "$PANES/$srv.json"
-    owed=$(jq '[.panes[] | select(.claude != "")] | length' "$lost")
-  elif [ "$n" -gt 0 ]; then
-    rm -f "$lost.tmp"
-    [ ! -e "$lost" ] || logline "tmux server $srv: its lost record would not parse, so the new one replaces it"
+  if [ "$n" -eq 0 ]; then
+    rm -f "$PANES/$srv.json"
+  elif [ ! -s "$lost" ]; then
     mv -f "$PANES/$srv.json" "$lost"
-  else rm -f "$PANES/$srv.json"; fi
-  logline "tmux server $srv died with $n conversation(s) on it${owed:+, $owed owed to restore in all}"
+  elif jq --slurpfile old "$lost" '
+      [.panes[] | select(.claude != "")] as $new
+      | .panes = ([$old[0].panes[] | select(.claude as $c | $c == "" or ($new | map(.claude) | index($c) | not))] + $new)' \
+      "$PANES/$srv.json" > "$lost.new"; then
+    mv -f "$lost.new" "$lost"; rm -f "$PANES/$srv.json"
+  else
+    # An unreadable old record restores nothing (restore reads it with jq too), so it is replaced, said aloud.
+    rm -f "$lost.new"; mv -f "$PANES/$srv.json" "$lost"
+    logline "tmux server $srv: the earlier lost record was unreadable and is replaced"
+  fi
+  logline "tmux server $srv died with $n conversation(s) on it"
   # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
   ! planned_reboot || return 0
   agent-notify -p high -t "tmux $srv server died" "$n conversation(s) were on it. Reopen them: fleet-dispatch restore" ||
@@ -2222,15 +2226,6 @@ cmd_record() {
   exec 8>&-
 }
 
-# conversation_live <id> -- a claude with that id is running now, so reopening it would be a second.
-conversation_live() {
-  local pid
-  for pid in $(awk 1 "$HOME/.claude/sessions"/*.json 2>/dev/null |
-    jq -Rr --arg id "$1" 'fromjson? | select(.sessionId == $id) | .pid'); do
-    kill -0 "$pid" 2>/dev/null && return 0
-  done
-  return 1
-}
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
@@ -2250,7 +2245,7 @@ restore_world() {
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
-    if conversation_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
+    if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
     item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
     mode=$(resume_mode "$id" "$([ -z "$item" ] || agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')")

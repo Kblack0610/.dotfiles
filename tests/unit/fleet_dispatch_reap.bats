@@ -1467,33 +1467,6 @@ OUT
   [ ! -f "$RECORD" ] || fail "an empty record stayed"
 }
 
-@test "a death before restore consumed the lost record adds its conversations to it, never replaces them (ar-2140)" {
-  record_setup
-  # Boot A: the server dies with two conversations; restore reopens one before a second reboot.
-  echo '{"pane":"hub/%2","session_id":"conv-2","cwd":"/work/two"}' >> "$NOTES_FIXTURE/panel.json"
-  world '10 1000' "$PANE1" "$PANE2"
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record
-  world ''
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
-  echo '{"pane":"hub/%1","session_id":"conv-1","cwd":"/work/tree"}' > "$NOTES_FIXTURE/panel.json"
-  world '11 2000' "$PANE1"
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record
-  # Boot B: the new server dies too.
-  world ''
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
-  assert_equal "$(jq -c '[.panes[].claude] | sort' "$LOST")" '["conv-1","conv-2"]'
-  grep -qF 'died with 1 conversation(s) on it, 2 owed to restore in all' "$FLEET_DISPATCH_DIR/log.md" || fail "log: $(cat "$FLEET_DISPATCH_DIR/log.md")"
-  [ ! -f "$RECORD" ] || fail "the merged record stayed"
-  # A lost record that will not parse owes nothing restore could read: the next death replaces it.
-  echo '{"server": "hub", "pan' > "$LOST"
-  world '12 3000' "$PANE1"
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record
-  world ''
-  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
-  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1"]'
-  [ ! -f "$LOST.tmp" ] || fail "left the failed merge's temp file"
-}
-
 @test "restore keeps a record that grew during its walk, so a rerun reopens the new death's conversations" {
   restore_setup
   lost_pane one "$SANDBOX/repos/game" conv-1
@@ -1521,16 +1494,20 @@ OUT
   transcript conv-work '{"permissionMode":"bypassPermissions"}'
   : > "$HOME/.agent/spin-down/conv-armed.request"
   : > "$HOME/.agent/spin-down/conv-closed.fired"
+  lost_pane otheracct "$G" conv-other
+  mkdir -p "$HOME/.claude-work/sessions"
+  printf '{"pid":%s,"sessionId":"conv-other"}' "$$" > "$HOME/.claude-work/sessions/$$.json"
   printf '{"pid":%s,"sessionId":"conv-alive"}' "$$" > "$HOME/.claude/sessions/$$.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
   assert_called 'tmx ensure hub'
   assert_called "-n planned -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called "-n working -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
-  for skipped in conv-armed conv-closed conv-alive conv-moved; do assert_not_called "--resume $skipped"; done
+  for skipped in conv-armed conv-closed conv-alive conv-other conv-moved; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:alive: already running, skipped'
+  assert_output --partial 'hub:dotfiles:otheracct: already running, skipped'
   assert_output --partial 'claude --resume conv-moved'
   assert_output --partial 'hub:dotfiles:shell: no conversation, not reopened'
   assert_output --partial 'hub: reopened 2, failed 0'
@@ -1574,6 +1551,23 @@ OUT
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+@test "a server that dies again keeps the lost record a restore only part finished, and adds the new conversations once" {
+  record_setup
+  PANE3=$'%3\037dotfiles\037fresh\037/fresh/dir'
+  echo '{"pane":"hub/%3","session_id":"conv-3","cwd":"/fresh"}' >> "$NOTES_FIXTURE/panel.json"
+  world '10 1000' "$PANE1" "$PANE2"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  sed -i 's|/work/tree|/moved/tree|' "$NOTES_FIXTURE/panel.json"
+  world '11 2000' "$PANE1" "$PANE3" "$PANE2"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1",""]'
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["","conv-1","conv-3"]'
+  assert_equal "$(jq -r '.panes[] | select(.claude == "conv-1") | .cwd' "$LOST")" /moved/tree
+  [ ! -f "$RECORD" ] || fail "the dead record stayed"
 }
 
 @test "reap settles a claude-lazer item whose claude exited, like claude's; an opencode one waits for its session to end" {
