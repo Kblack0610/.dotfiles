@@ -284,25 +284,33 @@ is_session_id() {
 # talking (resumed, or its window survived); its transcript still reads "wind-down armed",
 # so say it is not, or it waits on a Stop that closes nothing (ar-1197, 2026-11-08).
 cmd_disarm() {
-  local sid='' payload f removed=0 fired=0
+  local sid='' payload removed fired
   [ ! -t 0 ] && payload=$(cat 2>/dev/null)
   if [ -n "${payload:-}" ] && command -v jq >/dev/null 2>&1; then
     sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
-  for f in "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired; do
-    [ -f "$f" ] && rm -f -- "$f" && fired=1
-  done
-  for f in "$SPIN_DIR/$sid.request" "$SPIN_DIR"/*__"$sid".request; do
-    [ -f "$f" ] && rm -f -- "$f" && removed=1
-  done
+  fired=$(clear_markers "$sid" fired)
+  removed=$(clear_markers "$sid" request)
   if [ "$removed" = 1 ]; then
     echo "wind-down disarmed: a new prompt or message arrived, so nothing fires at this Stop; run /wind-down again when this work is done."
   elif [ "$fired" = 1 ]; then
-    echo "wind-down is not armed: this session's earlier teardown already fired, so nothing fires at this Stop; run /wind-down again when this work is done."
+    echo "wind-down is not armed: this session's earlier teardown was spent at a Stop, so nothing fires at this Stop; run /wind-down again when this work is done."
   fi
   return 0
+}
+
+# clear_markers <sid> <ext>: remove this session's <sid>.<ext> and legacy <project>__<sid>.<ext>
+# markers; print 1 when one existed, whether or not its rm succeeded.
+clear_markers() {
+  local f found=0
+  for f in "$SPIN_DIR/$1.$2" "$SPIN_DIR"/*__"$1.$2"; do
+    [ -f "$f" ] || continue
+    found=1
+    rm -f -- "$f"
+  done
+  echo "$found"
 }
 
 # Sourced (by the test suite) rather than run: stop here with every function defined but

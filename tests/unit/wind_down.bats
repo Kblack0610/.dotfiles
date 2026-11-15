@@ -485,6 +485,7 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
   disarm "{\"session_id\":\"$SID_A\"}"
   assert_success
   assert_output --partial 'wind-down is not armed'
+  assert_output --partial "spent at a Stop"
   [ ! -e "$SPIN_DIR/$SID_A.fired" ] || fail "own fired marker survived"
   [ -e "$SPIN_DIR/$SID_B.fired" ] || fail "removed another session's fired marker"
   disarm "{\"session_id\":\"$SID_A\"}"

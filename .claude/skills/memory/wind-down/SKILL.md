@@ -34,7 +34,8 @@ deferred (the sentinel stays armed) and fires on the next clean Stop instead. So
 never closes the window over broken or unpushed work. A new prompt, typed or a cross-session
 message, disarms it (`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session
 is not done, so re-run `/wind-down` when that work is finished. Trust the hook's line over your
-own memory: a resumed session whose teardown already fired is told "wind-down is not armed".
+own memory: a session resumed within a day of its teardown is told "wind-down is not armed"
+(the `.fired` marker that says so is reaped after a day).
 
 ## Steps
 
@@ -261,7 +262,7 @@ thing shown before the window closes.
   per project, so several armed sessions in the same repo do not clobber each other, and the
   directory `arm` runs from does not matter. A sentinel
   left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
-  prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
+  prompt or cross-session message arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
   `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
