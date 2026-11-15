@@ -892,7 +892,7 @@ trainee_ready() {
   # The trainee holds max_open (1) rows, so the next one-point row takes the verdict's fit.
   agent-queue add --project game --slug t-one-b --priority urgent --tags tier1 "Fix the menu footer #pts/1" >/dev/null
   run trainee_why "$(agent-queue show t-one-b --json)" gotrain
-  assert_failure; assert_output 'gotrain holds 1 trainee rows, its max_open in lanes.yaml'
+  assert_failure; assert_output 'gotrain holds 1 ladder rows, its max_open in lanes.yaml'
   # A rejected row redone on claude holds no trainee slot, though its trainee: stays.
   "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one --why 'redo on claude' >/dev/null
   agent-queue move t-one running >/dev/null
@@ -908,7 +908,7 @@ trainee_ready() {
   agent-queue add --project game --slug t-pin --agent gotrain --priority urgent --tags tier1 "Fix the menu title #pts/1" >/dev/null
   agent-queue set t-pin model=glm >/dev/null
   TRAINEE_LANE='' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial "queue item t-pin has no source with room it may run on: gotrain: runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:) or a trainee row, and lanes.yaml has no trainee: lane (model-lane trainee)"
+  assert_output --partial "queue item t-pin has no source with room it may run on: gotrain: runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), a class promoted for it or a trainee row, and lanes.yaml has no trainee: lane (model-lane trainee)"
   [ -n "$(qitem queued t-pin)" ] || fail "the pinned row left the queue with no trainee lane"
   assert_not_called 'opencode run'
   # A harness the lane does not name is no trainee either.
@@ -921,6 +921,50 @@ trainee_ready() {
   assert_output --partial 'started queue item t-pin on gotrain (glm), the harness it is pinned to'
   assert_equal "$(qfield "$(qitem running t-pin)" trainee)" gotrain:glm
   assert_called 'fleet-dispatch trainee-review t-pin'
+}
+
+@test "direct: a pair model-lane promoted for the class runs a tier-1 row of any #pts in its sandbox and lands it, logged under lane trainee; the trainee offer leaves it out" {
+  trainee_ready
+  export LANE=opus
+  # Room for two ladder rows on gotrain, so the direct run and a trainee run sit side by side.
+  export TRAINEE_LANE="${TRAINEE_LANE/\"max_open\":1/\"max_open\":2}"
+  # Negative control: unpromoted, a three-point row is past the trainee lane and no fit the sandbox takes.
+  agent-queue add --project game --slug d-big --priority urgent --tags tier1 "Fix the menu layout #pts/3" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item d-big on codex (sol), routed by model-lane'
+  assert_not_called 'opencode run'
+  # Promoted: the same kind of row runs direct on the pair, stamped direct: and not trainee:.
+  export LANE_PROMOTED=gotrain:glm
+  agent-queue add --project game --slug d-two --priority urgent --tags tier1 "Fix the menu border #pts/3" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item d-two on gotrain (glm), a direct run (model-lane promoted it for the class) it lands on CI with no review'
+  f=$(qitem running d-two)
+  assert_equal "$(qfield "$f" direct)" gotrain:glm
+  assert_equal "$(qfield "$f" trainee)" ''
+  assert_called 'srt --settings'
+  assert_called 'fleet-dispatch direct-land d-two'
+  assert_not_called 'fleet-dispatch trainee-review d-two'
+  assert_called '--lane trainee --by rule'
+  # A one-point row is a trainee row, and the offer leaves the promoted pair out: kimi trains on it.
+  agent-queue add --project game --slug d-one --priority urgent --tags tier1 "Fix the menu footer #pts/1" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item d-one on gotrain (kimi), a trainee run'
+  assert_equal "$(qfield "$(qitem running d-one)" trainee)" gotrain:kimi
+  # Tier 2, a row a ladder run took before, and a lane promotion (not a trainee one) are no direct rows.
+  agent-queue add --project game --slug d-tier2 --priority low --tags tier2 "Fix the save layout #pts/3" >/dev/null
+  HARNESSES=$DISPATCH_HARNESSES
+  run direct_why "$(agent-queue show d-tier2 --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output 'it is tier 2, and a direct run takes tier 1 only'
+  run direct_why "$(agent-queue show d-two --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
+  run direct_why "$(agent-queue show d-tier2 --json)" gotrain glm '{"promoted":["gotrain:glm"],"direct":[]}'
+  assert_failure; assert_output 'model-lane promoted gotrain:glm for no class of this item'
+  # A harness at max_open, counting its direct rows, takes no more.
+  agent-queue add --project game --slug d-three --priority low --tags tier1 "Fix the save border #pts/3" >/dev/null
+  run direct_why "$(agent-queue show d-three --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output 'gotrain holds 2 ladder rows, its max_open in lanes.yaml'
+  run trainee_why "$(agent-queue show d-two --json)" gotrain
+  assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
 }
 
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {

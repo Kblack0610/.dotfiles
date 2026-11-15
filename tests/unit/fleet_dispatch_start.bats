@@ -743,7 +743,7 @@ load 'fleet_dispatch/common'
   harness_sandboxed glm
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure 2
-  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:) or a trainee row, and it carries no #pts/N (fix-menu)'
+  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), a class promoted for it or a trainee row, and it carries no #pts/N (fix-menu)'
   # A canary tag without its task id is refused too: the score step would have nothing to score.
   agent-queue set fix-menu tags=canary >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
@@ -820,7 +820,7 @@ trainee_start_ready() {
   assert_equal "$(qfield "$f" trainee)" glm:glm
   [ -z "$(agent-queue show review-t-empty --json 2>/dev/null)" ] || fail "a review item for no diff"
   run trainee_why "$(agent-queue show t-empty --json)"
-  assert_failure; assert_output 'a trainee ran it once already (glm:glm)'
+  assert_failure; assert_output 'a ladder run took it once already (glm:glm)'
   # A review that cannot be queued leaves the row running and the diff in the worktree as well as the patch.
   printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
   mkdir -p "$SANDBOX/aqfail"
@@ -871,6 +871,87 @@ trainee_start_ready() {
   # A row that is not running (here, the rejected one, back in the queue) is no run's tail.
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
+}
+
+@test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
+  trainee_start_ready
+  # Negative control: the verdict lists no direct pair, so the same start is a trainee run.
+  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":[]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness glm --model glm
+  assert_success
+  assert_equal "$(qfield "$(qitem running t-one)" trainee)" glm:glm
+  assert_called 'fleet-dispatch trainee-review t-one'
+  agent-queue add --project game --slug d-one --priority high --tags tier1 "Fix the menu border #pts/3" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":["glm:glm"]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item d-one --harness glm --model glm
+  assert_success
+  f=$(qitem running d-one)
+  assert_equal "$(qfield "$f" direct)" glm:glm
+  assert_equal "$(qfield "$f" trainee)" ''
+  line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
+  [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; }; rm -f "* ]] || fail "no direct landing after the sandboxed run: $line"
+  [[ "$line" != *"trainee-review"* ]] || fail "a direct run hands off to review: $line"
+  assert_called 'model-lane log --item d-one --task Fix the menu border #pts/3 --lane trainee --by rule --picked glm --ran glm --harness glm --class fix/s'
+}
+
+@test "direct-land: the diff is committed, pushed, opened as a PR and landed by agent-land; a failed run, no diff, a hook or CI path, or a failed landing sends the row back on claude, and a merged one stays" {
+  trainee_start_ready
+  for s in d-one d-empty d-rc d-hook d-fail d-merged; do
+    agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the menu for $s #pts/3" >/dev/null
+    agent-queue set "$s" agent=glm model=glm direct=glm:glm row=game:ar-9 >/dev/null; agent-queue move "$s" running >/dev/null
+  done
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+  git init -q --bare "$SANDBOX/origin.git"
+  m="$SANDBOX/main" && git init -q -b main "$m" && printf 'a\n' > "$m/menu.txt"
+  git -C "$m" add menu.txt && git -C "$m" commit -qm base && git -C "$m" remote add origin "$SANDBOX/origin.git" && git -C "$m" push -q origin main
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q -b game-d "$w" 2>/dev/null
+  base=$(git -C "$w" rev-parse HEAD)
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$1 $2" != "pr create" ] || echo https://github.com/o/game/pull/77; [ "$1 $2" != "pr view" ] || echo "${PR_STATE:-OPEN}"'
+  stub agent-land 'echo "agent-land $*" >> "$NOTES_FIXTURE/calls.log"; exit ${LAND_RC:-0}'
+  land() { run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") direct-land $1"; }
+  # No diff: the row goes back on claude, its direct: kept so no ladder run takes it again.
+  land d-empty
+  assert_success; assert_output --partial 'direct-land: d-empty is back in the queue, on claude: it left no diff'
+  it=$(agent-queue show d-empty --json)
+  assert_equal "$(jq -r '"\(.state) \(.agent) \(.direct)"' <<<"$it")" 'queued claude glm:glm'
+  assert_not_called 'gh pr create'
+  # A run that exited non-zero lands nothing, its diff dropped; nor does a diff on the repo's hooks or CI.
+  printf 'half\n' > "$w/menu.txt"
+  land "d-rc --rc 124"
+  assert_success; assert_output --partial 'direct-land: d-rc is back in the queue, on claude: the run exited 124'
+  assert_equal "$(git -C "$w" status --porcelain)" ''
+  mkdir -p "$w/.githooks" && printf 'exit 0\n' > "$w/.githooks/pre-commit"
+  land d-hook
+  assert_success; assert_output --partial 'its diff touches hook or CI paths (.githooks/pre-commit)'
+  assert_equal "$(git -C "$w" status --porcelain)" ''
+  assert_not_called 'gh pr create'
+  # A diff: committed on the worktree's branch, pushed, a PR with the item's lines, landed by agent-land.
+  printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
+  land d-one
+  assert_success; assert_output --partial 'direct-land: d-one landed as #77, by glm:glm with no review'
+  assert_equal "$(git -C "$SANDBOX/origin.git" log -1 --format=%s game-d)" 'Fix the menu for d-one'
+  assert_equal "$(git -C "$SANDBOX/origin.git" show game-d:title.txt)" new
+  assert_called 'gh pr create --head game-d --title Fix the menu for d-one --body'
+  assert_called 'Direct run: glm:glm'
+  assert_called 'Task: ar-9'
+  assert_called 'agent-land 77 --item d-one --ran-checks'
+  # A landing that fails: the PR is closed, the row goes back on claude, and the worktree is put back.
+  w="$SANDBOX/wt2" && git -C "$m" worktree add -q -b game-f "$w" 2>/dev/null; printf 'c\n' > "$w/menu.txt"
+  LAND_RC=1 land d-fail
+  assert_success; assert_output --partial 'direct-land: d-fail is back in the queue, on claude: agent-land #77 failed'
+  assert_called 'gh pr close 77 --delete-branch'
+  assert_equal "$(jq -r '"\(.state) \(.agent)"' <<<"$(agent-queue show d-fail --json)")" 'queued claude'
+  assert_equal "$(git -C "$w" rev-parse HEAD)" "$base"
+  assert_equal "$(git -C "$w" status --porcelain)" ''
+  # agent-land that failed after its merge: the work is in, so the PR stays and the row is not redone.
+  w="$SANDBOX/wt3" && git -C "$m" worktree add -q -b game-m "$w" 2>/dev/null; printf 'm\n' > "$w/menu.txt"
+  LAND_RC=1 PR_STATE=MERGED land d-merged
+  assert_failure 1; assert_output --partial 'direct-land: #77 merged, but agent-land failed after it; d-merged stays running'
+  assert_equal "$(jq -r .state <<<"$(agent-queue show d-merged --json)")" running
+  # A row no direct run took, and one not running, are no run's tail.
+  land t-one
+  assert_failure 2; assert_output --partial 'direct-land: no direct run took t-one'
+  land d-fail
+  assert_failure 2; assert_output --partial 'direct-land: d-fail is queued, not running'
 }
 
 @test "an opencode harness with no config_dir keeps ~/.config/opencode: no isolation env on its launch" {
