@@ -43,12 +43,23 @@ pub struct CostsView {
     /// The History section's year/month/day rows are open (the chart and the day's sessions
     /// always show).
     pub history_open: bool,
-    /// The chart day picked, as days back from the newest (`,` and `.` step it).
+    /// The chart day picked, as days back from the newest (`,` and `.` step it); only once `snap`.
     pub day_back: usize,
-    /// The session opened in the day's table, 1-based (`v` steps it, 0 opens none).
+    /// A chart day is picked; false is the live last 24h (the default when `fleet-cost.json` has
+    /// session rows).
+    pub snap: bool,
+    /// The spend table's cut, an index of `spend_history::GROUPS` (`g` steps it).
+    pub group: usize,
+    /// The group opened in the table (`V`), empty when none.
+    pub open_grp: String,
+    /// The row highlighted in the table, 1-based: a group while they show, else a session, which
+    /// opens its own days (`v` steps it, 0 highlights none).
     pub sess_at: usize,
-    /// Rows the day's table last drew, so `v` wraps at the last one.
+    /// Rows the table last drew, so `v` wraps at the last one, and the names of its groups.
     pub sess_n: std::cell::Cell<usize>,
+    pub grp_names: std::cell::RefCell<Vec<String>>,
+    /// The board last read had a live day, so the first `,` steps from it to the newest chart day.
+    pub live_seen: std::cell::Cell<bool>,
     /// One of the Sections columns, or empty for fleet-bench's order (the most gate hours first).
     pub ssort: String,
     pub sasc: bool,
@@ -84,8 +95,13 @@ impl Default for CostsView {
             sections_open: true,
             history_open: true,
             day_back: 0,
+            snap: false,
+            group: 0,
+            open_grp: String::new(),
             sess_at: 0,
             sess_n: std::cell::Cell::new(0),
+            grp_names: std::cell::RefCell::new(vec![]),
+            live_seen: std::cell::Cell::new(false),
             ssort: String::new(),
             sasc: false,
             tokens: TokensView::default(),
@@ -148,6 +164,9 @@ impl CostsView {
             && self.ssort.is_empty()
             && !self.sasc
             && self.day_back == 0
+            && !self.snap
+            && self.group == 0
+            && self.open_grp.is_empty()
             && self.sess_at == 0
     }
 
@@ -168,7 +187,16 @@ impl CostsView {
                 "q" => q.push(v.to_string()),
                 "ssort" => self.ssort = v.to_string(),
                 "sdir" => self.sasc = v == "asc",
-                "back" => self.day_back = v.parse().unwrap_or(0),
+                "back" => {
+                    self.day_back = v.parse().unwrap_or(0);
+                    self.snap = true;
+                }
+                "g" => {
+                    self.group = spend_history::GROUPS
+                        .iter()
+                        .position(|g| *g == v)
+                        .unwrap_or(0)
+                }
                 _ if word == "sections" => self.sections_open = true,
                 _ if word == "spend" => self.history_open = true,
                 _ if word == "tokens" => self.tokens.open = Some(true),
@@ -278,17 +306,48 @@ impl CostsView {
         if self.typing.is_some() {
             return None;
         }
-        // The picked day and the session opened in burn per session.
+        // The spend table: the picked day, its cut, the group opened and the row highlighted.
         match code {
             KeyCode::Char(',') => {
                 self.reveal("sessions");
-                self.day_back = (self.day_back + 1).min(spend_history::CHART_DAYS - 1);
+                if self.snap || !self.live_seen.get() {
+                    self.day_back = (self.day_back + 1).min(spend_history::CHART_DAYS - 1);
+                } else {
+                    // from the live day to the newest chart day
+                    self.snap = true;
+                    self.day_back = 0;
+                }
                 self.sess_at = 0;
                 return Some(Some("sessions"));
             }
             KeyCode::Char('.') => {
                 self.reveal("sessions");
-                self.day_back = self.day_back.saturating_sub(1);
+                if self.day_back == 0 {
+                    // from the newest chart day back to the live one
+                    self.snap = false;
+                } else {
+                    self.day_back -= 1;
+                }
+                self.sess_at = 0;
+                return Some(Some("sessions"));
+            }
+            // `g` still scrolls to the top on the other inner tabs.
+            KeyCode::Char('g') if self.inner == "spend" => {
+                self.group = (self.group + 1) % spend_history::GROUPS.len();
+                self.open_grp.clear();
+                self.sess_at = 0;
+                return Some(Some("sessions"));
+            }
+            KeyCode::Char('V') => {
+                if self.reveal("sessions") {
+                    return Some(Some("sessions"));
+                }
+                // The total row (nothing highlighted) closes the open group; a group row opens it.
+                let name = self
+                    .sess_at
+                    .checked_sub(1)
+                    .and_then(|i| self.grp_names.borrow().get(i).cloned());
+                self.open_grp = name.unwrap_or_default();
                 self.sess_at = 0;
                 return Some(Some("sessions"));
             }
@@ -338,8 +397,17 @@ impl CostsView {
         }
     }
 
-    /// The chart day `,` and `.` picked: `day_back` days before the newest.
+    /// Whether a live last-24h day with session rows exists: the one `day_view` shows by default.
+    fn has_live(c: &Costs) -> bool {
+        c.live.as_ref().is_some_and(|d| !d.sessions.is_empty())
+    }
+
+    /// The chart day `,` and `.` picked: `day_back` days before the newest. Empty is the live last
+    /// 24h while there is one and no day is picked (`day_view` reads empty that way).
     fn picked<'a>(&self, c: &'a Costs) -> &'a str {
+        if Self::has_live(c) && !self.snap {
+            return "";
+        }
         let chart = &c.history.chart;
         chart
             .len()
@@ -351,14 +419,19 @@ impl CostsView {
     pub fn board(&self, c: &Costs) -> Board {
         let dir = if self.asc { "asc" } else { "desc" };
         let sdir = if self.sasc { "asc" } else { "desc" };
+        self.live_seen.set(Self::has_live(c));
         let day = self.picked(c);
-        // The opened session is the `sess_at`th row of the day's own table.
+        let group = spend_history::GROUPS[self.group % spend_history::GROUPS.len()];
+        // The highlighted session is the `sess_at`th row of the day's own table; while the groups
+        // show, `sess_at` highlights a group instead, so no session is opened.
         let sid = self.sess_at.checked_sub(1).and_then(|i| {
             let pick = spend_history::Pick {
                 day,
+                group,
+                in_group: &self.open_grp,
                 ..Default::default()
             };
-            spend_history::day_view(&c.spend_days, &pick)
+            spend_history::day_view(&c.spend_days, c.live.as_ref(), &pick)
                 .rows
                 .get(i)
                 .map(|r| r.sid.clone())
@@ -366,6 +439,8 @@ impl CostsView {
         let pick = spend_history::Pick {
             day,
             sid: sid.as_deref().unwrap_or(""),
+            group,
+            in_group: &self.open_grp,
             ..Default::default()
         };
         costs::board(
@@ -405,11 +480,18 @@ impl CostsView {
                     let open = consumers_open(self.consumers);
                     out.extend(consumers(&b.consumers, open, p, w))
                 }
-                "sessions" if b.history.why.is_none() => {
-                    out.extend(day_table(&b.day, self.sess_at, p, w));
-                    self.sess_n.set(b.day.rows.len().min(SESS_ROWS));
+                "sessions" => {
+                    out.extend(day_table(&b.day, &b.fleet_cost, self.sess_at, p, w));
+                    // `v` steps the groups while they show, else the sessions.
+                    let rows = if b.day.table.is_some() {
+                        b.day.rows.len().min(SESS_ROWS)
+                    } else {
+                        b.day.groups.len()
+                    };
+                    self.sess_n.set(rows);
+                    *self.grp_names.borrow_mut() =
+                        b.day.groups.iter().map(|g| g.name.clone()).collect();
                 }
-                "fleet" => out.extend(fleet(&b.fleet_cost, p, w)),
                 "spend" => {
                     out.extend(history(&b.history, self.history_open, p, w));
                     if b.history.why.is_none() {
@@ -1073,12 +1155,35 @@ fn spend_chart(bars: &[Bar], sel: &str, p: Palette, w: usize) -> Vec<Line<'stati
     out
 }
 
-/// The picked day's sessions, costliest first, and the opened one's own days as a one-line chart.
-fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>> {
+/// A share as a whole percent; one that rounds to 0 but is not 0 reads "<1%", so a priced row never looks free.
+fn pct_text(v: f64) -> String {
+    if v > 0.0 && v <= 0.5 {
+        "<1%".into()
+    } else {
+        format!("{v:.0}%")
+    }
+}
+
+/// A row of the group table: the day's total, a group, or the opened group.
+fn tot_cells(t: &spend_history::Tot, style: Style) -> Vec<Cell> {
+    vec![
+        cell(t.name.clone(), style),
+        cell(t.sessions.to_string(), style),
+        cell(dollars(t.cost), style),
+        cell(pct_text(t.share), style),
+        cell(dollars(t.per_session), style),
+        cell(pct_text(t.est), style),
+    ]
+}
+
+/// The spend table of the day shown (the live last 24h until a chart day is picked): the day's
+/// total row on top, then its groups, or its sessions under the opened group's row. `at`
+/// highlights a row. The coverage words and the foot are the fleet figure's (`f`).
+fn day_table(d: &DayView, f: &FleetCost, at: usize, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![];
     if let Some(why) = &d.why {
         out.push(clip_line(
-            Line::styled(format!("  BURN PER SESSION  {why}"), p.dim()),
+            Line::styled(format!("  SPEND TABLE  {why}"), p.dim()),
             w,
         ));
         out.push(Line::raw(""));
@@ -1086,48 +1191,112 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     }
     out.push(clip_line(
         Line::from(vec![
-            Span::styled("  BURN PER SESSION  ", p.head()),
+            Span::styled("  SPEND TABLE  ", p.head()),
             Span::raw(d.head.clone()),
         ]),
         w,
     ));
-    let rows = d
-        .rows
+    let cuts: Vec<Span> = d
+        .cuts
         .iter()
-        .take(SESS_ROWS)
-        .enumerate()
-        .map(|(i, r)| {
-            let style = if i + 1 == at { p.sel() } else { Style::new() };
-            let opt = |s: &Option<String>| s.clone().unwrap_or_default();
-            vec![
-                cell(r.session.clone(), style),
-                cell(opt(&r.project), style),
-                cell(opt(&r.origin), style),
-                cell(dollars(r.cost), style),
-                cell(format!("{:.0}%", r.share), style),
-                cell(format!("{:.0}%", r.est), style),
-                cell(r.days.to_string(), style),
-            ]
+        .flat_map(|c| {
+            let style = if *c == d.group { p.sel() } else { p.dim() };
+            [Span::styled(c.to_string(), style), Span::raw(" ")]
         })
         .collect();
-    out.extend(
+    let mut keys = vec![Span::styled("  group ", p.dim())];
+    keys.extend(cuts);
+    keys.push(Span::styled(
+        " g cuts, , . day, v row, V opens a group",
+        p.dim(),
+    ));
+    out.push(clip_line(Line::from(keys), w));
+    let tot_head = vec!["name", "sess", "cost", "of day", "$/sess", "est."];
+    let tot_table = |rows: Vec<Vec<Cell>>| {
         Table {
-            header: vec![
-                "session", "project", "origin", "cost", "of day", "est.", "days",
-            ],
+            header: tot_head.clone(),
             rows,
-            keep: vec![0, 3, 4, 1, 2, 5, 6],
-            right: vec![3, 4, 5, 6],
+            keep: vec![0, 2, 3, 1, 4, 5],
+            right: vec![1, 2, 3, 4, 5],
             ..Default::default()
         }
-        .fit(w, p.head()),
-    );
-    let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
-    if past > 0 {
-        out.push(Line::styled(
-            format!("+{past} more sessions; the web table (#costs/spend) shows up to 50"),
-            p.dim(),
+        .fit(w, p.head())
+    };
+    let total = d.total.as_ref().map(|t| tot_cells(t, Style::new()));
+    if d.table.is_none() {
+        let mut rows: Vec<Vec<Cell>> = total.into_iter().collect();
+        rows.extend(
+            d.groups
+                .iter()
+                .enumerate()
+                .map(|(i, g)| tot_cells(g, if i + 1 == at { p.sel() } else { Style::new() })),
+        );
+        out.extend(tot_table(rows));
+    } else {
+        // the total row stays on top of the sessions, with the opened group's row under it
+        let mut rows: Vec<Vec<Cell>> = total.into_iter().collect();
+        rows.extend(d.open.iter().map(|o| tot_cells(o, p.sel())));
+        out.extend(tot_table(rows));
+        let rows = d
+            .rows
+            .iter()
+            .take(SESS_ROWS)
+            .enumerate()
+            .map(|(i, r)| {
+                let style = if i + 1 == at { p.sel() } else { Style::new() };
+                let opt = |s: &Option<String>| s.clone().unwrap_or_default();
+                vec![
+                    cell(r.session.clone(), style),
+                    cell(r.who.clone(), style),
+                    cell(opt(&r.project), style),
+                    cell(opt(&r.harness), style),
+                    cell(dollars(r.cost), style),
+                    cell(pct_text(r.share), style),
+                    cell(pct_text(r.est), style),
+                    cell(r.days.to_string(), style),
+                ]
+            })
+            .collect();
+        out.extend(
+            Table {
+                header: vec![
+                    "session", "who", "project", "harness", "cost", "of day", "est.", "days",
+                ],
+                rows,
+                keep: vec![0, 4, 5, 1, 2, 3, 6, 7],
+                right: vec![4, 5, 6, 7],
+                ..Default::default()
+            }
+            .fit(w, p.head()),
+        );
+        let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
+        if past > 0 {
+            out.push(Line::styled(
+                format!("+{past} more sessions; the web table (#costs/spend) shows up to 50"),
+                p.dim(),
+            ));
+        }
+    }
+    if !d.outside.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("  {}", d.outside), p.dim()),
+            w,
         ));
+    }
+    if f.why.is_none() {
+        if d.live {
+            out.push(clip_line(Line::styled(f.coverage.clone(), p.dim()), w));
+            for u in &f.unpriced {
+                let words: Vec<&str> = u.split(' ').collect();
+                for l in wrap(&words, " ", w.saturating_sub(2)) {
+                    out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
+                }
+            }
+        }
+        let foot: Vec<&str> = f.foot.split(' ').collect();
+        for l in wrap(&foot, " ", w) {
+            out.push(clip_line(Line::styled(l, p.dim()), w));
+        }
     }
     if let Some(s) = &d.series {
         let max = s
@@ -1182,51 +1351,6 @@ fn fleet_head(f: &FleetCost, p: Palette, now: i64) -> Line<'static> {
         ),
         Span::styled(age, style),
     ])
-}
-
-/// Who spent the 24h fleet figure: `hub_core::fleet_cost` builds every row and word, this draws
-/// them. The figure itself heads Spend's totals (`fleet_head`).
-fn fleet(f: &FleetCost, p: Palette, w: usize) -> Vec<Line<'static>> {
-    if f.why.is_some() {
-        return vec![];
-    }
-    let mut out = vec![
-        clip_line(
-            Line::styled(
-                format!("WHO SPENT THE 24H  {} rows", f.rows.len()),
-                p.head(),
-            ),
-            w,
-        ),
-        clip_line(Line::styled(f.coverage.clone(), p.dim()), w),
-    ];
-    for r in &f.rows {
-        out.push(clip_line(
-            Line::from(vec![
-                Span::raw(format!("  {:<19} {:>7} {:>4}  ", r.name, r.cost, r.share)),
-                Span::styled(r.basis.clone(), p.dim()),
-            ]),
-            w,
-        ));
-        if let Some(d) = &r.detail {
-            let items: Vec<&str> = d.split(", ").collect();
-            for l in wrap(&items, ", ", w.saturating_sub(4)) {
-                out.push(clip_line(Line::styled(format!("    {l}"), p.dim()), w));
-            }
-        }
-    }
-    for u in &f.unpriced {
-        let words: Vec<&str> = u.split(' ').collect();
-        for l in wrap(&words, " ", w.saturating_sub(2)) {
-            out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
-        }
-    }
-    let foot: Vec<&str> = f.foot.split(' ').collect();
-    for l in wrap(&foot, " ", w) {
-        out.push(clip_line(Line::styled(l, p.dim()), w));
-    }
-    out.push(Line::raw(""));
-    out
 }
 
 /// This month's cash by bill: `hub_core::budget` builds every row and word, this draws them.
@@ -1604,35 +1728,16 @@ mod tests {
     }
 
     fn fleet_block() -> FleetCost {
-        let row = |name: &str, cost: &str, share: &str, basis: &str, detail: Option<&str>| {
-            hub_core::fleet_cost::Row {
-                name: name.into(),
-                usd: Some(1.0),
-                cost: cost.into(),
-                share: share.into(),
-                basis: basis.into(),
-                detail: detail.map(str::to_string),
-            }
-        };
         FleetCost {
             usd: "about $849".into(),
             measured: "$310".into(),
             estimated: "$538".into(),
             as_of: Some(1_000_000),
             coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry".into(),
-            rows: vec![
-                row("queue items", "$260", "31%", "30 sessions, $214 measured, $46 estimated", None),
-                row("shepherd", "$44", "5%", "61 sessions, measured", None),
-                row("dream", "$20", "2%", "22 sweeps, measured", None),
-                row(
-                    "other runners",
-                    "$30",
-                    "4%",
-                    "139 sessions, $12 measured, $18 estimated",
-                    Some("ask-judge $6.40, knowledge-engine $4.10, dispatch-judge $3.20, briefing $2.90, sentinel-diagnose $2.10, inbox-triage $1.80, $9.50 with no runner name"),
-                ),
+            unpriced: vec![
+                "claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"
+                    .into(),
             ],
-            unpriced: vec!["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions".into()],
             foot: hub_core::fleet_cost::FOOT,
             ..FleetCost::default()
         }
@@ -1676,7 +1781,111 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_is_the_first_line_spend_opens_on_the_fleet_figure_and_arrows_switch() {
+    fn a_priced_share_that_rounds_to_nothing_reads_under_one_percent() {
+        assert_eq!(
+            [pct_text(0.0), pct_text(0.2), pct_text(0.5), pct_text(0.6)],
+            ["0%", "<1%", "<1%", "1%"]
+        );
+    }
+
+    #[test]
+    fn the_spend_table_opens_on_the_live_day_by_who_and_g_v_and_the_day_keys_drive_it() {
+        use hub_core::spend_history::{build, Day, Sess};
+        let sess = |sid: &str, usd: f64, origin: &str, project: &str| Sess {
+            sid: sid.into(),
+            usd,
+            measured: usd,
+            origin: Some(origin.into()),
+            project: Some(project.into()),
+            title: Some(format!("title {sid}")),
+            ..Sess::default()
+        };
+        let snap = Day {
+            date: "2026-11-09".into(),
+            usd: 10.0,
+            sessions: vec![sess("old", 10.0, "queue", "dotfiles")].into(),
+            ..Day::default()
+        };
+        let live = Day {
+            date: "24h".into(),
+            usd: 100.0,
+            sessions: vec![
+                sess("a", 60.0, "queue", "dotfiles"),
+                sess("b", 30.0, "shepherd", "dotfiles"),
+                sess("c", 10.0, "queue", "bnb"),
+            ]
+            .into(),
+            ..Day::default()
+        };
+        let c = Costs {
+            live: Some(live),
+            history: build(std::slice::from_ref(&snap), "2026-11-10"),
+            spend_days: vec![snap],
+            ..burning()
+        };
+        let mut v = on("spend");
+        let page = |v: &CostsView| screen_of(&c, v, 80);
+        let rows_after = |s: &str, head: &str| -> Vec<String> {
+            s.lines()
+                .skip_while(|l| !l.contains(head))
+                .skip(3)
+                .take(3)
+                .map(|l| l.split_whitespace().next().unwrap_or("").to_string())
+                .collect()
+        };
+        let s = page(&v);
+        assert!(
+            s.contains("SPEND TABLE  last 24h: 3 sessions"),
+            "the live last 24h is the default: {s}"
+        );
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+        assert_eq!(
+            rows_after(&s, "SPEND TABLE"),
+            ["total", "queue", "shepherd"],
+            "the total row leads, groups ranked by cost: {s}"
+        );
+        // g cuts by project (the cut steps on each press).
+        v.fold(KeyCode::Char('g'), None, None);
+        let s = page(&v);
+        assert_eq!(
+            rows_after(&s, "SPEND TABLE"),
+            ["total", "dotfiles", "bnb"],
+            "{s}"
+        );
+        // v highlights a group row and V opens it: its sessions under the group's own total.
+        v.fold(KeyCode::Char('v'), None, None);
+        v.fold(KeyCode::Char('V'), None, None);
+        let s = page(&v);
+        assert!(
+            s.contains("title a") && s.contains("title b") && !s.contains("title c"),
+            "the opened group lists its sessions only: {s}"
+        );
+        // V with nothing highlighted is the total row: back to the groups.
+        v.fold(KeyCode::Char('V'), None, None);
+        let s = page(&v);
+        assert!(!s.contains("title a"), "{s}");
+        // the sessions cut keeps the total row above the sessions
+        v.group = 4;
+        let s = page(&v);
+        let at = |n: &str| s.find(n).unwrap_or_else(|| panic!("{n} missing\n{s}"));
+        assert!(at("total") < at("title a"), "{s}");
+        v.group = 1;
+        // on another inner tab `g` is left to the page (scroll to the top)
+        let mut other = on("limits");
+        assert_eq!(other.fold(KeyCode::Char('g'), None, None), None);
+        assert_eq!(other.inner, "limits");
+        // , leaves the live day for the newest snapshot, and . returns.
+        v.fold(KeyCode::Char(','), None, None);
+        let s = page(&v);
+        assert!(s.contains("SPEND TABLE  2026-11-09: 1 sessions"), "{s}");
+        v.fold(KeyCode::Char('.'), None, None);
+        let s = page(&v);
+        assert!(s.contains("SPEND TABLE  last 24h: 3 sessions"), "{s}");
+    }
+
+    #[test]
+    fn the_strip_is_the_first_line_spend_opens_on_the_fleet_figure_and_the_spend_table_and_arrows_switch(
+    ) {
         let mut v = CostsView::default();
         let spend = screen_of(&burning(), &v, 80);
         let lines: Vec<&str> = spend.lines().collect();
@@ -1685,21 +1894,17 @@ mod tests {
             "the strip is the first line, Spend first: {spend}"
         );
         let at = |head: &str| lines.iter().position(|l| l.trim_start().starts_with(head));
-        let (fleet, sess, who) = (
-            at("FLEET 24H").unwrap(),
-            at("BURN PER SESSION").unwrap(),
-            at("WHO SPENT THE 24H").unwrap(),
-        );
+        let (fleet, table) = (at("FLEET 24H").unwrap(), at("SPEND TABLE").unwrap());
         assert!(
-            fleet == 1 && fleet < who && who < sess,
-            "the fleet figure heads Spend, who spent it next, burn per session last: {spend}"
+            fleet == 1 && fleet < table,
+            "the fleet figure heads Spend, the one spend table next: {spend}"
         );
         assert!(spend.contains("window:") && !spend.contains("WHERE THE TOKENS GO"));
         assert!(v.key(KeyCode::Right));
         assert_eq!(v.inner, "limits");
         let limits = screen_of(&burning(), &v, 80);
         assert!(
-            !limits.contains("FLEET 24H") && !limits.contains("WHO SPENT"),
+            !limits.contains("FLEET 24H") && !limits.contains("SPEND TABLE"),
             "no fleet figure on Limits: {limits}"
         );
         assert!(limits.contains("BURN"));
@@ -1945,7 +2150,7 @@ mod tests {
     }
 
     #[test]
-    fn spend_charts_the_days_and_ranks_the_picked_days_sessions_within_80_columns() {
+    fn spend_charts_the_days_and_ranks_the_picked_days_sessions_by_session_within_80_columns() {
         use hub_core::spend_history::{build, Day, Sess};
         let sess = |sid: &str, usd: f64, title: &str| Sess {
             sid: sid.into(),
@@ -1984,6 +2189,7 @@ mod tests {
                 .join("\n")
         };
         let mut v = on("spend");
+        v.group = 4;
         let s = page(&v);
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         assert!(s.contains("$/DAY, LAST 30 DAYS"), "{s}");
@@ -2017,15 +2223,12 @@ mod tests {
         let s = page(&v);
         assert!(s.contains("2026-11-08: no figure"), "{s}");
         assert!(
-            s.contains("BURN PER SESSION  2026-11-08: no session rows"),
+            s.contains("SPEND TABLE  2026-11-08: no session rows"),
             "the picked day stays picked, and says it has no rows: {s}"
         );
         v.fold(KeyCode::Char(','), None, None);
         let s = page(&v);
-        assert!(
-            s.contains("BURN PER SESSION  2026-11-07: 2 sessions"),
-            "{s}"
-        );
+        assert!(s.contains("SPEND TABLE  2026-11-07: 2 sessions"), "{s}");
         v.fold(KeyCode::Char('v'), None, None);
         v.fold(KeyCode::Char('v'), None, None);
         let s = page(&v);
@@ -2062,19 +2265,6 @@ mod tests {
         );
         let s = format!("{spend}\n{limits}");
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
-        assert!(
-            s.contains("  shepherd                $44   5%  61 sessions, measured\n"),
-            "{s}"
-        );
-        assert!(
-            s.contains("  dream                   $20   2%  22 sweeps, measured\n"),
-            "{s}"
-        );
-        assert!(
-            s.contains("sentinel-diagnose $2.10"),
-            "every runner is reachable: {s}"
-        );
-        assert!(s.contains("estimated\" is priced from tokens"), "{s}");
         let burn = s.lines().find(|l| l.starts_with("BURN")).unwrap();
         assert!(
             burn.starts_with("BURN  4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live"),
@@ -2170,9 +2360,6 @@ mod tests {
             (Some(true), ""),
             "a section is no query"
         );
-        // The fleet figure is a Costs section too: no query, and it opens Spend.
-        v.open("fleet");
-        assert_eq!((v.q.as_str(), v.inner), ("", "spend"), "fleet is no query");
         // Each inner tab's sections: together every Costs section has its anchor, in the
         // layout's order.
         let mut names: Vec<&str> = vec![];
@@ -2202,7 +2389,7 @@ mod tests {
         );
         assert!(pages["totals"].starts_with("FLEET 24H"), "{pages:#?}");
         assert!(
-            pages["fleet"].starts_with("WHO SPENT THE 24H"),
+            pages["sessions"].trim_start().starts_with("SPEND TABLE"),
             "{pages:#?}"
         );
         assert!(pages["table"].starts_with("window:"), "{pages:#?}");

@@ -3,6 +3,7 @@
 //! writer). Rolled up here on read and never stored, so the hub TUI, `hub --once` and agent-web
 //! show the same rows (dashboards rule 8). A day with no figure is missing, never $0.
 
+use crate::fleet_cost::dollars;
 use crate::table::{Row, Summary, Val, View};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -294,15 +295,61 @@ fn month_bars(days: &[Day]) -> Vec<Bar> {
         .collect()
 }
 
+/// The cuts of the spend table: who spent (the origin, runner or harness, in words), and the
+/// session rows' own project, harness and account; `sessions` is no cut, the plain list.
+pub const GROUPS: [&str; 5] = ["who", "project", "harness", "account", "sessions"];
+/// The live day's name: the fleet's last 24 hours, from `fleet-cost.json`, not a nightly snapshot.
+pub const LIVE: &str = "24h";
+
+/// Who spent a session, in words: a codex or opencode session is its harness, a runner is its
+/// name (`runner, ask-judge`, and `dream` for the nightly sweep), and every other origin is the
+/// way a Claude session started. A queue item's origin is free-form (`fleet-dispatch` also writes
+/// `resume`), so an origin not listed is one more way a queue item started.
+pub fn who(s: &Sess) -> String {
+    let harness = s.harness.as_deref().filter(|h| !h.is_empty());
+    if let Some(h) = harness.filter(|h| *h != "claude") {
+        return h.to_string();
+    }
+    match (s.origin.as_deref().unwrap_or(""), s.agent.as_deref()) {
+        ("runner", Some("dream")) => "dream".into(),
+        ("runner", Some(a)) if !a.is_empty() => format!("runner, {a}"),
+        ("runner", _) => "runner, unnamed".into(),
+        ("run", _) => "queue, dispatch run".into(),
+        ("hand", _) => "queue, hand-started".into(),
+        ("plan", _) => "queue, plan".into(),
+        ("queue", _) => "queue items".into(),
+        ("shepherd", _) => "shepherd".into(),
+        ("interactive", _) => "you, interactive".into(),
+        ("", _) => "unknown".into(),
+        (other, _) => format!("queue, {other}"),
+    }
+}
+
+/// A session's value under a cut (`GROUPS`); a row that has none reads `unknown`.
+fn cut(s: &Sess, group: &str) -> String {
+    let some = |v: &Option<String>| {
+        v.as_deref()
+            .filter(|v| !v.is_empty())
+            .unwrap_or("unknown")
+            .to_string()
+    };
+    match group {
+        "project" => some(&s.project),
+        "harness" => some(&s.harness),
+        "account" => some(&s.account),
+        _ => who(s),
+    }
+}
+
 /// One session's row in a day's table.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SessRow {
     pub sid: String,
     /// What the session was: its title, else its queue item, else its agent.
     pub session: String,
+    /// Who spent it (`who`).
+    pub who: String,
     pub project: Option<String>,
-    pub origin: Option<String>,
-    pub agent: Option<String>,
     pub harness: Option<String>,
     pub cost: f64,
     /// Percent of the day's whole-fleet figure.
@@ -315,20 +362,19 @@ pub struct SessRow {
 
 impl Row for SessRow {
     const COLUMNS: &'static [&'static str] = &[
-        "session", "project", "origin", "agent", "harness", "cost", "share", "est", "days",
+        "session", "who", "project", "harness", "cost", "share", "est", "days",
     ];
     const STATES: &'static [&'static str] = &["all"];
     const FACETS: &'static [&'static str] = &[];
     const LEAD: &'static str = "session";
-    const GLANCE: &'static [&'static str] = &["cost", "share", "project"];
+    const GLANCE: &'static [&'static str] = &["cost", "share", "who"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &Option<String>| s.as_ref().map_or(Val::None, |s| Val::Text(s.clone()));
         match col {
             "session" => Val::Text(self.session.clone()),
+            "who" => Val::Text(self.who.clone()),
             "project" => text(&self.project),
-            "origin" => text(&self.origin),
-            "agent" => text(&self.agent),
             "harness" => text(&self.harness),
             "cost" => Val::Num(self.cost),
             "share" => Val::Num(self.share),
@@ -341,35 +387,99 @@ impl Row for SessRow {
         true
     }
     fn text(&self) -> String {
-        [
-            Some(&self.session),
-            Some(&self.sid),
-            self.project.as_ref(),
-            self.origin.as_ref(),
-            self.agent.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_lowercase()
+        [Some(&self.session), Some(&self.sid), Some(&self.who)]
+            .into_iter()
+            .flatten()
+            .chain(self.project.as_ref())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase()
     }
 }
 
-/// One day's sessions, and the opened session's own days.
+/// A set of a day's session rows added up: the day's total row, a group's row, the opened group.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Tot {
+    pub name: String,
+    pub sessions: usize,
+    pub cost: f64,
+    /// Percent of the day's whole-fleet figure.
+    pub share: f64,
+    /// Percent of the rows' dollars priced from tokens, not billed.
+    pub est: f64,
+    /// What one of these sessions cost: the dollars over the rows.
+    pub per_session: f64,
+}
+
+/// `part` as a percent of `whole`, 0 when there is no whole.
+fn pct(part: f64, whole: f64) -> f64 {
+    if whole > 0.0 {
+        part / whole * 100.0
+    } else {
+        0.0
+    }
+}
+
+/// The percent of `usd` priced from tokens rather than billed.
+fn est_pct(usd: f64, measured: f64) -> f64 {
+    if usd > 0.0 {
+        pct(usd - measured, usd).clamp(0.0, 100.0)
+    } else {
+        0.0
+    }
+}
+
+fn tot(name: &str, rows: &[&Sess], day_usd: f64) -> Tot {
+    let cost: f64 = rows.iter().map(|s| s.usd).sum();
+    let measured: f64 = rows.iter().map(|s| s.measured).sum();
+    Tot {
+        name: name.to_string(),
+        sessions: rows.len(),
+        cost,
+        share: pct(cost, day_usd),
+        est: est_pct(cost, measured),
+        per_session: if rows.is_empty() {
+            0.0
+        } else {
+            cost / rows.len() as f64
+        },
+    }
+}
+
+/// The spend table of one day: its total, its groups (or its sessions), the opened group and the
+/// opened session's own days.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DayView {
-    /// The day shown (`YYYY-MM-DD`); empty when no snapshot has session rows yet.
+    /// The day shown (`YYYY-MM-DD`, or `LIVE`); empty when no snapshot has session rows yet.
     pub day: String,
     pub head: String,
     pub why: Option<String>,
+    /// The cut shown (`GROUPS`).
+    pub group: String,
+    /// Every cut the table can regroup by, for the switch.
+    pub cuts: &'static [&'static str],
+    /// The day shown is the live last 24h, and whether there is one to go back to.
+    pub live: bool,
+    pub has_live: bool,
+    /// The opened group's value; empty when none is open.
+    pub in_group: String,
+    /// All of the day's session rows added up: the total row, on top of every view.
+    pub total: Option<Tot>,
+    /// The opened group's own row, beside the total.
+    pub open: Option<Tot>,
+    /// What the day spent outside any session row (helper calls, the gateway, and on a snapshot
+    /// the gap to the fleet figure); empty when there is none.
+    pub outside: String,
+    /// One row per group, costliest first; empty while a group is open or the cut is `sessions`.
+    pub groups: Vec<Tot>,
+    /// The sessions, when the cut is `sessions` or a group is open.
     pub rows: Vec<SessRow>,
     /// Rows past the `SESSION_ROWS` shown.
     pub more: usize,
-    /// What the day's rows add up to.
+    /// What the shown rows add up to.
     pub shown_usd: String,
-    /// The table's controls; None when there are no session rows to show.
+    /// The session table's controls; None while the groups are shown.
     pub table: Option<Summary>,
     /// The opened session (`sid`): one bar per chart day, a gap where it cost nothing.
     pub series: Option<Series>,
@@ -383,45 +493,148 @@ pub struct Series {
     pub bars: Vec<Bar>,
 }
 
-/// Which day's sessions to show, the table's own sort, and the session opened.
+/// Which day to show (`LIVE`, or empty for it), the cut and the group opened, the session table's
+/// own sort, and the session opened.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick<'a> {
     pub day: &'a str,
     pub sort: &'a str,
     pub dir: &'a str,
     pub sid: &'a str,
+    pub group: &'a str,
+    pub in_group: &'a str,
 }
 
-/// The table for `day` (the newest day with session rows when empty or unknown), under its own
-/// sort, with the session `sid` opened when it is set.
-pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
+/// The live day, from `fleet-cost.json`: the whole fleet's figure and its session rows.
+pub fn live(f: crate::fleet_cost::File) -> Day {
+    let (usd, estimated) = f.figure();
+    Day {
+        date: LIVE.into(),
+        usd: usd.max(0.0),
+        estimated,
+        sessions: Arc::new(f.by_session),
+    }
+}
+
+/// The spend table for `pick.day` (the live day when empty, else the newest snapshot with rows).
+pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
     let Pick {
         day,
         sort,
         dir,
         sid,
+        group,
+        in_group,
     } = *pick;
-    if !day.is_empty() && !all.iter().any(|d| d.date == day && !d.sessions.is_empty()) {
-        return DayView {
-            day: day.to_string(),
-            why: Some(format!(
-                "{day}: no session rows (no snapshot, or one from before they were kept)"
-            )),
-            ..DayView::default()
-        };
-    }
-    let Some(d) = all
+    let live = live.filter(|d| !d.sessions.is_empty());
+    let group = GROUPS
         .iter()
-        .rev()
-        .find(|d| !d.sessions.is_empty() && (day.is_empty() || d.date == day))
-    else {
-        return DayView {
-            why: Some(
-                "no snapshot keeps session rows yet (agent-usage fleet-cost by_session)".into(),
-            ),
-            ..DayView::default()
-        };
+        .find(|g| **g == group)
+        .copied()
+        .unwrap_or(GROUPS[0]);
+    // A day with nothing to show still carries the switches, so the way back stays on the page.
+    let none = |why: String| DayView {
+        day: day.to_string(),
+        why: Some(why),
+        group: group.to_string(),
+        cuts: &GROUPS,
+        has_live: live.is_some(),
+        ..DayView::default()
     };
+    let d =
+        if day == LIVE {
+            match live {
+                Some(d) => d,
+                None => {
+                    return none(
+                        "the last 24h: no session rows (agent-usage fleet-cost by_session)".into(),
+                    )
+                }
+            }
+        } else if day.is_empty() {
+            match live.or_else(|| all.iter().rev().find(|d| !d.sessions.is_empty())) {
+                Some(d) => d,
+                None => return DayView {
+                    why: Some(
+                        "no snapshot keeps session rows yet (agent-usage fleet-cost by_session)"
+                            .into(),
+                    ),
+                    ..DayView::default()
+                },
+            }
+        } else {
+            match all.iter().find(|d| d.date == day && !d.sessions.is_empty()) {
+                Some(d) => d,
+                None => {
+                    return none(format!(
+                        "{day}: no session rows (no snapshot, or one from before they were kept)"
+                    ))
+                }
+            }
+        };
+    let everyone: Vec<&Sess> = d.sessions.iter().collect();
+    let members: Vec<&Sess> = if group == "sessions" || in_group.is_empty() {
+        vec![]
+    } else {
+        everyone
+            .iter()
+            .filter(|s| cut(s, group) == in_group)
+            .copied()
+            .collect()
+    };
+    // A group no row is in (a stale link) is no group: the groups show.
+    let opened = !members.is_empty();
+    let label = if d.date == LIVE { "last 24h" } else { &d.date };
+    let sum: f64 = everyone.iter().map(|s| s.usd).sum();
+    let gap = d.usd - sum;
+    let outside = if gap >= 0.5 {
+        format!(
+            "+{} not in a session row{}",
+            dollars(gap),
+            if d.date == LIVE {
+                " (helper calls and the gateway)"
+            } else {
+                ""
+            }
+        )
+    } else {
+        String::new()
+    };
+    let mut groups: Vec<Tot> = vec![];
+    if group != "sessions" && !opened {
+        let mut by: HashMap<String, Vec<&Sess>> = HashMap::new();
+        for s in &everyone {
+            by.entry(cut(s, group)).or_default().push(s);
+        }
+        groups = by.iter().map(|(k, v)| tot(k, v, d.usd)).collect();
+        groups.sort_by(|a, b| b.cost.total_cmp(&a.cost).then_with(|| a.name.cmp(&b.name)));
+    }
+    let mut view = DayView {
+        day: d.date.clone(),
+        head: format!(
+            "{label}: {} sessions, {} of the day's {}",
+            d.sessions.len(),
+            dollars(sum),
+            dollars(d.usd)
+        ),
+        group: group.to_string(),
+        cuts: &GROUPS,
+        live: d.date == LIVE,
+        has_live: live.is_some(),
+        in_group: if opened {
+            in_group.to_string()
+        } else {
+            String::new()
+        },
+        total: Some(tot("total", &everyone, d.usd)),
+        open: opened.then(|| tot(in_group, &members, d.usd)),
+        outside,
+        groups,
+        ..DayView::default()
+    };
+    if group != "sessions" && !opened {
+        return view;
+    }
     // The chart's 30 days, which the opened session's bars cover too.
     let newest = all.last().map_or(d.date.as_str(), |x| x.date.as_str());
     let since = day_number(newest) - CHART_DAYS as i64;
@@ -431,38 +644,31 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
             *seen.entry(s.sid.as_str()).or_default() += 1;
         }
     }
+    let shown: &[&Sess] = if opened { &members } else { &everyone };
     // Costliest first under no sort, whatever order the file kept.
-    let mut all_rows: Vec<SessRow> = d
-        .sessions
+    let mut all_rows: Vec<SessRow> = shown
         .iter()
         .map(|s| SessRow {
             sid: s.sid.clone(),
             session: name(s),
+            who: who(s),
             project: s.project.clone(),
-            origin: s.origin.clone(),
-            agent: s.agent.clone(),
             harness: s.harness.clone(),
             cost: s.usd,
-            share: if d.usd > 0.0 {
-                s.usd / d.usd * 100.0
-            } else {
-                0.0
-            },
-            est: if s.usd > 0.0 {
-                ((s.usd - s.measured) / s.usd * 100.0).clamp(0.0, 100.0)
-            } else {
-                0.0
-            },
+            share: pct(s.usd, d.usd),
+            est: est_pct(s.usd, s.measured),
             days: seen.get(s.sid.as_str()).copied().unwrap_or(1),
         })
         .collect();
     all_rows.sort_by(|a, b| b.cost.total_cmp(&a.cost).then_with(|| a.sid.cmp(&b.sid)));
     let v = View::new::<SessRow>("", "", sort, dir);
     let (kept, table) = v.summary(&all_rows);
-    let shown: f64 = kept.iter().map(|r| r.cost).sum();
-    let more = kept.len().saturating_sub(SESSION_ROWS);
+    view.more = kept.len().saturating_sub(SESSION_ROWS);
+    view.shown_usd = dollars(kept.iter().map(|r| r.cost).sum());
+    view.rows = kept.into_iter().take(SESSION_ROWS).cloned().collect();
+    view.table = Some(table);
     // The opened session is named as the picked day's row names it, else as its newest day does.
-    let series = d
+    view.series = d
         .sessions
         .iter()
         .chain(all.iter().rev().flat_map(|x| x.sessions.iter()))
@@ -492,22 +698,7 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
                 bars,
             }
         });
-    DayView {
-        day: d.date.clone(),
-        head: format!(
-            "{}: {} sessions, {} of the day's {}",
-            d.date,
-            d.sessions.len(),
-            dollars(d.sessions.iter().map(|s| s.usd).sum()),
-            dollars(d.usd)
-        ),
-        why: None,
-        rows: kept.into_iter().take(SESSION_ROWS).cloned().collect(),
-        more,
-        shown_usd: dollars(shown),
-        table: Some(table),
-        series,
-    }
+    view
 }
 
 /// A session's name in the table: its title, else its queue item, else its agent, else its id.
@@ -684,10 +875,6 @@ fn day_number(date: &str) -> i64 {
                 .num_days()
         })
         .unwrap_or(0)
-}
-
-fn dollars(usd: f64) -> String {
-    crate::fleet_cost::dollars(usd)
 }
 
 #[cfg(test)]
@@ -895,8 +1082,51 @@ mod tests {
         assert_eq!(h.months[0].usd, Some(80.0), "the $0 day adds nothing");
     }
 
+    fn sess_of(sid: &str, usd: f64, origin: &str, project: &str) -> Sess {
+        Sess {
+            origin: Some(origin.into()),
+            ..sess(sid, usd, usd, project)
+        }
+    }
+
     #[test]
-    fn the_day_table_ranks_and_opens_a_sessions_own_days_and_rows_carry_a_session_day() {
+    fn who_names_every_origin_runner_and_harness_the_way_the_old_fleet_rows_did() {
+        let s = |origin: Option<&str>, harness: Option<&str>, agent: Option<&str>| {
+            who(&Sess {
+                origin: origin.map(Into::into),
+                harness: harness.map(Into::into),
+                agent: agent.map(Into::into),
+                ..Sess::default()
+            })
+        };
+        let claude = Some("claude");
+        assert_eq!(s(Some("queue"), claude, None), "queue items");
+        assert_eq!(s(Some("run"), claude, None), "queue, dispatch run");
+        assert_eq!(s(Some("hand"), claude, None), "queue, hand-started");
+        assert_eq!(s(Some("plan"), claude, None), "queue, plan");
+        assert_eq!(s(Some("shepherd"), claude, None), "shepherd");
+        assert_eq!(s(Some("interactive"), claude, None), "you, interactive");
+        assert_eq!(s(Some("resume"), claude, None), "queue, resume");
+        assert_eq!(s(Some("runner"), claude, Some("dream")), "dream");
+        assert_eq!(
+            s(Some("runner"), claude, Some("ask-judge")),
+            "runner, ask-judge"
+        );
+        assert_eq!(s(Some("runner"), None, None), "runner, unnamed");
+        assert_eq!(
+            s(None, None, None),
+            "unknown",
+            "an old snapshot row has no origin"
+        );
+        assert_eq!(
+            s(Some("interactive"), Some("codex"), None),
+            "codex",
+            "another harness is its own name, whatever started it"
+        );
+        assert_eq!(s(Some("hand"), Some("opencode"), Some("x")), "opencode");
+    }
+
+    fn spend_days() -> Vec<Day> {
         let mut a = day("2026-11-08", 40.0, 0.0);
         a.sessions = vec![sess("s1", 10.0, 10.0, "dotfiles")].into();
         let mut b = day("2026-11-09", 100.0, 0.0);
@@ -905,10 +1135,21 @@ mod tests {
             sess("s2", 70.0, 70.0, "playground"),
         ]
         .into();
-        let older = day("2026-11-07", 9.0, 0.0);
-        let all = [older, a, b];
-        let v = day_view(&all, &Pick::default());
-        assert_eq!(v.day, "2026-11-09", "no day picked: the newest with rows");
+        vec![day("2026-11-07", 9.0, 0.0), a, b]
+    }
+
+    #[test]
+    fn the_session_table_ranks_opens_a_sessions_own_days_and_rows_carry_a_session_day() {
+        let all = spend_days();
+        let by_sessions = Pick {
+            group: "sessions",
+            ..Pick::default()
+        };
+        let v = day_view(&all, None, &by_sessions);
+        assert_eq!(
+            v.day, "2026-11-09",
+            "no live day and none picked: the newest with rows"
+        );
         assert_eq!(
             v.rows.iter().map(|r| r.sid.as_str()).collect::<Vec<_>>(),
             ["s2", "s1"]
@@ -918,10 +1159,7 @@ mod tests {
             (20.0, 75.0, 2)
         );
         assert_eq!(v.head, "2026-11-09: 2 sessions, $90 of the day's $100");
-        assert!(
-            v.table.as_ref().unwrap().facets.is_empty(),
-            "no dropdowns over the table"
-        );
+        assert!(v.table.as_ref().unwrap().facets.is_empty(), "no dropdowns");
         // $/session: a day's session rows over their count, a month weighted by its rows, and a
         // day from before rows were kept is `-`, never $0.
         let h = build(&all, "2026-11-10");
@@ -942,31 +1180,33 @@ mod tests {
         );
         let back = day_view(
             &all,
+            None,
             &Pick {
                 day: "2026-11-08",
-                ..Pick::default()
+                ..by_sessions
             },
         );
         assert_eq!(back.rows.len(), 1);
         let none = day_view(
             &all,
+            None,
             &Pick {
                 day: "2026-11-07",
-                ..Pick::default()
+                ..by_sessions
             },
         );
         assert_eq!(none.day, "2026-11-07", "the picked day stays picked");
         assert!(none.rows.is_empty() && none.why.as_deref().unwrap().contains("no session rows"));
-        assert_eq!(
-            day_view(&all, &Pick::default()).rows[1].days,
-            2,
-            "days counts the chart's range"
+        assert!(
+            !none.cuts.is_empty() && none.group == "sessions",
+            "a day with no rows keeps the switches, so the way back stays on the page"
         );
         let s = day_view(
             &all,
+            None,
             &Pick {
                 sid: "s1",
-                ..Pick::default()
+                ..by_sessions
             },
         )
         .series
@@ -978,6 +1218,169 @@ mod tests {
             .filter_map(|b| b.usd.map(|u| (b.key.as_str(), u)))
             .collect();
         assert_eq!(got, [("2026-11-08", 10.0), ("2026-11-09", 20.0)]);
-        assert!(day_view(&[], &Pick::default()).why.is_some());
+        assert!(day_view(&[], None, &Pick::default()).why.is_some());
+    }
+
+    #[test]
+    fn the_table_opens_grouped_by_who_with_a_total_that_the_groups_add_up_to() {
+        let mut live = day(LIVE, 130.0, 20.0);
+        live.sessions = vec![
+            sess_of("a", 60.0, "queue", "dotfiles"),
+            sess_of("b", 30.0, "queue", "playground"),
+            Sess {
+                agent: Some("dream".into()),
+                ..sess_of("c", 10.0, "runner", "dotfiles")
+            },
+            Sess {
+                agent: Some("ask-judge".into()),
+                ..sess_of("d", 20.0, "runner", "dotfiles")
+            },
+        ]
+        .into();
+        let all = spend_days();
+        let v = day_view(&all, Some(&live), &Pick::default());
+        assert_eq!(v.day, LIVE, "the live day is the default pick");
+        assert_eq!(v.group, "who");
+        assert_eq!(v.head, "last 24h: 4 sessions, $120 of the day's $130");
+        let t = v.total.as_ref().unwrap();
+        assert_eq!((t.sessions, t.cost, t.per_session), (4, 120.0, 30.0));
+        assert!((t.share - 120.0 / 130.0 * 100.0).abs() < 1e-9);
+        assert_eq!(
+            v.groups
+                .iter()
+                .map(|g| (g.name.as_str(), g.cost))
+                .collect::<Vec<_>>(),
+            [
+                ("queue items", 90.0),
+                ("runner, ask-judge", 20.0),
+                ("dream", 10.0)
+            ],
+            "costliest first"
+        );
+        let sum: f64 = v.groups.iter().map(|g| g.cost).sum();
+        assert_eq!(sum, t.cost, "the groups add up to the total row");
+        assert_eq!(
+            v.outside, "+$10 not in a session row (helper calls and the gateway)",
+            "the fleet figure less its session rows"
+        );
+        assert!(
+            v.rows.is_empty() && v.table.is_none(),
+            "groups, not sessions"
+        );
+        // another cut: the same rows, regrouped, with the same total
+        let by = |group: &str| {
+            day_view(
+                &all,
+                Some(&live),
+                &Pick {
+                    group,
+                    ..Pick::default()
+                },
+            )
+        };
+        let p = by("project");
+        assert_eq!(
+            p.groups
+                .iter()
+                .map(|g| (g.name.as_str(), g.sessions))
+                .collect::<Vec<_>>(),
+            [("dotfiles", 3), ("playground", 1)]
+        );
+        assert_eq!(p.total, v.total);
+        let h = by("harness");
+        assert_eq!(
+            h.groups[0].name, "unknown",
+            "a row with no harness is unknown, not dropped"
+        );
+        assert_eq!(by("account").groups.len(), 1);
+        assert_eq!(by("nonsense").group, "who", "an unknown cut is the default");
+        // a group opened: its sessions, its own total, the day's total unchanged
+        let o = day_view(
+            &all,
+            Some(&live),
+            &Pick {
+                in_group: "queue items",
+                ..Pick::default()
+            },
+        );
+        assert_eq!(o.in_group, "queue items");
+        assert_eq!(
+            o.rows.iter().map(|r| r.sid.as_str()).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let g = o.open.as_ref().unwrap();
+        assert_eq!(
+            (g.name.as_str(), g.sessions, g.cost, g.per_session),
+            ("queue items", 2, 90.0, 45.0)
+        );
+        assert_eq!(o.total, v.total);
+        assert!(o.groups.is_empty() && o.table.is_some());
+        // a link to a group no row is in shows the groups again
+        let stale = day_view(
+            &all,
+            Some(&live),
+            &Pick {
+                in_group: "nobody",
+                ..Pick::default()
+            },
+        );
+        assert!(stale.in_group.is_empty() && !stale.groups.is_empty());
+        // a chart bar picks a snapshot day over the live one, and the live day is `24h`
+        let past = day_view(
+            &all,
+            Some(&live),
+            &Pick {
+                day: "2026-11-09",
+                ..Pick::default()
+            },
+        );
+        assert_eq!(past.day, "2026-11-09");
+        assert_eq!(past.outside, "+$10 not in a session row");
+        assert_eq!(
+            day_view(
+                &all,
+                Some(&live),
+                &Pick {
+                    day: LIVE,
+                    ..Pick::default()
+                }
+            )
+            .day,
+            LIVE
+        );
+        assert!(day_view(
+            &all,
+            None,
+            &Pick {
+                day: LIVE,
+                ..Pick::default()
+            }
+        )
+        .why
+        .is_some());
+    }
+
+    #[test]
+    fn a_live_file_with_no_session_rows_leaves_the_newest_snapshot_the_default() {
+        let all = spend_days();
+        let empty = day(LIVE, 50.0, 0.0);
+        assert_eq!(
+            day_view(&all, Some(&empty), &Pick::default()).day,
+            "2026-11-09"
+        );
+    }
+
+    #[test]
+    fn a_fleet_cost_file_becomes_the_live_day() {
+        let f: crate::fleet_cost::File = serde_json::from_value(serde_json::json!({
+            "total": {"usd": 50.0, "measured": 40.0, "estimated": 10.0},
+            "by_session": [{"sid": "x", "usd": 30.0, "measured": 30.0, "origin": "hand"}]
+        }))
+        .unwrap();
+        let d = live(f);
+        assert_eq!(
+            (d.date.as_str(), d.usd, d.estimated, d.sessions.len()),
+            (LIVE, 50.0, 10.0, 1)
+        );
     }
 }

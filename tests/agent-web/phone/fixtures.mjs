@@ -290,18 +290,11 @@ const costs = {
   fleet_cost: {
     why: null, usd: "about $859", measured: "$320", estimated: "$539", as_of: NOW - 600, stale: false,
     coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
-    rows: [
-      { name: "queue items", usd: 270, cost: "$270", share: "31%", basis: "102 sessions, $40 measured, $230 estimated", detail: null },
-      { name: "shepherd", usd: 44, cost: "$44", share: "5%", basis: "60 sessions, measured", detail: null },
-      { name: "other runners", usd: 30, cost: "$30", share: "4%", basis: "132 sessions, $13 measured, $17 estimated", detail: "ask-judge $6, knowledge-engine $4, dispatch-judge $3, a-runner-with-a-long-name $2, $15 with no runner name" },
-      { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "0 of 1 session, no price known", detail: null },
-    ],
     unpriced: ["claude-sonnet-4-6: 32M tokens in 1 session not in the total, no billed sessions"],
-    days: "11-05 $2,445  11-06 $1,750  11-07 $1,422  11-08 $775",
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
   },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
-  // hub_core::spend_history: the 30-day chart, and the picked day's sessions (Burn per session).
+  // hub_core::spend_history: the 30-day chart, and the picked day's sessions (the spend table).
   history: {
     why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-12 $1,312 vs 7d median $1,120 (+17%)", older: 0, missing: 1, stale: false,
     note: "est. is the share priced from tokens",
@@ -312,11 +305,12 @@ const costs = {
     }),
     months: [{ key: "2026-10", label: "10", usd: 34200, measured: 27000, estimated: 7200, tip: "2026-10: $34,200" }, { key: "2026-11", label: "11", usd: 14210, measured: 11200, estimated: 3010, tip: "2026-11: $14,210" }],
   },
+  // The spend table opens grouped by who, on the live day, with its total row on top.
   day: {
-    day: "2026-11-12", head: "2026-11-12: 6 sessions, $1,140 of the day's $1,312", why: null, more: 0, shown_usd: "$1,140",
-    rows: rows(6, (i) => ({ sid: `s${i}`, session: TEXT[i], project: pick(PROJECTS, i), origin: pick(["runner", "queue", "hand"], i), agent: i % 2 ? null : `agent-${i}`, harness: pick(["claude", "codex"], i), cost: 400 - i * 60, share: Math.round((400 - i * 60) / 13.12), est: i % 3 ? 0 : 30, days: 1 + i })),
-    table: table(6, ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"], ["all"], {}),
-    series: null,
+    day: "24h", head: "last 24h: 6 sessions, $1,140 of the day's $1,312", why: null, group: "who", cuts: ["who", "project", "harness", "account", "sessions"], live: true, has_live: true,
+    in_group: "", open: null, outside: "+$172 not in a session row (helper calls and the gateway)", more: 0, shown_usd: "$0.00", rows: [], table: null, series: null,
+    total: { name: "total", sessions: 6, cost: 1140, share: 87, est: 40, per_session: 190 },
+    groups: [{ name: "queue items", sessions: 3, cost: 760, share: 58, est: 50, per_session: 253 }, { name: "shepherd", sessions: 2, cost: 280, share: 21, est: 0, per_session: 140 }, { name: "dream", sessions: 1, cost: 100, share: 8, est: 30, per_session: 100 }],
   },
   sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "outcomes rows", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),

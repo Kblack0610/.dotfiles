@@ -16,7 +16,7 @@ const cost = tblTab({
   // section table's own (COST_TABLES).
   params: (p) => {
     const v = new URLSearchParams(st.views.costs || "");
-    for (const k of ["by", "w", "day", "sid"]) if (v.get(k)) p.set(k, v.get(k));
+    for (const k of ["by", "w", "day", "sid", "g", "gv"]) if (v.get(k)) p.set(k, v.get(k));
     for (const pre of Object.keys(COST_TABLES)) for (const [k, x] of tblParams(st.views.costs, pre)) p.set(k, x);
   },
   head: (t) => costsHead(t.data), lead: () => innerStrip("costs"),
@@ -112,20 +112,6 @@ function fleetTile(f) {
   return tile("FLEET 24H", esc(f.usd), "var(--c2)", `whole fleet, measured ${esc(f.measured)}, estimated ${esc(f.estimated)}, ${age}`);
 }
 
-// Who spent the fleet's 24h: hub_core::fleet_cost builds every row and word, the TUI's `fleet`
-// draws the same ones. Every percentage is of the whole-fleet total, which leads the tile row.
-function fleetCostSection(d) {
-  const f = d.fleet_cost;
-  if (!f || f.why) return "";
-  // Every column is on a phone's row too: "estimated" is never behind a tap.
-  const row = (r) => `<tr><td>${esc(r.name)}</td><td class="n">${esc(r.cost)}</td><td class="n">${esc(r.share)}</td><td class="muted">${esc(r.basis)}</td></tr>` +
-    (r.detail ? `<tr><td></td><td colspan="3" class="muted wrap">${esc(r.detail)}</td></tr>` : "");
-  return pfold("cost-fleet", secHead("fleet", "Who spent the 24h", f.rows.length), `<div class="panel scroll"><div class="muted">${esc(f.coverage)}</div>` +
-    `<table class="tbl"><tr><th data-role="lead">who</th><th class="n" data-role="glance">cost</th><th class="n" data-role="glance">% of fleet</th><th data-role="glance">measured or estimated</th></tr>${f.rows.map(row).join("")}</table>` +
-    f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") +
-    `<div class="muted">${esc(f.foot)}</div></div>`, true);
-}
-
 // The Budget inner tab (hub_core::budget, the TUI's coststab.rs `budget`): this month's cash, what
 // needs a look, the bills grouped (agents, CI, infra), then the split by project and lane. List price stays on Spend.
 function budgetSection(d) {
@@ -152,10 +138,10 @@ function budgetSection(d) {
 
 // The Spend section (hub_core::spend_history, the TUI's coststab.rs `history`, `spend_chart` and
 // `day_table`): the fleet's $/day over 30 calendar days (billed and estimated stacked, a day with
-// no figure an empty column), its months, then the year/month/day rows (folded); the picked day's
-// sessions are Burn per session, at the end of Spend. Open unless the reader folds it.
+// no figure an empty column), its months, then the year/month/day rows (folded). The one spend
+// table, above it, is the day the chart picks. Open unless the reader folds it.
 const SESS_COLS = {
-  session: ["session"], project: ["project"], origin: ["origin"], agent: ["agent"], harness: ["harness"],
+  session: ["session"], who: ["who"], project: ["project"], harness: ["harness"],
   cost: ["cost", "n"], share: ["of day", "n"], est: ["est.", "n"], days: ["days", "n"],
 };
 const spendBars = (bars, every) => bars.map((b, i) => ({
@@ -164,13 +150,26 @@ const spendBars = (bars, every) => bars.map((b, i) => ({
 }));
 const SPEND_KEY = legend([["billed", "var(--c1)"], ["estimated from tokens", "var(--c-other)"]]);
 
+// A share that rounds to 0 but is not 0 reads "<1%", so a priced row never looks free.
+const pctCell = (v) => `<td class="n">${v > 0 && v <= 0.5 ? "&lt;1" : Math.round(v)}%</td>`;
+
 function sessCell(r, k) {
   if (k === "cost") return `<td class="n">${usd(r.cost)}</td>`;
-  if (k === "share" || k === "est") return `<td class="n">${Math.round(r[k])}%</td>`;
+  if (k === "share" || k === "est") return pctCell(r[k]);
   if (k === "days") return `<td class="n">${r.days}</td>`;
   if (k === "session") return `<td title="${esc(r.sid)}">${esc(r.session)}</td>`;
   return `<td>${r[k] == null ? "-" : esc(r[k])}</td>`;
 }
+
+// A row of the group table: the day's total, a group, or the opened group. `go` is the group a click
+// opens ("" for the total, which closes the open one); a row that goes nowhere has none.
+function totRow(r, go, cls = "") {
+  const attr = go == null ? "" : ` data-grp="${esc(go)}"`;
+  return `<tr${attr} class="${cls}"><td>${esc(r.name)}</td><td class="n">${r.sessions}</td><td class="n">${usd(r.cost)}</td>${pctCell(r.share)}` +
+    `<td class="n">${usd(r.per_session)}</td>${pctCell(r.est)}</tr>`;
+}
+const GRP_HEAD = `<tr><th data-role="lead">name</th><th class="n">sessions</th><th class="n" data-role="glance" data-named>cost</th><th class="n" data-role="glance" data-named>of day</th>` +
+  `<th class="n" data-role="glance" data-named title="what one session cost">$/session</th><th class="n">est.</th></tr>`;
 
 // The picked day's sessions: the opened one's own days over them, a row per session.
 function dayRows(dv) {
@@ -183,20 +182,39 @@ function dayRows(dv) {
     (dv.more ? `<div class="muted more">+${dv.more} more sessions</div>` : "") + `</div>`;
 }
 
-// A block with no bar: the chart picks the day, and its sessions have no search, chips or
-// dropdowns; the block's data-tbl routes a header sort to its own keys (dsort, ddir).
+const grpTable = (rows, outside) => `<div class="panel scroll"><table class="tbl" id="spend-groups">${GRP_HEAD}${rows}</table>${outside}</div>`;
+
+// The table under the switches: the groups (total row on top, a click opens one), or the sessions
+// of the cut `sessions` or of an opened group, which keep the total row on top and the group's
+// beside it. Its sessions have no search, chips or dropdowns; the block's data-tbl routes a header
+// sort to its own keys (dsort, ddir).
 function dayTable(dv) {
   if (dv.why) return `<div class="panel muted">${esc(dv.why)}</div>`;
-  return `<div data-tbl="d"><div id="costs-day-body">${tblBodyFirst(dv.table, () => dayRows(dv))}</div></div>`;
+  const outside = dv.outside ? `<div class="muted">${esc(dv.outside)}</div>` : "";
+  const total = dv.total ? totRow(dv.total, dv.in_group ? "" : null, "allrow") : "";
+  if (!dv.table) {
+    return grpTable(total + dv.groups.map((g) => totRow(g, g.name)).join(""), outside);
+  }
+  const head = grpTable(total + (dv.in_group ? totRow(dv.open, null, "sel") : ""), outside);
+  return head + `<div data-tbl="d"><div id="costs-day-body">${tblBodyFirst(dv.table, () => dayRows(dv))}</div></div>`;
 }
 
-// Burn per session: the day picked on the chart, its sessions ranked by what they cost, and a row
-// opens that session's own days. Spend's last section; the period rows carry the $/session average.
-function sessionsSection(d) {
-  const h = d.history, dv = d.day;
-  if (!h || h.why || !dv) return "";
-  return `<details class="csec" data-k="spend-sessions" id="sec-sessions"${secOpen(cost.open, "spend-sessions") ? " open" : ""}><summary>${secHead("", "Burn per session", dv.table ? dv.table.total : null)}</summary>` +
-    (dv.head ? `<div class="panel"><div><span class="muted">DAY</span> ${esc(dv.head)}</div></div>` : "") + dayTable(dv) + `</details>`;
+// The one spend table: the day picked on the chart (the live last 24h until one is), grouped by who,
+// project, harness or account with a total row on top, or by session. A group row opens that
+// group's sessions, the total row goes back, and a session row opens its own days. The coverage
+// words and the foot are the fleet figure's (hub_core::fleet_cost).
+function spendTable(d) {
+  const dv = d.day;
+  if (!dv) return "";
+  const f = d.fleet_cost && !d.fleet_cost.why ? d.fleet_cost : null;
+  const days = dv.has_live ? costsSwitch("day", dv.live ? [""] : ["", dv.day], dv.live ? "" : dv.day, "day", (x) => x || "last 24h") : "";
+  const cuts = dv.cuts ? costsSwitch("group", dv.cuts, dv.group, "g") : "";
+  const n = dv.table ? dv.table.total : dv.groups ? dv.groups.length : null;
+  const live = f && dv.live ? `<div class="muted">${esc(f.coverage)}</div>` + f.unpriced.map((u) => `<div class="warn">${esc(u)}</div>`).join("") : "";
+  const notes = f ? live + `<div class="muted">${esc(f.foot)}</div>` : "";
+  return `<details class="csec" data-k="spend-table" id="sec-sessions"${secOpen(cost.open, "spend-table") ? " open" : ""}><summary>${secHead("", "Spend table", n)}</summary>` +
+    (dv.head ? `<div class="panel"><div><span class="muted">DAY</span> ${esc(dv.head)}</div></div>` : "") +
+    `<div>${days}${cuts}</div>` + dayTable(dv) + `<div class="panel">${notes}</div></details>`;
 }
 
 function historySection(d) {
@@ -208,7 +226,7 @@ function historySection(d) {
   const row = (r) => `<tr class="${r.kind === "day" ? "" : "allrow"}"><td>${esc(r.period)}</td><td class="n">${esc(r.total)}</td><td class="n">${r.days}</td>` +
     `<td class="n">${esc(r.per_day)}</td><td class="n">${esc(r.per_session)}</td><td class="n">${esc(r.vs_prev)}</td><td class="n">${esc(r.est)}</td></tr>`;
   const dv = d.day || {};
-  const charts = `<div class="spendcharts"><div class="panel"><h3>$/day, last 30 days, click a day for its sessions below ${SPEND_KEY}</h3>` +
+  const charts = `<div class="spendcharts"><div class="panel"><h3>$/day, last 30 days, click a day for its table above ${SPEND_KEY}</h3>` +
     `<div id="spend-days">${columns(spendBars(h.chart, 7), { height: 160, sel: dv.day, yfmt: usd })}</div>${pace}</div>` +
     (h.months.length ? `<div class="panel"><h3>By month</h3>${columns(spendBars(h.months, 1), { height: 160, yfmt: usd })}</div>` : "") + `</div>`;
   const periods = `<details class="sec-d" data-k="spend-periods"${secOpen(cost.open, "spend-periods") ? " open" : ""}><summary class="muted fold">Year, month and day rows</summary>` +
@@ -370,7 +388,7 @@ function langfuseSection(d) {
     `<div class="panel scroll">${shares}<table class="tbl"><tr><th data-role="lead">slowest tools, by total time</th><th class="n" data-role="glance" data-named>calls</th><th class="n">p50</th><th class="n" data-role="glance" data-named>p95</th><th class="n" data-role="glance" data-named>total</th></tr>${rows}</table>` +
     `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
     `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
-    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/fleet">who spent the 24h</a> on Spend</div></div></details>`;
+    `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/sessions">the spend table</a> on Spend</div></div></details>`;
 }
 
 // The Sections block (hub_core::sections, the TUI's coststab.rs `sections`): what each section of
@@ -392,15 +410,15 @@ function costsSections(d) {
 }
 
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): the strip first, then
-// each section inside its inner tab's group in the layout's order (Spend: the tile row, who spent
-// the 24h, the history chart and period rows, the table, burn per session; Limits: burn, consumers; Models:
-// tokens, langfuse, sections; Budget).
+// each section inside its inner tab's group in the layout's order (Spend: the tile row, the spend table,
+// the history chart and period rows, the outcomes table; Limits: burn, consumers; Models: tokens,
+// langfuse, sections; Budget).
 function costsHead(d) {
   const asOf = (d.sources || []).map((s) => `<span class="${s.stale ? "warn" : "muted"}">${esc(s.name)} ${s.as_of ? when(s.as_of) : NO_DATA}</span>`).join(" &middot; ");
   const g = d.grafana ? ` <a class="glink" href="${esc(d.grafana)}" target="_blank" rel="noopener">trends in Grafana</a>` : "";
   const totals = costsTiles(d) + `<div class="muted fold">as of: ${asOf}${g}</div>`;
   const switches = `<div id="sec-table">${costsSwitch("window", d.windows, d.window, "w")}${costsSwitch("by", d.cuts, d.by, "by")}</div>`;
-  let html = innerStrip("costs", d.amber) + innerWrap("costs", "totals", totals) + innerWrap("costs", "fleet", fleetCostSection(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "table", switches);
+  let html = innerStrip("costs", d.amber) + innerWrap("costs", "totals", totals) + innerWrap("costs", "sessions", spendTable(d)) + innerWrap("costs", "spend", historySection(d)) + innerWrap("costs", "table", switches);
   if (cost.err) html += `<div class="panel down">${esc(cost.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -412,8 +430,8 @@ function costsTail(d) {
     ? ` Landed, redo, rev and $/PR are fleet-bench models${d.eval_days ? ` over ${d.eval_days}d` : ""}, per family (opus), queue items only.` : "";
   const note = `<div class="muted fold">${d.unpriced ? `<span class="warn">${esc(d.unpriced)}.</span> ` : ""}Rows: ${esc(d.source)}.${ev} ` +
     `${d.table.shown} of ${d.table.total} rows, ${d.unpriced ? "-" : usd(d.shown_usd)}.</div>`;
-  // Burn per session, then the Limits and Models sections, follow the table, as the layout lists them.
-  return innerWrap("costs", "table", note) + innerWrap("costs", "sessions", sessionsSection(d)) + innerWrap("costs", "burn", costsBurn(d)) + innerWrap("costs", "consumers", costsConsumers(d)) +
+  // The Limits and Models sections follow the table, as the layout lists them.
+  return innerWrap("costs", "table", note) + innerWrap("costs", "burn", costsBurn(d)) + innerWrap("costs", "consumers", costsConsumers(d)) +
     innerWrap("costs", "tokens", tokensSection(d)) +
     innerWrap("costs", "langfuse", langfuseSection(d)) + innerWrap("costs", "sections", costsSections(d)) +
     innerWrap("costs", "budget", budgetSection(d));
@@ -422,6 +440,8 @@ function costsTail(d) {
 // A new cut has other columns, so its sort goes back to the cut's own.
 function costsView(patch) {
   if ("by" in patch) Object.assign(patch, { sort: "", dir: "" });
+  // A new cut has other groups: the opened one and session are the old cut's.
+  if ("g" in patch) Object.assign(patch, { gv: "", sid: "" });
   cost.view(patch);
 }
 
@@ -432,10 +452,13 @@ $("costs").addEventListener("click", (e) => {
   if (win) { cost.tokWin = win.dataset.tokwin; cost.render(); return; }
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
-  // Spend: a day column picks the day, a session row opens (or closes) its own days.
+  // Spend: a day column picks the day, a group row opens its sessions, the total row goes back, and
+  // a session row opens (or closes) its own days.
   const day = t.closest && t.closest("#spend-days [data-key], #spend-series [data-key]");
-  // The day's sessions are Spend's last section, so the paint scrolls there (seekSection).
+  // The spend table sits above the chart, so the paint scrolls up to it (seekSection).
   if (day) { if (day.closest("#spend-days")) st.section = "sessions"; costsView({ day: day.dataset.key }); return; }
+  const grp = t.closest && t.closest("tr[data-grp]");
+  if (grp) { costsView({ gv: grp.dataset.grp, sid: "" }); return; }
   const sess = t.closest && t.closest("tr[data-sid]");
   if (sess) { const v = new URLSearchParams(st.views.costs || ""); costsView({ sid: v.get("sid") === sess.dataset.sid ? "" : sess.dataset.sid }); }
 });

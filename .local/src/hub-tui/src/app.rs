@@ -4413,7 +4413,7 @@ impl App {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
             }
             Tab::Costs => format!(
-                "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+                "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  g cut  V open group  v row  , / . day  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
