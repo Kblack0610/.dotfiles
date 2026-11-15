@@ -437,6 +437,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "--backlog: a plan's finish row is rewritten only when the rewrite keeps its plan slug, which ask-sweep finds it by" {
+  sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "action": "rewrite", "row": "chore(ci): finish plan lazy-otter, 2 phases left #size/m"}' \
+    '{"n": 2, "action": "rewrite", "row": "chore(docs): finish beta-plan-tidy-crow, 1 phase left #size/s"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 1'
+  run tasks
+  assert_output --partial 'finish alpha-plan-lazy-otter: 2 phases left'
+  assert_output --partial 'chore(docs): finish beta-plan-tidy-crow, 1 phase left'
+}
+
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
   sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
   # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)

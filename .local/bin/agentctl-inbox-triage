@@ -639,6 +639,9 @@ backlog_row() {
   case "$action" in
     rewrite)
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
+      # ask-sweep finds a plan's finish row by the plan slug (ask-sweep sweep_plans), so a rewrite that
+      # drops or shortens it would file the row again; such a row stays as it is.
+      [[ $raw =~ finish\ ([a-z0-9][a-z0-9-]*):\ [0-9]+\ phases?\ left ]] && [[ $row != *"${BASH_REMATCH[1]}"* ]] && row=""
       if [ -n "$row" ] && [ -n "$epic" ] && eid="$(epic_new "${dest:-$p}" "$(clean 150 <<<"$epic")")"; then
         row="$(under_epic "$row" "$eid")"
       fi
