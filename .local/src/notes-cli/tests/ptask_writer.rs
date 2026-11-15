@@ -244,6 +244,20 @@ fn a_multi_line_add_stamps_its_id_on_the_row_line_so_done_finds_it() {
         "{}",
         h.board()
     );
+
+    // The human's own words still go to the inbox as typed, every line of them.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "add",
+        "buy milk\n\n  - eggs\n    - a dozen",
+    ]));
+    assert!(
+        h.sheet()
+            .contains("- [ ] buy milk\n\n  - eggs\n    - a dozen"),
+        "{}",
+        h.sheet()
+    );
 }
 
 #[test]

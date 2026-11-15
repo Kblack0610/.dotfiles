@@ -372,7 +372,8 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
-/// registry gives the project a `code`. Each of `details` becomes an indented line under it.
+/// registry gives the project a `code`. Each of `details` becomes an indented line under it,
+/// after any later lines of a multi-line `text`, whose first line alone is the row.
 ///
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
@@ -418,17 +419,18 @@ pub(crate) fn add_via(
     lane: Lane,
     systems: Option<&str>,
 ) -> Result<i32> {
-    // The text's first line is the row and any later lines are its details, so the tags and
-    // id marker stamped below land on the row line, the only line a pick or the board reads.
-    let (text, more) = text.trim().split_once('\n').unwrap_or((text.trim(), ""));
-    let text = text.trim();
+    let typed = text.trim();
+    // A stamped row's text is its first line and any later lines go before its details, so
+    // the tags and id marker land on the row line, the only line a pick or the board reads.
+    let (text, more) = typed.split_once('\n').unwrap_or((typed, ""));
+    let text = text.trim_end();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
     }
-    let details: Vec<String> = std::iter::once(more.to_string())
-        .chain(details.iter().cloned())
-        .collect();
-    let details = &details[..];
+    let mut row_details = details.to_vec();
+    if !more.trim().is_empty() {
+        row_details.insert(0, more.to_string());
+    }
     let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
     let to = to_arg.map(parse_to).transpose()?;
@@ -448,7 +450,7 @@ pub(crate) fn add_via(
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !projects::is_typed(text) {
-        let mut line = format!("- [ ] {text}");
+        let mut line = format!("- [ ] {typed}");
         if let Some(v) = to {
             line = md::add_tag(&line, &projects::fmt_version(v));
         }
@@ -474,7 +476,15 @@ pub(crate) fn add_via(
         );
         return Ok(3);
     }
-    let mut block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    let mut block = new_rows(
+        name,
+        &proj_dir,
+        &[text.to_string()],
+        to,
+        cur,
+        &[],
+        &row_details,
+    )?;
     if want.is_some() && lane == Lane::Agent {
         block[0] = md::add_tag(&block[0], WANT_TAG);
     }
@@ -484,7 +494,15 @@ pub(crate) fn add_via(
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
             return add_via(
-                p, log, name, &linked[0], details, to_arg, want_arg, lane, None,
+                p,
+                log,
+                name,
+                &linked[0],
+                &row_details,
+                to_arg,
+                want_arg,
+                lane,
+                None,
             );
         }
     }
