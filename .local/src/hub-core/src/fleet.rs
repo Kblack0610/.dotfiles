@@ -259,15 +259,6 @@ pub struct Score {
     pub false_defer_pct: Option<f64>,
     #[serde(default)]
     pub live: bool,
-    pub bar: Option<Bar>,
-}
-
-/// How far a shadow rule is from going live: scored answers against the bar's count.
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
-pub struct Bar {
-    pub labels: u32,
-    pub need: u32,
-    pub met: bool,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -1544,7 +1535,7 @@ mod tests {
 
     #[test]
     fn each_lanes_score_cell_and_title_are_judge_evals_score_7d_as_written() {
-        let json = r#"{"bar":{"labels":30,"precision":90},"agents":[
+        let json = r#"{"agents":[
           {"agent":"ask-judge","prompt_sha":"a","score":"ask-answers",
            "total":{"verdicts":1,"tp":0,"fp":0,"fn":0,"tn":0},
            "score_7d":{"window":"7d","right":7,"n":9,"pending":4,"value":null,"text":"n<30",
@@ -1593,7 +1584,7 @@ mod tests {
           {"agent":"ask-judge","prompt_sha":"aaaaaaaaa","total":{"verdicts":40,"tp":6,"fp":0,"fn":0,"tn":0},
            "live":["ship_deploy"],
            "rules":[{"rule":"ship_deploy","verdicts":9,"errors":0,"scored":6,"precision":100.0,
-                     "false_defer_pct":null,"live":true,"bar":{"labels":6,"need":30,"met":false}},
+                     "false_defer_pct":null,"live":true},
                     {"rule":"taste","verdicts":31,"scored":28,"precision":null,"false_defer_pct":18.0,
                      "live":false}],
            "misses":[]},
@@ -1612,16 +1603,8 @@ mod tests {
             ("ship_deploy", 6, Some(100.0), true)
         );
         assert_eq!(
-            a.rules[0].bar,
-            Some(Bar {
-                labels: 6,
-                need: 30,
-                met: false
-            })
-        );
-        assert_eq!(
-            (a.rules[1].false_defer_pct, a.rules[1].bar.is_none()),
-            (Some(18.0), true)
+            (a.rules[1].false_defer_pct, a.rules[1].live),
+            (Some(18.0), false)
         );
         let d = &evals["dispatch-judge"];
         assert_eq!(

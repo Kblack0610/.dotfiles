@@ -328,7 +328,7 @@ fn registry(r: &Registry, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
     out
 }
 
-/// A judge's per-rule table from judge-eval; a rule not yet live shows its labels against the bar.
+/// A judge's per-rule table from judge-eval, each rule live or not.
 fn eval(e: &Eval, p: Palette, w: usize) -> Vec<Line<'static>> {
     if e.rules.is_empty() {
         return vec![clip_line(
@@ -345,11 +345,7 @@ fn eval(e: &Eval, p: Palette, w: usize) -> Vec<Line<'static>> {
         .rules
         .iter()
         .map(|r| {
-            let live = match (&r.bar, r.live) {
-                (_, true) => "yes".to_string(),
-                (Some(b), false) => format!("no ({}/{} to bar)", b.labels, b.need),
-                (None, false) => "no".into(),
-            };
+            let live = if r.live { "yes" } else { "no" };
             vec![
                 cell(r.rule.clone(), Default::default()),
                 r.verdicts.to_string().into(),
@@ -978,9 +974,7 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{
-        Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
-    };
+    use hub_core::fleet::{Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker};
 
     pub const NOW: i64 = 1_793_661_428;
 
@@ -1069,11 +1063,6 @@ pub mod tests {
                                     verdicts: 31,
                                     scored: 28,
                                     false_defer_pct: Some(18.0),
-                                    bar: Some(Bar {
-                                        labels: 6,
-                                        need: 30,
-                                        met: false,
-                                    }),
                                     ..Default::default()
                                 },
                             ],

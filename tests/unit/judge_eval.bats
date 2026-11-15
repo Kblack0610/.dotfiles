@@ -155,16 +155,16 @@ ask_fixture() {
   assert_line '  assumed 2, 1 overridden'
 }
 
-@test "ask-judge: precision carries its 95% Wilson interval, each rule its live flag and distance to the bar" {
+@test "ask-judge: precision carries its 95% Wilson interval, and each rule its live flag" {
   ask_fixture
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [.total.precision_lo, .total.precision_hi, .live,
-    (.rules[] | select(.rule == "agent_policy") | [.live, .bar.labels, .bar.need, .bar.met]),
+    (.rules[] | select(.rule == "agent_policy") | [.live, has("bar")]),
     (.rules[] | select(.rule == "fast") | .live), (.misses | map(.id) | sort)]' <<<"$output"
-  assert_output '[15,85,["fast@self","fast@repo"],[false,2,30,false],true,["fp1","live_over"]]'
+  assert_output '[15,85,["fast@self","fast@repo"],[false,false],true,["fp1","live_over"]]'
   run "$JUDGE_EVAL" ask-judge
   assert_success
-  assert_line --regexp '^  agent_policy .* 2/30$'
+  assert_line --regexp '^  agent_policy .* shadow$'
   assert_line --regexp '^  fast .* live$'
   assert_line --partial 'calls 1, 0 failed'
 }
@@ -584,19 +584,19 @@ SH
   assert_equal "$(jq -c '.agents[0].total.verdicts' <<<"$output")" 0
 }
 
-@test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at the bar" {
+@test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at AGENT_ASK_LIVE_BAR rows" {
   local i
   for i in $(seq 1 30); do ev filed "t-$i" "$(ago '-3 days')"; ev dropped "t-$i" "$(ago '-3 days +1 hour')" by=ab12cd34; done > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
   assert_equal "$(jq -c '.agents[0].total | [.scored, .tp, .fp, .precision]' <<<"$output")" '[30,0,30,0]'
-  # the score cell: the week at the bar
+  # the score cell: the week at AGENT_ASK_LIVE_BAR rows
   assert_equal "$(jq -c '.agents[0].score_7d' <<<"$output")" '{"window":"7d","right":0,"n":30,"pending":0,"value":0,"text":"0% untouched","title":"7d, 0 of 30 right, 0 pending, triage-untouched"}'
   run "$JUDGE_EVAL" inbox-triage
   assert_line --regexp '^  all +30 +0 +100% +30 +0% \[0-11\.4\]'
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":0,"28d":0}'
-  # one short of the bar, no score
+  # one short of AGENT_ASK_LIVE_BAR rows, no score
   sed -i '1,2d' "$INGEST"
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'

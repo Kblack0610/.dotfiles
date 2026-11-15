@@ -51,11 +51,10 @@ const okClass = (ok) => (ok === false ? "bad" : ok == null ? "warn" : "");
 const kTok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : `${n}`);
 const base = (p) => p.split("/").pop();
 
-// A judge's per-rule table, judge-eval's numbers under its current prompt. A rule not yet live
-// shows how far its labels are from the bar.
+// A judge's per-rule table, judge-eval's numbers under its current prompt, each rule live or not.
 function evalTable(e) {
   const pc = (x) => pct(x == null ? null : x / 100);
-  const live = (r) => (r.live ? "yes" : r.bar ? `no (${r.bar.labels}/${r.bar.need} to bar)` : "no");
+  const live = (r) => (r.live ? "yes" : "no");
   const rows = e.rules.map((r) => `<tr><td>${esc(r.rule)}</td><td class="n">${r.verdicts}</td><td class="n">${r.scored}</td><td class="n">${pc(r.precision)}</td><td class="n">${pc(r.false_defer_pct)}</td><td>${live(r)}</td></tr>`).join("");
   return `<table class="tbl"><tr><th data-role="lead">rule</th><th class="n">calls</th><th class="n">scored</th><th class="n" data-role="glance" data-named>prec</th><th class="n" data-role="glance" data-named>false-defer</th><th data-role="glance" data-named>live</th></tr>${rows ||
     `<tr><td colspan="6" class="muted">no verdicts under prompt ${esc(e.prompt_sha)}</td></tr>`}</table>`;
