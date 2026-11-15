@@ -1832,6 +1832,24 @@ pro_rollout() {
   [[ "$output" == *alert=off* ]] || fail "$output"
 }
 
+@test "check pace: a team source with no alert=off trips inside its reserve, and trips on nothing else" {
+  src_setup
+  week main 30 84
+  rollout 1 0 84
+  budget sk-lazer key 95 100
+  budget team team 95 100
+  budget sk-res key 5 20
+  run --separate-stderr "$ACCT" check pace
+  assert_failure 1
+  [[ "$output" == *"over pace: "*"lazer reserve"* ]] || fail "$output"
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  week main 30 84
+  run --separate-stderr "$ACCT" check pace
+  assert_success
+}
+
 @test "check pace: the Claude accounts are one pool, so one past its own line trips nothing while the pool lasts to the resets" {
   # 2026-11-10 (ar-1529): main, alt and bnb past their own lines kept the watch red for days while
   # the four weeks, each refilled at its reset, carried the fleet's burn.
