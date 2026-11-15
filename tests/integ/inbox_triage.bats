@@ -466,6 +466,73 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
 }
 
+@test "--backlog --dry-run keeps its answers; a second dry run and the apply reuse them, and the apply leaves a row new since alone" {
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [ ] audio pass <!-- id:sc-2 -->\n    - [ ] the gun is late\n- [ ] jump is floaty <!-- id:sc-3 -->\n'
+  # sorted by text: sc-2, sc-3, sc-5, sc-7, sc-4; a heading (sc-2) is never dropped, and the cache keeps it a keep
+  answer '{"n": 1, "action": "drop", "why": "a heading"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "dup", "id": "sc-4"}' \
+    '{"n": 4, "action": "drop", "why": "a header, not a task"}' '{"n": 5, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 2'
+  assert_output --partial "answers kept in $cache"
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$cache")" = 5 ] || fail "$(cat "$cache")"
+  # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 2'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
+  [ "$(wc -l <"$cache")" = 5 ]
+  # The apply writes what the dry run printed, though the model would now say drop. A row new or
+  # changed since has no reviewed answer, so it is left as it is with no model call, and the heading
+  # whose child went stays.
+  sed -i -e '/the gun is late/d' -e 's/jump is floaty/jump is too floaty/' "$SHEET"
+  printf '%s\n' '- [ ] zebra row <!-- id:sc-9 -->' >>"$SHEET"
+  answer '{"n": 1, "action": "drop", "why": "never asked"}' '{"n": 2, "action": "drop", "why": "never asked"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 3'
+  assert_output --partial 'scratch (human): 2 rows new or changed since the dry run left as they are'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model $(wc -l <"$NOTES_FIXTURE/model.log") times"
+  [ ! -e "$cache" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
+  assert_output --partial '- [ ] audio pass <!-- id:sc-2 -->'
+  assert_output --partial 'jump is too floaty'
+  refute_output --partial 'menu flicker again'
+  assert_output --partial 'zebra row'
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
+  assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
+  assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+}
+
+@test "--backlog: an apply whose write is refused keeps the cache, so the retry writes the reviewed verdict, not a new one" {
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n'
+  answer '{"n": 1, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}'
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = ptask ] && [[ " $* " == *" edit "* ]] && exit 1\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused 1'
+  [ -s "$cache" ] || fail "the refused apply removed its cache"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  answer '{"n": 1, "action": "keep"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the retry asked the model again"
+  [ ! -e "$cache" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
+}
+
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
   mkdir -p "$HOME/.notes/lab/inbox"   # the capture inbox: a machine without one publishes no page
@@ -1108,15 +1175,19 @@ ask_stub() {
   assert_output --partial 'link: feature 1, standing 1, new epics 1'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
   [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  # A row filed after the dry run has no reviewed answer, so the apply leaves it unlinked.
+  sed -i '/id:sc-3 -->/a - [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->' "$SHEET"
   answer '{"n": 1, "system": "docs"}'
   run "$TRIAGE" --backlog --link --project scratch
   assert_success
+  assert_output --partial 'scratch (human): 1 rows new or changed since the dry run left as they are'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
   [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
   assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
   assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+  assert_output --partial '- [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->'
 }
 
 @test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
