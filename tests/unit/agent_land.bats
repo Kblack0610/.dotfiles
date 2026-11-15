@@ -1529,6 +1529,46 @@ real_notes_board() {
   assert_output --partial 'board: closed "ship it" with pr:o/p#43'
 }
 
+@test "a brief with two PRs in one repo lands both on its one item: the first --partial, the second closes it" {
+  # NEGATIVE CONTROL: before ar-2044 the second PR was refused as "an item carries one PR per repo",
+  # so release-windows-only filed ucp-1987 for #2397 (2026-11-12).
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 43 --item ship
+  assert_success
+  assert_line 'landed #43'
+  assert_output --partial 'board: closed "ship it" with pr:o/r#43'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged, .closing_pr] | join("|")' <<<"$output")" \
+    'done||o/r#42 o/r#43|fedcba9876543210fedcba9876543210fedcba98 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|o/r#43'
+  # Once done, the rule holds again: a third PR in o/r is a second task.
+  echo https://github.com/o/r/pull/44 >"$NOTES_FIXTURE/url"
+  run "$LAND" 44 --item ship
+  assert_failure 2
+  assert_output --partial 'an item carries one PR per repo'
+}
+
+@test "an open item not marked partial still refuses a second PR in a repo it carries" {
+  agent-queue set ship pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 >/dev/null
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  run "$LAND" 43 --item ship
+  assert_failure 2
+  assert_output --partial 'an item carries one PR per repo'
+  assert_output --partial 'queue item ship is open with o/r#42'
+  assert_output --partial 'agent-queue set ship partial=yes and re-run'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+  # The way out the refusal names lands it beside #42 and closes the item.
+  agent-queue set ship partial=yes >/dev/null
+  run "$LAND" 43 --item ship
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .pr] | join("|")' <<<"$output")" 'done|o/r#42 o/r#43'
+}
+
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,
 # head.oid, merge.oid); fj.status is the head's combined status (one green check by default) and
 # fj.files the changed files. Each call logs as "curl METHOD <path under repos/o/r/> [data]".

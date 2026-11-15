@@ -144,7 +144,7 @@ function alertsFixes(d) {
   const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(alertsFixRow).join("")}</div>` +
     (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
   const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${alertsOpen["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(alertsFixRow).join("")}</div></details>` : "";
-  const empty = failed ? `<div class="panel down">Could not read the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
+  const empty = failed ? `<div class="panel down">${NOT_READ}: the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
   return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : r.open.length, failed ? "bad" : "", open + settled + empty));
 }
 

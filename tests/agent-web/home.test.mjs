@@ -511,7 +511,7 @@ test("accept and reject post the id to their own route, and a refusal stays on t
 
 test("a failed proposals read does not say nothing is proposed", () => {
   const html = draw(home({ proposals_failed: true, errors: ["no jq, so no proposals are shown"] }));
-  assert.match(html, /Could not read proposals/);
+  assert.match(html, /not read: proposals/);
   assert.doesNotMatch(html, /Nothing proposed/);
 });
 
@@ -632,7 +632,7 @@ test("a failed section read falls back to the full Home read, which shows the er
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
   assert.match(seen[0], /^\/api\/home\/proposals/);
   assert.ok(seen.includes("/api/home"), seen.join());
-  assert.match(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+  assert.match(vm.runInContext("$('home').innerHTML", ctx), /not read: proposals/);
 });
 
 test("a slow full read that started before a search cannot put the older rows back", async () => {
@@ -672,7 +672,7 @@ test("after a failed proposals read the next search goes to the full read, so th
   } finally { ctx.fetch = before; delete ctx.URLSearchParams; }
   assert.ok(!seen.some((p) => p.startsWith("/api/home/proposals")), seen.join());
   assert.equal(vm.runInContext("hst.data.proposals_failed", ctx), undefined);
-  assert.doesNotMatch(vm.runInContext("$('home').innerHTML", ctx), /Could not read proposals/);
+  assert.doesNotMatch(vm.runInContext("$('home').innerHTML", ctx), /not read: proposals/);
 });
 
 test("a row that leaves Needs you closes, so its id never comes back open", async () => {

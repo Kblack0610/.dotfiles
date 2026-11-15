@@ -890,7 +890,7 @@ fn builds(i: &Inputs) -> Vec<String> {
                             "{} {}: live is {} but {} is pinned.",
                             r.project,
                             r.channel,
-                            r.live.value.as_deref().unwrap_or("unknown"),
+                            r.live.value.as_deref().unwrap_or(crate::reading::NOT_READ),
                             r.pinned.value.as_deref().unwrap_or("nothing")
                         ),
                         ITEM_MAX,
@@ -1224,10 +1224,11 @@ impl Briefing {
     fn top(&self, title: &str, headline: &str, see: &str) -> String {
         let mut s = format!("---\ngenerated: true\n---\n\n# {title}\n\n{headline}\n\n");
         if !self.errors.is_empty() {
-            s += &format!(
-                "Could not read {}, so this may be missing items: see {see}.\n\n",
+            let why = format!(
+                "{}, so this may be missing items: see {see}",
                 plural(self.errors.len(), "source", "sources")
             );
+            s += &format!("{}.\n\n", Reading::NotRead(why).sentence(""));
         }
         s
     }
@@ -1962,7 +1963,10 @@ mod tests {
         assert_eq!(area(&b, "Infra").level, Level::Warn);
         assert_eq!(area(&b, "Nightly").level, Level::Warn);
         let md = b.agents_markdown();
-        assert!(md.contains("Could not read 1 source"), "{md}");
+        assert!(
+            md.contains("Not read: 1 source, so this may be missing items"),
+            "{md}"
+        );
         assert!(md.contains("- watches: no such dir"), "{md}");
     }
 
@@ -2140,7 +2144,7 @@ mod tests {
             Source {
                 name: "Kalshi paper league".into(),
                 basis: crate::money::PNL.into(),
-                error: Some("no reading at 2026-11-13 00:00".into()),
+                error: Some("no data at 2026-11-13 00:00".into()),
                 ..Default::default()
             },
         ]);
@@ -2148,7 +2152,7 @@ mod tests {
         assert_eq!(m[4], "Alpaca (paper): made $12.50 yesterday.");
         assert_eq!(
             m[5],
-            "Kalshi paper league: not read, no reading at 2026-11-13 00:00."
+            "Kalshi paper league: not read, no data at 2026-11-13 00:00."
         );
         assert_eq!(m.len(), 6, "{m:?}");
     }
