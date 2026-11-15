@@ -1514,8 +1514,10 @@ pub fn redate(
 /// `notes ptask <name> reopen <id> --why "<why>"` - undo a false close: the closed row with that
 /// id goes back to todo (`[ ]`), and what `done` or `drop` stamped on its marker comes off, so a
 /// proof that was never its work stops reading as delivery (2026-11-07: ucp-1207 kept pr:652,
-/// another repo's PR, after agent-land closed it from the wrong session). An agent board row
-/// already archived into its version note moves back onto the board. The why goes to the log.
+/// another repo's PR, after agent-land closed it from the wrong session). A row already archived
+/// into its version note moves back onto its sheet. The why goes to the log. An id names one row
+/// across both lanes (`next_id` never reuses one), so a row the other lane holds reopens there:
+/// on 2026-11-12 `reopen ucp-1978` without `--agent` read only the human sheet and found nothing.
 pub fn reopen(
     p: &Profile,
     log: &Logger,
@@ -1533,53 +1535,66 @@ pub fn reopen(
     }
     let closed =
         |l: &str| l.starts_with("- [") && md::is_checked(l) && md::row_id(l).as_deref() == Some(id);
-    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
-        bail!("'{name}' has no task sheet yet");
+    let other = match lane {
+        Lane::Human => Lane::Agent,
+        Lane::Agent => Lane::Human,
     };
-    let done = |verb: &str, row: &str, from: &Path| {
-        log.info(
-            "ptask",
-            &format!("{verb} {id} in {} ({name}): {why}", from.display()),
-        );
-        let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
-        crate::ingest::record(p, &ev);
-        println!("reopened {}", row.trim());
-    };
-    if let Some((new, _)) =
-        md::edit_first_in_section(&content, sheet::TASKS, closed, |l| Some(unclose(l)))
-    {
-        write_sheet(&sheet, &new)?;
-        let row = new
-            .lines()
-            .find(|l| md::row_id(l).as_deref() == Some(id))
-            .unwrap_or_default();
-        done("reopened", row, &sheet);
-        return Ok(0);
-    }
-    // A row rolled off its sheet is in an agent note, under its lane's section.
-    {
-        let dir = projects::project_dir(p, name)?;
-        for (_, note) in projects::version_notes(&projects::agent_dir(&dir).join("versions")) {
-            let text = fs::read_to_string(&note)?;
-            let Some((kept, row, detail)) =
-                md::cut_first_block_in_section(&text, archive_section(lane), closed)
-            else {
-                continue;
-            };
-            let mut block = vec![unclose(&row)];
-            block.extend(detail);
-            // The board first: a failure between the two writes leaves the row in both, never
-            // neither. Untidied, since a tidy would archive into the note `kept` was cut from;
-            // the sheet is tidied once the note is written.
-            let reopened = md::insert_under_heading(&content, sheet::TASKS, &block);
-            md::write_atomic(&sheet, &reopened)?;
-            md::write_atomic(&note, &kept)?;
-            write_sheet(&sheet, &reopened)?;
-            done("reopened from the archive", &block[0], &note);
+    let mut sheets = 0;
+    for lane in [lane, other] {
+        let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+            continue;
+        };
+        sheets += 1;
+        let done = |verb: &str, row: &str, from: &Path| {
+            log.info(
+                "ptask",
+                &format!("{verb} {id} in {} ({name}): {why}", from.display()),
+            );
+            let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            crate::ingest::record(p, &ev);
+            println!("reopened {}", row.trim());
+        };
+        if let Some((new, _)) =
+            md::edit_first_in_section(&content, sheet::TASKS, closed, |l| Some(unclose(l)))
+        {
+            write_sheet(&sheet, &new)?;
+            let row = new
+                .lines()
+                .find(|l| md::row_id(l).as_deref() == Some(id))
+                .unwrap_or_default();
+            done("reopened", row, &sheet);
             return Ok(0);
         }
+        // A row rolled off its sheet is in an agent note, under its lane's section.
+        {
+            let dir = projects::project_dir(p, name)?;
+            for (_, note) in projects::version_notes(&projects::agent_dir(&dir).join("versions")) {
+                let text = fs::read_to_string(&note)?;
+                let Some((kept, row, detail)) =
+                    md::cut_first_block_in_section(&text, archive_section(lane), closed)
+                else {
+                    continue;
+                };
+                let mut block = vec![unclose(&row)];
+                block.extend(detail);
+                // The board first: a failure between the two writes leaves the row in both, never
+                // neither. Untidied, since a tidy would archive into the note `kept` was cut from;
+                // the sheet is tidied once the note is written.
+                let reopened = md::insert_under_heading(&content, sheet::TASKS, &block);
+                md::write_atomic(&sheet, &reopened)?;
+                md::write_atomic(&note, &kept)?;
+                write_sheet(&sheet, &reopened)?;
+                done("reopened from the archive", &block[0], &note);
+                return Ok(0);
+            }
+        }
     }
-    eprintln!("no closed task with id {id} in {name}");
+    if sheets == 0 {
+        bail!("'{name}' has no task sheet yet");
+    }
+    eprintln!(
+        "no closed task with id {id} in {name}, on its sheet, its agent board or their archives"
+    );
     Ok(1)
 }
 
@@ -3669,12 +3684,14 @@ Version: v0.0.1
             "an open row is not closed"
         );
         assert_eq!(
-            reopen(&p, &log, "demo", "dm-2", "wrong PR", Lane::Agent).unwrap(),
-            0
+            reopen(&p, &log, "demo", "dm-2", "wrong PR", Lane::Human).unwrap(),
+            0,
+            "an agent board row reopens without --agent: the id names one row in either lane"
         );
         assert_eq!(
             reopen(&p, &log, "demo", "dm-4", "wrong PR", Lane::Agent).unwrap(),
-            0
+            0,
+            "an archived row reopens on its own lane"
         );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
