@@ -324,9 +324,11 @@ moved_again() {
   second_wait
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 0
-  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
-  assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
-  assert_line --index 2 'git rev-parse HEAD'
+  # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
+  run grep -A3 '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_line --index 1 'git diff --raw -z --no-abbrev --no-renames --diff-filter=M 0123456789abcdef HEAD'
+  assert_line --index 2 'git push -q origin HEAD:refs/heads/pr-42'
+  assert_line --index 3 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
 }
@@ -1847,11 +1849,4 @@ follow() { git merge -q --no-edit main && . "$REPO_ROOT/.local/lib/submodule-fol
   run follow
   assert_success
   assert_output ''
-}
-
-@test "a catch-up merge runs submodule_follow from the pre-merge head before the push" {
-  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
-  run "$LAND" 42 --item ship
-  assert_success
-  [ "$(grep -n '^git diff --raw -z --no-abbrev --no-renames --diff-filter=M 0123456789abcdef HEAD$' "$LOG" | cut -d: -f1)" -lt "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" ]
 }
