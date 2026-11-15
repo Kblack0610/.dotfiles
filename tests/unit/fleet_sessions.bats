@@ -12,7 +12,7 @@ setup() {
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
-  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at"), no PRs when there is neither,
+  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title"), no PRs when there is neither,
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -36,7 +36,7 @@ case "$1" in
     f="$LEDGER_DIR/prs_${2//\//_}.tsv"; [ -f "$f" ] || f="$LEDGER_DIR/prs.tsv"
     [ -f "$f" ] || { echo '[]'; exit 0; }
     jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
-      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end)}]' "$f" ;;
+      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7]}]' "$f" ;;
   *) exit 2 ;;
 esac
 SS
@@ -3254,6 +3254,51 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
+}
+
+@test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
+  # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
+  # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
+  # one's own Checks was red only because the landing slot turned it away.
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip
+  oid="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -b train/20261113T101500Z-a1b2 origin/main
+  "${g[@]}" merge -q --no-ff -m '#2415' feat/x
+  tip="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q feat/x
+  # store <train state> <train branch> <title> [<member ci>]: the member PR and its train, newest first
+  store() {
+    printf '%s\t2467\t%s\tPENDING\t%s\t-\t\t%s\n' "$2" "$1" "$tip" "$3" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2415\tOPEN\t%s\t%s\t-\n' "${4:-FAIL}" "$oid" >> "$LEDGER_DIR/prs.tsv"
+  }
+  local title='chore(train): land #2415, #2417, #2444'
+  store OPEN train/20261113T101500Z-a1b2 "$title"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
+  # a member whose own gate is green waits on the train too, not on a lander
+  store OPEN train/20261113T101500Z-a1b2 "$title" PASS
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
+
+  # negative controls: the train does not name it (#24150 is not #2415), it closed, its branch is
+  # not a train's, the knob is off, or the session pushed past the head the train holds
+  for t in 'OPEN train/20261113T101500Z-a1b2 chore(train): land #24150, #2417' "CLOSED train/20261113T101500Z-a1b2 $title" \
+           "OPEN feat/y $title"; do
+    read -r st br ti <<<"$t"; store "$st" "$br" "$ti"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+  done
+  store OPEN train/20261113T101500Z-a1b2 "$title"
+  FLEET_TRAIN_BRANCH='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+  "${g[@]}" commit -q --allow-empty -m fix
+  oid="$("${g[@]}" rev-parse HEAD)"; store OPEN train/20261113T101500Z-a1b2 "$title"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
 }
 
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
