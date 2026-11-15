@@ -2,8 +2,9 @@
 // Renders every agent-web table tab at phone width and records whether a phone can read it.
 // No server and no auth: the page is assets::index() (dumped by an ignored Rust test), the
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
-//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit] [--wide] [--api origin]
+//   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit] [--wide] [--dark] [--api origin]
 // --wide draws every tab at 1280px for a before-and-after look; it skips the phone checks.
+// --dark draws every page in the dark colour scheme (ui.md rule 14); the checks are the same.
 // --api answers /api/* from a running agent-web instead of the fixtures, so a change is seen on
 // real data (lessons dotfiles.md: fixtures alone hide what real rows do); the session cookie is
 // $AGENT_WEB_SESSION. The fixed clock is off, since the rows are live.
@@ -84,6 +85,7 @@ const args = process.argv.slice(2);
 const control = args.includes("--control");
 const noKit = args.includes("--no-kit");
 const wide = args.includes("--wide");
+const dark = args.includes("--dark");
 const apiAt = args.indexOf("--api");
 const api = apiAt >= 0 ? args[apiAt + 1].replace(/\/$/, "") : null;
 if (api && !process.env.AGENT_WEB_SESSION) throw new Error("--api needs AGENT_WEB_SESSION, the agent_web cookie of that instance");
@@ -218,7 +220,7 @@ function measure({ width, row: selector }) {
 // A fresh page at a viewport with the clock fixed, the live stream stubbed and every request
 // answered by wire(); every check opens its pages through this.
 async function openPage(browser, page0, viewport, phone) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: phone ? 2 : 1, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles" });
+  const context = await browser.newContext({ viewport, deviceScaleFactor: phone ? 2 : 1, hasTouch: phone, isMobile: phone, locale: "en-US", timezoneId: "America/Los_Angeles", colorScheme: dark ? "dark" : "light" });
   const page = await context.newPage();
   const seen = { errors: [], unfixtured: new Set(), drift: new Set() };
   if (!api) await context.clock.setFixedTime(new Date(NOW * 1000));
