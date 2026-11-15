@@ -13,7 +13,7 @@ function page() {
   const ctx = vm.createContext({
     console,
     document: { getElementById: (id) => (id === "main" ? main : null) },
-    st: { tab: "home" },
+    st: { tab: "home" }, conn: { open: true }, location: { reload() {} },
     // Each read waits for answer(path); status 500 is a failed read.
     fetch: (path) => new Promise((done) => out.set(path, (status = 200) =>
       done({ ok: status < 400, status, statusText: "", headers: { get: () => "application/json" }, json: async () => ({ path }), text: async () => "boom" }))),
@@ -80,4 +80,38 @@ test("a tab shown from what it already read is marked by setTab's check", () => 
   vm.runInContext("drawnCheck()", p.ctx);
   p.frame();
   assert.equal(p.main.dataset.drawn, "costs");
+});
+
+test("no mark before the stream opens, since its reads (sessions, asks) have not started", async () => {
+  const p = page();
+  p.ctx.conn.open = false;
+  p.api("/api/home");
+  await p.answer("/api/home");
+  p.frame();
+  assert.equal(p.main.dataset.drawn, undefined);
+  p.ctx.conn.open = true;
+  vm.runInContext("drawnCheck()", p.ctx); // the stream's open
+  p.frame();
+  assert.equal(p.main.dataset.drawn, "home");
+});
+
+test("a signed-out read (401) reloads the page and never marks it", async () => {
+  const p = page();
+  p.api("/api/home");
+  await p.answer("/api/home", 401);
+  p.frame();
+  assert.equal(p.main.dataset.drawn, undefined);
+});
+
+test("drawnReset forgets what was heard: a tab shown again waits for its refetch", async () => {
+  const p = page();
+  p.api("/api/home");
+  await p.answer("/api/home");
+  vm.runInContext("drawnReset()", p.ctx);
+  p.api("/api/home");
+  p.frame();
+  assert.equal(p.main.dataset.drawn, undefined, "the refetch after the reset is a first read");
+  await p.answer("/api/home");
+  p.frame();
+  assert.equal(p.main.dataset.drawn, "home");
 });

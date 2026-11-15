@@ -559,7 +559,7 @@ function setTab(t, arg, query, page) {
     if (n !== "sessions") $(n).hidden = t !== n;
   }
   $("detail").hidden = t !== "sessions";
-  delete $("main").dataset.drawn;
+  drawnReset();
   if (TABS[t]) TABS[t].show();
   drawnCheck();
   showUrl();
@@ -651,6 +651,7 @@ function connect() {
     refreshAsks();
     if (st.sel) load();
     if (was) catchUp(read); else showConn();
+    drawnCheck();
   };
   es.onerror = () => { Object.assign(conn, { down: conn.down || Date.now(), retrying: false }); showConn(); };
   es.onmessage = (m) => {

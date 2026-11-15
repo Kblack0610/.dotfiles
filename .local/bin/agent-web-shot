@@ -22,9 +22,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 from marionette import scratch_firefox  # noqa: E402
 
-# Answers the tab the page says it has drawn (#main's data-drawn), once it says so.
+# Answers the tab the page says it has drawn (#main's data-drawn), once it says so; null at once
+# on a page with no #main (the sign-in page: a cookie that is not signed in).
 READY = r"""
 const done = arguments[arguments.length - 1], main = document.getElementById("main");
+if (!main) return done(null);
 if (main.dataset.drawn) return done(main.dataset.drawn);
 const mo = new MutationObserver(() => { if (main.dataset.drawn) { mo.disconnect(); done(main.dataset.drawn); } });
 mo.observe(main, { attributes: true, attributeFilter: ["data-drawn"] });
@@ -58,7 +60,9 @@ def main():
             tab = h.split("/")[0].split("?")[0]
             try:
                 drawn = m.cmd("WebDriver:ExecuteAsyncScript", script=READY)["value"]
-                if drawn != tab:
+                if drawn is None:
+                    print(f"agent-web-shot: #{h} is not the app (no #main): is --cookie signed in?", file=sys.stderr)
+                elif drawn != tab:
                     print(f"agent-web-shot: #{h} opened the {drawn} tab", file=sys.stderr)
             except RuntimeError as e:
                 print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e}); shooting it as it is", file=sys.stderr)
