@@ -454,6 +454,17 @@ tmux_calls() { cat "$FIX/calls.log"; }
   assert_success; assert_output --partial 'claude-acct: unparked dotfiles:%8 on alt'
 }
 
+@test "park refuses a window whose pane id key holds another session's ledger, as after a tmux restart reused the id" {
+  WIN=3 session hub dotfiles %6 60 61 idle ""
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=dotfiles server=hub target=hub/dotfiles:2 pane=%6 direct=0 pid=1 session_id=sid-old "cwd=$HOME/wt" status=idle why=park 'resume=claude --resume sid-old' > "$(PARKED_LEDGER dotfiles:%6)"
+  run "$ACCT" park hub/dotfiles:3
+  assert_failure; assert_output --partial 'holds another session'
+  grep -q sid-old "$(PARKED_LEDGER dotfiles:%6)"
+  run tmux_calls
+  refute_output --partial 'send-keys'
+}
+
 @test "a legacy session:window ledger still unparks by that name" {
   session hub dotfiles %6 60 61 idle ""
   mkdir -p "$HOME/.agent/parked"

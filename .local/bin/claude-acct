@@ -1595,6 +1595,11 @@ park_flow() {
         key="$session:$pane"
     fi
     what="$key"
+    # Pane ids restart with the tmux server, so a ledger that outlived a reboot can hold the
+    # same key: it is another claude's resume, never overwritten.
+    if [[ "$key" != "$session" && -f "$PARKED/$key" ]] && [[ "$(ledger_get "$PARKED/$key" session_id)" != "$(jq -r '.sessionId // empty' "$reg")" ]]; then
+        refuse "ledger $PARKED/$key holds another session; unpark it or delete it first"; return
+    fi
 
     local status sid cwd from b score name to note why shells=""
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
