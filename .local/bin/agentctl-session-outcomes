@@ -106,7 +106,7 @@ queue_index() {
   "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
       | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
         .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug]),
-                   iprojects: ((.[$x.s].iprojects // []) + [$x.i.project // empty] | unique),
+                   iprojects: ((.[$x.s].iprojects // []) + [$x.i.project // empty | select(. != "")] | unique),
                    refs: ((.[$x.s].refs // []) + [{row: ($x.i.row // ""), type: ($x.i.type // "")}])})' > "$1" && return 0
   printf '{}' > "$1"
   return 1
