@@ -265,13 +265,8 @@ def rank: sort_by((.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0
 # shellcheck source=../lib/plan-phases.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_repo_path "$1"; }
-# pr_repo_dir <pr ref> <project> -> the checkout an item's PR merged into: the repo an
-# <owner>/<repo>#<N> ref names (one project spans repos: agent-runtime lands in .dotfiles,
-# .dotfiles-private and home-config), else, for a bare number, the project's own.
-pr_repo_dir() {
-  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { repo_dir "$2"; return; }
-  repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
-}
+# pr_repo_dir <pr ref> <project> -> the checkout an item's PR merged into (so_pr_dir, on dispatch's map).
+pr_repo_dir() { PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" so_pr_dir "$@"; }
 # shellcheck source=../lib/session-outcomes.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"   # forge_canonical (origin-repo.sh), so_forgejo_*
 # shellcheck source=../lib/agent-merge-proof.sh
@@ -2745,35 +2740,15 @@ settle_row() {
 PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup
 PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci] | join(" ")'
 
-# pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
-# prints it; fails when its forge cannot be read. A checkout whose canonical forge is Forgejo
-# (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
-# so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, and fix-traefik's reap logged
-# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10). There <fields> is
-# fixed: <jq> sees only what so_forgejo_pr gives plus statusCheckRollup. The PR is the number on the
-# checkout's own Forgejo remote: the ref names the GitHub mirror, whose owner may differ. Else gh reads
-# the repo the ref names, or a bare number from the checkout.
-pr_view() {
-  local n=${1##*#} repo pr ci
-  if forge_canonical "$2"; then
-    # Authed in this shell, so the token is read once and both reads below carry it (each $(...) is a subshell).
-    repo=$(so_forgejo_repo "$2") && so_forgejo_auth "$repo" && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) &&
-      ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
-    jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
-  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
-  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
-  fi
-}
-
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
-# be read (pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
+# be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
 # project's checkout and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
 item_pr_state() {
   local pr project
   IFS=$'\x1f' read -r pr project < <(jq -r '[.pr // "", .project // ""] | join("\u001f")' <<<"$2")
   [ -n "$pr" ] || return 1
-  if [[ "$pr" == */*#* ]]; then pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
-  pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
+  if [[ "$pr" == */*#* ]]; then so_pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
+  so_pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
 }
 
@@ -2886,7 +2861,7 @@ item_rollout() {
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
-# (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state its forge cannot read (pr_view), or a bare pr: whose PR
+# (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state its forge cannot read (so_pr_view), or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
 # doc, a stack-review report) is done ok: that was the deliverable. A waiting or review item with
 # neither stays parked on its blocker, any other item with neither is failed, the reason in note.
