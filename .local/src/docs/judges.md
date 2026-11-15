@@ -47,7 +47,7 @@ Each verdict is one of: TP (answered, right), FP (answered, wrong), FN (deferred
 | coverage | answered / (verdicts - errors) |
 | precision | TP / (TP + FP), with its Wilson 95% interval |
 | false-defer % | FN / (FN + TN); the dispatch judge's is `dispatch_false_defer_pct`, null under 10 scored skips |
-| `runner_score_<name>` | the lane's precision, TP / (TP + FP), null under 30 scored |
+| `runner_score_<name>` | the lane's precision, TP / (TP + FP), null under `AGENT_ASK_LIVE_BAR` (30) scored |
 | kappa | Cohen's kappa over the TP, FP, FN, TN table |
 | p50, p95 | each scored verdict's call `duration_ms` |
 | cost per verdict | each call's `cost_usd` divided by the verdicts it made, averaged |

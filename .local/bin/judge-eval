@@ -354,7 +354,7 @@ JQ_EVAL="$JQ_EPOCH"'
                         answered_at: (.answered_at // .at | epoch)}))}
        # What the human reads rather than a score, so every prompt counts: a policy change must
        # not empty the list or reset the week. score_7d is the week as the Workers score cell and
-       # the day-log rollup show it, a percent only past the bar; the runner_score KPI counts the
+       # the day-log rollup show it, a percent only from AGENT_ASK_LIVE_BAR rows; the runner_score KPI counts the
        # current prompt only.
        + (($all | map(select(.agent == $ag))) as $every
           | ($every | map(select((.at | epoch // 0) >= $now - 7 * 86400)) | stats) as $wk
