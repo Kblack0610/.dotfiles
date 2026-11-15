@@ -47,7 +47,7 @@ plan_pointer() {
   local path n
   # A stub is short (agent-queue writes about ten lines); a longer plan that opens the same way is its own.
   [ "$(wc -l <"$1")" -le 40 ] || return 0
-  IFS=$'\t' read -r n path < <(head -n 8 "$1" | sed -nE 's/^Phase ([0-9]+) of ((~|\/)[^(:]*\.md).*$/\1\t\2/p' | head -n 1)
+  IFS=$'\t' read -r n path < <(awk 'NR <= 8' "$1" | sed -nE '/^Phase ([0-9]+) of ((~|\/)[^(:]*\.md).*$/{s//\1\t\2/p;q;}')
   [ -n "${path:-}" ] || return 0
   path="${path/#\~/$HOME}"
   [ -f "$path" ] || return 0
