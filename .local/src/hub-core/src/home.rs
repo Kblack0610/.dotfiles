@@ -41,7 +41,7 @@ pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
 pub const TEXT_MAX: usize = 160;
 /// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
 /// long list is capped, never unbounded at top level).
-pub const SHOWN: usize = 8;
+pub const SHOWN: usize = 6;
 /// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
 /// rewrite Home says the state stopped, instead of showing an old list as if it were now.
 pub const FLEET_STATE_STALE_SECS: i64 = 300;
