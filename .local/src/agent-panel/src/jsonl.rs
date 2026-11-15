@@ -302,9 +302,10 @@ pub struct FleetInfo {
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,
     /// What the session is waiting on right now, from the jobs still open at its last entry:
-    /// `human`, `gate`, `test`, `agent` (a background subagent), `jobs` (any other command) or
-    /// `none`. Only the class, never the command. fleet-sessions trusts a `gate`, `test` or
-    /// `agent` shell for longer than a `jobs` one, which is a sleep loop or a watch on a file.
+    /// `human`, `gate`, `test`, `build`, `agent` (a background subagent), `jobs` (any other
+    /// command) or `none`. Only the class, never the command. fleet-sessions trusts a `gate`,
+    /// `test`, `build` or `agent` shell for longer than a `jobs` one, which is a sleep loop or a
+    /// watch on a file.
     pub open_job: &'static str,
     /// The last main-thread tool call, `<Tool>: <description>`, empty when there is none.
     pub doing: String,
@@ -380,6 +381,9 @@ enum Wait {
     Jobs,
     Human,
     Parked,
+    /// Only a `build` line of the conf yields this, and `open_job` turns it into a `Jobs` job
+    /// with `build` set: time_use counts a build as `jobs`, so this is never a `secs` index.
+    Build,
 }
 
 /// A tool call still running. Holds what it counts as, never its command, which can hold a secret.
@@ -389,10 +393,12 @@ struct Job {
     wait: Wait,
     /// A background subagent: its session is idle while the subagent works.
     agent: bool,
+    /// A command a `build` line of `time-use.conf` names: counted as `jobs`, reported as `build`.
+    build: bool,
     since: u64,
 }
 
-/// `<gate|test> <text in the command>` lines. The first line that matches wins.
+/// `<gate|test|build> <text in the command>` lines. The first line that matches wins.
 fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
     conf.lines()
         .filter_map(|l| {
@@ -400,6 +406,7 @@ fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
             match kind {
                 "gate" => Some((Wait::Gate, text.trim())),
                 "test" => Some((Wait::Test, text.trim())),
+                "build" => Some((Wait::Build, text.trim())),
                 _ => None,
             }
         })
@@ -474,6 +481,8 @@ fn open_class(jobs: &[Job], last: u64) -> &'static str {
         "gate"
     } else if has(Wait::Test) {
         "test"
+    } else if live.iter().any(|j| j.build) {
+        "build"
     } else if live.iter().any(|j| j.agent) {
         "agent"
     } else if live.is_empty() {
@@ -561,6 +570,8 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
             .find(|(_, text)| command.contains(text))
             .map_or(Wait::Jobs, |(wait, _)| *wait)
     };
+    let build = wait == Wait::Build;
+    let wait = if build { Wait::Jobs } else { wait };
     if let Some(id) = call.get("id").and_then(Value::as_str) {
         let agent = name == "Agent" || name == "Task";
         jobs.push(Job {
@@ -568,6 +579,7 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
             task_id: None,
             wait,
             agent,
+            build,
             since: at,
         });
     }
@@ -887,10 +899,13 @@ pub fn context_window(model: &str) -> Option<u64> {
 }
 
 /// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), unless the
-/// session later landed a phase against another plan (`agent-land --plan`, `plans_landed`): it
-/// works the plan it lands, as when it copies its plan-mode file under a name of its own
-/// (2026-11-11, unity-core-playground-agent-82 landed every phase of a copy and read the 2/4
-/// plan-mode file, ar-201). Only a landing moves it, so editing another plan does not. Else the plan
+/// session later landed a phase against another plan (`agent-land --plan`) or copied or moved its
+/// plan-mode file under a name of its own (`plans_carried`): it works the plan it lands or copied
+/// to, whichever came last (2026-11-11, unity-core-playground-agent-82 landed every phase of a
+/// copy and read the 2/4 plan-mode file, ar-201; 2026-11-12, hub/dotfiles:7 copied its plan to
+/// binks-gtm.md, ticked every phase there and read 0/6 from the plan-mode file, ar-2067). Only a
+/// landing or a copy moves it, so editing another plan does not, and writing the plan-mode file
+/// again takes it back (a backup copy is not the plan it works). Else the plan
 /// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
 /// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
 /// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
@@ -916,15 +931,9 @@ fn plan_file(text: &str) -> String {
         let mode = rest.find('"').map(|end| &rest[..end]);
         // The same file through another account's plans dir (a link to ~/.claude/plans) keeps
         // the path plan mode wrote.
-        // agent-land is rare in a transcript, so the per-line parse runs only when it is there.
-        let after = &text[chosen..];
-        let landed = if after.contains("agent-land") {
-            plans_landed(after).pop()
-        } else {
-            None
-        };
-        if let Some(name) = landed {
-            if mode.and_then(|m| m.rsplit('/').next()) != Some(name.as_str()) {
+        let mode_name = mode.and_then(|m| m.rsplit('/').next()).unwrap_or("");
+        if let Some(name) = plans_carried(&text[chosen..], mode_name).pop() {
+            if mode_name != name {
                 return plans.join(name).to_string_lossy().into_owned();
             }
         }
@@ -964,18 +973,30 @@ fn plan_file(text: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Which plan references `plans_touched` keeps.
+#[derive(Clone, Copy)]
+enum Touch<'a> {
+    /// Every write: Edit, Write, MultiEdit, and the shell writes of `bash_plan_refs`.
+    Written,
+    /// What moves a session's plan off or back onto the plan-mode file named here: an
+    /// `agent-land --plan`, the target of a `cp` or `mv` of it (not a write of its own), and a
+    /// write of the plan-mode file itself, so the last of them is the plan it works.
+    Carried(&'a str),
+}
+
 /// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
 /// file_path, or a Bash command that writes one (see `bash_plan_refs`).
 fn plans_written(text: &str) -> Vec<String> {
-    plans_touched(text, false)
+    plans_touched(text, Touch::Written)
 }
 
-/// The plans the session's own `agent-land --plan` calls named, oldest first.
-fn plans_landed(text: &str) -> Vec<String> {
-    plans_touched(text, true)
+/// The plans the session's own tool calls carried its plan `mode` to, oldest first (see
+/// `Touch::Carried`): a landing, a copy of `mode`, or a write of `mode` that takes it back.
+fn plans_carried(text: &str, mode: &str) -> Vec<String> {
+    plans_touched(text, Touch::Carried(mode))
 }
 
-fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
+fn plans_touched(text: &str, touch: Touch) -> Vec<String> {
     let mut out = Vec::new();
     for v in text
         .lines()
@@ -996,10 +1017,15 @@ fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
                     .unwrap_or("")
             };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                "Edit" | "Write" | "MultiEdit" if !lands_only => {
-                    out.extend(plan_name(input("file_path")).map(str::to_string))
-                }
-                "Bash" => out.extend(bash_plan_refs(input("command"), lands_only)),
+                "Edit" | "Write" | "MultiEdit" => out.extend(
+                    plan_name(input("file_path"))
+                        .filter(|n| match touch {
+                            Touch::Written => true,
+                            Touch::Carried(mode) => *n == mode,
+                        })
+                        .map(str::to_string),
+                ),
+                "Bash" => out.extend(bash_plan_refs(input("command"), touch)),
                 _ => {}
             }
         }
@@ -1009,8 +1035,10 @@ fn plans_touched(text: &str, lands_only: bool) -> Vec<String> {
 
 /// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
 /// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
-/// to another command is not writing it. With `lands_only`, only the agent-land `--plan` ones.
-fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
+/// to another command is not writing it. With `Touch::Carried(mode)`, only the agent-land
+/// `--plan` ones, the target of a `cp` or `mv` whose source is the plan `mode`, and a write of
+/// `mode` itself.
+fn bash_plan_refs(cmd: &str, touch: Touch) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
     if !cmd.contains("/plans/") {
         return Vec::new();
@@ -1044,12 +1072,25 @@ fn bash_plan_refs(cmd: &str, lands_only: bool) -> Vec<String> {
         };
         let lands =
             cmd_is("agent-land") && (before.ends_with("--plan") || before.ends_with("--plan="));
-        if lands
-            || !lands_only
-                && (before.ends_with('>')
-                    || cmd_is("tee")
-                    || (cmd_is("sed") && words.iter().any(sed_in_place)))
-        {
+        // The source of a copy is the last operand before the target: `cp [-f] <src> <dst>`.
+        let copies_mode = |mode: &str| {
+            (cmd_is("cp") || cmd_is("mv"))
+                && words[1..]
+                    .iter()
+                    .rev()
+                    .find(|w| !w.starts_with('-'))
+                    .and_then(|w| plan_name(w.trim_matches(['\'', '"'])))
+                    == Some(mode)
+        };
+        let writes = before.ends_with('>')
+            || cmd_is("tee")
+            || (cmd_is("sed") && words.iter().any(sed_in_place));
+        let keep = lands
+            || match touch {
+                Touch::Written => writes,
+                Touch::Carried(mode) => copies_mode(mode) || (writes && name == mode),
+            };
+        if keep {
             out.push(name.to_string());
         }
     }
@@ -1654,6 +1695,36 @@ mod tests {
     }
 
     #[test]
+    fn a_build_job_counts_as_jobs_in_time_use_and_reads_build_when_open() {
+        let patterns = [(Wait::Test, "run.sh"), (Wait::Build, "unity-method.sh")];
+        const BUILD: &str =
+            r#"{"command":"scripts/authoring/unity-method.sh RenderCli","run_in_background":true}"#;
+        let lines = [
+            call(0, "b", "Bash", BUILD),
+            launched(0, "b", "backgroundTaskId", "tb"),
+            peer(30),
+        ];
+        let (used, open) = walk(&lines.join("\n"), &patterns);
+        // The wait is `jobs`, never `test`: a build is not a test run, and no stat of its own.
+        assert_eq!(
+            used,
+            TimeUse {
+                jobs_min: 30,
+                ..TimeUse::default()
+            }
+        );
+        assert_eq!(open, "build");
+        // A test beside it still wins the open class, as a gate does over a test.
+        let both = [
+            call(0, "b", "Bash", BUILD),
+            launched(0, "b", "backgroundTaskId", "tb"),
+            call(1, "t", "Bash", TEST),
+            launched(1, "t", "backgroundTaskId", "tt"),
+        ];
+        assert_eq!(walk(&both.join("\n"), &patterns).1, "test");
+    }
+
+    #[test]
     fn time_use_splits_gate_test_and_other_jobs_and_ranks_them() {
         let got = buckets(&[
             call(0, "o", "Bash", OTHER),
@@ -1864,6 +1935,7 @@ mod tests {
             .1
         };
         assert_eq!(open("gh-run-wait 42349132239 'Release builds'"), "gate");
+        assert_eq!(open("scripts/authoring/unity-method.sh RenderCli"), "build");
         // A wrapper script of the session's own hides its gh run view: a plain job.
         assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
     }
@@ -2352,7 +2424,58 @@ mod tests {
         let reattached = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude/plans/mode-file.md"}}"#;
         let edited = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/sibling.md","old_string":"","new_string":""}}]}}"#;
         let other_mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/other-mode.md"}"#;
+        // 2026-11-12, hub/dotfiles:7 (ar-2067): plan mode wrote an account's copy, the session
+        // copied it to a name of its own and ticked every phase there.
+        let personal_mode = r#"{"type":"attachment","attachment":{"type":"plan_mode"},"planFilePath":"/h/.claude-personal/plans/lazy-soaring-babbage.md"}"#;
+        let reattached_personal = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude-personal/plans/lazy-soaring-babbage.md"}}"#;
+        let cp_to_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude-personal/plans/lazy-soaring-babbage.md ~/.claude/plans/binks-gtm.md 2>/dev/null || true; ls -la ~/.claude/plans/binks-gtm.md"}}]}}"#;
+        let mv_to_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"mv -f \"$HOME/.claude-personal/plans/lazy-soaring-babbage.md\" ~/.claude/plans/binks-gtm.md"}}]}}"#;
+        let edited_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/binks-gtm.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
+        let cp_back = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/binks-gtm.md ~/.claude-personal/plans/lazy-soaring-babbage.md; grep -n x ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
+        let cp_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude-personal/plans/lazy-soaring-babbage.md; cp ~/.claude/plans/theirs.md ~/.claude/plans/binks-gtm.md"}}]}}"#;
+        let landed_third = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"agent-land 9 --item x --plan ~/.claude/plans/third.md --phase 1"}}]}}"#;
+        let edited_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude-personal/plans/lazy-soaring-babbage.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
+        let sed_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/- \\[ \\]/- [x]/' ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
         for (name, lines, want) in [
+            // A backup copy taken before it went on writing the plan-mode file is not its plan.
+            (
+                "backup-then-edited",
+                vec![personal_mode, cp_to_own, edited_mode],
+                "/h/.claude-personal/plans/lazy-soaring-babbage.md",
+            ),
+            (
+                "backup-then-sed",
+                vec![personal_mode, cp_to_own, sed_mode, reattached_personal],
+                "/h/.claude-personal/plans/lazy-soaring-babbage.md",
+            ),
+            (
+                "copied-then-edited",
+                vec![personal_mode, cp_to_own, edited_own, reattached_personal],
+                "/.claude/plans/binks-gtm.md",
+            ),
+            // Copying the worked plan back over the plan-mode file does not undo the copy.
+            (
+                "synced-back",
+                vec![personal_mode, cp_to_own, edited_own, cp_back],
+                "/.claude/plans/binks-gtm.md",
+            ),
+            (
+                "moved",
+                vec![personal_mode, mv_to_own],
+                "/.claude/plans/binks-gtm.md",
+            ),
+            // A copy of another plan, or reading the plan-mode file, does not move it.
+            (
+                "copied-other",
+                vec![personal_mode, cp_other, edited_own],
+                "/h/.claude-personal/plans/lazy-soaring-babbage.md",
+            ),
+            // A landing after the copy still wins: the later of the two.
+            (
+                "copied-then-landed",
+                vec![personal_mode, cp_to_own, landed_third],
+                "/.claude/plans/third.md",
+            ),
             (
                 "reattached-older",
                 vec![mode, other_mode, reattached],
@@ -2500,13 +2623,13 @@ mod tests {
                 vec![],
             ),
         ] {
-            assert_eq!(bash_plan_refs(cmd, false), want, "{cmd}");
+            assert_eq!(bash_plan_refs(cmd, Touch::Written), want, "{cmd}");
         }
         let abs = format!(
             "cat > {}/.claude/plans/a.md",
             crate::session::home().display()
         );
-        assert_eq!(bash_plan_refs(&abs, false), ["a.md"]);
+        assert_eq!(bash_plan_refs(&abs, Touch::Written), ["a.md"]);
     }
 
     #[test]

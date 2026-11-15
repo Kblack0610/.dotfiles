@@ -136,8 +136,8 @@ pub enum Extras {
     None,
     /// the dispatch judge (dispatch-judge.conf): the verdict counts and the newest `PAGE_ROWS`.
     DispatchVerdicts { dispatch: Dispatch },
-    /// The answer judge's tiles and every verdict: a surface cuts them to its view and the
-    /// newest `PAGE_ROWS` (`Judge::view`), so its state tiles count them all.
+    /// The answer judge's tiles and every verdict: a surface cuts them to its view and its
+    /// own cap (`Judge::view`; the TUI's `PAGE_ROWS`, agent-web's `RUNNER_ROWS`), so its state tiles count them all.
     AskJudge { judge: Box<Judge> },
     /// The intake steps in the ingest record for the week: counts and the newest `PAGE_ROWS`.
     Ingest {
