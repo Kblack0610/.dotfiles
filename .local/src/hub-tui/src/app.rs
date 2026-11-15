@@ -7807,23 +7807,19 @@ mod tests {
 
     #[test]
     fn a_ledger_append_rereads_builds_only_while_the_tab_is_shown() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut a = builds_app();
-        a.tx = tx;
-        a.handle(Msg::BuildFile);
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(5)),
-            Ok(Msg::Builds(_))
-        ));
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut c = builds_app();
-        c.tab = Tab::Infra;
-        c.tx = tx;
-        c.handle(Msg::BuildFile);
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(Msg::Builds(_))),
-            "Infra's Runs shows the runs too"
-        );
+        // `busy` is set on the calling thread when the read is started, so it says a read began
+        // without waiting on the worker thread's message.
+        for (tab, why) in [
+            (Tab::Releases, "Releases shows the runs"),
+            (Tab::Infra, "Infra's Runs shows the runs too"),
+        ] {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut a = builds_app();
+            a.tab = tab;
+            a.tx = tx;
+            a.handle(Msg::BuildFile);
+            assert!(a.builds_read.busy, "{why}");
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let mut b = builds_app();
         b.tab = Tab::Home;
@@ -7835,14 +7831,10 @@ mod tests {
 
     #[test]
     fn a_new_snapshot_rereads_the_releases_tab_only_while_it_is_shown() {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Releases, tx);
         a.handle(Msg::ReleaseFile);
-        assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(5)),
-            Ok(Msg::Releases(_))
-        ));
-        a.handle(Msg::Releases(Box::default()));
+        assert!(a.releases_read.busy, "Releases shows the snapshot");
         let (tx, rx) = std::sync::mpsc::channel();
         let mut b = with_tx(Tab::Costs, tx);
         b.handle(Msg::ReleaseFile);
