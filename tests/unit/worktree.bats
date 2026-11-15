@@ -1190,6 +1190,30 @@ done_from_inside() {
   [ -f "$WT_ROOT/repo-train/.git" ]
 }
 
+@test "a lock with no reason is foreign, and a reworded wt hold is still wt's" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-bare" origin/main
+  git -C "$MAIN" worktree lock "$WT_ROOT/repo-bare"
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  git -C "$MAIN" worktree lock --reason 'held by wt: an older wording' "$WT_ROOT/repo-agent-1"
+  run wt_occupied_reason "$WT_ROOT/repo-bare"
+  assert_failure
+  assert_output 'git-locked: no reason given'
+  run wt_occupied_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+}
+
+@test "reap leaves another tool's lock on, so git refuses a removal past the policy" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-train" origin/main
+  git -C "$MAIN" worktree lock --reason 'the train reuses it' "$WT_ROOT/repo-train"
+  wt_occupied_reason() { return 0; } # the lock appeared after the policy check
+  run cmd_reap "$WT_ROOT/repo-train"
+  assert_failure
+  [ -f "$WT_ROOT/repo-train/.git" ]
+  grep -qx 'the train reuses it' "$MAIN/.git/worktrees/repo-train/locked"
+}
+
 @test "gc a main checkout and an unresolvable .git are not-a-worktree, not held" {
   mkdir -p "$WT_ROOT/clone/.git" "$WT_ROOT/broken"
   git init --quiet "$WT_ROOT/clone"
