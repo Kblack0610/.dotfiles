@@ -2200,6 +2200,45 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
+# interrupt_pass <signal>: start a pass whose agent-queue read hangs, send <signal> to the
+# fleet-sessions pid alone (a caller forwarding it, or `timeout`), and check the pass ends with
+# every process it started and leaves no scratch dir (nc-42).
+interrupt_pass() {
+  mkfifo "$SANDBOX/ready"
+  mkdir -p "$SANDBOX/tmp"
+  printf '#!/usr/bin/env bash\necho $$ > "$SANDBOX/queue.pid"\necho started > "$SANDBOX/ready"\nexec sleep 300\n' \
+    > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export SANDBOX
+  # A job of a non-interactive shell starts with SIGINT ignored, which bash cannot trap; reset it.
+  env --default-signal=INT TMPDIR="$SANDBOX/tmp" "$REPO_ROOT/.local/bin/fleet-sessions" --json \
+    > "$SANDBOX/out" 2> "$SANDBOX/err" 3>&- &
+  local main=$! queue group
+  LIVE_PIDS="$main"
+  # the stand-in writing the fifo is the event that the pass is inside collect
+  timeout 20 cat "$SANDBOX/ready" >/dev/null || fail 'the pass never reached agent-queue'
+  queue="$(cat "$SANDBOX/queue.pid")"
+  group="$(ps -o pgid= -p "$queue" | tr -d ' ')"
+  LIVE_PIDS="$main $queue"   # teardown kills these, pass or fail
+  kill -"$1" "$main"
+  timeout 20 tail --pid="$main" -f /dev/null || fail "fleet-sessions ran on after SIG$1"
+  timeout 20 tail --pid="$queue" -f /dev/null || fail "agent-queue outlived the pass after SIG$1"
+  # every process of the pass, not only the stand-in: its subshells and process substitutions
+  run pgrep -g "$group"
+  assert_failure
+  [ -z "$(ls -A "$SANDBOX/tmp")" ] || fail "the pass left $(ls "$SANDBOX/tmp")"
+  run cat "$SANDBOX/err"
+  refute_output --partial 'No such file or directory'
+}
+
+@test "SIGINT to fleet-sessions alone ends the pass at once, its children with it (nc-42)" {
+  interrupt_pass INT
+}
+
+@test "SIGTERM to fleet-sessions alone leaves no orphan of the pass and no scratch dir (nc-42)" {
+  interrupt_pass TERM
+}
+
 # bench_eta <json line>...: a fleet-bench stub whose `eta --json` prints these lines.
 bench_eta() {
   { printf '#!/usr/bin/env bash\n[ "$*" = "eta --json" ] || exit 1\ncat <<"J"\n'; printf '%s\n' "$@"; printf 'J\n'; } \
