@@ -294,10 +294,9 @@ pub const TABS: [Tab; 11] = [
             "How fast are the limits burning, what does the fleet cost, and is each model worth it?",
         sections: &[
             "totals",
-            "fleet",
+            "sessions",
             "spend",
             "table",
-            "sessions",
             "burn",
             "consumers",
             "tokens",
@@ -306,14 +305,14 @@ pub const TABS: [Tab; 11] = [
             "budget",
         ],
         // The strip splits the four questions; Spend opens first: its tiles (the 24h fleet figure
-        // among them), who spent it, the chart and period rows ($/session among them), the table,
-        // then the picked day's sessions last (human, 2026-11-12). Budget is cash (the bills we
-        // pay); the rest of the tab is list price.
+        // among them), then the one spend table (who, project, harness, account or session, with a
+        // total row), the chart and period rows ($/session among them), and the outcomes cut table
+        // (human, 2026-11-12). Budget is cash (the bills we pay); the rest of the tab is list price.
         inner: &[
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "fleet", "spend", "table", "sessions"],
+                sections: &["totals", "sessions", "spend", "table"],
             },
             Inner {
                 id: "limits",
@@ -933,7 +932,7 @@ mod tests {
             Inner {
                 id: "a",
                 title: "A",
-                sections: &["totals", "fleet", "spend", "table", "sessions"],
+                sections: &["totals", "sessions", "spend", "table"],
             },
             Inner {
                 id: "a",
@@ -963,7 +962,7 @@ mod tests {
             Inner {
                 id: "spend",
                 title: "Spend",
-                sections: &["totals", "fleet", "spend", "table", "sessions"],
+                sections: &["totals", "sessions", "spend", "table"],
             },
             Inner {
                 id: "models",
@@ -993,7 +992,7 @@ mod tests {
         // a missing or unknown word falls to the first, Spend
         assert_eq!(at(None), Some("spend"));
         assert_eq!(at(Some("nope")), Some("spend"));
-        // the fleet figure and burn per session are Spend's
+        // the spend table is Spend's, and the retired #costs/fleet link falls to Spend too
         assert_eq!(at(Some("fleet")), Some("spend"));
         assert_eq!(at(Some("sessions")), Some("spend"));
         // an old section link opens the inner tab now holding it

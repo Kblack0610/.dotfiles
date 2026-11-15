@@ -1570,6 +1570,10 @@ checkout_rows() {
 # the owners once (nudged), and only a red no item could be filed for escalates (ar-185, ar-623).
 # Its fact is the episode's first failure, an episode ending at a quiet gap longer than the window, so one more branch is not a new page and the
 # same test red again tomorrow is. Owners are the live sessions in the failing worktrees.
+# A ledger line may carry a fifth column, the failure's fingerprint (a baseline-count test's count
+# delta, say), - or none when unknown: a branch counts by its latest one, and a test is shared only
+# when one fingerprint, with the unknown ones, reaches the bar. A different delta on each branch is
+# each branch's own diff, not a shared cause (ar-2448: FlakePatternTests on agent-4 and agent-23).
 shared_rows() {
   local ledgers=() f test start n keys owners sid reason fact nu e win="${FLEET_SHARED_RED_MIN}m"
   for f in "$TEST_FAILURES" "$POOL_FAILURES"; do [ -f "$f" ] && ledgers+=("$f"); done
@@ -1585,13 +1589,29 @@ shared_rows() {
       if (!(t in last) || $1 - last[t] > w) start[t] = $1
       last[t] = $1
       if ($1 < now - w) next
-      if (!((t, k) in seen)) { seen[t, k] = 1; n[t]++; keys[t] = keys[t] (n[t] > 1 ? ", " : "") k }
-      if (!((t, $2) in wt)) {
-        wt[t, $2] = 1; m = split(sids[$2], s, " ")
-        for (i = 1; i <= m; i++) if (!((t, s[i]) in own)) { own[t, s[i]] = 1; o[t] = o[t] (o[t] == "" ? "" : ",") s[i] }
-      }
+      if (!((t, k) in seen)) { seen[t, k] = 1; b[t, ++nb[t]] = k }
+      if (!((t, k, $2) in wt)) { wt[t, k, $2] = 1; wts[t, k] = wts[t, k] " " $2 }
+      fp[t, k] = ($5 == "-") ? "" : $5
     }
-    END { for (t in n) if (n[t] >= min) print t, start[t], n[t], keys[t], (o[t] == "" ? "-" : o[t]) }' "$CACHE/cwds" - | sort |
+    END {
+      for (x in fp) if (fp[x] != "") { split(x, p, SUBSEP); if (++c[p[1], fp[x]] > mx[p[1]]) { mx[p[1]] = c[p[1], fp[x]]; g[p[1]] = fp[x] } }
+      # the branches of the largest fingerprint, with the unknown ones, in first-failure order
+      for (t in nb) {
+        n = 0; keys = ""; o = ""; delete own; delete wd
+        for (j = 1; j <= nb[t]; j++) {
+          k = b[t, j]
+          if (fp[t, k] != "" && fp[t, k] != g[t]) continue
+          n++; keys = keys (n > 1 ? ", " : "") k
+          m = split(wts[t, k], ws, " ")
+          for (i = 1; i <= m; i++) {
+            if (ws[i] in wd) continue
+            wd[ws[i]] = 1; q = split(sids[ws[i]], s, " ")
+            for (r = 1; r <= q; r++) if (!(s[r] in own)) { own[s[r]] = 1; o = o (o == "" ? "" : ",") s[r] }
+          }
+        }
+        if (n >= min) print t, start[t], n, keys, (o == "" ? "-" : o)
+      }
+    }' "$CACHE/cwds" - | sort |
   while IFS=$'\t' read -r test start n keys owners; do
     sid="shared-$(printf '%s' "$test" | tr -c 'A-Za-z0-9' _)"
     reason="$test red on $n branches in $win: $keys"
@@ -1672,14 +1692,16 @@ board_cells() {
 }
 
 # transitions <previous cells file> <current cells file> -> one line per session that
-# appeared, left, or changed a stage cell: "target  ci pending -> fail, stage ... (reason)".
+# appeared, left, or changed a stage cell: "target  ci pending -> fail, stage ... (reason)". The
+# new: and gone rows end in " sid=<session id>": a target like hub/dotfiles:3 is reused within a
+# day, so only the id ties a close to the shepherd nudge that preceded it (ar-2013).
 transitions() {
   awk -F'\t' '
     BEGIN { split("- - sync conflicts tree pr ci plan quality stage labels", name, " ") }
     NR == FNR { prev[$1] = $0; next }
     {
       seen[$1] = 1
-      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ")"; print $2 "  project - -> " $21; next }
+      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ") sid=" $1; print $2 "  project - -> " $21; next }
       split(prev[$1], p, "\t"); out = ""
       for (i = 3; i <= 11; i++)
         if (p[i] != $i) out = out (out == "" ? "" : ", ") name[i] " " p[i] " -> " $i
@@ -1687,7 +1709,7 @@ transitions() {
       if (p[21] != $21) out = out (out == "" ? "" : ", ") "project " (p[21] == "" ? "-" : p[21]) " -> " $21
       if (out != "") print $2 "  " out (p[10] != $10 ? " (" $14 ")" : "")
     }
-    END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
+    END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone sid=" s } }' "$1" "$2"
 }
 
 # keep_blind <previous cells file> <current cells file> <blind file> -> the current cells with each

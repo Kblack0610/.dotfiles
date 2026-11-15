@@ -42,17 +42,21 @@ const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 
 // Home: hub_core::home needs, proposals.
 const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
+// Every capped Home list holds more rows than the page draws (hub_core::home SHOWN), the Needs you list at the 83 that read 2783 px live (ar-2038): Home must stay under budget however long they run.
+const NEEDS = 83, RUNNING = 12, PROPOSALS = 12;
+// The cap the server sends, read from hub-core so a change to it moves the fixture too.
+const HOME_SHOWN = Number(readFileSync(new URL("../../../.local/src/hub-core/src/home.rs", import.meta.url), "utf8").match(/pub const SHOWN: usize = (\d+);/)[1]);
 const home = {
-  errors: [], shown: 6, grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
+  errors: [], shown: HOME_SHOWN, grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   vitals: null,
-  running: rows(2, (i) => ({ project: pick(PROJECTS, i), title: TEXT[i], slug: SLUGS[i], started: iso(ago(40 + i * 10)), phases: { done: 1 + i, total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
-  running_table: table(2, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
-  table: table(6, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
-  needs: rows(6, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: TEXT[i], target: `agent-${i}` })),
-  proposals: rows(5, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: TEXT[i + 2], created: iso(ago(120 + i * 60)), error: null, why: TEXT[i], evidence: "", does: "queue", expires: null, verb: "queue" })),
-  proposals_head: "5 from 3 streams", proposals_failed: false,
-  proposals_table: table(5, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
+  running: rows(RUNNING, (i) => ({ project: pick(PROJECTS, i), title: pick(TEXT, i), slug: `${pick(SLUGS, i)}-${i}`, started: iso(ago(40 + i * 10)), phases: { done: 1 + (i % 4), total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
+  running_table: table(RUNNING, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
+  table: table(NEEDS, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
+  needs: rows(NEEDS, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: pick(TEXT, i), target: `agent-${i}` })),
+  proposals: rows(PROPOSALS, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: pick(TEXT, i + 2), created: iso(ago(120 + i * 60)), error: null, why: pick(TEXT, i), evidence: "", does: "queue", expires: null, verb: "queue" })),
+  proposals_head: `${PROPOSALS} from 3 streams`, proposals_failed: false,
+  proposals_table: table(PROPOSALS, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
 };
 const briefing = {
   since: iso(ago(600)), since_label: "since last night", errors: [], ok_line: "4 more lanes green",
@@ -286,18 +290,11 @@ const costs = {
   fleet_cost: {
     why: null, usd: "about $859", measured: "$320", estimated: "$539", as_of: NOW - 600, stale: false,
     coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
-    rows: [
-      { name: "queue items", usd: 270, cost: "$270", share: "31%", basis: "102 sessions, $40 measured, $230 estimated", detail: null },
-      { name: "shepherd", usd: 44, cost: "$44", share: "5%", basis: "60 sessions, measured", detail: null },
-      { name: "other runners", usd: 30, cost: "$30", share: "4%", basis: "132 sessions, $13 measured, $17 estimated", detail: "ask-judge $6, knowledge-engine $4, dispatch-judge $3, a-runner-with-a-long-name $2, $15 with no runner name" },
-      { name: "lazer-reserve", usd: null, cost: "-", share: "-", basis: "0 of 1 session, no price known", detail: null },
-    ],
     unpriced: ["claude-sonnet-4-6: 32M tokens in 1 session not in the total, no billed sessions"],
-    days: "11-05 $2,445  11-06 $1,750  11-07 $1,422  11-08 $775",
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
   },
   direct: { usd: 1.25, unpriced: 1, note: "opencode lazer/*, nightly; other direct use unseen" },
-  // hub_core::spend_history: the 30-day chart, and the picked day's sessions (Burn per session).
+  // hub_core::spend_history: the 30-day chart, and the picked day's sessions (the spend table).
   history: {
     why: null, head: "Nov $1,579/day vs Oct $1,102/day (+43%); 11-12 $1,312 vs 7d median $1,120 (+17%)", older: 0, missing: 1, stale: false,
     note: "est. is the share priced from tokens",
@@ -308,11 +305,12 @@ const costs = {
     }),
     months: [{ key: "2026-10", label: "10", usd: 34200, measured: 27000, estimated: 7200, tip: "2026-10: $34,200" }, { key: "2026-11", label: "11", usd: 14210, measured: 11200, estimated: 3010, tip: "2026-11: $14,210" }],
   },
+  // The spend table opens grouped by who, on the live day, with its total row on top.
   day: {
-    day: "2026-11-12", head: "2026-11-12: 6 sessions, $1,140 of the day's $1,312", why: null, more: 0, shown_usd: "$1,140",
-    rows: rows(6, (i) => ({ sid: `s${i}`, session: TEXT[i], project: pick(PROJECTS, i), origin: pick(["runner", "queue", "hand"], i), agent: i % 2 ? null : `agent-${i}`, harness: pick(["claude", "codex"], i), cost: 400 - i * 60, share: Math.round((400 - i * 60) / 13.12), est: i % 3 ? 0 : 30, days: 1 + i })),
-    table: table(6, ["session", "project", "origin", "agent", "harness", "cost", "share", "est", "days"], ["all"], {}),
-    series: null,
+    day: "24h", head: "last 24h: 6 sessions, $1,140 of the day's $1,312", why: null, group: "who", cuts: ["who", "project", "harness", "account", "sessions"], live: true, has_live: true,
+    in_group: "", open: null, outside: "+$172 not in a session row (helper calls and the gateway)", more: 0, shown_usd: "$0.00", rows: [], table: null, series: null,
+    total: { name: "total", sessions: 6, cost: 1140, share: 87, est: 40, per_session: 190 },
+    groups: [{ name: "queue items", sessions: 3, cost: 760, share: 58, est: 50, per_session: 253 }, { name: "shepherd", sessions: 2, cost: 280, share: 21, est: 0, per_session: 140 }, { name: "dream", sessions: 1, cost: 100, share: 8, est: 30, per_session: 100 }],
   },
   sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "outcomes rows", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),

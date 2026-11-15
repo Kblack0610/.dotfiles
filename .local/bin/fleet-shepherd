@@ -717,30 +717,59 @@ shared_items() {
 # shared_sample: one queue item owns each shared red episode (ar-623). A test red on several
 # branches at once is a shared cause, and before this every branch's session gated again into it
 # alone: 2026-10-30..11-06, 55% of playground test reds sat on 3+ branches and red gates burned 57%
-# of gate pool hours, while the page these rows sent was answered twice. A live item that already
-# names the test's class owns it (a nightly-fix item, say); otherwise one is filed to quarantine the
-# test with an owner and expiry (playground docs/operations/ci.md rule 5) and fix it. A failed add
-# files nothing, so the row stays a `shared red:` line the pass escalates.
+# of gate pool hours, while the page these rows sent was answered twice. An owner is a live item,
+# not low priority, whose task or title names the test as Class.Method or in full: on 2026-11-14 a
+# landed item and a low gate-spread item that cited the class as evidence were named owners
+# (ar-2448). An owner that stops being one (it landed) is dropped and the fact matched again;
+# with no owner, one is filed per test to quarantine it with an owner and expiry (playground
+# docs/operations/ci.md rule 5) and fix it. A failed add, or one whose slug is taken by an item
+# that does not own the test, files nothing, so the row stays a `shared red:` line the pass
+# escalates; a queue that reads empty or a document that cannot be read changes nothing.
+# SHARED_OWNER_JQ: the active items in, $t the test without its parameters, each owner's slug out.
+SHARED_OWNER_JQ='def word: gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)") | "(^|[^A-Za-z0-9_.])" + . + "($|[^A-Za-z0-9_])";
+  ($t | split(".") | .[-2:] | join(".")) as $cm
+  | select($t != "" and (.priority // "") != "low")
+  | select(((.task // "") + " " + (.title // "")) | test($t | word) or test($cm | word))
+  | .slug'
+# shared_owners <test>: the slugs of the items in $active that own it.
+shared_owners() { jq -r --arg t "${1%%(*}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null; }
 shared_sample() {
-  local fact test reason cls active slug out
+  local fact test reason cm active slug out keep rows
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
-  active="$(agent-queue list --json --state active 2>/dev/null)"
+  active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
+  rows="$(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)" || return 0
+  # Keep the mappings of the document's live facts whose item still owns the test. A queue that
+  # reads empty proves no owner gone, so it keeps every mapping and only files for the rest.
+  [ -n "$active" ] && keep="$(while IFS=$'\t' read -r fact test reason; do
+      slug="$(awk -F'\t' -v f="$fact" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
+      [ -n "$fact" ] && [ -n "$slug" ] || continue
+      if shared_owners "$test" | grep -qxF -- "$slug"; then
+        printf '%s\t%s\n' "$fact" "$slug"
+      else
+        cmd_log "shared red: $test is no longer owned by queue item $slug: it landed, is low, or does not name the test" >/dev/null
+      fi
+    done <<<"$rows")" &&
+    { printf '%s' "${keep:+$keep$'\n'}" > "$SHARED_ITEMS.tmp" && mv "$SHARED_ITEMS.tmp" "$SHARED_ITEMS"; }
   while IFS=$'\t' read -r fact test reason; do
+    [ -n "$fact" ] || continue
     awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
-    cls="${test%%(*}"; cls="${cls%.*}"; cls="${cls##*.}"
-    slug="$(jq -r --arg t "${test%%(*}" --arg c "$cls" '
-      select(((.task // "") + " " + (.title // "")) as $x | ($x | contains($t)) or ($c != "" and ($x | test("\\b" + $c + "\\b"))))
-      | .slug' <<<"$active" 2>/dev/null | head -1)"
+    cm="${test%%(*}"; cm="$(awk -F. '{ print (NF > 1 ? $(NF - 1) "." : "") $NF }' <<<"$cm")"
+    slug="$(shared_owners "$test" | head -1)"
     if [ -z "$slug" ]; then
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
-        --slug "shared-red-$cls" --repeat --title "fix(test): $cls red on several branches at once" \
+        --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
-      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p; s/.*already in the queue: //p' <<<"$out" | head -1)"
+      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p' <<<"$out" | head -1)"
+      if [ -z "$slug" ]; then
+        # taken, slugs being cut to 40 characters: another test's item, or this one's at low
+        slug="$(sed -n 's/.*already in the queue: //p' <<<"$out" | head -1)"
+        [ -z "$slug" ] || shared_owners "$test" | grep -qxF -- "$slug" || slug=""
+      fi
     fi
     [ -n "$slug" ] || { cmd_log "shared red: could not file an owner for $test: ${out##*: }" >/dev/null; continue; }
     printf '%s\t%s\n' "$fact" "$slug" >> "$SHARED_ITEMS"
     cmd_log "shared red: $reason; owned by queue item $slug" >/dev/null
-  done < <(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)
+  done <<<"$rows"
 }
 
 # log [--heading] <text>: the rundown's only writer of times. A model that types the time

@@ -180,8 +180,9 @@ shared_doc() {
   # ar-623: before, every branch's session gated again into a shared red alone and the human was paged
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
 case "$1" in
-  list) printf "%s\n" "${STUB_ACTIVE:-}" ;;
-  add) echo "queued shared-red-footests -> /q/x.md" ;;
+  list) cat "$HOME/aq.items" 2>/dev/null || true ;;
+  add) jq -nc --arg t "${*: -1}" "{slug: \"shared-red-footests\", priority: \"high\", task: \$t}" > "$HOME/aq.items"   # the item it files is live after
+       echo "queued shared-red-footests -> /q/x.md" ;;
 esac'
   shared_doc '["sid-1","sid-2"]'
   run checked
@@ -192,7 +193,7 @@ esac'
   assert_output 1
   run grep '^add ' "$HOME/aq.calls"
   assert_output --partial '--project unity-core-playground'
-  assert_output --partial '--slug shared-red-FooTests'
+  assert_output --partial '--slug shared-red-FooTests.Bar'
   assert_output --partial 'scripts/test/quarantine.txt'
   grep -q 'owned by queue item shared-red-footests' "$FLEET_SHEPHERD_DIR/log.md"
   # the same episode on the next check files nothing more
@@ -208,7 +209,7 @@ esac'
 
 @test "a shared red a live item already names is owned by that item, and one with no sessions in it is not due" {
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
-[ "$1" = list ] && printf "%s\n" "{\"slug\":\"other\",\"task\":\"fix the BarTests class\"}" "{\"slug\":\"nightly-fix-foo-ucp-9\",\"task\":\"fix FooTests on the nightly\"}"
+[ "$1" = list ] && printf "%s\n" "{\"slug\":\"other\",\"task\":\"fix the BarTests class\"}" "{\"slug\":\"nightly-fix-foo-ucp-9\",\"task\":\"fix FooTests.Bar on the nightly\"}"
 exit 0'
   shared_doc '["sid-1"]'
   run checked
@@ -219,6 +220,73 @@ exit 0'
   shared_doc '[]'
   run "$SH" due
   refute_output --partial FooTests
+}
+
+@test "an item that names only the test's class, or is low priority, is no owner, so check files one that is (ar-2448)" {
+  # 2026-11-14: NetProtocolTests went to gate-spread-lumping, a low gate-spread item citing it as evidence
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "{\"slug\":\"cls-only\",\"task\":\"fix FooTests on the nightly\"}" \
+          "{\"slug\":\"gate-spread\",\"priority\":\"low\",\"task\":\"the watch lumps FooTests.Bar per-branch reds\"}" \
+          "{\"slug\":\"longer\",\"task\":\"fix FooTests.BarBaz\"}" "{\"slug\":\"full-longer\",\"task\":\"P.Tests.FooTests.BarBaz red\"}" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  shared_doc '["sid-1"]'
+  run checked
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+}
+
+@test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
+  # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) [ -z "${STUB_ACTIVE:-}" ] || printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  printf '%s\t%s\n' 'SHARED P.Tests.FooTests.Bar("x") @100' fix-red-trains 'SHARED Gone.Test @50' old-item > "$FLEET_SHEPHERD_DIR/.shared"
+  shared_doc '["sid-1"]'
+  # while it is live and names the test, it keeps the episode and nothing is filed
+  STUB_ACTIVE='{"slug":"fix-red-trains","priority":"urgent","task":"red on FooTests.Bar"}' run checked
+  assert_line --partial 'is owned by queue item fix-red-trains; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # an episode no longer on the document is pruned with it
+  run grep -c 'Gone.Test' "$FLEET_SHEPHERD_DIR/.shared"
+  assert_output 0
+  # it landed: no longer active, so the line names the item check files instead
+  STUB_ACTIVE='{"slug":"unrelated","task":"x"}' run checked
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  refute_output --partial fix-red-trains
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  grep -q 'no longer owned by queue item fix-red-trains' "$FLEET_SHEPHERD_DIR/log.md"
+  run cat "$FLEET_SHEPHERD_DIR/.shared"
+  assert_output "$(printf '%s\t%s' 'SHARED P.Tests.FooTests.Bar("x") @100' shared-red-footests)"
+  # negative controls: a queue that cannot be read, or reads empty, keeps every owner as it is and files nothing
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"'
+  "$SH" check >/dev/null || true
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"; exit 1'
+  "$SH" check >/dev/null || true
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run cat "$FLEET_SHEPHERD_DIR/.shared"
+  assert_output "$(printf '%s\t%s' 'SHARED P.Tests.FooTests.Bar("x") @100' shared-red-footests)"
+}
+
+@test "an add whose slug is taken by an item that does not own the test files no owner, so the red escalates (ar-2448)" {
+  # slugs are cut to 40 characters, so two long test names can share one; a low item is no owner either
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) echo "{\"slug\":\"shared-red-footests-bar\",\"priority\":\"low\",\"task\":\"P.Tests.FooTests.Bar red\"}" ;;
+  add) echo "agent-queue: already in the queue: shared-red-footests-bar" >&2; exit 1 ;;
+esac'
+  shared_doc '["sid-1"]'
+  run checked
+  assert_line --partial 'shared red: P.Tests.FooTests.Bar("x") red on 3 branches'
+  refute_output --partial 'is owned by'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.shared" ]
 }
 
 @test "a manual row is never due, and an all-quiet document exits 1" {

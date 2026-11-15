@@ -989,8 +989,11 @@ EOF
   c() { jq -cn --arg k "$1" '{project: "game", stage: "beta", lane: "human", key: $k, text: "- [ ] \($k)", tier: 1, line: $k}'; }
   run judge "$(c a; c b; c c)"
   assert_equal "$(jq -c '.properties.verdicts | [.minItems, .maxItems]' "$NOTES_FIXTURE/schema.json")" '[3,3]'
+  # the rule is one of the policy's ids, so "(stage)" with the policy's parentheses cannot be answered
+  assert_equal "$(jq -c '.properties.verdicts.items.properties.rule.enum' "$NOTES_FIXTURE/schema.json")" \
+    '["fits","tier3","unclear"]'
   # the rest is the conf's schema, unchanged
-  assert_equal "$(jq -S 'del(.properties.verdicts.minItems, .properties.verdicts.maxItems)' "$NOTES_FIXTURE/schema.json")" \
+  assert_equal "$(jq -S 'del(.properties.verdicts.minItems, .properties.verdicts.maxItems, .properties.verdicts.items.properties.rule.enum)' "$NOTES_FIXTURE/schema.json")" \
     "$(jq -S . "$DISPATCH_SCHEMA")"
   # negative control: a schema that cannot be read makes no call and no verdict, so the rows are judged again
   rm -f "$NOTES_FIXTURE/schema.json" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; DISPATCH_SCHEMA="$SANDBOX/missing.json"
