@@ -40,7 +40,7 @@ LIB="$HERE/../lib"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$HERE/../../.config/shared-hooks/project-name.sh"
 
-DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; HELD=0; KEPT=0; RECORD=""
+DRY=0; ONLY=""; KICK=0; PLANNED=0; SPLIT=0; FAILED=0; HELD=0; KEPT=0; DECLINED=0; RECORD=""
 say() { printf 'inbox-plan: %s\n' "$*" >&2; }
 clean() { md_ascii | tr -cd ' -~' | cut -c1-"$1"; }
 
@@ -187,6 +187,14 @@ hold_row() {
     say "$p $id: held as a queued plan item; a dispatch pass starts it ($(tail -n 1 <<<"$out" | clean 120))"
     HELD=$((HELD + 1)); return 0
   fi
+  # fleet-dispatch refuses a row whose own item already finished ok: it un-starts a human row or
+  # leaves an agent row to the orphan pass, so the row is settled and nothing here broke. The
+  # refusal is recorded so the row is not tried every pass, and the pass reports BLOCKED, not FAILED.
+  if [[ "$out" == *"already finished ok"* ]]; then
+    refused "$p" "not held: $(grep -m1 'already finished ok' <<<"$out" | clean 140)" "$text"
+    DECLINED=$((DECLINED + 1))
+    return 0
+  fi
   if [ "$rc" != 0 ]; then
     out="$(tail -n 1 <<<"${out:-no output}" | clean 160)"
     say "$p $id: not held: $out"
@@ -270,6 +278,9 @@ main() {
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP
   [ "$PLANNED" -gt 0 ] || [ "$HELD" -gt 0 ] && verdict=WORKED
+  # A refusal is work the pass could not do, not an error: BLOCKED, with the refusal as its why
+  # (only a BLOCKED line carries one), even when another row was planned or held.
+  [ "$DECLINED" -gt 0 ] && verdict=BLOCKED
   # "budget: " is what agentctl-briefing reads on the last outcome line.
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
   [ "$rc" = 1 ] && verdict=FAILED
