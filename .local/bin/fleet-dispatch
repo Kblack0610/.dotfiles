@@ -2539,22 +2539,21 @@ unstart_orphans() {
 # reason, and such an end rates as before. The item's `sessions:` hold the ids its run claimed; the
 # launcher's timeout tells a timeout from a cut.
 item_end() {
-  local agent f t
+  local agent f launcher t
   agent=$(jq -r '.agent // "claude"' <<<"$1")
+  launcher=$(harness_launcher "$agent")
+  case "$launcher" in codex | opencode) ;; *) return 0 ;; esac
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
-  case "$(harness_launcher "$agent")" in
-    codex)
-      read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
-      jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null ;;
-    opencode) item_oc_end "$1" "${t:-0}" ;;
-  esac
+  if [ "$launcher" = opencode ]; then item_oc_end "$1" "${t:-0}"; return; fi
+  read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
+  jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null
 }
 
 # item_oc_end <item json> <timeout seconds> -> the end_reason of the newest opencode session the item
 # claimed that an opencode.db holds: the shared one, then each lane-sandboxed harness's own (ocfree's runs
 # never reach the shared one). The id comes from the item and goes into SQL, so only ses_<alnum> passes.
 item_oc_end() {
-  local id db rows
+  local id db rows why
   for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
     [[ "$id" =~ ^ses_[A-Za-z0-9]+$ ]] || continue
     while IFS= read -r db; do
@@ -2562,8 +2561,8 @@ item_oc_end() {
       rows=$(sqlite3 -readonly -json "$db" "SELECT type, time_created, time_updated, json_extract(data, '\$.finish') AS finish,
         json_extract(data, '\$.error.type') AS etype FROM session_message WHERE session_id = '$id' ORDER BY seq" 2>/dev/null) || continue
       [ -n "$rows" ] || continue
-      jq -r --argjson timeout_s "$2" -f "$OPENCODE_SESSION_JQ" <<<"$rows" 2>/dev/null
-      return 0
+      why=$(jq -r --argjson timeout_s "$2" -f "$OPENCODE_SESSION_JQ" <<<"$rows" 2>/dev/null)
+      [ -z "$why" ] || { echo "$why"; return 0; }
     done < <(printf '%s\n' "$OPENCODE_DB"; harness_run_dbs "$HARNESSES")
   done
 }

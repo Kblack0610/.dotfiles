@@ -1047,15 +1047,14 @@ OUT
   assert_output 'model-lane outcome r-cx failed'   # only the timeout rated: it is the run's own length
 }
 
-@test "reap: an opencode run's last assistant row is classified: a quota end is limit and requeues, a key refusal is refused and still fails" {
+@test "reap: an opencode run's last assistant row is classified: a quota end is provider, never requeued, and unrated; a key refusal is refused" {
   oc_end_item ses_evalq 'error|provider.quota'
   run cmd_reap
-  assert_output --partial 'requeued queue item oc'
-  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-oc.md)
-  assert_equal "$(qfield "$f" end_reason)" limit
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   assert_failure
-  rm -rf "$AGENT_QUEUE_DIR/queued"
+  rm -rf "$AGENT_QUEUE_DIR/done"
   oc_end_item ses_evala 'error|provider.auth'
   run cmd_reap
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
@@ -1080,6 +1079,14 @@ OUT
     run cmd_reap
     assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" "$reason"
   done
+}
+
+@test "reap: an opencode item whose newest session never got a model reply reads its older session" {
+  oc_end_item ses_evalo 'error|provider.auth'
+  sqlite3 "$OPENCODE_DB" "INSERT INTO session_message VALUES ('m9', 'ses_evalnew', 'user', 1, 1794200100000, 1794200100000, '{}')"
+  agent-queue claim oc --sid ses_evalnew >/dev/null
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" refused
 }
 
 @test "reap: an opencode item whose sessions are in no database records no end_reason" {
