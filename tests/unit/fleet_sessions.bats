@@ -1525,6 +1525,44 @@ SH
   [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
 }
 
+@test "end to end: a baseline-count test over by a different delta on each branch is per-branch, not SHARED (ar-2448)" {
+  # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline tripped on agent-4 and agent-23, each by its own diff,
+  # and the SHARED line handed both to an owner that could not fix either.
+  landed_fixture
+  local now f
+  now="$(date +%s)" f="$XDG_STATE_HOME/unity-test-runs/test-failures.tsv"
+  mkdir -p "${f%/*}"
+  # feat/b's first run carried delta +1, its latest +3: a branch counts by its latest fingerprint
+  printf '%s\t%s\t%s\t%s\t%s\n' $((now - 900)) wt feat/x T.Count over+1 \
+    $((now - 800)) uc-b feat/b T.Count over+1 $((now - 700)) uc-b feat/b T.Count over+3 $((now - 600)) uc-c feat/c T.Count over+2 > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+
+  # the same delta on all three is a shared cause (a base over its baseline)
+  printf '%s\t%s\t%s\t%s\t%s\n' $((now - 900)) wt feat/x T.Count over+1 \
+    $((now - 800)) uc-b feat/b T.Count over+1 $((now - 600)) uc-c feat/c T.Count over+1 > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "SHARED") | .reason' <<<"$output")" = 'T.Count red on 3 branches in 2h: feat/x, feat/b, feat/c' ]
+
+  # an unknown fingerprint (a 4-column line, or -) may be either, so it counts toward the bar
+  printf '%s\t%s\t%s\t%s\t%s\n' $((now - 900)) wt feat/x T.Count over+1 $((now - 800)) uc-b feat/b T.Count over+1 > "$f"
+  printf '%s\tuc-c\tfeat/c\tT.Count\n' $((now - 600)) >> "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket == "SHARED") | .target' <<<"$output")" = T.Count ]
+  printf '%s\t%s\t%s\t%s\t%s\n' $((now - 900)) wt feat/x T.Count over+1 $((now - 800)) uc-b feat/b T.Count - $((now - 600)) uc-c feat/c T.Count over+2 > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$(jq -c 'select(.bucket == "SHARED")' <<<"$output")" ]
+
+  # a fourth branch over by its own delta is left out of the row, and its session is no owner
+  printf '%s\t%s\t%s\t%s\t%s\n' $((now - 900)) wt feat/x T.Count over+5 $((now - 800)) uc-b feat/b T.Count over+1 \
+    $((now - 700)) uc-c feat/c T.Count over+1 $((now - 600)) uc-d feat/d T.Count over+1 > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  shared="$(jq -c 'select(.bucket == "SHARED")' <<<"$output")"
+  [ "$(jq -r .reason <<<"$shared")" = 'T.Count red on 3 branches in 2h: feat/b, feat/c, feat/d' ]
+  [ "$(jq -r '.owners | length' <<<"$shared")" = 0 ]
+}
+
 @test "a repo's runs are read from the run ledger once per pass; a failed read is UNKNOWN, a repo it does not sync has no runs" {
   # 2026-10-29: every caller listed actions/runs itself, and the fleet spent GitHub's 5,000/hr REST
   # limit; the ledger has one writer (schedules-sync), and every reader goes through it.
