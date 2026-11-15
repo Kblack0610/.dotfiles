@@ -19,6 +19,7 @@
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch, a review item queued
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
+#   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
@@ -1528,13 +1529,14 @@ harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.ke
 # sources file; claude-acct is the one reader of how much that source has left).
 harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
-# gateway_launch <harness> <model> <item json> <brief> -- past every refusal, set cmd to the launch
+# gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
 # stops `--model opus` on claude-lazer, which pins every slot to Sonnet, from mislabelling the run.
 # A pane inherits its tmux server's environment, so each line drops the master key.
+# A direct pair (cmd_start, direct_why) is a run model-lane promoted the pair for: its tail lands the diff.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail
+  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1571,7 +1573,7 @@ gateway_launch() {
   sbx=$(harness_sandbox "$harness")
   if [ -n "$sbx" ]; then
     [ "$(harness_launcher "$harness")" = opencode ] || { say "start: $harness names lane sandbox '$sbx', which only an opencode harness holds; nothing started"; return 2; }
-    pwhy=$(sandbox_item_why "$it" "$harness") || { say "start: $harness $pwhy ($slug)"; return 2; }
+    [ -n "$drc" ] || pwhy=$(sandbox_item_why "$it" "$harness") || { say "start: $harness $pwhy ($slug)"; return 2; }
   fi
   case "$(harness_launcher "$harness")" in
     claude-lazer)
@@ -1623,13 +1625,15 @@ gateway_launch() {
         # The oracle runs the code the model wrote, so the score runs that command back inside the jail.
         # A start that fails skips the run and the score: the tree was never put at base, so a score
         # there would grade the merged code. A trainee's run is followed by its review hand-off
-        # (cmd_trainee_review), which reads the diff the run left whatever way the run ended.
+        # (cmd_trainee_review), which reads the diff the run left whatever way the run ended; a direct run's
+        # by its landing (cmd_direct_land), given the run's exit status, so a run that did not end clean lands nothing.
         if is_canary "$it"; then
           cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
           tail="BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok"
         else
           cmd="{ timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
           tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
+          [ -z "$drc" ] || tail="fleet-dispatch direct-land $(printf '%q' "$slug") --rc \$?"
         fi
       else
         cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m"
@@ -1730,16 +1734,33 @@ harness_tier_why() {
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
-# sandbox_item_why <item json> <harness> -> why a sandboxed harness cannot run the item, or nothing. Its
-# run sees its worktree alone (no skills, queue, gh or push), so it takes a canary item that names its
-# task (`canary`, fleet-bench canary queue sets it), or a trainee row (trainee_why): fleet-dispatch runs
-# the canary steps, or the trainee's review hand-off, around the run (gateway_launch).
+# sandbox_item_why <item json> <harness> [model] [verdict] -> why a sandboxed harness cannot run the
+# item, or nothing. Its run sees its worktree alone (no skills, queue, gh or push), so it takes a canary
+# item that names its task (`canary`, fleet-bench canary queue sets it), a row of a class model-lane
+# promoted the pair for (direct_why), or a trainee row (trainee_why): fleet-dispatch runs the canary
+# steps, the direct landing, or the trainee's review hand-off, around the run (gateway_launch).
 sandbox_item_why() {
   local why
   is_canary "$1" && [ -n "$(jq -r '.canary // empty' <<<"$1")" ] && return 0
+  [ -n "${3:-}" ] && direct_why "$1" "$2" "$3" "${4:-}" >/dev/null && return 0
   why=$(trainee_why "$1" "$2") && return 0
-  echo "runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:) or a trainee row, and $why"
+  echo "runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), a class promoted for it or a trainee row, and $why"
   return 1
+}
+
+# direct_why <item json> <harness> <model> <verdict> -> why the pair cannot run the item directly, rc 1,
+# or nothing. A trainee pair that model-lane score promoted for a class (the ladder's third rung) is in
+# the verdict's `direct` for that class, apart from a lane's `promoted`, which is no licence to land
+# unreviewed; it runs a row ladder_row_why lets through, of any #pts, still in its sandbox, tier-capped
+# and inside max_open, and its diff lands on CI with no review (cmd_direct_land).
+direct_why() {
+  local it="$1" pair="$2:$3" verdict="${4:-}"
+  [ -n "$(harness_sandbox "$2")" ] || { echo "$2 runs in no lane sandbox"; return 1; }
+  jq -e --arg p "$pair" 'any(.direct[]?; . == $p)' <<<"${verdict:-null}" >/dev/null 2>&1 ||
+    { echo "model-lane promoted $pair for no class of this item"; return 1; }
+  ladder_row_why "$it" "a direct run" || return 1
+  trainee_load
+  ladder_open_why "$2"
 }
 
 # trainee_load -- the trainee block of lanes.yaml (`model-lane trainee`) in TRAINEE_CONF, read once in
@@ -1752,26 +1773,35 @@ trainee_load() {
 # item_points <item json> -> the item's board points (#pts/N in its task), or nothing.
 item_points() { jq -r '[(.task // "") | match("#pts/([0-9]+)\\b"; "i").captures[0].string][0] // empty' <<<"$1"; }
 
-# trainee_why <item json> [harness] -> why no trainee takes the item, rc 1, or nothing. A trainee (the
-# training ladder's second rung, lanes.yaml `trainee:`) takes a row of at most `points` at tier 1 whose
-# kind opens a PR, not a plan, a canary, a verify or review item, one that names its own model, or one a
-# trainee ran before (`trainee:`, so a rejected row goes to claude); with a harness, one of its
-# `candidates` holding fewer than `max_open` trainee rows (running, waiting or in review). Its project
-# is the harness's `projects` allowlist (harness_project_why), checked beside this.
-trainee_why() {
-  local it="$1" h="${2:-}" pts tags tier kind max open
-  pts=$(item_points "$it")
-  [ -n "$pts" ] || { echo "it carries no #pts/N"; return 1; }
+# ladder_row_why <item json> <who> -> why no sandboxed ladder run (a trainee's or a direct one) takes
+# the item, rc 1, or nothing: it takes a tier-1 row whose kind opens a PR, not a plan, a canary, a verify
+# or review item, one that names its own model, or one a ladder run took before (`trainee:` or
+# `direct:`, so a rejected or failed row goes to claude). <who> names the run in the reason.
+ladder_row_why() {
+  local it="$1" who="$2" tags tier kind prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
   ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* ]] ||
     { echo "it is a canary, verify or review item"; return 1; }
-  [ -z "$(jq -r '.trainee // empty' <<<"$it")" ] || { echo "a trainee ran it once already ($(jq -r .trainee <<<"$it"))"; return 1; }
+  prev=$(jq -r '.trainee // .direct // empty' <<<"$it")
+  [ -z "$prev" ] || { echo "a ladder run took it once already ($prev)"; return 1; }
   [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
   [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
   tier=$(item_tier "$it")
-  [ "$tier" = 1 ] || { echo "it is tier $tier, and a trainee takes tier 1 only"; return 1; }
+  [ "$tier" = 1 ] || { echo "it is tier $tier, and $who takes tier 1 only"; return 1; }
   load_kinds; kind=$(item_kind "$it")
   [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
+}
+
+# trainee_why <item json> [harness] -> why no trainee takes the item, rc 1, or nothing. A trainee (the
+# training ladder's second rung, lanes.yaml `trainee:`) takes a row ladder_row_why lets through of at
+# most `points`; with a harness, one of its `candidates` holding fewer than `max_open` trainee rows
+# (running, waiting or in review). Its project is the harness's `projects` allowlist
+# (harness_project_why), checked beside this.
+trainee_why() {
+  local it="$1" h="${2:-}" pts max open
+  pts=$(item_points "$it")
+  [ -n "$pts" ] || { echo "it carries no #pts/N"; return 1; }
+  ladder_row_why "$it" "a trainee" || return 1
   trainee_load
   max=$(jq -r '.points // empty' <<<"$TRAINEE_CONF")
   [ -n "$max" ] || { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
@@ -1779,11 +1809,19 @@ trainee_why() {
   [ -n "$h" ] || return 0
   jq -e --arg h "$h" 'any(.candidates[]?; .harness == $h)' <<<"$TRAINEE_CONF" >/dev/null ||
     { echo "$h is no trainee in lanes.yaml"; return 1; }
+  ladder_open_why "$h"
+}
+
+# ladder_open_why <harness> -> why the harness takes no more ladder rows, rc 1, or nothing: it holds
+# fewer than lanes.yaml trainee `max_open` rows a ladder run took (trainee: or direct:), running,
+# waiting or in review.
+ladder_open_why() {
+  local h="$1" open max
   open=$(agent-queue list --json --state active 2>/dev/null |
-    jq -se --arg h "$h" '[.[] | select(.state != "queued" and .agent == $h and ((.trainee // "") | startswith($h + ":")))] | length') ||
-    { echo "the queue is unreadable, so $h's open trainee rows are unknown"; return 1; }
+    jq -se --arg h "$h" '[.[] | select(.state != "queued" and .agent == $h and ((.trainee // .direct // "") | startswith($h + ":")))] | length') ||
+    { echo "the queue is unreadable, so $h's open ladder rows are unknown"; return 1; }
   max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
-  [ "$open" -lt "$max" ] || { echo "$h holds $open trainee rows, its max_open in lanes.yaml"; return 1; }
+  [ "$open" -lt "$max" ] || { echo "$h holds $open ladder rows, its max_open in lanes.yaml"; return 1; }
 }
 
 # trainee_brief <item json> -- a trainee's run: the task, done in its worktree and left there. The
@@ -1793,8 +1831,15 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
-  echo "Do not commit, push or open a pull request: leave your edits in the working tree. A reviewer reads the diff and lands it or sends the task back."
+  echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If the task cannot be done without a decision from the human, change nothing and stop."
+}
+
+# linked_base -> HEAD of the linked worktree this runs in, rc 1 in a main checkout or none: a ladder
+# tail resets its worktree to that base, which in a main checkout would discard work.
+linked_base() {
+  local b
+  b=$(git rev-parse HEAD 2>/dev/null) && [ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo "$b"
 }
 
 # cmd_trainee_review <slug> -- the tail of a trainee's run (gateway_launch), outside its sandbox, in its
@@ -1809,8 +1854,7 @@ cmd_trainee_review() {
   [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
   [ "$(jq -r .state <<<"$it")" = running ] || { say "trainee-review: $slug is $(jq -r .state <<<"$it"), not running"; return 2; }
   # The reset below discards what the diff saved, so it runs only in a linked worktree, never a main checkout.
-  base=$(git rev-parse HEAD 2>/dev/null) && [ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] ||
-    { say "trainee-review: $PWD is no linked worktree"; return 1; }
+  base=$(linked_base) || { say "trainee-review: $PWD is no linked worktree"; return 1; }
   mkdir -p "$TRAINEE_DIR" || { say "trainee-review: no $TRAINEE_DIR"; return 1; }
   patch="$TRAINEE_DIR/$slug.patch"
   git add -A && git diff --cached --binary "$base" >"$patch" || { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
@@ -1854,8 +1898,8 @@ EOF
 }
 
 # cmd_trainee_reject <slug> --why <text> -- the row goes back to the normal queue on claude (its outcome
-# a redo on the trainee's run, agent-queue move), with the reason as its note; its `trainee:` stays, so
-# no trainee takes it again (trainee_why).
+# a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:` stays, so no
+# trainee takes it again (trainee_why).
 cmd_trainee_reject() {
   local slug="${1:?trainee-reject: needs a slug}" why='' it trn
   shift
@@ -1864,10 +1908,80 @@ cmd_trainee_reject() {
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-reject: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-reject: no trainee ran $slug"; return 2; }
-  agent-queue set "$slug" agent=claude model= routed= "note=trainee $trn rejected: $why" >/dev/null &&
-    agent-queue move "$slug" queued >/dev/null || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  ladder_back "$slug" "trainee $trn rejected: $why" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
   rm -f "$TRAINEE_DIR/$slug.patch"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
+}
+
+# ladder_back <slug> <note> -- a ladder run's row back to the normal queue on claude, the note saying
+# why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts.
+ladder_back() {
+  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued >/dev/null
+}
+
+# DIRECT_GUARDED: paths a direct run's diff may not touch, as an ERE on the repo-relative path. Its
+# commit runs the repo's hooks outside the sandbox and lands on its CI, so a diff that edits either
+# would run or grade itself; core.hooksPath is added to these.
+DIRECT_GUARDED='^(\.github|\.forgejo|\.githooks|\.husky)/'
+
+# cmd_direct_land <slug> [--rc <n>] -- the tail of a direct run (gateway_launch), outside its sandbox,
+# in its worktree, given the run's exit status: the diff a run that ended clean left is committed on the
+# worktree's branch, pushed, opened as a PR and landed by agent-land once checks that ran are green
+# (--ran-checks), with no review; agent-land records the PR on the item and closes its row. A run that
+# exited non-zero, no diff, a diff on DIRECT_GUARDED paths, or a commit, push, PR or landing that fails
+# closes the PR and sends the row back (direct_back); a PR that merged before agent-land failed stays.
+cmd_direct_land() {
+  local slug="${1:?direct-land: needs a slug}" rc=0 it drc base branch guard hp bad title key url pr
+  [ "${2:-}" != --rc ] || rc="${3:-1}"
+  it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "direct-land: no queue item $slug"; return 1; }
+  drc=$(jq -r '.direct // empty' <<<"$it")
+  [ -n "$drc" ] || { say "direct-land: no direct run took $slug"; return 2; }
+  [ "$(jq -r .state <<<"$it")" = running ] || { say "direct-land: $slug is $(jq -r .state <<<"$it"), not running"; return 2; }
+  # direct_back resets the worktree, so this runs only in a linked worktree, never a main checkout.
+  base=$(linked_base) || { say "direct-land: $PWD is no linked worktree"; return 1; }
+  [ "$rc" = 0 ] || { direct_back "the run exited $rc (a timeout, crash or provider error)"; return; }
+  branch=$(git symbolic-ref --short -q HEAD) || { direct_back "its worktree is on no branch"; return; }
+  git add -A || { direct_back "its diff could not be staged"; return; }
+  ! git diff --cached --quiet || { direct_back "it left no diff"; return; }
+  guard=$DIRECT_GUARDED
+  hp=$(git config core.hooksPath) && guard="$guard|^${hp%/}/"
+  bad=$(git diff --cached --name-only | grep -E "$guard" | head -3 | paste -sd, -)
+  [ -z "$bad" ] || { direct_back "its diff touches hook or CI paths ($bad), which a direct run may not"; return; }
+  # The board's trailing tags (#pts/3 #size/s) are no part of a commit or PR title.
+  title=$(item_headline "$it" | sed -E 's/([[:space:]]+#[^[:space:]]+)+[[:space:]]*$//')
+  key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
+  # The commit runs the repo's own hooks (the token scan), which the sandboxed run could not reach.
+  git commit -q -m "$title" -m "Direct: $drc" || { direct_back "the commit failed (the repo's hooks)"; return; }
+  git push -q -u origin "$branch" || { direct_back "the push of $branch failed"; return; }
+  url=$(gh pr create --head "$branch" --title "$title" --body "$(direct_pr_body "$it" "$drc" "$key")") ||
+    { git push -q origin --delete "$branch"; direct_back "gh pr create failed"; return; }
+  pr=${url##*/}
+  if agent-land "$pr" --item "$slug" --ran-checks; then say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; fi
+  # agent-land can fail after its merge (the record, the row); the work is in, so nothing is redone.
+  [ "$(gh pr view "$pr" --json state -q .state 2>/dev/null)" != MERGED ] ||
+    { say "direct-land: #$pr merged, but agent-land failed after it; $slug stays running: agent-land $pr --item $slug records it"; return 1; }
+  gh pr close "$pr" --delete-branch --comment "agent-land refused or failed this direct run of $drc; the row goes back to the queue, on claude." >/dev/null ||
+    say "direct-land: could not close #$pr"
+  direct_back "agent-land #$pr failed"
+}
+
+# direct_pr_body <item json> <pair> <task key> -> a direct run's PR body: the row it ran and the Task:
+# line the board reads (agent-land stamps the Item: line).
+direct_pr_body() {
+  jq -r .task <<<"$1"
+  echo
+  echo "Direct run: $2, which model-lane score promoted for this class. It ran in its lane sandbox, and this PR lands on its checks with no review."
+  echo
+  [ -z "$3" ] || echo "Task: $3"
+}
+
+# direct_back <why> -- a direct run that did not land, read from cmd_direct_land's slug, drc and base: the
+# row goes back on claude (ladder_back), and the worktree back at its base so wt reaps it; its `direct:`
+# stays, so no ladder run takes it again (ladder_row_why).
+direct_back() {
+  ladder_back "$slug" "direct run $drc did not land: $1" || { say "direct-land: could not send $slug back to the queue ($1)"; return 1; }
+  git reset -q --hard "$base" && git clean -fdq || say "direct-land: could not put $PWD back at $base, so wt reap leaves it"
+  say "direct-land: $slug is back in the queue, on claude: $1"
 }
 
 # takes_plan <harness> -- it can run a plan item: a pane that waits on the human at its plan, or a
@@ -1913,7 +2027,7 @@ resume_thread() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' \
+  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2088,7 +2202,9 @@ cmd_start() {
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"$it")
       # A cloud session's model is its environment's, so the map's one entry stands for it.
       [ "$(harness_launcher "$harness")" != claude-cloud ] || model=${model:-cloud}
-      gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" || return
+      # A sandboxed pair model-lane promoted for the item's class runs it directly (direct_why); its tail lands it.
+      [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || ! direct_why "$it" "$harness" "$model" "$verdict" >/dev/null || drc="$harness:$model"
+      gateway_launch "$harness" "$model" "$it" "$(item_brief "$it" "$harness")" "$drc" || return
       # What the run bills: the source the map names for the harness; a cloud session bills the claude
       # account gateway_launch chose (acct).
       [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(harness_source "$harness")
@@ -2097,17 +2213,19 @@ cmd_start() {
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
-    # A sandboxed run of anything but a canary is a trainee's (sandbox_item_why): `trainee:` marks the
-    # row as trained once, counts toward its harness's cap, and its review hand-off reads it.
-    trn=''; [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
-    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} >/dev/null &&
+    # A sandboxed run of anything but a canary or a direct one is a trainee's (sandbox_item_why): `trainee:`
+    # marks the row as trained once, counts toward its harness's cap, and its review hand-off reads it;
+    # `direct:` marks a direct run the same way, for its landing.
+    trn=''; [ -n "$drc" ] || [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
+    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
-    # A trainee run logs under lane trainee, with the class of the verdict that routed it when one did.
-    elif [ -n "$trn" ]; then
+    # A trainee or direct run logs under lane trainee (one record per pair, which model-lane score and
+    # its send-back read), with the class of the verdict that routed it when one did.
+    elif [ -n "$trn$drc" ]; then
       lane_log "$item" "$(item_headline "$it")" "$(jq -cn --argjson v "${verdict:-null}" --arg m "$model" '($v // {}) + {lane: "trainee", by: "rule", model: $m}')" "$model" "$harness"
     # A routed start is not an experiment: it logs under the lane model-lane picked, with its harness.
     elif [ -n "$verdict" ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model" "$harness"
@@ -3571,10 +3689,13 @@ route() {
   # A trainee row (trainee_why) offers the trainees ahead of every other fit, one model per harness picked
   # by the slug, so a trainee takes it whenever its source has room, the Claude hold or not; a trainee
   # past its cap or with no room falls to the verdict's own candidates. Only a harness in a lane sandbox
-  # trains: that is where its cap and review hand-off are applied (sandbox_item_why, gateway_launch).
+  # trains: that is where its cap and review hand-off are applied (sandbox_item_why, gateway_launch). A
+  # pair the verdict promoted for the class is no trainee there: it stays at its own fit and runs direct.
   if [ "$pinned" = 0 ] && [ -z "${SOURCE_PICK:-}" ] && trainee_why "$it" >/dev/null &&
     trn=$(jq -c --argjson t "$TRAINEE_CONF" --slurpfile H "$HARNESSES" --argjson n "$(cksum <<<"$(jq -r .slug <<<"$it")" | cut -d' ' -f1)" \
-      '. as $c | [$t.candidates[] | select(($H[0].harnesses[.harness].sandbox // "") != "")] | [group_by(.harness)[] | .[$n % length] | . + {fit: -1}] + $c' <<<"$cands"); then
+      --argjson v "${verdict:-null}" '. as $c | (($v // {}).direct // []) as $p
+        | [$t.candidates[] | select(($H[0].harnesses[.harness].sandbox // "") != "" and ("\(.harness):\(.model)" as $k | $p | index($k) | not))]
+        | [group_by(.harness)[] | .[$n % length] | . + {fit: -1}] + $c' <<<"$cands"); then
     cands=$trn
   fi
   tier=$(item_tier "$it")
@@ -3590,14 +3711,14 @@ route() {
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
     elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
-    elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h"); then why+=("$h: $pwhy")
+    elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
     elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
-    elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
+    elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?, .direct[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
     elif [ "$overflow" = 1 ] && [ "$tier" -gt 1 ]; then why+=("$h: pay-per-use takes tier-1 work only, and this is tier $tier")
@@ -3660,6 +3781,7 @@ start_item() {
     START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
     if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
+    elif [ -n "$(harness_sandbox "$harness")" ] && direct_why "$it" "$harness" "$ROUTE_MODEL" "$verdict" >/dev/null; then floor=" on $harness ($ROUTE_MODEL), a direct run (model-lane promoted it for the class) it lands on CI with no review"
     elif [ -n "$(harness_sandbox "$harness")" ]; then floor=" on $harness ($ROUTE_MODEL), a trainee run (lanes.yaml trainee:) its review item lands or sends back"
     else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
     # A start past the account hold leaves it standing, like a floor start.
@@ -4899,6 +5021,7 @@ main() {
     item-tier) shift; cmd_item_tier "$@" ;;
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
+    direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
     -h | --help) sed -n '2,39p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
