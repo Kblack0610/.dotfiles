@@ -35,11 +35,14 @@ pub struct CostsQuery {
     pub sq: String,
     pub ssort: String,
     pub sdir: String,
-    /// The Spend day table: the day shown, its own sort, and the session opened.
+    /// The Spend table: the day shown, the cut (`g`) and the group opened (`gv`), the session
+    /// table's own sort, and the session opened.
     pub day: String,
     pub dsort: String,
     pub ddir: String,
     pub sid: String,
+    pub g: String,
+    pub gv: String,
     /// The Consumers table's own view: its query, state, sort and direction.
     pub cq: String,
     pub cs: String,
@@ -88,6 +91,8 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
             sort: &q.dsort,
             dir: &q.ddir,
             sid: &q.sid,
+            group: &q.g,
+            in_group: &q.gv,
         },
     );
     b.consumers = costs::consumers(
