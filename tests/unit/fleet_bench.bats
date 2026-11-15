@@ -1178,7 +1178,8 @@ echo "$*" >> "$L"
 [ "$1 $2" != "row parse" ] || exec bash "$S" row parse   # the shared stub's row.parse lookup table (parses)
 if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config's in $B.home, another's in $B.<project>
   H="$B.home"; [ "$2" = home-config ] || H="$B.$2"
-  case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;; esac
+  case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;;
+    drop) [ "$5" = --why ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
   exit 0
 fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
@@ -1190,6 +1191,8 @@ case "$4" in
        printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  drop) [ "$6" = --why ] || exit 8
+        awk -F'\t' -v q="$5" 'index($3, tolower(q)) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
         [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
@@ -1603,7 +1606,7 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -1614,7 +1617,7 @@ watch() {
   : > "$NLOG"
   run "$SUBJECT" triage
   assert_success
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run outcome
   assert_output NOOP
@@ -1626,7 +1629,7 @@ watch() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
@@ -1644,7 +1647,7 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_success
   assert_line 'retire: check(watch): drift tripped since'
   assert_line 'retire: fix(hold): liveness-179 went red'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -2124,6 +2127,61 @@ fix_item() {
   assert_success
   [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
   [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+# 2026-11-11/12 (ar-2111): ar-1092 and ar-1650 sat on the human's sheet while their routes were human;
+# the route changed, the agent board's upsert saw none of them, and ar-1674 and ar-2068 were filed as
+# second rows for the same watch.
+@test "triage: a watch whose route left the human's sheet keeps one row, on the agent board; a second run adds none" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [ ] %s\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c . "$BOARD.agent-runtime"
+  assert_output 0
+  run grep -c 'ptask agent-runtime drop check(watch): spend tripped since --why moved to the agent board' "$NLOG"
+  assert_output 1
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'tripped since' "$BOARD"
+  assert_output 1
+  run grep -c ' drop \| add ' "$NLOG"
+  assert_output 0
+}
+
+@test "triage: a watch whose route moved to the human's sheet drops its agent-board row and files one on the sheet" {
+  log_triage_setup
+  watch puck TRIP -25200 high
+  route 'watch.: puck' human:home-config - 'check the puck'
+  board_row ' ' 'check(watch): puck tripped since 2026-11-01, expected: x'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): puck' "$BOARD"
+  assert_output 0
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
+  run grep -c -- '--agent drop check(watch): puck tripped since --why moved to the home-config sheet' "$NLOG"
+  assert_output 1
+}
+
+@test "triage: a twin left on the human's sheet by an earlier route is dropped on a pass that adds nothing" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  printf 'board.md\t9\t%s\t- [ ] %s\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c . "$BOARD.agent-runtime"
+  assert_output 0
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
 }
 
 @test "triage: a tripped watch's item is outside the daily cap and does not count against it" {
