@@ -247,6 +247,16 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/scratch-rm-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "Grep|Glob",
         "hooks": [
           {
