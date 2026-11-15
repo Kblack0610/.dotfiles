@@ -12,6 +12,8 @@
 #     --session s       the asking session; default the caller's tmux session
 #     --audit-of <id>   the live judge answer this ask audits (audit_sample posts these); its
 #                       answer is that answer's review, not a decision of its own
+#     --preview <file>  an image the card shows above the answers, repeatable; agent-web serves
+#                       one only from under the outbound ledger dir, where `mkt draft` puts them
 #   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
 #   agent-ask answer-names <id>         each option the human's answer names, one per line; none: free text
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
@@ -406,7 +408,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of=""
+        options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -421,6 +423,8 @@ cmd_post() {
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       --audit-of) audit_of="$2"; shift 2 ;;
+      --preview) [ -f "$2" ] || { echo "agent-ask post: no preview file $2" >&2; return 2; }
+                 previews+="${previews:+|}$(realpath "$2")"; shift 2 ;;
       --wait)    wait=1; shift ;;
       --) shift; question="$*"; break ;;
       -*) echo "agent-ask post: unknown flag $1" >&2; return 2 ;;
@@ -559,6 +563,7 @@ cmd_post() {
     # resumed is a decision the system has not acted on yet - see the header.
     printf 'resumed_at: \n'
     [ -z "$audit_of" ] || printf 'audit_of: %s\n' "$(oneline "$audit_of")"
+    [ -z "$previews" ] || printf 'previews: %s\n' "$(oneline "$previews")"
   } > "$file"
   queue_changed
 
@@ -641,7 +646,7 @@ cmd_list() {
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
   #      answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-  #      delivery_answer  (append new columns at the end only; parked_until is filled only while
+  #      delivery_answer, previews  (append new columns at the end only; parked_until is filled only while
   #      the ask is parked, so no reader compares it with the clock)
   # --undelivered adds the answered asks whose delivery has not gone out (queued, delivering) or
   # failed unread, to the rows another filter picks, or alone lists just those.
@@ -652,7 +657,7 @@ cmd_list() {
   [ "${#files[@]}" -gt 0 ] || return 0
   awk -v want="$want" -v undelivered="$undelivered" -v cutoff="$cutoff" -v now="$(now_utc)" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer previews", K, " ")
     }
     function flush(   i, d, p, row, parked, und) {
       if (cur == "") return

@@ -1,8 +1,8 @@
 //! A product's department tabs and Projects > Coverage, both surfaces, from one read
 //! (dashboards rule 8). Stores: pipelines from `~/.config/agentctl/departments.tsv` checked
-//! against this machine, numbers from VictoriaMetrics `kb_project_number`, Legal from
-//! `game.json` or `metadata.yaml` with each URL probed, and the stage that makes a department
-//! due from stages.md. A cell is `ok` (fed, no gap), `amber` (a gap not due yet), `red` (a gap
+//! against this machine, numbers from VictoriaMetrics `kb_project_number`, Marketing's outbound
+//! ledger (`outbound`), Legal from `game.json` or `metadata.yaml` with each URL probed, and the
+//! stage that makes a department due from stages.md. A cell is `ok` (fed, no gap), `amber` (a gap not due yet), `red` (a gap
 //! its stage requires) or `off` (nothing feeds it, nothing due). Only the product's own
 //! sources count: a `*` catalog row serves every product, so it is listed, never counted.
 
@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::links::{Kind, Link};
+use crate::outbound::{self, Item};
 use crate::prom::Series;
 use crate::reading::{self, State};
 use crate::schedules::CiState;
@@ -131,6 +132,8 @@ pub struct Paths {
     pub home: PathBuf,
     /// `schedules-sync`'s state.json, the last runs of scheduled workflows.
     pub ci: PathBuf,
+    /// The outbound ledger `mkt` writes, which Marketing lists.
+    pub outbound: PathBuf,
 }
 
 impl Paths {
@@ -152,6 +155,7 @@ impl Paths {
             skills: home.join(".claude/skills"),
             bin: home.join(".local/bin"),
             ci: crate::schedules::state_path(&home.to_string_lossy()),
+            outbound: crate::outbound::dir(),
             home,
         }
     }
@@ -249,6 +253,10 @@ pub struct Dept {
     pub checks: Vec<Check>,
     /// The `kb-project` dashboard on this product; None when no Grafana is configured.
     pub grafana: Option<String>,
+    /// Marketing only: the ledger's open items and what went out in 30 days, newest first.
+    pub outbound: Vec<Item>,
+    /// Why the ledger was not read; empty when it was.
+    pub outbound_says: String,
 }
 
 /// One product: a Coverage row and its department tabs.
@@ -415,6 +423,8 @@ pub struct Inputs<'a> {
     pub numbers: Result<Vec<Series>, String>,
     pub ci: Option<CiState>,
     pub grafana: Option<String>,
+    /// The clock a review's wait and the 30-day window are measured at.
+    pub now: i64,
 }
 
 /// Reads every store and builds the grid. URL probes run in parallel through `runner`'s curl.
@@ -451,6 +461,7 @@ pub fn read(runner: &(dyn Runner + Sync), paths: &Paths) -> Coverage {
         numbers,
         ci,
         grafana: crate::infra::grafana(),
+        now: chrono::Utc::now().timestamp(),
     };
     build(&inputs, paths, &|url: &str| probe(runner, url))
 }
@@ -606,7 +617,18 @@ pub fn build(
                     vec![]
                 };
                 let due = due_at(d, kind, reqs);
-                dept(d, due, rank, pipes, legal, nums, grafana.clone())
+                let ledger = if d.id == "marketing" {
+                    outbound::read(&paths.outbound, key)
+                } else {
+                    Ok(vec![])
+                };
+                let own = Own {
+                    pipes,
+                    checks: legal,
+                    numbers: nums,
+                    ledger,
+                };
+                dept(d, due, rank, own, grafana.clone(), inputs.now)
             })
             .collect();
         out.products.push(Product {
@@ -651,15 +673,29 @@ fn due_at(d: &Department, kind: &str, reqs: &[Requirement]) -> Option<usize> {
         .min()
 }
 
+/// What feeds one department of one product.
+struct Own {
+    pipes: Vec<Pipe>,
+    checks: Vec<Check>,
+    numbers: Option<Vec<Number>>,
+    /// The product's outbound items, read for Marketing only.
+    ledger: Result<Vec<Item>, String>,
+}
+
 fn dept(
     d: &Department,
     due: Option<usize>,
     rank: Option<usize>,
-    pipes: Vec<Pipe>,
-    mut checks: Vec<Check>,
-    numbers: Option<Vec<Number>>,
+    own: Own,
     grafana: Option<String>,
+    now: i64,
 ) -> Dept {
+    let Own {
+        pipes,
+        mut checks,
+        numbers,
+        ledger,
+    } = own;
     let required = matches!((due, rank), (Some(due), Some(r)) if r >= due);
     let level = if required { Level::Bad } else { Level::Warn };
     let mut needs = vec![];
@@ -676,10 +712,16 @@ fn dept(
             says: format!("{}: {}", c.item, c.says),
         });
     }
+    let (items, outbound_says) = match ledger {
+        Ok(i) => (i, String::new()),
+        Err(e) => (vec![], State::NotRead(e).sentence("outbound ledger")),
+    };
+    needs.extend(ledger_needs(&items, now));
     let fed = pipes.iter().any(|p| !p.shared && p.found == FOUND)
         || checks.iter().any(|c| c.state == MET)
-        || numbers.as_ref().is_some_and(|n| !n.is_empty());
-    if required && !fed && needs.is_empty() {
+        || numbers.as_ref().is_some_and(|n| !n.is_empty())
+        || !items.is_empty();
+    if required && !fed && !needs.iter().any(|n| n.level != Level::Ok) {
         needs.push(Need {
             level,
             says: format!(
@@ -689,11 +731,14 @@ fn dept(
             ),
         });
     }
-    let cell = match (needs.is_empty(), required, fed) {
-        (true, _, true) => Cell::Ok,
-        (true, _, false) => Cell::Off,
-        (false, true, _) => Cell::Red,
-        (false, false, _) => Cell::Amber,
+    // An ok-level need (a fresh review) is listed but colors nothing.
+    needs.sort_by_key(|n| n.level);
+    let worst = needs.first().map(|n| n.level);
+    let cell = match (worst, fed) {
+        (Some(Level::Bad), _) => Cell::Red,
+        (Some(Level::Warn), _) => Cell::Amber,
+        (_, true) => Cell::Ok,
+        (_, false) => Cell::Off,
     };
     let numbers_says = match &numbers {
         None => reading::NOT_READ.to_string(),
@@ -713,7 +758,34 @@ fn dept(
         pipes,
         checks,
         grafana,
+        outbound: outbound::shown(&items, now),
+        outbound_says,
     }
+}
+
+/// What the ledger asks of the human: each draft in review (amber once it has waited
+/// `STALE_DAYS`, listed but uncolored before), and each one approved for a hand post.
+fn ledger_needs(items: &[Item], now: i64) -> Vec<Need> {
+    let mut out = vec![];
+    for i in items {
+        let what = format!("{} \"{}\" on {}", i.kind, i.title, i.channel);
+        match (i.state, i.waited_days(now)) {
+            ("review", Some(w)) if w >= outbound::STALE_DAYS => out.push(Need {
+                level: Level::Warn,
+                says: format!("{what} has waited {w} days on your review (ask {})", i.ask),
+            }),
+            ("review", _) => out.push(Need {
+                level: Level::Ok,
+                says: format!("{what} waits on your review (ask {})", i.ask),
+            }),
+            ("approved", _) if i.verdict == "hand" => out.push(Need {
+                level: Level::Warn,
+                says: format!("post {what} by hand, then: mkt log {} <url>", i.id),
+            }),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn numbers_of(series: &[Series], project: &str, dept: &str) -> Vec<Number> {
@@ -1095,6 +1167,7 @@ mod tests {
             bin: root.join("bin"),
             home: root.join("home"),
             ci: root.join("ci.json"),
+            outbound: root.join("outbound"),
         }
     }
 
@@ -1145,6 +1218,7 @@ mod tests {
             numbers: Ok(vec![]),
             ci: None,
             grafana: Some("https://grafana.test".into()),
+            now: 1_794_787_200,
         }
     }
 
@@ -1176,6 +1250,91 @@ mod tests {
             m.grafana.as_deref(),
             Some("https://grafana.test/d/kb-project?var-project=quiet")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_ledger_feeds_marketing_and_a_review_waiting_a_week_turns_it_amber() {
+        let root = tmp("ledger");
+        let reg = registry(&root.join("mono"));
+        let book = root.join("outbound/quiet");
+        std::fs::create_dir_all(&book).unwrap();
+        let ev = |ts: &str, id: &str, ev: &str, rest: &str| {
+            format!("{{\"ts\":\"{ts}\",\"id\":\"{id}\",\"event\":\"{ev}\"{rest}}}\n")
+        };
+        let draft = |ts: &str, id: &str, title: &str| {
+            ev(ts, id, "draft", &format!(",\"project\":\"quiet\",\"channel\":\"reddit\",\"kind\":\"post\",\"title\":\"{title}\""))
+        };
+        let write = |text: &str| std::fs::write(book.join("2026-11.jsonl"), text).unwrap();
+        let marketing = || {
+            let cov = build(
+                &inputs(&reg, &[("quiet", "draft")], ""),
+                &paths(&root),
+                &|_| panic!("nothing to probe"),
+            );
+            let p = &cov.products[0];
+            assert_eq!(
+                p.dept("analytics").unwrap().cell,
+                Cell::Off,
+                "only Marketing reads it"
+            );
+            p.dept("marketing").unwrap().clone()
+        };
+        let fresh = draft("2026-11-15T10:00:00Z", "261115-aaaaaa", "devlog")
+            + &ev(
+                "2026-11-15T10:00:01Z",
+                "261115-aaaaaa",
+                "review",
+                ",\"ask\":\"Ab12Cd\"",
+            );
+        write(&fresh);
+        let m = marketing();
+        assert_eq!(m.cell, Cell::Ok, "a fresh review is listed, not a gap");
+        assert_eq!(m.needs.len(), 1);
+        assert_eq!(m.needs[0].level, Level::Ok);
+        assert_eq!(m.outbound.len(), 1);
+
+        let stale = draft("2026-11-05T10:00:00Z", "261105-bbbbbb", "clip")
+            + &ev(
+                "2026-11-05T10:00:01Z",
+                "261105-bbbbbb",
+                "review",
+                ",\"ask\":\"Ef34Gh\"",
+            )
+            + &draft("2026-11-14T10:00:00Z", "261114-cccccc", "page")
+            + &ev(
+                "2026-11-14T10:00:01Z",
+                "261114-cccccc",
+                "verdict",
+                ",\"verdict\":\"hand\"",
+            );
+        write(&(fresh + &stale));
+        let m = marketing();
+        assert_eq!(m.cell, Cell::Amber);
+        let says: Vec<&str> = m.needs.iter().map(|n| n.says.as_str()).collect();
+        assert!(
+            says.contains(
+                &"post \"clip\" on reddit has waited 10 days on your review (ask Ef34Gh)"
+            ),
+            "{says:?}"
+        );
+        assert!(
+            says.contains(
+                &"post post \"page\" on reddit by hand, then: mkt log 261114-cccccc <url>"
+            ),
+            "{says:?}"
+        );
+
+        // negative control: an unreadable ledger is said, never a silent empty list
+        std::fs::remove_dir_all(&book).unwrap();
+        std::fs::write(&book, "not a dir").unwrap();
+        let m = marketing();
+        assert!(
+            m.outbound_says.contains("outbound/quiet"),
+            "{}",
+            m.outbound_says
+        );
+        assert_eq!(m.cell, Cell::Off);
         let _ = std::fs::remove_dir_all(&root);
     }
 

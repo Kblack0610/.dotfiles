@@ -163,6 +163,7 @@ async fn main() -> Result<()> {
         .route("/api/asks/parked", get(parked_asks))
         .route("/api/asks/park", post(park))
         .route("/api/asks/{id}/trace", get(ask_trace))
+        .route("/api/asks/{id}/preview/{n}", get(ask_preview))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
@@ -1122,12 +1123,15 @@ struct Ask {
     assume_at: String,
     /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
     parked_until: String,
+    /// The file names of its preview images (`--preview`), served by `/api/asks/{id}/preview/{n}`.
+    previews: Vec<String>,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note, assume_at, resume, parked_until.
+/// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
+/// delivery_answer, previews.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -1165,6 +1169,11 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     answer_note: col(23).into(),
                     assume_at: col(24).into(),
                     parked_until: col(26).into(),
+                    previews: col(31)
+                        .split('|')
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                        .collect(),
                 }
             })
         })
@@ -1232,6 +1241,24 @@ async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::V
     serde_json::from_str(&out)
         .map(Json)
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+}
+
+/// An ask's `n`th preview image, only one under the outbound ledger (hub-core `outbound::preview`).
+async fn ask_preview(UrlPath((id, n)): UrlPath<(String, usize)>) -> ApiResult<Response> {
+    if !ask_id_ok(&id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let (mime, bytes) = tokio::task::spawn_blocking(move || {
+        let ledger = hub_core::outbound::dir();
+        let (path, mime) = hub_core::outbound::preview(&boards::asks_dir(), &ledger, &id, n)?;
+        std::fs::read(&path)
+            .map(|b| (mime, b))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
 }
 
 async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
@@ -2071,6 +2098,13 @@ mod tests {
         let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
         assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
         assert_eq!(parse_asks(&armed)[0].parked_until, "");
+        // previews trail delivery, delivery_note, answer and delivery_answer, as file names.
+        let shown = format!(
+            "{}\t\t\t\t\t/o/dodge/files/x/shot.png|/o/dodge/files/x/b.jpg\n",
+            parked.trim_end_matches('\n')
+        );
+        assert_eq!(parse_asks(&shown)[0].previews, ["shot.png", "b.jpg"]);
+        assert!(parse_asks(&parked)[0].previews.is_empty());
     }
 
     #[test]

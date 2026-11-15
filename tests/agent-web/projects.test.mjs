@@ -624,12 +624,16 @@ test("Ladder: a project row opens its Stage page; a new stages.json re-reads bot
 });
 
 // hub_core::departments for one product, as /api/projects/{key}/departments sends it.
-const dept = (id, title, o = {}) => ({ id, title, question: `Is ${title} in hand?`, cell: "off", due_at: null, required: false, needs: [], numbers: [], numbers_says: "no kb_project_number series for it", pipes: [], checks: [], grafana: null, ...o });
+const dept = (id, title, o = {}) => ({ id, title, question: `Is ${title} in hand?`, cell: "off", due_at: null, required: false, needs: [], numbers: [], numbers_says: "no kb_project_number series for it", pipes: [], checks: [], grafana: null, outbound: [], outbound_says: "", ...o });
 const depts = () => ({
   says: "",
   product: {
     profile: "bnb", name: "demo", stage: "beta", type: "game", stage_rank: 3,
-    depts: [dept("analytics", "Analytics"), dept("marketing", "Marketing"),
+    depts: [dept("analytics", "Analytics"), dept("marketing", "Marketing", {
+        cell: "ok", needs: [{ level: "ok", says: "post \"devlog\" on reddit waits on your review (ask Ab12Cd)" }],
+        outbound: [{ id: "261115-aaaaaa", channel: "reddit", kind: "post", title: "devlog", state: "review", verdict: "", reviewed_by: "", url: "", created: 1794700000, sent: null },
+          { id: "261114-bbbbbb", channel: "bluesky", kind: "mockup", title: "clip", state: "sent", verdict: "hand", reviewed_by: "human", url: "https://bsky.app/x", created: 1794600000, sent: 1794650000 }],
+      }),
       dept("legal", "Legal", {
         cell: "red", required: true, due_at: "beta",
         needs: [{ level: "bad", says: "privacy policy: no privacyUrl in game.json" }],
@@ -658,6 +662,10 @@ test("a product's page has the five department tabs before the work tabs, and Le
   assert.match(legal, /id="sec-p-legal-numbers">Numbers <span class="n">1<\/span>.*<b>reviews<\/b> 3 store reviews.*trends in Grafana/s);
   assert.match(legal, /id="sec-p-legal-pipes">Pipelines <span class="n">1<\/span>.*every product.*<td class="warn">never ran<\/td>/s, "a shared pipeline missing here is amber");
   assert.match(pinOf(pane, "analytics"), /<div class="card muted">Nothing\.<\/div>.*no kb_project_number series for it.*No pipeline in departments.tsv feeds Analytics\./s, "an empty department says so, section by section");
+  const mk = pinOf(pane, "marketing");
+  assert.match(mk, /id="sec-p-marketing-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="">post &quot;devlog&quot; on reddit waits on your review/, "a fresh review is listed, uncolored");
+  assert.match(mk, /id="sec-p-marketing-outbound">Outbound <span class="n">1 sent in 30d<\/span>.*<td>reddit<\/td><td>post<\/td><td class="wrap">devlog <span class="muted">261115-aaaaaa<\/span><\/td><td>-<\/td><td class="warn">review<\/td>.*<a class="tl" href="https:\/\/bsky.app\/x"[^>]*>clip<\/a>.*<td>hand by human<\/td><td class="">sent<\/td>/s, "open items and sends, a send linked to its post");
+  assert.match(mk, /sec-p-marketing-needs.*sec-p-marketing-outbound.*sec-p-marketing-numbers/s, "Outbound sits under Needs you");
   // The retired inner id lands on Deliverables, in the URL too.
   vm.runInContext(`pInner("build")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
