@@ -362,6 +362,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::deliverables::Deliverable>(),
         phone_table::<crate::stages::Project>(),
         phone_table::<crate::stages::Requirement>(),
+        phone_table::<crate::departments::Product>(),
         phone_table::<crate::session_table::SessionRow>(),
         phone_table::<crate::jobs::Job>(),
         phone_table::<crate::actions::Action>(),
