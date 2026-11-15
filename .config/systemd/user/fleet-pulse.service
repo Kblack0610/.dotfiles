@@ -1,7 +1,5 @@
 [Unit]
 Description=Fleet Pulse - push this machine's liveness heartbeat to gatus
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot
