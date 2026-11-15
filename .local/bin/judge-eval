@@ -27,7 +27,7 @@
 #       cell is held while a narrower cell of its type is shadow with scored answers under its
 #       own bar, since a row's level is a ceiling that opens every level under it. --ask posts
 #       one approval ask per candidate (the briefing runs it on Mondays), unless one for that
-#       cell is pending or was answered in the last PROMOTE_QUIET_DAYS days.
+#       cell is pending or was answered or closed in the last PROMOTE_QUIET_DAYS days.
 #
 #   judge-eval replay [--limit N] [--out DIR] [--json]
 #       the answer judge's current policy over the asks the human answered with an option, newest
@@ -75,6 +75,8 @@ LOG_LIMIT=50
 PROMOTE_QUIET_DAYS=28
 
 say() { printf 'judge-eval: %s\n' "$*" >&2; }
+# JUDGE_LEVELS as a JSON array, narrowest first.
+LEVELS_JSON="$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')"
 
 # prompt_sha <agent>: the git blob hash of its conf's PROMPT now, as agentctl-run records it.
 prompt_sha() {
@@ -115,7 +117,7 @@ eval_json() {
     --slurpfile I "$tmp/ingest" --argjson src "$src" --argjson settle "$((SETTLE_H * 3600))" \
     --argjson shas "$shas" --arg sweepre "$SWEEP_ROW_RE" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
-    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" --argjson levels "$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')" \
+    --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" --argjson levels "$LEVELS_JSON" \
     --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
@@ -463,6 +465,9 @@ log() {
       "    level \(if .level == "" then "-" else .level end)\(if .level_raised then " (raised)" else "" end)  call \(if .call == "" then "-" else .call end)" end' <<<"$out"
 }
 
+# ask_cells <any-prompt 0|1> <days or empty>: the answer judge's cells, as `cells --json` prints them.
+ask_cells() { VERDICTS=0 eval_json ask-judge "$1" "$2" | jq -c '[.agents[] | select(.score == "ask-answers") | .cells[]]'; }
+
 # cells [--any-prompt] [--days N] [--json]: see the header.
 cells() {
   local any=0 days="" json=0 out
@@ -474,7 +479,7 @@ cells() {
       *) say "usage: judge-eval cells [--any-prompt] [--days N] [--json]"; return 2 ;;
     esac
   done
-  out="$(VERDICTS=0 eval_json ask-judge "$any" "$days" | jq -c '[.agents[] | select(.score == "ask-answers") | .cells[]]')" ||
+  out="$(ask_cells "$any" "$days")" ||
     { say "could not read the sources"; return 1; }
   if [ "$json" = 1 ]; then printf '%s\n' "$out"; return; fi
   jq -r 'def pad($w): tostring | if length >= $w then .[0:$w] else . + " " * ($w - length) end;
@@ -496,10 +501,10 @@ promote_json() {
   bars="$(jq -cn --arg s "$(judge_conf PROMOTE_BARS "" | tr ',' ' ')" --arg l "${JUDGE_LEVELS% critical}" '
     [$s | splits(" +") | select(test("^[a-z]+=[0-9]+$")) | split("=") | select(.[0] as $x | $l | split(" ") | index($x))
      | {(.[0]): (.[1] | tonumber)}] | add // {}')"
-  VERDICTS=0 eval_json ask-judge "$1" "" | jq -c --argjson bars "$bars" --arg hard "$JUDGE_HARD_STOPS" \
-    --argjson levels "$(jq -cn --arg l "$JUDGE_LEVELS" '$l | split(" ")')" \
-    --arg demoted " $(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null | tr '\n' ' ') " '
-    [.agents[] | select(.score == "ask-answers") | .cells[] | select(.type != "" and .level != "")] as $cells
+  # Demoted: in the demote list and still opened by a row, so deleting the line is all approval takes.
+  ask_cells "$1" "" | jq -c --argjson bars "$bars" --arg hard "$JUDGE_HARD_STOPS" --argjson levels "$LEVELS_JSON" \
+    --arg demoted " $(comm -12 <(cut -f1 "$AGENT_ASK_DEMOTED" 2>/dev/null | sort -u) <(AGENT_ASK_DEMOTED=/dev/null live_rules 2>/dev/null | sort -u) | tr '\n' ' ') " '
+    [.[] | select(.type != "" and .level != "")] as $cells
     | ($cells | map({("\(.type)@\(.level)"): .}) | add // {}) as $by
     # A cell under its bar: no bar for its level, no right or wrong answer yet, or a low bound under it.
     | def under: ($bars[.level]) as $b | $b == null or (.tp + .fp) == 0 or (.precision_lo // 0) < $b;
@@ -513,7 +518,7 @@ promote_json() {
              elif .bar == null then {status: "held", why: "no bar for \(.level): only the human promotes it"}
              elif ($c | under) then {status: "below", why: (if .tp + .fp == 0 then "no scored answers yet"
                else "low bound \(.precision_lo)% under the \(.bar)% bar" end)}
-             elif ($narrow | length) > 0 then {status: "held", why: "\($narrow | map(.level) | join(", ")) of this type is under its bar, and the row would open it"}
+             elif ($narrow | length) > 0 then {status: "held", why: "the row would also open \($narrow | map(if $bars[.level] == null then "\(.level) (no bar)" else "\(.level) (low bound \(.precision_lo)%)" end) | join(", ")), under its bar"}
              else {status: "candidate", why: "low bound \(.precision_lo)% past the \(.bar)% bar over \(.tp + .fp) scored"} end)]'
 }
 
@@ -547,18 +552,20 @@ promote() {
       *) say "usage: judge-eval promote [--any-prompt] [--ask] [--json]"; return 2 ;;
     esac
   done
+  # An ask quotes the bar's own precision, and --any-prompt mixes in answers the bar never saw.
+  [ "$ask" = 1 ] && [ "$any" = 1 ] && { say "--ask reads only the current prompt's answers, not --any-prompt"; return 2; }
   out="$(promote_json "$any")" || { say "could not read the sources"; return 1; }
   if [ "$ask" = 1 ]; then
-    # The cells already asked: a promotion ask pending, or answered inside the quiet window.
+    # The cells already asked: a promotion ask pending, or answered or closed inside the quiet window.
     asked="$(judge_ask_docs "$ASKS_ROOT" | jq -r --argjson since "$(( $(date +%s) - PROMOTE_QUIET_DAYS * 86400 ))" "$JQ_EPOCH"'
       select((.task // "") | startswith("promote ask-judge cell "))
-      | select(.status == "pending" or (.status == "answered" and ((.answered_at | epoch) // 0) >= $since))
+      | select(.status == "pending" or (([.answered_at, .closed_at] | map(epoch) | max) // 0) >= $since)
       | .task | ltrimstr("promote ask-judge cell ")')"
     while IFS= read -r c; do
       [ -n "$c" ] || continue
       task="$(jq -r '"\(.type)@\(.level)"' <<<"$c")"
       grep -qxF -- "$task" <<<"$asked" && { say "$task: already asked"; continue; }
-      if id="$(promote_ask "$c")" && [ -n "$id" ]; then say "$task: asked $id"; posted=$((posted + 1))
+      if id="$(promote_ask "$c" </dev/null)" && [ -n "$id" ]; then say "$task: asked $id"; posted=$((posted + 1))
       else say "$task: the ask did not post"; failed=$((failed + 1)); fi
     done < <(jq -c '.[] | select(.status == "candidate")' <<<"$out")
     say "posted $posted promotion ask(s)$([ "$failed" = 0 ] || echo ", $failed failed")"

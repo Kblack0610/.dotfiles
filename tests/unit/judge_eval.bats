@@ -334,13 +334,27 @@ cell() {
   run "$JUDGE_EVAL" promote
   assert_success
   assert_line --regexp '^wide +repo +25/25 +100% \[86.7-100\] +85% +candidate: low bound 86.7% past the 85% bar over 25 scored$'
-  assert_line --regexp '^nar +repo .* held: self of this type is under its bar, and the row would open it$'
+  assert_line --regexp '^nar +repo .* held: the row would also open self \(low bound 23.7%\), under its bar$'
   # negative control: with no bars in the conf, nothing is a candidate
   sed -i '/^PROMOTE_BARS=/d' "$AGENTCTL_CONF_DIR/ask-judge.conf"
   run "$JUDGE_EVAL" promote --json
   assert_equal "$(jq '[.[] | select(.status == "candidate")] | length' <<<"$output")" 0
   run "$JUDGE_EVAL" promote --sideways
   assert_failure 2
+  run "$JUDGE_EVAL" promote --ask --any-prompt
+  assert_failure 2
+}
+
+@test "promote: a cell in the demote list is demoted only while a row still opens it" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  export AGENT_ASK_DEMOTED="$HOME/demoted"
+  printf 'fast@repo\t%s\toverride\nwide@repo\t%s\toverride\n' "$NOW_ISO" "$NOW_ISO" > "$AGENT_ASK_DEMOTED"
+  cell fast repo 25   # fast@repo=0 opens it, the demote list shuts it
+  cell wide repo 25   # negative control: listed, but no row opens it any more
+  run "$JUDGE_EVAL" promote --json
+  assert_success
+  run jq -c 'map([.type, .status, .demoted]) | sort' <<<"$output"
+  assert_output '[["fast","candidate",true],["wide","candidate",false]]'
 }
 
 @test "promote --ask: one approval ask per candidate, never sent to the judge, and not asked again while pending or lately answered" {
@@ -373,6 +387,11 @@ cell() {
   assert_success
   assert_output --partial 'wide_scope@repo: asked '
   assert_output --partial 'posted 1 promotion ask(s)'
+  # cancelled today: quiet, like an answer
+  f="$(grep -rlx 'status: pending' "$HOME/.agent/asks/agent-runtime" | xargs -d '\n' grep -lx 'task: promote ask-judge cell wide_scope@repo')"
+  sed -i "s/^status: pending/status: cancelled/; /^closed_at:/d" "$f"; printf 'closed_at: %s\n' "$NOW_ISO" >> "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_output --partial 'wide_scope@repo: already asked'
 }
 
 @test "log --level keeps one impact level, and every row names its level and call" {
