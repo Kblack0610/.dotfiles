@@ -111,10 +111,8 @@ parsed() {
   out="$(python3 -I -c "$PARSE" "$3" "$DAY" "$4" 2>/dev/null)" || { failed "$1" "$2" "report did not parse"; return; }
   jq -c --arg n "$1" --arg b "$2" '{name: $n, basis: $b} + .' <<<"$out"
 }
-# api_error <file> -> Apple's or Google's error text, else empty.
-api_error() { jq -r '[.errors[]?.detail, .error.message?] | map(select(. != null)) | first // empty' "$1" 2>/dev/null; }
 # http_failed <name> <basis> <code> <file> -> "HTTP <code>", with the API's own text when it gave one.
-http_failed() { local d; d="$(api_error "$4")"; failed "$1" "$2" "HTTP $3${d:+: $d}"; }
+http_failed() { local d; d="$(store_api_error "$4")"; failed "$1" "$2" "HTTP $3${d:+: $d}"; }
 
 app_store() {
   local name="App Store" basis=proceeds vendor code
@@ -128,7 +126,7 @@ app_store() {
          parsed "$name" "$basis" asc "$TMP/asc.tsv" ;;
     # Apple answers a day with no sales 404 "There were no sales for the date specified."; any
     # other 404 (the report is not out yet) is not read.
-    404) if api_error "$TMP/asc.gz" | grep -qi 'no sales'; then
+    404) if store_api_error "$TMP/asc.gz" | grep -qi 'no sales'; then
            jq -nc --arg n "$name" --arg b "$basis" '{name: $n, basis: $b, made: [], sales: 0, titles: []}'
          else http_failed "$name" "$basis" 404 "$TMP/asc.gz"; fi ;;
     *) http_failed "$name" "$basis" "$code" "$TMP/asc.gz" ;;
