@@ -3,7 +3,8 @@
 # store-reviews. Load it after sandbox_init and call store_stubs in setup.
 #
 # rbw is the shared stub (helpers/stubs/rbw): its entries are the files in $SANDBOX/rbw, its calls
-# land in $SANDBOX/rbw/calls.log, and RBW_LOCKED=1 makes `rbw unlocked` fail.
+# land in $SANDBOX/rbw/calls.log, and a `locked` file there makes `rbw unlocked`
+# fail.
 #
 # store_stubs writes the curl stub. It reads its stdin config the way real curl does and logs argv
 # ($SANDBOX/curl.argv) apart from that config ($SANDBOX/curl.config), so a test can prove a

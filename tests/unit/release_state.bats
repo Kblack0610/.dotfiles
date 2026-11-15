@@ -873,7 +873,8 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
 
 @test "store: a locked vault never calls rbw get, and each row says why" {
   store_setup
-  RBW_LOCKED=1 run "$RS" refresh game
+  : > "$SANDBOX/rbw/locked"
+  run "$RS" refresh game
   assert_success
   run grep -c '^rbw get' "$SANDBOX/rbw/calls.log"
   assert_output 0

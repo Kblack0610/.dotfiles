@@ -10,7 +10,7 @@ setup() {
   sandbox_init basic
 
   PF="$REPO_ROOT/.local/bin/playtest-feedback"
-  export SANDBOX PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+  export PROM_TEXTFILE_DIR="$SANDBOX/textfile"
   mkdir -p "$PROM_TEXTFILE_DIR" "$SANDBOX/lab/dodge" "$SANDBOX/lab/pmp" "$SANDBOX/lab/broken"
   : > "$SANDBOX/lab/dodge/playtest.md"
   : > "$SANDBOX/lab/broken/playtest.md"

@@ -92,7 +92,8 @@ steam_page() {
   keys
   reply steam.5553740 200 "$(steam_page)"
   reply steam.5376830 302 ''
-  RBW_LOCKED=1 run "$SR"
+  : > "$SANDBOX/rbw/locked"
+  run "$SR"
   assert_success
   assert_equal "$(app shape-city play)" '{"error":"rbw is locked"}'
   assert_equal "$(app shape-city app_store)" '{"error":"rbw is locked"}'

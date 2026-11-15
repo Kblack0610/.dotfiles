@@ -48,7 +48,8 @@ src() { jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$output"; }
 
 @test "a locked vault never calls rbw get, and every store says why" {
   asc_key
-  RBW_LOCKED=1 run "$SS" 2026-11-09
+  : > "$SANDBOX/rbw/locked"
+  run "$SS" 2026-11-09
   assert_success
   assert_equal "$(src 'App Store' | jq -r .error)" "rbw is locked"
   assert_equal "$(src 'Google Play' | jq -r .error)" "rbw is locked"
