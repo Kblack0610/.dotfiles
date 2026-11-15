@@ -696,7 +696,7 @@ def runner_calls(state_dir):
 def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, *, models, tokens,
                 provider=None):
     """One by_session row: what one session cost in the window, on which models, and who it was. A non-Claude
-    harness's row names its provider (`lazer` is Lazer direct, past the gateway)."""
+    harness's row names its provider."""
     return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
             "origin": origin, "harness": harness, "agent": agent, "account": account,
             "project": project, "title": title, "item": item,

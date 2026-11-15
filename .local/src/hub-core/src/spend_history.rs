@@ -514,8 +514,7 @@ pub struct Pick<'a> {
     pub in_group: &'a str,
 }
 
-/// The live day, from `fleet-cost.json`: the whole fleet's figure and its session rows. No unpriced
-/// list: only Lazer direct reads one, and it reads the nightly days.
+/// The live day, from `fleet-cost.json`: the whole fleet's figure and its session rows.
 pub fn live(f: crate::fleet_cost::File) -> Day {
     let (usd, estimated) = f.figure();
     Day {

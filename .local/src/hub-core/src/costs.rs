@@ -171,15 +171,16 @@ pub struct Direct {
     pub note: &'static str,
 }
 
-/// The snapshot date (`YYYY-MM-DD`, local, as the snapshots are named) of the 1st of `now`'s month.
-pub fn month_first(now: i64) -> String {
+/// `now` as a local date in `fmt`: the snapshots are named by local day.
+fn local_date(now: i64, fmt: &str) -> String {
     chrono::DateTime::from_timestamp(now, 0)
-        .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%Y-%m-01")
-                .to_string()
-        })
+        .map(|t| t.with_timezone(&chrono::Local).format(fmt).to_string())
         .unwrap_or_default()
+}
+
+/// The snapshot date (`YYYY-MM-DD`) of the 1st of `now`'s month.
+fn month_first(now: i64) -> String {
+    local_date(now, "%Y-%m-01")
 }
 
 /// `days` oldest first, as `spend_history::read` gives them. A session's row is its running total,
@@ -326,13 +327,7 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
     }
     c.snapshots = snapshots(&paths.tokens, (longest() / DAY) as usize, &mut c.errors);
     c.tokens = crate::tokens::from_snapshots(&c.snapshots, now);
-    let today = chrono::DateTime::from_timestamp(now, 0)
-        .map(|t| {
-            t.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
-                .to_string()
-        })
-        .unwrap_or_default();
+    let today = local_date(now, "%Y-%m-%d");
     c.spend_days = crate::spend_history::read(&paths.tokens);
     c.history = crate::spend_history::build(&c.spend_days, &today);
     c.fleet_cost = match crate::fleet_cost::load(&paths.fleet_cost) {
@@ -986,14 +981,13 @@ pub struct Source {
 }
 
 fn sources(c: &Costs) -> Vec<Source> {
-    let fresh = |name, as_of: Option<i64>| Source {
-        name,
-        as_of,
-        stale: as_of.is_none_or(|t| c.at - t > STALE_SECS),
-    };
     let snap = c.snapshots.first().and_then(|s| s.generated_at);
     vec![
-        fresh("token snapshot", snap),
+        Source {
+            name: "token snapshot",
+            as_of: snap,
+            stale: snap.is_none_or(|t| c.at - t > STALE_SECS),
+        },
         Source {
             name: "calls",
             as_of: c.calls.iter().map(|x| x.at).max(),
