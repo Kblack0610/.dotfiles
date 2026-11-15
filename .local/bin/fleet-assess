@@ -36,6 +36,7 @@ set -uo pipefail
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
 : "${GH_CALLERS_WINDOW_S:=600}"  # gh_callers counts the call log over this many seconds
+: "${FLEET_GH_PROBE_TTL_S:=300}" # the actions/workflows reading is reused this long: fleet-dispatch asks every pass and each ask spent one of that bucket's calls (172 REST an hour, 2026-11-13)
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
@@ -562,6 +563,25 @@ gh_callers() {
     sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
 }
 
+# wf_bucket -> "<remaining> <reset epoch>" of the actions/workflows bucket, or nothing when unreadable.
+# The read spends one call of that bucket, so the last reading is kept for FLEET_GH_PROBE_TTL_S; a
+# reading whose reset has passed is stale however young. No event announces a spend, so this ages out.
+wf_bucket() {
+  local f="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}/actions-budget" at r t now out
+  now="$(date +%s)"
+  if read -r at r t 2>/dev/null < "$f" && [ "$(( now - at ))" -ge 0 ] \
+    && [ "$(( now - at ))" -lt "$FLEET_GH_PROBE_TTL_S" ] && [ "${t:-0}" -gt "$now" ]; then
+    echo "$r $t"
+    return
+  fi
+  out="$(timeout 5 gh api -i "repos/$FLEET_GH_PROBE_REPO/actions/workflows?per_page=1" 2>/dev/null \
+    | tr -d '\r' | awk -F': ' 'tolower($1) == "x-ratelimit-remaining" { r = $2 }
+                              tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }')"
+  [ -n "$out" ] || return 0
+  mkdir -p "${f%/*}" 2>/dev/null && printf '%s %s\n' "$now" "$out" > "$f.$$" 2>/dev/null && mv -f "$f.$$" "$f"
+  echo "$out"
+}
+
 # gh_budget -> one line: REST calls left this hour in the emptier bucket, and who is spending
 # them when LOW. GitHub charges actions/workflows (`gh run list`, `gh run view`, `gh workflow
 # run`) and orgs/ to a second per-user bucket of the same size that rate_limit does not show; on
@@ -572,10 +592,7 @@ gh_budget() {
   rl="$(timeout 5 gh api rate_limit --jq '.resources.core | "\(.remaining) \(.limit) \(.reset)"' 2>/dev/null)" \
     || { echo "github: rate limit unreadable"; return; }
   read -r remaining limit reset <<<"$rl"
-  wf="$(timeout 5 gh api -i "repos/$FLEET_GH_PROBE_REPO/actions/workflows?per_page=1" 2>/dev/null \
-    | tr -d '\r' | awk -F': ' 'tolower($1) == "x-ratelimit-remaining" { r = $2 }
-                              tolower($1) == "x-ratelimit-reset" { t = $2 } END { if (r != "") print r, t }')"
-  read -r wf wf_reset <<<"$wf"
+  read -r wf wf_reset < <(wf_bucket)
   if [ -n "$wf" ] && [ "$wf" -lt "$remaining" ]; then
     remaining="$wf" reset="$wf_reset" bucket=" (actions/workflows)"
   fi
