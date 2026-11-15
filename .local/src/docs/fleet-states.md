@@ -60,11 +60,11 @@ Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default
 
 ## Close verdict
 
-Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label). A DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on quiet. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
+Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label, manual permission mode). A DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on quiet. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
 
 | # | Facts | Verdict |
 |---|---|---|
-| 1 | label `manual` | keep: the human keeps it |
+| 1 | label `manual`, or the session in Claude's manual permission mode (`manual_mode`, from `agent-panel`: investigate-only, so it does no work on its own) | keep: the human keeps it |
 | 2 | PARKED | keep: its claude is gone |
 | 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
 | 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |

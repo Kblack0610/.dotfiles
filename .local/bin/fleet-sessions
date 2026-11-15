@@ -1391,11 +1391,11 @@ collect() {
     rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host cwin < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin manual
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
       (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
       (.plan_file | if . == "" then "-" else . end), (.started_at // "-"), (.pid // 0), (.host // "-"),
-      (.context_window // 0)] | @tsv' <<<"$line")
+      (.context_window // 0), (if .manual_mode then 1 else 0 end)] | @tsv' <<<"$line")
     # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
@@ -1569,12 +1569,12 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$planf")" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}"
+      "$(plan_phase_list "$planf")" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -1889,7 +1889,8 @@ explain() {
 # .local/src/docs/fleet-states.md. Dispatched is the `@dispatch` window flag or a queue item with
 # an origin; the world is not a sign, since a human may still type in a lab window. Only a
 # dispatched session closes over its own open ask (the answer reopens it); a hand-started one waits
-# for it. What waits on the human (an ask, a dialog, plan mode, the manual label) keeps a window.
+# for it. What waits on the human (an ask, a dialog, plan mode, the manual label, manual permission
+# mode) keeps a window.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. Quiet is fleet-shepherd's: a null age_min reads
 # 0, so an unknown age never closes a CHAT row. The row of the session named by `--arg self`
@@ -1908,6 +1909,7 @@ CLOSE_JQ='
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (.bucket == "STALLED" and ($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
+      elif .manual_mode then {verdict: "keep", why: "manual permission mode: the human keeps it"}
       elif .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
       elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
@@ -2010,7 +2012,8 @@ json_rows() {
       activity_line: (if (.[52] // "-") == "-" then null else .[52] end),
       own_asks: ((.[53] // "0") | tonumber), in_plan_mode: ((.[54] // "0") == "1"),
       context_window: ((.[55] // "0") | tonumber | if . > 0 then . else null end),
-      open_job: (if (.[56] // "-") == "-" then null else .[56] end)} | '"$CLOSE_JQ"
+      open_job: (if (.[56] // "-") == "-" then null else .[56] end),
+      manual_mode: ((.[57] // "0") == "1")} | '"$CLOSE_JQ"
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

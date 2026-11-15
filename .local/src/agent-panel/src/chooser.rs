@@ -750,6 +750,7 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
             "session_id": a.session_id,
             "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
             "plan_mode": a.mode == jsonl::Mode::Plan,
+            "manual_mode": a.mode == jsonl::Mode::Manual,
             "idle_since": idle_since,
             "started_at": a.started_at,
             "context_tokens": info.context_tokens,
