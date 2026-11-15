@@ -36,7 +36,7 @@ A judge is a model call that decides something a human would otherwise decide: t
 
 ## Replay
 
-`judge-eval replay` scores a changed policy before it earns live labels: the real `agent-ask judge` over blind copies of the asks the human answered with an option, as the agent `ask-judge-replay`, whose own budget keeps it off `ask-judge`'s. The copies are then scored like any other verdicts, so its numbers are a replay's, never counted into the KPIs, and a run that would leak an answer sends nothing. Test: `judge_eval.bats` "replay".
+`judge-eval replay` scores a changed policy before it earns live labels: the real `agent-ask judge` over blind copies of the asks the human answered with an option, as the agent `ask-judge-replay`, whose own budget keeps it off `ask-judge`'s. The copies are then scored like any other verdicts, so its numbers are a replay's, never counted into the KPIs, and a run that would leak an answer sends nothing. `--ids` backfills a named set instead, in any state (answered, cancelled, parked): one row per ask with the judge's call, its type and level, whether `live_answer` would have let it act, and what the human did. Test: `judge_eval.bats` "replay".
 
 ## How the numbers are computed
 
