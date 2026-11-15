@@ -450,6 +450,18 @@ test("a runner page's lists stop at the server's shown, and each +N more opens o
   assert.doesNotMatch(open, /data-more="activity"/);
   assert.match(open, /data-more="runs">\+1 more</, "the other lists stay cut");
   assert.deepEqual(asked.filter((u) => u.includes("/runner")), ["/api/fleet/runner?name=inbox-triage"]);
+  // The per-rule eval and an extras block's rows are cut the same way, each under its own key.
+  const evald = runnerPage("ask-judge", { shown: 1, registry: data.workers[0].registry, extras: { kind: "none" } });
+  const e = await openPage("ask-judge", { "ask-judge": evald });
+  assert.match(e, /<td>ship_deploy<\/td>/);
+  assert.doesNotMatch(e, /<td>taste<\/td>/);
+  assert.match(e, /data-more="eval">\+1 more</);
+  const v = (key) => ({ ts: 1793942000, project: "dotfiles", key, verdict: "skip", tier: 2, clear: true, reason: "r" });
+  const disp = { counts_24h: {}, counts_7d: {}, log_24h: {}, partial: false, recent: [v("row one"), v("row two")] };
+  const d = await openPage("dispatch-judge", { "dispatch-judge": runnerPage("dispatch-judge", { shown: 1, extras: { kind: "dispatch-verdicts", dispatch: disp } }) });
+  assert.match(d, /row one/);
+  assert.doesNotMatch(d, /row two/);
+  assert.match(d, /data-more="dispatch">\+1 more</);
   // Negative control: a page that sends no shown draws every row.
   const all = await openPage("inbox-triage", { "inbox-triage": { ...page, shown: undefined } });
   assert.match(all, /line 2/);
@@ -494,6 +506,13 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   await flush();
   assert.deepEqual(asked, ["/api/fleet/runner?name=ask-judge&vs=wrong"]);
   st.views.sessions = "";
+  // The server cut the verdicts, so their +N older is a button that re-reads them all (vall).
+  assert.match(j, /<\/div><button class="btn sm" data-more="verdicts">\+117 older<\/button>/);
+  asked = [];
+  click({ target: { closest: (sel) => (sel === "#ov-runners" ? box : sel === "[data-more]" ? { dataset: { more: "verdicts" } } : null), dataset: {} } });
+  await flush();
+  assert.deepEqual(asked, ["/api/fleet/runner?name=ask-judge&vall=1"]);
+  ctx.setTab("sessions", "runners", ""); // leaving the page forgets what it opened
   // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
   assert.match(j, /<td>ship_deploy<\/td><td>repo<\/td><td class="n">4<\/td><td class="n">3<\/td><td class="n">66.7% <span class="muted">\[20.8-93.9\]<\/span><\/td><td class="n">1<\/td><td class="">yes<\/td><td class="n">3<\/td><td class="n">25%<\/td>/);
   assert.match(j, /<td>\(no type\)<\/td><td>-<\/td>/);

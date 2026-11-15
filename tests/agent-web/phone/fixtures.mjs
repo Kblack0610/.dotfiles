@@ -280,7 +280,7 @@ const askJudge = { kind: "ask-judge", judge: { ...fleet.judge, verdicts: fleet.j
   table: table(200, ["when", "project", "type", "said", "question", "why", "you"], ["all", "answered", "would answer", "passed", "wrong"]) } };
 // The runner pages render.mjs measures, each `#sessions/runners/<name>`.
 export const RUNNER_PAGES = {
-  "inbox-triage": runnerPage("inbox-triage", { running: true, runs: 21, older: 11, calls: 20, conf: 20, extras: ingest }),
+  "inbox-triage": runnerPage("inbox-triage", { running: true, runs: 20, older: 12, calls: 20, conf: 20, extras: ingest }),
   shepherd: runnerPage("shepherd", { runs: 20, older: 1118, calls: 0, conf: 22 }),
   "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts }),
   "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge }),

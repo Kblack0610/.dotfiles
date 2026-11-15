@@ -33,17 +33,18 @@ const VERDICTS_PRE = "v";
 const rst = { name: "", data: null, err: null, log: null, sel: "", open: new Set() };
 
 // Each list on the runner page draws the server's `shown` rows (agent-web RUNNER_ROWS) until its
-// "+N more" (data-more, its key) is pressed, then every row the server sent.
+// "+N more" (data-more, its key) is pressed, then every row the server sent. The answer judge's
+// verdicts are cut by the server, so theirs ("verdicts") re-reads with vall.
 const pageRows = (list, key) => firstRows(list, rst.open.has(key) ? null : rst.data.shown);
-const pageMore = (list, key) => {
-  const n = list.length - pageRows(list, key).length;
-  return n > 0 ? `<button class="btn sm" data-more="${key}">+${n} more</button>` : "";
-};
+const moreButton = (n, key, word = "more") => (n > 0 ? `<button class="btn sm" data-more="${key}">+${n} ${word}</button>` : "");
+const pageMore = (list, key) => moreButton(list.length - pageRows(list, key).length, key);
 
 const refreshRunner = coalesce(async () => {
   const name = runnerName();
   if (!name) return;
-  const v = tblParams(st.views.sessions, VERDICTS_PRE).toString();
+  const p = tblParams(st.views.sessions, VERDICTS_PRE);
+  if (rst.open.has("verdicts")) p.set("vall", "1");
+  const v = p.toString();
   try { rst.data = await api("/api/fleet/runner?name=" + encodeURIComponent(name) + (v ? "&" + v : "")); rst.err = null; } catch (e) { rst.data = null; rst.err = e.message; }
   if (runnerName() === name) renderRunners();
 });
@@ -163,8 +164,9 @@ const judgeWeek = (j) => `<div class="muted">7d: ${share(j.week.live_pct)} answe
 const VERDICT_COLS = { when: ["when", "n"], project: ["project"], type: ["type"], said: ["said"], question: ["question"], why: ["why"], you: ["you", "", true] };
 
 // The verdicts the server kept (Judge::view), newest first, then what its cap left out: `more`
-// draws that count, Log's a button that reads them all, the runner page's a line.
-function judgeRows(j, more = older) {
+// draws that count, Log's a button that reads them all; the runner page's draws nothing here (its
+// button sits outside the verdicts' data-tbl block).
+function judgeRows(j, more = () => "") {
   const t = j.table;
   // Why, built once as its parts (the rule, the quoted evidence, the reason): the title is their
   // text, the cell the same parts escaped, the rule in bold.
@@ -202,18 +204,19 @@ function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
       return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) +
-        dispatchList({ ...x.dispatch, recent: pageRows(x.dispatch.recent, "extras") }) + pageMore(x.dispatch.recent, "extras");
+        dispatchList({ ...x.dispatch, recent: pageRows(x.dispatch.recent, "dispatch") }) + pageMore(x.dispatch.recent, "dispatch");
     case "ask-judge":
       return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells({ ...x.judge, cells: pageRows(x.judge.cells, "cells") }) +
         pageMore(x.judge.cells, "cells") + judgeWeek(x.judge) +
-        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
+        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>` +
+        moreButton(x.judge.table.shown - x.judge.verdicts.length, "verdicts", "older");
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
-      const rows = pageRows(x.steps, "extras").map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
+      const rows = pageRows(x.steps, "steps").map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
       return secHead("", "Intake") +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>` + pageMore(x.steps, "extras");
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>` + pageMore(x.steps, "steps");
     }
     case "sentinel-watches": {
       // Every watch, its state and owner are on Alerts; Runners keeps the count, and a tripped one
@@ -320,7 +323,7 @@ $("scroll").addEventListener("click", (e) => {
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
   const more = t.closest("[data-more]");
-  if (more) { rst.open.add(more.dataset.more); renderRunners(); return; }
+  if (more) { rst.open.add(more.dataset.more); if (more.dataset.more === "verdicts") refreshRunner(); else renderRunners(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;

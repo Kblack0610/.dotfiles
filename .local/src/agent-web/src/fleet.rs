@@ -102,17 +102,30 @@ pub async fn runner(q: RunnerQuery) -> Result<String, String> {
     let name = q.name.clone();
     let mut r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
     if let fleet::runner::Extras::AskJudge { judge } = &mut r.extras {
-        judge.view(&q.verdicts.view(), RUNNER_ROWS);
+        let cap = match q.verdicts.vall {
+            Some(_) => usize::MAX,
+            None => RUNNER_ROWS,
+        };
+        judge.view(&q.verdicts.view(), cap);
     }
     page(&r)
 }
 
 /// The runner page's JSON: the reader's fields and `shown` (`RUNNER_ROWS`), so the page holds no
 /// copy of the cap.
+#[derive(serde::Serialize)]
+struct Page<'a> {
+    #[serde(flatten)]
+    runner: &'a fleet::runner::Runner,
+    shown: usize,
+}
+
 fn page(r: &fleet::runner::Runner) -> Result<String, String> {
-    let mut v = serde_json::to_value(r).map_err(|e| e.to_string())?;
-    v["shown"] = RUNNER_ROWS.into();
-    serde_json::to_string(&v).map_err(|e| e.to_string())
+    serde_json::to_string(&Page {
+        runner: r,
+        shown: RUNNER_ROWS,
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
