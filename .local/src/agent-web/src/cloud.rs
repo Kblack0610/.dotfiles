@@ -77,7 +77,7 @@ pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
         .map_err(|e| {
             bad(
                 StatusCode::BAD_GATEWAY,
-                format!("cannot read the governor's hosts: {e}"),
+                hub_core::reading::State::NotRead(format!("the governor's hosts, {e}")).words(""),
             )
         })?;
     if !hosts.contains(&host) {

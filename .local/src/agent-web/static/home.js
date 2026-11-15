@@ -126,7 +126,7 @@ const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.tota
 
 function propSection(h) {
   const t = h.proposals_table;
-  if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? "Could not read proposals. The reason is at the top of this page." : "Nothing proposed."}</div>`;
+  if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? `${NOT_READ}: proposals, the reason is at the top of this page.` : "Nothing proposed."}</div>`;
   const body = tblBodyFirst(t, () => propBody(h));
   return `<div id="home-prop-head">${propHead(h)}</div>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;

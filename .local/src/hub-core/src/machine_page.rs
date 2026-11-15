@@ -276,7 +276,11 @@ fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
             bits.extend(m.disk.map(|v| format!("disk {} free", pct(v))));
             Part::new("Now", bits.join(", ")).warn(cpu >= 0.9)
         }
-        None => Part::new("Now", format!("no reading: {}", why_no_reading(m))).warn(true),
+        None => Part::new(
+            "Now",
+            format!("{}: {}", crate::reading::NO_DATA, why_no_reading(m)),
+        )
+        .warn(true),
     };
     out.push(now);
     if m.carries_ci() || m.off > 0 {
@@ -512,11 +516,11 @@ mod tests {
         assert_eq!(p.parts[0].label, "Now");
         assert_eq!(
             p.parts[0].text,
-            "no reading: Prometheus has no node exporter series for it"
+            "no data: Prometheus has no node exporter series for it"
         );
         assert!(p.parts[0].warn);
         let p = page(&i, "aws-burst-1", "", &[]);
-        assert_eq!(p.parts[0].text, "no reading: the governor has it stopped");
+        assert_eq!(p.parts[0].text, "no data: the governor has it stopped");
         assert!(p.parts.iter().any(|x| x.label == "Power"));
         // No reading, so no other or idle: only what the runners say.
         assert!(p.share.is_empty());

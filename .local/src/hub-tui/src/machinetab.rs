@@ -129,7 +129,11 @@ pub(crate) fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<
 /// Cores per pool, then other and idle, each a bar of its cores.
 fn share(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     let Some(cores) = page.cores.filter(|c| *c > 0.0) else {
-        return vec![heading("SHARE", "no reading of its cores", p)];
+        return vec![heading(
+            "SHARE",
+            format!("{} for its cores", hub_core::reading::NO_DATA),
+            p,
+        )];
     };
     let mut out = vec![heading("SHARE", format!("of its {cores:.0} cores"), p)];
     let width = SHARE_BAR.min(w.saturating_sub(30)).max(5);
@@ -237,7 +241,10 @@ fn history(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         p,
     )];
     if h.hours.is_empty() {
-        out.push(Line::styled("  no reading in the window", p.dim()));
+        out.push(Line::styled(
+            format!("  {} in the window", hub_core::reading::NO_DATA),
+            p.dim(),
+        ));
         return out;
     }
     // One column per bucket of hours, so the whole window fits the width.
@@ -690,7 +697,7 @@ mod tests {
                     from: 3600,
                     to: 7200,
                     open: false,
-                    why: "no reading".into(),
+                    why: hub_core::reading::NO_DATA.into(),
                 }],
                 power: Some(PowerHistory {
                     changes: vec![Change {
@@ -771,7 +778,7 @@ mod tests {
             "EditMode",
             "7 DAYS",
             "DOWNTIME",
-            "no reading",
+            "no data",
             "POWER",
             "11-10 3.5h",
             "queue",
@@ -820,17 +827,17 @@ mod tests {
             host: "mac-mini".into(),
             parts: vec![Part::new(
                 "Now",
-                "no reading: Prometheus has no node exporter series for it",
+                "no data: Prometheus has no node exporter series for it",
             )
             .warn(true)],
             ..MachinePage::default()
         };
         let t = text(&page_lines(&page));
         assert!(
-            t.contains("no reading: Prometheus has no node exporter series"),
+            t.contains("no data: Prometheus has no node exporter series"),
             "{t}"
         );
-        assert!(t.contains("no reading of its cores"), "{t}");
+        assert!(t.contains("no data for its cores"), "{t}");
         assert!(t.contains("not read"), "no history read: {t}");
         assert!(t.contains("SENSORS  not read"), "{t}");
     }
