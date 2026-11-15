@@ -739,7 +739,8 @@ priority_pass() {
 # notes-cli's epics::POINTS; the minutes are measured agent work, queue start to close, over
 # 1,937 items closed ok 2026-10-20 to 11-12 (p25 10, median 24, p75 54, p90 114 min).
 # Provisional: re-read when the pts-bands Sentinel watch trips (`fleet-bench sizes --check`: over
-# the last 7 days of closes, the median l is not slower than m or m not slower than s).
+# the last 7 days of closes of rows scored #pts, the median l is not slower than m or m not slower than s;
+# only a small share of the 1,937 items had #pts, so the watch checks the order, not these minutes).
 size_rule() {
   cat <<'RULE'
 Points measure the whole job: the agent's work, the tests it needs, CI and review rounds, and anything it waits on. They are not value or priority.
