@@ -16,14 +16,16 @@ setup() {
   C="$XDG_CACHE_HOME"
   mkdir -p "$C/hub-spend-history/$OTHER/snap" "$C/mine/$ME" "$C/stale/$DEAD" "$C/plain/sub"
   touch "$C/hub-spend-history/top.json"
-  # The fifo read returns once bash has exec'd with the id in its environ, so no wait is needed.
+  # bash starts with the id already in its environ, and so does the sleep it execs into, so the
+  # fifo read returning means the guard can see it: no wait is needed.
   mkfifo "$T/ready"
   CLAUDE_CODE_SESSION_ID=$OTHER bash -c 'echo up > "$1"; exec sleep 100000' _ "$T/ready" 3>&- &
   LIVE=$!
   read -r _ < "$T/ready"
 }
 
-teardown() { kill "$LIVE" 2>/dev/null || true; }
+# KILL: a job of the parallel runner can inherit TERM as ignored.
+teardown() { { kill -KILL "$LIVE"; wait "$LIVE"; } 2>/dev/null || true; }
 
 at() { jq -nc --arg c "$2" --arg d "$1" --arg s "$ME" '{tool_name:"Bash", session_id:$s, cwd:$d, tool_input:{command:$c}}' | python3 "$GUARD"; }
 
@@ -42,7 +44,8 @@ allowed() { assert_success; assert_output ''; }
   for c in "rm -rf $C/hub-spend-history/" "rm -r -f $C/hub-spend-history/$OTHER" "rm -fR $C/hub-spend-history/*" \
     "rm --recursive --force $C/hub-spend-history/$OTHER/snap" "rm -rf $C" "rm -rf $C/../cache" \
     "cd $C && rm -rf hub-spend-history" "bash -c 'rm -rf $C/hub-spend-history'" "eval rm -rf $C/hub-spend-history" \
-    "true; sudo rm -rf -- $C/hub-*"; do
+    "true; sudo rm -rf -- $C/hub-*" "rm -rf $C/{plain,hub-spend-history}" "rm -rf $C/hub-spend-{x,history}/" \
+    "rm --rec -f $C/hub-spend-history" "rm --r $C/hub-spend-history"; do
     run at /tmp "$c"
     denied
   done
@@ -54,12 +57,27 @@ allowed() { assert_success; assert_output ''; }
   denied
   run at /tmp "rm -rf $T/link"
   allowed
+  run at /tmp "rm -rf $T/link/"
+  denied
+  mkdir -p "$T/a/b"
+  ln -s "$C/hub-spend-history" "$T/a/b/up"
+  run at /tmp "rm -rf $T/a/b/up/../hub-spend-history"
+  denied
+}
+
+@test "~/.cache is guarded when XDG_CACHE_HOME points elsewhere" {
+  export HOME="$T/home"
+  mkdir -p "$HOME/.cache/tool/$OTHER"
+  run at /tmp "rm -rf ~/.cache/tool"
+  denied
+  run at /tmp "rm -rf $HOME/.cache"
+  denied
 }
 
 @test "the caller's own scratch, a dead session's dir and plain cache dirs pass" {
   local c
   for c in "rm -rf $C/mine" "rm -rf $C/mine/$ME" "rm -rf $C/stale" "rm -rf $C/stale/$DEAD" "rm -rf $C/plain" \
-    "rm -rf $C/absent" "rm -rf $T/elsewhere"; do
+    "rm -rf $C/absent" "rm -rf $T/elsewhere" "rm -rf $C/{plain,stale}" "rm --dir $C/plain/sub"; do
     run at /tmp "$c"
     allowed
   done
@@ -75,7 +93,7 @@ allowed() { assert_success; assert_output ''; }
 }
 
 @test "the session dies, the dir is free" {
-  kill "$LIVE"
+  kill -KILL "$LIVE"
   wait "$LIVE" 2>/dev/null || true
   run at /tmp "rm -rf $C/hub-spend-history"
   allowed
