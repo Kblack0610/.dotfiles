@@ -229,6 +229,18 @@ impl Registry {
             .is_some_and(|m| m.values().any(|v| v.as_str() == Some(name)))
     }
 
+    /// The checkout of repo key `repo` here: the first `paths` key mapped to it that is a
+    /// directory. None when no path names it or none is cloned on this machine.
+    pub fn checkout(&self, repo: &str) -> Option<PathBuf> {
+        self.raw
+            .get("paths")?
+            .as_object()?
+            .iter()
+            .filter(|(_, v)| v.as_str() == Some(repo))
+            .map(|(k, _)| PathBuf::from(k))
+            .find(|p| p.is_dir())
+    }
+
     /// `trackers.<name>.type`: game, app or infra.
     pub fn kind(&self, name: &str) -> Option<String> {
         let t = self.tracker(name)?.get("type")?.as_str()?;
@@ -543,6 +555,19 @@ mod tests {
         assert_eq!(r.code("beta").as_deref(), Some("bt"));
         assert_eq!(r.code("gamma"), None, "no code set");
         assert_eq!(r.code("epsilon"), None, "a malformed code is no code");
+    }
+
+    #[test]
+    fn a_checkout_is_the_first_mapped_path_that_is_cloned() {
+        let here = std::env::temp_dir();
+        let text = format!(
+            r#"{{"paths": {{"/no/such/clone": "mono", "{}": "mono", "/elsewhere": "other"}}}}"#,
+            here.display()
+        );
+        let r = Registry::parse(&text).unwrap();
+        assert_eq!(r.checkout("mono"), Some(here));
+        assert_eq!(r.checkout("other"), None, "mapped but not cloned");
+        assert_eq!(r.checkout("nope"), None, "not mapped");
     }
 
     #[test]
