@@ -634,14 +634,23 @@ backlog_row() {
     dest=""
     [ "$action" = rewrite ] || action=keep
   fi
+  # ask-sweep finds a plan's finish row by its slug on the plan's own board (sweep_plans), so the row
+  # stays on this board, and a rewrite that drops or shortens the slug is kept as it is.
+  local slug=""
+  [[ $raw =~ finish\ ([^\ :]+):\ [0-9]+\ phases?\ left ]] && slug="${BASH_REMATCH[1]}"
+  if [ -n "$slug" ]; then
+    [ -n "$dest" ] && say "$p ($lane): $own stays: ask-sweep finds plan $slug's row on this board"
+    dest=""
+    if [ "$action" = rewrite ] && [[ $row != *"$slug"* ]]; then
+      say "$p ($lane): $own kept: the rewrite drops plan slug $slug, which ask-sweep finds it by"
+      action=keep
+    fi
+  fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
   case "$action" in
     rewrite)
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
-      # ask-sweep finds a plan's finish row by the plan slug (ask-sweep sweep_plans), so a rewrite that
-      # drops or shortens it would file the row again; such a row stays as it is.
-      [[ $raw =~ finish\ ([a-z0-9][a-z0-9-]*):\ [0-9]+\ phases?\ left ]] && [[ $row != *"${BASH_REMATCH[1]}"* ]] && row=""
       if [ -n "$row" ] && [ -n "$epic" ] && eid="$(epic_new "${dest:-$p}" "$(clean 150 <<<"$epic")")"; then
         row="$(under_epic "$row" "$eid")"
       fi
