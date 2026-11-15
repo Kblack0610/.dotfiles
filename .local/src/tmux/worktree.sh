@@ -28,6 +28,8 @@
 #                     opening anything to choose from.
 #   done [<name>]     THE CLEANUP. Kill this worktree's session and reap the worktree, in
 #                     one go, safe to run FROM INSIDE that session.          [Prefix+X]
+#                     From a Claude session in it, the kill waits for that session's Stop
+#                     hook (wind-down arm); otherwise it is a timed job on the tmux server.
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
@@ -1231,6 +1233,8 @@ cmd_reap() {
 wt_done_arm() {
   local sess cwd top
   [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 1
+  # arm records the worktree to reap only under WT_ROOT; without it the kill would run and no reap.
+  case "$1" in "$WT_ROOT"/*) ;; *) return 1 ;; esac
   sess="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)"
   cwd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}' 2>/dev/null)"
   [ "$sess" = "$2" ] && [ -n "$cwd" ] || return 1
@@ -1281,7 +1285,7 @@ cmd_done() {
   # plan sync, spend, the wind-down fire) have run. Arming the wind-down sentinel hands the
   # kill and the reap to the Stop pipeline, last in line, and `fire` runs `reap --after-kill`.
   if wt_done_arm "$path" "$name"; then
-    printf 'done: armed %s; its session closes at the end of this turn, then its worktree is reaped unless something still holds it (log: %s)\n' \
+    printf 'done: armed %s; its session closes at the next clean Stop, then its worktree is reaped unless something still holds it (log: %s)\n' \
       "$name" "$HOME/.agent/spin-down/fire.log"
     return
   fi

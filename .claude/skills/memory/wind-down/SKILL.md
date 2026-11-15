@@ -203,7 +203,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there, because it closes this session a second later, before the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
+6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there: step 3 already armed the same teardown, which waits for the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
