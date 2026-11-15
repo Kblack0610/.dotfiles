@@ -160,9 +160,10 @@ pub struct Snapshot {
 }
 
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
-/// provider `lazer` in this month's nightly days, the pool's own period, each at its whole cost (a
-/// session from last month still running counts all of it). Nightly: whole days to the newest
-/// snapshot, never the live 24h, which overlaps that day (as the 7D and 30D tiles).
+/// provider `lazer` in this month's nightly days, each at its whole cost (a session from last month
+/// still running counts all of it). Nightly: whole days to the newest snapshot, never the live 24h,
+/// which overlaps that day (as the 7D and 30D tiles). The days are local, so the month edge is the
+/// local 1st, up to the UTC offset off the pool's 00:00 UTC reset.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Direct {
     pub usd: f64,
