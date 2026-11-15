@@ -308,13 +308,16 @@ catch_up() {
     exit 3
   fi
   # The merge moved the gitlinks, not the submodule checkouts: a clean one on its old pin follows,
-  # so the next local build compiles the merged code (ucp-671 #2506).
-  submodule_follow "$pre"
+  # so the next local build compiles the merged code (ucp-671 #2506). Before the push, so a failed
+  # push still leaves the checkouts matching the merged HEAD; its lines print after the fetch line.
+  local subs
+  subs=$(submodule_follow "$pre")
   # Push HEAD to the PR's own head branch: a bare `git push` under push.default=simple refuses when
   # the local branch name differs from its upstream (agent-11 -> feat/x, PR #1252), and the upstream
   # itself can be the base (a worktree cut from origin/main tracks it).
   out=$(git push -q "$remote" "HEAD:refs/heads/$head_ref" 2>&1) || fail push "$(lastline "$out")"
   echo "fetch: merged $remote/$base ($behind behind) into the head and pushed it"
+  [ -z "$subs" ] || printf '%s\n' "$subs"
   # GitHub works out whether a pushed head merges after the push and refuses the merge until then
   # ("not mergeable"). No event says when, so the PR is polled at the checks cadence until it
   # reads this head with a known answer; the merge step reports what it ends up refusing.
