@@ -189,8 +189,8 @@ pub struct Card {
     pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
-    /// Its project-map `type`, empty when untyped; `departments::is_product` reads it.
-    pub kind: String,
+    /// A game or app in project-map (`departments::is_product`): its page has department tabs.
+    pub product: bool,
 }
 
 impl Card {
@@ -209,9 +209,9 @@ impl Card {
             eta_days: eta_days(&s.progress),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
-            kind: project_map::cached()
+            product: project_map::cached()
                 .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
-                .unwrap_or_default(),
+                .is_some_and(|k| crate::departments::is_product(&k)),
             ..Card::default()
         }
     }

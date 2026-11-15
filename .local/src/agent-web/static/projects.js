@@ -116,8 +116,11 @@ const P_INNER = PROJECT_PAGE.map((t) => t[0]);
 const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
 // A product shows all ten; infra (project-map type) skips the departments, the tabs before Rows.
 const P_DEPTS = PROJECT_PAGE.slice(1, P_INNER.indexOf(PROJECT_WORK)).map((t) => t[0]);
-const pProduct = (c) => !!c && PRODUCT_TYPES.includes(c.kind);
+const pProduct = (c) => !!c && c.product;
 const pPage = (c) => PROJECT_PAGE.filter((t) => pProduct(c) || !P_DEPTS.includes(t[0]));
+// Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
+// department on infra) on Overview.
+const pInnerFor = (c, w) => { w = pInnerOf(w); return pPage(c).some((t) => t[0] === w) ? w : "overview"; };
 // Projects' URL arg as the project and its inner tab: `<key>/<inner>` when the last word is an
 // inner tab and the whole arg is no project's name, else the arg alone on Overview.
 function pSplit(arg) {
@@ -245,7 +248,7 @@ function pActivity(c, pg) {
 }
 
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
-// Deliverables' elements so the outline lists them in the strip's order: `p-pane` holds Overview,
+// Deliverables' elements, in the strip's order: `p-pane` holds Overview,
 // a product's departments and the Rows head, `p-pane2` Stage and Activity. One that needs the page
 // says it is reading or why it failed.
 function pPanes(c) {
@@ -295,10 +298,10 @@ function pDeep() {
 function pOpen(key, inner) {
   const c = pCard(key);
   pst.open = key;
-  pst.inner = pPage(c).some((t) => t[0] === inner) ? inner : "overview";
+  pst.inner = pInnerFor(c, inner);
   bst.draft.key = key;
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
-  if (pProduct(c)) { delete deptGot[key]; deptRead(key); }
+  if (pProduct(c)) deptRead(key);
   bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
   dst.data = null;
   paint($("p-deliv"), "");
@@ -311,8 +314,7 @@ function pOpen(key, inner) {
 // Show inner tab `id` of the opened page in place: the URL follows (no history entry, as a tab
 // button), the panes flip without a repaint, and Deliverables reads its rows for this project.
 function pInner(id) {
-  id = pInnerOf(id);
-  pst.inner = pPage(pCard(pst.open)).some((t) => t[0] === id) ? id : "overview";
+  pst.inner = pInnerFor(pCard(pst.open), id);
   st.arg = lastInner.projects = pArg();
   showUrl();
   pShow();
@@ -394,8 +396,6 @@ function renderProjects() {
 
 $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { e.preventDefault(); pGo(null); return; }
-  // A link in a row (a project's name, a Coverage cell) navigates by itself.
-  if (e.target.closest("tr[data-open] a[href^='#']")) return;
   const tab = e.target.closest("[data-ptab]");
   if (tab) { pInner(tab.dataset.ptab); return; }
   const go = e.target.closest("[data-pgo]");
@@ -404,6 +404,7 @@ $("projects").addEventListener("click", (e) => {
     pInner(go.dataset.pgo);
     return;
   }
+  if (e.target.closest("a")) return; // a link (a project's name, a Coverage cell) navigates by itself
   const sys = e.target.closest("[data-psys]");
   if (sys) { pSys(sys.dataset.psys); return; }
   const o = e.target.closest("[data-open]");

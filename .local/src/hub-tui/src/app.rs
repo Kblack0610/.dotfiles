@@ -64,6 +64,9 @@ pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
 /// The Costs sources are written nightly or per call and none is watched, so the tick re-reads
 /// them this often while the tab is shown; entering it and `r` read at once.
 pub const COSTS_REFRESH: Duration = Duration::from_secs(300);
+/// A Coverage read probes every product's URLs and VictoriaMetrics, and a department's row moves
+/// in days, so showing it again re-reads it only this often; `r` still reads it at once.
+pub const COVERAGE_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -646,8 +649,8 @@ pub struct App {
     /// The Ladder showed at the last check, so coming into view again reads it afresh.
     ladder_seen: bool,
     coverage_read: Read,
-    /// Coverage or a department tab showed at the last check, as `ladder_seen`.
-    coverage_seen: bool,
+    /// When the last Coverage read finished, for `COVERAGE_REFRESH`.
+    coverage_at: Option<std::time::Instant>,
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
@@ -786,7 +789,7 @@ impl App {
             ladder_read: Read::default(),
             ladder_seen: false,
             coverage_read: Read::default(),
-            coverage_seen: false,
+            coverage_at: None,
             schedules_read: Read::default(),
             releases_read: Read::default(),
             builds_read: Read::default(),
@@ -999,14 +1002,16 @@ impl App {
         }
     }
 
-    /// Coverage reads when it or a department tab comes into view, and on `r`: its stores
-    /// (notes, stages.md, VictoriaMetrics, URL probes) have no one file to watch.
+    /// Coverage reads when it or a department tab shows, at most every `COVERAGE_REFRESH`, and on
+    /// `r`: its stores (notes, stages.md, VictoriaMetrics, URL probes) have no one file to watch.
     fn read_coverage_due(&mut self) {
-        let shown = self.coverage_shown();
-        if shown && !self.coverage_seen {
+        if self.coverage_shown()
+            && self
+                .coverage_at
+                .is_none_or(|t| t.elapsed() >= COVERAGE_REFRESH)
+        {
             self.read_coverage();
         }
-        self.coverage_seen = shown;
     }
 
     pub fn coverage_shown(&self) -> bool {
@@ -2129,6 +2134,7 @@ impl App {
             }
             Msg::Coverage(c) => {
                 self.coverage = Some(*c);
+                self.coverage_at = Some(std::time::Instant::now());
                 if self.coverage_read.done() && self.coverage_shown() {
                     self.read_coverage();
                 }
@@ -8721,6 +8727,20 @@ mod tests {
         assert!(screen(&mut a, 140, 30).contains("Coverage  reading the department stores"));
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("ladder"));
+        a.handle(Msg::Coverage(Box::default()));
+        a.handle(arrow(KeyCode::Left));
+        assert!(
+            !a.coverage_read.busy,
+            "Coverage shown again read a fresh answer"
+        );
+        a.coverage_at = std::time::Instant::now().checked_sub(COVERAGE_REFRESH);
+        a.handle(arrow(KeyCode::Right));
+        a.handle(arrow(KeyCode::Left));
+        assert!(
+            a.coverage_read.busy,
+            "a stale Coverage shown again was not read"
+        );
+        a.handle(arrow(KeyCode::Right));
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("list"));
         a.handle(arrow(KeyCode::Left));

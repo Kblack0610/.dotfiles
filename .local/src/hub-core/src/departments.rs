@@ -66,13 +66,13 @@ pub const DEPARTMENTS: [Department; 5] = [
 ];
 
 /// The stage ladder, lowest first, as stages.md orders it.
-pub const LADDER: [&str; 5] = ["draft", "dev", "alpha", "beta", "prod"];
+const LADDER: [&str; 5] = ["draft", "dev", "alpha", "beta", "prod"];
 
 /// The project-map types that are products, the ones with department tabs; the rest are infra.
-pub const PRODUCT_TYPES: [&str; 2] = ["game", "app"];
+const PRODUCT_TYPES: [&str; 2] = ["game", "app"];
 
 /// The trend dashboard every tab links (home-config `apps/monitoring/dashboards/kb-project.json`).
-pub const DASHBOARD: &str = "kb-project";
+const DASHBOARD: &str = "kb-project";
 
 /// How long one URL probe may take.
 const PROBE_SECS: &str = "5";
@@ -108,9 +108,9 @@ impl Cell {
 }
 
 /// A source's words on this machine.
-pub const FOUND: &str = "ok";
-pub const MISSING: &str = "missing";
-pub const NOT_CLONED: &str = "not cloned";
+const FOUND: &str = "ok";
+const MISSING: &str = "missing";
+const NOT_CLONED: &str = "not cloned";
 
 /// A Legal check's words: met, a gap, or no check exists yet (never a failure, rule 6).
 pub const MET: &str = "ok";
@@ -210,6 +210,8 @@ pub struct Check {
     pub state: &'static str,
     pub says: String,
     pub evidence: String,
+    /// A gap's tone: bad once the stage requires Legal, warn before; ok otherwise.
+    pub level: Level,
 }
 
 /// One number from `kb_project_number`.
@@ -388,11 +390,19 @@ impl Coverage {
         parts.push(format!("{} off", self.off));
         parts.join("  |  ")
     }
+
+    /// Products with a red cell: the Coverage strip's count on both surfaces.
+    pub fn failing(&self) -> usize {
+        self.products
+            .iter()
+            .filter(|p| p.depts.iter().any(|d| d.cell == Cell::Red))
+            .count()
+    }
 }
 
 /// Whether `kind` (a project-map type) has department tabs.
-pub fn is_product(kind: Option<&str>) -> bool {
-    kind.is_some_and(|k| PRODUCT_TYPES.contains(&k))
+pub fn is_product(kind: &str) -> bool {
+    PRODUCT_TYPES.contains(&kind)
 }
 
 /// What one read gathered, handed to [`build`] so a test can feed each store.
@@ -516,7 +526,7 @@ pub fn build(
         .filter_map(|(profile, name, stage)| {
             let key = reg.lookup(name).unwrap_or(name).to_string();
             let kind = reg.kind(&key)?;
-            is_product(Some(&kind)).then_some((
+            is_product(&kind).then_some((
                 profile.as_str(),
                 name.as_str(),
                 stage.as_str(),
@@ -542,7 +552,10 @@ pub fn build(
     let urls: BTreeSet<String> = legal
         .iter()
         .flatten()
-        .filter_map(|p| p.url.clone())
+        .filter_map(|p| match p {
+            Pending::Probe { url, .. } => Some(url.clone()),
+            Pending::Done(_) => None,
+        })
         .collect();
     let codes: BTreeMap<String, Result<u16, String>> = std::thread::scope(|s| {
         let handles: Vec<_> = urls
@@ -564,13 +577,15 @@ pub fn build(
     let numbers = inputs.numbers.as_ref().ok();
     for ((profile, name, stage, key, kind), pending) in products.iter().zip(legal) {
         let rank = LADDER.iter().position(|s| s == stage);
-        let repo = reg
-            .tracker(key)
-            .and_then(|t| t.get("repo"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let checks: Vec<Check> = pending.into_iter().map(|p| p.finish(&codes)).collect();
+        let repo = tracker_field(reg, key, "repo");
+        let mut checks: Vec<Check> = pending.into_iter().map(|p| p.finish(&codes)).collect();
+        let reqs = inputs.requirements.as_deref().unwrap_or_default();
+        let grafana = inputs.grafana.as_deref().map(|g| {
+            format!(
+                "{g}/d/{DASHBOARD}?var-project={}",
+                crate::kube_proxy::encode(key)
+            )
+        });
         let depts = DEPARTMENTS
             .iter()
             .map(|d| {
@@ -585,23 +600,13 @@ pub fn build(
                     .map(|r| pipe(r, &found[&(r.kind.clone(), r.source.clone())]))
                     .collect();
                 let nums = numbers.map(|n| numbers_of(n, key, d.id));
-                dept(
-                    d,
-                    kind,
-                    rank,
-                    inputs.requirements.as_deref().unwrap_or_default(),
-                    pipes,
-                    if d.id == "legal" {
-                        checks.clone()
-                    } else {
-                        vec![]
-                    },
-                    nums,
-                    inputs
-                        .grafana
-                        .as_deref()
-                        .map(|g| format!("{g}/d/{DASHBOARD}?var-project={}", url_word(key))),
-                )
+                let legal = if d.id == "legal" {
+                    std::mem::take(&mut checks)
+                } else {
+                    vec![]
+                };
+                let due = due_at(d, kind, reqs);
+                dept(d, due, rank, pipes, legal, nums, grafana.clone())
             })
             .collect();
         out.products.push(Product {
@@ -628,11 +633,13 @@ pub fn build(
     out
 }
 
-/// A key as a URL query value: the project-map names are already plain words.
-fn url_word(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        .collect()
+/// A string field of the product's project-map tracker, empty when unset.
+fn tracker_field(reg: &Registry, key: &str, k: &str) -> String {
+    reg.tracker(key)
+        .and_then(|t| t.get(k))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// The earliest stage a requirement of `d` names for `kind`, by the ladder.
@@ -644,18 +651,15 @@ fn due_at(d: &Department, kind: &str, reqs: &[Requirement]) -> Option<usize> {
         .min()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dept(
     d: &Department,
-    kind: &str,
+    due: Option<usize>,
     rank: Option<usize>,
-    reqs: &[Requirement],
     pipes: Vec<Pipe>,
-    checks: Vec<Check>,
+    mut checks: Vec<Check>,
     numbers: Option<Vec<Number>>,
     grafana: Option<String>,
 ) -> Dept {
-    let due = due_at(d, kind, reqs);
     let required = matches!((due, rank), (Some(due), Some(r)) if r >= due);
     let level = if required { Level::Bad } else { Level::Warn };
     let mut needs = vec![];
@@ -665,7 +669,8 @@ fn dept(
             says: format!("{} {} is missing", p.kind, p.source),
         });
     }
-    for c in checks.iter().filter(|c| c.state == GAP) {
+    for c in checks.iter_mut().filter(|c| c.state == GAP) {
+        c.level = level;
         needs.push(Need {
             level,
             says: format!("{}: {}", c.item, c.says),
@@ -714,10 +719,9 @@ fn dept(
 fn numbers_of(series: &[Series], project: &str, dept: &str) -> Vec<Number> {
     let mut out: Vec<Number> = series
         .iter()
-        .filter(|s| s.labels.get("project").map(String::as_str) == Some(project))
-        .filter(|s| s.labels.get("dept").map(String::as_str) == Some(dept))
+        .filter(|s| s.label("project") == project && s.label("dept") == dept)
         .filter_map(|s| {
-            let metric = s.labels.get("metric").cloned().unwrap_or_default();
+            let metric = s.label("metric").to_string();
             let value = s.value?;
             Some(Number {
                 says: number_says(value),
@@ -784,10 +788,11 @@ fn mtime(p: &Path) -> Option<i64> {
 /// A source's state, the rules `tests/unit/departments_catalog.bats` checks the catalog by,
 /// over the deployed paths.
 fn look(paths: &Paths, reg: &Registry, ci: Option<&CiState>, kind: &str, src: &str) -> Found {
-    let have = |ok: bool| Found {
-        found: if ok { FOUND } else { MISSING },
+    let word = |found: &'static str| Found {
+        found,
         ..Default::default()
     };
+    let have = |ok: bool| word(if ok { FOUND } else { MISSING });
     match kind {
         "runner" => {
             if !paths.agents.join(format!("{src}.conf")).is_file() {
@@ -812,10 +817,7 @@ fn look(paths: &Paths, reg: &Registry, ci: Option<&CiState>, kind: &str, src: &s
                 return have(false);
             };
             let Some(dir) = reg.checkout(repo) else {
-                return Found {
-                    found: NOT_CLONED,
-                    ..Default::default()
-                };
+                return word(NOT_CLONED);
             };
             let here = [".github/workflows", ".forgejo/workflows"]
                 .iter()
@@ -837,21 +839,13 @@ fn look(paths: &Paths, reg: &Registry, ci: Option<&CiState>, kind: &str, src: &s
             };
             let full = if let Some(rest) = path.strip_prefix("~/") {
                 if rest.starts_with(".notes/") && !paths.home.join(".notes").is_dir() {
-                    return Found {
-                        found: NOT_CLONED,
-                        ..Default::default()
-                    };
+                    return word(NOT_CLONED);
                 }
                 paths.home.join(rest)
             } else if let Some((repo, rel)) = path.split_once(':') {
                 match reg.checkout(repo) {
                     Some(d) => d.join(rel),
-                    None => {
-                        return Found {
-                            found: NOT_CLONED,
-                            ..Default::default()
-                        }
-                    }
+                    None => return word(NOT_CLONED),
                 }
             } else {
                 return have(false);
@@ -899,8 +893,8 @@ fn last_workflow_run(
         .filter(|w| Path::new(&w.path).file_name().and_then(|f| f.to_str()) == Some(file))
         .flat_map(|w| &w.runs)
         .filter_map(|r| {
-            let at = chrono::DateTime::parse_from_rfc3339(r.created_at.as_deref()?).ok()?;
-            Some((at.timestamp(), r.conclusion.clone().unwrap_or_default()))
+            let at = crate::fleet::ts(r.created_at.as_deref()?)?;
+            Some((at, r.conclusion.clone().unwrap_or_default()))
         })
         .max_by_key(|(t, _)| *t);
     run.map_or((None, String::new()), |(t, c)| (Some(t), c))
@@ -955,54 +949,46 @@ fn wild(pat: &str, name: &str) -> bool {
     p[i..].iter().all(|c| *c == '*')
 }
 
-/// A Legal item before its URL is probed.
-struct Pending {
-    item: &'static str,
-    /// Settled without a probe: the state and its words.
-    settled: Option<(&'static str, String)>,
-    url: Option<String>,
-    evidence: String,
+/// A Legal item: settled from its file, or a URL still to probe.
+enum Pending {
+    Done(Check),
+    Probe { item: &'static str, url: String },
 }
 
 impl Pending {
     fn finish(self, codes: &BTreeMap<String, Result<u16, String>>) -> Check {
-        let (state, says) = match (self.settled, &self.url) {
-            (Some(s), _) => s,
-            (None, Some(u)) => {
+        match self {
+            Pending::Done(c) => c,
+            Pending::Probe { item, url } => {
                 let (ok, says) = codes
-                    .get(u.as_str())
+                    .get(&url)
                     .map_or((false, reading::NOT_READ.to_string()), probed);
-                (if ok { MET } else { GAP }, says)
+                Check {
+                    item,
+                    state: if ok { MET } else { GAP },
+                    says,
+                    evidence: url,
+                    ..Default::default()
+                }
             }
-            (None, None) => (NOT_YET, String::new()),
-        };
-        Check {
-            item: self.item,
-            state,
-            says,
-            evidence: self.evidence,
         }
     }
 }
 
 fn settled(item: &'static str, state: &'static str, says: &str, evidence: &str) -> Pending {
-    Pending {
+    Pending::Done(Check {
         item,
-        settled: Some((state, says.to_string())),
-        url: None,
+        state,
+        says: says.to_string(),
         evidence: evidence.to_string(),
-    }
+        ..Default::default()
+    })
 }
 
 /// A URL item: probed when the key is set, a gap naming the key when it is not.
 fn url_item(item: &'static str, key: &str, url: Option<String>, file: &str) -> Pending {
     match url.filter(|u| u.starts_with("http")) {
-        Some(u) => Pending {
-            item,
-            settled: None,
-            evidence: u.clone(),
-            url: Some(u),
-        },
+        Some(url) => Pending::Probe { item, url },
         None => settled(item, GAP, &format!("no {key} in {file}"), file),
     }
 }
@@ -1010,15 +996,10 @@ fn url_item(item: &'static str, key: &str, url: Option<String>, file: &str) -> P
 /// The Legal checklist for one product, from the files that hold its facts today: none when
 /// the product has no store file yet (its tab then says what is due, not what fails).
 fn legal_checks(reg: &Registry, key: &str, kind: &str) -> Vec<Pending> {
-    let tracker = reg.tracker(key);
-    let field = |k: &str| {
-        tracker
-            .and_then(|t| t.get(k))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let (repo, path) = (field("repo"), field("path"));
+    let (repo, path) = (
+        tracker_field(reg, key, "repo"),
+        tracker_field(reg, key, "path"),
+    );
     let licences = settled("licences", NOT_YET, "no licence check exists yet", "");
     match kind {
         "game" => {

@@ -585,10 +585,6 @@ mod tests {
                 "const PROJECT_RETIRED = {};",
                 serde_json::Value::Object(retired)
             ),
-            format!(
-                "const PRODUCT_TYPES = {};",
-                serde_json::json!(hub_core::departments::PRODUCT_TYPES)
-            ),
         ] {
             assert!(APP_JS.contains(&want), "app.js lacks {want}");
         }

@@ -339,12 +339,11 @@ const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day",
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["analytics","Analytics",["p-analytics-needs","p-analytics-numbers","p-analytics-pipes"]],["marketing","Marketing",["p-marketing-needs","p-marketing-numbers","p-marketing-pipes"]],["legal","Legal",["p-legal-needs","p-legal-checks","p-legal-numbers","p-legal-pipes"]],["support","Support",["p-support-needs","p-support-numbers","p-support-pipes"]],["money","Money",["p-money-needs","p-money-numbers","p-money-pipes"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
-// hub_core::layout::PROJECT_WORK, PROJECT_RETIRED and departments::PRODUCT_TYPES: the strip breaks before the
-// work tabs, an old inner id lands on its new one, and only a product has department tabs.
+// hub_core::layout::PROJECT_WORK and PROJECT_RETIRED: the strip breaks before the work tabs, and an
+// old inner id lands on its new one.
 // assets.rs `project_page_is_the_layout` fails when these lines drift.
 const PROJECT_WORK = "rows";
 const PROJECT_RETIRED = {"build":"deliverables"};
-const PRODUCT_TYPES = ["game","app"];
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.

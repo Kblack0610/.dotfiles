@@ -633,8 +633,8 @@ const depts = () => ({
       dept("legal", "Legal", {
         cell: "red", required: true, due_at: "beta",
         needs: [{ level: "bad", says: "privacy policy: no privacyUrl in game.json" }],
-        checks: [{ item: "privacy policy", state: "gap", says: "no privacyUrl in game.json", evidence: "game.json" },
-          { item: "support URL", state: "ok", says: "answers 200", evidence: "https://example.com/support" }],
+        checks: [{ item: "privacy policy", state: "gap", level: "bad", says: "no privacyUrl in game.json", evidence: "game.json" },
+          { item: "support URL", state: "ok", level: "ok", says: "answers 200", evidence: "https://example.com/support" }],
         numbers: [{ metric: "reviews", value: 3, says: "3 store reviews" }], grafana: "https://grafana.example/d/kb-project?var-project=demo",
         pipes: [{ source: "store-reviews", kind: "runner", record: "~/.agent/state/store-reviews", shared: true, found: "missing", last: null, last_says: "never ran", verdict: "", level: "warn" }],
       }),
@@ -647,7 +647,7 @@ test("a product's page has the five department tabs before the work tabs, and Le
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
   ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
-  draw(list([card({ kind: "game" })]), "bnb/demo");
+  draw(list([card({ product: true })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
   assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing<\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
@@ -667,9 +667,9 @@ test("a product's page has the five department tabs before the work tabs, and Le
 
 test("an infra project keeps five tabs with no break, and a department link on it lands on Overview", async () => {
   await settle(); await settle();
-  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card({ kind: "infra" })]) };
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card({ product: false })]) };
   ctx.sent = [];
-  draw(list([card({ kind: "infra" })]), "bnb/demo");
+  draw(list([card({ product: false })]), "bnb/demo");
   await settle();
   const { head } = read();
   assert.doesNotMatch(head, /data-ptab="(analytics|marketing|legal|support|money)"|isep/);
@@ -683,7 +683,7 @@ test("the list's project names are links to their pages, and a click on one is l
   const t = listTable([card()], 1, { links: [{ project: "#projects/bnb%2Fdemo" }] });
   const { cards } = draw(list([card()], { table: t }));
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td>/);
-  const a = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-open] a[href^='#']" ? {} : sel === "[data-open]" ? { dataset: { open: "bnb/demo" } } : null) };
+  const a = { id: "", dataset: {}, closest: (sel) => (sel === "a" ? {} : sel === "[data-open]" ? { dataset: { open: "bnb/demo" } } : null) };
   for (const f of box("projects").on.click) f({ type: "click", target: a, preventDefault() {} });
   assert.equal(vm.runInContext(`pst.open`, ctx), null, "the href navigates; the row's own open does not run too");
 });

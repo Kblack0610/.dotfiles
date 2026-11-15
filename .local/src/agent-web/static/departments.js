@@ -42,17 +42,16 @@ async function deptRead(key) {
   if (st.tab === "projects" && pst.open === key) renderProjects();
 }
 const deptOf = (key, id) => deptGot[key]?.data?.product?.depts?.find((d) => d.id === id) || null;
-// The strip's count on a department: what needs the human there.
-const deptCounts = (key) => Object.fromEntries((deptGot[key]?.data?.product?.depts || []).map((d) => [d.id, d.needs.length]));
+// The strip's count on a department: what needs the human there, as the TUI counts it.
+const deptCounts = (key) => Object.fromEntries((deptGot[key]?.data?.product?.depts || []).map((d) => [d.id, d.needs.filter((n) => n.level !== "ok").length]));
 
-const deptLevel = (l) => (l === "bad" || l === "warn" ? l : null);
 const D_PART = {
-  "-needs": (d, sec) => secHead(sec, "Needs you", d.needs.length, deptLevel(d.needs[0]?.level)) + (d.needs.length
+  "-needs": (d, sec) => secHead(sec, "Needs you", d.needs.length, d.needs[0]?.level) + (d.needs.length
     ? `<div class="card">${d.needs.map((n) => `<div class="${n.level === "ok" ? "" : esc(n.level)}">${esc(n.says)}</div>`).join("")}</div>`
     : `<div class="card muted">${d.due_at ? `Nothing; ${esc(d.title)} is due at ${esc(d.due_at)}.` : "Nothing."}</div>`),
   "-checks": (d, sec) => secHead(sec, "Checklist", d.checks.length ? `${d.checks.filter((c) => c.state === "ok").length} of ${d.checks.length}` : null) + (d.checks.length
     ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">item</th><th data-role="glance">state</th><th>says</th><th>evidence</th></tr>` +
-      d.checks.map((c) => `<tr><td>${esc(c.item)}</td><td${c.state === "gap" ? ` class="${d.required ? "bad" : "warn"}"` : c.state === "ok" ? "" : ` class="muted"`}>${esc(c.state)}</td>` +
+      d.checks.map((c) => `<tr><td>${esc(c.item)}</td><td class="${levelClass(c.level) || (c.state === "ok" ? "" : "muted")}">${esc(c.state)}</td>` +
         `<td>${pDash(c.says)}</td><td class="wrap">${/^https?:/.test(c.evidence) ? tblLink(c.evidence, c.evidence) : pDash(c.evidence)}</td></tr>`).join("") + `</table></div>`
     : `<div class="card muted">No store file yet: game.json or mobile/metadata.yaml.</div>`),
   "-numbers": (d, sec) => secHead(sec, "Numbers", d.numbers.length || null) + `<div class="card">` + (d.numbers.length
@@ -63,7 +62,7 @@ const D_PART = {
     ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">source</th><th>kind</th><th>for</th><th data-role="glance">last</th><th data-role="glance">verdict</th><th>record</th></tr>` +
       d.pipes.map((p) => `<tr><td>${esc(p.source)}</td><td>${esc(p.kind)}</td><td class="muted">${p.shared ? "every product" : "this one"}</td>` +
         `<td${p.found === "ok" ? "" : p.found === "missing" ? ` class="${p.shared ? "warn" : "bad"}"` : ` class="muted"`}>${pDash(p.last_says)}</td>` +
-        `<td${deptLevel(p.level) ? ` class="${p.level}"` : ""}>${pDash(p.verdict)}</td><td class="wrap">${pDash(p.record)}</td></tr>`).join("") + `</table></div>`
+        `<td class="${levelClass(p.level)}">${pDash(p.verdict)}</td><td class="wrap">${pDash(p.record)}</td></tr>`).join("") + `</table></div>`
     : `<div class="card muted">No pipeline in departments.tsv feeds ${esc(d.title)}.</div>`),
 };
 

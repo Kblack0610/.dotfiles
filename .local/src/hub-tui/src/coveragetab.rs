@@ -7,7 +7,6 @@
 //! This file reads nothing.
 
 use hub_core::departments::{Cell as DCell, Coverage, Dept, Product};
-use hub_core::vocab::Level;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -29,14 +28,6 @@ const HEADER: [&str; 8] = [
     "SUPPORT",
     "MONEY",
 ];
-
-/// The products with any red cell: the strip's count, as the Ladder counts its failing.
-pub fn reds(c: &Coverage) -> usize {
-    c.products
-        .iter()
-        .filter(|p| p.depts.iter().any(|d| d.cell == DCell::Red))
-        .count()
-}
 
 impl ProjView {
     /// Coverage's keys: the shared table keys and moves, Enter opens the product's page, Esc
@@ -222,13 +213,12 @@ fn checklist(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
         p,
         w,
     ));
-    let gap = if d.required { Level::Bad } else { Level::Warn };
     let rows = d
         .checks
         .iter()
         .map(|c| {
             let style = match c.state {
-                GAP => tone(gap, p),
+                GAP => tone(c.level, p),
                 NOT_YET => p.dim(),
                 _ => Style::default(),
             };
@@ -333,6 +323,7 @@ fn pipes(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
 pub(crate) mod tests {
     use super::*;
     use hub_core::departments::{Check, Need, Number, Pipe, DEPARTMENTS, GAP, NOT_YET};
+    use hub_core::vocab::Level;
 
     fn row_of(id: &'static str, cell: DCell) -> Dept {
         let d = DEPARTMENTS.iter().find(|d| d.id == id).unwrap();
@@ -366,12 +357,14 @@ pub(crate) mod tests {
                 state: GAP,
                 says: "answers 404".into(),
                 evidence: "https://example.com/privacy".into(),
+                level: Level::Bad,
             },
             Check {
                 item: "Content rating",
                 state: NOT_YET,
                 says: "no check yet".into(),
                 evidence: String::new(),
+                ..Default::default()
             },
         ];
         legal.numbers_says = hub_core::reading::NO_DATA.into();
@@ -439,7 +432,7 @@ pub(crate) mod tests {
     fn coverage_says_its_head_then_one_row_a_product_and_the_legend_at_80_columns() {
         let p = Palette::default();
         let c = coverage();
-        assert_eq!(reds(&c), 1, "the strip counts products with a red cell");
+        assert_eq!(c.failing(), 1, "the strip counts products with a red cell");
         let (l, at) = page(Some(&c), &ProjView::default(), p, 80);
         let t = text(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
@@ -501,7 +494,7 @@ pub(crate) mod tests {
         let cards = [hub_core::projects::Card {
             profile: "bnb".into(),
             name: "demo".into(),
-            kind: "app".into(),
+            product: true,
             ..Default::default()
         }];
         assert!(pv.ckey(&mut tv, KeyEvent::from(KeyCode::Char('j')), &cards, &c, 10));

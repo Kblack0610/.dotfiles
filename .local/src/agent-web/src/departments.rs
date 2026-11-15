@@ -1,4 +1,4 @@
-//! Projects > Coverage and a product's department tabs, from `hub_core::departments` (the grid
+//! Projects > Coverage an        failing: c.failing(), a product's department tabs, from `hub_core::departments` (the grid
 //! and words the hub TUI draws). `/api/coverage` is the grid (`cq`, `cs`, `csort`, `cdir`);
 //! `/api/projects/{name}/departments` is one product's five tabs. Both narrow one kept read.
 

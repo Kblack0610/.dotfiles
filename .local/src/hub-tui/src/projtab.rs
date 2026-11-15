@@ -122,7 +122,7 @@ impl ProjView {
         tv.said = None;
         self.open = true;
         self.inner = OVERVIEW;
-        self.product = c.is_some_and(|c| departments::is_product(Some(&c.kind)));
+        self.product = c.is_some_and(|c| c.product);
         self.needs = false;
         self.sys = 0;
         self.bv = DataTable::default();
@@ -427,7 +427,7 @@ pub fn top_strip(
     let total = |i: &layout::Inner| match i.id {
         ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
-        COVERAGE => cov.map(crate::coveragetab::reds),
+        COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
         _ => None,
     };
@@ -1881,7 +1881,7 @@ pub(crate) mod tests {
     fn a_product_shows_ten_tabs_broken_before_the_work_and_infra_five_at_80_columns() {
         let p = Palette { no_color: true };
         let mut pr = fixture();
-        pr.cards[0].kind = "game".into();
+        pr.cards[0].product = true;
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[0]));
         assert!(pv.product);
