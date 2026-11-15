@@ -20,7 +20,7 @@ pub const QUEUE: &[(&str, &str)] = &[
     ),
     (
         "cancelled",
-        "closed without running to an end; hover the state for who and why; done counts these too",
+        "closed without running to an end; hover the state for who and why; the done chip counts these too",
     ),
     ("stalled", "its session is STALLED"),
     ("no session", "running 10m+, and no session works it"),

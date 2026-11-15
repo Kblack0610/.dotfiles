@@ -950,7 +950,7 @@ fn builds(i: &Inputs) -> Vec<String> {
 const CANCEL_WHY_MAX: usize = 30;
 
 /// One line when anything finished as cancelled in the window, whatever its project (a mass
-/// cancel is the thing to see): how many, how many the human asked for (`from: human`), and who
+/// cancel is the thing to see): how many, how many of them are work the human asked for (`from: human`; the work, not the cancel), and who
 /// cancelled the most with their first reason. The Queue tab's cancelled chip lists them.
 fn cancelled_line(i: &Inputs) -> Option<String> {
     let all: Vec<&Item> = i
@@ -970,16 +970,14 @@ fn cancelled_line(i: &Inputs) -> Option<String> {
     let (who, theirs) = by
         .iter()
         .max_by_key(|(w, v)| (v.len(), std::cmp::Reverse(**w)))?;
+    // The top canceller's first reason, else any cancel's, so a reason given by another canceller is not hidden.
     let why = theirs
         .iter()
-        .find(|it| {
-            it.cancel_why
-                .as_deref()
-                .is_some_and(|w| !w.trim().is_empty())
-        })
+        .chain(all.iter())
+        .find_map(|it| it.recorded_reason())
         .map_or_else(
-            || theirs[0].cancel_reason().to_string(),
-            |it| cap(it.cancel_reason(), CANCEL_WHY_MAX),
+            || "no reason recorded".to_string(),
+            |w| cap(w, CANCEL_WHY_MAX),
         );
     let mine = all.iter().filter(|it| it.source() == Some("human")).count();
     let more = match by.len() - 1 {
@@ -2394,8 +2392,7 @@ mod tests {
             o,
             ["4 cancelled, 3 you asked for: by 9fd0d2fd, dead chain, and 1 other canceller. See Queue, cancelled."]
         );
-        // negative controls: a cancel before the window is not read, and a run that ended ok or
-        // failed is no cancel
+        // negative control: a run that ended ok is no cancel
         let mut ok = item("e", "p:2", "normal");
         ok.state = State::Done;
         ok.status = Some("ok".into());
@@ -2410,6 +2407,18 @@ mod tests {
         assert_eq!(
             build(&k).overnight,
             ["1 cancelled, 0 you asked for: by an unrecorded canceller, no reason recorded. See Queue, cancelled."]
+        );
+        // a reason another canceller gave is not hidden by the top canceller's silence
+        let mut m = green();
+        m.releases = Some(vec![]);
+        m.done = Some(vec![
+            cancelled("g", Some("aaaa"), None, "shepherd"),
+            cancelled("h", Some("aaaa"), None, "shepherd"),
+            cancelled("i", Some("bbbb"), Some("dead chain"), "shepherd"),
+        ]);
+        assert_eq!(
+            build(&m).overnight,
+            ["3 cancelled, 0 you asked for: by aaaa, dead chain, and 1 other canceller. See Queue, cancelled."]
         );
     }
 

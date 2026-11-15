@@ -314,8 +314,8 @@ test("a cancelled row's state cell and its opened detail say who cancelled it an
   assert.match(draw(), /<td class="muted" title="cancelled by 9fd0d2fd: dead chain">cancelled<\/td>/);
   load({ ...data, items: [c] }, { sel: "c" });
   const h = draw();
-  assert.match(h, /<div class="qhold">cancelled by 9fd0d2fd: dead chain<\/div>/);
   assert.match(h, /cancelled by<\/[^>]+>[^]*9fd0d2fd/);
+  assert.match(h, /cancel reason<\/[^>]+>[^]*dead chain/);
   // negative control: a finish that ran has no such line
   load({ ...data, items: [item("d", { state: "done", status: "ok" })] }, { sel: "d" });
   assert.doesNotMatch(draw(), /cancelled by/);

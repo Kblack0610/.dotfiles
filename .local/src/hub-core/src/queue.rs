@@ -565,9 +565,14 @@ impl Item {
         said(&self.cancelled_by).unwrap_or("an unrecorded canceller")
     }
 
+    /// The reason it was cancelled with, when one was recorded.
+    pub fn recorded_reason(&self) -> Option<&str> {
+        said(&self.cancel_why)
+    }
+
     /// Its reason, or that none was recorded.
     pub fn cancel_reason(&self) -> &str {
-        said(&self.cancel_why).unwrap_or("no reason recorded")
+        self.recorded_reason().unwrap_or("no reason recorded")
     }
 
     /// Who cancelled it and why, in words.

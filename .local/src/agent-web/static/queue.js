@@ -287,7 +287,7 @@ function qDetail(i) {
   return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
     cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) + qLinks(i) +
     (line ? `<div class="cline">${line}</div>` : "") +
-    (i.status === "cancelled" && i.state_why ? `<div class="qhold">${esc(i.state_why)}</div>` : "") + (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
+    (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
     (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
     cfold(`task:${i.slug}`, "Full task and details", facts([
       ["state", i.state === "done" ? `done, ${i.status || "ok"}` : i.state], ["in state", qMin(t.in_state)], ["wait", qMin(t.wait)], ["run", qMin(t.run)],
