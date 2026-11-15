@@ -220,7 +220,8 @@ pub fn page(watch: &Watch, table: Vec<Line<'static>>, p: Palette, now: i64) -> V
             let names: Vec<&str> = u.iter().filter_map(Value::as_str).collect();
             out.push(Line::styled(
                 format!(
-                    "could not read {} on the last pass: its cells are the last good ones",
+                    "{}: {} on the last pass, its cells are the last good ones",
+                    hub_core::reading::NOT_READ,
                     names.join(", ")
                 ),
                 p.warn(),

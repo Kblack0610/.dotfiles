@@ -329,7 +329,7 @@ pub fn who(s: &Sess) -> String {
         ("queue", _) => "queue items".into(),
         ("shepherd", _) => "shepherd".into(),
         ("interactive", _) => "you, interactive".into(),
-        ("", _) => "unknown".into(),
+        ("", _) => crate::reading::NO_DATA.into(),
         (other, _) => format!("queue, {other}"),
     }
 }
@@ -339,7 +339,7 @@ fn cut(s: &Sess, group: &str) -> String {
     let some = |v: &Option<String>| {
         v.as_deref()
             .filter(|v| !v.is_empty())
-            .unwrap_or("unknown")
+            .unwrap_or(crate::reading::NO_DATA)
             .to_string()
     };
     match group {
@@ -1125,7 +1125,7 @@ mod tests {
         assert_eq!(s(Some("runner"), None, None), "runner, unnamed");
         assert_eq!(
             s(None, None, None),
-            "unknown",
+            crate::reading::NO_DATA,
             "an old snapshot row has no origin"
         );
         assert_eq!(
@@ -1299,7 +1299,8 @@ mod tests {
         assert_eq!(p.total, v.total);
         let h = by("harness");
         assert_eq!(
-            h.groups[0].name, "unknown",
+            h.groups[0].name,
+            crate::reading::NO_DATA,
             "a row with no harness is unknown, not dropped"
         );
         assert_eq!(by("account").groups.len(), 1);

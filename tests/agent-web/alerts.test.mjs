@@ -181,7 +181,7 @@ test("fixes: open rows with outcome, red, slug, PR and age; the settled fold to 
 
 test("fixes: a failed read says so, never an empty list, and the open ones cap at LOG_ROWS", () => {
   const failed = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: [], settled: [], summary: "" }, errors: ["fleet-bench reds: exit 1"] }))})`);
-  assert.match(failed, /<h2 class="sec bad">Fixes<\/h2><\/summary><div class="panel down">Could not read the fixes\.<\/div>/);
+  assert.match(failed, /<h2 class="sec bad">Fixes<\/h2><\/summary><div class="panel down">not read: the fixes\.<\/div>/);
   assert.ok(!failed.includes("No red was queued"));
   const n = run("LOG_ROWS") + 2;
   const many = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: Array.from({ length: n }, (_, i) => fix(`ar-${i}`, "queued")), settled: [], summary: `${n} open` } }))})`);

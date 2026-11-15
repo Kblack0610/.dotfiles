@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::prom::{self, Series};
+use crate::reading::NO_DATA;
 use crate::table::{Row, Val};
 
 /// How far back a history reaches.
@@ -30,14 +31,13 @@ const _: () = assert!(DAYS * 86_400 / STEP < 11_000);
 
 /// Seconds per history bucket: an hour, so a week is 168 columns on either surface.
 pub const BUCKET: u64 = 3600;
-/// The state written for a stretch with no sample at all (the governor down or not yet run).
-pub const NO_READING: &str = "no reading";
 
 #[derive(Serialize, Debug, PartialEq, Clone)]
 pub struct Change {
     /// Unix seconds of the first sample in this state.
     pub at: u64,
-    /// stopped, starting, running, draining, stopping, or `NO_READING`.
+    /// stopped, starting, running, draining, stopping, or `NO_DATA` for a stretch with no sample at all (the governor
+    /// down or not yet run).
     pub state: String,
     /// Why the governor last powered it (queue, idle, cap, override), "none" before it has.
     pub reason: String,
@@ -344,7 +344,7 @@ pub fn history(
     for d in &mut down {
         d.why = match &power {
             Some(p) if off_at(p, d.from + STEP) => POWERED_OFF.into(),
-            _ => NO_READING.into(),
+            _ => NO_DATA.into(),
         };
     }
     down.reverse();
@@ -417,7 +417,7 @@ fn power(base: &str, host: &str, from: u64, now: u64) -> Result<PowerHistory, St
 }
 
 /// Each sample as (time, state, reason), oldest first, then one change per new state or
-/// reason, and a `NO_READING` change where samples skip more than one step.
+/// reason, and a `NO_DATA` change where samples skip more than one step.
 pub fn fold(host: &str, series: &[Series], from: u64, to: u64) -> PowerHistory {
     let mut samples: Vec<(u64, &str, &str)> = series
         .iter()
@@ -437,7 +437,7 @@ pub fn fold(host: &str, series: &[Series], from: u64, to: u64) -> PowerHistory {
     for (t, state, reason) in samples {
         let gap_from = last_t.map_or(from, |prev| prev + STEP);
         if t > gap_from + STEP {
-            push(&mut changes, gap_from, NO_READING, "");
+            push(&mut changes, gap_from, NO_DATA, "");
         }
         push(&mut changes, t, state, reason);
         let day = hours.entry(utc_day(t)).or_default();
@@ -449,7 +449,7 @@ pub fn fold(host: &str, series: &[Series], from: u64, to: u64) -> PowerHistory {
     // Samples that end before `to`: the governor stopped exporting, so its last state is not now.
     if let Some(prev) = last_t {
         if to > prev + 2 * STEP {
-            push(&mut changes, prev + STEP, NO_READING, "");
+            push(&mut changes, prev + STEP, NO_DATA, "");
         }
     }
     PowerHistory {
@@ -573,7 +573,7 @@ mod tests {
             T + 10 * STEP,
         );
         let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
-        assert_eq!(states, vec!["running", NO_READING, "stopped"]);
+        assert_eq!(states, vec!["running", NO_DATA, "stopped"]);
         assert_eq!(h.changes[1].at, T + STEP);
         assert_eq!(
             h.days[1],
@@ -596,7 +596,7 @@ mod tests {
             T + 20 * STEP,
         );
         let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
-        assert_eq!(states, vec![NO_READING, "running", NO_READING]);
+        assert_eq!(states, vec![NO_DATA, "running", NO_DATA]);
         assert_eq!(
             h.days,
             vec![Day {
@@ -645,7 +645,7 @@ mod tests {
             ],
             "newest first"
         );
-        assert!(h.down.iter().all(|d| d.why == NO_READING));
+        assert!(h.down.iter().all(|d| d.why == NO_DATA));
         assert_eq!(h.readings, 15);
     }
 
@@ -666,7 +666,7 @@ mod tests {
                 from: T,
                 to: T + 7200,
                 open: true,
-                why: NO_READING.into()
+                why: NO_DATA.into()
             }]
         );
         assert!(h.hours.iter().all(|x| x.cpu.is_none() && x.seen == 0.0));

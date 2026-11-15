@@ -23,11 +23,14 @@ use crate::table::{Row, Val};
 /// A snapshot older than this is drawn amber: the collector runs every 15 minutes, and this is
 /// `release-state check`'s own `--max-age` default.
 pub const STALE_SECS: i64 = 3600;
+/// The collector's word for a channel it could not read (`RANK` in `release-state`), which the
+/// tab says as `NOT_READ` (`shown`). It is release-state's wire word, so it stays as written.
+const UNREAD: &str = "unknown";
 /// The collector's words, worst first (`RANK` in `release-state`). A word not listed here is
 /// new, so it is drawn amber and sorts with the exceptions rather than folding as green.
 const STATUSES: [(&str, Level); 6] = [
     ("drift", Level::Bad),
-    ("unknown", Level::Warn),
+    (UNREAD, Level::Warn),
     ("floating", Level::Warn),
     ("ok", Level::Ok),
     ("released", Level::Ok),
@@ -38,7 +41,7 @@ const STATUSES: [(&str, Level); 6] = [
 /// is what the human needs to hear. Every other word is said as it is written.
 fn shown(status: &str) -> &str {
     match status {
-        "unknown" => NOT_READ,
+        UNREAD => NOT_READ,
         s => s,
     }
 }
@@ -271,7 +274,7 @@ impl Release {
 
     /// The collector could not read this channel: a probe or a credential failed.
     pub fn unread(&self) -> bool {
-        self.status == "unknown"
+        self.status == UNREAD
     }
 
     /// Why the channel could not be read, as the probe said it.
@@ -907,7 +910,7 @@ fn app(
         .iter()
         .map(|r| r.status.as_str())
         .min_by_key(|s| rank(s))
-        .unwrap_or("unknown")
+        .unwrap_or(UNREAD)
         .to_string();
     // A tripped watch or failed deploy on an unread channel still says; nothing read is at
     // least amber.

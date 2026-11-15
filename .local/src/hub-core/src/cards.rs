@@ -316,7 +316,7 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
     let unread = i
         .machines
         .iter()
-        .filter(|m| m.state == "no reading")
+        .filter(|m| m.state == crate::reading::NO_DATA)
         .count();
     let down = i.runners_down().len();
     let stuck = i.ci.red.len();
@@ -336,7 +336,7 @@ pub fn infra(i: &crate::infra::Infra) -> Card {
     c.big = format!("{up} of {}", i.machines.len());
     c.unit = "machines up".into();
     let machines = i.machines.iter().filter(|m| m.state != "up").map(|m| {
-        let level = if m.state == "no reading" {
+        let level = if m.state == crate::reading::NO_DATA {
             Level::Red
         } else {
             Level::Warn

@@ -421,11 +421,11 @@ pub fn page(
             Span::styled("PROPOSALS  ", p.head()),
             Span::styled(
                 if h.proposals_failed {
-                    "could not read them, see above"
+                    format!("{}, see above", hub_core::reading::NOT_READ)
                 } else if h.proposals_unread {
-                    "reading"
+                    "reading".into()
                 } else {
-                    "nothing proposed"
+                    "nothing proposed".into()
                 },
                 p.dim(),
             ),

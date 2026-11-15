@@ -14,6 +14,7 @@ use serde::Serialize;
 use crate::infra::{self, Infra};
 use crate::links::{Kind, Link};
 use crate::prom::Series;
+use crate::reading::NO_DATA;
 use crate::table::{Row, Val};
 
 /// The pool a machine's local Unity gates count under, as `cc:site_slots` folds them into local.
@@ -154,8 +155,7 @@ impl Row for Machine {
         "machine", "where", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "pools",
         "running", "governor", "power", "up",
     ];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "no reading", "cloud", "governed"];
+    const STATES: &'static [&'static str] = &["all", "busy", "idle", NO_DATA, "cloud", "governed"];
     const FACETS: &'static [&'static str] = &["where", "state", "pools"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "machine";
@@ -199,7 +199,7 @@ impl Row for Machine {
         match s {
             "busy" => self.busy > 0,
             "idle" => self.slots > 0 && self.busy == 0,
-            "no reading" => self.state == "no reading",
+            NO_DATA => self.state == NO_DATA,
             "cloud" => self.place == "cloud",
             "governed" => self.governor.is_some() || self.power.is_some(),
             _ => false,
@@ -586,7 +586,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 {
                     "up".into()
                 }
-                _ => "no reading".into(),
+                _ => NO_DATA.into(),
             };
             mm
         })
@@ -845,7 +845,7 @@ pub(crate) mod tests {
         );
         assert_eq!(p.rule, "no job past the home hosts; starts at 3");
         let mini = machine(&ms, "mac-mini");
-        assert_eq!(mini.state, "no reading");
+        assert_eq!(mini.state, NO_DATA);
         assert_eq!(mini.pools, ["macos 0/1"]);
         // CI carriers first, the busiest of them first; the Pi last.
         let order: Vec<&str> = ms.iter().map(|m| m.host.as_str()).collect();
@@ -884,7 +884,7 @@ pub(crate) mod tests {
         let chip = |n: &str| s.states.iter().find(|c| c.name == n).map(|c| c.n);
         assert_eq!(chip("busy"), Some(1));
         assert_eq!(chip("idle"), Some(1));
-        assert_eq!(chip("no reading"), Some(1));
+        assert_eq!(chip(NO_DATA), Some(1));
         assert_eq!(chip("cloud"), Some(1));
         assert_eq!(chip("governed"), Some(2));
         let facet = |k: &str| -> Vec<String> {

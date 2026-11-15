@@ -204,34 +204,50 @@ mod tests {
     }
 
     /// The files allowed to spell an empty-state word, per file, outside tests and comments:
-    /// only agent-web's mirror of `NOT_READ` and `NO_DATA`, which the browser cannot import. Any
-    /// other file writing one by hand fails this test (dashboards.md rule 6).
-    const HAND_WRITTEN: &[(&str, usize)] = &[("agent-web/static/ui.js", 2)];
-
-    /// A string, template or HTML text that is or starts with an empty-state word, in any case
-    /// (`"Not read: x"`, `'NO DATA'`, `>no data from x<`); the words inside a longer sentence
-    /// (`2 channels not read`) are that sentence's own.
-    const NEEDLES: &[&str] = &[
-        "\"not read",
-        "'not read",
-        "`not read",
-        ">not read",
-        "\"no data",
-        "'no data",
-        "`no data",
-        ">no data",
-        "\"never\"",
-        "'never'",
+    /// agent-web's mirror of `NOT_READ` and `NO_DATA`, which the browser cannot import, and
+    /// `releases::UNREAD`, release-state's wire word for a channel it could not read. Any other
+    /// file writing one by hand fails this test (dashboards.md rule 6).
+    const HAND_WRITTEN: &[(&str, usize)] = &[
+        ("agent-web/static/ui.js", 2),
+        ("hub-core/src/releases.rs", 1),
     ];
 
-    fn count(path: &std::path::Path) -> usize {
+    /// A string, template or HTML text that is or starts with an empty-state word or one of its
+    /// old hand-spelled forms, in any case (`"Not read: x"`, `'NO DATA'`, `>no reading from x<`,
+    /// `"Could not read {}"`); the words inside a longer sentence (`2 channels not read`) are that
+    /// sentence's own.
+    const OPENS: &[&str] = &[
+        "not read",
+        "no data",
+        "no reading",
+        "could not read",
+        "cannot read",
+        "not reported",
+    ];
+    /// A whole cell that is only this word: `"never"`, `'unknown'`.
+    const CELLS: &[&str] = &["never", "unknown"];
+
+    fn needles() -> Vec<String> {
+        let opens = OPENS
+            .iter()
+            .flat_map(|w| ["\"", "'", "`", ">"].map(|q| format!("{q}{w}")));
+        let cells = CELLS
+            .iter()
+            .flat_map(|w| [format!("\"{w}\""), format!("'{w}'")]);
+        opens.chain(cells).collect()
+    }
+
+    fn count(path: &std::path::Path, needles: &[String]) -> usize {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         let body = text.split("#[cfg(test)]").next().unwrap_or("");
         body.lines()
             .filter(|l| !l.trim_start().starts_with("//"))
             .map(|l| {
                 let l = l.to_lowercase();
-                NEEDLES.iter().map(|n| l.matches(n).count()).sum::<usize>()
+                needles
+                    .iter()
+                    .map(|n| l.matches(n.as_str()).count())
+                    .sum::<usize>()
             })
             .sum()
     }
@@ -260,12 +276,13 @@ mod tests {
             files(&src.join(d), &mut all);
         }
         assert!(all.len() > 50, "the scan found only {} files", all.len());
+        let needles = needles();
         let mut found: Vec<(String, usize)> = all
             .iter()
             .filter(|p| !p.ends_with("hub-core/src/reading.rs"))
             .map(|p| {
                 let rel = p.strip_prefix(&src).unwrap().to_string_lossy().into_owned();
-                (rel, count(p))
+                (rel, count(p, &needles))
             })
             .filter(|(_, n)| *n > 0)
             .collect();
