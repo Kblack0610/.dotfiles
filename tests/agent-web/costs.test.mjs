@@ -597,6 +597,13 @@ test("the spend table opens grouped with the total row on top; a group row opens
   assert.match(ot, /<tr class="sel"><td>queue items<\/td><td class="n">2<\/td>/, "the opened group's row, with no click of its own");
   assert.ok(ot.indexOf("data-grp=\"\"") < ot.indexOf("big run") && ot.indexOf("big run") < ot.indexOf("small run"), "the sessions follow, as the server ranked them");
   assert.match(ot, /data-tbl="d">[\s\S]*data-tsort="cost"/, "the sessions sort in their own block, on their own keys");
+  // the sessions cut keeps the total row on top, with nowhere to go back to
+  const bySess = show(board({ day: { ...open, group: "sessions", in_group: "", open: null } }));
+  const st = bySess.slice(bySess.indexOf('id="sec-sessions"'), bySess.indexOf('id="sec-table"'));
+  assert.match(st, /<tr class="allrow"><td>total<\/td>/);
+  assert.ok(st.indexOf("<td>total</td>") < st.indexOf("big run"), "the total row is above the sessions");
+  // a priced share that rounds to nothing reads <1%, never 0%
+  assert.match(show(board({ day: liveDay({ groups: [tot("tiny", 1, 0.3, 0.2, 0.3)] }) })), /<td>tiny<\/td><td class="n">1<\/td><td class="n">\$0\.30<\/td><td class="n">&lt;1%<\/td>/);
   // clicks write the group and cut keys, and the cut clears the opened group and session
   asked = [];
   body = board({ day: liveDay() });

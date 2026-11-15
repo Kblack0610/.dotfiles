@@ -331,11 +331,8 @@ impl CostsView {
                 self.sess_at = 0;
                 return Some(Some("sessions"));
             }
-            KeyCode::Char('g') => {
-                // A switch only shows the table: the cut steps on the next press.
-                if self.reveal("sessions") {
-                    return Some(Some("sessions"));
-                }
+            // `g` still scrolls to the top on the other inner tabs.
+            KeyCode::Char('g') if self.inner == "spend" => {
                 self.group = (self.group + 1) % spend_history::GROUPS.len();
                 self.open_grp.clear();
                 self.sess_at = 0;
@@ -400,10 +397,15 @@ impl CostsView {
         }
     }
 
+    /// Whether a live last-24h day with session rows exists: the one `day_view` shows by default.
+    fn has_live(c: &Costs) -> bool {
+        c.live.as_ref().is_some_and(|d| !d.sessions.is_empty())
+    }
+
     /// The chart day `,` and `.` picked: `day_back` days before the newest. Empty is the live last
     /// 24h while there is one and no day is picked (`day_view` reads empty that way).
     fn picked<'a>(&self, c: &'a Costs) -> &'a str {
-        if c.live.is_some() && !self.snap {
+        if Self::has_live(c) && !self.snap {
             return "";
         }
         let chart = &c.history.chart;
@@ -417,7 +419,7 @@ impl CostsView {
     pub fn board(&self, c: &Costs) -> Board {
         let dir = if self.asc { "asc" } else { "desc" };
         let sdir = if self.sasc { "asc" } else { "desc" };
-        self.live_seen.set(c.live.is_some());
+        self.live_seen.set(Self::has_live(c));
         let day = self.picked(c);
         let group = spend_history::GROUPS[self.group % spend_history::GROUPS.len()];
         // The highlighted session is the `sess_at`th row of the day's own table; while the groups
@@ -1153,15 +1155,24 @@ fn spend_chart(bars: &[Bar], sel: &str, p: Palette, w: usize) -> Vec<Line<'stati
     out
 }
 
+/// A share as a whole percent; one that rounds to 0 but is not 0 reads "<1%", so a priced row never looks free.
+fn pct_text(v: f64) -> String {
+    if v > 0.0 && v <= 0.5 {
+        "<1%".into()
+    } else {
+        format!("{v:.0}%")
+    }
+}
+
 /// A row of the group table: the day's total, a group, or the opened group.
 fn tot_cells(t: &spend_history::Tot, style: Style) -> Vec<Cell> {
     vec![
         cell(t.name.clone(), style),
         cell(t.sessions.to_string(), style),
         cell(dollars(t.cost), style),
-        cell(format!("{:.0}%", t.share), style),
+        cell(pct_text(t.share), style),
         cell(dollars(t.per_session), style),
-        cell(format!("{:.0}%", t.est), style),
+        cell(pct_text(t.est), style),
     ]
 }
 
@@ -1222,11 +1233,10 @@ fn day_table(d: &DayView, f: &FleetCost, at: usize, p: Palette, w: usize) -> Vec
         );
         out.extend(tot_table(rows));
     } else {
-        if let Some(o) = &d.open {
-            let mut rows: Vec<Vec<Cell>> = total.into_iter().collect();
-            rows.push(tot_cells(o, p.sel()));
-            out.extend(tot_table(rows));
-        }
+        // the total row stays on top of the sessions, with the opened group's row under it
+        let mut rows: Vec<Vec<Cell>> = total.into_iter().collect();
+        rows.extend(d.open.iter().map(|o| tot_cells(o, p.sel())));
+        out.extend(tot_table(rows));
         let rows = d
             .rows
             .iter()
@@ -1241,8 +1251,8 @@ fn day_table(d: &DayView, f: &FleetCost, at: usize, p: Palette, w: usize) -> Vec
                     cell(opt(&r.project), style),
                     cell(opt(&r.harness), style),
                     cell(dollars(r.cost), style),
-                    cell(format!("{:.0}%", r.share), style),
-                    cell(format!("{:.0}%", r.est), style),
+                    cell(pct_text(r.share), style),
+                    cell(pct_text(r.est), style),
                     cell(r.days.to_string(), style),
                 ]
             })
@@ -1771,6 +1781,14 @@ mod tests {
     }
 
     #[test]
+    fn a_priced_share_that_rounds_to_nothing_reads_under_one_percent() {
+        assert_eq!(
+            [pct_text(0.0), pct_text(0.2), pct_text(0.5), pct_text(0.6)],
+            ["0%", "<1%", "<1%", "1%"]
+        );
+    }
+
+    #[test]
     fn the_spend_table_opens_on_the_live_day_by_who_and_g_v_and_the_day_keys_drive_it() {
         use hub_core::spend_history::{build, Day, Sess};
         let sess = |sid: &str, usd: f64, origin: &str, project: &str| Sess {
@@ -1846,6 +1864,16 @@ mod tests {
         v.fold(KeyCode::Char('V'), None, None);
         let s = page(&v);
         assert!(!s.contains("title a"), "{s}");
+        // the sessions cut keeps the total row above the sessions
+        v.group = 4;
+        let s = page(&v);
+        let at = |n: &str| s.find(n).unwrap_or_else(|| panic!("{n} missing\n{s}"));
+        assert!(at("total") < at("title a"), "{s}");
+        v.group = 1;
+        // on another inner tab `g` is left to the page (scroll to the top)
+        let mut other = on("limits");
+        assert_eq!(other.fold(KeyCode::Char('g'), None, None), None);
+        assert_eq!(other.inner, "limits");
         // , leaves the live day for the newest snapshot, and . returns.
         v.fold(KeyCode::Char(','), None, None);
         let s = page(&v);

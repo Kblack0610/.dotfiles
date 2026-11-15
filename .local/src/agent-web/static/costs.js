@@ -150,7 +150,8 @@ const spendBars = (bars, every) => bars.map((b, i) => ({
 }));
 const SPEND_KEY = legend([["billed", "var(--c1)"], ["estimated from tokens", "var(--c-other)"]]);
 
-const pctCell = (v) => `<td class="n">${Math.round(v)}%</td>`;
+// A share that rounds to 0 but is not 0 reads "<1%", so a priced row never looks free.
+const pctCell = (v) => `<td class="n">${v > 0 && v <= 0.5 ? "&lt;1" : Math.round(v)}%</td>`;
 
 function sessCell(r, k) {
   if (k === "cost") return `<td class="n">${usd(r.cost)}</td>`;
@@ -194,7 +195,7 @@ function dayTable(dv) {
   if (!dv.table) {
     return grpTable(total + dv.groups.map((g) => totRow(g, g.name)).join(""), outside);
   }
-  const head = dv.in_group ? grpTable(total + totRow(dv.open, null, "sel"), outside) : "";
+  const head = grpTable(total + (dv.in_group ? totRow(dv.open, null, "sel") : ""), outside);
   return head + `<div data-tbl="d"><div id="costs-day-body">${tblBodyFirst(dv.table, () => dayRows(dv))}</div></div>`;
 }
 

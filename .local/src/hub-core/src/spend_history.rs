@@ -527,9 +527,18 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
         in_group,
     } = *pick;
     let live = live.filter(|d| !d.sessions.is_empty());
+    let group = GROUPS
+        .iter()
+        .find(|g| **g == group)
+        .copied()
+        .unwrap_or(GROUPS[0]);
+    // A day with nothing to show still carries the switches, so the way back stays on the page.
     let none = |why: String| DayView {
         day: day.to_string(),
         why: Some(why),
+        group: group.to_string(),
+        cuts: &GROUPS,
+        has_live: live.is_some(),
         ..DayView::default()
     };
     let d =
@@ -563,11 +572,6 @@ pub fn day_view(all: &[Day], live: Option<&Day>, pick: &Pick) -> DayView {
                 }
             }
         };
-    let group = GROUPS
-        .iter()
-        .find(|g| **g == group)
-        .copied()
-        .unwrap_or(GROUPS[0]);
     let everyone: Vec<&Sess> = d.sessions.iter().collect();
     let members: Vec<&Sess> = if group == "sessions" || in_group.is_empty() {
         vec![]
@@ -1193,6 +1197,10 @@ mod tests {
         );
         assert_eq!(none.day, "2026-11-07", "the picked day stays picked");
         assert!(none.rows.is_empty() && none.why.as_deref().unwrap().contains("no session rows"));
+        assert!(
+            !none.cuts.is_empty() && none.group == "sessions",
+            "a day with no rows keeps the switches, so the way back stays on the page"
+        );
         let s = day_view(
             &all,
             None,
