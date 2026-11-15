@@ -634,6 +634,18 @@ backlog_row() {
     dest=""
     [ "$action" = rewrite ] || action=keep
   fi
+  # ask-sweep finds a plan's finish row by its slug on the plan's own board (sweep_plans), so the row
+  # stays on this board, and a rewrite that drops or shortens the slug is kept as it is.
+  local slug=""
+  [[ $raw =~ finish\ ([^\ :]+):\ [0-9]+\ phases?\ left ]] && slug="${BASH_REMATCH[1]}"
+  if [ -n "$slug" ]; then
+    [ -n "$dest" ] && say "$p ($lane): $own stays: ask-sweep finds plan $slug's row on this board"
+    dest=""
+    if [ "$action" = rewrite ] && [[ $row != *"$slug"* ]]; then
+      say "$p ($lane): $own kept: the rewrite drops plan slug $slug, which ask-sweep finds it by"
+      action=keep
+    fi
+  fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
   case "$action" in
