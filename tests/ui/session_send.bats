@@ -42,8 +42,10 @@ now_us() { local t="${EPOCHREALTIME/./}"; printf '%s' "$t"; }
 draw
 while :; do
   IFS= read -r -s -n1 -d '' "${wait[@]}" c; rc=$?
-  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; continue; fi
-  [ "$rc" = 0 ] || break
+  # A read that times out still returns a byte that arrived as the timer fired (bash keeps
+  # partial input on a timeout), so a timeout is a tick and that byte is still input.
+  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; [ -n "$c" ] || continue
+  elif [ "$rc" != 0 ]; then break; fi
   if [ -n "$seq" ] || [ "$c" = $'\e' ]; then
     seq+="$c"
     case "$seq" in
@@ -100,9 +102,6 @@ teardown() { ui_teardown; }
 }
 
 @test "a busy pane: the answer is submitted, not left in its box while the spinner moves" {
-  # Quarantined (ci.md red handling 2): flaked once on PR #2194 run 43745573737. Owner: queue item
-  # session-send-busy-pane-flake (ar-2502). The skip lapses after its expiry, so the test runs again.
-  [[ "$(date +%F)" > 2026-11-29 ]] || skip "quarantined until 2026-11-29: session-send-busy-pane-flake (ar-2502)"
   tmux_stop
   tmux_start env READER_BUSY=1 "$READER" "$LOG"
   PANE="x/$TM_TARGET"
