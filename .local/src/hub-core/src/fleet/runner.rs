@@ -1,4 +1,4 @@
-//! One runner's page: `#fleet/<name>` on the web, Enter on a Workers row in the TUI. Read only
+//! One runner's page: `#sessions/runners/<name>` on the web, Enter on a Runners row in the TUI. Read only
 //! when it is opened (dashboards.md rule 10), and by this one reader for both surfaces (rule 8).
 //! Nothing is kept; each part reads the file its writer owns:
 //!
@@ -22,7 +22,7 @@ const PAGE_RUNS: usize = 20;
 const PAGE_ACTIVITY: usize = 20;
 const PAGE_CALLS: usize = 20;
 /// The newest verdicts and steps an extras block lists; the Log tab keeps the whole lists.
-const PAGE_ROWS: usize = 10;
+pub const PAGE_ROWS: usize = 10;
 /// Enough of calls.jsonl for a week at today's rate (about 70 KB a day); `partial` says when not.
 const CALLS_WEEK_TAIL: u64 = 16 << 20;
 const INGEST_TAIL: u64 = 2 << 20;
@@ -36,7 +36,9 @@ pub const DETAILS: [&str; 4] = [
 ];
 
 /// The intake steps the ingest block counts: what inbox-triage does with a line.
-const INTAKE: [&str; 7] = ["moved", "filed", "dup", "planned", "left", "asked", "refused"];
+const INTAKE: [&str; 7] = [
+    "moved", "filed", "dup", "planned", "left", "asked", "refused",
+];
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Runner {
@@ -111,12 +113,20 @@ pub struct Watch {
     /// TRIP, OK, ERROR, or `new` before its first run.
     pub state: String,
     pub severity: String,
+    /// Its `project:`, a canonical project name; empty for a fleet-wide watch.
+    pub project: String,
     pub since: Option<i64>,
     pub lastrun: Option<i64>,
     pub lasttrip: Option<i64>,
     /// What it looks at: the text of its `where:`.
-    #[serde(skip)]
     pub place: String,
+    /// What it checks: its `what:`.
+    pub what: String,
+    /// What to do when it trips: its `action:`.
+    pub action: String,
+    /// Its last probe output (`<state>/<name>.out`, kept only while it is red), the first
+    /// `EVIDENCE_LINES` lines.
+    pub evidence: String,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -126,8 +136,9 @@ pub enum Extras {
     None,
     /// the dispatch judge (dispatch-judge.conf): the verdict counts and the newest `PAGE_ROWS`.
     DispatchVerdicts { dispatch: Dispatch },
-    /// The answer judge's tiles and its newest `PAGE_ROWS` verdicts.
-    AskJudge { judge: Judge },
+    /// The answer judge's tiles and every verdict: a surface cuts them to its view and the
+    /// newest `PAGE_ROWS` (`Judge::view`), so its state tiles count them all.
+    AskJudge { judge: Box<Judge> },
     /// The intake steps in the ingest record for the week: counts and the newest `PAGE_ROWS`.
     Ingest {
         counts_7d: BTreeMap<String, u32>,
@@ -245,11 +256,9 @@ pub fn runner(
             dispatch.recent.truncate(PAGE_ROWS);
             Extras::DispatchVerdicts { dispatch }
         }
-        "ask-judge" => {
-            let mut judge = judge;
-            judge.verdicts.truncate(PAGE_ROWS);
-            Extras::AskJudge { judge }
-        }
+        "ask-judge" => Extras::AskJudge {
+            judge: Box::new(judge),
+        },
         "ingest" => match tail(&paths.notes_state.join("ingest.jsonl"), INGEST_TAIL) {
             Ok((t, cut)) => ingest(&t, cut, at),
             Err(e) => {
@@ -510,13 +519,34 @@ pub fn watch_dirs(home: &str, var: impl Fn(&str) -> String) -> (PathBuf, PathBuf
     )
 }
 
-/// The text of a watch file's `where:`, a one-liner or a folded block.
-pub(crate) fn place(yaml: &str) -> String {
-    let mut lines = yaml.lines().skip_while(|l| !l.starts_with("where:"));
-    let first = lines.next().unwrap_or("");
-    let rest = lines.take_while(|l| l.starts_with(' ') || l.is_empty());
-    std::iter::once(first.trim_start_matches("where:"))
+/// How much of a red watch's probe output a row carries.
+pub const EVIDENCE_LINES: usize = 20;
+
+/// The text of a watch file's top-level `key:`, a one-liner or a folded block (`>-`, `|`), on
+/// one line.
+pub(crate) fn field(yaml: &str, key: &str) -> String {
+    let head = format!("{key}:");
+    let mut lines = yaml.lines().skip_while(|l| !l.starts_with(&head));
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let first = first[head.len()..].trim();
+    let first = if matches!(first, ">" | ">-" | ">+" | "|" | "|-" | "|+") {
+        ""
+    } else {
+        first
+            .strip_prefix('"')
+            .and_then(|f| f.strip_suffix('"'))
+            .or_else(|| first.strip_prefix('\'').and_then(|f| f.strip_suffix('\'')))
+            .unwrap_or(first)
+    };
+    let rest = lines
+        .take_while(|l| l.starts_with(' ') || l.is_empty())
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'));
+    std::iter::once(first)
         .chain(rest)
+        .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -541,13 +571,22 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
             let st = read(&name, "state");
+            let out = read(&name, "out");
             Some(Watch {
                 state: if st.is_empty() { "new".into() } else { st },
                 severity,
+                project: field(&yaml, "project"),
                 since: read(&name, "since").parse().ok(),
                 lastrun: read(&name, "lastrun").parse().ok(),
                 lasttrip: read(&name, "lasttrip").parse().ok(),
-                place: place(&yaml),
+                place: field(&yaml, "where"),
+                what: field(&yaml, "what"),
+                action: field(&yaml, "action"),
+                evidence: out
+                    .lines()
+                    .take(EVIDENCE_LINES)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 name,
             })
         })
@@ -564,6 +603,15 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_strips_quotes_and_skips_comment_lines() {
+        let yaml = "what: \"the nightly\"\naction: 'rerun it'\nwhere: >-\n  GitHub,\n  # not this\n  unity\nsev: high\n";
+        assert_eq!(field(yaml, "what"), "the nightly");
+        assert_eq!(field(yaml, "action"), "rerun it");
+        assert_eq!(field(yaml, "where"), "GitHub, unity");
+        assert_eq!(field(yaml, "missing"), "");
+    }
 
     const T: i64 = 1_762_200_000; // 2025-11-03T12:00:00-08:00
 
@@ -963,6 +1011,11 @@ mod tests {
                 &format!("name: {n}\nseverity: {sev}\n"),
             );
         }
+        write(
+            &w.join("bravo.yaml"),
+            "name: bravo\nwhat: >-\n  The pool has a slot\n  free.\nwhere: one host\naction: >-\n  Free a slot.\nseverity: high\n",
+        );
+        write(&s.join("bravo.out"), "line one\nline two\n");
         write(&w.join("README.md"), "not a watch");
         write(&s.join("alpha.state"), "OK\n");
         write(&s.join("bravo.state"), "TRIP\n");
@@ -988,6 +1041,14 @@ mod tests {
                     (watches[0].severity.as_str(), watches[0].since),
                     ("high", Some(T - 60))
                 );
+                // The fields a row opens to: folded blocks on one line, the probe's output.
+                let b = &watches[0];
+                assert_eq!(
+                    (b.what.as_str(), b.place.as_str(), b.action.as_str()),
+                    ("The pool has a slot free.", "one host", "Free a slot.")
+                );
+                assert_eq!(b.evidence, "line one\nline two");
+                assert_eq!(watches[1].evidence, "", "no .out: nothing red to show");
             }
             e => panic!("{e:?}"),
         }

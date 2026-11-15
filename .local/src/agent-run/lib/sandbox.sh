@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # sandbox.sh - resolve a lane's SANDBOX_PROFILE into the isolation its harness enforces.
 #
-# Sourced by agentctl-run. A runner conf sets SANDBOX_PROFILE=<name> (it arrives as
+# Sourced by agentctl-run, and by fleet-dispatch for a harness that names one (srt, below). A runner conf sets SANDBOX_PROFILE=<name> (it arrives as
 # environment on a supervised runner) to run that lane in the OS sandbox described by
 # ~/.config/agentctl/sandbox/<name>.json. The profile is content: the credential paths
 # to hide, the paths to keep writable, the hosts to allow. This file is the mechanism and
@@ -20,7 +20,7 @@ SANDBOX_SHAPE='
   type == "object" and (.sandbox | type == "object")
   and ((.permissions // {}) | type == "object") and (.permissions.deny | strs)
   and ((.sandbox.filesystem // {}) | type == "object") and ((.sandbox.network // {}) | type == "object")
-  and (.sandbox.filesystem.denyRead | paths) and (.sandbox.filesystem.allowWrite | paths)
+  and (.sandbox.filesystem.denyRead | paths) and (.sandbox.filesystem.allowRead | paths) and (.sandbox.filesystem.allowWrite | paths)
   and (.sandbox.filesystem.denyWrite | paths) and (.sandbox.network.allowedDomains | strs)'
 
 # sandbox_load -> SANDBOX_FILE (empty for an unsandboxed lane), and the lane's GitHub token.
@@ -134,4 +134,65 @@ sandbox_codex_flags() {
         + (if $common == "" then [] else [$common] end) | tojson)",
     "sandbox_workspace_write.network_access=false"' \
     "$SANDBOX_FILE"
+}
+
+# --- srt: a lane whose harness has no sandbox of its own (opencode) runs inside srt, the runtime ---
+# claude's sandbox is built on (@anthropic-ai/sandbox-runtime: bwrap, its own network namespace, and a
+# proxy that holds the run to allowedDomains), so one profile means the same thing on both.
+
+# What an srt-held run needs on PATH: srt itself, and on Linux the bwrap and socat it drives (macOS
+# srt uses sandbox-exec).
+if [ "$(uname -s)" = Linux ]; then SANDBOX_SRT_NEEDS="${SANDBOX_SRT_NEEDS:-srt bwrap socat}"; else SANDBOX_SRT_NEEDS="${SANDBOX_SRT_NEEDS:-srt}"; fi
+
+# The environment an srt-held run keeps from its pane; every other variable (the gateway master key,
+# tokens, the tmux and D-Bus sockets) is dropped. srt adds its own proxy variables. Each reads as
+# empty when the pane has none, which these treat as unset (TZ would not, so it is not kept).
+SANDBOX_ENV_KEEP="HOME USER LOGNAME SHELL PATH LANG LC_ALL TERM COLORTERM"
+
+# sandbox_srt_refusal -> why srt cannot hold a run here, or nothing: a SANDBOX_SRT_NEEDS tool missing.
+sandbox_srt_refusal() {
+  local t
+  for t in $SANDBOX_SRT_NEEDS; do
+    command -v "$t" >/dev/null 2>&1 || { echo "$t is not on PATH"; return; }
+  done
+}
+
+# sandbox_srt_settings [--ro <path>] [--rw <path>]... -> the srt --settings JSON: the profile's
+# filesystem and network, with the run's cwd (".", srt resolves it where it starts) and each --rw path
+# writable, and each --ro path, the profile's allowRead, the git common dir and srt's own package (its
+# seccomp helper runs inside) readable through denyRead, and strictAllowlist on. The common dir is
+# read-only: the run's commits are not needed (fleet-dispatch moves and scores its tree outside), and
+# a writable one would let it move the shared repo's refs. Paths are passed as given; srt expands ~/
+# and follows links, so name a stowed file by its target.
+sandbox_srt_settings() {
+  local ro=() rw=() pkg
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ro) ro+=("$2"); shift 2 ;;
+      --rw) rw+=("$2"); shift 2 ;;
+      *) return 2 ;;
+    esac
+  done
+  pkg=$(realpath -e "$(command -v srt)" 2>/dev/null)
+  case "$pkg" in */dist/*) pkg=${pkg%/dist/*} ;; *) pkg="" ;; esac
+  jq -c --arg common "$(sandbox_git_common)" --arg pkg "$pkg" \
+    --argjson ro "$(printf '%s\n' "${ro[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" \
+    --argjson rw "$(printf '%s\n' "${rw[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" '
+    (if $common == "" then [] else [$common] end) as $c
+    | (.sandbox.filesystem // {}) as $fs
+    | {network: ((.sandbox.network // {}) | .allowedDomains //= [] | .deniedDomains //= [] | .strictAllowlist = true),
+       filesystem: {
+         denyRead: ($fs.denyRead // []),
+         allowRead: (["."] + $ro + $rw + $c + ($fs.allowRead // []) + ($fs.allowWrite // []) + (if $pkg == "" then [] else [$pkg] end)),
+         allowWrite: (["."] + $rw + ($fs.allowWrite // [])),
+         denyWrite: ($fs.denyWrite // [])}}' \
+    "$SANDBOX_FILE"
+}
+
+# sandbox_env_clear -> `env -i` with each SANDBOX_ENV_KEEP variable, left unexpanded (NAME="${NAME-}")
+# for the shell that runs the line (bash or zsh, set -u or not) to fill in from its own environment.
+sandbox_env_clear() {
+  local v out="env -i"
+  for v in $SANDBOX_ENV_KEEP; do out+=" $v=\"\${$v-}\""; done
+  printf '%s\n' "$out"
 }

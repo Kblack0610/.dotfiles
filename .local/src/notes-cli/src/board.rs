@@ -475,7 +475,8 @@ fn note_rows(note: &std::path::Path, keep: impl Fn(bool) -> bool) -> Vec<String>
 type LaneRows = Vec<(Lane, String)>;
 
 /// One project's release `want` across both lanes: the live sheets' rows aimed at it, plus the
-/// rows already frozen into `versions/<want>.md` or archived into `agent/versions/<want>.md`.
+/// rows already frozen into `versions/<want>.md` (or the tag note it froze under, `frozen_note`)
+/// or archived into `agent/versions/<want>.md`.
 /// Each row carries its lane. Empty when nothing on this project is aimed at `want`.
 fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
     let ver = crate::projects::fmt_version(want);
@@ -491,7 +492,7 @@ fn release_view(dir: &std::path::Path, want: V) -> (LaneRows, LaneRows) {
         let agent_note = crate::projects::agent_note_path(dir, &ver);
         let rows = match lane {
             Lane::Human => {
-                let mut r = frozen_rows(&dir.join("versions").join(format!("{ver}.md")));
+                let mut r = frozen_rows(&crate::projects::frozen_note(dir, &ver));
                 r.extend(note_rows(&agent_note, |sheet| sheet));
                 r
             }
@@ -600,8 +601,11 @@ struct FeedRow {
     /// The `type(area):` prefix split out; `None` on a row without a well-formed one.
     r#type: Option<String>,
     area: Option<String>,
-    /// `#size/s|m|l`: s a small single PR, m one PR, l needs a plan.
+    /// `#size/s|m|l`: s a small single PR, m one PR, l needs a plan. The band of `points`
+    /// when the row has them ([`crate::epics::POINTS`]), else its own `#size/` tag.
     size: Option<String>,
+    /// `#pts/<n>`: the row's effort estimate on the points scale, `None` when unscored.
+    points: Option<u32>,
     text: String,
     tags: Vec<String>,
     marker: Option<String>,
@@ -705,9 +709,8 @@ fn feed_row(
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let requested = all.iter().any(|t| t == "requested");
-    let size = all
-        .iter()
-        .find_map(|t| t.strip_prefix("size/").map(str::to_string));
+    let points = crate::projects::points_of(line);
+    let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
     let tags = all
         .into_iter()
@@ -715,9 +718,11 @@ fn feed_row(
             !words.contains(&t.as_str())
                 && !md::is_version_tag(t)
                 && !md::is_created_tag(t)
+                && !md::is_done_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
+                && !t.starts_with("pts/")
                 && t != "requested"
         })
         .collect();
@@ -742,6 +747,7 @@ fn feed_row(
         r#type: ty,
         area,
         size,
+        points,
         text: md::task_text(line),
         tags,
         marker: md::marker_of(line),
@@ -1392,6 +1398,7 @@ mod tests {
             "type",
             "area",
             "size",
+            "points",
             "text",
             "tags",
             "marker",

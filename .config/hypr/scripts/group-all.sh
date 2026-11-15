@@ -1,6 +1,6 @@
 #!/bin/bash
 # Group all tiled windows on the active workspace into a single tab group.
-# Bound to $mainMod, G in conf.d/keybindings.conf.
+# Bound to Super+G in conf/keybindings.lua.
 # Floating windows are excluded (grouping floaters under dwindle is messy).
 
 set -eu
@@ -15,10 +15,15 @@ mapfile -t addrs < <(
 
 # moveintogroup needs a direction and the correct one depends on layout state,
 # so spam all four. Three no-op silently, one fires.
-batch="dispatch focuswindow address:${addrs[0]}; dispatch togglegroup;"
+focus() { printf 'hl.dispatch(hl.dsp.focus({ window = "address:%s" }))\n' "$1"; }
+lua="$(focus "${addrs[0]}")
+hl.dispatch(hl.dsp.group.toggle())"
 for a in "${addrs[@]:1}"; do
-    batch+=" dispatch focuswindow address:$a;"
-    batch+=" dispatch moveintogroup l; dispatch moveintogroup r;"
-    batch+=" dispatch moveintogroup u; dispatch moveintogroup d;"
+    lua+="
+$(focus "$a")"
+    for d in left right up down; do
+        lua+="
+hl.dispatch(hl.dsp.window.move({ into_group = \"$d\" }))"
+    done
 done
-hyprctl --batch "$batch"
+hyprctl eval "$lua"

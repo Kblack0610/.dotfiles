@@ -1,14 +1,13 @@
-//! The Fleet tab's machinery, below the sessions: one table of who is working and why each one
-//! is deployed (runners by kind, then the live sessions), under the legend of what each kind
-//! means, from hub-core's `fleet` (the same reader as agent-web's Fleet tab).
-//! The Claude accounts and the token folds are the Costs tab's (coststab.rs, tokens.rs). Named
-//! apart from `fleet.rs`, which is the sessions' watch page. One runner's page (`runner_page`) is
-//! hub-core's `fleet::runner`, as agent-web's `#fleet/<runner>`.
+//! Sessions' Runners inner tab: one table of the runners that work on their own (agentctl's
+//! lanes), by tier, under the legend of what each kind means, from hub-core's `fleet` (the same
+//! reader as agent-web's Runners). The sessions are the Sessions inner tab's (controls.rs); the
+//! Claude accounts and the token folds are the Costs tab's (coststab.rs, tokens.rs). Named apart
+//! from `fleet.rs`, which is the sessions' watch page. One runner's page (`runner_page`) is
+//! hub-core's `fleet::runner`, as agent-web's `#sessions/runners/<runner>`.
 
-use std::collections::HashSet;
-
-use hub_core::fleet::runner::{Extras, Runner, Totals};
-use hub_core::fleet::who::{self, Who};
+use hub_core::boards::Due;
+use hub_core::fleet::runner::{self, Extras, Runner, Totals};
+use hub_core::fleet::who::Who;
 use hub_core::fleet::{AskVerdict, Dispatch, Eval, Fleet, Judge, Registry, ASK_FILTERS};
 use ratatui::text::{Line, Span};
 
@@ -28,36 +27,35 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-/// The rows as shown: the table's query, state and sort applied, then the rows a folded tier 1
-/// row holds taken out (unless a search or chip is on). `[ ]`-free: j/k step through these and
+/// The rows as shown: the table's query, state and sort applied. j/k step through these and
 /// Enter opens the one selected.
-pub fn shown<'a>(f: &'a Fleet, t: &DataTable, folded: &HashSet<String>) -> Vec<&'a Who> {
-    who::unfolded(t.view.apply(&f.who), folded, &t.view)
+pub fn shown<'a>(f: &'a Fleet, t: &DataTable) -> Vec<&'a Who> {
+    t.view.apply(&f.who)
 }
 
-/// The Fleet page: the table of who is working, the row j/k picked (`t.sel`) drawn reversed:
-/// Enter opens it.
+/// The Runners inner tab: the table of runners, the row j/k picked (`t.sel`) drawn reversed:
+/// Enter opens its page. Also the line that row is on, counted past every line above it (the
+/// errors, the heading, the legend and the chips, each as wrapped), so the app keeps it in view.
 pub fn page(
     f: &Fleet,
     t: &DataTable,
-    folded: &HashSet<String>,
     p: Palette,
     now: i64,
     w: usize,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = vec![];
     for e in &f.errors {
         out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
     }
-    let rows = shown(f, t, folded);
+    let rows = shown(f, t);
     out.push(clip_line(
         heading(
-            "FLEET",
+            "RUNNERS",
             format!(
                 "  {} of {} rows, {}",
                 rows.len(),
                 f.who.len(),
-                hub_core::costs::SPEND_BADGE
+                hub_core::costs::spend_badge()
             ),
             p,
         ),
@@ -66,9 +64,15 @@ pub fn page(
     for l in wrap(&f.legend, " | ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
+    let unled: Vec<&str> = f.unled.split_whitespace().collect();
+    for l in wrap(&unled, " ", w) {
+        out.push(clip_line(Line::styled(l, p.warn()), w));
+    }
     out.extend(wrap_spans(t.status(&f.who, p), w));
-    out.extend(who_table(&rows, t, folded, p, now, w, f.who.is_empty()));
-    out
+    // The table's head is its first line; the selected row is under it.
+    let sel = (!rows.is_empty()).then(|| out.len() + 1 + t.sel.min(rows.len() - 1));
+    out.extend(who_table(&rows, t, p, now, w, f.who.is_empty()));
+    (out, sel)
 }
 
 /// The chip line broken between chips so every chip shows in a narrow pane; a chip's own
@@ -97,14 +101,13 @@ fn wrap_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
 }
 
 /// `Who::COLUMNS` in capitals, in its order: the sort mark is placed by that index.
-const WHO_HEADER: [&str; 10] = [
-    "KIND", "WHO", "STATE", "COST 24H", "ACTIVITY", "SINCE", "FOR", "DOING", "UNDER", "PROJECT",
+const WHO_HEADER: [&str; 8] = [
+    "KIND", "WHO", "STATE", "COST 24H", "SINCE", "FOR", "DOING", "UNDER",
 ];
 
 fn who_table(
     rows: &[&Who],
     t: &DataTable,
-    folded: &HashSet<String>,
     p: Palette,
     now: i64,
     w: usize,
@@ -115,7 +118,7 @@ fn who_table(
             if none_at_all {
                 "No runners configured in ~/.config/agentctl/agents."
             } else {
-                "No runner or session matches (/ query, f state, x clears)."
+                "No runner matches (/ query, f state, x clears)."
             },
             p.dim(),
         )];
@@ -129,21 +132,9 @@ fn who_table(
                 "working" => p.good(),
                 _ => p.dim(),
             };
-            let fold = match (r.kids, folded.contains(&r.key)) {
-                (0, _) => "",
-                (_, true) => "> ",
-                (_, false) => "v ",
-            };
             vec![
-                cell(format!("{fold}{}", r.kind), p.dim()),
-                cell(
-                    r.who.clone(),
-                    if r.tier == 3 {
-                        Default::default()
-                    } else {
-                        p.head()
-                    },
-                ),
+                cell(r.kind.clone(), p.dim()),
+                cell(r.who.clone(), p.head()),
                 cell(r.state.clone(), state),
                 format!(
                     "{}{}",
@@ -151,12 +142,10 @@ fn who_table(
                     usd(r.cost_24h)
                 )
                 .into(),
-                r.activity.clone().into(),
                 r.since.map_or("-".into(), |s| dur((now - s) as f64)).into(),
                 r.purpose.clone().into(),
                 r.doing.clone().into(),
                 cell(r.under.clone(), p.dim()),
-                cell(r.project.clone(), p.dim()),
             ]
         })
         .collect();
@@ -164,19 +153,81 @@ fn who_table(
         header: WHO_HEADER.to_vec(),
         rows: cells,
         // FOR, capped, keeps its place beside WHO; DOING is the flex column and takes the rest.
-        keep: vec![1, 0, 2, 3, 4, 6, 7, 5, 9, 8],
-        flex: Some(7),
+        keep: vec![1, 0, 2, 3, 5, 6, 4, 7],
+        flex: Some(6),
         flexmin: 12,
-        right: vec![3, 5],
-        cap: vec![(1, 18), (4, 24), (6, 40), (8, 22), (9, 16)],
+        right: vec![3, 4],
+        cap: vec![(1, 18), (5, 40), (7, 22)],
         mark: t.mark::<Who>(),
         ..Default::default()
     }
     .fit(w, p.head());
-    // A re-read or a fold can leave fewer rows than the selection until the next key.
+    // A re-read can leave fewer rows than the selection until the next key.
     if let Some(l) = out.get_mut(t.sel.min(rows.len() - 1) + 1) {
         l.style = p.sel();
     }
+    out
+}
+
+/// Sessions' Shepherd inner tab: `fleet-shepherd`'s ledger, who holds the pass lease and when it
+/// took it, then each line due with its role, how long it has waited, and whether the last pass
+/// left it unhandled. The pass's rundowns are Log's Rundowns.
+pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let lease = match (&d.lease_holder, d.lease_at) {
+        (Some(h), Some(at)) => format!("lease {h}, taken {} ago", dur((now - at as i64) as f64)),
+        (Some(h), None) => format!("lease {h}"),
+        _ => "no pass holds the lease".into(),
+    };
+    let mut out = vec![clip_line(
+        heading("SHEPHERD", format!("  {} due, {lease}", d.due.len()), p),
+        w,
+    )];
+    if d.due.is_empty() {
+        out.push(Line::styled("Nothing due.", p.dim()));
+    } else {
+        let rows = d
+            .due
+            .iter()
+            .map(|l| {
+                vec![
+                    cell(
+                        if l.role.is_empty() {
+                            "-".into()
+                        } else {
+                            l.role.clone()
+                        },
+                        p.dim(),
+                    ),
+                    match l.first_seen {
+                        0 => "-".into(),
+                        t => dur((now - t as i64) as f64).into(),
+                    },
+                    if l.unhandled {
+                        cell(format!("unhandled: {}", l.line), p.warn())
+                    } else {
+                        l.line.clone().into()
+                    },
+                ]
+            })
+            .collect();
+        out.extend(
+            Table {
+                header: vec!["ROLE", "WAITING", "LINE"],
+                rows,
+                keep: vec![2, 0, 1],
+                flex: Some(2),
+                flexmin: 12,
+                right: vec![1],
+                cap: vec![(0, 18)],
+                ..Default::default()
+            }
+            .fit(w, p.head()),
+        );
+    }
+    out.push(clip_line(
+        Line::styled("The pass's rundowns: Log > Rundowns.", p.dim()),
+        w,
+    ));
     out
 }
 
@@ -187,7 +238,7 @@ pub fn verdicts(f: &Fleet, filter: &str, p: Palette, now: i64, w: usize) -> Vec<
     out.extend(dispatch_list(&f.dispatch, p, now, w));
     out.push(Line::raw(""));
     out.push(judge_head(&f.judge, p, w));
-    out.extend(judge_list(&f.judge, filter, p, now, w));
+    out.extend(judge_list(&f.judge, filter, FOLD_ROWS, p, now, w));
     out
 }
 
@@ -277,7 +328,7 @@ fn registry(r: &Registry, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
     out
 }
 
-/// A judge's per-rule table from judge-eval; a rule not yet live shows its labels against the bar.
+/// A judge's per-rule table from judge-eval, each rule live or not.
 fn eval(e: &Eval, p: Palette, w: usize) -> Vec<Line<'static>> {
     if e.rules.is_empty() {
         return vec![clip_line(
@@ -294,11 +345,7 @@ fn eval(e: &Eval, p: Palette, w: usize) -> Vec<Line<'static>> {
         .rules
         .iter()
         .map(|r| {
-            let live = match (&r.bar, r.live) {
-                (_, true) => "yes".to_string(),
-                (Some(b), false) => format!("no ({}/{} to bar)", b.labels, b.need),
-                (None, false) => "no".into(),
-            };
+            let live = if r.live { "yes" } else { "no" };
             vec![
                 cell(r.rule.clone(), Default::default()),
                 r.verdicts.to_string().into(),
@@ -415,8 +462,8 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
         heading(
             "ANSWER JUDGE",
             format!(
-                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  false-defer {}  pending {}  unscored {}",
-                j.agree, j.disagree, j.deferred, j.false_defer, j.pending, j.unscored
+                "  prompt {prompt}  agree {}{share}  disagree {}  deferred {}  pending {}  unscored {}",
+                j.agree, j.disagree, j.deferred, j.pending, j.unscored
             ),
             p,
         ),
@@ -424,9 +471,107 @@ fn judge_head(j: &Judge, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
-/// The week's line, the filters, then what the judge said on each ask and why.
-fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let share = |x: Option<f64>| x.map_or("-".to_string(), |x| format!("{x}%"));
+/// judge-eval's percent as it gives it, or "-" with none.
+fn share(x: Option<f64>) -> String {
+    x.map_or("-".to_string(), |x| format!("{x}%"))
+}
+
+/// The answer judge per type and impact level, judge-eval's cells under its current prompt. A
+/// live cell's scored count is the answers the human reviewed (AUDITED); silence scores nothing.
+fn judge_cells(j: &Judge, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![clip_line(
+        Line::styled(
+            "  By type and level (self, repo, fleet, critical), under the current prompt:",
+            p.dim(),
+        ),
+        w,
+    )];
+    if j.cells.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!(
+                    "{PAD}no verdicts under prompt {}",
+                    if j.prompt.is_empty() {
+                        "none"
+                    } else {
+                        &j.prompt
+                    }
+                ),
+                p.dim(),
+            ),
+            w,
+        ));
+        return out;
+    }
+    let or_dash = |s: &str, none: &str| {
+        if s.is_empty() {
+            none.to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    let rows = j
+        .cells
+        .iter()
+        .map(|c| {
+            let prec = match (c.precision, c.precision_lo, c.precision_hi) {
+                (Some(x), Some(lo), Some(hi)) => format!("{x}% [{lo}-{hi}]"),
+                (x, _, _) => share(x),
+            };
+            vec![
+                or_dash(&c.kind, "(no type)").into(),
+                or_dash(&c.level, "-").into(),
+                c.verdicts.to_string().into(),
+                c.scored.to_string().into(),
+                prec.into(),
+                c.pending.to_string().into(),
+                cell(
+                    if c.live { "yes" } else { "no" }.to_string(),
+                    if c.live { p.good() } else { p.dim() },
+                ),
+                c.audited.to_string().into(),
+                share(c.level_raised_pct).into(),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: vec![
+                "TYPE",
+                "LEVEL",
+                "VERD",
+                "SCORED",
+                "PREC [95%]",
+                "PEND",
+                "LIVE",
+                "AUDITED",
+                "RAISED",
+            ],
+            rows,
+            keep: vec![0, 1, 4, 3, 6, 7, 2, 5, 8],
+            right: vec![2, 3, 4, 5, 7, 8],
+            ..Default::default()
+        }
+        .fit(w.saturating_sub(PAD.len()), p.dim())
+        .into_iter()
+        .map(|l| {
+            let mut spans = vec![Span::raw(PAD)];
+            spans.extend(l.spans);
+            Line::from(spans)
+        }),
+    );
+    out
+}
+
+/// The week's line, the filters, then what the judge said on each ask and why, at most `cap`.
+fn judge_list(
+    j: &Judge,
+    filter: &str,
+    cap: usize,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let filters = ASK_FILTERS
         .map(|f| {
             if f == filter {
@@ -458,7 +603,7 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
     }
     let rows = shown
         .iter()
-        .take(FOLD_ROWS)
+        .take(cap)
         .map(|x| {
             let wrong = x.score == "wrong";
             vec![
@@ -490,29 +635,16 @@ fn judge_list(j: &Judge, filter: &str, p: Palette, now: i64, w: usize) -> Vec<Li
         }
         .fit(w, p.head()),
     );
-    out.extend(older(shown.len(), FOLD_ROWS, p));
+    out.extend(older(shown.len(), cap, p));
     out
-}
-
-/// The runner a `fleet <word>` query names: any word but one of Fleet's own section names
-/// (`workers`), which scroll there instead, or one that moved off it (`accounts`, which
-/// tabreq::parse sends to its new tab). One rule for `hub tab fleet` and `--once --tab`.
-pub fn runner_arg(q: &str) -> Option<&str> {
-    let q = q.trim();
-    let fleet = crate::app::Tab::Fleet.title();
-    let secs = hub_core::layout::resolve(fleet).map_or(&[][..], |t| t.sections);
-    (!q.is_empty()
-        && !secs.iter().any(|s| s.eq_ignore_ascii_case(q))
-        && hub_core::layout::moved(fleet, q).is_none())
-    .then_some(q)
 }
 
 /// `[ ]` and Esc on a runner's page, for its first line.
 const PAGE_KEYS: &str = "[ ] runner  Esc all runners";
 
-/// One runner's page (`hub tab fleet <runner>`, Enter on a Workers row): summary first, then 14
+/// One runner's page (`hub tab 'sessions runners <runner>'`, Enter on a Runners row): summary first, then 14
 /// days of runs, its status and activity, 24h and 7d calls, the registry, the lane's extras block
-/// (`DETAIL=` in its conf) and the conf, as agent-web's `#fleet/<runner>`.
+/// (`DETAIL=` in its conf) and the conf, as agent-web's `#sessions/runners/<runner>`.
 pub fn runner_page(
     name: &str,
     r: Option<&Result<Runner, String>>,
@@ -588,7 +720,8 @@ pub fn runner_page(
         heading(
             "RUNS",
             format!(
-                "  14 days of runs.jsonl; a run's log: 6 Infra, h on {}",
+                "  14 days of runs.jsonl; a run's log: {}, h on {}",
+                hub_core::layout::bar_label("infra"),
                 r.name
             ),
             p,
@@ -631,7 +764,7 @@ pub fn runner_page(
                 let result = if j.result.is_empty() {
                     match j.state {
                         hub_core::jobs::State::Running => "running",
-                        hub_core::jobs::State::Queued => "queued",
+                        hub_core::jobs::State::Queued => "waiting",
                         hub_core::jobs::State::Done => "done",
                     }
                     .to_string()
@@ -758,7 +891,15 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
         Extras::AskJudge { judge } => {
             out.push(judge_head(judge, p, w));
-            out.extend(judge_list(judge, ASK_FILTERS[0], p, now, w));
+            out.extend(judge_cells(judge, p, w));
+            out.extend(judge_list(
+                judge,
+                ASK_FILTERS[0],
+                runner::PAGE_ROWS,
+                p,
+                now,
+                w,
+            ));
         }
         Extras::Ingest {
             counts_7d,
@@ -794,43 +935,22 @@ fn extras(x: &Extras, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                 ));
             }
         }
+        // Every watch with what it checks, where and what to do is Alerts' Watches; here only
+        // the count and the way there.
         Extras::SentinelWatches { watches } => {
             let trip = watches.iter().filter(|x| x.state == "TRIP").count();
+            let alerts = hub_core::layout::bar_label("alerts");
             out.push(clip_line(
                 heading(
                     "WATCHES",
-                    format!("  {} watches, {trip} tripped", watches.len()),
+                    format!(
+                        "  {} watches, {trip} tripped: {alerts}, Watches",
+                        watches.len()
+                    ),
                     p,
                 ),
                 w,
             ));
-            let at = |t: Option<i64>| t.map_or("-".into(), |t| clock(t, now));
-            let rows = watches
-                .iter()
-                .map(|x| {
-                    let style = match x.state.as_str() {
-                        "TRIP" | "ERROR" => p.bad(),
-                        "OK" => p.good(),
-                        _ => p.dim(),
-                    };
-                    vec![
-                        x.name.clone().into(),
-                        cell(x.state.clone(), style),
-                        cell(x.severity.clone(), p.dim()),
-                        at(x.since).into(),
-                        at(x.lastrun).into(),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["WATCH", "STATE", "SEVERITY", "SINCE", "LAST RUN"],
-                    rows,
-                    keep: vec![0, 1, 3, 4, 2],
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
         }
     }
     out
@@ -854,48 +974,22 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::who::Opens;
-    use hub_core::fleet::{
-        Bar, Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
-    };
+    use hub_core::fleet::{Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker};
 
     pub const NOW: i64 = 1_793_661_428;
 
-    fn who_row(
-        tier: u8,
-        name: &str,
-        key: &str,
-        opens: Opens,
-        state: &str,
-        kids: usize,
-        parent: Option<&str>,
-    ) -> Who {
+    fn who_row(tier: u8, name: &str, state: &str, under: &str) -> Who {
         Who {
             tier,
-            kind: match tier {
-                1 => "lead",
-                2 => "observe",
-                _ => "session",
-            }
-            .into(),
+            kind: if tier == 1 { "lead" } else { "observe" }.into(),
             who: name.into(),
-            opens,
-            key: key.into(),
             state: state.into(),
             since: Some(NOW - 600),
-            cost_24h: (tier < 3).then_some(4.5),
+            cost_24h: Some(4.5),
             cost_estimated: false,
-            activity: String::new(),
             purpose: format!("{name} for"),
             doing: format!("{name} doing"),
-            under: if kids > 0 {
-                format!("{kids} sessions")
-            } else {
-                String::new()
-            },
-            project: "dotfiles".into(),
-            parent: parent.map(String::from),
-            kids,
+            under: under.into(),
         }
     }
 
@@ -904,6 +998,7 @@ pub mod tests {
             at: NOW,
             errors: vec!["dispatch: unreadable".into()],
             legend: vec!["lead runs the sessions".into(), "observe reports".into()],
+            unled: String::new(),
             workers: vec![
                 Worker {
                     name: "dream".into(),
@@ -968,11 +1063,6 @@ pub mod tests {
                                     verdicts: 31,
                                     scored: 28,
                                     false_defer_pct: Some(18.0),
-                                    bar: Some(Bar {
-                                        labels: 6,
-                                        need: 30,
-                                        met: false,
-                                    }),
                                     ..Default::default()
                                 },
                             ],
@@ -989,17 +1079,9 @@ pub mod tests {
                 },
             ],
             who: vec![
-                who_row(1, "dream", "dream", Opens::Runner, "failed", 1, None),
-                who_row(2, "idle-one", "idle-one", Opens::Runner, "off", 0, None),
-                who_row(
-                    3,
-                    "dotfiles-agent-11",
-                    "lab/dotfiles-agent-11:1",
-                    Opens::Session,
-                    "working",
-                    0,
-                    Some("dream"),
-                ),
+                who_row(1, "dream", "failed", "1 sessions"),
+                who_row(2, "idle-one", "off", ""),
+                who_row(2, "inbox-triage", "working", ""),
             ],
             dispatch: Dispatch {
                 recent: vec![Verdict {
@@ -1023,7 +1105,6 @@ pub mod tests {
                 deferred: 2,
                 pending: 1,
                 unscored: 5,
-                false_defer: 1,
                 precision: Some(75.0),
                 kappa: Some(0.2),
                 prompt: "60c840b".into(),
@@ -1060,21 +1141,43 @@ pub mod tests {
                         ..Default::default()
                     },
                 ],
+                cells: vec![
+                    hub_core::fleet::Cell {
+                        kind: "ship_deploy".into(),
+                        level: "repo".into(),
+                        verdicts: 4,
+                        scored: 3,
+                        pending: 1,
+                        precision: Some(66.7),
+                        precision_lo: Some(20.8),
+                        precision_hi: Some(93.9),
+                        live: true,
+                        audited: 3,
+                        level_raised_pct: Some(25.0),
+                    },
+                    hub_core::fleet::Cell {
+                        verdicts: 2,
+                        pending: 2,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
             },
         }
     }
 
-    fn lines(f: &Fleet, t: &DataTable, folded: &HashSet<String>, w: usize) -> Vec<String> {
-        page(f, t, folded, Palette { no_color: true }, NOW, w)
+    fn lines(f: &Fleet, t: &DataTable, w: usize) -> Vec<String> {
+        page(f, t, Palette { no_color: true }, NOW, w)
+            .0
             .iter()
             .map(plain)
             .collect()
     }
 
-    /// The Fleet page, then Log's verdicts section drawn from the same read.
+    /// The Runners table, then Log's verdicts section drawn from the same read.
     fn text(f: &Fleet, w: usize) -> String {
         let p = Palette { no_color: true };
-        lines(f, &DataTable::default(), &HashSet::new(), w)
+        lines(f, &DataTable::default(), w)
             .into_iter()
             .chain(verdicts(f, "all", p, NOW, w).iter().map(plain))
             .collect::<Vec<_>>()
@@ -1086,8 +1189,8 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "FLEET  3 of 3 rows, spend: 9 Costs",
-            "all 3  lead 1  deliver 0  observe 1  learn 0  maintain 0  session 1",
+            "RUNNERS  3 of 3 rows, spend: 0 Costs",
+            "all 3  lead 1  deliver 0  observe 2  learn 0  maintain 0",
             "KIND",
             "FOR",
             "COST 24H",
@@ -1095,7 +1198,7 @@ pub mod tests {
             "dream for",
             "lead runs the sessions | observe reports",
             "1 sessions",
-            "dotfiles-agent-11",
+            "inbox-triage",
             "dispatch 2 (9+ in 7d)  skip 0 (4+ in 7d)  started 2  reaped 1",
             "prompt 60c840b  agree 3 (75% precision)",
             "land the fleet tab now?",
@@ -1108,34 +1211,79 @@ pub mod tests {
             "WHERE THE TOKENS GO",
             "WHAT LANGFUSE SEES",
         ] {
-            assert!(!s.contains(gone), "{gone:?} is still on Fleet\n{s}");
+            assert!(!s.contains(gone), "{gone:?} is still on Runners\n{s}");
+        }
+        // The sessions are the Sessions inner tab's, so the runners table has no session columns.
+        let head = s.lines().find(|l| l.starts_with("KIND")).unwrap();
+        for gone in ["PROJECT", "ACTIVITY"] {
+            assert!(
+                !head.contains(gone),
+                "{gone:?} is still a Runners column: {head}"
+            );
         }
     }
 
     #[test]
-    fn a_folded_tier_one_row_leaves_its_children_out_until_a_search_asks() {
+    fn a_search_narrows_the_runners() {
         let f = fixture();
-        let t = DataTable::default();
-        let folded: HashSet<String> = ["dream".to_string()].into();
-        let names = |t: &DataTable| -> Vec<String> {
-            shown(&f, t, &folded)
-                .iter()
-                .map(|r| r.who.clone())
-                .collect()
-        };
-        assert_eq!(names(&t), ["dream", "idle-one"]);
-        let mut q = DataTable::default();
-        q.view.q = "agent".into();
-        assert_eq!(names(&q), ["dotfiles-agent-11"], "a hit is never hidden");
-        let rows = lines(&f, &t, &folded, 160);
-        assert!(
-            rows.iter()
-                .any(|l| l.contains("> lead") && l.contains("dream")),
-            "{rows:#?}"
+        let names =
+            |t: &DataTable| -> Vec<String> { shown(&f, t).iter().map(|r| r.who.clone()).collect() };
+        assert_eq!(
+            names(&DataTable::default()),
+            ["dream", "idle-one", "inbox-triage"]
         );
+        let mut q = DataTable::default();
+        q.view.q = "inbox".into();
+        assert_eq!(names(&q), ["inbox-triage"]);
+    }
+
+    #[test]
+    fn the_shepherd_page_shows_the_lease_and_each_line_due() {
+        use hub_core::boards::DueLine;
+        let d = Due {
+            due: vec![
+                DueLine {
+                    key: "k1".into(),
+                    role: "shepherd".into(),
+                    first_seen: (NOW - 900) as u64,
+                    line: "dotfiles-agent-3 stalled 40m".into(),
+                    unhandled: true,
+                },
+                DueLine {
+                    key: "k2".into(),
+                    role: String::new(),
+                    first_seen: 0,
+                    line: "trader-agent-1 landed #12".into(),
+                    unhandled: false,
+                },
+            ],
+            lease_holder: Some("runner".into()),
+            lease_at: Some((NOW - 120) as u64),
+        };
+        let p = Palette { no_color: true };
+        let s = shepherd_page(&d, p, NOW, 120)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for want in [
+            "SHEPHERD  2 due, lease runner, taken 2m ago",
+            "ROLE",
+            "unhandled: dotfiles-agent-3 stalled 40m",
+            "15m",
+            "trader-agent-1 landed #12",
+            "Log > Rundowns",
+        ] {
+            assert!(s.contains(want), "{want:?} missing from\n{s}");
+        }
+        let none = shepherd_page(&Due::default(), p, NOW, 120)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            !rows.iter().any(|l| l.contains("dotfiles-agent-11")),
-            "{rows:#?}"
+            none.contains("0 due, no pass holds the lease") && none.contains("Nothing due."),
+            "{none}"
         );
     }
 
@@ -1143,8 +1291,8 @@ pub mod tests {
     fn a_held_runner_is_red_like_a_failed_one() {
         let p = Palette::default();
         let mut f = fixture();
-        f.who[1] = who_row(2, "ask-judge", "ask-judge", Opens::Runner, "held", 0, None);
-        let out = page(&f, &DataTable::default(), &HashSet::new(), p, NOW, 160);
+        f.who[1] = who_row(2, "ask-judge", "held", "");
+        let (out, _) = page(&f, &DataTable::default(), p, NOW, 160);
         let span = |word: &str| {
             out.iter()
                 .flat_map(|l| l.spans.iter())
@@ -1164,18 +1312,61 @@ pub mod tests {
             sel: 1,
             ..Default::default()
         };
-        let out = page(&f, &t, &HashSet::new(), p, NOW, 160);
+        let (out, sel) = page(&f, &t, p, NOW, 160);
         let at = out
             .iter()
             .position(|l| plain(l).contains("idle-one"))
             .unwrap();
         assert_eq!(out[at].style, p.sel());
         assert_ne!(out[at - 1].style, p.sel());
+        assert_eq!(sel, Some(at), "the line it names is the reversed one");
     }
 
     #[test]
-    fn a_narrow_fleet_page_fits() {
-        for l in lines(&fixture(), &DataTable::default(), &HashSet::new(), 40) {
+    fn the_sessions_no_lead_oversees_are_a_line_over_the_table() {
+        let mut f = fixture();
+        assert!(
+            !text(&f, 100).contains("no lead oversees"),
+            "none unled, no line"
+        );
+        f.unled = "2 sessions no lead oversees (no tier 1 runner has OVERSEES=sessions); the Sessions table lists them".into();
+        let l = lines(&f, &DataTable::default(), 40);
+        let at = l
+            .iter()
+            .position(|x| x.starts_with("2 sessions no lead"))
+            .expect("the line shows");
+        assert!(
+            l[at + 1].starts_with("oversees") || l[at].contains("oversees"),
+            "wrapped, not clipped: {l:?}"
+        );
+        assert!(l.iter().any(|x| x.contains("table lists them")), "{l:?}");
+    }
+
+    #[test]
+    fn the_selected_line_counts_the_wrapped_legend_and_chips_above_the_rows() {
+        // A narrow pane wraps the legend and the chip line onto several lines each: the line the
+        // page names for the selection is still the reversed row's.
+        let p = Palette { no_color: true };
+        let mut f = fixture();
+        f.legend = (0..6)
+            .map(|i| format!("kind{i} means a long thing"))
+            .collect();
+        let t = DataTable {
+            sel: 2,
+            ..Default::default()
+        };
+        let (out, sel) = page(&f, &t, p, NOW, 40);
+        let at = sel.expect("rows");
+        assert_eq!(out[at].style, p.sel());
+        assert!(at > 6, "the wrapped legend sits above: {at}");
+        let mut none = DataTable::default();
+        none.view.q = "nothing-matches".into();
+        assert_eq!(page(&f, &none, p, NOW, 40).1, None, "no row, no line");
+    }
+
+    #[test]
+    fn a_narrow_runners_page_fits() {
+        for l in lines(&fixture(), &DataTable::default(), 40) {
             assert!(l.chars().count() <= 40, "{l:?}");
         }
     }
@@ -1184,11 +1375,8 @@ pub mod tests {
     fn a_search_that_keeps_nothing_says_so() {
         let mut t = DataTable::default();
         t.view.q = "nothing-matches".into();
-        let l = lines(&fixture(), &t, &HashSet::new(), 160);
-        assert!(
-            l.iter().any(|l| l.contains("No runner or session matches")),
-            "{l:#?}"
-        );
+        let l = lines(&fixture(), &t, 160);
+        assert!(l.iter().any(|l| l.contains("No runner matches")), "{l:#?}");
     }
 
     #[test]
@@ -1412,24 +1600,92 @@ pub mod tests {
     }
 
     #[test]
-    fn a_fleet_word_is_a_runner_unless_it_names_a_section() {
-        assert_eq!(runner_arg(" inbox-triage "), Some("inbox-triage"));
-        assert_eq!(
-            runner_arg("Accounts"),
-            None,
-            "moved to Costs, never a runner"
-        );
-        assert_eq!(runner_arg("tokens"), None);
-        assert_eq!(runner_arg("workers"), None);
-        assert_eq!(runner_arg("  "), None);
-    }
-
-    #[test]
     fn a_page_still_reading_or_unreadable_says_so() {
         assert_eq!(page_text(None, 80), ["Reading dream..."]);
         let lines = page_text(Some(&Err("no runner named dream".into())), 80);
         assert_eq!(lines[0], "no runner named dream");
         assert!(lines[1].contains("Esc all runners"));
+    }
+
+    #[test]
+    fn sentinels_page_counts_its_watches_and_sends_them_to_alerts() {
+        let mut r = runner_fixture();
+        let watch = |state: &str| hub_core::fleet::runner::Watch {
+            name: "dream".into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        r.extras = Extras::SentinelWatches {
+            watches: vec![watch("TRIP"), watch("OK")],
+        };
+        let lines = page_text(Some(&Ok(r)), 120);
+        assert!(
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");
+    }
+
+    #[test]
+    fn the_answer_judges_page_tables_each_type_at_each_level_as_judge_eval_scores_it() {
+        let mut r = runner_fixture();
+        r.extras = Extras::AskJudge {
+            judge: Box::new(fixture().judge),
+        };
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        let s = lines.join("\n");
+        let head = lines
+            .iter()
+            .position(|l| l.contains("TYPE") && l.contains("AUDITED"));
+        let head = head.unwrap_or_else(|| panic!("{s}"));
+        assert!(lines[head].contains("PREC [95%]"), "{s}");
+        let row = &lines[head + 1];
+        for want in ["ship_deploy", "repo", "66.7% [20.8-93.9]", "yes", "25%"] {
+            assert!(row.contains(want), "{want}: {row}");
+        }
+        // A verdict with no type or level is its own cell, never folded into another.
+        assert!(lines[head + 2].contains("(no type)"), "{s}");
+        // It sits between the judge's counts and its verdict list.
+        let judge = lines
+            .iter()
+            .position(|l| l.starts_with("ANSWER JUDGE"))
+            .unwrap();
+        let list = lines.iter().position(|l| l.contains("7d:")).unwrap();
+        assert!(judge < head && head < list, "{s}");
+
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.cells.clear();
+        }
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("no verdicts under prompt 60c840b")),
+            "{lines:?}"
+        );
+        // No prompt reads "none", as the counts line above it does.
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            judge.prompt.clear();
+        }
+        let lines = page_text(Some(&Ok(r.clone())), 160);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.trim_end().ends_with("no verdicts under prompt none")),
+            "{lines:?}"
+        );
+        // The page lists the newest `PAGE_ROWS` of every verdict it is sent.
+        if let Extras::AskJudge { judge } = &mut r.extras {
+            let v = judge.verdicts[0].clone();
+            judge.verdicts = vec![v; runner::PAGE_ROWS + 3];
+        }
+        let lines = page_text(Some(&Ok(r)), 160);
+        let rows = lines
+            .iter()
+            .filter(|l| l.contains("land the fleet tab"))
+            .count();
+        assert_eq!(rows, runner::PAGE_ROWS, "{lines:?}");
+        assert!(lines.iter().any(|l| l.trim() == "+3 older"), "{lines:?}");
     }
 
     #[test]
@@ -1439,7 +1695,7 @@ pub mod tests {
             Extras::None,
             r.extras.clone(),
             Extras::AskJudge {
-                judge: fixture().judge,
+                judge: Box::new(fixture().judge),
             },
             Extras::SentinelWatches {
                 watches: vec![hub_core::fleet::runner::Watch {

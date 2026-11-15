@@ -13,14 +13,17 @@
 # skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
 #
 # Verdict: WORKED when it queued a pass, NOOP when there was no drift, a pass is still open or the
-# queue's admission held it, FAILED when a count could not be taken.
+# queue's admission held it, FAILED when a count could not be taken or the open pass has sat queued
+# or held by admission past DOCS_CLEANUP_STARVED_DAYS without starting.
 set -uo pipefail
-# The user manager's PATH has no ~/.local/bin, where skill-drift and agent-queue live.
-PATH="$HOME/.local/bin:$PATH"
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-docs-cleanup: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
 NAME="${AGENTCTL_NAME:-docs-cleanup}"
 SLUG=docs-cleanup-pass
+# Provisional, confidence medium: 2 nights unstarted is a starved pass, not a busy queue. The pass
+# queued 2026-11-06 at low sat 5 nights behind 678 high and urgent items, each night a quiet NOOP.
+# Revisit when a pass at high still waits more than one night.
+STARVED_DAYS="${DOCS_CLEANUP_STARVED_DAYS:-2}"
 DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 # A dry run publishes no outcome: it is a look, not a run.
 report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
@@ -66,7 +69,17 @@ fi
 # One pass at a time under one slug: agent-queue refuses a second active item with it, and a
 # finished one sits in done/ where `show` still finds it, so only an active state means "open".
 # Each night's pass is new work under that slug, so it is queued --repeat.
-state="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty')"
+item="$(agent-queue show "$SLUG" --json 2>/dev/null)"
+state="$(jq -r '.state // empty' <<<"$item" 2>/dev/null)"
+# Starved: queued past STARVED_DAYS with nothing holding it but the night window. Another hold
+# (after, focus, ask) is the queue's own choice, not starvation.
+if [ "$state" = queued ] && jq -e '(.hold // "") | . == "" or startswith("night")' <<<"$item" >/dev/null; then
+    queued_at="$(jq -r '.queued // empty' <<<"$item")"
+    queued_s="$(date -d "$queued_at" +%s 2>/dev/null)" && [ -n "$queued_at" ] \
+        || fail "pass $SLUG has no readable queued time ('$queued_at'), cannot judge starvation"
+    [ $(( $(date +%s) - queued_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+        || fail "pass $SLUG starved: queued since $queued_at, never started ($summary)"
+fi
 case "$state" in
     queued|running|waiting|review)
         report NOOP "pass $SLUG still $state ($summary)"
@@ -82,13 +95,20 @@ if [ "$DRY" = 1 ]; then
     exit 0
 fi
 # An automated filer: a queue already a day of drain deep holds the pass (agent-queue exit 5), and
-# tomorrow's run counts again.
-agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority low --tags night "$task"
+# tomorrow's run counts again; held since HELD_SINCE for STARVED_DAYS is starved too. High plus `cleanup` is where the queue orders the fleet's own
+# housekeeping (agent-queue ORDER); at low it never reached the front.
+agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags "night cleanup" "$task"
 rc=$?
+HELD_SINCE="$INBOX/held-since"
 if [ "$rc" -eq 5 ]; then
+    [ -s "$HELD_SINCE" ] || date +%s > "$HELD_SINCE"
+    held_s="$(cat "$HELD_SINCE")"
+    [ $(( $(date +%s) - held_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+        || fail "pass $SLUG starved: held by queue admission since $(date -d "@$held_s" +%F), never queued ($summary)"
     report NOOP "pass held by queue admission ($summary)"
     echo "docs-cleanup: the queue held the pass (admission), not queued ($summary)"
     exit 0
 fi
 [ "$rc" -eq 0 ] || fail "could not queue the pass ($summary)"
+rm -f "$HELD_SINCE"
 report WORKED "queued $SLUG ($summary)"

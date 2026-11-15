@@ -67,6 +67,46 @@ Confirm it took: the mtime on `~/.cache/rbw/*.json` should be current, and `rbw 
 
 If `rbw login` still returns silently, the account has 2FA and the device needs registering with a personal API key (web vault -> Settings -> Security -> Keys -> View API Key), then `rbw register`.
 
+## Vault layout: entry names are an API
+
+- Every caller looks an entry up by its exact name with `rbw get <name>` and no `--folder`, so a name is an interface: a rename changes its callers in the same PR. Folders are free: rbw finds an entry in any folder by name alone (`rbw get kalshi` resolves `trading/kalshi`).
+- A name must be unique across the whole vault. Two entries with one name make `rbw get <name>` fail as ambiguous for every caller. When one of them has no folder, rbw returns that one.
+- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin`, `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
+- After a non-interactive `rbw add`, check that the entry is not empty: when stdin is not a terminal, rbw reads the secret from it, and empty stdin creates an entry with nothing in it.
+
+## Discord webhooks (`discord-post`)
+
+`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
+
+Add a channel (a person with Manage Webhooks on the server):
+
+1. Discord: channel settings -> Integrations -> Webhooks -> New Webhook, name it, Copy Webhook URL.
+2. `rbw add --folder discord webhook_<slug>` and paste the URL as the password, then `rbw sync`. The slug is the game channel's (`dodginballs`, `apociseum`) or `announcements`.
+3. `discord-post --channel <slug> "webhook check"` prints the message id, and the message shows in the channel.
+
+What it does with Discord's limits (docs.discord.com/developers/topics/rate-limits, read 2026-11-14: 50 requests/s global, per-route buckets in `X-RateLimit-*`, `retry_after` in seconds on a 429, never reuse a webhook that answers 404): every post on a machine goes through one `flock` in `$XDG_RUNTIME_DIR`, and a drained bucket (`X-RateLimit-Remaining: 0`) is waited out before the lock is released. A 429 is retried after `retry_after`, at most 3 attempts and never for a wait over 60 s. A 5xx, a timeout or a network error is never retried, because the message may already be in the channel. `@everyone` and `@here` never ping; role and user mentions do. Each request times out after 15 s. Messages over 2000 characters are refused.
+
+| Symptom | Fix |
+|---|---|
+| `no channel '<slug>'` | The entry is missing or the folder is not `discord`; `rbw list --fields folder,name \| grep webhook_`, then `rbw sync`. |
+| `webhook ... is gone (404)` | Someone deleted the webhook in Discord. Make a new one and replace the entry's password. |
+| `not retried, the message may have posted` | Look in the channel before running it again. |
+
+## Reorganising the vault without losing anything
+
+`rbw-inventory` is read-only and never prints a value. Make each change in the web vault (it can move entries between folders; rbw cannot), then run `rbw-inventory snap <n>` and `rbw-inventory diff <prev> <n>`.
+
+```bash
+rbw-inventory snap 0-baseline            # before anything
+rbw-inventory dups 0-baseline            # same name or same content, and which parts match
+# ... one change in the web vault ...
+rbw-inventory snap 1 && rbw-inventory diff 0-baseline 1
+rbw-inventory diff 0-baseline 1 --allow 'fleet token'   # a removal you meant
+rbw-inventory clean                      # when done: drops the snapshots and the hash key
+```
+
+`diff` exits 1 on LOST (content with no copy left anywhere), BROKEN (a name that resolved before no longer resolves to the same content) or CHANGED (an entry's content changed). Same content is not the same entry: several different logins share a password, and every empty entry hashes alike, so `dups` lists candidates, and a person decides. A delete in the web vault goes to the trash for 30 days, but `rbw remove` deletes permanently (2026-11-12: after six `rbw remove` calls, none of their ids were left in the Vaultwarden db). Before an `rbw remove`, take a server backup with `kubectl --context home-k3s -n vaultwarden create job --from=cronjob/vaultwarden-backup vw-backup-now`, then copy its archive from `/mnt/nas/private/backups/home-k3s/vaultwarden/` to `/mnt/nas/private/backups/vault-exports/`, where the job's keep-30 prune does not reach it (home-config `apps/vaultwarden/README.md`). `--allow NAME` also hides a CHANGED on another entry with that name, so when two entries share it, compare the one you keep by hand. Snapshots and the HMAC key live in `$XDG_RUNTIME_DIR/rbw-inventory`, mode 0600.
+
 ## Storing & sourcing the Cloudflare tokens
 
 ```bash

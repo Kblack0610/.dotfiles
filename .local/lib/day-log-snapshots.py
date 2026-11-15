@@ -302,17 +302,14 @@ def enrich(a):
 # --- CI, a finished day ----------------------------------------------------
 
 def ci_repos():
-    """[(owner/name, base branch, clone or None)] of the GitHub repos in DAYLOG_CI. A
-    `forgejo:` repo is left out: ci-failures reads a red run's jobs and logs from GitHub, and
-    ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same."""
-    out = []
-    with open(ENV["DAYLOG_CI"]) as f:
-        for line in f:
-            cols = line.split("#")[0].strip().split(None, 2)  # a clone's path may hold a space
-            if cols and not cols[0].startswith("forgejo:"):
-                out.append((cols[0].removeprefix("github:"), cols[1],
-                            os.path.expanduser(cols[2]) if len(cols) > 2 else None))
-    return out
+    """[(owner/name, base branch, clone or None)] of the GitHub repos `schedules-sync repos`
+    lists. A forgejo repo is left out: ci-failures reads a red run's jobs and logs from GitHub,
+    and ci-cost reads GitHub; its runs are in the schedules-sync ledger all the same. A prs-only
+    repo is left out too: only the PR store reads it. OSError when the list is unreadable."""
+    got, err = run_json(shlex.split(ENV.get("SCHEDULES_SYNC", "schedules-sync")) + ["repos"])
+    if got is None:
+        raise OSError(err)
+    return [(r["repo"], r["base"], r.get("clone")) for r in got if r.get("forge") == "github"]
 
 
 def stamp(epoch):
@@ -328,12 +325,17 @@ def ci_failures(repo, base, start, end):
     got, err = run_json(shlex.split(reader) + ["--repo", repo, "--base", base] + window_args(start, end), ok=(0, 3))  # 3: partial
     if got is None:
         return None, err
-    runs, red = got.get("runs"), got.get("red_runs")
-    return {"runs": runs, "red": red, "red_rate": share(red, runs), "pending": got.get("pending_runs"),
-            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets"),
-            "main": dict(zip(("runs", "red"), got.get("base") or (None, None))),
-            "workflows": {wf: {"runs": n, "red": r, "pass_rate": share(n - r, n)}
-                          for wf, (n, r) in (got.get("by_workflow") or {}).items()}}, None
+    return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
+            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets")}, None
+
+
+def ci_pass(start, end, branch=None):
+    """({forge:repo: {runs, green, pass, workflows}}, error) from `hub ci pass`: the one pass rate
+    (hub_core::builds::verdict) of the run ledger's runs created in the day, on `branch` when given.
+    Repo keys are lowered: the ledger may spell a repo in another case."""
+    got, err = run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)]
+                        + (["--branch", branch] if branch else []))
+    return (None if got is None else {k.lower(): v for k, v in got.items()}), err
 
 
 def ci_cost(clone, base, day, start, end):
@@ -365,9 +367,18 @@ def ci(a):
     try:
         repos = ci_repos()
     except OSError as e:
-        out["unreadable"].append(f"{ENV.get('DAYLOG_CI')}: {e.strerror}")
+        out["unreadable"].append(f"schedules-sync repos: {e}")
         repos = []
     start, end = day_bounds(a.day)
+    passes, err = ci_pass(start, end) if repos else ({}, None)
+    if passes is None:
+        out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
+    # main: the base branch's runs and its reds (runs that counted, less the green), one read per base
+    on_base = dict.fromkeys(b for _, b, _ in repos)
+    for base in on_base if passes is not None else ():  # a hub that failed once is named once
+        on_base[base], err = ci_pass(start, end, base)
+        if on_base[base] is None:
+            out["unreadable"].append(f"hub ci pass --branch {base}: {err}")
     for repo, base, clone in repos:
         row, err = ci_failures(repo, base, start, end)
         if row is None:
@@ -375,6 +386,14 @@ def ci(a):
             row = {}
         elif row["partial"]:
             out["unreadable"].append(f"{repo} ci-failures: partial")
+        none = {"runs": 0, "green": 0, "pass": None}  # a repo with no run that day is absent: 0 runs
+        if passes is not None:
+            got = passes.get(f"github:{repo}".lower(), none)
+            row["pass"] = {k: got[k] for k in ("runs", "green", "pass")}
+            row["workflows"] = got.get("workflows", {})
+        if on_base[base] is not None:
+            got = on_base[base].get(f"github:{repo}".lower(), none)
+            row["main"] = {"runs": got["runs"], "red": got["runs"] - got["green"]}
         if clone:
             row["cost"], err = ci_cost(clone, base, a.day, start, end)
             if row["cost"] is None:
@@ -437,12 +456,16 @@ def rollup(records):
         short = repo.split("/")[-1].lstrip(".")
         rows = [(get(r, "ci.repos") or {}).get(repo) or {} for r in records]
         fold_tables(CI_TABLES, rows, f"ci.{short}.")
-        if f"ci.{short}.runs" in out:
-            days = out[f"ci.{short}.runs"][1]
-            out[f"ci.{short}.red_rate"] = (share(out[f"ci.{short}.red"][0], out[f"ci.{short}.runs"][0]), days)
+        # The pass rate over the week is green over runs summed, never a mean of daily rates. A day
+        # gathered before hub ci pass has no green, so it is left out.
+        def fold_pass(name, cells):
+            cells = [c for c in cells if c and "green" in c]
+            if cells:
+                out[name] = (share(sum(c["green"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+
+        fold_pass(f"ci.{short}.pass", [row.get("pass") for row in rows])
         for wf in sorted({w for row in rows for w in row.get("workflows") or {}}):
-            cells = [c for c in ((row.get("workflows") or {}).get(wf) for row in rows) if c]
-            out[f"ci.{short}.pass.{wf}"] = (share(sum(c["runs"] - c["red"] for c in cells), sum(c["runs"] for c in cells)), len(cells))
+            fold_pass(f"ci.{short}.pass.{wf}", [(row.get("workflows") or {}).get(wf) for row in rows])
     return out
 
 
@@ -509,9 +532,9 @@ def line_of(week):
         parts.append(f"board +{cell('board.opened')['value']:g}/-{cell('board.closed')['value']:g}")
     if cell("cost_usd")["value"] is not None:
         parts.append(f"{usd(cell('cost_usd')['value'])}{signed(cell('cost_usd')['delta'], usd)}")
-    for name in sorted(k for k in m if k.endswith(".red_rate")):
+    for name in sorted(k for k in m if re.fullmatch(r"ci\.[^.]+\.pass", k) and m[k]["value"] is not None):
         pts = lambda v: f"{100 * v:.0f} pts"
-        parts.append(f"{name.split('.')[1]} red {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
+        parts.append(f"{name.split('.')[1]} pass {100 * m[name]['value']:.0f}%{signed(m[name]['delta'], pts)}")
     return f"week to {week['end']} ({week['days_present']} of {WINDOW} days): " + ", ".join(parts)
 
 

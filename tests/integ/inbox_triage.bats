@@ -24,7 +24,7 @@ setup() {
   export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
   unset NOTES_PROFILE
   echo '{"trackers": {"scratch": {"code": "sc"}, "other": {"code": "ot"}}}' >"$PROJECT_MAP_FILE"
-  export INBOX_TRIAGE_CMD=model-stub
+  export INBOX_TRIAGE_CMD=model-stub INBOX_BACKLOG_CMD=model-stub
   printf '#!/usr/bin/env bash\necho called >> "$NOTES_FIXTURE/model.log"\ncat > "$NOTES_FIXTURE/prompt.txt"\ncat "$NOTES_FIXTURE/model.out" 2>/dev/null\n' >"$SANDBOX/bin/model-stub"
   chmod +x "$SANDBOX/bin/model-stub"
   # The planner's start, recorded: no unit ever starts from a test.
@@ -92,6 +92,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qF "type is one of $("$NOTES_BIN" row types); a bug is fix." "$NOTES_FIXTURE/prompt.txt" || fail "the row types never reached the model"
   # The --priority pass's rubric, so the row is filed with the priority that pass would give it (ar-1615).
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
+  # An agent-lane row is #requested, so the rubric makes it high; filed without one, the --priority pass re-tags it (ar-1633).
+  grep -q 'lane agent is filed #requested, so the person asked for it: it is #high' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the agent-lane priority"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -108,6 +110,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -qx FAILED "$st/last-outcome"
   grep -q 'outcome=FAILED .*model call failed: You have hit your weekly limit - resets 7pm' "$st/activity.log"
   grep -q '"action":"sweep-stopped".*"why":"model call failed: You have hit your weekly limit - resets 7pm"' "$HOME/.local/state/notes/ingest.jsonl" || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  inbox | grep -q 'the gun sound is off'
+}
+
+@test "a failed board read names notes' own error in the log and the outcome" {
+  # 2026-11-10: the board read failed for 15 hours and the log said only "notes board --json
+  # failed", because notes' stderr went to /dev/null.
+  sheet '- the gun sound is off since the top-down patch\n' ''
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$*" = "board --json" ] && { echo "error: sheet other: bad heading" >&2; exit 2; }\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes board --json failed (exit 2): error: sheet other: bad heading'
+  grep -q 'outcome=FAILED .*notes board --json failed (exit 2): error: sheet other: bad heading' "$HOME/.local/state/agentctl/inbox-triage/activity.log"
   inbox | grep -q 'the gun sound is off'
 }
 
@@ -134,7 +150,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE" --backlog
   assert_failure 75
   [ "$(wc -l < "$NOTES_FIXTURE/model.log")" = 1 ] || fail "model calls: $(wc -l < "$NOTES_FIXTURE/model.log")"
-  st="$HOME/.local/state/agentctl/inbox-triage"
+  st="$HOME/.local/state/agentctl/inbox-backlog"
   grep -qx BLOCKED "$st/last-outcome"
   grep -q 'outcome=BLOCKED budget: backlog: ' "$st/activity.log" || fail "$(cat "$st/activity.log")"
   # negative control: an exit that is not the budget's is still a failed pass
@@ -142,6 +158,22 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run "$TRIAGE" --backlog
   assert_failure 1
   grep -qx FAILED "$st/last-outcome"
+}
+
+@test "--backlog: its calls go to the inbox-backlog agent, never the intake sweep's, so a cleanup cannot spend intake's budget" {
+  sheet '' '- [ ] fix(ui): the menu <!-- id:sc-1 -->\n'
+  printf '#!/usr/bin/env bash\necho intake >> "$NOTES_FIXTURE/model.log"\nexit 1\n' >"$SANDBOX/bin/intake-stub"
+  chmod +x "$SANDBOX/bin/intake-stub"
+  printf '%s\n' INBOX-TRIAGE-START '{"n": 1, "action": "keep"}' INBOX-TRIAGE-END >"$NOTES_FIXTURE/model.out"
+  INBOX_TRIAGE_CMD=intake-stub run "$TRIAGE" --backlog
+  assert_success
+  assert_equal "$(cat "$NOTES_FIXTURE/model.log")" called
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-backlog/last-outcome"
+  [ ! -e "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "the backlog pass reported as the intake sweep"
+  # negative control: a runner that names itself keeps its own name
+  AGENTCTL_NAME=inbox-triage run "$TRIAGE" --backlog
+  assert_success
+  grep -qx NOOP "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
 }
 
 @test "a reply with no answer block names that reason in the outcome" {
@@ -967,9 +999,12 @@ ask_stub() {
   gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
   # rows reach the model in sheet order: sc-4, sc-5, sc-6
   answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
-  run "$TRIAGE" --backlog --priority
+  # run from a session: the record still names inbox-priority, the lane judge-eval scores these by
+  CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --priority
   assert_success
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
+  run notes log --json --action tagged
+  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#low"],["sc-5","inbox-priority","+#high"]]'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
@@ -999,6 +1034,35 @@ ask_stub() {
   run "$TRIAGE" --priority
   assert_failure 2
   assert_output --partial '--priority goes with --backlog'
+  [ ! -e "$NOTES_FIXTURE/model.log" ]
+}
+
+@test "--backlog --size: each row with no points gets the model's points and their size band, a pointed row or an epic is not asked, an off-scale answer writes nothing" {
+  export INBOX_SIZE_CMD=model-stub
+  sheet '' '- [ ] epic(ui): menus #epic <!-- id:sc-3 -->\n- [ ] the save is slow #size/s <!-- id:sc-4 -->\n- [ ] the menu flickers <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n- [ ] the logo #pts/2 #size/s <!-- id:sc-7 -->\n  - [ ] a child step <!-- id:sc-8 -->\n'
+  # rows reach the model in sheet order: sc-4, sc-5, sc-6; a second answer for n 1 is ignored
+  answer '{"n": 1, "pts": 5}' '{"n": 1, "pts": 1}' '{"n": 2, "pts": 13}' '{"n": 3, "pts": 4}'
+  CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --size --project scratch
+  assert_success
+  assert_output --partial 'size: scored 2, left 1, refused 0'
+  run notes log --json --action tagged
+  assert_equal "$(jq -sc 'map([.id, .by])' <<<"$output")" '[["sc-4","inbox-size"],["sc-5","inbox-size"]]'
+  refute grep -q 'logo\|epic(ui)\|child step' "$NOTES_FIXTURE/prompt.txt"
+  grep -q 'should be split' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
+  run tasks
+  assert_output --regexp 'the save is slow #pts/5 #size/m <!-- id:sc-4 -->'
+  refute_output --partial 'slow #size/s'
+  assert_output --regexp 'the menu flickers #pts/13 #size/l <!-- id:sc-5 -->'
+  assert_output --regexp '\[ \] the jump is floaty <!-- id:sc-6 -->'
+}
+
+# NEGATIVE CONTROL: --size with --priority would run two passes' writes under one name; refused.
+@test "--size without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --size
+  assert_failure 2
+  assert_output --partial '--size goes with --backlog'
+  run "$TRIAGE" --backlog --size --priority
+  assert_failure 2
   [ ! -e "$NOTES_FIXTURE/model.log" ]
 }
 
@@ -1114,7 +1178,7 @@ the_ask() { find "$HOME/.agent/asks" -name '*.md' -type f; }
 # ask_about <words>: the id of the ask whose question holds <words>.
 ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)" .md; }
 
-@test "outbox: a line the router cannot place asks the human which project, as a gate, once" {
+@test "outbox: a line the router cannot place asks the human which project, as an approval, once" {
   ask_setup
   sheet '' ''
   outbox '- [ ] the menu flickers after a match\n- [ ] the logo is too dark\n'
@@ -1126,13 +1190,13 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -q 'ask: an \[outbox\] line that is a task, but neither it nor its neighbours say which project' "$NOTES_FIXTURE/prompt.txt" || fail "the ask action never reached the model"
   [ "$(the_ask | wc -l)" = 1 ] || fail "asks: $(the_ask)"
   f="$(the_ask)"
-  grep -qx 'kind: gate' "$f" || fail "$(cat "$f")"
+  grep -qx 'kind: approval' "$f" || fail "$(cat "$f")"
   grep -qx 'question: Which project is this outbox line for: "the menu flickers after a match"?' "$f" || fail "$(cat "$f")"
   # Only board projects, in the model's order, then drop.
   grep -qx 'options: other|scratch|drop' "$f" || fail "$(cat "$f")"
   grep -qx 'recommend: other' "$f" || fail "$(cat "$f")"
   grep -qx 'resume: run:agentctl-inbox-triage --answer' "$f" || fail "$(cat "$f")"
-  grep -q '^context: Your outbox line: the menu flickers after a match. Written after it: the logo is too dark' "$f" || fail "$(cat "$f")"
+  grep -qx 'context: Your outbox line: the menu flickers after a match. Written after it: the logo is too dark. The projects it could go to: other scratch' "$f" || fail "$(cat "$f")"
   grep -q 'the menu flickers after a match' "$HOME/.notes/outbox.md" || fail "the asked line left the outbox"
   run jq -r 'select(.action == "asked") | [.from, .why, .text] | join(" ")' "$HOME/.local/state/notes/ingest.jsonl"
   assert_output "outbox $(basename "$f" .md) the menu flickers after a match"

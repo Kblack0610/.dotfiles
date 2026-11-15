@@ -5,12 +5,14 @@
 //! they print. Cancel and bump are argv for agent-queue too. `candidates` types the ranked board
 //! rows of the snapshot `fleet-dispatch suggest --write` keeps, for the tabs' Candidates section.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use agent_panel::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::links::{Kind, Link};
+use crate::release_graph::pr_ref;
 use crate::session_actions::Runner;
 use crate::text::{cap, headline, TITLE_MAX};
 
@@ -55,7 +57,7 @@ pub const SECTION_ALIASES: [(&str, &str); 5] = [
     ("waiting", "needs you"),
     ("running", "running"),
     ("review", "on a PR"),
-    ("queued", "up next"),
+    ("queued", "ready"),
     ("done", "done"),
 ];
 
@@ -67,9 +69,6 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .find(|(old, _)| *old == s)
         .map(|(_, chip)| *chip)
 }
-
-/// How many table rows a view draws before "+N older"; the chips still count every row.
-pub const TABLE_OPEN_ROWS: usize = 200;
 
 /// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
 /// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so
@@ -179,6 +178,10 @@ pub struct Item {
         skip_serializing_if = "Option::is_none"
     )]
     pub work_min: Option<f64>,
+    /// `<plan name> P5`: a plan item's plan and phase, the column beside its title (`parse`
+    /// sets it); None for any other item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -289,13 +292,79 @@ impl Item {
         Some((now - from).num_minutes().max(0))
     }
 
+    /// The words of its `pr:` field, each a PR ref (`owner/repo#N`, `#N` or `N`), split on
+    /// spaces or commas.
+    pub fn pr_refs(&self) -> impl Iterator<Item = &str> {
+        self.pr
+            .as_deref()
+            .unwrap_or("")
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|w| !w.is_empty())
+    }
+
+    /// The board row the item works as (project, id): its `row:`, else the row it was promoted
+    /// from (`from: board:<project>:<id>`), the same order as agent-queue's `item_row`.
+    pub fn board_row(&self) -> Option<(&str, &str)> {
+        let row = self
+            .row
+            .as_deref()
+            .filter(|r| !r.is_empty())
+            .or_else(|| self.from.as_deref()?.strip_prefix("board:"))?;
+        row.split_once(':')
+            .filter(|(p, id)| !p.is_empty() && !id.is_empty())
+    }
+
+    /// Whether a queued item is held: it has a hold line with words in it.
+    pub fn is_held(&self) -> bool {
+        said(&self.hold).is_some()
+    }
+
+    /// What a held item waits on, its kind and object (`after <slug> <slug>`, `ask <id>`, `pr
+    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`, `focus`),
+    /// from agent-queue's `hold` line (`hold_for`); None when it is not held.
+    pub fn held_on(&self) -> Option<String> {
+        let h = said(&self.hold)?;
+        let (word, rest) = h
+            .split_once([':', ' '])
+            .map_or((h, ""), |(w, r)| (w, r.trim()));
+        let first = rest
+            .split_whitespace()
+            .next()
+            .filter(|f| !f.starts_with('('));
+        Some(match (word, first) {
+            // `after a b`: every slug still live; `after a closed failed, dead: ...` names the one.
+            ("after", Some(_)) => {
+                let live: Vec<&str> = rest
+                    .split_whitespace()
+                    .take_while(|w| *w != "closed")
+                    .collect();
+                format!("after {}", live.join(" "))
+            }
+            ("ask", Some(f)) => format!("ask {}", f.split('=').next().unwrap_or(f)),
+            // `at:2026-11-13T02:30`: the year goes, the day stays, since a hold can run past today.
+            ("at", Some(f)) => {
+                let t = f.replacen('T', " ", 1);
+                format!("at {}", t.get(5..).filter(|_| t.len() > 10).unwrap_or(&t))
+            }
+            ("focus", _) | (_, None) => word.to_string(),
+            (w, Some(f)) => format!("{w} {f}"),
+        })
+    }
+
+    /// Who queued it, the first word of `from`: `human`, `board`, `shepherd`, `auto`, `canary`, `item`.
+    pub fn source(&self) -> Option<&str> {
+        said(&self.from).and_then(|f| f.split(':').next())
+    }
+
     /// What the item is in a few words: the `title:` header, else the task's first sentence
-    /// with each file path shortened to its name; either one capped at `TITLE_MAX` chars.
+    /// with each file path shortened to its name; either one [`crate::text::clean`] (no
+    /// `type(area):`, id or `#tag`) and capped at `TITLE_MAX` chars.
     pub fn title(&self) -> String {
-        if self.title.trim().is_empty() {
+        let own = crate::text::clean(&self.title).text;
+        if own.is_empty() {
             headline(&self.task).0
         } else {
-            cap(self.title.trim(), TITLE_MAX)
+            cap(&own, TITLE_MAX)
         }
     }
 
@@ -304,13 +373,13 @@ impl Item {
         Some((self.extra_str("plan")?, self.extra_str("phases")?))
     }
 
-    /// `<plan name> P5: <phase words>`, a plan item's title as every view says it (`parse`
-    /// sets it): the plan by its heading (`plans::named`) in place of the file name
-    /// `agent-queue add --plan` titles it with. A one-phase item takes the label its words lead
-    /// with (`P9 live stage`) over its checklist place. An item with no `plan:` whose title has
-    /// that shape (one promoted from a board row) is named the same way when its plan file
-    /// exists. Capped at `TITLE_MAX` like any title; None for any other item.
-    fn plan_title(&self) -> Option<String> {
+    /// A plan item's (`<plan name> P5`, `<phase words>`): its plan label and its title, as
+    /// every view says them (`parse` sets both): the plan by its heading (`plans::named`) in
+    /// place of the file name `agent-queue add --plan` titles it with. A one-phase item takes
+    /// the label its words lead with (`P9 live stage`) over its checklist place. An item with no
+    /// `plan:` whose title has that shape (one promoted from a board row) is named the same way
+    /// when its plan file exists. None for any other item.
+    fn plan_title(&self) -> Option<(String, String)> {
         use crate::plans::{base, legacy, named, own_label, path};
         // An item with no `title:` header is worded by its task, as `title()` words it.
         let head = self.title.trim().is_empty().then(|| headline(&self.task).0);
@@ -333,10 +402,8 @@ impl Item {
             .then(|| own_label(words))
             .flatten()
             .unwrap_or((tag, words));
-        Some(cap(
-            &format!("{} {label}: {words}", named(&plan)),
-            TITLE_MAX,
-        ))
+        let words = cap(&crate::text::clean(words).text, TITLE_MAX);
+        Some((format!("{} {label}", named(&plan)), words))
     }
 
     /// The stage times at `now` (see [`Timing`]). A stamp before the one it is measured from
@@ -404,8 +471,59 @@ impl Item {
 
     /// The PR as `agent-land` records it (`owner/repo#N`; older items carry a bare number or a
     /// URL): the label a row prints and the page it links to, when the ledger names the repo.
+    /// An item that landed one PR per repo names the first, `home-config#875 +2`; the opened
+    /// item's `links` lists each.
     pub fn pr_link(&self) -> Option<(String, Option<String>)> {
-        pr_link_of(self.pr.as_deref()?)
+        let mut refs = self.pr_refs();
+        let first = refs.next()?;
+        let (label, url) = pr_link_of(first)?;
+        let mut more: Vec<&str> = refs.filter(|r| *r != first).collect();
+        more.sort_unstable();
+        more.dedup();
+        match more.len() {
+            0 => Some((label, url)),
+            more => Some((format!("{label} +{more}"), url)),
+        }
+    }
+
+    /// What the item names, each to its one page (`links`), which both surfaces list on the
+    /// opened item: its session, project and board row, then each PR and that PR's CI runs.
+    pub fn links(&self) -> Vec<ItemLink> {
+        let mut out = vec![];
+        let mut add = |what, text: &str, link| {
+            out.push(ItemLink {
+                what,
+                text: text.to_string(),
+                link,
+            })
+        };
+        // A session page is found by the item it worked (`session_page::find`), live or ended.
+        if let Some(s) = self.session.as_deref().filter(|s| !s.is_empty()) {
+            add("session", s, Link::to(Kind::Session, self.slug.clone()));
+        }
+        if !self.project.trim().is_empty() {
+            add(
+                "project",
+                self.project.trim(),
+                Link::to(Kind::Project, self.project.trim()),
+            );
+        }
+        if let Some((_, id)) = self.board_row() {
+            add("row", id, Link::to(Kind::Row, id));
+        }
+        for pr in self.pr_refs() {
+            if let Some((label, Some(url))) = pr_link_of(pr) {
+                add("pr", &label, Link::Url(url));
+            }
+            // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
+            if let Some((Some(repo), n)) =
+                pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
+            {
+                let r = format!("{repo}#{n}");
+                add("ci", &format!("CI runs of {r}"), Link::to(Kind::PrRuns, r));
+            }
+        }
+        out
     }
 
     /// A done row's PR in words, the same on both surfaces: `PR r#7 merged`, or `merge not
@@ -426,19 +544,36 @@ impl Item {
         said(&self.merged).is_some()
     }
 
-    /// Why an item in review or waiting sits there, in the words of what its headers record.
-    /// Review is a PR to merge; waiting is the human's turn, by an ask, a note or the question
-    /// its live session shows.
-    pub fn waits_on(&self) -> &'static str {
-        match self.state {
-            State::Review if self.partial.as_deref() == Some("yes") => "on a final landing",
-            State::Review => "on its merge",
-            _ if self.extra_str("ask").is_some() || self.extra_str("report").is_some() => {
-                "on an ask or report"
-            }
-            _ if said(&self.note).is_some() => "parked with a note",
-            _ => "on its session's question",
+    /// Why an item in review or waiting sits there, in the words of what its headers record:
+    /// review is a PR to merge; waiting is the human's turn, by an ask, a report, a note or the
+    /// question its live session shows. None in any other state.
+    pub fn waits_on(&self) -> Option<Wait> {
+        Some(match self.state {
+            State::Review if self.partial.as_deref() == Some("yes") => Wait::Landing,
+            State::Review => Wait::Merge,
+            State::Waiting if self.extra_str("ask").is_some() => Wait::Ask,
+            State::Waiting if self.extra_str("report").is_some() => Wait::Report,
+            State::Waiting if said(&self.note).is_some() => Wait::Parked,
+            State::Waiting => Wait::Question,
+            _ => return None,
+        })
+    }
+
+    /// The HOLD cell: what the item waits on. A queued item's hold (`held_on`); a waiting or
+    /// review item's `Wait`, an ask with its id (`ask PGpGsi`), never a `hold` line left over
+    /// from before it started.
+    pub fn waits_for(&self) -> Option<String> {
+        if self.state == State::Queued {
+            return self.held_on();
         }
+        let w = self.waits_on()?;
+        let id = self
+            .extra_str("ask")
+            .map(|a| a.split('=').next().unwrap_or(a));
+        Some(match (w, id) {
+            (Wait::Ask, Some(id)) => format!("ask {id}"),
+            _ => w.word().to_string(),
+        })
     }
 
     /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
@@ -457,6 +592,49 @@ impl Item {
         let i = PRIORITIES.iter().position(|p| *p == self.priority)?;
         let j = if up { i.checked_sub(1)? } else { i + 1 };
         PRIORITIES.get(j).copied()
+    }
+}
+
+/// What a waiting or review item waits on (`Item::waits_on`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// A partial landing's last PR (`partial: yes`).
+    Landing,
+    /// Its PR's merge.
+    Merge,
+    /// The human's answer to its ask (`ask`).
+    Ask,
+    /// The human's read of its report (`report`).
+    Report,
+    /// Parked with a note, which says what for.
+    Parked,
+    /// The question its live session shows.
+    Question,
+}
+
+impl Wait {
+    /// The HOLD cell's word, which is also its facet value.
+    pub fn word(self) -> &'static str {
+        match self {
+            Wait::Landing => "landing",
+            Wait::Merge => "merge",
+            Wait::Ask => "ask",
+            Wait::Report => "report",
+            Wait::Parked => "parked",
+            Wait::Question => "question",
+        }
+    }
+
+    /// The pipeline line's words: `3 on its merge`.
+    pub fn phrase(self) -> &'static str {
+        match self {
+            Wait::Landing => "on a final landing",
+            Wait::Merge => "on its merge",
+            Wait::Ask => "on an ask",
+            Wait::Report => "on a report",
+            Wait::Parked => "parked with a note",
+            Wait::Question => "on its session's question",
+        }
     }
 }
 
@@ -717,6 +895,16 @@ fn argv(args: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ItemLink {
+    /// session, project, row, pr or ci.
+    pub what: &'static str,
+    pub text: String,
+    #[serde(rename = "href")]
+    pub link: Link,
+}
+
 /// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
 pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     let pr = pr.trim();
@@ -742,14 +930,17 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
 }
 
 /// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
-/// Each item's `title` becomes the one every view shows: `plan_title` for a plan item, else
-/// `title()`.
+/// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
+/// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
     jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Item>(l).ok())
         .map(|mut i| {
-            i.title = i.plan_title().unwrap_or_else(|| i.title());
+            match i.plan_title() {
+                Some((label, words)) => (i.plan_label, i.title) = (Some(label), words),
+                None => i.title = i.title(),
+            }
             i
         })
         .collect()
@@ -794,12 +985,77 @@ pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
-/// What a Queue view shows: the items (`all`), the week's stats, and what could not be read.
+/// What a Queue view shows: the items (`all`), the week's stats, the last dispatch pass's
+/// verdict (the line over the table), and what could not be read.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Queue {
     pub items: Vec<Item>,
     pub stats: Option<Stats>,
+    pub dispatch: Option<crate::capacity::Dispatch>,
     pub errors: Vec<String>,
+    /// Each item's own session as fleet-sessions last saw it (`sessions`), None when that state
+    /// was not read fresh, so a running row then says only `running`.
+    pub sessions: Option<HashMap<String, Health>>,
+}
+
+/// A running item's own session in fleet-sessions' state: its bucket, idle minutes and why.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Health {
+    pub bucket: String,
+    pub idle_min: Option<i64>,
+    pub reason: String,
+}
+
+impl Health {
+    /// `STALLED 42m idle: PR #2487 CI red`, the state cell's hover.
+    pub fn line(&self) -> String {
+        let idle = self
+            .idle_min
+            .map_or(String::new(), |m| format!(" {m}m idle"));
+        format!("{}{idle}: {}", self.bucket, self.reason)
+    }
+}
+
+/// How long a running item may have no session in the fleet state before its row says so: an
+/// item started since the last fleet pass, or before its window registered, has none yet.
+/// Provisional (2026-11-13): fleet-state.timer writes every minute, and the one sessionless
+/// running item that day was 8 minutes old; revisit when a live row reads `no session` wrongly.
+pub const NO_SESSION_GRACE_MIN: i64 = 10;
+
+/// Each item slug's own session (`item.is` is `own`, its `slug` and every `also` slug) in the
+/// fleet state document at `path`. None when the document is missing, unreadable, older than
+/// `FLEET_STATE_STALE_SECS` at `now` (epoch seconds), names a silent worker, or holds no own
+/// session at all, so no row reads `no session` for want of a full read. Of two own sessions on
+/// one slug, one that is not STALLED wins: the item is being worked.
+pub fn sessions(path: &std::path::Path, now: i64) -> Option<HashMap<String, Health>> {
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let at = doc["generated_epoch"].as_i64()?;
+    let silent = doc["silent"].as_array().is_some_and(|a| !a.is_empty());
+    if now - at > crate::home::FLEET_STATE_STALE_SECS || silent {
+        return None;
+    }
+    let mut out: HashMap<String, Health> = HashMap::new();
+    for s in doc["sessions"].as_array()? {
+        if s["item"]["is"].as_str() != Some("own") {
+            continue;
+        }
+        let also = s["item"]["also"].as_array().into_iter().flatten();
+        let slugs = std::iter::once(&s["item"]["slug"]).chain(also);
+        let h = Health {
+            bucket: s["bucket"].as_str().unwrap_or_default().to_string(),
+            idle_min: s["idle_min"].as_i64(),
+            reason: s["reason"].as_str().unwrap_or_default().to_string(),
+        };
+        for slug in slugs.filter_map(Value::as_str).filter(|s| !s.is_empty()) {
+            match out.get(slug) {
+                Some(old) if old.bucket != "STALLED" || h.bucket == "STALLED" => {}
+                _ => {
+                    out.insert(slug.to_string(), h.clone());
+                }
+            }
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// What `Queue::read` prefixes a failed `agent-queue list` with.
@@ -812,12 +1068,25 @@ impl Queue {
     }
 
     pub fn read(runner: &dyn Runner) -> Queue {
+        Queue {
+            dispatch: Some(crate::capacity::Dispatch::now()),
+            sessions: sessions(
+                &crate::boards::fleet_state(),
+                chrono::Utc::now().timestamp(),
+            ),
+            ..Queue::from_reads(list(runner, "all"), stats(runner))
+        }
+    }
+
+    /// The view over a `list` and a `stats` read made elsewhere (agent-web keeps both), each
+    /// failure named as `read` names it.
+    pub fn from_reads(items: Result<Vec<Item>, String>, stats: Result<Stats, String>) -> Queue {
         let mut q = Queue::default();
-        match list(runner, "all") {
+        match items {
             Ok(items) => q.items = items,
             Err(e) => q.errors.push(format!("{LIST_FAILED}: {e}")),
         }
-        match stats(runner) {
+        match stats {
             Ok(s) => q.stats = Some(s),
             Err(e) => q.errors.push(e),
         }
@@ -832,13 +1101,15 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// `1 running, 1 ready, 1 held`: the phone widget's queue line. Ready is queued with no hold.
+    /// The items not started, as `(ready, held)`: ready is queued with no hold.
+    pub fn up_next(&self) -> (usize, usize) {
+        let held = self.in_state(State::Queued).filter(|i| i.is_held()).count();
+        (self.count(State::Queued) - held, held)
+    }
+
+    /// `1 running, 1 ready, 1 held`: the phone widget's queue line.
     pub fn counts_line(&self) -> String {
-        let held = self
-            .in_state(State::Queued)
-            .filter(|i| i.hold.is_some())
-            .count();
-        let ready = self.count(State::Queued) - held;
+        let (ready, held) = self.up_next();
         let mut s = format!("{} running, {ready} ready", self.count(State::Running));
         if held > 0 {
             s += &format!(", {held} held");
@@ -854,6 +1125,65 @@ impl Queue {
 pub struct QueueRow<'a> {
     pub item: &'a Item,
     pub timing: Timing,
+    /// Its place among the ready items in agent-queue's start order (1 starts next); None for
+    /// every other row, a held one included.
+    pub start: Option<usize>,
+    /// Its own session in the fleet state: `Seen::NotRead` when that state was not read fresh.
+    pub session: Seen<'a>,
+    /// What its state cell says is stuck, if anything (`stuck_on`, set by `Queue::rows`).
+    pub stuck: Option<Stuck>,
+}
+
+/// A running or review row that needs a look: the state cell's amber words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stuck {
+    /// Its own session is STALLED.
+    Stalled,
+    /// No session of a fresh, full fleet pass works it, `NO_SESSION_GRACE_MIN` after it started.
+    NoSession,
+    /// fleet-dispatch spent its fix-ci tries on the PR and handed it to the human (`fix_human`).
+    PrRed,
+    /// As `PrRed`, but the tries were a lander's (`pr_owner: land`): green, and not merging.
+    PrGreen,
+}
+
+impl Stuck {
+    pub fn word(self) -> &'static str {
+        match self {
+            Stuck::Stalled => "stalled",
+            Stuck::NoSession => "no session",
+            Stuck::PrRed => "PR red, yours",
+            Stuck::PrGreen => "PR green, yours",
+        }
+    }
+}
+
+/// What is stuck about `item` with its fleet `session` and stage `timing`, if anything.
+pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck> {
+    match item.state {
+        State::Running => match session {
+            Seen::Own(h) if h.bucket == "STALLED" => Some(Stuck::Stalled),
+            Seen::Missing if timing.run.unwrap_or(0) >= NO_SESSION_GRACE_MIN => {
+                Some(Stuck::NoSession)
+            }
+            _ => None,
+        },
+        State::Review if item.extra_str("fix_human").is_some() => {
+            match item.extra_str("pr_owner") {
+                Some("land") => Some(Stuck::PrGreen),
+                _ => Some(Stuck::PrRed),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether a row's item has its own session in the fleet state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Seen<'a> {
+    NotRead,
+    Missing,
+    Own(&'a Health),
 }
 
 impl Queue {
@@ -864,20 +1194,70 @@ impl Queue {
         let mut rows: Vec<QueueRow<'_>> = self
             .items
             .iter()
-            .map(|item| QueueRow {
-                item,
-                timing: item.timing(now),
+            .map(|item| {
+                let timing = item.timing(now);
+                let session = match &self.sessions {
+                    None => Seen::NotRead,
+                    Some(m) => m.get(&item.slug).map_or(Seen::Missing, Seen::Own),
+                };
+                QueueRow {
+                    item,
+                    timing,
+                    start: None,
+                    session,
+                    stuck: stuck_on(item, session, &timing),
+                }
             })
             .collect();
         rows.sort_by(|a, b| a.rank().cmp(&b.rank()).then_with(|| a.within(b)));
+        // The sort keeps agent-queue's order among the ready (`within`), the order `next` starts from.
+        for (n, r) in rows.iter_mut().filter(|r| r.rank() == 3).enumerate() {
+            r.start = Some(n + 1);
+        }
         rows
     }
 }
 
 impl QueueRow<'_> {
+    /// The state cell: the item's state, or what is stuck about a running or review row
+    /// (`Stuck`).
+    pub fn state_word(&self) -> &'static str {
+        if let Some(st) = self.stuck {
+            return st.word();
+        }
+        match self.item.state {
+            State::Waiting => "needs",
+            State::Running => "running",
+            State::Review => "on a PR",
+            State::Queued if self.item.is_held() => "held",
+            State::Queued => "ready",
+            State::Done => "done",
+        }
+    }
+
+    /// True when the state cell names something stuck, which the table draws amber and sorts
+    /// first within its state.
+    pub fn stuck(&self) -> bool {
+        self.stuck.is_some()
+    }
+
+    /// Why the state cell says what it does, its hover: a running row's session bucket, idle and
+    /// reason; a sessionless run's recorded session; a handed-back PR's note.
+    pub fn state_why(&self) -> Option<String> {
+        match (self.stuck, self.session) {
+            (_, Seen::Own(h)) if self.item.state == State::Running => Some(h.line()),
+            (Some(Stuck::NoSession), _) => Some(format!(
+                "no session of fleet-sessions' last pass works this item (session: {})",
+                self.item.session.as_deref().unwrap_or("none recorded")
+            )),
+            (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
+            _ => None,
+        }
+    }
+
     /// Where the row sits in the table's own order.
     fn rank(&self) -> u8 {
-        match (self.item.state, self.item.hold.is_some()) {
+        match (self.item.state, self.item.is_held()) {
             (State::Waiting, _) => 0,
             (State::Running, _) => 1,
             (State::Review, _) => 2,
@@ -889,6 +1269,13 @@ impl QueueRow<'_> {
 
     /// The order inside one rank; equal rows keep agent-queue's order (the sort is stable).
     fn within(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
+        // Stuck first: a stalled or sessionless run, a PR handed back to the human.
+        o.stuck()
+            .cmp(&self.stuck())
+            .then_with(|| self.within_state(o))
+    }
+
+    fn within_state(&self, o: &QueueRow<'_>) -> std::cmp::Ordering {
         use std::cmp::Ordering::Equal;
         match self.item.state {
             State::Waiting | State::Review => o.timing.in_state.cmp(&self.timing.in_state),
@@ -909,16 +1296,29 @@ impl QueueRow<'_> {
 }
 
 impl crate::table::Row for QueueRow<'_> {
+    /// The title leads; `#` is the start order, so a sort on it reads what starts next.
     const COLUMNS: &'static [&'static str] = &[
-        "state", "in", "wait", "run", "project", "kind", "size", "acct", "pr", "title",
+        "#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr",
+        "row", "kind", "size", "acct", "mode", "plan",
     ];
-    /// `all` first, because the first chip keeps every row; then the states in the order the
-    /// Queue sections list them.
-    const STATES: &'static [&'static str] =
-        &["all", "needs you", "running", "on a PR", "up next", "done"];
-    const FACETS: &'static [&'static str] = &["project", "kind", "size", "acct"];
+    /// `active` first, the view the table opens on: every item not done. Then the states in the
+    /// table's own order, done, and `all`.
+    const STATES: &'static [&'static str] = &[
+        "active",
+        "needs you",
+        "running",
+        "on a PR",
+        "ready",
+        "held",
+        "done",
+        "all",
+    ];
+    const FACETS: &'static [&'static str] = &[
+        "project", "priority", "state", "hold", "from", "kind", "acct", "plan",
+    ];
     const LEAD: &'static str = "title";
-    const GLANCE: &'static [&'static str] = &["state", "in", "project"];
+    const GLANCE: &'static [&'static str] = &["project", "state", "hold"];
+    const LEGEND: &'static [(&'static str, &'static str)] = crate::vocab::QUEUE;
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
@@ -926,51 +1326,103 @@ impl crate::table::Row for QueueRow<'_> {
         let num = |m: Option<i64>| m.map_or(Val::None, |m| Val::Num(m as f64));
         let i = self.item;
         match col {
-            "state" => Val::Text(
-                match i.state {
-                    State::Waiting => "needs",
-                    State::Running => "running",
-                    State::Review => "on a PR",
-                    State::Queued => "queued",
-                    State::Done => "done",
-                }
-                .into(),
-            ),
+            "#" => self.start.map_or(Val::None, |n| Val::Num(n as f64)),
+            "state" => Val::Text(self.state_word().into()),
             "in" => num(self.timing.in_state),
             "wait" => num(self.timing.wait),
             "run" => num(self.timing.run),
             "project" => text(Some(i.project.trim()).filter(|p| !p.is_empty())),
+            "priority" => text(Some(i.priority.trim()).filter(|p| !p.is_empty())),
+            "hold" => text(i.waits_for().as_deref()),
+            "from" => text(i.source()),
+            "row" => text(i.board_row().map(|(_, id)| id)),
             "kind" => text(said(&i.kind)),
             "size" => text(said(&i.size)),
             "acct" => text(said(&i.account)),
+            "mode" => text(Some(i.mode.trim()).filter(|m| !m.is_empty())),
             "pr" => text(said(&i.pr)),
+            "plan" => text(i.plan_label.as_deref()),
             "title" => Val::Text(i.title()),
             _ => Val::None,
         }
     }
 
-    fn in_state(&self, s: &str) -> bool {
-        let want = match s {
-            "needs you" => State::Waiting,
-            "running" => State::Running,
-            "on a PR" => State::Review,
-            "up next" => State::Queued,
-            "done" => State::Done,
-            _ => return false,
-        };
-        self.item.state == want
+    /// A hold filters by its kind (`hold:after`), so the dropdown lists the few kinds, not each
+    /// blocking item; the cell and a bare word still have the whole of it.
+    fn vals(&self, col: &str) -> Vec<crate::table::Val> {
+        match col {
+            "hold" => vec![self
+                .item
+                .waits_for()
+                .and_then(|h| h.split_whitespace().next().map(str::to_string))
+                .map_or(crate::table::Val::None, crate::table::Val::Text)],
+            _ => vec![self.val(col)],
+        }
     }
 
-    /// A bare word also finds the slug, the tags and the task the title was cut from.
+    /// `#` sorts 1 first on the first click, and priority urgent first, not by spelling.
+    fn rank(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        match col {
+            "#" => self.start.map_or(Val::None, |n| Val::Num(-(n as f64))),
+            "priority" => match self.item.priority.trim() {
+                "urgent" => Val::Num(3.0),
+                "high" => Val::Num(2.0),
+                "" => Val::None,
+                "low" => Val::Num(0.0),
+                _ => Val::Num(1.0),
+            },
+            c => self.val(c),
+        }
+    }
+
+    /// The project opens its page and the row its board row (queue.js draws the PR cell from
+    /// the item's own link).
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "project" => Some(self.item.project.trim())
+                .filter(|p| !p.is_empty())
+                .map(|p| Link::to(Kind::Project, p)),
+            "row" => self.item.board_row().map(|(_, id)| Link::to(Kind::Row, id)),
+            _ => None,
+        }
+    }
+
+    fn in_default(&self) -> bool {
+        self.item.state != State::Done
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        let i = self.item;
+        match s {
+            "needs you" => i.state == State::Waiting,
+            "running" => i.state == State::Running,
+            "on a PR" => i.state == State::Review,
+            "ready" => i.state == State::Queued && !i.is_held(),
+            "held" => i.state == State::Queued && i.is_held(),
+            "done" => i.state == State::Done,
+            "all" => true,
+            _ => false,
+        }
+    }
+
+    /// A bare word also finds the slug, the tags, the hold and the task the title was cut from.
     fn text(&self) -> String {
         let i = self.item;
-        [i.title.as_str(), &i.slug, &i.project, &i.tags, &i.task]
-            .join("\n")
-            .to_lowercase()
+        [
+            i.title.as_str(),
+            &i.slug,
+            &i.project,
+            &i.tags,
+            i.hold.as_deref().unwrap_or(""),
+            &i.task,
+        ]
+        .join("\n")
+        .to_lowercase()
     }
 }
 
-/// How many candidates a view lists; its heading counts them all.
+/// How many candidates a view lists before "+N more"; its heading counts them all.
 pub const CANDIDATES_SHOWN: usize = 30;
 
 /// One open board row `fleet-dispatch suggest --json` ranks: what the Queue tab's Candidates
@@ -978,6 +1430,9 @@ pub const CANDIDATES_SHOWN: usize = 30;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Candidate {
+    /// Its place in fleet-dispatch's ranking, from 1: the line it is on (`parse_candidates`).
+    #[serde(skip_deserializing)]
+    pub rank: usize,
     pub profile: String,
     pub project: String,
     /// `agent` or `human`.
@@ -1007,16 +1462,9 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// The row's words: no checkbox, no `#tags`, no trailing `<!-- -->` comment, capped.
+    /// The row's words, [`crate::text::clean`] and capped.
     pub fn title(&self) -> String {
-        let t = self.text.trim_start();
-        let t = t.strip_prefix("- [").and_then(|r| r.get(2..)).unwrap_or(t);
-        let t = t.split("<!--").next().unwrap_or(t);
-        let words: Vec<&str> = t
-            .split_whitespace()
-            .filter(|w| !w.starts_with('#'))
-            .collect();
-        cap(&words.join(" "), TITLE_MAX)
+        cap(&crate::text::clean(&self.text).shown(), TITLE_MAX)
     }
 
     /// Each blocked reason as a chip names it: the judge's own reason cut off, so every skip
@@ -1062,32 +1510,128 @@ impl Candidate {
     }
 }
 
-/// What a view shows of the ranked list: every row counted, the first `CANDIDATES_SHOWN` kept,
-/// and every blocked reason counted over all of them.
+impl crate::table::Row for Candidate {
+    /// `blocked` is each reason as `Candidate::reasons` words it, one row holding several.
+    const COLUMNS: &'static [&'static str] =
+        &["rank", "project", "key", "task", "start", "why", "blocked"];
+    const STATES: &'static [&'static str] = &["all", "clear", "blocked"];
+    const FACETS: &'static [&'static str] = &["project", "blocked"];
+    const LEAD: &'static str = "task";
+    const GLANCE: &'static [&'static str] = &["project", "start"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            "clear",
+            "a worker takes it and no judge, size or held area stops it",
+        ),
+        ("blocked", "no worker would start it; BLOCKED says why"),
+    ];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        let text = |s: &str| match s {
+            "" => Val::None,
+            s => Val::Text(s.to_string()),
+        };
+        match col {
+            "rank" => Val::Num(self.rank as f64),
+            "project" => text(&self.project),
+            "key" => text(&self.key),
+            "task" => Val::Text(self.title()),
+            "start" => Val::Text(self.start_label()),
+            "why" => text(&self.why),
+            "blocked" => self.reasons().first().map_or(Val::None, |r| text(r)),
+            _ => Val::None,
+        }
+    }
+
+    fn vals(&self, col: &str) -> Vec<crate::table::Val> {
+        match col {
+            "blocked" => self
+                .reasons()
+                .into_iter()
+                .map(crate::table::Val::Text)
+                .collect(),
+            _ => vec![self.val(col)],
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        match s {
+            "clear" => self.blocked.is_empty(),
+            "blocked" => !self.blocked.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// A bare word finds the title, project, key, why and each reason in full.
+    fn text(&self) -> String {
+        [
+            self.title(),
+            self.project.clone(),
+            self.key.clone(),
+            self.why.clone(),
+        ]
+        .into_iter()
+        .chain(self.blocked.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+    }
+
+    fn link(&self, col: &str) -> Option<Link> {
+        match col {
+            "project" if !self.project.is_empty() => Some(Link::to(Kind::Project, &self.project)),
+            _ => None,
+        }
+    }
+}
+
+/// The ranked list, every row in rank order, with what its head says about all of them.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Candidates {
-    pub total: usize,
-    pub auto: usize,
     pub rows: Vec<Candidate>,
-    /// Rows past the first `CANDIDATES_SHOWN`, in rank order, kept so each reason chip lists up
-    /// to `CANDIDATES_SHOWN` of its own.
-    pub blocked_rows: Vec<Candidate>,
-    /// Rows nothing blocks: a worker takes each and no judge, size or held area stops it.
-    pub clear: usize,
-    /// Each chip reason (`Candidate::reasons`) and how many rows it blocks, most first.
-    pub reasons: Vec<(String, usize)>,
+    pub auto: usize,
     /// `#urgent` rows something blocks: a view opens its Candidates by itself while any are.
     pub urgent_blocked: usize,
     /// Projects worked on in the last day that have a row no worker covers, sorted.
     pub uncovered: Vec<String>,
-    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
-    /// when the rows came from no file.
-    pub as_of: String,
+    /// When the snapshot file was written (its mtime), None when the rows came from no file. Kept
+    /// raw so a reader that keeps the parse words it at serve time (`as_of`).
+    #[serde(skip)]
+    pub written: Option<std::time::SystemTime>,
 }
 
 impl Candidates {
+    /// The first `CANDIDATES_SHOWN`, what the TUI's fold lists.
+    pub fn shown(&self) -> &[Candidate] {
+        &self.rows[..self.rows.len().min(CANDIDATES_SHOWN)]
+    }
+
+    /// When the snapshot was written, `HH:MM` (the day in front once it is not today's); empty
+    /// when the rows came from no file.
+    pub fn as_of(&self, now: chrono::DateTime<chrono::Local>) -> String {
+        self.written.map_or(String::new(), |t| as_of(t.into(), now))
+    }
+
     pub fn more(&self) -> usize {
-        self.total - self.rows.len()
+        self.rows.len() - self.shown().len()
+    }
+
+    /// Each blocked reason and how many rows it blocks, most first: the `blocked` facet's counts,
+    /// a row counted once per reason as the facet counts it, without scanning every other facet.
+    pub fn reasons(&self) -> Vec<(String, usize)> {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for r in &self.rows {
+            let mut seen = std::collections::BTreeSet::new();
+            for x in r.reasons() {
+                if !x.is_empty() && seen.insert(x.clone()) {
+                    *counts.entry(x).or_default() += 1;
+                }
+            }
+        }
+        let mut by: Vec<(String, usize)> = counts.into_iter().collect();
+        by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        by
     }
 }
 
@@ -1100,16 +1644,13 @@ fn uncovered_reason(r: &str) -> bool {
 /// there is no row; a line that does not parse is skipped.
 pub fn parse_candidates(jsonl: &str) -> Candidates {
     let mut c = Candidates::default();
-    let mut by: Vec<(String, usize)> = Vec::new();
-    for row in jsonl
+    for mut row in jsonl
         .lines()
         .filter_map(|l| serde_json::from_str::<Candidate>(l).ok())
     {
-        c.total += 1;
+        row.rank = c.rows.len() + 1;
         c.auto += usize::from(row.auto);
-        let reasons = row.reasons();
-        c.clear += usize::from(reasons.is_empty());
-        if !reasons.is_empty() && row.prio == Some(0) {
+        if !row.blocked.is_empty() && row.prio == Some(0) {
             c.urgent_blocked += 1;
         }
         if row.active
@@ -1118,27 +1659,8 @@ pub fn parse_candidates(jsonl: &str) -> Candidates {
         {
             c.uncovered.push(row.project.clone());
         }
-        let mut wanted = false;
-        for r in &reasons {
-            match by.iter_mut().find(|(k, _)| k == r) {
-                Some((_, n)) => {
-                    wanted |= *n < CANDIDATES_SHOWN;
-                    *n += 1;
-                }
-                None => {
-                    wanted = true;
-                    by.push((r.clone(), 1));
-                }
-            }
-        }
-        if c.rows.len() < CANDIDATES_SHOWN {
-            c.rows.push(row);
-        } else if wanted {
-            c.blocked_rows.push(row);
-        }
+        c.rows.push(row);
     }
-    by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    c.reasons = by;
     c.uncovered.sort();
     c
 }
@@ -1157,9 +1679,7 @@ pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
         _ => format!("{}: {e}", path.display()),
     })?;
     let mut c = parse_candidates(&body);
-    if let Ok(t) = std::fs::metadata(path).and_then(|m| m.modified()) {
-        c.as_of = as_of(t.into(), chrono::Local::now());
-    }
+    c.written = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     Ok(c)
 }
 
@@ -1385,6 +1905,67 @@ mod tests {
     }
 
     #[test]
+    fn an_item_links_its_session_project_row_and_each_prs_page_and_ci_runs() {
+        let i = Item {
+            slug: "ops-center-p6".into(),
+            project: "dotfiles".into(),
+            row: Some("agent-runtime:ar-1726".into()),
+            session: Some("lab:dotfiles-agent-21".into()),
+            pr: Some("Kblack0610/.dotfiles#1930 https://github.com/o/r/pull/7 812".into()),
+            ..Item::default()
+        };
+        let got: Vec<(&str, String, String)> = i
+            .links()
+            .into_iter()
+            .map(|l| (l.what, l.text, l.link.href()))
+            .collect();
+        let want = |w, t: &str, h: &str| (w, t.to_string(), h.to_string());
+        assert_eq!(
+            got,
+            [
+                want(
+                    "session",
+                    "lab:dotfiles-agent-21",
+                    "#sessions/sessions/ops-center-p6"
+                ),
+                want("project", "dotfiles", "#projects/dotfiles"),
+                want("row", "ar-1726", "#projects/all?q=id:=ar-1726"),
+                want(
+                    "pr",
+                    ".dotfiles#1930",
+                    "https://github.com/Kblack0610/.dotfiles/pull/1930"
+                ),
+                want(
+                    "ci",
+                    "CI runs of kblack0610/.dotfiles#1930",
+                    "#infra/runs?bq=pr:=kblack0610%2F.dotfiles%231930"
+                ),
+                want("pr", "#7", "https://github.com/o/r/pull/7"),
+                want("ci", "CI runs of o/r#7", "#infra/runs?bq=pr:=o%2Fr%237"),
+            ],
+            "a bare 812 names no repo: no page, no runs"
+        );
+        let row = QueueRow {
+            item: &i,
+            timing: Timing::default(),
+            start: None,
+            session: Seen::NotRead,
+            stuck: None,
+        };
+        use crate::table::Row;
+        assert_eq!(
+            row.link("project"),
+            Some(Link::to(Kind::Project, "dotfiles"))
+        );
+        assert_eq!(
+            row.link("pr"),
+            None,
+            "queue.js draws the PR cell from the item"
+        );
+        assert!(Item::default().links().is_empty());
+    }
+
+    #[test]
     fn the_harness_is_the_items_agent_else_claude_with_its_model_alias() {
         let item = |kv: &[(&str, &str)]| Item {
             model: kv
@@ -1459,18 +2040,20 @@ mod tests {
         // worklog's plan test covers the shapes; these are the cap and the untitled item.
         let bare = serde_json::json!({"slug": "p6", "state": "queued", "phases": "6",
             "plan": plan.to_str().unwrap(), "task": "Sixth thing. Read the plan."});
+        let bare = parse(&bare.to_string()).remove(0);
         assert_eq!(
-            parse(&bare.to_string()).remove(0).title(),
-            "Systems you can see P6: Sixth thing",
-            "an item with no title header names its phase by its task"
+            (bare.title(), bare.plan_label.as_deref()),
+            ("Sixth thing".into(), Some("Systems you can see P6")),
+            "an item with no title header is titled by its task, its plan and phase beside it"
         );
         let long = serde_json::json!({"slug": "p5", "state": "queued", "phases": "5",
             "plan": plan.to_str().unwrap(), "title": "word ".repeat(40)});
-        let long = parse(&long.to_string()).remove(0).title();
+        let long = parse(&long.to_string()).remove(0);
+        assert_eq!(long.plan_label.as_deref(), Some("Systems you can see P5"));
+        let long = long.title();
         assert!(
-            long.starts_with("Systems you can see P5: word")
-                && long.chars().count() <= TITLE_MAX + 3,
-            "a plan title is capped like any other: {long}"
+            long.starts_with("word") && long.chars().count() <= TITLE_MAX + 3,
+            "a plan title is capped like any other, its label not in it: {long}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1588,9 +2171,22 @@ mod tests {
         assert!(e.contains("next dispatch pass"), "no file yet: {e}");
         std::fs::write(&f, SUGGEST).unwrap();
         let c = candidates(&f).unwrap();
-        assert_eq!(c.as_of.len(), 5, "stamped HH:MM today: {}", c.as_of);
-        assert_eq!((c.total, c.auto, c.more()), (2, 1, 0));
+        let now = chrono::Local::now();
+        assert_eq!(
+            c.as_of(now).len(),
+            5,
+            "stamped HH:MM today: {}",
+            c.as_of(now)
+        );
+        let day = now + chrono::Duration::days(1);
+        assert!(
+            c.as_of(day).contains(' '),
+            "worded when served, so a kept parse names the day once it is old: {}",
+            c.as_of(day)
+        );
+        assert_eq!((c.rows.len(), c.auto, c.more()), (2, 1, 0));
         let c = c.rows;
+        assert_eq!((c[0].rank, c[1].rank), (1, 2), "a bad line takes no rank");
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["bar-17", "backtest report"], "a bad line is skipped");
         assert!(c[1].lane == "human");
@@ -1600,11 +2196,7 @@ mod tests {
         assert_eq!(c[1].start_label(), "man held", "unjudged is not shown");
         std::fs::write(&f, "").unwrap();
         let c = candidates(&f).unwrap();
-        assert_eq!(
-            (c.total, c.rows.len()),
-            (0, 0),
-            "an empty snapshot is no rows"
-        );
+        assert!(c.rows.is_empty(), "an empty snapshot is no rows");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1621,7 +2213,7 @@ mod tests {
     }
 
     #[test]
-    fn candidates_count_each_blocked_reason_over_every_row_and_keep_rows_for_each_chip() {
+    fn candidates_count_each_blocked_reason_over_every_row() {
         let row = |key: &str, prio: u8, blocked: &str, active: bool, project: &str| {
             let b: Vec<&str> = blocked.split('|').filter(|s| !s.is_empty()).collect();
             serde_json::json!({"key": key, "project": project, "prio": prio, "blocked": b,
@@ -1656,21 +2248,29 @@ mod tests {
         lines.push(row("taken", 0, "", false, "game"));
         let c = parse_candidates(&lines.join("\n"));
         assert_eq!(
-            (c.total, c.rows.len()),
-            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN)
-        );
-        let kept: Vec<&str> = c.blocked_rows.iter().map(|r| r.key.as_str()).collect();
-        assert_eq!(
-            kept,
-            ["skip-a", "skip-b", "gap", "gap-old"],
-            "an unblocked row past the cap is not kept"
+            (c.rows.len(), c.shown().len(), c.more()),
+            (CANDIDATES_SHOWN + 5, CANDIDATES_SHOWN, 5),
+            "every row is kept; the TUI lists the first"
         );
         assert_eq!(
-            c.reasons[0],
+            c.reasons()[0],
             ("judge: skip".to_string(), 2),
             "a judge's reason is one chip"
         );
-        assert_eq!(c.reasons.len(), 4);
+        assert_eq!(c.reasons().len(), 4);
+        let mut facet: Vec<(String, usize)> = crate::table::View::default()
+            .facets(&c.rows)
+            .into_iter()
+            .filter(|f| f.key == "blocked")
+            .flat_map(|f| f.values)
+            .map(|v| (v.value, v.n))
+            .collect();
+        facet.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        assert_eq!(
+            c.reasons(),
+            facet,
+            "the TUI's chips count what the blocked facet counts"
+        );
         assert_eq!(
             c.urgent_blocked, 1,
             "an urgent row a worker takes is not counted"
@@ -1681,33 +2281,79 @@ mod tests {
             "a gap with no commit in a day is not a gap in cover"
         );
         assert_eq!(
-            c.blocked_rows[1].why_line(),
+            c.rows[CANDIDATES_SHOWN + 1].why_line(),
             "alpha; blocked: judge: skip, a dupe; size/l: too big for a pick"
         );
         assert_eq!(c.rows[0].why_line(), "alpha");
     }
 
     #[test]
-    fn a_reason_chip_keeps_at_most_the_shown_count_past_the_top() {
-        let line = r#"{"key":"k","blocked":["tier 3: past the unattended ceiling"]}"#;
-        let c = parse_candidates(&vec![line; 3 * CANDIDATES_SHOWN].join("\n"));
-        assert_eq!(c.rows.len() + c.blocked_rows.len(), CANDIDATES_SHOWN);
-        assert_eq!(
-            c.reasons,
-            [(
-                "tier 3: past the unattended ceiling".to_string(),
-                3 * CANDIDATES_SHOWN
-            )]
+    fn the_candidates_table_searches_every_row_and_facets_each_reason() {
+        use crate::table::View;
+        let mut lines: Vec<String> = (0..3 * CANDIDATES_SHOWN)
+            .map(|i| format!(r#"{{"key":"k-{i}","project":"game","text":"- [ ] row {i}"}}"#))
+            .collect();
+        lines.push(
+            r#"{"key":"deep","project":"trader","text":"- [ ] the far one","why":"alpha","blocked":["judge: skip, a dupe","size/l: too big"]}"#
+                .into(),
         );
-        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
+        let c = parse_candidates(&lines.join("\n"));
+        let keys = |q: &str, s: &str| -> Vec<String> {
+            View::new::<Candidate>(q, s, "", "")
+                .apply(&c.rows)
+                .iter()
+                .map(|r| r.key.clone())
+                .collect()
+        };
+        assert_eq!(
+            keys("far", ""),
+            ["deep"],
+            "a word finds a row past the first page"
+        );
+        assert_eq!(
+            keys("dupe", ""),
+            ["deep"],
+            "the search reads each reason in full"
+        );
+        assert_eq!(keys("project:trader", ""), ["deep"]);
+        assert_eq!(keys("", "blocked"), ["deep"]);
+        assert_eq!(keys("", "clear").len(), 3 * CANDIDATES_SHOWN);
+        assert_eq!(
+            keys(r#"blocked:"size/l: too big""#, ""),
+            ["deep"],
+            "a row is under each of its reasons"
+        );
+        assert_eq!(keys(r#"blocked:"judge: skip""#, ""), ["deep"]);
+        assert!(keys("-project:game", "clear").is_empty(), "the control");
+        let (_, s) = View::new::<Candidate>("", "", "", "").summary(&c.rows);
+        let reasons = s.facets.iter().find(|f| f.key == "blocked").unwrap();
+        let values: Vec<(&str, usize)> = reasons
+            .values
+            .iter()
+            .map(|v| (v.value.as_str(), v.n))
+            .collect();
+        assert_eq!(values, [("judge: skip", 1), ("size/l: too big", 1)]);
+        assert_eq!(
+            s.states.iter().map(|c| (c.name, c.n)).collect::<Vec<_>>(),
+            [("all", 91), ("clear", 90), ("blocked", 1)]
+        );
+        assert_eq!(s.links[90]["project"], "#projects/trader");
     }
 
     #[test]
-    fn candidates_count_every_row_and_keep_the_first_shown() {
-        let line = r#"{"key":"k","auto":true}"#;
+    fn candidates_count_every_row_and_list_the_first_shown() {
+        let line = r#"{"key":"k","auto":true,"blocked":["tier 3: past the ceiling"]}"#;
         let c = parse_candidates(&vec![line; CANDIDATES_SHOWN + 8].join("\n"));
-        assert_eq!((c.total, c.auto, c.rows.len()), (38, 38, CANDIDATES_SHOWN));
+        assert_eq!(
+            (c.rows.len(), c.auto, c.shown().len()),
+            (38, 38, CANDIDATES_SHOWN)
+        );
         assert_eq!(c.more(), 8);
+        assert_eq!(
+            c.reasons(),
+            [("tier 3: past the ceiling".to_string(), CANDIDATES_SHOWN + 8)]
+        );
+        assert_eq!(c.urgent_blocked, 0, "a row with no prio is not urgent");
     }
 
     #[test]
@@ -1754,6 +2400,27 @@ mod tests {
         // An older item carries a bare number: a label, no link, and no merge recorded.
         let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
+        // One PR per repo: the first one's label and page, and how many more.
+        let many = Item {
+            pr: Some("kblack0610/home-config#875 Kblack0610/.dotfiles-private#844, o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            many.pr_link(),
+            Some((
+                "home-config#875 +2".into(),
+                Some("https://github.com/kblack0610/home-config/pull/875".into())
+            ))
+        );
+        // A ref written twice is one PR, not a second.
+        let twice = Item {
+            pr: Some("o/r#7, o/r#7 o/r#7".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            twice.pr_link(),
+            Some(("r#7".into(), Some("https://github.com/o/r/pull/7".into())))
+        );
         assert!(!bare.merged() && !bare.unproven());
         assert_eq!(bare.pr_words().unwrap(), "PR #1796 merge not recorded");
         assert_eq!(landed.pr_words().unwrap(), "PR .dotfiles#1225 merged");
@@ -1784,6 +2451,23 @@ mod tests {
         assert!(!canary.unproven());
         assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
+    }
+
+    #[test]
+    fn the_board_row_is_the_items_row_else_the_row_it_was_promoted_from() {
+        let mut i = Item {
+            from: Some("board:trader:tr-9".into()),
+            ..Default::default()
+        };
+        assert_eq!(i.board_row(), Some(("trader", "tr-9")));
+        i.row = Some("agent-runtime:ar-1".into());
+        assert_eq!(i.board_row(), Some(("agent-runtime", "ar-1")));
+        // An empty row falls back; a promotion from anything but a board row is no row.
+        i.row = Some(String::new());
+        i.from = Some("ask:abc".into());
+        assert_eq!(i.board_row(), None);
+        i.from = Some("board:tr-9".into());
+        assert_eq!(i.board_row(), None, "a row names its project");
     }
 
     #[test]
@@ -2028,6 +2712,193 @@ mod tests {
         }
     }
 
+    /// Four running items and two on a PR, each a case of the state cell.
+    fn stuck_queue() -> Queue {
+        let item = |slug: &str, state: &str, extra: &str| {
+            format!(
+                r#"{{"slug":"{slug}","state":"{state}","started":"2026-11-06T10:00:00Z","task":"t {slug}"{extra}}}"#
+            )
+        };
+        let items = [
+            item("ok", "running", ""),
+            item("stuck", "running", ""),
+            item("gone", "running", r#","session":"lab:x-agent-1""#),
+            item("fresh", "running", "").replace("10:00", "11:55"),
+            item(
+                "red",
+                "review",
+                r#","fix_human":"abc","fix_tries":"2 abc","note":"PR #7 red after 2 fix-ci tries""#,
+            ),
+            item("green", "review", r#","fix_human":"abc","pr_owner":"land""#),
+            item("plain", "review", ""),
+        ]
+        .join("\n");
+        let health = |bucket: &str| Health {
+            bucket: bucket.into(),
+            idle_min: Some(42),
+            reason: "PR #7 CI red".into(),
+        };
+        Queue {
+            items: parse(&items),
+            sessions: Some(HashMap::from([
+                ("ok".to_string(), health("WORKING")),
+                ("stuck".to_string(), health("STALLED")),
+            ])),
+            ..Queue::default()
+        }
+    }
+
+    #[test]
+    fn the_state_cell_says_a_run_is_stalled_or_sessionless_and_a_pr_is_handed_back() {
+        let q = stuck_queue();
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let word = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .unwrap()
+                .state_word()
+        };
+        assert_eq!(word("stuck"), "stalled");
+        assert_eq!(word("gone"), "no session");
+        assert_eq!(word("red"), "PR red, yours");
+        assert_eq!(word("green"), "PR green, yours");
+        // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
+        assert_eq!(word("ok"), "running");
+        assert_eq!(word("fresh"), "running", "started 5m ago, inside the grace");
+        assert_eq!(word("plain"), "on a PR");
+        let order: Vec<&str> = rows.iter().map(|r| r.item.slug.as_str()).collect();
+        assert_eq!(
+            order,
+            ["stuck", "gone", "ok", "fresh", "red", "green", "plain"],
+            "stuck rows first within running and within review"
+        );
+        let stuck = rows.iter().find(|r| r.item.slug == "stuck").unwrap();
+        assert_eq!(
+            stuck.state_why().as_deref(),
+            Some("STALLED 42m idle: PR #7 CI red")
+        );
+        let gone = rows.iter().find(|r| r.item.slug == "gone").unwrap();
+        assert!(gone.state_why().unwrap().contains("lab:x-agent-1"));
+        let red = rows.iter().find(|r| r.item.slug == "red").unwrap();
+        assert_eq!(
+            red.state_why().as_deref(),
+            Some("PR #7 red after 2 fix-ci tries")
+        );
+        // The running chip still finds every running row, whatever its cell says.
+        use crate::table::Row;
+        assert_eq!(rows.iter().filter(|r| r.in_state("running")).count(), 4);
+    }
+
+    #[test]
+    fn an_unread_fleet_state_never_says_no_session() {
+        let mut q = stuck_queue();
+        q.sessions = None;
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        assert!(rows
+            .iter()
+            .filter(|r| r.item.state == State::Running)
+            .all(|r| r.state_word() == "running" && r.state_why().is_none()));
+    }
+
+    #[test]
+    fn sessions_reads_each_items_own_session_from_a_fresh_fleet_state() {
+        let dir = std::env::temp_dir().join(format!("hub-queue-sessions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let doc = |at: i64| {
+            serde_json::json!({"generated_epoch": at, "sessions": [
+                {"bucket": "STALLED", "idle_min": 61, "reason": "idle", "item": {"slug": "a", "is": "own"}},
+                {"bucket": "DONE", "idle_min": 5, "reason": "done", "item": {"slug": "b", "is": "moved"}},
+                {"bucket": "CHAT", "item": null},
+                {"bucket": "STALLED", "idle_min": 30, "reason": "idle", "item": {"slug": "c", "is": "own"}},
+                {"bucket": "WORKING", "idle_min": 1, "reason": "busy", "item": {"slug": "d", "is": "own", "also": ["c"]}},
+            ]})
+            .to_string()
+        };
+        std::fs::write(&path, doc(1000)).unwrap();
+        let m = sessions(&path, 1100).expect("fresh");
+        assert_eq!(
+            m.len(),
+            3,
+            "only own sessions join, `also` slugs too: {m:?}"
+        );
+        assert_eq!(m["a"].bucket, "STALLED");
+        assert_eq!(m["a"].idle_min, Some(61));
+        assert_eq!(m["c"].bucket, "WORKING", "the session working it wins");
+        // NEGATIVE CONTROLS: a silent worker, or no own session at all, reads as not read.
+        let silent = serde_json::json!({"generated_epoch": 1000, "silent": [{"host": "mini", "why": "ssh"}],
+            "sessions": [{"bucket": "WORKING", "item": {"slug": "a", "is": "own"}}]});
+        std::fs::write(&path, silent.to_string()).unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::write(&path, r#"{"generated_epoch": 1000, "sessions": []}"#).unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::write(&path, doc(1000)).unwrap();
+        // NEGATIVE CONTROLS: stale, missing and unparseable read as not read.
+        assert_eq!(
+            sessions(&path, 1000 + crate::home::FLEET_STATE_STALE_SECS + 1),
+            None
+        );
+        assert_eq!(sessions(&dir.join("none.json"), 1100), None);
+        std::fs::write(&path, "{").unwrap();
+        assert_eq!(sessions(&path, 1100), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_hold_cell_says_what_every_waiting_or_review_row_waits_on() {
+        let item = |state: State, f: &dyn Fn(&mut Item)| {
+            let mut i = Item {
+                state,
+                ..Item::default()
+            };
+            f(&mut i);
+            i
+        };
+        let cell = |i: &Item| i.waits_for();
+        let waiting = |f: &dyn Fn(&mut Item)| cell(&item(State::Waiting, f));
+        assert_eq!(
+            waiting(&|i| {
+                i.extra.insert("ask".into(), "OBAJTo=a".into());
+            })
+            .as_deref(),
+            Some("ask OBAJTo")
+        );
+        assert_eq!(
+            waiting(&|i| {
+                i.extra.insert("report".into(), "docs/x.md".into());
+            })
+            .as_deref(),
+            Some("report")
+        );
+        assert_eq!(
+            waiting(&|i| i.note = Some("no hardware arrived".into())).as_deref(),
+            Some("parked")
+        );
+        assert_eq!(waiting(&|_| {}).as_deref(), Some("question"));
+        assert_eq!(
+            cell(&item(State::Review, &|_| {})).as_deref(),
+            Some("merge")
+        );
+        assert_eq!(
+            cell(&item(State::Review, &|i| i.partial = Some("yes".into()))).as_deref(),
+            Some("landing")
+        );
+        // NEGATIVE CONTROL: a hold line left from before it started does not hide its wait.
+        assert_eq!(
+            cell(&item(State::Review, &|i| i.hold = Some("ask:X".into()))).as_deref(),
+            Some("merge")
+        );
+        // A queued item's hold still says its hold.
+        assert_eq!(
+            cell(&item(State::Queued, &|i| i.hold = Some("after a b".into()))).as_deref(),
+            Some("after a b")
+        );
+        // NEGATIVE CONTROLS: a ready, a running and a done item wait on nothing.
+        for st in [State::Queued, State::Running, State::Done] {
+            assert_eq!(cell(&item(st, &|_| {})), None, "{st:?}");
+        }
+    }
+
     #[test]
     fn the_queue_filters_sorts_and_counts_on_the_shared_table() {
         use crate::table::View;
@@ -2050,16 +2921,20 @@ mod tests {
             "what needs the human comes first"
         );
         assert_eq!(
-            slugs(View::new::<QueueRow>("-acct:k1 hub", "", "", "")),
+            slugs(View::new::<QueueRow>("-acct:k1 hub", "all", "", "")),
             ["c"],
             "a bare word finds the task"
         );
         assert_eq!(
             slugs(View::new::<QueueRow>("", "", "run", "")),
-            ["d", "c", "a", "b"],
-            "run sorts biggest first (a tie keeps the table order), none last"
+            ["d", "a", "b"],
+            "run sorts biggest first (a tie keeps the table order), none last; done is a chip away"
         );
-        assert_eq!(slugs(View::new::<QueueRow>("", "up next", "", "")), ["b"]);
+        assert_eq!(
+            slugs(View::new::<QueueRow>("", "all", "run", "")),
+            ["d", "c", "a", "b"]
+        );
+        assert_eq!(slugs(View::new::<QueueRow>("", "ready", "", "")), ["b"]);
         let chips: Vec<(&str, usize)> = View::new::<QueueRow>("project:dotfiles", "", "", "")
             .states(&rows)
             .iter()
@@ -2068,12 +2943,14 @@ mod tests {
         assert_eq!(
             chips,
             [
-                ("all", 3),
+                ("active", 2),
                 ("needs you", 1),
                 ("running", 1),
                 ("on a PR", 0),
-                ("up next", 0),
-                ("done", 1)
+                ("ready", 0),
+                ("held", 0),
+                ("done", 1),
+                ("all", 3)
             ]
         );
         let kinds = View::new::<QueueRow>("project:dotfiles", "", "", "").facets(&rows);
@@ -2083,7 +2960,11 @@ mod tests {
             .iter()
             .map(|v| (v.value.as_str(), v.n))
             .collect();
-        assert_eq!(counts, [("feat", 1), ("fix", 2)]);
+        assert_eq!(
+            counts,
+            [("fix", 2)],
+            "the done feat is a chip away, so it counts there"
+        );
     }
     #[test]
     fn the_table_opens_in_exceptions_first_order() {
@@ -2109,7 +2990,7 @@ mod tests {
             ..Queue::default()
         };
         let rows = q.rows(at("2026-11-06T12:00:00Z"));
-        let order: Vec<&str> = View::default()
+        let order: Vec<&str> = View::new::<QueueRow>("", "all", "", "")
             .apply(&rows)
             .iter()
             .map(|r| r.item.slug.as_str())
@@ -2122,9 +3003,153 @@ mod tests {
     }
 
     #[test]
+    fn hash_is_the_start_order_of_the_ready_items_and_every_field_filters() {
+        use crate::table::{Row, Val, View};
+        let q = Queue {
+            items: parse(concat!(
+                // agent-queue's order: a held item at the head is skipped, as `next` skips it.
+                r#"{"slug":"wait","state":"queued","priority":"urgent","hold":"ask:pHqQtl=repro+location (pending)","from":"human","task":"t"}"#,
+                "\n",
+                r#"{"slug":"first","state":"queued","priority":"urgent","from":"board:apociseum:apo-120","row":"apociseum:apo-120","task":"apo-120: base UI screens"}"#,
+                "\n",
+                r#"{"slug":"second","state":"queued","priority":"high","from":"human","task":"Diversity p5"}"#,
+                "\n",
+                r#"{"slug":"later","state":"queued","priority":"low","hold":"at:2026-11-13T02:30","from":"auto","task":"t"}"#,
+                "\n",
+                r#"{"slug":"next-phase","state":"queued","priority":"high","hold":"after first-p1 closed cancelled, dead: cancel it","from":"item:x","task":"t"}"#,
+                "\n",
+                r#"{"slug":"focus","state":"queued","priority":"high","hold":"focus: only apociseum binks","from":"canary","task":"t"}"#,
+                "\n",
+                r#"{"slug":"pr","state":"queued","priority":"high","hold":"pr:o/r#7 not merged","task":"t"}"#,
+                "\n",
+                r#"{"slug":"night","state":"queued","priority":"low","hold":"night (01:00-06:00)","task":"t"}"#,
+                "\n",
+                r#"{"slug":"two","state":"queued","priority":"low","hold":"after a-p1 b-p2","task":"t"}"#,
+                "\n",
+                r#"{"slug":"nightly","state":"queued","priority":"low","hold":"nightly:tests (not run yet)","task":"t"}"#,
+                "\n",
+                r#"{"slug":"res","state":"queued","priority":"low","hold":"hold:mac-desktop (claimed by agent-3)","task":"t"}"#,
+                "\n",
+                // A blank hold line holds nothing: it is ready and has a place.
+                r#"{"slug":"blank","state":"queued","priority":"low","hold":"  ","task":"t"}"#,
+                "\n",
+                r#"{"slug":"run","state":"running","priority":"urgent","from":"human","task":"t"}"#,
+            )),
+            ..Queue::default()
+        };
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let get = |slug: &str, col: &str| {
+            let r = rows.iter().find(|r| r.item.slug == slug).unwrap();
+            match r.val(col) {
+                Val::Text(t) => t,
+                Val::Num(n) => n.to_string(),
+                Val::None => "-".into(),
+            }
+        };
+        let starts: Vec<(&str, Option<usize>)> = rows
+            .iter()
+            .map(|r| (r.item.slug.as_str(), r.start))
+            .filter(|(_, n)| n.is_some())
+            .collect();
+        assert_eq!(
+            starts,
+            [("first", Some(1)), ("second", Some(2)), ("blank", Some(3))]
+        );
+        assert_eq!(get("blank", "state"), "ready");
+        assert_eq!(
+            get("wait", "#"),
+            "-",
+            "a held item at the head gets no place"
+        );
+        assert_eq!(get("run", "#"), "-");
+        let by_hash: Vec<&str> = View::new::<QueueRow>("", "", "#", "")
+            .apply(&rows)
+            .iter()
+            .take(2)
+            .map(|r| r.item.slug.as_str())
+            .collect();
+        assert_eq!(
+            by_hash,
+            ["first", "second"],
+            "the first click on # reads what starts next"
+        );
+        let holds: Vec<String> = [
+            "wait",
+            "later",
+            "next-phase",
+            "focus",
+            "pr",
+            "night",
+            "two",
+            "nightly",
+            "res",
+            "first",
+        ]
+        .iter()
+        .map(|s| get(s, "hold"))
+        .collect();
+        assert_eq!(
+            holds,
+            [
+                "ask pHqQtl",
+                "at 11-13 02:30",
+                "after first-p1",
+                "focus",
+                "pr o/r#7",
+                "night",
+                "after a-p1 b-p2",
+                "nightly tests",
+                "hold mac-desktop",
+                "-"
+            ]
+        );
+        assert_eq!(get("first", "from"), "board");
+        assert_eq!(get("next-phase", "from"), "item");
+        assert_eq!(get("first", "row"), "apo-120");
+        assert_eq!(get("first", "title"), "base UI screens");
+        let first = rows.iter().find(|r| r.item.slug == "first").unwrap();
+        assert_eq!(first.link("row"), Some(Link::to(Kind::Row, "apo-120")));
+        let by_prio: Vec<&str> = View::new::<QueueRow>("", "", "priority", "")
+            .apply(&rows)
+            .iter()
+            .map(|r| r.item.priority.as_str())
+            .collect();
+        assert_eq!(by_prio.first(), Some(&"urgent"));
+        assert_eq!(by_prio.last(), Some(&"low"));
+        let slugs = |q: &str, s: &str| -> Vec<String> {
+            View::new::<QueueRow>(q, s, "", "")
+                .apply(&rows)
+                .iter()
+                .map(|r| r.item.slug.clone())
+                .collect()
+        };
+        assert_eq!(slugs("hold:after", ""), ["next-phase", "two"]);
+        assert_eq!(slugs("from:board priority:urgent", ""), ["first"]);
+        assert_eq!(slugs("", "held").len(), 9);
+        assert_eq!(
+            slugs("b-p2", ""),
+            ["two"],
+            "every slug an item waits on is in its hold"
+        );
+        assert_eq!(slugs("pHqQtl", ""), ["wait"], "a bare word reads the hold");
+        let facets = View::default().facets(&rows);
+        let keys: Vec<&str> = facets.iter().map(|f| f.key).collect();
+        assert_eq!(
+            keys,
+            ["project", "priority", "state", "hold", "from", "kind", "acct", "plan"]
+        );
+        let hold: Vec<&str> = facets[3].values.iter().map(|v| v.value.as_str()).collect();
+        assert_eq!(
+            hold,
+            ["after", "ask", "at", "focus", "hold", "night", "nightly", "pr"],
+            "the kinds, not each object"
+        );
+    }
+
+    #[test]
     fn an_old_section_id_opens_its_state_chip() {
         assert_eq!(section_chip("Waiting"), Some("needs you"));
-        assert_eq!(section_chip("queued"), Some("up next"));
+        assert_eq!(section_chip("queued"), Some("ready"));
         assert_eq!(section_chip("table"), None, "a live section is no alias");
         for (_, chip) in SECTION_ALIASES {
             assert!(<QueueRow as crate::table::Row>::STATES.contains(&chip));

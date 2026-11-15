@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # karakeep-menu: fuzzy-search every Karakeep bookmark by title, tag or domain and open
-# the link. Bound to Super+B in hypr/conf.d/keybindings.conf. Type any mix of words:
+# the link. Bound to Super+B in hypr/conf/keybindings.lua. Type any mix of words:
 # "rust dev", "#gamedev unity", "github vim".
 #
 # Host and key both come from the rbw entry `karakeep_api_key` (password = API key,

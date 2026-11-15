@@ -32,8 +32,7 @@ write_map() {
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "mono-canon" },
-  "aliases": { "aliased-dir": "from-alias" },
-  "trackers": $(jq -c '. + {"_comment": "a string value"}' <<<"$trackers")
+  "trackers": $(jq -c '{"from-alias": {"names": ["aliased-dir"]}} + . + {"_comment": "a string value"}' <<<"$trackers")
 }
 EOF
 }
@@ -82,7 +81,7 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
   assert_output '_unscoped'
 }
 
-@test "an aliases entry resolves a bare basename outside any repo" {
+@test "a names entry resolves a bare basename outside any repo" {
   write_map
   mkdir -p "$HOME/aliased-dir"
   run resolve_project_name "$HOME/aliased-dir"
@@ -290,7 +289,6 @@ write_tracker_map() {
     "/repos/toolrepo": "toolrepo",
     "/repos/monorepo": "monorepo"
   },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
     "monorepo":   { "system": "clickup" },
@@ -379,6 +377,23 @@ EOF
   assert_output "$(printf '%s\n' app-one monorepo no-repo toolrepo)"
 }
 
+@test "project_dir_key: a repo-only key resolves to its repo; a key with a path or no repo is itself" {
+  write_tracker_map
+  jq '.trackers["app-one"].path = "apps/one"' "$MAP" > "$MAP.new" && mv "$MAP.new" "$MAP"
+  run project_dir_key cockpit;   assert_output 'toolrepo'
+  run project_dir_key app-two;   assert_output 'monorepo'
+  run project_dir_key app-one;   assert_output 'app-one'
+  run project_dir_key no-repo;   assert_output 'no-repo'
+  run project_dir_key unmapped;  assert_output 'unmapped'
+}
+
+@test "project_dir_key: no registry is the key itself" {
+  export PROJECT_MAP_FILE="$BATS_TEST_TMPDIR/absent.json"
+  run project_dir_key cockpit
+  assert_success
+  assert_output 'cockpit'
+}
+
 @test "project_lab_names: a repo lists every project that belongs to it, itself included" {
   write_tracker_map
   run project_lab_names monorepo
@@ -448,7 +463,6 @@ write_release_map() {
   cat > "$MAP" <<EOF
 {
   "paths": { "$REPO": "monorepo" },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "lab project -> repo. Keys here are NOT paths.",
     "monorepo":  { "system": "board" },

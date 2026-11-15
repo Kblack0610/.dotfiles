@@ -284,13 +284,13 @@
     "custom/timebox": {
         "format": "{}",
         "return-type": "json",
-        "interval": 2,
+        "interval": 1,
         "exec": "$HOME/.config/waybar/modules.sh gate custom/timebox $HOME/.local/bin/timebox status --json",
         "signal": 10,
         "hide-empty-text": true,
-        "on-click": "$HOME/.local/bin/timebox-menu",
+        "on-click": "kitty --class floating-term -e $HOME/.local/bin/timebox-panel",
         "on-click-right": "$HOME/.local/bin/timebox pause",
-        "on-click-middle": "$HOME/.local/bin/timebox lap",
+        "on-click-middle": "$HOME/.local/bin/timebox done",
         "tooltip": true
     }
 }

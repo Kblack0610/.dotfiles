@@ -6,8 +6,11 @@
 # painted by their pass rate on the board's lines (red under 70%, amber under 90%), each
 # pool's queue, oldest wait, finished jobs and pass rate, then one row per machine: where it
 # is, busy/slots, and busy/slots per pool, busiest first. Below that, any runner that is down
-# and the jobs running past LONG_RUN_SECS. A runner the governor withholds is counted apart
-# (`unity withheld 1/2`), so a machine reads what it is meant to run. A local row is busy of
+# (not one on a cloud host the governor has powered off: that host reads "off") and the jobs
+# running past LONG_RUN_SECS. A runner the governor withholds is counted apart
+# (`unity withheld 1/2`), so a machine reads what it is meant to run; one withheld because
+# its pair is using its cores (ci_governor_lent, aws-build-1) reads `lent`, since that is
+# normal work and not a hold for load (`unity-build lent 0/3`). A local row is busy of
 # its open slots; its burst slots, which open only while the machine has room, are named in
 # a legend line instead of the cell. The per-job list is the board's CI tab, not this hover.
 #
@@ -43,8 +46,16 @@ cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_2
   || fail "cannot read $PROM_URL"
 runners="$(prom_q "$W (github_runner_state)")" || fail "cannot read $PROM_URL"
 withheld="$(prom_q "$W (github_runner_withheld) == 1")" || fail "cannot read $PROM_URL"
+lent="$(prom_q "$W (ci_governor_lent) == 1")" || fail "cannot read $PROM_URL"
+# name -> the word its pool reads with: withheld, or lent when its pair is using its cores.
 declare -A WITHHELD=()
-while read -r name; do [ -n "$name" ] && WITHHELD[$name]=1; done < <(jq -r '.data.result[].metric.name' <<< "$withheld")
+while read -r name; do [ -n "$name" ] && WITHHELD[$name]=withheld; done < <(jq -r '.data.result[].metric.name' <<< "$withheld")
+while read -r name; do [ -n "${WITHHELD[$name]:-}" ] && WITHHELD[$name]=lent; done < <(jq -r '.data.result[].metric.name' <<< "$lent")
+# A cloud host the governor holds in any power state but running has its runners offline by
+# design (standby, a cap, the budget), so they are not DOWN.
+powered_off="$(prom_q "$W (ci_governor_power_state{state!=\"running\"}) == 1")" || fail "cannot read $PROM_URL"
+declare -A POWERED_OFF=()
+while read -r h; do [ -n "$h" ] && POWERED_OFF[$h]=1; done < <(jq -r '.data.result[].metric.host' <<< "$powered_off")
 
 # name/key -> value, key = pool, host, component or site. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
@@ -119,7 +130,7 @@ body+="$burst_legend"
 # --- machines, one pass over the runner rows ---------------------------------------------
 # host|pool|state|name|site|repo|pr|seconds
 # A slot is what cc:pool_slots counts: running, or idle and not withheld. A withheld runner
-# is keyed <host>/<pool> withheld, so it prints after its pool's admitted ones.
+# is keyed <host>/<pool> withheld (or lent), so it prints after its pool's admitted ones.
 declare -A ALL=() BUSY=() HB=() HS=() SITE=() DOWN=()
 long=()
 while IFS='|' read -r h p state name site repo pr secs; do
@@ -129,15 +140,15 @@ while IFS='|' read -r h p state name site repo pr secs; do
   w="${WITHHELD[$name]:-}"
   case "$state" in
     running)
-      [ -z "$w" ] || p+=" withheld"
+      [ -z "$w" ] || p+=" $w"
       ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1)) BUSY[$h/$p]=$((${BUSY[$h/$p]:-0} + 1))
       ((HB[$h]++, HS[$h]++))
       ((${secs%.*} > LONG_RUN_SECS)) && long+=("${secs%.*}|$name ${repo:--}${pr:+#$pr}") ;;
     idle)
-      [ -z "$w" ] || p+=" withheld"
+      [ -z "$w" ] || p+=" $w"
       ALL[$h/$p]=$((${ALL[$h/$p]:-0} + 1))
       [ -n "$w" ] || ((HS[$h]++)) ;;
-    offline | missing) DOWN[$h/$state]=$((${DOWN[$h/$state]:-0} + 1)) ;;
+    offline | missing) [ -n "${POWERED_OFF[$h]:-}" ] || DOWN[$h/$state]=$((${DOWN[$h/$state]:-0} + 1)) ;;
   esac
 done < <(jq -r '.data.result[]
     | [.metric.host, .metric.pool, .metric.state, .metric.name, .metric.site, .metric.repo,

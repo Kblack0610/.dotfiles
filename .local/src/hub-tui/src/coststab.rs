@@ -1,15 +1,17 @@
 //! The Costs tab: `hub_core::costs::board`, the same view agent-web draws. `b`/`B` step the cut,
 //! `w` the window, `/` types the query (the shared table's grammar), `s` sorts by the cut's next
 //! column, `S` flips it, `x` clears; `o` opens the Grafana trends. Burn has one row per source
-//! (the Fleet tab's accounts table until 2026-11-07). Under it Consumers has one row per LLM
+//! (each account's week, 5h window and day). Under it Consumers has one row per LLM
 //! consumer (a runner with a priority, or a gateway key no runner names): `K` opens or folds it,
 //! and it starts open when amber or red. Under them the token folds
 //! (tokens.rs): `u` opens where the tokens go, `U` its window, `l` what Langfuse sees. The
 //! Sections block is folded to its headline: `e` opens it, `t` steps its sort column and `T`
 //! flips it. Spend charts the fleet's last 30 days and ranks the picked day's sessions: `,` and `.`
 //! pick the day, `v` opens a session's own days, `y` opens the year, month and day rows.
-//! The sections sit in inner tabs (`hub_core::layout`, Limits, Spend, Models) under the pinned
-//! fleet figure: Left/Right switch them, and a key for a section on another one switches to it.
+//! The sections sit in inner tabs (`hub_core::layout`, Spend, Limits, Models, Budget); Spend opens
+//! first, on the 24h fleet figure and the totals, with burn per session per day last. Left/Right switch
+//! them, and a key for a section on another one switches to it. Budget is the one cash view
+//! (`hub_core::budget`); every other figure here is list price.
 
 use hub_core::burn::{self, Account, Burn};
 use hub_core::costs::{self, Board, Costs};
@@ -60,7 +62,7 @@ pub struct CostsView {
     pub inner: &'static str,
 }
 
-/// Costs' layout entry: its pinned sections and inner tabs.
+/// Costs' layout entry: its sections and inner tabs.
 fn tab() -> &'static layout::Tab {
     layout::resolve("costs").expect("costs is a tab")
 }
@@ -105,6 +107,7 @@ pub fn header(col: &str) -> &'static str {
     match col {
         "session" => "SESSION",
         "tool" => "TOOL",
+        "skill" => "SKILL",
         "kind" => "KIND",
         "project" => "PROJECT",
         "harness" => "HARNESS",
@@ -123,6 +126,16 @@ pub fn header(col: &str) -> &'static str {
         "pr" => "PR",
         "at" => "UPDATED",
         _ => "",
+    }
+}
+
+/// The section a key acts on, which `key` brings up and the page seeks to: the table's keys the
+/// table, which sits under Spend's other sections, and `t`/`T` the Sections block.
+pub fn key_section(code: KeyCode) -> Option<&'static str> {
+    match code {
+        KeyCode::Char('/' | 'b' | 'B' | 'w' | 's' | 'S') => Some("table"),
+        KeyCode::Char('t' | 'T') => Some("sections"),
+        _ => None,
     }
 }
 
@@ -161,7 +174,7 @@ impl CostsView {
                 _ if word == "tokens" => self.tokens.open = Some(true),
                 _ if word == "langfuse" => self.langfuse = Some(true),
                 _ if word == "consumers" => self.consumers = Some(true),
-                _ if named.is_some() || tab().pinned.contains(&v) => {}
+                _ if named.is_some() => {}
                 _ if costs::CUTS.contains(&v) => self.by = costs::cut(v),
                 _ if costs::WINDOWS.iter().any(|w| w.0 == v) => self.window = costs::window(v).0,
                 _ => q.push(word.to_string()),
@@ -195,12 +208,8 @@ impl CostsView {
             }
             return true;
         }
-        // The table's keys act on the table, so they bring it up first.
-        if matches!(code, KeyCode::Char('/' | 'b' | 'B' | 'w' | 's' | 'S')) {
-            self.reveal("table");
-        }
-        if matches!(code, KeyCode::Char('t' | 'T')) {
-            self.reveal("sections");
+        if let Some(sec) = key_section(code) {
+            self.reveal(sec);
         }
         match code {
             KeyCode::Left | KeyCode::Right => {
@@ -269,24 +278,27 @@ impl CostsView {
         if self.typing.is_some() {
             return None;
         }
-        // The chart's day and the session opened in its table.
+        // The picked day and the session opened in burn per session.
         match code {
             KeyCode::Char(',') => {
-                self.reveal("spend");
+                self.reveal("sessions");
                 self.day_back = (self.day_back + 1).min(spend_history::CHART_DAYS - 1);
                 self.sess_at = 0;
-                return Some(Some("spend"));
+                return Some(Some("sessions"));
             }
             KeyCode::Char('.') => {
-                self.reveal("spend");
+                self.reveal("sessions");
                 self.day_back = self.day_back.saturating_sub(1);
                 self.sess_at = 0;
-                return Some(Some("spend"));
+                return Some(Some("sessions"));
             }
             KeyCode::Char('v') => {
-                self.reveal("spend");
+                // A switch only shows the table: its row count is unknown until Spend draws.
+                if self.reveal("sessions") {
+                    return Some(Some("sessions"));
+                }
                 self.sess_at = (self.sess_at + 1) % (self.sess_n.get() + 1);
-                return Some(Some("spend"));
+                return Some(Some("sessions"));
             }
             _ => {}
         }
@@ -363,13 +375,17 @@ impl CostsView {
             &self.q,
             &self.sort,
             dir,
-            (&self.ssort, sdir),
+            hub_core::table::Keys {
+                sort: &self.ssort,
+                dir: sdir,
+                ..Default::default()
+            },
             &pick,
         )
     }
 
     /// The page, and where each of its sections starts (layout.rs's Costs sections, for `seek`):
-    /// the strip first, the pinned fleet figure under it, then the sections of the inner tab shown.
+    /// the strip first, then the sections of the inner tab shown.
     pub fn lines(
         &self,
         c: &Costs,
@@ -379,27 +395,29 @@ impl CostsView {
     ) -> (Vec<Line<'static>>, Vec<(&'static str, usize)>) {
         let b = self.board(c);
         let mut out = vec![innertabs::strip(tab(), self.inner, &b.amber, p, w)];
-        let mut at = vec![("fleet", out.len())];
-        out.extend(fleet(&b.fleet_cost, p, now, w));
+        let mut at: Vec<(&'static str, usize)> = vec![];
         let shown = layout::inner_tab(tab(), Some(self.inner)).map_or(&[][..], |i| i.sections);
         for sec in shown {
-            at.push((sec, out.len()));
+            at.push((*sec, out.len()));
             match *sec {
                 "burn" => out.extend(burn(&b.burn, p, w)),
                 "consumers" => {
                     let open = consumers_open(self.consumers);
                     out.extend(consumers(&b.consumers, open, p, w))
                 }
+                "sessions" if b.history.why.is_none() => {
+                    out.extend(day_table(&b.day, self.sess_at, p, w));
+                    self.sess_n.set(b.day.rows.len().min(SESS_ROWS));
+                }
+                "fleet" => out.extend(fleet(&b.fleet_cost, p, w)),
                 "spend" => {
                     out.extend(history(&b.history, self.history_open, p, w));
                     if b.history.why.is_none() {
                         out.extend(spend_chart(&b.history.chart, self.picked(c), p, w));
-                        out.extend(day_table(&b.day, self.sess_at, p, w));
-                        self.sess_n.set(b.day.rows.len().min(SESS_ROWS));
                         out.extend(history_rows(&b.history, self.history_open, p, w));
                     }
                 }
-                "totals" => self.totals(&b, p, w, &mut out),
+                "totals" => self.totals(&b, p, now, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
                 "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w)),
                 "langfuse" => {
@@ -409,14 +427,30 @@ impl CostsView {
                     }
                 }
                 "sections" => out.extend(sections(&b.sections, self.sections_open, p, w)),
+                "budget" => out.extend(budget(&b.budget, p, now, w)),
                 _ => {}
             }
         }
         (out, at)
     }
 
-    /// The window and cut bars, the tiles and what each source says.
-    fn totals(&self, b: &Board, p: Palette, w: usize, out: &mut Vec<Line<'static>>) {
+    /// The 24h fleet figure, the window tiles and what each source says: Spend's head.
+    fn totals(&self, b: &Board, p: Palette, now: i64, w: usize, out: &mut Vec<Line<'static>>) {
+        out.push(clip_line(fleet_head(&b.fleet_cost, p, now), w));
+        out.push(clip_line(Line::from(tiles(b, p)), w));
+        out.push(clip_line(Line::from(direct(b, p)), w));
+        out.push(clip_line(Line::from(sources(b, p)), w));
+        for e in &b.errors {
+            out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
+        }
+        if let Some(note) = b.unpriced {
+            out.push(clip_line(Line::styled(note, p.warn()), w));
+        }
+        out.push(Line::raw(""));
+    }
+
+    /// The window and cut bars over the table.
+    fn switches(&self, b: &Board, p: Palette, w: usize, out: &mut Vec<Line<'static>>) {
         let bar = |name: &str, all: &[&'static str], on: &str, key: &str| {
             let mut s = vec![Span::styled(format!("{name}: "), p.dim())];
             for x in all {
@@ -431,19 +465,11 @@ impl CostsView {
         };
         out.push(bar("window", &b.windows, &b.window, "w"));
         out.push(bar("by", b.cuts, &b.by, "b/B"));
-        out.push(clip_line(Line::from(tiles(b, p)), w));
-        out.push(clip_line(Line::from(direct(b, p)), w));
-        out.push(clip_line(Line::from(sources(b, p)), w));
-        for e in &b.errors {
-            out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
-        }
-        if let Some(note) = b.unpriced {
-            out.push(clip_line(Line::styled(note, p.warn()), w));
-        }
     }
 
     /// The query line, the rows and the notes under them.
     fn table_section(&self, b: &Board, p: Palette, w: usize, out: &mut Vec<Line<'static>>) {
+        self.switches(b, p, w, out);
         let mut st = vec![];
         if let Some(t) = &self.typing {
             st.push(Span::styled(format!("/{t}_"), p.head()));
@@ -456,7 +482,7 @@ impl CostsView {
                 if st.is_empty() { "" } else { "    " },
                 b.table.shown,
                 b.table.total,
-                costs::usd(Some(b.shown_usd).filter(|_| b.unpriced.is_none()))
+                costs::usd(b.unpriced.is_none().then_some(b.shown_usd))
             ),
             p.dim(),
         ));
@@ -506,7 +532,10 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
         return vec![clip_line(
-            Line::from(vec![dim("BURN  "), Span::raw("no data from claude-acct")]),
+            Line::from(vec![
+                dim("BURN  "),
+                Span::raw(format!("{} from claude-acct", hub_core::reading::NO_DATA)),
+            ]),
             w,
         )];
     }
@@ -519,7 +548,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut drip = vec![dim("DRIP  "), Span::raw(b.drip_line.clone())];
     if b.drip.held.is_some() {
         drip.push(Span::styled(
-            format!("   dispatch held -> {}", burn::HOLD_BADGE),
+            format!("   dispatch held -> {}", burn::hold_badge()),
             p.warn(),
         ));
     }
@@ -610,6 +639,30 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
             ]
         })
         .collect::<Vec<_>>();
+    let mut rows = rows;
+    if let Some(f) = &b.total {
+        let dash = || Cell::from("-");
+        let over = if f.over { p.warn() } else { Style::new() };
+        rows.push(vec![
+            cell("TOTAL", p.head()),
+            dash(),
+            f.live.to_string().into(),
+            Cell::from(""),
+            dash(),
+            dash(),
+            dash(),
+            dash(),
+            cell(format!("{:.2}", f.burn), over),
+            format!("{:.2}", f.sustain).into(),
+            dash(),
+            dash(),
+            f.run_out.map_or("-".into(), time).into(),
+            dash(),
+            dash(),
+            dash(),
+            costs::usd(f.cost_24h).into(),
+        ]);
+    }
     out.extend(
         Table {
             header: vec![
@@ -632,7 +685,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 "$24H",
             ],
             rows,
-            // The 5h window and the day's dollars were Fleet's accounts table's; $24H goes first.
+            // The 5h window and the day's dollars drop first at a narrow width, $24H before them.
             keep: vec![0, 7, 4, 1, 8, 9, 2, 14, 10, 11, 3, 5, 6, 12, 13, 15, 16],
             right: vec![2, 4, 5, 6, 8, 9, 14, 16],
             ..Default::default()
@@ -856,7 +909,7 @@ fn history(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'static>> 
         ];
     }
     // the month and the day halves of the headline on their own lines, so the warning and the key fit 80 columns
-    let (month, day) = h.head.split_once("; ").unwrap_or((&h.head, ""));
+    let (month, day) = (&h.month, &h.last_day);
     let mut head = vec![title];
     if h.stale {
         head.push(Span::styled("STALE: no snapshot for yesterday  ", p.warn()));
@@ -887,6 +940,7 @@ fn history_rows(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'stat
                 &r.total,
                 &r.days.to_string(),
                 &r.per_day,
+                &r.per_session,
                 &r.vs_prev,
                 &r.est,
             ]
@@ -897,10 +951,18 @@ fn history_rows(h: &History, open: bool, p: Palette, w: usize) -> Vec<Line<'stat
         .collect();
     out.extend(
         Table {
-            header: vec!["period", "total", "days", "$/day", "vs prev", "est."],
+            header: vec![
+                "period",
+                "total",
+                "days",
+                "$/day",
+                "$/session",
+                "vs prev",
+                "est.",
+            ],
             rows,
-            keep: vec![0, 1, 3, 4, 5, 2],
-            right: (1..6).collect(),
+            keep: vec![0, 1, 3, 4, 5, 6, 2],
+            right: (1..7).collect(),
             ..Default::default()
         }
         .fit(w, p.head()),
@@ -1016,7 +1078,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     let mut out = vec![];
     if let Some(why) = &d.why {
         out.push(clip_line(
-            Line::styled(format!("  SESSIONS  {why}"), p.dim()),
+            Line::styled(format!("  BURN PER SESSION  {why}"), p.dim()),
             w,
         ));
         out.push(Line::raw(""));
@@ -1024,7 +1086,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     }
     out.push(clip_line(
         Line::from(vec![
-            Span::styled("  SESSIONS  ", p.head()),
+            Span::styled("  BURN PER SESSION  ", p.head()),
             Span::raw(d.head.clone()),
         ]),
         w,
@@ -1063,7 +1125,7 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     let past = d.rows.len().saturating_sub(SESS_ROWS) + d.more;
     if past > 0 {
         out.push(Line::styled(
-            format!("+{past} more on the web table (#costs/spend), which takes a query"),
+            format!("+{past} more sessions; the web table (#costs/spend) shows up to 50"),
             p.dim(),
         ));
     }
@@ -1098,17 +1160,12 @@ fn day_table(d: &DayView, at: usize, p: Palette, w: usize) -> Vec<Line<'static>>
     out
 }
 
-/// The whole fleet's 24h cost: `hub_core::fleet_cost` builds every row and word, this draws them.
-fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
-    let title = Span::styled("FLEET COST 24H  ", p.head());
+/// The whole fleet's 24h figure, the first line of Spend's totals: `hub_core::fleet_cost`'s
+/// total, its measured and estimated parts and its age, or why there is none.
+fn fleet_head(f: &FleetCost, p: Palette, now: i64) -> Line<'static> {
+    let title = Span::styled("FLEET 24H ", p.head());
     if let Some(why) = &f.why {
-        return vec![
-            clip_line(
-                Line::from(vec![title, Span::styled(why.clone(), p.warn())]),
-                w,
-            ),
-            Line::raw(""),
-        ];
+        return Line::from(vec![title, Span::styled(why.clone(), p.warn())]);
     }
     let as_of = f.as_of.map_or("-".into(), |t| clock(t, now));
     let (age, style) = if f.stale {
@@ -1116,17 +1173,29 @@ fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     } else {
         (format!("as of {as_of}"), p.dim())
     };
+    Line::from(vec![
+        title,
+        Span::raw(format!("{}  ", f.usd)),
+        Span::styled(
+            format!("measured {}  estimated {}  ", f.measured, f.estimated),
+            p.dim(),
+        ),
+        Span::styled(age, style),
+    ])
+}
+
+/// Who spent the 24h fleet figure: `hub_core::fleet_cost` builds every row and word, this draws
+/// them. The figure itself heads Spend's totals (`fleet_head`).
+fn fleet(f: &FleetCost, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if f.why.is_some() {
+        return vec![];
+    }
     let mut out = vec![
         clip_line(
-            Line::from(vec![
-                title,
-                Span::raw(format!("{}  ", f.usd)),
-                Span::styled(
-                    format!("measured {}  estimated {}  ", f.measured, f.estimated),
-                    p.dim(),
-                ),
-                Span::styled(age, style),
-            ]),
+            Line::styled(
+                format!("WHO SPENT THE 24H  {} rows", f.rows.len()),
+                p.head(),
+            ),
             w,
         ),
         clip_line(Line::styled(f.coverage.clone(), p.dim()), w),
@@ -1153,6 +1222,126 @@ fn fleet(f: &FleetCost, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
         }
     }
     let foot: Vec<&str> = f.foot.split(' ').collect();
+    for l in wrap(&foot, " ", w) {
+        out.push(clip_line(Line::styled(l, p.dim()), w));
+    }
+    out.push(Line::raw(""));
+    out
+}
+
+/// This month's cash by bill: `hub_core::budget` builds every row and word, this draws them.
+fn budget(b: &hub_core::budget::Budget, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let title = Span::styled("BUDGET  ", p.head());
+    if let Some(why) = &b.why {
+        return vec![
+            clip_line(
+                Line::from(vec![title, Span::styled(why.clone(), p.warn())]),
+                w,
+            ),
+            Line::raw(""),
+        ];
+    }
+    let as_of = b.as_of.map_or("-".into(), |t| clock(t, now));
+    // STALE leads, so a narrow screen clips the month, never the warning.
+    let mut head = vec![title];
+    if b.stale {
+        head.push(Span::styled(format!("STALE, as of {as_of}  "), p.warn()));
+    }
+    head.push(Span::styled(format!("{}  ", b.month), p.dim()));
+    head.push(Span::raw(format!(
+        "{} so far  {} by month end  ",
+        b.spent, b.projected
+    )));
+    head.push(Span::styled(format!("caps {}", b.caps), p.dim()));
+    if !b.stale {
+        head.push(Span::styled(format!("  as of {as_of}"), p.dim()));
+    }
+    let mut out = vec![clip_line(Line::from(head), w)];
+    if !b.partial.is_empty() {
+        out.push(clip_line(
+            Line::styled(
+                format!("partial, not counted: {}", b.partial.join(", ")),
+                p.warn(),
+            ),
+            w,
+        ));
+    }
+    if !b.needs.is_empty() {
+        out.push(clip_line(
+            Line::styled(format!("NEEDS LOOK {}", b.needs.len()), p.warn()),
+            w,
+        ));
+        for n in &b.needs {
+            let words: Vec<&str> = n.split(' ').collect();
+            for l in wrap(&words, " ", w.saturating_sub(2)) {
+                out.push(clip_line(Line::styled(format!("  {l}"), p.warn()), w));
+            }
+        }
+    }
+    // Each group's heading row (its name and our cash in it), then its bills.
+    let mut rows = vec![];
+    for g in &b.groups {
+        rows.push(vec![
+            cell(g.name.to_uppercase(), p.head()),
+            Cell::from(""),
+            Cell::from(""),
+            cell(g.spent.clone(), p.head()),
+            cell(g.month.clone(), p.head()),
+            Cell::from(""),
+        ]);
+        for x in &g.bills {
+            let s = if x.status == "ok" {
+                Style::new()
+            } else {
+                p.warn()
+            };
+            rows.push(vec![
+                cell(format!("  {}", x.name), s),
+                cell(x.kind.clone(), p.dim()),
+                x.cap.clone().into(),
+                cell(x.spent.clone(), s),
+                x.month.clone().into(),
+                cell(x.note.clone(), p.dim()),
+            ]);
+        }
+    }
+    out.extend(
+        Table {
+            header: vec!["BILL", "KIND", "CAP", "SO FAR", "MONTH EST", "NOTE"],
+            rows,
+            keep: vec![0, 3, 4, 2, 5, 1],
+            flex: Some(5),
+            flexmin: 12,
+            right: vec![2, 3, 4],
+            ..Table::default()
+        }
+        .fit(w, p.head()),
+    );
+    let project: Vec<String> = b
+        .by_project
+        .iter()
+        .map(|c| format!("{} {}", c.name, c.usd))
+        .collect();
+    for (head, items) in [
+        ("BY PROJECT  ", project),
+        ("BY LANE     ", b.by_lane.clone()),
+    ] {
+        for (i, l) in wrap(&items, "  ", w.saturating_sub(head.len()))
+            .into_iter()
+            .enumerate()
+        {
+            let lead = if i == 0 {
+                head.to_string()
+            } else {
+                " ".repeat(head.len())
+            };
+            out.push(clip_line(
+                Line::from(vec![Span::styled(lead, p.head()), Span::raw(l)]),
+                w,
+            ));
+        }
+    }
+    let foot: Vec<&str> = b.foot.split(' ').collect();
     for l in wrap(&foot, " ", w) {
         out.push(clip_line(Line::styled(l, p.dim()), w));
     }
@@ -1194,9 +1383,9 @@ fn direct(b: &Board, p: Palette) -> Vec<Span<'static>> {
 fn sources(b: &Board, p: Palette) -> Vec<Span<'static>> {
     let mut s = vec![Span::styled("as of: ", p.dim())];
     for (i, src) in b.sources.iter().enumerate() {
-        let when = src
-            .as_of
-            .map_or("never".into(), |t| crate::fmt::clock(t, b.at));
+        let when = src.as_of.map_or(hub_core::reading::NO_DATA.into(), |t| {
+            crate::fmt::clock(t, b.at)
+        });
         let text = format!("{}{} {when}", if i == 0 { "" } else { "  " }, src.name);
         s.push(if src.stale {
             Span::styled(text, p.warn())
@@ -1261,8 +1450,9 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
     ];
     // The key column and its cost never drop; the evaluation goes before the share.
     let order = [
-        "session", "tool", "kind", "project", "harness", "model", "runner", "cost", "landed",
-        "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src", "pr", "at",
+        "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "cost",
+        "landed", "per_pr", "sessions", "calls", "share", "tokens", "redo", "reverts", "src", "pr",
+        "at",
     ];
     let mut keep: Vec<usize> = vec![0];
     keep.extend(order.iter().filter_map(|k| at(k)).filter(|i| *i != 0));
@@ -1289,6 +1479,7 @@ fn table(b: &Board, p: Palette, w: usize) -> Vec<Line<'static>> {
             ("project", 20),
             ("runner", 22),
             ("tool", 28),
+            ("skill", 28),
             ("pr", 22),
         ]
         .iter()
@@ -1448,6 +1639,26 @@ mod tests {
     }
 
     /// A view with one inner tab shown.
+    #[test]
+    fn v_from_another_inner_tab_only_switches_until_spend_has_drawn_its_rows() {
+        let mut v = on("limits");
+        assert_eq!(
+            v.fold(KeyCode::Char('v'), None, None),
+            Some(Some("sessions"))
+        );
+        assert_eq!(
+            (v.inner, v.sess_at),
+            ("spend", 0),
+            "the switch opens no session"
+        );
+        v.sess_n.set(3);
+        v.fold(KeyCode::Char('v'), None, None);
+        assert_eq!(v.sess_at, 1, "on Spend, v steps to the first session");
+        assert_eq!(key_section(KeyCode::Char('w')), Some("table"));
+        assert_eq!(key_section(KeyCode::Char('T')), Some("sections"));
+        assert_eq!(key_section(KeyCode::Left), None);
+    }
+
     fn on(inner: &'static str) -> CostsView {
         CostsView {
             inner,
@@ -1465,33 +1676,131 @@ mod tests {
     }
 
     #[test]
-    fn the_strip_is_the_first_line_with_the_pinned_fleet_figure_under_it_and_arrows_switch() {
+    fn the_strip_is_the_first_line_spend_opens_on_the_fleet_figure_and_arrows_switch() {
         let mut v = CostsView::default();
-        let limits = screen_of(&burning(), &v, 80);
-        let lines: Vec<&str> = limits.lines().collect();
+        let spend = screen_of(&burning(), &v, 80);
+        let lines: Vec<&str> = spend.lines().collect();
         assert!(
-            lines[0].starts_with("[Limits 1] Spend  Models") && lines[0].contains("<- -> switch"),
-            "the strip is the first line: {limits}"
+            lines[0].starts_with("[Spend] Limits 1  Models") && lines[0].contains("<- -> switch"),
+            "the strip is the first line, Spend first: {spend}"
         );
-        let at = |head: &str| lines.iter().position(|l| l.starts_with(head));
-        let (fleet, burn) = (at("FLEET COST 24H").unwrap(), at("BURN").unwrap());
+        let at = |head: &str| lines.iter().position(|l| l.trim_start().starts_with(head));
+        let (fleet, sess, who) = (
+            at("FLEET 24H").unwrap(),
+            at("BURN PER SESSION").unwrap(),
+            at("WHO SPENT THE 24H").unwrap(),
+        );
         assert!(
-            0 < fleet && fleet < burn,
-            "fleet is pinned under the strip: {limits}"
+            fleet == 1 && fleet < who && who < sess,
+            "the fleet figure heads Spend, who spent it next, burn per session last: {spend}"
         );
-        assert!(!limits.contains("window:") && !limits.contains("WHERE THE TOKENS GO"));
+        assert!(spend.contains("window:") && !spend.contains("WHERE THE TOKENS GO"));
         assert!(v.key(KeyCode::Right));
-        assert_eq!(v.inner, "spend");
-        assert!(screen_of(&burning(), &v, 80).contains("window:"));
+        assert_eq!(v.inner, "limits");
+        let limits = screen_of(&burning(), &v, 80);
+        assert!(
+            !limits.contains("FLEET 24H") && !limits.contains("WHO SPENT"),
+            "no fleet figure on Limits: {limits}"
+        );
+        assert!(limits.contains("BURN"));
         v.key(KeyCode::Right);
         v.key(KeyCode::Right);
-        assert_eq!(v.inner, "limits", "Right wraps past the last");
+        v.key(KeyCode::Right);
+        assert_eq!(v.inner, "spend", "Right wraps past the last");
         v.key(KeyCode::Left);
-        assert_eq!(v.inner, "models", "Left wraps before the first");
+        assert_eq!(v.inner, "budget", "Left wraps before the first");
         // Esc clears the view, not the inner tab shown.
         v.q = "x".into();
         v.key(KeyCode::Esc);
-        assert_eq!(v.inner, "models");
+        assert_eq!(v.inner, "budget");
+    }
+
+    fn with_budget(age: i64) -> Costs {
+        let f: hub_core::budget::File = serde_json::from_value(serde_json::json!({
+            "schema": 2, "month": "2026-11", "as_of_epoch": 1_000_000 - age, "day": 11, "days": 30,
+            "total": {"spent": 838.3, "projected": 1303.52, "caps": 1445.0},
+            "needs": [],
+            "by_project": [{"name": "unity-core-playground", "usd": 334.31}, {"name": "agent-runtime", "usd": 200.91},
+                           {"name": "dotfiles", "usd": 118.82}, {"name": "notes-cockpit", "usd": 93.08},
+                           {"name": "unattributed", "usd": 91.18}],
+            "by_lane": [{"name": "queue", "usd": 175.02}, {"name": "interactive", "usd": 171.06}],
+            "lines": [
+                {"name": "max4", "kind": "subscription", "cap": 200.0, "spent": 200.0, "projected": 200.0,
+                 "list_usd": 1125.54, "status": "ok", "note": ""},
+                {"name": "lazer", "kind": "litellm", "paid_by": "lazer", "cap": 50.0, "spent": 228.12,
+                 "projected": 228.12, "status": "over", "note": "past its $50 cap"},
+                {"name": "do", "kind": "digitalocean", "lane": "infra", "spent": 77.71, "projected": 224.0, "status": "ok", "note": ""},
+                {"name": "aws", "kind": "aws", "lane": "ci", "cap": 600.0, "spent": 112.95, "projected": 379.86,
+                 "status": "ok", "note": "AWS's own forecast"}
+            ]
+        }))
+        .unwrap();
+        Costs {
+            at: 1_000_000,
+            budget: hub_core::budget::build(&f, 1_000_000),
+            ..Costs::default()
+        }
+    }
+
+    #[test]
+    fn budget_leads_with_the_month_then_what_needs_a_look_then_the_bills_within_80_columns() {
+        let c = with_budget(600);
+        let screen = screen_of(&c, &on("budget"), 80);
+        for l in screen.lines() {
+            assert!(crate::fit::len(l) <= 80, "{l:?} is wider than 80");
+        }
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(
+            lines[0].contains("Budget 1"),
+            "the strip counts it: {screen}"
+        );
+        let at = |head: &str| {
+            lines
+                .iter()
+                .position(|l| l.starts_with(head))
+                .unwrap_or(usize::MAX)
+        };
+        let (head, needs, bills) = (at("BUDGET"), at("NEEDS LOOK 1"), at("BILL "));
+        assert!(
+            head < needs && needs < bills && bills < lines.len(),
+            "{screen}"
+        );
+        assert!(
+            lines[head].contains("$838 so far") && lines[head].contains("~$1,304 by month end"),
+            "{screen}"
+        );
+        assert!(
+            lines[needs + 1].contains("lazer over its $50 cap ($228)"),
+            "{screen}"
+        );
+        assert!(
+            lines[bills + 1].starts_with("AGENTS"),
+            "the agents group leads: {screen}"
+        );
+        assert!(
+            lines[bills + 2].starts_with("  lazer"),
+            "off ok leads its group: {screen}"
+        );
+        let (ci, infra) = (at("CI "), at("INFRA "));
+        assert!(
+            bills < ci && ci < at("  aws") && at("  aws") < infra && infra < at("  do"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("BY PROJECT  unity-core-playground $334"),
+            "{screen}"
+        );
+        assert!(screen.contains("unattributed $91"), "{screen}");
+        assert!(
+            !screen.contains("FLEET 24H"),
+            "the fleet figure is on Spend, not Budget"
+        );
+        // negative control: three hours old says STALE and needs a look for it
+        let stale = screen_of(&with_budget(3 * 3600), &on("budget"), 80);
+        assert!(
+            stale.contains("STALE, as of") && stale.contains("NEEDS LOOK 2"),
+            "{stale}"
+        );
     }
 
     #[test]
@@ -1553,7 +1862,7 @@ mod tests {
             Some(None),
             "on its own tab, y folds the open history"
         );
-        let mut v = CostsView::default();
+        let mut v = on("limits");
         assert_eq!(v.fold(KeyCode::Char('y'), None, None), Some(Some("spend")));
         assert!(
             v.history_open && v.inner == "spend",
@@ -1610,7 +1919,10 @@ mod tests {
         let open = page(&v);
         assert!(open.lines().all(|l| l.chars().count() <= 80), "{open}");
         assert!(open.contains("- SPEND  "), "{open}");
-        assert!(open.contains("vs prev"), "{open}");
+        assert!(
+            open.contains("vs prev") && open.contains("$/session"),
+            "{open}"
+        );
         let row = |p: &str| {
             open.lines()
                 .find(|l| l.trim_start().starts_with(p))
@@ -1620,12 +1932,15 @@ mod tests {
         };
         assert_eq!(
             row("2026-11 "),
-            ["2026-11", "$1,579", "1", "$1,579", "+43%", "25%"]
+            ["2026-11", "$1,579", "1", "$1,579", "-", "+43%", "25%"]
         );
-        assert_eq!(row("2026 "), ["2026", "$3,783", "3", "$1,261", "-", "25%"]);
+        assert_eq!(
+            row("2026 "),
+            ["2026", "$3,783", "3", "$1,261", "-", "-", "25%"]
+        );
         assert_eq!(
             row("10-31"),
-            ["10-31", "$1,102", "1", "$1,102", "+0%", "25%"]
+            ["10-31", "$1,102", "1", "$1,102", "-", "+0%", "25%"]
         );
     }
 
@@ -1695,16 +2010,22 @@ mod tests {
                 && ranked[0].contains("90%"),
             "{s}"
         );
-        assert_eq!(v.fold(KeyCode::Char(','), None, None), Some(Some("spend")));
+        assert_eq!(
+            v.fold(KeyCode::Char(','), None, None),
+            Some(Some("sessions"))
+        );
         let s = page(&v);
         assert!(s.contains("2026-11-08: no figure"), "{s}");
         assert!(
-            s.contains("SESSIONS  2026-11-08: no session rows"),
+            s.contains("BURN PER SESSION  2026-11-08: no session rows"),
             "the picked day stays picked, and says it has no rows: {s}"
         );
         v.fold(KeyCode::Char(','), None, None);
         let s = page(&v);
-        assert!(s.contains("SESSIONS  2026-11-07: 2 sessions"), "{s}");
+        assert!(
+            s.contains("BURN PER SESSION  2026-11-07: 2 sessions"),
+            "{s}"
+        );
         v.fold(KeyCode::Char('v'), None, None);
         v.fold(KeyCode::Char('v'), None, None);
         let s = page(&v);
@@ -1716,22 +2037,31 @@ mod tests {
     }
 
     #[test]
-    fn the_fleet_figure_leads_then_the_burn_section_and_all_fits_80_columns() {
-        let s = CostsView::default()
-            .lines(&burning(), Palette::default(), 1_000_000, 80)
-            .0
-            .iter()
-            .map(crate::fit::plain)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
+    fn the_fleet_figure_leads_spend_and_burn_leads_limits_all_in_80_columns() {
+        let page = |v: CostsView| {
+            v.lines(&burning(), Palette::default(), 1_000_000, 80)
+                .0
+                .iter()
+                .map(crate::fit::plain)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (spend, limits) = (page(CostsView::default()), page(on("limits")));
         assert!(
-            s.starts_with("[Limits 1] Spend  Models")
-                && s.lines().nth(1).unwrap().starts_with(
-                    "FLEET COST 24H  about $849  measured $310  estimated $538  as of "
-                ),
-            "{s}"
+            spend.starts_with("[Spend] Limits 1  Models")
+                && spend
+                    .lines()
+                    .nth(1)
+                    .unwrap()
+                    .starts_with("FLEET 24H about $849  measured $310  estimated $538  as of "),
+            "{spend}"
         );
+        assert!(
+            limits.lines().nth(1).unwrap().starts_with("BURN"),
+            "{limits}"
+        );
+        let s = format!("{spend}\n{limits}");
+        assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         assert!(
             s.contains("  shepherd                $44   5%  61 sessions, measured\n"),
             "{s}"
@@ -1761,11 +2091,11 @@ mod tests {
             "{s}"
         );
         assert!(
-            !s.contains("window:"),
+            !limits.contains("window:") && !limits.contains("7D "),
             "the spend tiles are on Spend, not Limits"
         );
         // a narrow pane wraps the headline between clauses instead of cutting its last one
-        let narrow = CostsView::default()
+        let narrow = on("limits")
             .lines(&burning(), Palette::default(), 1_000_000, 50)
             .0
             .iter()
@@ -1781,7 +2111,7 @@ mod tests {
             assert!(s.contains(t), "{t} undefined: {s}");
         }
         // and every term the legend defines, bar the headline's unit, is a column the table prints
-        let wide = CostsView::default()
+        let wide = on("limits")
             .lines(&burning(), Palette::default(), 1_000_000, 400)
             .0
             .iter()
@@ -1796,7 +2126,7 @@ mod tests {
     #[test]
     fn a_burn_row_carries_the_five_hour_window_and_the_days_dollars() {
         let at = |w| {
-            CostsView::default()
+            on("limits")
                 .lines(&burning(), Palette::default(), 1_000_000, w)
                 .0
                 .iter()
@@ -1840,23 +2170,18 @@ mod tests {
             (Some(true), ""),
             "a section is no query"
         );
-        // The pinned section is a Costs section too: no query, and the inner tab stays put.
+        // The fleet figure is a Costs section too: no query, and it opens Spend.
         v.open("fleet");
-        assert_eq!((v.q.as_str(), v.inner), ("", "limits"), "fleet is no query");
-        // The pinned section, then each inner tab's: together every Costs section has its
-        // anchor, in the layout's order.
+        assert_eq!((v.q.as_str(), v.inner), ("", "spend"), "fleet is no query");
+        // Each inner tab's sections: together every Costs section has its anchor, in the
+        // layout's order.
         let mut names: Vec<&str> = vec![];
         let mut pages = std::collections::HashMap::new();
         for i in layout::resolve("costs").unwrap().inner {
             v.inner = i.id;
             let (l, at) = v.lines(&c, Palette::default(), 1_000_000, 100);
             let l: Vec<String> = l.iter().map(crate::fit::plain).collect();
-            assert_eq!(at[0].0, "fleet");
-            names.extend(
-                at.iter()
-                    .skip(if names.is_empty() { 0 } else { 1 })
-                    .map(|a| a.0),
-            );
+            names.extend(at.iter().map(|a| a.0));
             for (sec, n) in &at {
                 pages.insert(*sec, l.get(*n).cloned().unwrap_or_default());
             }
@@ -1875,7 +2200,13 @@ mod tests {
             pages["langfuse"].starts_with("- WHAT LANGFUSE SEES"),
             "{pages:#?}"
         );
-        assert!(pages["totals"].starts_with("window:"), "{pages:#?}");
+        assert!(pages["totals"].starts_with("FLEET 24H"), "{pages:#?}");
+        assert!(
+            pages["fleet"].starts_with("WHO SPENT THE 24H"),
+            "{pages:#?}"
+        );
+        assert!(pages["table"].starts_with("window:"), "{pages:#?}");
+        assert!(pages["budget"].starts_with("BUDGET"), "{pages:#?}");
     }
 
     fn with_sections() -> Costs {
@@ -1975,7 +2306,7 @@ mod tests {
 
     #[test]
     fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
-        let s = screen(&CostsView::default(), 80);
+        let s = screen(&on("limits"), 80);
         assert!(s.contains("\nBURN  no data from claude-acct"), "{s}");
         assert!(screen(&on("spend"), 80).contains("window:"));
     }
@@ -2049,7 +2380,7 @@ mod tests {
             burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
-        let shut = screen_of(&c, &CostsView::default(), 200);
+        let shut = screen_of(&c, &on("limits"), 200);
         let shut: Vec<&str> = shut.lines().collect();
         assert!(
             shut.iter().any(|l| l.starts_with("lazer")),
@@ -2118,7 +2449,7 @@ mod tests {
             )])),
             ..costs()
         };
-        let mut v = CostsView::default();
+        let mut v = on("limits");
         let open = screen_of(&c, &v, 80);
         assert_eq!(v.fold(KeyCode::Char('K'), None, Some("ok")), Some(None));
         let shut = screen_of(&c, &v, 80);
@@ -2128,7 +2459,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{shut}"));
         assert!(head.contains("2 consumers: must 1, low 1"), "{shut}");
         assert!(!shut.contains("CONSUMER "), "folded, no table: {shut}");
-        let mut linked = CostsView::default();
+        let mut linked = on("limits");
         linked.open("consumers");
         assert_eq!(
             screen_of(&c, &linked, 80),
@@ -2164,7 +2495,7 @@ mod tests {
             ])),
             ..costs()
         };
-        let s = screen_of(&c, &CostsView::default(), 80);
+        let s = screen_of(&c, &on("limits"), 80);
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         assert!(s.contains("- CONSUMERS  1 MISMATCH | "), "{s}");
         let lines: Vec<&str> = s.lines().collect();
@@ -2220,7 +2551,7 @@ mod tests {
             burn: burn::build(&all, Default::default(), 1_000_000),
             ..costs()
         };
-        let wide = CostsView::default()
+        let wide = on("limits")
             .lines(&c, Palette::default(), 1_000_000, 200)
             .0
             .iter()

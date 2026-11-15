@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
+/// The home-screen widget's page; its cards go in at `DATA_MARK` on each request.
+const WIDGET: &str = include_str!("widget.html");
+const DATA_MARK: &str = "{{data}}";
 /// Where the page and every CSS file name the asset version: web-kit's tokens.css versions the
 /// fonts with it (`css_names_the_fonts_at_the_current_version`).
 const VERSION_MARK: &str = "{{v}}";
@@ -26,12 +29,21 @@ const WOFF2: &str = "font/woff2";
 /// `(name, content type, body)`. tokens.css, shell.css, kb-shell.js and the fonts are web-kit's
 /// (`../../web-kit`, shared with every kblab site), served flat beside agent-web's own.
 /// ui.js is the shared helpers, md.js the markdown renderer,
-/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, home.js the Home tab;
+/// app.js the open session and the event stream, sessions.js the Sessions table, waiting.js the answer cards, cards.js the status card Home and
+/// the widget draw, home.js the Home tab, widget.js the home-screen widget page;
 /// each other script is one board tab.
 const FILES: &[(&str, &str, &[u8])] = &[
-    ("tokens.css", CSS, include_bytes!("../../web-kit/tokens.css")),
+    (
+        "tokens.css",
+        CSS,
+        include_bytes!("../../web-kit/tokens.css"),
+    ),
     ("shell.css", CSS, include_bytes!("../../web-kit/shell.css")),
-    ("kb-shell.js", JS, include_bytes!("../../web-kit/kb-shell.js")),
+    (
+        "kb-shell.js",
+        JS,
+        include_bytes!("../../web-kit/kb-shell.js"),
+    ),
     ("app.css", CSS, include_bytes!("../static/app.css")),
     ("ui.js", JS, include_bytes!("../static/ui.js")),
     ("md.js", JS, include_bytes!("../static/md.js")),
@@ -39,7 +51,9 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("convo.js", JS, include_bytes!("../static/convo.js")),
     ("app.js", JS, include_bytes!("../static/app.js")),
     ("waiting.js", JS, include_bytes!("../static/waiting.js")),
+    ("cards.js", JS, include_bytes!("../static/cards.js")),
     ("home.js", JS, include_bytes!("../static/home.js")),
+    ("widget.js", JS, include_bytes!("../static/widget.js")),
     ("outbox.js", JS, include_bytes!("../static/outbox.js")),
     ("watch.js", JS, include_bytes!("../static/watch.js")),
     ("log.js", JS, include_bytes!("../static/log.js")),
@@ -47,13 +61,16 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("table.js", JS, include_bytes!("../static/table.js")),
     ("flow.js", JS, include_bytes!("../static/flow.js")),
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
+    ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
     ("costs.js", JS, include_bytes!("../static/costs.js")),
     ("sessions.js", JS, include_bytes!("../static/sessions.js")),
     ("queue.js", JS, include_bytes!("../static/queue.js")),
     ("board.js", JS, include_bytes!("../static/board.js")),
+    ("ladder.js", JS, include_bytes!("../static/ladder.js")),
     ("projects.js", JS, include_bytes!("../static/projects.js")),
     ("shepherd.js", JS, include_bytes!("../static/shepherd.js")),
     ("work.js", JS, include_bytes!("../static/work.js")),
@@ -85,6 +102,7 @@ const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsa
 struct Built {
     version: String,
     index: String,
+    widget: String,
     files: Vec<(&'static str, &'static str, Bytes)>,
 }
 
@@ -111,6 +129,7 @@ fn built() -> &'static Built {
             .collect();
         Built {
             index: page.replace(VERSION_MARK, &version),
+            widget: WIDGET.replace(VERSION_MARK, &version),
             version,
             files,
         }
@@ -151,6 +170,13 @@ fn fnv(h: u64, bytes: &[u8]) -> u64 {
 /// The app page, with the current asset version in its links.
 pub fn index() -> &'static str {
     &built().index
+}
+
+/// The widget page around `data`, JSON the page parses. `<` is escaped so no string in it can
+/// close the script element it sits in.
+pub fn widget(data: &serde_json::Value) -> String {
+    let json = data.to_string().replace('<', "\\u003c");
+    built().widget.replacen(DATA_MARK, &json, 1)
 }
 
 /// One asset. Only a request naming the current version may be cached for good; any other
@@ -214,6 +240,7 @@ mod tests {
             std::env::var("AGENT_WEB_INDEX_OUT").expect("AGENT_WEB_INDEX_OUT is the output path");
         std::fs::write(&out, index()).unwrap();
         std::fs::write(format!("{out}.csp"), CSP).unwrap();
+        std::fs::write(format!("{out}.widget"), &built().widget).unwrap();
         let roles = serde_json::to_string(&hub_core::table::phone_tables()).unwrap();
         std::fs::write(format!("{out}.roles"), roles).unwrap();
     }
@@ -268,7 +295,8 @@ mod tests {
 
     #[test]
     fn the_schedules_headers_are_hub_cores_columns() {
-        // Rule 8, less `repo`: the name says it, and it still sorts and filters.
+        // Rule 8, less `result` and `repo`: the state and the name say them, and they still sort
+        // and filter.
         use hub_core::table::Row;
         let js = include_str!("../static/schedules.js");
         let at = js.find("const SCHED_COLS = {").expect("no SCHED_COLS");
@@ -279,8 +307,18 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::schedules::Schedule::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 1]);
-        assert_eq!(all[all.len() - 1..], ["repo"]);
+        assert_eq!(keys, all[..all.len() - 2]);
+        assert_eq!(all[all.len() - 2..], ["result", "repo"]);
+    }
+
+    #[test]
+    fn the_candidates_headers_are_hub_cores_columns() {
+        // qCandRow writes its cells in this order, so the map must be COLUMNS, in order.
+        use hub_core::table::Row;
+        assert_eq!(
+            col_keys(include_str!("../static/queue.js"), "const CAND_COLS = {"),
+            hub_core::queue::Candidate::COLUMNS
+        );
     }
 
     #[test]
@@ -302,10 +340,11 @@ mod tests {
 
     #[test]
     fn the_builds_headers_are_hub_cores_columns() {
-        // Rule 8: the Builds table draws the first columns hub_core::builds sorts and filters;
-        // `forge` and `event` are dropdowns and `title` the open row's heading.
+        // Rule 8: the CI run tables draw the first columns hub_core::builds sorts and filters;
+        // `forge` and `event` are dropdowns, `title` the open row's heading, and `id` and `pr`
+        // only a query's (a run's record `id:=`, a PR's runs `pr:=`).
         use hub_core::table::Row;
-        let js = include_str!("../static/releases.js");
+        let js = include_str!("../static/ci.js");
         let at = js.find("const BLD_COLS = {").expect("no BLD_COLS");
         let body = &js[at..at + js[at..].find('}').unwrap()];
         let keys: Vec<&str> = body
@@ -314,13 +353,16 @@ mod tests {
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
         let all = hub_core::builds::Run::COLUMNS;
-        assert_eq!(keys, all[..all.len() - 3]);
-        assert_eq!(all[all.len() - 3..], ["forge", "event", "title"]);
+        assert_eq!(keys, all[..all.len() - 5]);
+        assert_eq!(
+            all[all.len() - 5..],
+            ["forge", "event", "title", "id", "pr"]
+        );
     }
 
     #[test]
     fn the_fleet_headers_are_hub_cores_columns() {
-        // Rule 8: the Fleet table draws the columns hub_core::fleet::who sorts and filters.
+        // Rule 8: the Runners table draws the columns hub_core::fleet::who sorts and filters.
         use hub_core::table::Row;
         let at = FLEET_JS
             .find("const FLEET_COLS = {")
@@ -440,6 +482,104 @@ mod tests {
     }
 
     #[test]
+    fn entity_pages_are_the_links() {
+        // Rule 8 for record pages: app.js's ENTITY_PAGES is hub_core::links::PAGES (and the old
+        // words it still reads), so the router keeps the id of every page Link::href draws inside
+        // an inner tab, and of a saved link to one.
+        let mut want = serde_json::Map::new();
+        for p in hub_core::links::PAGES
+            .iter()
+            .chain(hub_core::links::RETIRED_PAGES)
+        {
+            let tab = want.entry(p.tab).or_insert_with(|| serde_json::json!({}));
+            tab[p.word] = p.inner.into();
+        }
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const ENTITY_PAGES = "))
+            .expect("app.js has ENTITY_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("ENTITY_PAGES is JSON");
+        assert_eq!(got, serde_json::Value::Object(want));
+    }
+
+    #[test]
+    fn retired_tab_pages_are_the_links() {
+        // app.js's RETIRED_TAB_PAGES is hub_core::links::RETIRED_TAB_PAGES: `#fleet/<runner>`
+        // opens the page Link::href draws for that runner, and the old table's view keys take
+        // the prefix fleet.js's table reads.
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const RETIRED_TAB_PAGES = "))
+            .expect("app.js has RETIRED_TAB_PAGES");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("RETIRED_TAB_PAGES is JSON");
+        let got = got.as_object().expect("an object");
+        assert_eq!(got.len(), hub_core::links::RETIRED_TAB_PAGES.len());
+        for (tab, kind) in hub_core::links::RETIRED_TAB_PAGES {
+            let (new, arg) = hub_core::links::Link::to(*kind, "x")
+                .tab_args()
+                .expect("a page on a tab");
+            let word = arg.strip_suffix("/x").expect("a page arg");
+            let pre = format!(
+                "const RUNNERS_PRE = \"{}\";",
+                got[*tab][2].as_str().unwrap()
+            );
+            assert_eq!(got[*tab][0], new, "{tab}");
+            assert_eq!(got[*tab][1], word, "{tab}");
+            assert!(FLEET_JS.contains(&pre), "fleet.js lacks {pre}");
+        }
+    }
+
+    #[test]
+    fn moved_chips_are_the_layout() {
+        // app.js's MOVED carries each layout::MOVED_CHIPS entry as the view it opens with, under
+        // the table's prefix (infra::TABLES), so a renamed chip or prefix fails here.
+        for (tab, old, table, chip) in hub_core::layout::MOVED_CHIPS {
+            let to = hub_core::layout::MOVED
+                .iter()
+                .find(|m| m.0 == *tab && m.1 == *old)
+                .expect("a moved chip is a moved section");
+            let pre = crate::infra::TABLES
+                .iter()
+                .find(|t| t.0 == *table)
+                .expect("the chip's table is on the page")
+                .1;
+            let want = format!(
+                r#""{tab}/{old}": ["{}", "{}", "{pre}s={chip}"]"#,
+                to.2, to.3
+            );
+            assert!(APP_JS.contains(&want), "app.js MOVED lacks {want}");
+        }
+    }
+
+    #[test]
+    fn project_page_is_the_layout() {
+        // Rule 8 for an opened project: app.js's PROJECT_PAGE is hub_core::layout::PROJECT_PAGE.
+        let want: Vec<serde_json::Value> = hub_core::layout::PROJECT_PAGE
+            .iter()
+            .map(|i| serde_json::json!([i.id, i.title, i.sections]))
+            .collect();
+        let line = APP_JS
+            .lines()
+            .find_map(|l| l.strip_prefix("const PROJECT_PAGE = "))
+            .expect("app.js has PROJECT_PAGE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("PROJECT_PAGE is JSON");
+        assert_eq!(got, serde_json::Value::Array(want));
+        // Every section a group names is an anchor projects.js draws.
+        let js = include_str!("../static/projects.js");
+        for i in hub_core::layout::PROJECT_PAGE {
+            for s in i.sections {
+                assert!(
+                    js.contains(&format!("\"{s}\"")),
+                    "projects.js never names {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn inner_tabs_are_the_layout() {
         // Rule 8 for inner tabs: app.js's INNER_TABS is hub_core::layout's groups, as JSON.
         let mut want = serde_json::Map::new();
@@ -452,10 +592,7 @@ mod tests {
                 .iter()
                 .map(|i| serde_json::json!([i.id, i.title, i.sections]))
                 .collect();
-            want.insert(
-                t.id.to_string(),
-                serde_json::json!({ "pinned": t.pinned, "tabs": tabs }),
-            );
+            want.insert(t.id.to_string(), serde_json::json!({ "tabs": tabs }));
         }
         let line = APP_JS
             .lines()
@@ -468,12 +605,17 @@ mod tests {
         // section never shows under every inner tab or under none. Releases is checked per
         // inner tab below: its table and detail share one group.
         let pages = [
+            ("alerts", include_str!("../static/alerts.js").to_string()),
             ("costs", include_str!("../static/costs.js").to_string()),
             ("infra", include_str!("../static/infra.js").to_string()),
+            (
+                "projects",
+                include_str!("../static/projects.js").to_string(),
+            ),
         ];
         for t in hub_core::layout::TABS
             .iter()
-            .filter(|t| !t.inner.is_empty() && t.id != "releases")
+            .filter(|t| !t.inner.is_empty() && !["releases", "log", "sessions"].contains(&t.id))
         {
             let (_, js) = pages
                 .iter()
@@ -488,6 +630,37 @@ mod tests {
                     t.id
                 );
             }
+        }
+        // Log's sections are index.html's `sec-` anchors, which log.js puts in their inner tab's
+        // group by id; one log.js draws (the day's history) it wraps where it draws it. The
+        // forecast is the TUI's alone, as `log_folds_are_the_layout` says.
+        let log_js = include_str!("../static/log.js");
+        assert!(
+            log_js.contains(r#"innerHide("log", el.id.slice(4), el)"#),
+            "log.js never puts Log's sections in their inner tabs"
+        );
+        let index = include_str!("index.html");
+        for s in hub_core::layout::resolve("log").expect("log").sections {
+            let id = format!("id=\"sec-{s}\"");
+            let drawn = log_js.contains(&format!("innerWrap(\"log\", \"{s}\", `<div {id}"));
+            assert!(
+                *s == "forecast" || index.contains(&id) || drawn,
+                "Log's {s} has no {id} in its inner tab's group"
+            );
+        }
+        // Every Sessions inner tab has a group on the page: app.js's overview wraps one of its
+        // sections (an open session's `detail` replaces the page, so it is in no group).
+        for i in hub_core::layout::resolve("sessions")
+            .expect("sessions")
+            .inner
+        {
+            assert!(
+                i.sections
+                    .iter()
+                    .any(|s| APP_JS.contains(&format!("innerWrap(\"sessions\", \"{s}\""))),
+                "app.js never draws the {} inner tab",
+                i.id
+            );
         }
         // Every Releases inner tab has a group on the page: releases.js wraps one of its sections.
         let releases = include_str!("../static/releases.js");
@@ -536,24 +709,27 @@ mod tests {
     #[test]
     fn every_page_link_is_served_at_the_current_version() {
         let b = built();
-        assert!(!b.index.contains(VERSION_MARK));
-        for part in b.index.split("/static/").skip(1) {
-            let (name, rest) = part.split_once('?').expect("a versioned link");
-            assert!(
-                rest.starts_with(&format!("v={}\"", b.version)),
-                "{name} is not linked at the current version"
-            );
-            assert!(
-                b.files.iter().any(|(n, _, _)| *n == name),
-                "{name} is linked but not served"
-            );
+        for page in [&b.index, &b.widget] {
+            assert!(!page.contains(VERSION_MARK));
+            for part in page.split("/static/").skip(1) {
+                let (name, rest) = part.split_once('?').expect("a versioned link");
+                assert!(
+                    rest.starts_with(&format!("v={}\"", b.version)),
+                    "{name} is not linked at the current version"
+                );
+                assert!(
+                    b.files.iter().any(|(n, _, _)| *n == name),
+                    "{name} is linked but not served"
+                );
+            }
         }
-        // Every script and the stylesheet; a file nothing links is dead weight.
+        // Every script and the stylesheet; a file no page links is dead weight.
         for (name, ctype, _) in &b.files {
             if *ctype != WOFF2 {
+                let link = format!("/static/{name}?");
                 assert!(
-                    b.index.contains(&format!("/static/{name}?")),
-                    "{name} is served but the page never loads it"
+                    b.index.contains(&link) || b.widget.contains(&link),
+                    "{name} is served but no page loads it"
                 );
             }
         }

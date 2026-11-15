@@ -6,11 +6,14 @@
 //! every figure in it moves nightly or per call, so every open tab and view shares one read for
 //! `COSTS_SECS`. The lock is held across the read, so tabs that refresh together wait on one.
 
+use std::sync::Arc;
+
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::costs::{self, Board, Costs};
 use hub_core::session_actions::System;
+use hub_core::table::Keys;
 use serde::Deserialize;
 
 use crate::cache::{off, ReadCache};
@@ -28,16 +31,18 @@ pub struct CostsQuery {
     pub q: String,
     pub sort: String,
     pub dir: String,
-    /// The Sections block's own sort, which a click on its headers sets.
+    /// The Sections block's own view: its query, sort and direction (no state but all).
+    pub sq: String,
     pub ssort: String,
     pub sdir: String,
-    /// The Spend day table: the day shown, its own query and sort, and the session opened.
+    /// The Spend day table: the day shown, its own sort, and the session opened.
     pub day: String,
-    pub dq: String,
     pub dsort: String,
     pub ddir: String,
     pub sid: String,
-    /// The Consumers table's own sort, which a click on its headers sets.
+    /// The Consumers table's own view: its query, state, sort and direction.
+    pub cq: String,
+    pub cs: String,
     pub csort: String,
     pub cdir: String,
 }
@@ -52,13 +57,17 @@ fn kept(c: &Costs) -> bool {
     !c.sessions.is_empty() || c.errors.is_empty()
 }
 
-pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
+/// The one kept read, the tab's and Home's Costs card's.
+pub async fn read() -> Result<Arc<Costs>, String> {
     let read = off(|| {
         let now = chrono::Utc::now().timestamp();
         costs::read(&System, &costs::Paths::from_env(), now)
     });
-    let c = LAST
-        .get_if((), read, kept)
+    LAST.get_if((), read, kept).await
+}
+
+pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
+    let c = read()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let mut b = costs::board(
@@ -68,16 +77,28 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
         &q.q,
         &q.sort,
         &q.dir,
-        (&q.ssort, &q.sdir),
+        Keys {
+            q: &q.sq,
+            sort: &q.ssort,
+            dir: &q.sdir,
+            ..Keys::default()
+        },
         &hub_core::spend_history::Pick {
             day: &q.day,
-            q: &q.dq,
             sort: &q.dsort,
             dir: &q.ddir,
             sid: &q.sid,
         },
     );
-    b.consumers = costs::consumers(&c, &q.csort, &q.cdir);
+    b.consumers = costs::consumers(
+        &c,
+        Keys {
+            q: &q.cq,
+            s: &q.cs,
+            sort: &q.csort,
+            dir: &q.cdir,
+        },
+    );
     Ok(Json(b))
 }
 

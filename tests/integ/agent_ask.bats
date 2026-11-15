@@ -29,6 +29,30 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert [ -f "$HOME/.agent/asks/demo/$id.md" ]
 }
 
+@test "post refuses session terms its --context does not define, and files one that does" {
+  # 2026-11-09 YVyqvq: the question led with a flag name, the why cited a doc, and the context
+  # opened with an item id, so the human could only ask what was going on.
+  local q='Which game should turn scale.net.botsPredicted off next?'
+  local opts='a=keep botsPredicted on until you play one|b=turn it off now'
+  run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
+    --why 'scaling-net.md says play first' --context 'ucp-526 phase 3 is in' "$q"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"scale.net.botsPredicted, botsPredicted, scaling-net.md"* ]]
+  [[ "$stderr" == *"open --context with one plain-words line"* ]]
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend a \
+    --why 'scaling-net.md says play first' \
+    --context 'scale.net.botsPredicted is the switch that runs bots on your machine; scaling-net.md is the netcode doc' "$q"
+  assert_success
+  # Plain words and quoted text need no definitions (negative control).
+  run "$AGENT_ASK" post --project demo 'PR #1036 is green, merge it after "fix ar-12 in foo.md", e.g. today in utf-8?'
+  assert_success
+  # A term counts as named only whole: ucp-5260 in the context does not name ucp-526.
+  run --separate-stderr "$AGENT_ASK" post --project demo --context 'ucp-5260 is a row' 'land ucp-526?'
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"(ucp-526)"* ]]
+}
+
 @test "a new ask starts pending" {
   local id; id="$(post demo 'ship it?')"
   run "$AGENT_ASK" show "$id"
@@ -193,7 +217,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
 @test "answer and cancel fail the queued items the ask can no longer release, and only those" {
-  local opts='go=run it now|later=run it later' a b c
+  local opts='go=run it now|later=run it later' a b c d e
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
@@ -218,6 +242,18 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   "$AGENT_ASK_QUEUE_CMD" settle-ask "$c"
   run "$AGENT_ASK_QUEUE_CMD" show on-c
   assert_line 'state: queued'
+  # 2026-11-12: a free-text answer from the human releases, so the item stays queued with its brief carrying it.
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'how should it look?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-d --tags "ask:$d=go" "runs on go" >/dev/null
+  "$AGENT_ASK" answer "$d" "Neither: make it slope toward every ramp" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-d --json
+  [ "$(jq -r '"\(.state) \(.hold // "released")"' <<<"$output")" = "queued released" ]
+  # Negative control: free text that names another option is a deliberate no, so settle-ask fails it.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" 'and the last?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-e --tags "ask:$e=go" "runs on go" >/dev/null
+  "$AGENT_ASK" answer "$e" "No, run it later" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-e
+  assert_line 'status: failed'
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
@@ -229,17 +265,19 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
+  assert_not_called 'agentctl start'
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'chore(ask)'
   assert_called 'agentctl start fleet-dispatch --no-block'
   # Negative control: no item waits on it and it has no resume, so the answer is filed where work is picked up.
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'free?')"
-  "$AGENT_ASK" answer "$b" later 2>/dev/null
+  "$AGENT_ASK" answer "$b" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): free? -> answered: later (ask $b)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug picky --tags "ask:$c=go" "the go phase" >/dev/null
-  "$AGENT_ASK" answer "$c" later 2>/dev/null
+  "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
 }
@@ -250,7 +288,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   local a
   a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
-  "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null
+  "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agentctl start'
   assert_called "(the judge; to override: agent-ask answer $a <option>)"
   [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer released the held item"
@@ -471,7 +509,7 @@ traced_ask() {
   run "$AGENT_ASK" trace "$id" --json
   assert_success
   run jq -r '[.status, .judge, (.events | map(.event) | join(",")), .call.id, .langfuse] | join("|")' <<<"$output"
-  assert_output "answered|Judge: deferred (taste) - only you know|posted,judged,answered|c0ffee000001|https://lf.example/project/p/sessions/s-1"
+  assert_output "answered|Judge: deferred (taste) - only you know|posted,judged,answered,queued|c0ffee000001|https://lf.example/project/p/sessions/s-1"
 }
 
 @test "trace says when the call line is gone or no Langfuse link is configured, and lists overrides and closes" {
@@ -523,7 +561,7 @@ outcomes_cli() {
   # The newest block is where the session stands; the older one is left to the session.
   assert_line 'it said   Keep it? 1 keep 2 drop'
   refute_output --partial 'Looked at the queue.'
-  assert_line --regexp '^telemetry friction 2 \(#2 of 2 this week\): 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
+  assert_line --regexp '^telemetry friction 2: 2 x 1 lessons written \. \$1\.50 \. 1h2m \. 1 PRs merged \. seen 0m ago$'
   grep -qx "agent-panel said $HOME/.claude/projects/p/sid-s.jsonl --around $id" "$NOTES_FIXTURE/calls.log"
   # The asking pane's own copy is the card alone: that session already holds the story.
   run env CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_SESSION_ID=sid-s "$AGENT_ASK" post --project demo 'again?'
@@ -543,7 +581,7 @@ outcomes_cli() {
   refute_output --partial 'it said'
   refute_output --partial 'telemetry'
   refute_line --partial 'only-a-title:'
-  # A session with no friction has no rank; its row still gives the telemetry line.
+  # A session with no friction still gets the telemetry line from its row.
   mkdir -p "$HOME/.agent/outcomes/demo"; outcomes_cli
   printf '{"session_id":"sid-t","project":"demo","title":"t","updated":"x","updated_epoch":%d,"observed":"%s","prs":[],"prs_merged":0}\n' \
     "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$HOME/.agent/outcomes/demo/2026-11.jsonl"
@@ -617,10 +655,10 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 26 tab-separated fields per ask, resume last" {
+@test "list emits 31 tab-separated fields per ask, delivery and its answers after parked_until" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '26'
+  assert_output '31'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
@@ -730,6 +768,128 @@ outcomes_cli() {
   "$AGENT_ASK" cancel "$id" 2>/dev/null
   run "$AGENT_ASK" count demo
   assert_output '0'
+}
+
+# ── park: off the boards until a date, still pending ─────────────────────────
+
+# days_ahead <utc stamp>: whole days from now to the stamp, rounded.
+days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); }
+
+@test "park keeps the ask pending but out of --pending and count; --parked and --open list it; unpark brings it back" {
+  local id; id="$(post demo 'wear the headset?')"
+  post demo 'other?' >/dev/null
+  run "$AGENT_ASK" park "$id" --until '+2 days'
+  assert_success
+  assert_output --partial "parked $id until"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_line --regexp '^parked_until: 20[0-9-]{8}T[0-9:]{8}Z$'
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  run bash -c '"$AGENT_ASK" list demo --pending | cut -f1'
+  refute_output --partial "$id"
+  run bash -c '"$AGENT_ASK" list demo --parked | cut -f1'
+  assert_output "$id"
+  run bash -c '"$AGENT_ASK" list demo --open | wc -l'
+  assert_output '2'
+  run bash -c '"$AGENT_ASK" list demo --parked | cut -f27'
+  assert_output --regexp '^20[0-9-]{8}T[0-9:]{8}Z$'
+  run "$AGENT_ASK" unpark "$id"
+  assert_success
+  assert_equal "$("$AGENT_ASK" count demo)" 2
+  run "$AGENT_ASK" show "$id"
+  refute_line --partial 'parked_until:'
+}
+
+@test "a parked ask whose date has passed is back on --pending and count with no write" {
+  local id; id="$(post demo 'fly the drone?')"
+  printf 'parked_until: %s\n' "$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)" >> "$HOME/.agent/asks/demo/$id.md"
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  run bash -c '"$AGENT_ASK" list demo --pending | cut -f1'
+  assert_output "$id"
+  run bash -c '"$AGENT_ASK" list demo --parked'
+  assert_output ''
+  # list fills parked_until only while parked, so no reader compares it with the clock.
+  run bash -c '"$AGENT_ASK" list demo | cut -f27'
+  assert_output ''
+  # Negative control: the same field a day ahead hides it.
+  sed -i "s/^parked_until: .*/parked_until: $(date -u -d '+1 day' +%Y-%m-%dT%H:%M:%SZ)/" "$HOME/.agent/asks/demo/$id.md"
+  assert_equal "$("$AGENT_ASK" count demo)" 0
+}
+
+@test "park with no --until takes PARK_DAYS for the held item's priority, normal when no item holds it" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  printf 'PARK_DAYS="urgent=1 high=3 normal=7 low=14"\n' > "$BATS_TEST_TMPDIR/park.conf"
+  export AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  local held free
+  held="$("$AGENT_ASK" post --project demo --kind gate 'go?')"
+  free="$("$AGENT_ASK" post --project other --kind gate 'go too?')"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --priority high --tags "ask:$held=approve" "the next phase" >/dev/null
+  "$AGENT_ASK" park "$held" 2>/dev/null
+  "$AGENT_ASK" park "$free" 2>/dev/null
+  assert_equal "$(days_ahead "$("$AGENT_ASK" show "$held" | sed -n 's/^parked_until: //p')")" 3
+  assert_equal "$(days_ahead "$("$AGENT_ASK" show "$free" | sed -n 's/^parked_until: //p')")" 7
+}
+
+@test "park refuses a past date, a bad date and an ask that is not pending" {
+  local id done; id="$(post demo 'a?')"; done="$(post other 'b?')"
+  "$AGENT_ASK" answer "$done" yes 2>/dev/null
+  run "$AGENT_ASK" park "$id" --until '-1 day'
+  assert_failure 2
+  run "$AGENT_ASK" park "$id" --until 'not a date at all'
+  assert_failure 2
+  run "$AGENT_ASK" park "$id" --until
+  assert_failure 2
+  assert_output --partial '--until needs a date'
+  printf 'PARK_DAYS="normal=abc"\n' > "$BATS_TEST_TMPDIR/bad.conf"
+  AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/bad.conf" run "$AGENT_ASK" park "$id"
+  assert_failure 2
+  assert_output --partial 'not a whole number of days'
+  run "$AGENT_ASK" park "$done" --until '+1 day'
+  assert_failure 1
+  assert_output --partial 'only a pending ask parks'
+  run "$AGENT_ASK" show "$id"
+  refute_line --partial 'parked_until:'
+}
+
+@test "settle-session leaves a parked ask on other talk in its session, and a named option still answers it" {
+  local id other
+  id="$(CLAUDE_CODE_SESSION_ID=sid-p "$AGENT_ASK" post --project demo --options 'worn=it is on|later=not yet' 'wear the headset?')"
+  "$AGENT_ASK" park "$id" --until '+2 days' 2>/dev/null
+  "$AGENT_ASK" settle-session sid-p answered "can you also fix the lint?"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # Negative control: the same reply cancels an ask that is not parked.
+  other="$(CLAUDE_CODE_SESSION_ID=sid-q "$AGENT_ASK" post --project demo --options 'worn=it is on|later=not yet' 'wear it now?')"
+  "$AGENT_ASK" settle-session sid-q answered "can you also fix the lint?"
+  run "$AGENT_ASK" show "$other"
+  assert_line 'status: cancelled'
+  "$AGENT_ASK" settle-session sid-p answered "worn"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'; assert_line 'answer: worn'
+}
+
+@test "park drops a judge arm, sweep passes a parked ask by, and answering it still closes it" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  local parked open
+  parked="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
+  open="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the other flake?')"
+  printf 'assume_answer: fix\nassume_at: 2099-01-01T00:00:00-0800\n' >> "$HOME/.agent/asks/demo/$parked.md"
+  "$AGENT_ASK" park "$parked" --until '+1 day' 2>/dev/null
+  run "$AGENT_ASK" show "$parked"
+  refute_line --partial 'assume_answer:'
+  refute_line --partial 'assume_at:'
+  fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  : > "$BATS_TEST_TMPDIR/judge.calls"
+  run "$AGENT_ASK" sweep --all
+  assert_success
+  refute_output --partial "$parked"
+  assert_line --regexp "^other	$open	answered fix	"
+  run grep -c 'fix the flake?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '0'
+  "$AGENT_ASK" answer "$parked" wait 2>/dev/null
+  run "$AGENT_ASK" show "$parked"
+  assert_line 'status: answered'; assert_line 'answer: wait'
 }
 
 # ── answer / cancel lifecycle ────────────────────────────────────────────────
@@ -843,6 +1003,69 @@ outcomes_cli() {
   assert [ ! -e "$HOME/.agent/asks/.changed" ]
 }
 
+# ── reopen on answer ────────────────────────────────────────────────────────
+# A session that closes over its own pending ask (/wind-down auto, close rule "only its own ask is
+# open") sets the ask to reopen it: the answer starts the ended conversation again with the answer.
+
+@test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
+  local id other loose
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-8.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ -f "$NOTES_FIXTURE/live" ] && echo "{\\"session_id\\":\\"sid-8\\",\\"pane\\":\\"%%1\\"}"; exit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'ship it?')"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  assert_line --partial "$id reopens its session on the answer"
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'session gone: the answer reopens the session with it'
+  # The resume is the answer's route, so no board row is filed for it.
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  assert_not_called 'chore(ask)'
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: go"
+  # Negative controls: a live session already had the answer typed in; nothing starts.
+  : >"$NOTES_FIXTURE/calls.log"; : >"$NOTES_FIXTURE/live"
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'is live'
+  assert_not_called 'fleet-dispatch start'
+  rm "$NOTES_FIXTURE/live"
+  # A queue item tagged with the ask is the queue's to restart.
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$id" "the next phase" >/dev/null
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'a queue item holds it'
+  assert_not_called 'fleet-dispatch start'
+  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
+  "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  run "$AGENT_ASK" reopen "$failed"
+  assert_failure
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
+  # Refused: an ask that already resumes some other way, one with no session, one not pending.
+  other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
+  run "$AGENT_ASK" reopen-on-answer "$other"
+  assert_failure
+  assert_output --partial 'already resumes with: /captain resume'
+  loose="$(post demo 'loose?')"
+  run "$AGENT_ASK" reopen-on-answer "$loose"
+  assert_failure
+  assert_output --partial 'names no session'
+  run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_failure
+  assert_output --partial 'answered, not pending'
+}
+
 # ── lifecycle: one home ──────────────────────────────────────────────────────
 # An ask stays pending until the human answers or drops it, however old and whether or not its
 # session lives. Nothing marks it stale or copies it to a board.
@@ -921,12 +1144,12 @@ registry() {
   mkdir -p "$HOME/.config/shared-hooks"
   ln -sf "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
-  printf '%s\n' '{"paths":{"/r/big":"big-platform"},"aliases":{"monorepo":"big-platform"},
-    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"},
+  printf '%s\n' '{"paths":{"/r/big":"big-platform"},
+    "trackers":{"_comment":"x","notes-cockpit":{"repo":"dotfiles"},"big-platform":{"names":["monorepo"]},
       "shop":{"repo":"big-platform","path":"apps/shop"}}}' > "$PROJECT_MAP_FILE"
 }
 
-@test "post refuses an explicit project the registry does not know, or an alias" {
+@test "post refuses an explicit project the registry does not know, or another spelling of one" {
   registry
   run "$AGENT_ASK" post --project shpo 'typo?'
   assert_failure 2
@@ -945,11 +1168,11 @@ registry() {
 # Outside the sandbox dir: its path has a space, and the judge command is a word list.
 # score <what> [answer] [reason]: a schema reply whose criteria derive <what>. `not-<id>` takes a
 # needed criterion away, a criterion id sets it, and anything else is the ask's type, which an
-# answerable verdict names. SCORE_TYPE sets the type beside a criterion.
+# answerable verdict names. SCORE_TYPE sets the type beside a criterion, SCORE_LEVEL the impact (self).
 score() {
-  jq -cn --arg c "$1" --arg a "${2:-}" --arg r "${3:-x}" --arg t "${SCORE_TYPE:-ship_deploy}" '
+  jq -cn --arg c "$1" --arg a "${2:-}" --arg r "${3:-x}" --arg t "${SCORE_TYPE:-ship_deploy}" --arg l "${SCORE_LEVEL:-self}" '
     ["knowledge", "external", "taste", "unclear-ask", "against-precedent", "reversible", "grounded"] as $ids
-    | {decision: "d"}
+    | {decision: "d", impact: {evidence: "q impact", level: $l}}
     + ({knowledge: 0, external: 0, taste: 0, "unclear-ask": 0, "against-precedent": 0, reversible: 1, grounded: 1}
        | with_entries(.value = {evidence: (if .value == 1 then "q \(.key)" else "" end), met: (.value == 1)}))
     | if ($c | startswith("not-")) then .[$c[4:]] = {evidence: "q not", met: false}
@@ -1007,9 +1230,9 @@ SH
   refute_output --partial 'Always `human`'
 }
 
-@test "judge never sends a gate to the model, and the gate's judge is the human" {
+@test "judge never sends an approval to the model, and the approval's judge is the human" {
   fake_judge '{"call":"answer","answer":"approve","reason":"x"}'
-  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #1?')"
+  local id; id="$("$AGENT_ASK" post --project demo --kind approval 'merge #1?')"
   run "$AGENT_ASK" judge "$id"
   assert_success
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
@@ -1048,11 +1271,11 @@ SH
 }
 
 @test "sweep judges the pending queue again, answers live classes as the judge and leaves the rest" {
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   local live shadow gate done
   live="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   shadow="$("$AGENT_ASK" post --project other --options 'a=one|b=two' --recommend a 'which mic?')"
-  gate="$("$AGENT_ASK" post --project demo --kind gate 'merge #9?')"
+  gate="$("$AGENT_ASK" post --project demo --kind approval 'merge #9?')"
   done="$("$AGENT_ASK" post --project demo --options 'x=x|y=y' --recommend x 'old?')"
   "$AGENT_ASK" answer "$done" y 2>/dev/null
   # the stale verdict an older policy left on the live one
@@ -1079,6 +1302,7 @@ SH
   run "$AGENT_ASK" show "$shadow"; assert_line 'status: pending'
   run "$AGENT_ASK" show "$gate"; assert_line 'status: pending'
   # an ask with no live session and no resume is filed as a row, saying the judge answered
+  "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "notes ptask"
   assert_equal "$("$AGENT_ASK" count --all)" 2
 }
@@ -1086,7 +1310,7 @@ SH
 # 2026-11-07: the judge answered itX9A3 under a queued phase, and agent-queue releases an ask only
 # on the human's answer, so the phase would have waited for good.
 @test "sweep never answers live an ask a queue item waits on; the human keeps it" {
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local held free
   held="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   free="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake too?')"
@@ -1102,15 +1326,15 @@ SH
 
 @test "a judge answer typed into a live session names the judge, its rule and its reason" {
   unset AGENT_ASK_NO_RESUME
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   printf '{"session_id":"sid-7","pane":"%%7","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix it here?')"
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
-  "$AGENT_ASK" sweep demo >/dev/null
+  "$AGENT_ASK" sweep demo >/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "agent-panel send --pane %7 Answer to ask $id: fix (the judge, ship_deploy: rules say fix failing CI yourself; the human can override in this session)"
   # negative control: a human answer keeps the plain text
   id="$(CLAUDE_CODE_SESSION_ID=sid-7 "$AGENT_ASK" post --project demo --options 'a=a|b=b' 'pick?')"
-  "$AGENT_ASK" answer "$id" b 2>/dev/null
+  "$AGENT_ASK" answer "$id" b 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "agent-panel send --pane %7 Answer to ask $id: b"
 }
 
@@ -1171,7 +1395,7 @@ ASK-JUDGE-END'
 @test "judge derives the call from the score" {
   check() {
     fake_judge "$(score "$1")"
-    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "case $1?")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$1 is the case under test" "case $1?")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
     assert_line "judge: $2"
@@ -1189,7 +1413,7 @@ ASK-JUDGE-END'
 }
 
 @test "judge: every human criterion beats the type, however safe the type looks" {
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(SCORE_TYPE=ship_deploy score external)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
@@ -1207,7 +1431,7 @@ ASK-JUDGE-END'
 }
 
 @test "judge: grounded is noted, never a stop: a live type answers, a shadow type only says so" {
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(SCORE_TYPE=ship_deploy score not-grounded)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'ship it?' 2>/dev/null)"
@@ -1224,7 +1448,7 @@ ASK-JUDGE-END'
 }
 
 @test "judge: other is never live, even when DELAY_RULES names it" {
-  export AGENT_ASK_DELAY_RULES='other=0 ship_deploy=0'
+  export AGENT_ASK_DELAY_RULES='other@self=0 ship_deploy@repo=0'
   unset AGENT_ASK_NO_JUDGE
   fake_judge "$(score other)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'no type fits?' 2>/dev/null)"
@@ -1258,7 +1482,7 @@ ASK-JUDGE-END'
   bundle() { jq -cs '{type: .[0].type, decisions: map(.decisions[0]), reason: "x", answer: ""}' <(score engineering_design) <(score "$1"); }
   check() {
     fake_judge "$(bundle "$1")"
-    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes "bundle $1?")"
+    local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$1 is the item under test" "bundle $1?")"
     "$AGENT_ASK" judge "$id"
     run "$AGENT_ASK" show "$id"
     assert_line "judge: $2"
@@ -1284,7 +1508,7 @@ ASK-JUDGE-END'
   local policy schema derive="$REPO_ROOT/.local/lib/judge.sh" file="$REPO_ROOT/.config/agent-ask/policy.md"
   local verdict="$REPO_ROOT/.config/agent-ask/verdict.schema.json"
   policy=$(judge_rules "$file" | grep -vx gate | sort)
-  schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision")' "$verdict" | sort)
+  schema=$(jq -r '.properties.decisions.items.properties | keys[] | select(. != "decision" and . != "impact")' "$verdict" | sort)
   assert_equal "$policy" "$schema"
   assert_equal "$(printf '%s\n' $JUDGE_HUMAN_CRITERIA $JUDGE_NEEDED_CRITERIA grounded | sort)" "$schema"
   types() { sed -n 's/^- `\([a-z_]*\)`: .*/\1/p' "$1" | sort; }
@@ -1305,8 +1529,8 @@ ASK-JUDGE-END'
   done
 }
 
-@test "judge: a gate names the gate rule and no call" {
-  local id; id="$("$AGENT_ASK" post --project demo --kind gate 'merge #2?')"
+@test "judge: an approval names the gate rule and no call" {
+  local id; id="$("$AGENT_ASK" post --project demo --kind approval 'merge #2?')"
   "$AGENT_ASK" judge "$id"
   run "$AGENT_ASK" show "$id"
   assert_line 'judge_rule: gate'
@@ -1331,18 +1555,109 @@ ASK-JUDGE-END'
   refute_line --partial 'judge:'
 }
 
+@test "judge: impact is recorded as judge_level, a bundle takes its widest item, external or irreversible is critical" {
+  local id
+  id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: repo'; assert_line 'judge_level_evidence: q impact'; assert_line 'judge_level_raised: false'
+  fake_judge "$(jq -cs '{type: .[0].type, decisions: map(.decisions[0]), reason: "x", answer: ""}' \
+    <(score ship_deploy) <(SCORE_LEVEL=fleet score ship_deploy))"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: fleet'; assert_line 'judge_level_raised: false'
+  assert_equal "$(grep -c '^judge_level: ' "$(ask_file "$id")")" 1
+  local c; for c in external not-reversible; do
+    fake_judge "$(score "$c")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    # critical is derived, not a floor: raised marks only a floor name
+    assert_line 'judge_level: critical'; assert_line 'judge_level_raised: false'; assert_line 'judge: human'
+  done
+  assert_line 'judge_level_evidence: q not'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_output --partial 'level critical'
+  refute_output --partial 'raised by a floor name'
+}
+
+@test "judge: a reply without an impact level, or with one the judge may not give, is no verdict" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  fake_judge "$(score ship_deploy | jq -c 'del(.decisions[0].impact)')"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: error'; refute_line --partial 'judge_level'
+  fake_judge "$(SCORE_LEVEL=critical score ship_deploy)"
+  run "$AGENT_ASK" judge "$id"
+  assert_failure
+  # negative control: the same reply with a level it may give is a verdict
+  fake_judge "$(score ship_deploy)"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: take-recommend'; assert_line 'judge_level: self'
+}
+
+@test "judge: an ask naming a fleet floor name is fleet at least, whatever the judge rated" {
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
+  fake_judge "$(score ship_deploy)"
+  local id; id="$("$AGENT_ASK" post --project demo --context 'CLAUDE.md says landing is authorized' --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: question'; assert_line 'judge: take-recommend'
+  assert_line 'judge_level: fleet'; assert_line 'judge_level_evidence: the ask names CLAUDE.md'; assert_line 'judge_level_raised: true'
+  run "$AGENT_ASK" trace "$id" --json
+  assert_output --partial 'level fleet (raised by a floor name)'
+  # negative control: the same ask naming no floor keeps the judge's rating
+  id="$("$AGENT_ASK" post --project demo --context 'the repo rules say landing is authorized' --options 'yes=do it|no=leave it' --recommend yes 'open the PR?')"
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge_level: self'; assert_line 'judge_level_raised: false'
+}
+
+@test "post: an ask naming the judge's own authority is an approval and never reaches the judge" {
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md"
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(score agent_policy)"
+  run --separate-stderr "$AGENT_ASK" post --project demo --options 'a=add ship_deploy=0 to DELAY_RULES|b=leave it' --recommend a --context 'ship_deploy is the type of ask that ships a change; DELAY_RULES lists the types the judge answers' 'let the judge answer more?'
+  assert_success
+  assert_equal "$stderr" "agent-ask post: the ask names DELAY_RULES, the judge's own authority, so it is an approval for the human"
+  local id="$output"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: approval'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # a gate naming one is raised to an approval the same way
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  id="$("$AGENT_ASK" post --project demo --kind gate --options 'a=raise the cap in ask-judge.conf|b=leave it' --recommend a --context 'ask-judge.conf is the judge settings file' 'raise the judge cap?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'judge_rule: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # negative control: an ask naming no authority name goes to the judge as a question
+  id="$("$AGENT_ASK" post --project demo --options 'a=add the test|b=leave it' --recommend a 'add the missing test?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: question'
+  assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # a question posted before the floor existed is held to it when judged again
+  rm "$BATS_TEST_TMPDIR/judge.calls"
+  id="$(AGENT_ASK_PROMPT=/nonexistent AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project demo --options 'a=raise JUDGE_HARD_STOPS|b=leave it' --recommend a --context 'JUDGE_HARD_STOPS lists the asks the judge never answers' 'trim the hard stops?')"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+  "$AGENT_ASK" judge "$id"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'judge: human'; assert_line 'judge_rule: gate'; refute_line --partial 'judge_level'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+}
+
 # ── live answers ─────────────────────────────────────────────────────────────
 
 # live_post <claude_session> <question>: a post from that Claude session, the way an agent asks.
 live_post() {
   CLAUDE_CODE_SESSION_ID="$1" "$AGENT_ASK" post --project demo \
-    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix "$2"
+    --options 'fix=fix the test in its own PR|wait=park until the row is fixed' --recommend fix --context "$2 is the case under test" "$2"
 }
 
 @test "a live rule's take-recommend is answered by the judge at post, and the asker is told to proceed" {
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   run --separate-stderr live_post sid-1 'fix the flaky test here?'
   assert_success
   local id="$output"
@@ -1356,9 +1671,9 @@ live_post() {
   assert_equal "$("$AGENT_ASK" count demo)" 0
 }
 
-@test "live answers: a shadow rule, an empty DELAY_RULES, a gate and a human call all stay with the human" {
+@test "live answers: a shadow rule, an empty DELAY_RULES, an approval and a human call all stay with the human" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge "$(score engineering_design)"
   local id; id="$(live_post sid-a 'shadow rule?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge: take-recommend'
@@ -1366,8 +1681,8 @@ live_post() {
   fake_judge "$(score ship_deploy)"
   id="$(live_post sid-b 'nothing live?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
-  id="$("$AGENT_ASK" post --project demo --kind gate 'merge #4?')"
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  id="$("$AGENT_ASK" post --project demo --kind approval 'merge #4?')"
   assert [ "$(grep -c 'merge #4' "$BATS_TEST_TMPDIR/judge.calls")" = 0 ]
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   fake_judge "$(score knowledge)"
@@ -1376,7 +1691,7 @@ live_post() {
   # A demoted rule is out of the live set even while the conf lists it.
   fake_judge "$(score ship_deploy)"
   mkdir -p "$(dirname "$HOME/.local/state/agent-ask/demoted")"
-  printf 'ship_deploy\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"
+  printf 'ship_deploy@self\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"
   id="$(live_post sid-d 'demoted?')"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   # negative control: the same verdict with the demote gone is answered
@@ -1385,9 +1700,129 @@ live_post() {
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
 }
 
+@test "live answers: a row answers its type at every level up to its own, never above it" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=engineering_design@repo=0
+  local id l
+  for l in self repo; do
+    fake_judge "$(SCORE_LEVEL=$l score engineering_design)"
+    id="$(live_post "sid-$l" "at $l?" 2>/dev/null)"
+    run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'; assert_line "judge_level: $l"
+  done
+  fake_judge "$(SCORE_LEVEL=fleet score engineering_design)"
+  id="$(live_post sid-f 'at fleet?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge: take-recommend'; assert_line 'judge_level: fleet'
+  run "$AGENT_ASK" sweep demo
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  # positive control: the same fleet verdict under a fleet row is answered
+  export AGENT_ASK_DELAY_RULES=engineering_design@fleet=0
+  id="$(live_post sid-f2 'at fleet again?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
+}
+
+# ar-1766: a stop a session chose for itself goes to the judge like a question; approvals do not.
+@test "live answers: a session's gate is judged and answered under its cell's ceiling, a fleet one stays human" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  local gate=(--project demo --kind gate --options 'approve=merge the PR|hold=leave it open' --recommend approve
+    --context 'the PR is the change under test')
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy "" "landing is standing authorization")"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-g1 "$AGENT_ASK" post "${gate[@]}" 'merge #5?' 2>/dev/null)"
+  assert [ "$(grep -c 'merge #5' "$BATS_TEST_TMPDIR/judge.calls")" = 1 ]
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: gate'; assert_line 'answered_by: judge'; assert_line 'answer: approve'
+  assert_line 'judge_rule: ship_deploy'; assert_line 'judge_level: repo'
+  # Rated fleet, the same gate under an @repo row stays with the human, and a sweep keeps it there.
+  fake_judge "$(SCORE_LEVEL=fleet score ship_deploy)"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g2 "$AGENT_ASK" post "${gate[@]}" 'merge #6?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'; assert_line 'judge: take-recommend'; assert_line 'judge_level: fleet'
+  "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  # A human criterion on a gate is the human's, as on a question.
+  fake_judge "$(SCORE_LEVEL=repo score knowledge)"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g3 "$AGENT_ASK" post "${gate[@]}" 'merge #7?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; assert_line 'judge_rule: knowledge'
+  # Negative control: the same repo verdict on an approval never reaches the model.
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
+  rm -f "$BATS_TEST_TMPDIR/judge.calls"
+  local approval=(--project demo --kind approval --options 'approve=merge the PR|hold=leave it open' --recommend approve
+    --context 'the PR is the change under test')
+  id="$(CLAUDE_CODE_SESSION_ID=sid-g4 "$AGENT_ASK" post "${approval[@]}" 'merge #8?' 2>/dev/null)"
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'status: pending'; assert_line 'judge_rule: gate'
+}
+
+# judged_ask <id> <level>: a pending ship_deploy ask the judge would answer `fix`, at <level>.
+judged_ask() {
+  mkdir -p "$HOME/.agent/asks/demo"
+  printf 'id: %s\nproject: demo\nkind: question\nstatus: pending\nquestion: is %s fixed here?\noptions: fix|wait\noption_notes: fix the test in its own PR|park until the row is fixed\ncontext: the flaky test is the case under test\nrecommend: fix\njudge: take-recommend\njudge_rule: ship_deploy\njudge_level: %s\njudge_reason: x\n' \
+    "$1" "$1" "$2" > "$HOME/.agent/asks/demo/$1.md"
+}
+
+@test "audit: every Nth live answer at a level goes back to the human as an approval offering the ask's options" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_AUDIT_RATES='self=10 repo=5'
+  local d="$HOME/.agent/asks/demo" i
+  for i in $(seq 1 20); do judged_ask "S$i" self; "$AGENT_ASK" answer --by judge "S$i" fix 2>/dev/null; done
+  for i in $(seq 1 10); do judged_ask "R$i" repo; "$AGENT_ASK" answer --by judge "R$i" fix 2>/dev/null; done
+  # an answer that is none of the options cannot be reviewed, so it is not counted
+  judged_ask S21 self; "$AGENT_ASK" answer --by judge S21 "something else" 2>/dev/null
+  assert_equal "$(grep -h '^audit_of: ' "$d"/*.md | sort | paste -sd' ')" 'audit_of: R10 audit_of: R5 audit_of: S10 audit_of: S20'
+  assert_equal "$(cat "$HOME/.local/state/agent-ask/audit/self")" 20
+  local audit; audit="$(sed -n 's/^judge_audit: //p' "$d/S10.md")"
+  run "$AGENT_ASK" show "$audit"
+  assert_line 'kind: approval'; assert_line 'status: pending'; assert_line 'audit_of: S10'
+  assert_line 'question: The judge answered "is S10 fixed here?" with "fix"; your pick?'
+  assert_line 'options: fix|wait'; assert_line 'option_notes: fix the test in its own PR|park until the row is fixed'
+  assert_line 'claude_session: '; assert_line 'recommend: '
+  # a level the rates leave out is audited every time
+  export AGENT_ASK_AUDIT_RATES='self=10'
+  judged_ask R11 repo; "$AGENT_ASK" answer --by judge R11 fix 2>/dev/null
+  assert [ -n "$(sed -n 's/^judge_audit: //p' "$d/R11.md")" ]
+  # an answer the judge gives at post is sampled the same way
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(SCORE_LEVEL=repo score ship_deploy)"
+  local id; id="$(live_post sid-p 'posted live?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'; assert_line --regexp '^judge_audit: .+'
+}
+
+@test "audit: its answer is the review: the judge's option keeps it, another overrides it and reaches the asker" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_AUDIT_RATES='repo=1'
+  local d="$HOME/.agent/asks/demo" audit
+  judged_ask K1 repo; "$AGENT_ASK" answer --by judge K1 fix 2>/dev/null
+  audit="$(sed -n 's/^judge_audit: //p' "$d/K1.md")"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AGENT_ASK" answer "$audit" fix
+  assert_success
+  run "$AGENT_ASK" show K1; assert_line 'judge_override: kept'; assert_line 'judge_override_note: audit: fix'
+  run "$AGENT_ASK" show "$audit"; assert_line 'status: answered'; assert_line 'answer: fix'
+  # a kept answer files nothing: the asker already has it
+  assert_not_called 'notes ptask'
+  judged_ask W1 repo; "$AGENT_ASK" answer --by judge W1 fix 2>/dev/null
+  audit="$(sed -n 's/^judge_audit: //p' "$d/W1.md")"
+  run "$AGENT_ASK" answer "$audit" wait
+  assert_success
+  run "$AGENT_ASK" show W1
+  assert_line 'judge_override: wait'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called 'is W1 fixed here? -> answered: wait'
+  # an answer naming no option reviews nothing (negative control)
+  judged_ask N1 repo; "$AGENT_ASK" answer --by judge N1 fix 2>/dev/null
+  audit="$(sed -n 's/^judge_audit: //p' "$d/N1.md")"
+  run --separate-stderr "$AGENT_ASK" answer "$audit" "not sure"
+  assert_success; [[ "$stderr" == *"names no option of ask N1"* ]]
+  run "$AGENT_ASK" show N1; refute_line --partial 'judge_override'
+  # an audit that cannot post says why and marks the answer unaudited, never silently skipped
+  # (an option note with a term its context never names, which post refuses)
+  judged_ask P1 repo; sed -i 's/^option_notes: fix the test/option_notes: fix it with retryLoop/' "$d/P1.md"
+  run --separate-stderr "$AGENT_ASK" answer --by judge P1 fix
+  assert_success; [[ "$stderr" == *"audit of ask P1 not posted: "*"define its session terms (retryLoop)"* ]]
+  run "$AGENT_ASK" show P1; assert_line 'judge_audit: failed'
+}
+
 @test "live answers: malformed output is an error verdict, and a stuck call times out to one; both stay pending" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge 'not json'
   run --separate-stderr live_post sid-1 'garbled?'
   assert_success
@@ -1408,7 +1843,7 @@ live_post() {
 
 @test "override: the human's next message naming another option labels the live answer; one miss does not demote" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge "$(score ship_deploy)"
   local id; id="$(live_post sid-1 'fix it here?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-1 answered "no, wait for the row to be fixed"
@@ -1423,9 +1858,9 @@ live_post() {
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
 }
 
-@test "override: a message that agrees or says nothing about the options closes the review with none" {
+@test "override: a message naming no option closes the review with none, one naming the judge's option with kept" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge "$(score ship_deploy)"
   local a b
   a="$(live_post sid-1 'fix it here?' 2>/dev/null)"
@@ -1436,40 +1871,53 @@ live_post() {
   run "$AGENT_ASK" show "$a"; assert_line 'judge_override: none'
   b="$(live_post sid-3 'fix that one too?' 2>/dev/null)"
   "$AGENT_ASK" settle-session sid-3 answered "yes, fix it"
-  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: none'
+  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: kept'
+  assert_line 'judge_override_note: in session: yes, fix it'
+  # kept closes the review: a later pick of the other option is about something else
+  "$AGENT_ASK" settle-session sid-3 answered "wait"
+  run "$AGENT_ASK" show "$b"; assert_line 'judge_override: kept'
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
   assert_not_called 'agent-notify'
 }
 
-# live_answer_file <n> <minute> <override>: a reviewed live ship_deploy answer on disk.
+# live_answer_file <n> <minute> <override> [level]: a reviewed live ship_deploy answer on disk, at
+# level repo unless named.
 live_answer_file() {
   mkdir -p "$HOME/.agent/asks/demo"
-  printf 'id: L%05d\nproject: demo\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:%02d:00+0000\njudge_rule: ship_deploy\njudge_override: %s\n' \
-    "$1" "$2" "$3" > "$HOME/.agent/asks/demo/L$(printf %05d "$1").md"
+  printf 'id: L%05d\nproject: demo\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:%02d:00+0000\njudge_rule: ship_deploy\njudge_level: %s\njudge_override: %s\n' \
+    "$1" "$2" "${4:-repo}" "$3" > "$HOME/.agent/asks/demo/L$(printf %05d "$1").md"
 }
 
-@test "override: a type demotes when precision over its last live answers falls under the bar, once it has the minimum" {
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
+@test "override: a cell demotes when precision over its last live answers falls under the bar, once it has the minimum" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=85
   local d="$HOME/.agent/asks/demo" i
-  # An old override outside the window of 5, then four good answers.
+  # An old override outside the window of 5, then four kept answers.
   live_answer_file 1 1 wait
-  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" kept; done
   # The sixth is overridden: the window is answers 2-6, 4 of 5 is 80%, under 85.
-  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\n' > "$d/L00006.md"
+  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\njudge_level: repo\n' > "$d/L00006.md"
   "$AGENT_ASK" settle-session sid-9 answered "wait"
   run cat "$HOME/.local/state/agent-ask/demoted"
-  assert_output --regexp "^ship_deploy	.+	override on ask L00006: 1 of its last 5 live answers overridden, under 85%$"
+  assert_output --regexp "^ship_deploy@repo	.+	override on ask L00006: 1 of its last 5 live answers overridden, under 85%$"
   assert_called 'agent-notify -p high -t Judge demoted'
-  assert_called 'notes ptask agent-runtime --agent add check(judge): ask-judge ship_deploy went back to shadow'
-  # negative control: at a 75% bar the same override keeps the type live
+  assert_called 'notes ptask agent-runtime --agent add check(judge): ask-judge ship_deploy@repo went back to shadow'
+  # negative control: at a 75% bar the same override keeps the cell live, and an override at
+  # another level is not in its window (counted, answers 3-7 would be 3 of 5, under 75)
   rm "$HOME/.local/state/agent-ask/demoted"
   sed -i '/^judge_override/d' "$d/L00006.md"
+  live_answer_file 7 7 wait self
   export AGENT_ASK_DEMOTE_PRECISION=75
   "$AGENT_ASK" settle-session sid-9 answered "wait"
   run "$AGENT_ASK" show L00006; assert_line 'judge_override: wait'
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # silence is not a review: with 2-5 unreviewed the window is answers 1 and 6, under the minimum
+  rm "$HOME/.local/state/agent-ask/demoted" 2>/dev/null || true
+  for i in 2 3 4 5; do live_answer_file "$i" "$i" none; done
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
   # under the minimum nothing demotes, even at 0%: the window counts only these two
-  rm "$d"/L0000[1-4].md
+  rm "$d"/L0000[1-4].md "$d/L00007.md"
   sed -i '/^judge_override/d' "$d/L00006.md"
   export AGENT_ASK_DEMOTE_PRECISION=85
   "$AGENT_ASK" settle-session sid-9 answered "wait"
@@ -1554,7 +2002,7 @@ due() { sed -i 's/^assume_at: .*/assume_at: 2026-01-01T00:00:00+0000/' "$(ask_fi
 
 delay_setup() {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=30
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=30
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
 }
 
@@ -1573,7 +2021,7 @@ delay_setup() {
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25}"'
   assert_output --regexp '^20'
   # negative control: at 0 the same verdict answers at post
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   id="$(armed sid-2 'fix that flake?')"
   run "$AGENT_ASK" show "$id"
   assert_line 'answered_by: judge'
@@ -1586,6 +2034,7 @@ delay_setup() {
   due "$a"
   run "$AGENT_ASK" assume-due
   assert_success
+  "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'answer: fix'; assert_line 'answered_by: judge'
   assert_line 'assume_at: 2026-01-01T00:00:00+0000'
@@ -1593,7 +2042,7 @@ delay_setup() {
   assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
   # a second pass changes nothing and files nothing
   local at; at="$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")"
-  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" assume-due; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_equal "$(grep '^answered_at: ' "$HOME/.agent/asks/demo/$a.md")" "$at"
   assert_equal "$(grep -c 'answered: fix (the judge; to override: agent-ask answer' "$NOTES_FIXTURE/calls.log")" 1
 }
@@ -1614,25 +2063,25 @@ delay_setup() {
   }
   errored() { sed -i 's/^judge: .*/judge: error/' "$1"; }
   empty() { sed -i 's/^judge: .*/judge: /' "$1"; }
-  gate() { sed -i 's/^kind: .*/kind: gate/' "$1"; }
   approval() { sed -i 's/^kind: .*/kind: approval/' "$1"; }
   disarmed() { printf 'assume_disarmed: 2026-11-06T10:00:00-0800\n' >> "$1"; }
   rerecommended() { sed -i 's/^recommend: .*/recommend: wait/' "$1"; }
+  unleveled() { sed -i '/^judge_level: /d' "$1"; }
   check errored errored
   check empty empty
-  check gate gate
   check approval approval
   check disarmed disarmed
   check rerecommended rerecommended
+  check unleveled unleveled
   # a demoted type, a removed row, a hard stop in the table and malformed rows
   mkdir -p "$HOME/.local/state/agent-ask"
-  demote() { printf 'ship_deploy\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"; }
+  demote() { printf 'ship_deploy@self\t2026-11-05T00:00:00+0000\tx\n' > "$HOME/.local/state/agent-ask/demoted"; }
   check demoted demote
   rm "$HOME/.local/state/agent-ask/demoted"
   id="$(armed sid-rr 'removed row?')"; due "$id"
-  AGENT_ASK_DELAY_RULES=engineering_design=30 "$AGENT_ASK" assume-due 2>/dev/null
+  AGENT_ASK_DELAY_RULES=engineering_design@repo=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
-  local rows; for rows in 'ship_deploy=soon' 'ship_deploy' 'ship_deploy=-5'; do
+  local rows; for rows in 'ship_deploy@self=soon' 'ship_deploy' 'ship_deploy@self=-5' 'ship_deploy=0' 'ship_deploy@critical=0' 'ship_deploy@nope=0'; do
     id="$(armed "sid-$rows" "malformed $rows?")"; due "$id"
     run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" "$AGENT_ASK" assume-due
     assert_regex "$stderr" "refuses '$rows'"
@@ -1640,7 +2089,7 @@ delay_setup() {
   done
   id="$(armed sid-hs 'hard stop?')"; due "$id"
   sed -i 's/^judge_rule: .*/judge_rule: product_taste/' "$d/$id.md"
-  run --separate-stderr env AGENT_ASK_DELAY_RULES='product_taste=0' "$AGENT_ASK" assume-due
+  run --separate-stderr env AGENT_ASK_DELAY_RULES='product_taste@self=0' "$AGENT_ASK" assume-due
   assert_regex "$stderr" 'refuses product_taste'
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
   # positive control: an untouched due ask under the same table fires
@@ -1651,10 +2100,10 @@ delay_setup() {
 
 @test "delay: a hard stop or a malformed row in DELAY_RULES never makes a type live at post" {
   unset AGENT_ASK_NO_JUDGE
-  local rows; for rows in 'gate=0' 'reversible=0' 'credential_or_account=0' 'ship_deploy' 'ship_deploy=soon'; do
-    case "$rows" in ship_deploy*) fake_judge "$(score ship_deploy)" ;; *) fake_judge "$(score "${rows%%=*}")" ;; esac
+  local rows; for rows in 'gate@self=0' 'reversible@self=0' 'credential_or_account@repo=0' 'ship_deploy' 'ship_deploy=soon' 'ship_deploy=0' 'ship_deploy@critical=0'; do
+    case "$rows" in ship_deploy*) fake_judge "$(score ship_deploy)" ;; *) fake_judge "$(score "${rows%%[@=]*}")" ;; esac
     run --separate-stderr env AGENT_ASK_DELAY_RULES="$rows" CLAUDE_CODE_SESSION_ID="sid-$rows" "$AGENT_ASK" post \
-      --project demo --options 'yes=do it|no=leave it' --recommend yes "row $rows?"
+      --project demo --options 'yes=do it|no=leave it' --recommend yes --context "$rows is the row under test" "row $rows?"
     assert_success
     assert_regex "$stderr" 'refuses'
     run "$AGENT_ASK" show "${output##*$'\n'}"
@@ -1665,7 +2114,7 @@ delay_setup() {
 
 @test "delay: a human answer during the judge's call stands; the judge writes nothing over it" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   # The judge's call is where the human answers: it finds the ask by its question and answers it.
   cat > "$BATS_TEST_TMPDIR/judge" <<SH
 #!/usr/bin/env bash
@@ -1703,14 +2152,14 @@ SH
   assert_not_called "agent-panel send --pane %9"
   # negative control: once idle, the next pass fires it into the session
   printf '{"session_id":"sid-w","pane":"%%9","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
-  "$AGENT_ASK" assume-due
+  "$AGENT_ASK" assume-due; "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$id"; assert_line 'answered_by: judge'
   assert_called "agent-panel send --pane %9 Answer to ask $id: fix (the judge, ship_deploy"
 }
 
 @test "delay: recommend drops the arm, and sweep arms again keeping the clock on the same answer" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=30
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=30
   fake_judge "$(score ship_deploy fix)"
   local id f; id="$(armed sid-1 'fix or wait?')"; f="$HOME/.agent/asks/demo/$id.md"
   run "$AGENT_ASK" show "$id"; assert_line 'judge: answer:fix'; assert_line 'assume_answer: fix'
@@ -1742,7 +2191,7 @@ SH
   # the same option agrees
   "$AGENT_ASK" settle-session sid-2 answered "yes fix it"
   run "$AGENT_ASK" show "$b"
-  assert_line 'judge_override: none'; assert_line 'answer: fix'; assert_line 'answered_by: human'
+  assert_line 'judge_override: kept'; assert_line 'answer: fix'; assert_line 'answered_by: human'
   # neither fires later
   due "$a"; due "$b"
   "$AGENT_ASK" assume-due
@@ -1759,7 +2208,7 @@ SH
   refute_line --partial 'assume_at:'
   # neither assume-due nor a sweep answers it
   "$AGENT_ASK" assume-due
-  AGENT_ASK_DELAY_RULES=ship_deploy=0 "$AGENT_ASK" sweep demo >/dev/null
+  AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 "$AGENT_ASK" sweep demo >/dev/null
   run "$AGENT_ASK" show "$id"; assert_line 'status: cancelled'; assert_line 'answer: '
 }
 
@@ -1783,15 +2232,16 @@ SH
   local a b; a="$(armed sid-1 'fix the flake?')"; b="$(armed sid-2 'fix this flake?')"
   due "$a"; due "$b"
   "$AGENT_ASK" assume-due
-  "$AGENT_ASK" answer "$a" wait 2>/dev/null
+  "$AGENT_ASK" answer "$a" wait 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge_override: wait'; assert_line 'judge_override_note: from a board: wait'
   assert_line 'answer: fix'; assert_line 'answered_by: judge'
   assert_called "answered: wait (ask $a)"
-  # the same option changes nothing
+  # the same option keeps it: the review judge-eval scores as agreement, and the answer stays
   "$AGENT_ASK" answer "$b" fix 2>/dev/null
   run "$AGENT_ASK" show "$b"
-  refute_line --partial 'judge_override'; assert_line 'answered_by: judge'
+  assert_line 'judge_override: kept'; assert_line 'judge_override_note: from a board: fix'
+  assert_line 'answer: fix'; assert_line 'answered_by: judge'
   # a board answer on a pending armed ask records the human's and the override
   local c; c="$(armed sid-3 'fix one more?')"
   "$AGENT_ASK" answer "$c" wait 2>/dev/null
@@ -1801,7 +2251,7 @@ SH
 
 @test "override: a nested option names one option, not two" {
   unset AGENT_ASK_NO_JUDGE
-  export AGENT_ASK_DELAY_RULES=ship_deploy=0
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
   fake_judge "$(score ship_deploy)"
   local id; id="$(CLAUDE_CODE_SESSION_ID=sid-n "$AGENT_ASK" post --project demo \
     --options 'approve=ship it|approve-with-edits=ship with edits|redo=start over' --recommend approve 'ship?' 2>/dev/null)"
@@ -1823,7 +2273,7 @@ SH
   "$AGENT_ASK" settle-session sid-2 answered "wait"
   # 1 of 2 overridden, under 85%: without the agreeing one the window would be under the minimum
   run cat "$HOME/.local/state/agent-ask/demoted"
-  assert_output --regexp "^ship_deploy	.+	override on ask $b: 1 of its last 2 live answers overridden"
+  assert_output --regexp "^ship_deploy@self	.+	override on ask $b: 1 of its last 2 live answers overridden"
   run "$AGENT_ASK" precedents 2030-01-01T00:00:00+0000
   assert_output --partial "$b (demo): fix this flake? | recommended: fix"
   assert_output --partial 'the human chose: wait'

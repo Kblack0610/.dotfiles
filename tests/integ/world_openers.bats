@@ -55,7 +55,7 @@ resumable() {
   assert_called 'tmx goto hub dotfiles'
 }
 
-@test "resume --window of a worktree session from hub makes its session on the agent world" {
+@test "resume --window of a worktree session from hub makes its session on lab" {
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
   git init -q -b main "$HOME/dev/app"
   git -C "$HOME/dev/app" commit -q --allow-empty -m seed

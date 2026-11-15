@@ -65,6 +65,17 @@ hold() { # hold <node>: a process with the node open, like a camera app
   assert_equal "$LINE" '{"text":""}'
 }
 
+@test "a holder gone before its comm is read is not named: the pill stays hidden" {
+  # The fd walk can list a process that is reaped before its comm read; a stub find names a pid
+  # past pid_max, which never exists, so the race is the same on every run.
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\necho /proc/4194999/fd\n' > "$BATS_TEST_TMPDIR/bin/find"
+  chmod +x "$BATS_TEST_TMPDIR/bin/find"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" start
+  next_line
+  assert_equal "$LINE" '{"text":""}'
+}
+
 @test "a camera plugged in after start is watched" {
   start
   next_line

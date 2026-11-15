@@ -146,13 +146,40 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" BLOCKED
 }
 
-@test "a throughput drop holds only the items on that project's repo, an alias included" {
+# pipeline-eval-p2 review: a merge-line hold is by design, so it goes on to the board like a finding
+# hold, and a pass that starts nothing is NOOP, never the BLOCKED fleet-liveness reads as a stall.
+@test "every queue item a full merge line holds sends the pass on to the board; one that starts nothing is NOOP" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
+  row app human 'fix app crash' "- [ ] fix app crash #high $T"
+  verdict app human 'fix app crash' dispatch
+  export DISPATCH_LINE_MAX=6
+  line_state 0 6 game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'merge line full: fix-game (merge line: 6 game sessions wait their landing turn'
+  assert_output --partial 'started game-agent-1: app: '
+  assert_equal "$(outcome)" WORKED
+  [ -n "$(qitem queued fix-game)" ] || fail "the held item stays queued"
+  # No row left to start: NOOP naming the line, not BLOCKED.
+  agent-queue list --json 2>/dev/null | jq -r 'select(.project == "app") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+  : > "$NOTES_FIXTURE/rows.app.human"; : > "$NOTES_FIXTURE/calls.log"
+  line_state 0 6 game
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'merge line full: fix-game'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "a throughput drop holds only the items on that project's repo, another spelling of it included" {
   two_items
   findings "$(finding throughput-drop game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started game-agent-1: app: fix-app'
   agent-queue add --project game --slug fix-game-2 --priority low "fix it again"
-  jq '.aliases = {gm: "game"}' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
+  jq '.trackers.game.names = ["gm"]' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
   findings "$(finding throughput-drop gm)" "$(finding starved pool:light '["elsewhere"]')"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'started'
@@ -195,7 +222,7 @@ load 'fleet_dispatch/common'
 
 @test "an urgent heavy item that can never fit the run units holds nothing back" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_AWAY=1
   agent-queue add --project game --slug big-urgent --priority urgent --weight heavy "big urgent"
   agent-queue add --project game --slug small-high --priority high --weight light "small high"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -216,9 +243,26 @@ load 'fleet_dispatch/common'
   grep -q 'preempted l2 (lab/game-agent-l2) for urgent now-one' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
 }
 
+@test "preempt: at the pace target with run units free, an urgent item still parks a runner session and starts; a high one waits" {
+  six_of_six_units
+  export DISPATCH_TARGET_AWAY=10
+  fleet_state 10
+  agent-queue add --project game --slug later-one --priority high "later one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'at 10 live sessions, the away pace target is 10, starting nothing'
+  assert_not_called 'claude-acct park'
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for now-one'
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item waited behind the pace target"
+  [ -n "$(qitem queued later-one)" ] || fail "the high item started past the pace target"
+}
+
 @test "preempt: a heavy urgent item among light sessions parks one a pass, lowest priority first, and starts once two are free" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=2
+  export DISPATCH_TARGET_AWAY=2
   started_item l1 lab:game-agent-l1 run area-l1
   started_item l2 lab:game-agent-l2 run area-l2
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-l1.md
@@ -269,7 +313,7 @@ load 'fleet_dispatch/common'
 
 @test "preempt: a hand-started session is never a victim, however low its priority" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_AWAY=1
   started_item run1 lab:game-agent-run1 run area-run1
   started_item hand1 lab:game-agent-hand1 hand area-hand1
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-hand1.md
@@ -284,7 +328,7 @@ load 'fleet_dispatch/common'
 
 @test "preempt: with only urgent runner sessions live, nothing is parked and the pass says no runner session" {
   project game beta "$SANDBOX/repos/game"
-  export DISPATCH_MAX_LIVE=1
+  export DISPATCH_TARGET_AWAY=1
   started_item u1 lab:game-agent-u1 run area-u1
   sed -i 's/^priority: high/priority: urgent/' "$AGENT_QUEUE_DIR"/running/*-u1.md
   echo game-agent-u1 > "$NOTES_FIXTURE/tmux.sessions.lab"

@@ -56,7 +56,7 @@ Not for finding defects - that is `/code-review`. Not for a repo-wide sweep - th
 
 6. **Commit by concern.** Simplification and house-check fixes are separate `refactor:` commits; hygiene commits split the way code-hygiene step 5 splits them. Skip any concern with nothing in it.
 
-7. **Gate.** Run the repo's merge gate as its CLAUDE.md defines it (one-shot step 4). For dotfiles that is the shell-test-harness gate: `make -C tests test-fast` on the host, and the ui tier only through `tests/docker.sh`, never on the host. If the gate goes red and the step-3 baseline was green, revert the hunk that broke it before trying anything else.
+7. **Gate.** Run the repo's merge gate as its CLAUDE.md defines it (one-shot step 4). For dotfiles that is the shell-test-harness gate: `make -C tests test-pr` on the host (the files the PR gate picks for the change; the whole tier is main's job), and the ui tier only through `tests/docker.sh`, never on the host. If the gate goes red and the step-3 baseline was green, revert the hunk that broke it before trying anything else.
 
 8. **Report.**
    ```

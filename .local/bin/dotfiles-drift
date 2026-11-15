@@ -183,10 +183,11 @@ cat <<'EOF'
             there is one source of truth and it cannot disagree with itself:
               dotfiles-deploy --apply   (writes the relative link stow owns; an
               absolute one aborts `stow .`)
-  LINK   -> run `stow --no-folding .` in the repo, then re-check.
-            Check `stow --simulate` first: stow deploys the FILESYSTEM, not the
-            git index, so untracked junk in the tree gets linked into $HOME too.
-            A copy: diff it against the repo, commit any live value worth keeping,
-            then replace the copy with a link to the repo file.
+  LINK   -> run `dotfiles-deploy --apply`, then re-check.
+            Preview with `dotfiles-deploy --check` first. It deploys tracked files,
+            attaches missing links, and rewrites absolute links into the relative
+            form stow owns; an absolute link can abort the whole `stow .` run.
+            A copy: review the diff and commit any live value worth keeping before
+            applying. Differing copies are backed up before replacement.
 EOF
 exit 1

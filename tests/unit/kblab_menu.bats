@@ -29,7 +29,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" >"$BIN/$1"; chmod +x "$BIN/$1";
   run "$SUBJECT"
   assert_success
   assert_equal "$(cat "$OPENED")" "https://agents.example"
-  assert_equal "$(cat "$FOCUSED")" 'dispatch focuswindow class:^(firefox)$'
+  assert_equal "$(cat "$FOCUSED")" 'dispatch hl.dsp.focus({ window = "class:^(firefox)$" })'
 }
 
 @test "the menu lists sites sorted with name, group and url" {

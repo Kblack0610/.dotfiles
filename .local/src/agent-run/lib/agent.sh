@@ -13,7 +13,7 @@
 AGENTCTL_CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 
 # agent_load <name> -> AGENT_KIND AGENT_ROLE AGENT_MODEL AGENT_PROMPT AGENT_SCHEMA AGENT_PROMPT_SHA
-#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE, and for
+#                      AGENT_ROUTE AGENT_DATA_CLASS AGENT_DELAY_RULES AGENT_HARNESS AGENT_SOURCE AGENT_CALL_CONTEXT, and for
 #                      the raw harness AGENT_MAX_TOKENS AGENT_TEMPERATURE, or exit 78; and the
 #                      conf's budget (lib/budget.sh), which replaces a parent runner's
 agent_load() {
@@ -26,13 +26,13 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   mapfile -t v < <(
     set +eu
     unset NAME KIND ROLE MODEL PROMPT SCHEMA ROUTE DATA_CLASS DELAY_RULES BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
-      HARNESS MAX_TOKENS TEMPERATURE SOURCE
+      HARNESS MAX_TOKENS TEMPERATURE SOURCE CALL_CONTEXT
     # shellcheck disable=SC1090
     . "$conf" >/dev/null 2>&1
     printf '%s\n' "${NAME:-}" "${KIND:-}" "${ROLE:-}" "${MODEL:-}" "${PROMPT:-}" \
       "${ROUTE:-}" "${DATA_CLASS:-}" "${DELAY_RULES:-}" \
       "${BUDGET_CALL_USD:-}" "${BUDGET_DAY_USD:-}" "${MAX_CALLS_HOUR:-}" "${SCHEMA:-}" \
-      "${HARNESS:-}" "${MAX_TOKENS:-}" "${TEMPERATURE:-}" "${SOURCE:-}"
+      "${HARNESS:-}" "${MAX_TOKENS:-}" "${TEMPERATURE:-}" "${SOURCE:-}" "${CALL_CONTEXT:-}"
   )
   [ "${v[0]:-}" = "$name" ] || role_die "agent conf $conf has NAME='${v[0]:-}', not '$name'"
   AGENT_KIND="${v[1]:-}"
@@ -49,6 +49,9 @@ add a KIND=call conf for it - see ~/.config/agentctl/README.md, \"What an agent 
   fi
   AGENT_HARNESS="${v[12]:-}" AGENT_MAX_TOKENS="${v[13]:-}" AGENT_TEMPERATURE="${v[14]:-}"
   AGENT_SOURCE="${v[15]:-}"
+  # CALL_CONTEXT=lean: the call carries its PROMPT and input, not the session context (harnesses/claude.sh)
+  AGENT_CALL_CONTEXT="${v[16]:-}"
+  case "$AGENT_CALL_CONTEXT" in ''|lean) ;; *) role_die "agent '$name' CALL_CONTEXT='$AGENT_CALL_CONTEXT' is not empty or lean ($conf)" ;; esac
   [ -n "$AGENT_ROLE" ] || role_die "agent '$name' declares no ROLE ($conf)"
   AGENT_PROMPT_SHA=""
   if [ -n "$AGENT_PROMPT" ]; then

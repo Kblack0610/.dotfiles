@@ -50,6 +50,57 @@ def state(root, before=None):
     return files
 
 
+# The baseline's HEAD at session start; a path never holds a NUL, so the key cannot collide.
+HEAD = "\0head"
+
+
+def default_ref(root):
+    """The remote's default branch (origin/HEAD, else origin/main or origin/master), or None."""
+    for ref in ("origin/HEAD", "origin/main", "origin/master"):
+        try:
+            git(root, "rev-parse", "--verify", "-q", ref + "^{tree}")
+            return ref
+        except subprocess.CalledProcessError:
+            continue
+    return None
+
+
+def ls_tree(root, rev, paths):
+    """Path -> [mode, blob] for the paths rev holds, read in batches: cost follows the paths, not the tree."""
+    tree = {}
+    for i in range(0, len(paths), 500):
+        rows = git(root, "--literal-pathspecs", "ls-tree", "-z", "--full-tree", rev, "--", *paths[i:i + 500])
+        for row in filter(None, rows.split(b"\0")):
+            meta, path = row.split(b"\t", 1)
+            mode, _, blob = meta.decode().split()
+            tree[os.fsdecode(path)] = [mode, blob]
+    return tree
+
+
+def upstream(root, head, changed, current):
+    """The changed paths that came in from the default branch, not from this session.
+
+    A merge of the default branch, or agent-land's fast-forward of the main checkout, brings
+    in its files. A path counts as upstream's when its content now matches that branch, or
+    when it is gone, that branch lacks it, and the fork point of the session's starting HEAD
+    and that branch held it. A baseline with no HEAD counts every deletion.
+    """
+    ref = default_ref(root)
+    if ref is None:
+        return set()
+    tree = ls_tree(root, ref, changed)
+    theirs = {p for p in changed if p in current and tree.get(p) == current[p][:2]}
+    gone = [p for p in changed if p not in current and p not in tree]
+    if head and gone:
+        try:
+            base = git(root, "merge-base", head, ref).decode().strip()
+        except subprocess.CalledProcessError:
+            base = None
+        if base:
+            theirs |= ls_tree(root, base, gone).keys()
+    return theirs
+
+
 def main():
     action, directory, sid = sys.argv[1:]
     root = Path(os.fsdecode(git(directory, "rev-parse", "--show-toplevel")).strip())
@@ -59,14 +110,22 @@ def main():
     if action == "start":
         if not baseline.exists():
             current = state(root)
+            try:
+                current[HEAD] = git(root, "rev-parse", "--verify", "-q", "HEAD").decode().strip()
+            except subprocess.CalledProcessError:
+                pass
             cache.mkdir(parents=True, exist_ok=True)
             with baseline.open("x") as stream:
                 json.dump(current, stream)
     elif action == "changed":
         before = json.loads(baseline.read_text())
+        head = before.pop(HEAD, None)
         current = state(root, before)
-        for path in sorted(before.keys() | current.keys()):
-            if (before.get(path) or [])[:3] != (current.get(path) or [])[:3]:
+        changed = [p for p in sorted(before.keys() | current.keys())
+                   if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
+        theirs = upstream(root, head, changed, current) if changed else set()
+        for path in changed:
+            if path not in theirs:
                 print(path)
     else:
         raise ValueError("unknown action")

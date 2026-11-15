@@ -48,7 +48,7 @@ fi
 
 if [ "$tier" = rust ]; then
   # The rust gate's own files, not the bats harness: a helper change cannot reach a crate.
-  harness='^(tests/(Makefile|pick\.sh|rust\.sh|rust-crates\.sh|rust-inputs\.txt)|\.github/workflows/tests\.yml)$'
+  harness='^(tests/(Makefile|pick\.sh|rust\.sh|rust-crates\.sh|rust-inputs\.txt|rust-toolchain)|\.github/workflows/tests\.yml)$'
   grep -qE "$harness" <<<"$changed" && full "the change touches the rust gate"
   # A crate's inputs: its own directory, plus its lines of rust-inputs.txt (files outside it that
   # its build or tests read; unit/pick.bats checks the list against the sources).
@@ -85,7 +85,7 @@ if [ "$tier" = rust ]; then
   exit 0
 fi
 
-harness='^(tests/(helpers|fixtures|vendor)/|tests/(Makefile|shard\.sh|pick\.sh|broad\.txt)$|\.github/workflows/tests\.yml$|\.local/lib/test-pick\.sh$)'
+harness='^(tests/(helpers|fixtures|vendor)/|tests/(Makefile|run-bats\.sh|shard\.sh|pick\.sh|broad\.txt)$|\.github/workflows/tests\.yml$|\.local/lib/test-pick\.sh$)'
 grep -qE "$harness" <<<"$changed" && full "the change touches the test harness"
 
 # shellcheck source=../.local/lib/test-pick.sh

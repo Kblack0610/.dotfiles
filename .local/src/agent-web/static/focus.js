@@ -162,8 +162,8 @@ function sectionFold(s, open) {
 // steps, Edit and Rendered/Raw. The nav is the way to today and back to it.
 function focusHead(v) {
   const n = v.note, f = v.focus;
-  const day = n.date ? esc(n.title !== n.date && n.title ? n.title : n.date) : `<span title="${esc(n.path)}">${esc(n.rel)}</span>`;
-  const counts = f ? `<span class="muted">${f.open} open, ${f.done} done</span>` : "";
+  const day = n.date ? (n.title !== n.date && n.title ? n.title : n.date) : n.rel;
+  const counts = f ? `${f.open} open, ${f.done} done` : null;
   const nav = [
     n.prev ? `<a class="btn sm" href="${focusHref("daily:" + n.prev)}" title="${esc(n.prev)}" aria-label="Day before">&lt;</a>` : "",
     n.next ? `<a class="btn sm" href="${focusHref("daily:" + n.next)}" title="${esc(n.next)}" aria-label="Day after">&gt;</a>` : "",
@@ -173,7 +173,7 @@ function focusHead(v) {
     fcs.saved && fcs.saved.path === n.path && !fcs.edit ? `<span class="muted">Saved ${esc(fcs.saved.at)}</span>` : "",
   ].join("");
   const seg = `<div class="seg"><button data-f="rendered"${fcs.raw ? "" : ` class="on"`}>Rendered</button><button data-f="raw"${fcs.raw ? ` class="on"` : ""}>Raw</button></div>`;
-  return `<div class="dhead"><div class="dtitle"><h2>${day}</h2>${counts}</div><div class="opts">${nav}${fcs.edit ? "" : seg}</div></div>`;
+  return `<div class="dhead">${secHead("", day, counts)}<div class="opts">${nav}${fcs.edit ? "" : seg}</div></div>`;
 }
 
 function focusBody(v) {

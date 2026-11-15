@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# store-sales - what each app store made on one day, as one JSON document on stdout.
+# store-sales - what each app store and Steam made on one day, as one JSON document on stdout.
 #
 #   store-sales [YYYY-MM-DD]   the day (default yesterday, local time)
 #
-# One source per store: App Store (Sales and Trends daily summary, Apple's proceeds after its cut)
-# and Google Play (the month's sales report in the developer bucket, the charged amount before
-# Google's cut). A source that could not be read carries `error` and no `made`, never a 0. The
+# One source per store: App Store (Sales and Trends daily summary, Apple's proceeds after its cut),
+# Google Play (the month's sales report in the developer bucket, the charged amount before
+# Google's cut) and Steam (the partner financial API's detailed sales, net of refunds and tax,
+# before Valve's cut). A source that could not be read carries `error` and no `made`, never a 0. The
 # briefing's Money section reads it (hub-core briefing.rs). Credentials and statuses:
 # docs/operations/store-sales.md.
 set -uo pipefail
@@ -18,9 +19,14 @@ PROBE_TIMEOUT="${STORE_SALES_TIMEOUT:-15}"
 # The read-only sales credentials: one rbw entry per store. Never the release keys.
 RBW_ASC=store_sales_asc
 RBW_PLAY=store_sales_play
+RBW_STEAM=store_sales_steam
 ASC_API=https://api.appstoreconnect.apple.com/v1
 GCS_API=https://storage.googleapis.com/storage/v1
 GCS_SCOPE=https://www.googleapis.com/auth/devstorage.read_only
+STEAM_FIN_API=https://partner.steam-api.com/IPartnerFinancialsService
+# Pages of one day's Steam sales read at most. A page is Steam's own size; a studio's day is one
+# or two. Steam Web API terms: 100,000 calls a day per key (read 2026-11-11).
+STEAM_PAGES=20
 # The Sales and Trends report version the summary is asked in.
 ASC_REPORT_VERSION=1_1
 
@@ -40,10 +46,11 @@ esac
 TMP="$(mktemp -d)" || die "cannot make a scratch dir"
 trap 'rm -rf "$TMP"' EXIT
 
-# The report parser: <asc|play> <day> <file> -> {made: [{currency, amount}], sales, titles}.
-# made sums by currency (an App Store refund subtracts; Play counts charges only, its refunds land
-# in the monthly earnings report); a currency that nets to 0 drops out; sales counts paid units;
-# titles are by units sold.
+# The report parser: <asc|play|steam> <day> <file> -> {made: [{currency, amount}], sales, titles}.
+# made sums by currency (an App Store or Steam refund subtracts; Play counts charges only, its
+# refunds land in the monthly earnings report); a currency that nets to 0 drops out; sales counts
+# paid units; titles are by units sold. Steam's file is a JSON array of its answer pages; a row with
+# no money (a retail key activation, a free package) does not count.
 PARSE='
 import csv, io, json, sys
 from collections import Counter, defaultdict
@@ -60,6 +67,29 @@ if kind == "asc":
             continue
         made[r.get("Currency of Proceeds") or "?"] += n * each
         units[r.get("Title") or "?"] += n
+elif kind == "steam":
+    # A missing or non-numeric money field, or a row dated another day, fails the parse: the
+    # source is then not read, never a wrong amount.
+    def req(r, k):
+        return float(str(r[k]).replace(",", ""))
+    pages = [p.get("response", p) for p in json.loads(text)]
+    names = {}
+    for p in pages:
+        for a in p.get("app_info") or []:
+            names["app", a.get("appid")] = a.get("app_name")
+        for a in p.get("package_info") or []:
+            names["package", a.get("packageid")] = a.get("package_name")
+    for p in pages:
+        for r in p.get("results") or []:
+            if "date" in r and str(r["date"]).replace("/", "-") != day:
+                raise ValueError(f"a row is dated {r['date']}")
+            net = req(r, "net_sales_usd")
+            if net == 0 and req(r, "gross_sales_usd") == 0:
+                continue
+            made["USD"] += net
+            title = (names.get(("app", r.get("appid"))) or names.get(("app", r.get("primary_appid")))
+                     or names.get(("package", r.get("packageid"))) or "?")
+            units[title] += int(req(r, "net_units_sold"))
 else:
     for r in csv.DictReader(io.StringIO(text)):
         if r.get("Order Charged Date") != day or r.get("Financial Status") != "Charged":
@@ -121,11 +151,36 @@ google_play() {
   esac
 }
 
+# Steam's days are Pacific time; DAY is the caller's local date. Steam does not tell a day with no
+# sales from a day not reported yet: an answer with no rows reads as no sales.
+steam() {
+  local name=Steam basis=net key hw=0 max code n=0
+  key="$(rbw_read "$RBW_STEAM")"
+  [ -n "$key" ] || { failed "$name" "$basis" "no rbw entry $RBW_STEAM"; return; }
+  [[ "$key" =~ ^[0-9A-Za-z]+$ ]] || { failed "$name" "$basis" "rbw entry $RBW_STEAM is not a bare Web API key"; return; }
+  # One page per call: the next starts at the last one's max_id, until max_id stops moving or a
+  # page has no rows.
+  while :; do
+    n=$((n + 1))
+    [ "$n" -le "$STEAM_PAGES" ] || { failed "$name" "$basis" "more than $STEAM_PAGES pages of sales"; return; }
+    code="$(store_fetch "$STEAM_FIN_API/GetDetailedSales/v001/?key=$key&date=$DAY&highwatermark_id=$hw" "" "$TMP/steam.$n.json")" \
+      || { failed "$name" "$basis" "sales request failed"; return; }
+    [ "$code" = 200 ] || { http_failed "$name" "$basis" "$code" "$TMP/steam.$n.json"; return; }
+    jq -e '.response.results | length > 0' "$TMP/steam.$n.json" >/dev/null 2>&1 || break
+    max="$(jq -r '.response.max_id // empty | tostring' "$TMP/steam.$n.json" 2>/dev/null)"
+    [[ "$max" =~ ^[0-9]+$ ]] || { failed "$name" "$basis" "sales answer has no max_id"; return; }
+    [ "$max" != "$hw" ] || break
+    hw="$max"
+  done
+  jq -s . "$TMP"/steam.*.json > "$TMP/steam.pages" 2>/dev/null || { failed "$name" "$basis" "sales answer is not JSON"; return; }
+  parsed "$name" "$basis" steam "$TMP/steam.pages"
+}
+
 if store_rbw_ready; then
-  # The stores run side by side, each into its own file, so the wait is the slower one.
-  app_store > "$TMP/asc.json" & google_play > "$TMP/play.json" & wait
-  sources="$(cat "$TMP/asc.json" "$TMP/play.json")"
+  # The stores run side by side, each into its own file, so the wait is the slowest one.
+  app_store > "$TMP/asc.json" & google_play > "$TMP/play.json" & steam > "$TMP/steam.json" & wait
+  sources="$(cat "$TMP/asc.json" "$TMP/play.json" "$TMP/steam.json")"
 else
-  sources="$(failed "App Store" proceeds "$STORE_WHY"; failed "Google Play" charged "$STORE_WHY")"
+  sources="$(failed "App Store" proceeds "$STORE_WHY"; failed "Google Play" charged "$STORE_WHY"; failed Steam net "$STORE_WHY")"
 fi
 jq -s --arg d "$DAY" --argjson now "$(now_epoch)" '{date: $d, generated_epoch: $now, sources: .}' <<<"$sources"

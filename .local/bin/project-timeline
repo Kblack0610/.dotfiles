@@ -68,6 +68,7 @@ import json, os, re, subprocess
 from datetime import datetime, timezone
 
 E = os.environ
+SCHEDULES_SYNC = E.get("SCHEDULES_SYNC", "schedules-sync")
 since = int(E["SINCE"])
 out = {"since": since, "branch": E["BRANCH"], "scoped": bool(E["FILTER"] or E["PATHF"]),
        "commits": [], "prs": [], "runs": [], "tags": [], "notes": [], "errors": []}
@@ -124,28 +125,27 @@ if d:
         pr_refs.update(prs)
 
 if d and E["GH"]:
-    day = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%d")
-    code, text, err = run(["gh", "pr", "list", "--state", "all", "--limit", "100", "--search", f"updated:>={day}",
-                           "--json", "number,title,state,createdAt,mergedAt,closedAt,headRefName,url"], cwd=d)
-    if code:
-        out["errors"].append(f"gh pr list: {err}")
+    # The PR store keeps PRs updated in the window: an old open PR pushed to today is in, so its
+    # runs are the project's; the fold lists only its events in the window.
+    iso = datetime.fromtimestamp(since, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    code, text, err = run([SCHEDULES_SYNC, "prs", E["GH"], "--since", iso])
+    if code == 3:
+        out["notes"].append(f"PRs: {E['GH']} not in the PR store")
+    elif code:
+        out["errors"].append(f"schedules-sync prs: {err}")
     else:
         try:
             prs = json.loads(text or "[]")
         except ValueError as e:
             prs = []
-            out["errors"].append(f"gh pr list: {e}")
+            out["errors"].append(f"schedules-sync prs: {e}")
         for p in prs:
             if filt and p["number"] not in pr_refs and not filt.search(p.get("title") or ""):
                 continue
-            # The search keeps PRs updated in the window: an old open PR pushed to today is in,
-            # so its runs are the project's; the fold lists only its events in the window.
             out["prs"].append({"number": p["number"], "title": p.get("title") or "", "state": (p.get("state") or "").lower(),
-                   "created": epoch(p.get("createdAt")), "merged": epoch(p.get("mergedAt")),
-                   "closed": epoch(p.get("closedAt")), "branch": p.get("headRefName") or "",
+                   "created": epoch(p.get("created_at")), "merged": epoch(p.get("merged_at")),
+                   "closed": epoch(p.get("closed_at")), "branch": p.get("branch") or "",
                    "url": p.get("url") or ""})
-        if len(prs) >= 100:
-            out["notes"].append("PRs: the newest 100 of those updated in the window only")
 elif d:
     out["notes"].append("PRs: the origin is not GitHub")
 
@@ -154,7 +154,7 @@ if E["LEDGER"]:
     # A GitHub origin can be the mirror of a repo whose CI runs on Forgejo (home-config).
     keys = [E["LEDGER"]] + ([f"forgejo:{E['GH']}"] if E["GH"] else [])
     for key in keys:
-        code, text, err = run(["schedules-sync", "runs", key, "--since", iso])
+        code, text, err = run([SCHEDULES_SYNC, "runs", key, "--since", iso])
         if code != 3:
             break
     if code == 3:

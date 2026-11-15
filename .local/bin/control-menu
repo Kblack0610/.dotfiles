@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# control-menu - every waybar chip's hover from the keyboard (Super+A Space, leader.conf).
+# control-menu - every waybar chip's hover from the keyboard (Super+A Space, hypr/conf/leader.lua).
 #
 #   control-menu                the menu: fzf, the chip list on the left, the selected chip's
 #                               tooltip on the right; Enter is the chip's click, alt-Enter its
@@ -19,7 +19,7 @@
 # runs and what a click does is the waybar config (config.base, plus config.pin-full for the
 # pin-only machines chip). A chip hidden from the bar (modules.sh) still lists, because the
 # preview runs the command behind its `modules.sh gate <id>` prefix, not the gate. The window
-# rows are the described exec binds (bindd/bindpd in keybindings.conf and leader.conf), read
+# rows are the described exec binds (hypr/conf/keybindings.lua and leader.lua), read
 # live by hypr-binds, each with the chord that reaches it. The hub rows are `hub tabs`
 # (hub-core's layout), each previewed with `hub --once --tab` and opened as a hub popup.
 
@@ -62,7 +62,7 @@ run_exec() {
 }
 
 # Every described exec bind as chord<TAB>description<TAB>arg. A leader leaf's chord is the
-# path of submap entries that reach it (Super+A u t s); an Esc bind never counts as an entry.
+# path of submap entries that reach it (Super+A t s); an Esc bind never counts as an entry.
 windows() {
     "${SELF%/*}/hypr-binds" | awk -F'\t' -v OFS='\t' '$3 == "exec" && $2 != "" { print $1, $2, $4 }'
 }
@@ -116,7 +116,7 @@ id_of() { registry | awk -F'\t' -v k="$1" '$1 == k { print $3; exit }'; }
 preview() {
     local key="$1" id out rc err
     if [ "$key" = win ]; then
-        printf 'enter runs this bind through hyprctl dispatch exec:\n\n%s\n' "${2:-}"
+        printf 'enter runs this bind through hyprctl dispatch exec_cmd:\n\n%s\n' "${2:-}"
         return 0
     fi
     if [ "$key" = hub ]; then
@@ -179,7 +179,8 @@ click() {
         return 0
     fi
     if [ "$1" = win ]; then
-        hyprctl dispatch exec "$cmd" >/dev/null
+        # A Lua long string carries the command verbatim: no quote in it needs escaping.
+        hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
     setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null

@@ -146,8 +146,8 @@ containing a space cannot be expressed there (such a line is skipped).
 
 | Server | Sessions | Lands on |
 |---|---|---|
-| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles and home-config (on demand) | today's daily note |
-| `lab` - building | every agent worktree, platform and unity-core-playground (on demand) | no landing page: root resumes the last agent session |
+| `hub` - personal | **hub** (+ window `board`: hub, and window `shepherd`, the fleet lead's pass, which `fleet-shepherd run` owns and replaces in place), dotfiles, home-config, platform and unity-core-playground (on demand): main checkouts only | today's daily note |
+| `lab` - agents | every worktree session, `<repo>-agent-N`, started by hand or by `fleet-dispatch` | no landing page: root resumes the last worktree session |
 | `work` - client work | declared in the private overlay | that client's project index |
 
 Declared in `../../.config/tmux-servers/<name>.conf`, one
@@ -185,10 +185,9 @@ The manifests are also the **routing table**, and `worlds.sh` (on PATH as `tmux-
 | Picked | Goes to | Because |
 |---|---|---|
 | `~/.dotfiles` | `hub`, session `dotfiles` | hub.conf declares it |
-| `~/dev/bnb/games/engine/unity-core-playground` | `lab`, session `unity-core-playground` | lab.conf declares it (`?`, on demand) |
-| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | every linked worktree goes to the `@agents` world, under its own name, whichever repo it came from |
+| `~/dev/bnb/games/engine/unity-core-playground` | `hub`, session `unity-core-playground` | hub.conf declares it (`?`, on demand) |
+| `~/.worktrees/dotfiles-agent-3` | `lab`, session `dotfiles-agent-3` | a linked worktree goes to the `@agents` world, under its own name, whoever started it |
 | `~/.notes` | `hub`, session **`hub`** | the manifest's name wins over the basename |
-| `~/dev/bnb/games/some-game` | `lab`, session `some-game` | no entry names it, and `@repos ~/dev/bnb/games` encloses it |
 | `~/dev/other-repo` | `hub`, session `other-repo` | no entry names it, so the bare `@repos` takes it |
 
 Before this the picker ran plain `tmux`, which follows `$TMUX`, so it created the
@@ -196,7 +195,7 @@ session on whatever socket happened to enclose it - `Prefix+f` on
 `~/dev/bnb/platform` from `hub` built a **second** `platform` beside lab's. Same
 directory, two worlds, and nothing looked wrong from either side.
 
-`wt new` (`Prefix+F`) creates its session on the `@agents` world, inside tmux or out, and you hop there. 2026-10-28: the playground was undeclared, `Prefix+F` pressed from `hub` built three agent sessions on hub's socket while 23 siblings sat on lab. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on that world first; `tmx land` would otherwise fall back to the world's last session.
+`wt new` (`Prefix+F`) creates its session on the agent world (lab), inside tmux or out, and you hop there: every worktree session is on lab and only main checkouts are in hub. A worktree is in no manifest, so when the picker hops to one that has no session yet it creates the session on lab first, or on the server where its session already lives; `tmx land` would otherwise fall back to the world's last session.
 
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
@@ -348,6 +347,7 @@ breaking all three at once.
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
+| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 

@@ -746,6 +746,14 @@ listing_report() {
   refute_output --partial "LISTBUDGET"
 }
 
+@test "LISTBUDGET: a name-only override costs the name line, not the description" {
+  mkdeployed big "description: $(desc 200)"
+  mkdeployed bigger "description: $(desc 200)"
+  printf '{"skillOverrides": {"bigger": "name-only"}}' > "$HOME/empty/settings.json"
+  SKILL_SETTINGS="$HOME/empty/settings.json" listing_report 400
+  refute_output --partial "LISTBUDGET"
+}
+
 @test "LISTBUDGET stays out of --lint, which has no deployed tree" {
   mkskill ops one >/dev/null
   SKILL_LISTING_MAX=1 lint
@@ -759,4 +767,21 @@ listing_report() {
   listing_report 1000 --json
   assert_failure
   echo "$output" | jq -e '.findings[] | select(.type == "BADYAML")'
+}
+
+@test "ARGSUB: a \$N in the body fails and names the line" {
+  d=$(mkskill ops dollars)
+  printf '%s\n' "It costs \$0." "awk '{print \$1}'" >> "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "ARGSUB"
+  assert_output --partial "SKILL.md:13,14"
+}
+
+@test "ARGSUB: \${1}, \$(1), \$\$ and \$VAR pass, and frontmatter is not body" {
+  d=$(mkskill ops escaped 'when_to_use: costs $0')
+  printf '%s\n' 'f() { echo "${1}"; }' "awk '{print \$(1)}'" 'echo $$ $HOME' >> "$d/SKILL.md"
+  lint
+  assert_success
+  refute_output --partial "ARGSUB"
 }

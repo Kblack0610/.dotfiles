@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""opencode-perm-check - does an opencode config deny a shell command? Asks the real opencode.
+
+  opencode-perm-check [--config FILE] [--opencode BIN] [--model ID] [--json] COMMAND...
+
+For each COMMAND it starts the real opencode (`run --standalone --auto`, as fleet-dispatch does) on a copy of FILE (default
+~/.config/opencode/opencode.json) against a fake OpenAI-compatible model on 127.0.0.1. The model
+emits COMMAND as one shell tool call, and the tool result opencode sends back says whether its
+permissions refused it. One line per command: DENIED or ran, then the command. Exit 0 when every
+command got a verdict, 1 when one got none (opencode failed: see its log under --keep), 2 on usage.
+
+A permission rule is a glob over the whole command line (`*` is any run of characters, last
+matching rule wins), so `cd x && git ...` and `git -C d ...` need the leading `*`, and a trailing
+` *` also matches nothing (`ls *` matches `ls`). Globs surprise, so a new deny is tested here
+before it ships instead of trusted.
+
+An allowed command RUNS, in a scratch git repo, with HOME in the scratch dir too: pass only
+commands that are harmless there. Config, data, state and cache all live in that dir, so the shared
+opencode.db, auth.json and plugins are never read or written; the copy points the litellm provider
+and every agent at the fake and drops the MCP servers, so nothing reaches a real model or spends a key.
+"""
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+RUN_TIMEOUT_S = 120  # per command: startup plus two model turns against a local fake
+
+
+def strip_jsonc(text):
+    """The config is JSONC: drop // and /* */ comments and trailing commas, all outside strings."""
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+            out.append(c)
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        elif c in "}]":
+            while out and out[-1].isspace():
+                out.pop()
+            if out and out[-1] == ",":
+                out.pop()
+            out.append(c)
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+class Fake(BaseHTTPRequestHandler):
+    """Turn one: a call to the tool that takes a `command`. Turn two, and any request with no
+    tools (the title agent): plain text. Each tool result is kept on the server, by call id, for the verdict."""
+
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+        results = [m for m in body.get("messages") or [] if m.get("role") == "tool"]
+        if results:
+            self.server.results.update((m.get("tool_call_id"), str(m.get("content") or "")) for m in results)
+            return self.reply({"role": "assistant", "content": "done"}, "stop")
+        tool = next((t["function"]["name"] for t in body.get("tools") or []
+                     if "command" in ((t.get("function") or {}).get("parameters") or {}).get("properties", {})), None)
+        if tool:
+            args = json.dumps({"command": self.server.command, "description": "permission check"})
+            delta = {"role": "assistant", "tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function", "function": {"name": tool, "arguments": args}}]}
+            self.reply(delta, "tool_calls")
+        else:
+            self.reply({"role": "assistant", "content": "done"}, "stop")
+
+    def reply(self, delta, finish):
+        """opencode's AI SDK always streams, so every answer is SSE."""
+        base = {"id": "fake", "created": 0, "model": "fake"}
+        usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        chunks = [dict(base, object="chat.completion.chunk", choices=[{"index": 0, "delta": delta, "finish_reason": None}]),
+                  dict(base, object="chat.completion.chunk", usage=usage, choices=[{"index": 0, "delta": {}, "finish_reason": finish}])]
+        data = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks).encode() + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+
+def verdict(results):
+    """DENIED when opencode refused the call on its shell permission (opencode 2.x:
+    {"error":{"type":"permission.rejected","message":"Permission denied: shell"}}), so a refusal on
+    another rule (external_directory, say) does not pass for the shell rule under test; ran for any
+    other result, the command's own output."""
+    if not results:
+        return "NO-RESULT"
+    for text in results.values():
+        try:
+            err = json.loads(text)["error"]
+            if err["type"] == "permission.rejected" and str(err["message"]).endswith(": shell"):
+                return "DENIED"
+        except (ValueError, LookupError, TypeError):
+            pass
+    return "ran"
+
+
+def scratch_config(cfg, model, port):
+    """The config under test with litellm and every agent on the fake, and no MCP servers to start."""
+    cfg.pop("mcp", None)
+    lite = cfg.setdefault("providers", {}).setdefault("litellm", {})
+    lite["package"] = "aisdk:@ai-sdk/openai-compatible"
+    lite["settings"] = {"baseURL": f"http://127.0.0.1:{port}/v1", "apiKey": "fake"}
+    cfg["model"] = model
+    for agent in (cfg.get("agents") or {}).values():
+        agent["model"] = model
+    return cfg
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="opencode-perm-check", description=__doc__.split("\n\n")[0])
+    ap.add_argument("commands", nargs="+", metavar="COMMAND")
+    ap.add_argument("--config", default=os.path.expanduser("~/.config/opencode/opencode.json"))
+    ap.add_argument("--opencode", default="opencode")
+    ap.add_argument("--model", help="a litellm/<id> the config defines (default: its first litellm model)")
+    ap.add_argument("--json", action="store_true", help="one JSON object per command")
+    ap.add_argument("--keep", action="store_true", help="keep the scratch dir and print its path")
+    a = ap.parse_args()
+    try:
+        with open(a.config) as f:
+            cfg = json.loads(strip_jsonc(f.read()))
+    except (OSError, ValueError) as e:
+        print(f"opencode-perm-check: cannot read {a.config}: {e}", file=sys.stderr)
+        return 2
+    model = a.model or next((f"litellm/{m}" for m in ((cfg.get("providers") or {}).get("litellm") or {}).get("models") or {}), None)
+    if not model:
+        print("opencode-perm-check: the config has no litellm model; pass --model litellm/<id>", file=sys.stderr)
+        return 2
+    scratch = tempfile.mkdtemp(prefix="opencode-perm-check.")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    rc = 0
+    try:
+        os.makedirs(os.path.join(scratch, "config", "opencode"))
+        with open(os.path.join(scratch, "config", "opencode", "opencode.json"), "w") as f:
+            json.dump(scratch_config(cfg, model, server.server_address[1]), f)
+        work = os.path.join(scratch, "work")
+        subprocess.run(["git", "init", "-q", work], check=True)
+        # opencode's shell runs in $PWD, not the process cwd, and git reads $HOME's config: both point
+        # into the scratch dir, or an allowed command runs in the caller's repo.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("OPENCODE_")}
+        env.update(PWD=work, HOME=os.path.join(scratch, "home"), GIT_CONFIG_NOSYSTEM="1",
+                   OPENCODE_DISABLE_CLAUDE_CODE="1", OPENCODE_DISABLE_PROJECT_CONFIG="1",
+                   **{f"XDG_{k}_HOME": os.path.join(scratch, k.lower()) for k in ("CONFIG", "DATA", "STATE", "CACHE")})
+        os.makedirs(env["HOME"])
+        with open(os.path.join(scratch, "opencode.log"), "a") as log:
+            for command in a.commands:
+                server.command, server.results = command, {}
+                log.write(f"\n=== {command}\n")
+                log.flush()
+                try:
+                    subprocess.run([a.opencode, "run", "--standalone", "--auto", "--model", model, "go"], cwd=work, env=env,
+                                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, timeout=RUN_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    log.write("timed out\n")
+                log.write("--- tool result: " + " | ".join(server.results.values()) + "\n")
+                v = verdict(server.results)
+                rc = 1 if v == "NO-RESULT" else rc
+                print(json.dumps({"command": command, "verdict": v}) if a.json else f"{v:<9} {command}", flush=True)
+    finally:
+        server.shutdown()
+        server.server_close()
+        if a.keep:
+            print(f"scratch: {scratch}", file=sys.stderr)
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

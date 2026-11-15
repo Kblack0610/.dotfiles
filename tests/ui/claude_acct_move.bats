@@ -166,11 +166,12 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   assert_failure
   assert_output --partial 'more than one claude in its panes'
 
-  local w1 p2
+  local w1 p1 p2
   w1=$(t display-message -p -t '=shared:one' '#{window_index}')
+  p1=$(t display-message -p -t '=shared:one' '#{pane_id}')
   run "$ACCT" move "$SRV/shared:$w1"
   assert_success
-  assert_output --partial "claude-acct: moved shared:$w1 to alt"
+  assert_output --partial "claude-acct: moved shared:$p1 to alt"
   wait_until 'registered_sid sid-w1 "$ALT"'
   registered_sid sid-w2 main
 

@@ -143,9 +143,10 @@ pub fn age(now: u64, started_at: Option<u64>) -> String {
 
 /// Build the fzf rows and the preview map-file body, ordered by `sort`. The project sort
 /// groups rows under a header per project (the shepherd first, then projects by name, which
-/// reverse flips); any other sort is one flat list under one header that names it, each
-/// target led by its project since no group header carries it. `now` (epoch seconds) dates
-/// the open column. Returns `(rows, map_lines)`.
+/// reverse flips), and the plan sort under a header per plan; any other sort is one flat list
+/// under one header that names it. Outside the project sort each target is led by its project,
+/// since no group header carries it. `now` (epoch seconds) dates the time column: how long
+/// open, or under the recent sort how long since the last activity. Returns `(rows, map_lines)`.
 pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) {
     let mut groups: Vec<(String, Vec<&Agent>)> = Vec::new();
     if sort.key == Key::Project {
@@ -171,6 +172,21 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
                     .filter(|a| !is_shepherd(a) && a.project == project)
                     .collect(),
             ));
+        }
+    } else if sort.key == Key::Plan {
+        // One header per plan, in the plan sort's order (by name, no plan last).
+        let mut all: Vec<&Agent> = agents.iter().collect();
+        sort.order(&mut all);
+        for a in all {
+            let title = if a.plan_slug.is_empty() {
+                "no plan".to_string()
+            } else {
+                format!("plan {}", a.plan_slug)
+            };
+            match groups.last_mut() {
+                Some((t, group)) if *t == title => group.push(a),
+                _ => groups.push((title, vec![a])),
+            }
         }
     } else {
         let mut all: Vec<&Agent> = agents.iter().collect();
@@ -204,7 +220,13 @@ pub fn build(agents: &[Agent], sort: Sort, now: u64) -> (Vec<Row>, Vec<String>) 
             } else {
                 " ".to_string()
             };
-            let open = format!("{DIM}{}{RESET}", age(now, a.started_at));
+            // The recent sort dates the column by the last activity; every other by the open time.
+            let since = if sort.key == Key::Recent {
+                a.last_active
+            } else {
+                a.started_at
+            };
+            let open = format!("{DIM}{}{RESET}", age(now, since));
             let target = if flat {
                 format!("{} {}", a.project, a.short_target)
             } else {
@@ -669,6 +691,46 @@ mod tests {
             7300,
         );
         assert_eq!(headers(&rows), ["zulu", "alpha"]);
+    }
+
+    #[test]
+    fn plan_groups_under_a_header_per_plan_and_recent_dates_the_last_activity() {
+        use crate::sort::Key;
+        let mut a = agent("s:1", '✓', Mode::Other, false);
+        a.project = "zulu".into();
+        a.plan_slug = "quilt".into();
+        a.started_at = Some(100);
+        a.last_active = Some(7000);
+        let mut b = agent("s:2", '~', Mode::Other, false);
+        b.project = "alpha".into();
+        b.started_at = Some(200);
+        let mut c = agent("s:3", '~', Mode::Other, false);
+        c.project = "alpha".into();
+        c.plan_slug = "quilt".into();
+        c.started_at = Some(300);
+        let plan = Sort {
+            key: Key::Plan,
+            reverse: false,
+        };
+        let (rows, _) = build(&[b.clone(), c.clone(), a.clone()], plan, 7300);
+        assert_eq!(headers(&rows), ["plan quilt", "no plan"]);
+        assert!(
+            row(&rows, "s:3").contains("alpha s:3"),
+            "led by its project"
+        );
+        let recent = Sort {
+            key: Key::Recent,
+            reverse: false,
+        };
+        let (rows, _) = build(&[a.clone(), b], recent, 7300);
+        assert!(
+            row(&rows, "s:1").contains(&format!("{DIM} 5m{RESET} zulu s:1")),
+            "{}",
+            row(&rows, "s:1")
+        );
+        // Negative control: every other sort dates the open time.
+        let (rows, _) = build(&[a], Sort::default(), 7300);
+        assert!(row(&rows, "s:1").contains(&format!("{DIM} 2h{RESET} s:1")));
     }
 
     #[test]

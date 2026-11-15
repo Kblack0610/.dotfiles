@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import "../../.config/firefox/tab-keeper/rules.js";
 
-const { withDefaults, configErrors, fromPolicy, karakeepOrigin, dedupeAction, planTick } = globalThis.TabKeeperRules;
+const { withDefaults, configErrors, fromPolicy, karakeepOrigin, homeSetFrom, homeSetAction, dedupeAction, planTick } = globalThis.TabKeeperRules;
 
 const HOUR = 3600e3;
 const DAY = 24 * HOUR;
@@ -129,4 +129,64 @@ test("settings come from the policy, and anything wrong there falls back to dry 
 
 test("the Karakeep host grant drops the port", () => {
   assert.equal(karakeepOrigin("https://k.test:8443/x"), "https://k.test/*");
+});
+
+const HOME = ["https://cal.test/r", "https://board.test/v/1", "https://board.test/v/2"];
+
+test("the home set comes from a | list of web pages, and about:home gives none", () => {
+  assert.deepEqual(homeSetFrom(" https://cal.test/r | https://board.test/v/1|about:blank"), ["https://cal.test/r", "https://board.test/v/1"]);
+  assert.deepEqual(homeSetFrom("about:home"), []);
+  assert.deepEqual(homeSetFrom(undefined), []);
+});
+
+test("an empty profile opens every home page", () => {
+  assert.deepEqual(homeSetAction(HOME, []), { pin: [], open: HOME });
+});
+
+test("an open home page is pinned, not opened again", () => {
+  const cal = tab("https://cal.test/r?x=1");
+  const { pin, open } = homeSetAction(HOME, [cal]);
+  assert.deepEqual(pin, [cal]);
+  assert.deepEqual(open, ["https://board.test/v/1", "https://board.test/v/2"]);
+});
+
+test("a pinned tab that navigated within its site still counts for that site", () => {
+  const tabs = [tab("https://cal.test/r/week/3", { pinned: true }), tab("https://board.test/v/9", { pinned: true }), tab("https://board.test/v/2", { pinned: true })];
+  assert.deepEqual(homeSetAction(HOME, tabs), { pin: [], open: [] });
+});
+
+test("only the shortfall on a site opens, and hidden tabs do not count", () => {
+  const tabs = [tab("https://cal.test/r", { pinned: true }), tab("https://board.test/v/7", { pinned: true }), tab("https://board.test/v/1", { hidden: true })];
+  assert.deepEqual(homeSetAction(HOME, tabs).open, ["https://board.test/v/1"]);
+});
+
+test("in a home-set profile unpinned tabs sweep after homeSetSweepHours and pinned ones stay", () => {
+  const [stale, fresh, pinned] = [ago(5 * HOUR), ago(HOUR), ago(9 * DAY, { pinned: true })];
+  const result = planTick([stale, fresh, pinned], NOW, config({ homeSetSweepHours: 4 }), {}, HOME);
+  assert.deepEqual(result.sweep, [stale]);
+  assert.deepEqual(result.discard, []);
+});
+
+test("without a home set a day-old tab only discards", () => {
+  const day = ago(DAY);
+  const result = planTick([day], NOW, config({ homeSetSweepHours: 4 }), {}, []);
+  assert.deepEqual(result, { discard: [day], sweep: [], close: [] });
+});
+
+test("two home pages that differ only in query pin one tab once", () => {
+  const open = tab("https://q.test/a");
+  const { pin, open: opened } = homeSetAction(["https://q.test/a?u=1", "https://q.test/a?u=2"], [open]);
+  assert.deepEqual(pin, [open]);
+  assert.deepEqual(opened, ["https://q.test/a?u=2"]);
+});
+
+test("a site already covered by a pinned tab gets no second pin", () => {
+  const moved = tab("https://cal.test/r/week", { pinned: true });
+  const copy = tab("https://cal.test/r");
+  assert.deepEqual(homeSetAction(["https://cal.test/r"], [moved, copy]), { pin: [], open: [] });
+});
+
+test("an unpinned home page is not swept", () => {
+  const home = tab("https://cal.test/r", { lastAccessed: NOW - 9 * DAY });
+  assert.deepEqual(planTick([home], NOW, config(), {}, HOME).sweep, []);
 });

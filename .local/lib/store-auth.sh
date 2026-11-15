@@ -21,12 +21,31 @@ store_get() {
   { printf 'url = "%s"\n' "$1"; [ -z "${2:-}" ] || printf 'header = "Authorization: Bearer %s"\n' "$2"; } | secret_curl
 }
 
+# Retries of a GET the store answered 429 or 5xx, each after its Retry-After (seconds), else
+# STORE_RETRY_BASE doubling, never longer than STORE_RETRY_MAX.
+STORE_RETRIES=2
+STORE_RETRY_BASE="${STORE_RETRY_BASE:-2}"
+STORE_RETRY_MAX=30
+
 # store_fetch <url> <bearer-token> <out-file> -> the HTTP status on stdout, the body (an error's
-# too) in out-file. Exit 1 when curl could not get an answer at all.
+# too) in out-file. An empty token sends no Authorization header (Steam's key rides in the URL,
+# which reaches curl on stdin too). Only for GETs: a 429 or 5xx is retried. Exit 1 when curl could
+# not get an answer at all.
 store_fetch() {
-  { printf 'url = "%s"\n' "$1"; printf 'header = "Authorization: Bearer %s"\n' "$2"
-    printf 'output = "%s"\nwrite-out = "%%{http_code}"\n' "$3"; } \
-    | timeout "${PROBE_TIMEOUT:-20}" curl -sS -g --max-time "${PROBE_TIMEOUT:-20}" -K - 2>/dev/null
+  local try=0 code wait
+  while :; do
+    code="$({ printf 'url = "%s"\n' "$1"; [ -z "$2" ] || printf 'header = "Authorization: Bearer %s"\n' "$2"
+      printf 'output = "%s"\ndump-header = "%s.h"\nwrite-out = "%%{http_code}"\n' "$3" "$3"; } \
+      | timeout "${PROBE_TIMEOUT:-20}" curl -sS -g --max-time "${PROBE_TIMEOUT:-20}" -K - 2>/dev/null)" || { rm -f "$3.h"; return 1; }
+    if [[ ! "$code" =~ ^(429|5[0-9][0-9])$ ]] || [ "$try" -ge "$STORE_RETRIES" ]; then
+      rm -f "$3.h"; printf '%s' "$code"; return 0
+    fi
+    wait="$(sed -n 's/^[Rr]etry-[Aa]fter: *\([0-9][0-9]*\).*/\1/p' "$3.h" 2>/dev/null | tail -n 1)"
+    try=$((try + 1))
+    wait="${wait:-$((STORE_RETRY_BASE << (try - 1)))}"
+    [ "$wait" -le "$STORE_RETRY_MAX" ] || wait="$STORE_RETRY_MAX"
+    sleep "$wait"
+  done
 }
 
 b64url() { basenc --base64url -w0 | tr -d '='; }

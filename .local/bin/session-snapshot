@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# session-snapshot - spin the fleet down for a planned reboot or upgrade, and back up after it.
+#
+#   session-snapshot down [--dry-run] ["<reason>"]   hold dispatch, pause the agentctl runners, write the marker
+#   session-snapshot up [--dry-run]                  reopen the conversations, undo what down set, clear the marker
+#   session-snapshot status                          the marker and what it holds; rc 1 while down
+#
+# down sets only what is not already set and writes what it set into the marker, so up never lifts
+# a hold or a pause somebody else put up. Nothing is parked or killed: the reboot stops the sessions,
+# and `fleet-dispatch restore` reopens them from the pane record. session-snapshot-up.service runs
+# `up` at boot only while the marker exists. The inventory half and the why: the session-snapshot skill.
+
+set -uo pipefail
+
+MARKER="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}"
+
+say() { printf 'session-snapshot: %s\n' "$*"; }
+field() { sed -n "s/^$1: //p" "$MARKER" 2>/dev/null | head -1; }
+dispatch_held() { agent-hold list 2>/dev/null | awk -F'\t' '$1 == "dispatch" { found = 1 } END { exit !found }'; }
+# agentctl has no read verb for the pause; list leads with it.
+fleet_paused() { agentctl list 2>/dev/null | grep -q '^PAUSED since'; }
+# conversations on the live pane records (not a .lost or .restored one): what restore would reopen.
+on_record() {
+  local dir="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/panes" f files=()
+  for f in "$dir"/*.json; do
+    case $f in *.lost.json | *.restored.json) continue ;; esac
+    [ -r "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -gt 0 ] || { echo 0; return; }
+  jq -s '[.[].panes[]? | select(.claude != "")] | length' "${files[@]}" 2>/dev/null || echo 0
+}
+# undo <set word> -- lift one thing down set; rc 1 when the lever refused.
+undo() {
+  case $1 in
+    agentctl-pause) agentctl resume >/dev/null ;;
+    dispatch-hold) agent-hold release dispatch >/dev/null ;;
+    *) return 0 ;;
+  esac
+}
+# write_marker <reason> <since> <set words...>
+write_marker() {
+  local reason=$1 since=$2; shift 2
+  mkdir -p "$(dirname "$MARKER")"
+  printf 'since: %s\nreason: %s\nset: %s\n' "$since" "$reason" "$*" > "$MARKER"
+}
+
+cmd_status() {
+  if [ ! -e "$MARKER" ]; then
+    echo "up: no planned reboot in progress"
+    return 0
+  fi
+  echo "down since $(field since): $(field reason)"
+  echo "set by down: $(field set)"
+  echo "undo with: session-snapshot up"
+  return 1
+}
+
+cmd_down() {
+  local dry=0 words=() w
+  for w in "$@"; do
+    case $w in
+      --dry-run) dry=1 ;;
+      -*) say "down: unknown flag $w"; return 2 ;;
+      *) words+=("$w") ;;
+    esac
+  done
+  local reason="${words[*]:-planned reboot}"
+  if [ -e "$MARKER" ]; then cmd_status; return 0; fi
+  local set=() why="maintenance: $reason"
+  if dispatch_held; then
+    say "dispatch already held, left as it is"
+  elif [ "$dry" = 1 ]; then
+    say "would hold dispatch: $why"
+  elif agent-hold set dispatch --by session-snapshot "$why" >/dev/null; then
+    set+=(dispatch-hold)
+  else
+    say "down: agent-hold set dispatch failed; nothing left set"; return 1
+  fi
+  if fleet_paused; then
+    say "agentctl already paused, left as it is"
+  elif [ "$dry" = 1 ]; then
+    say "would pause agentctl: $why"
+  elif agentctl pause "$why" >/dev/null; then
+    set+=(agentctl-pause)
+  else
+    for w in "${set[@]}"; do undo "$w"; done
+    say "down: agentctl pause failed; nothing left set"; return 1
+  fi
+  if [ "$dry" = 1 ]; then
+    say "would reopen $(on_record) conversation(s) at the next boot"
+    return 0
+  fi
+  # A record now, so the restore point holds the panes as they are at the moment of going down.
+  fleet-dispatch record >/dev/null 2>&1 || say "fleet-dispatch record failed; the last minute's record stands"
+  write_marker "$reason" "$(date -Iseconds)" "${set[@]}"
+  say "down: ${set[*]:-nothing new to set}; $(on_record) conversation(s) will reopen at the next boot"
+  say "reboot when ready; not rebooting after all: session-snapshot up"
+}
+
+cmd_up() {
+  local dry=0 w
+  for w in "$@"; do
+    case $w in
+      --dry-run) dry=1 ;;
+      *) say "up: unknown argument $w"; return 2 ;;
+    esac
+  done
+  if [ ! -e "$MARKER" ]; then
+    echo "up: no planned reboot in progress, nothing to do"
+    return 0
+  fi
+  local reason since set=() restore rc=0 undone=() left=() prio=low reopen_failed=0
+  reason=$(field reason); since=$(field since)
+  read -ra set <<<"$(field set)"
+  if [ "$dry" = 1 ]; then
+    fleet-dispatch restore --dry-run
+    for w in "${set[@]}"; do say "would undo $w"; done
+    return 0
+  fi
+  # Conversations first, while dispatch is still held, so a pass cannot start new work into the
+  # same sessions. A failed reopen keeps its lost record, so `fleet-dispatch restore` finishes it.
+  restore=$(fleet-dispatch restore 2>&1) || { rc=1; prio=normal; reopen_failed=1; }
+  printf '%s\n' "$restore"
+  # In reverse of down, so dispatch, set first, is released last, once the runners are back.
+  local i
+  for (( i = ${#set[@]} - 1; i >= 0; i-- )); do
+    if undo "${set[i]}"; then undone+=("${set[i]}"); else left+=("${set[i]}"); fi
+  done
+  # A lever that refused stays on the marker, so a rerun of up retries exactly it.
+  if [ "${#left[@]}" -gt 0 ]; then
+    write_marker "$reason" "$since" "${left[@]}"; rc=1; prio=high
+  else
+    rm -f "$MARKER"
+  fi
+  local summary tail=''
+  summary=$(printf '%s\n' "$restore" | grep -E ': reopened [0-9]+, failed [0-9]+$|no lost server' | paste -sd ';' -)
+  [ "${#left[@]}" = 0 ] || tail+=". Still set: ${left[*]}, rerun session-snapshot up"
+  [ "$reopen_failed" = 0 ] || tail+=". Some did not reopen: fleet-dispatch restore"
+  agent-notify -p "$prio" -t "back up after: ${reason:-planned reboot}" \
+    "${summary:-restore printed nothing}; undone: ${undone[*]:-nothing}$tail" || say "could not page"
+  say "up: undone ${undone[*]:-nothing}${left:+, still set ${left[*]}}"
+  return "$rc"
+}
+
+case "${1:-}" in
+  down) shift; cmd_down "$@" ;;
+  up) shift; cmd_up "$@" ;;
+  status) cmd_status ;;
+  -h|--help|help|'') sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) say "unknown verb: $1"; exit 2 ;;
+esac

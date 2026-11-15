@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # kblab-menu: fuzzy-pick a home-lab site and open it. Bound to Super+K in
-# hypr/conf.d/keybindings.conf. Type any part of the name, group or address.
+# hypr/conf/keybindings.lua. Type any part of the name, group or address.
 #
 # Sites come from the ingress manifests through home-config's gen-ha-launcher.py
 # --list-sites, so the list is never kept by hand and no host lives in this repo.
@@ -33,5 +33,5 @@ url=${choice##*  |  }
 
 xdg-open "$url" >/dev/null 2>&1
 if command -v hyprctl >/dev/null 2>&1; then
-    hyprctl dispatch focuswindow 'class:^(firefox)$' >/dev/null
+    hyprctl dispatch 'hl.dsp.focus({ window = "class:^(firefox)$" })' >/dev/null
 fi

@@ -4,6 +4,8 @@ Style, design and look of game worlds and UI: lighting, art direction, consisten
 
 ## Patterns (read first)
 
+- A game with no written taste, or a `Draft` taste no one corrected: every review then grades against someone's guess.
+- Set dressing, sky or a prop out-contrasting or out-saturating the players, threats and pickups.
 - Raw colours and sizes in UI instead of the theme's tokens; a page keeping its own copy of a shared widget.
 - Fixed pixel sizes where the layout should flex; text that drops below the type scale at small sizes.
 - Materials upgraded from a legacy shader drawing wrong in the current pipeline (white or black squares, wrong transparency).
@@ -35,7 +37,7 @@ Taste calls (which direction a game's look should go) are the human's: put the s
 
 ## Review list
 
-Per game: every named view at the lowest and default tier against the patterns; the reference view against the game's look settings; art-set mix; scale; the UI gallery against the repo's UI rules.
+Per game: every named view at the lowest and default tier, graded against the game's taste and each of the repo's review tests (pass, drift or fail, with a one-line reason and the rule it breaks); the reference view against the game's look settings; art-set mix; scale; the UI gallery against the repo's UI rules. The pass is not done until every view has a grade: a table of view x test in the report, and each fail filed as a row.
 
 ## Prove
 

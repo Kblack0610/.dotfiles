@@ -29,6 +29,8 @@
 # Usage:
 #   source "$HOME/.local/lib/agent-merge-proof.sh"
 #   proof="$(merge_proof "$repo" "$ref" "$(merge_proof_branch "$repo")" "$sha")"
+#   (MERGE_PROOF_REMOTE names the remote whose branch is the truth, origin by default: home-config's
+#   origin is its GitHub mirror, so agent-land proves a Forgejo merge on its forgejo remote)
 #   case $? in
 #     0) : ;;                       # $proof is a printable, recordable proof
 #     1) echo "$proof" >&2; exit 1;; # honest refusal: no evidence
@@ -105,7 +107,7 @@ merge_proof() {
   local ref="${2:?merge_proof: ticket ref required}"
   local branch="${3:?merge_proof: integration branch required}"
   local evidence="${4:-}"
-  local short hit pat
+  local short hit pat remote="${MERGE_PROOF_REMOTE:-origin}"
 
   ref="$(merge_proof_normalize_ref "$ref")"
   if ! _merge_proof_ere_safe "$ref"; then
@@ -123,27 +125,27 @@ merge_proof() {
   # origin/BRANCH we last saw, which can only ever make us MORE conservative
   # (stale = fewer commits = a true claim may be refused, never a false one
   # accepted).
-  git -C "$repo" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null || true
+  git -C "$repo" fetch -q "$remote" "+refs/heads/$branch:refs/remotes/$remote/$branch" 2>/dev/null || true
 
-  if ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
-    echo "merge_proof: no origin/$branch in $repo — cannot prove anything" >&2
+  if ! git -C "$repo" rev-parse --verify --quiet "refs/remotes/$remote/$branch" >/dev/null 2>&1; then
+    echo "merge_proof: no $remote/$branch in $repo: cannot prove anything" >&2
     return 2
   fi
 
   if [ -n "$evidence" ]; then
     if ! git -C "$repo" rev-parse --verify --quiet "${evidence}^{commit}" >/dev/null 2>&1; then
-      echo "merge_proof: REFUSING — evidence '$evidence' is not a commit in $repo" >&2
+      echo "merge_proof: REFUSING: evidence '$evidence' is not a commit in $repo" >&2
       return 2
     fi
-    if ! git -C "$repo" merge-base --is-ancestor "$evidence" "origin/$branch" 2>/dev/null; then
+    if ! git -C "$repo" merge-base --is-ancestor "$evidence" "$remote/$branch" 2>/dev/null; then
       # Hard error, NOT a fall-through to the grep. A caller that names a SHA is
       # making a specific claim; if that claim is false the weaker check finding
       # some other commit would launder a lie into a proof.
-      echo "merge_proof: REFUSING — evidence $evidence is not an ancestor of origin/$branch" >&2
+      echo "merge_proof: REFUSING: evidence $evidence is not an ancestor of $remote/$branch" >&2
       return 2
     fi
     short="$(git -C "$repo" rev-parse --short "$evidence" 2>/dev/null)"
-    printf 'evidence commit %s is an ancestor of origin/%s' "$short" "$branch"
+    printf 'evidence commit %s is an ancestor of %s/%s' "$short" "$remote" "$branch"
     return 0
   fi
 
@@ -155,13 +157,13 @@ merge_proof() {
   # boundary is satisfied by `1559`. A ticket proved done by an unrelated
   # ticket's commit is exactly the class of lie this file exists to stop.
   pat="(^|[^0-9A-Za-z_-])${ref}([^0-9]|\$)"
-  hit="$(git -C "$repo" log "origin/$branch" -E --grep="$pat" --format='%h %s' -1 2>/dev/null || true)"
+  hit="$(git -C "$repo" log "$remote/$branch" -E --grep="$pat" --format='%h %s' -1 2>/dev/null || true)"
   if [ -n "$hit" ]; then
-    printf 'origin/%s carries a commit naming %s: %s' "$branch" "$ref" "$hit"
+    printf '%s/%s carries a commit naming %s: %s' "$remote" "$branch" "$ref" "$hit"
     return 0
   fi
 
-  printf 'no evidence on origin/%s that %s shipped' "$branch" "$ref"
+  printf 'no evidence on %s/%s that %s shipped' "$remote" "$branch" "$ref"
   return 1
 }
 

@@ -74,7 +74,7 @@ dry_run() {
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/bin/parallel"
   chmod +x "$BATS_TEST_TMPDIR/bin/parallel"
-  PATH="$BATS_TEST_TMPDIR/bin:$PATH" env -u CI make -n -s --no-print-directory -f "$MK" BATS=/bin/true UNIT_JOBS=3 "$@"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" env -u CI make -n -s --no-print-directory -f "$MK" BATS=/bin/true RUN_BATS=/bin/true UNIT_JOBS=3 "$@"
 }
 
 # Integ serial was the full CI tier's critical path (run 42983385857: 405 s of a 5-minute gate).

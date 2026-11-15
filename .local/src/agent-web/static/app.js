@@ -6,12 +6,16 @@
 // session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", asks: [], views: {} };
-// The board tabs (static/*.js) register here: { show(), onEvent(ev) }.
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], parked: [], views: {} };
+// The board tabs (static/*.js) register here: { show(), onEvent(ev) }, and `inner(id)` for a tab whose
+// inner tabs read their own data (innerGo).
 const TABS = {};
-// Log's folded sections under the day (Actions, Changes, Rundowns, the judges' verdicts): the
-// file that owns each one's data adds {show, onEvent} here and paints its own container.
+// Log's sections past the day (Work, Actions, Changes, Rundowns, the judges' verdicts, Ranked): the
+// file that owns each one's data adds {sec, show, onEvent} here and paints its own container.
 const LOG_PARTS = [];
+// Whether Log shows the inner tab holding section `sec`: a Log part reads only then (dashboards
+// rule 10), and an event for a hidden one marks it stale for when its inner tab opens.
+const logShows = (sec) => st.tab === "log" && innerShown("log", homeOf("log", sec));
 
 const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
@@ -40,12 +44,16 @@ function phasesText(a) {
 st.approving = null;
 function approveButtons(a) {
   if (!a || !(a.actions || []).includes("approve-plan")) return "";
-  const t = esc(a.target);
-  return st.approving === a.target
+  const t = esc(a.target), err = st.approveErr[a.target] ? `<span class="err">${esc(st.approveErr[a.target])}</span>` : "";
+  // A sent approval draws busy on every surface (Home, the pinned card, a Queue item) until the
+  // session list says the dialog is gone, so a slow approve never reads as a dead click.
+  if (askst.sending[`ses:${a.target}`]) return `<button class="btn sm primary" disabled><span class="spin"></span>Approving...</button>`;
+  return err + (st.approving === a.target
     ? `<button class="btn sm primary" data-approve-go="${t}">Yes, approve the plan</button><button class="btn sm" data-approve-no>Cancel</button>`
-    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`;
+    : `<button class="btn sm primary" data-approve="${t}">Approve plan</button>`);
 }
 function rerenderApprove() {
+  sst.render();
   if (st.tab === "home") renderHome();
   if (st.tab === "queue") qst.render();
 }
@@ -57,10 +65,15 @@ document.addEventListener("click", async (e) => {
   const t = b.dataset.approveGo;
   st.approving = null;
   if (!t) { rerenderApprove(); return; }
-  const err = b.closest(".card") && b.closest(".card").querySelector(".err");
-  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); if (err) err.textContent = ""; }
-  catch (x) { if (err) err.textContent = x.message; }
-  refreshAgents();
+  const key = `ses:${t}`;
+  if (askst.sending[key]) return;
+  delete st.approveErr[t];
+  askst.sending[key] = "the plan approval";
+  rerenderApprove();
+  try { await post(`/api/session/${encodeURIComponent(t)}/approve-plan`, {}); await refreshAgents(); }
+  catch (x) { st.approveErr[t] = x.message; }
+  delete askst.sending[key];
+  rerenderApprove();
 }, true);
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
@@ -71,6 +84,8 @@ const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpar
   stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
 const actLabel = (n) => ACT_LABEL[n] || n;
 st.act = { confirm: null, busy: false, msg: "", err: false };
+// Why the last Approve plan failed, by session target, shown beside its button.
+st.approveErr = {};
 st.opts = { describe: {}, accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
@@ -147,15 +162,16 @@ function renderPin() {
   const key = a.target + "|" + a.question.kind + "|" + a.question.text;
   if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
   el.dataset.key = key;
-  // The row kind hub-core's home::NeedKind::of_dialog gives the same dialog.
-  el.innerHTML = sessionCard(a, { choice: "ask", tool: "perm", plan: "plan" }[a.question.kind] || "turn", true);
+  el.innerHTML = sessionCard(a, dialogKind(a.question), true);
 }
 $("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
 $("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
 
 function select(a) {
   if (!st.sel || st.sel.target !== a.target) st.act = { confirm: null, busy: st.act.busy, msg: "", err: false };
+  if (st.sel) markSeen(st.sel.session);
   st.sel = a; st.start = null; st.end = null;
+  markSeen(a.session);
   showView("transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
@@ -164,8 +180,12 @@ function select(a) {
   load();
 }
 
-// No session open: the page is the table (sessions.js) and the folds under it.
+// No session open: the page is the inner tabs' strip and one group each, the table (sessions.js)
+// and the folds under it, the runners (fleet.js) and the shepherd (shepherd.js); TABS.sessions
+// reads only the one shown. It draws only the empty boards: its one caller, TABS.sessions.show,
+// then calls inner(), whose render of the shown inner tab fills its board.
 function overview() {
+  if (st.sel) markSeen(st.sel.session);
   st.sel = null; st.start = null; st.end = null;
   $("d-dot").hidden = $("v-seg").hidden = true;
   $("d-name").textContent = "Sessions";
@@ -173,8 +193,11 @@ function overview() {
   $("compose").hidden = true;
   renderPin();
   $("main").classList.remove("open");
-  $("scroll").innerHTML = "";
-  renderFacts(); sst.render(); renderSide(); refreshSessions();
+  $("scroll").innerHTML = `<div id="sessions">${innerStrip("sessions")}` +
+    innerWrap("sessions", "sessions", `<div id="ov-sessions"></div>`) +
+    innerWrap("sessions", "fleet", `<div id="sec-fleet" data-tbl="${RUNNERS_PRE}"><div id="ov-runners"></div></div>`) +
+    innerWrap("sessions", "shepherd", `<div id="sec-shepherd"><div id="ov-shepherd"></div></div>`) + `</div>`;
+  renderFacts(); renderSide();
 }
 
 $("back").onclick = () => setTab("sessions", "");
@@ -302,16 +325,40 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (docs/dashboards.md "Hub layout"); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "queue", "projects", "board", "sessions", "infra", "log", "fleet", "schedules", "costs", "releases"];
-const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home" };
-// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section.
-// And the web's old URL for every project's rows, which the TUI still opens with `a` on Projects.
-const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "projects/all": ["board", ""] };
-// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections;
-// `pinned` stays above the strip. assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"infra":{"pinned":["health","red"],"tabs":[["reds","Reds",["fixes"]],["machines","Machines",["machines","ci","governor"]],["jobs","Jobs",["jobs"]],["cloud","Cloud",["cloud"]]]},"costs":{"pinned":["fleet"],"tabs":[["limits","Limits",["burn","consumers"]],["spend","Spend",["spend","totals","table"]],["models","Models",["tokens","langfuse","sections"]]]},"releases":{"pinned":[],"tabs":[["apps","Apps",["table","detail"]],["builds","Builds",["builds"]],["tests","Tests",["tests"]]]}};
+const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs"];
+const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home", "board": "projects" };
+// layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
+// and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
+const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
+  "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
+  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
+  "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
+// hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
+// assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
+const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","All rows",["board"]],["deliverables","Deliverables",["deliverables"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","fleet","spend","table","sessions"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]}};
+// hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
+// Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
+const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["rows","Rows",["p-rows"]],["build","Build",["p-build"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]]];
+// hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
+// `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
+// assets.rs `entity_pages_are_the_links` fails when this line drifts.
+const ENTITY_PAGES = {"sessions":{"runners":"runners","sessions":"sessions"},"infra":{"machines":"machines","pools":"machines","runs":"runs","jobs":"jobs","ci":"runs"},"releases":{"apps":"apps"}};
+// hub_core::links::RETIRED_TAB_PAGES: a retired tab whose `#tab/<id>` was a record's page, as
+// [tab, word] of that page now and the key prefix its table's view took there, so `#fleet/<runner>`
+// is `#sessions/runners/<runner>` and `#fleet?s=failed` is `#sessions/runners?rs=failed`.
+// assets.rs `retired_tab_pages_are_the_links` fails when this line drifts.
+const RETIRED_TAB_PAGES = {"fleet":["sessions","runners","r"]};
+// A runner's page (hub_core::links Kind::Runner), for a page that holds a runner's name and no
+// server link: Schedules' agentctl rows and Log's judge headers.
+const runnerHref = (name) => "#sessions/runners/" + encodeURIComponent(name);
+// Open a session's page (hub_core::links Kind::Session, `#sessions/sessions/<id>`) from any tab.
+function openSessionId(id) {
+  setTab("sessions", "sessions", undefined, "sessions/" + id);
+}
+// The id of the `word` page the URL has open on `tab` (`#infra/machines/<host>` -> the host), or "".
+const pageId = (tab, word) => (st.tab === tab && st.page.startsWith(word + "/") ? st.page.slice(word.length + 1) : "");
 // The inner tab a name opens: an inner id, or a section id (an old `#costs/burn` link) for the one
-// holding it; a missing, unknown or pinned name opens the first. Null when the tab has none.
+// holding it; a missing or unknown name opens the first. Null when the tab has none.
 function innerOf(tab, name) {
   const g = INNER_TABS[tab];
   if (!g) return null;
@@ -322,15 +369,30 @@ function innerOf(tab, name) {
 const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
 // The inner tab each tab last showed, so a tab button brings it back as it was.
 const lastInner = {};
+// A tab whose arg also names a record (`#projects/<profile>/<name>`) keeps an arg that is not
+// one of its inner tabs: the record's page is under its first inner tab (projects.js).
+const RECORD_ARGS = ["projects"];
+// A record page an older link named with no word (`#sessions/<id>`, before a session's page sat
+// under `sessions/` so an id named like an inner tab still opens): any other arg is its id.
+const BARE_PAGES = { sessions: "sessions" };
 // A route's inner tab: `#costs/models` keeps its arg; a section (an old link, or a moved one) becomes
 // its inner tab's arg with the section left to scroll to; anything else is the first inner tab.
 function innerRoute(r) {
   const g = INNER_TABS[r.tab];
   if (!g) return r;
+  // A record's page (`#infra/machines/<host>`) opens its inner tab and keeps `word/id` as `page`.
+  const at = (r.arg || "").indexOf("/");
+  const word = at < 0 ? "" : r.arg.slice(0, at).toLowerCase();
+  const pages = Object.hasOwn(ENTITY_PAGES, r.tab) ? ENTITY_PAGES[r.tab] : {};
+  const inner = Object.hasOwn(pages, word) ? pages[word] : undefined;
+  if (inner && r.arg.slice(at + 1)) return { ...r, arg: inner, page: word + "/" + r.arg.slice(at + 1) };
   const want = (r.section || r.arg || "").toLowerCase();
   const hit = homeOf(r.tab, want);
   if (hit) return { ...r, arg: hit[0], section: r.section || (hit[0] === want ? undefined : want) };
-  return { ...r, arg: g.tabs.some((t) => t[0] === want) ? want : "" };
+  if (g.tabs.some((t) => t[0] === want)) return { ...r, arg: want };
+  const bare = Object.hasOwn(BARE_PAGES, r.tab) && r.arg ? BARE_PAGES[r.tab] : "";
+  if (bare) return { ...r, arg: pages[bare], page: bare + "/" + r.arg };
+  return { ...r, arg: RECORD_ARGS.includes(r.tab) ? r.arg : "" };
 }
 const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] || TAB_NAMES[0]);
 // The open tab's section anchors. Ids repeat across boards (Queue and Costs both have
@@ -338,63 +400,114 @@ const tabOf = (name) => (TAB_NAMES.includes(name) ? name : RETIRED_TABS[name] ||
 const tabAnchors = () => [...($(st.tab)?.querySelectorAll('[id^="sec-"]') || [])];
 // A retired name that is now a section of its tab (`#jobs` is Infra's Jobs section) scrolls
 // there once that section has drawn (hub_core::layout::section). Each board calls this after
-// it paints; the first paint that has the section clears it.
+// it paints; the first paint that has the section clears it. A section that paints later above
+// it (Infra CI's runs above Tests, each from its own read) pushes it down, so until the reader
+// touches the page, a paint that moved the anchor puts it back on top. Any input ends that
+// hold: a reader who opened a fold or scrolled is never pulled back.
+let seekHeld = null;
+for (const ev of ["pointerdown", "wheel", "keydown", "touchstart"]) document.addEventListener(ev, () => { seekHeld = null; }, { capture: true, passive: true });
+const anchorAt = (e) => e.getBoundingClientRect?.().top;
+function seekTo(board, e) {
+  seekHeld = null;
+  if (!e.scrollIntoView) return;
+  e.scrollIntoView({ block: "start" });
+  if (board) seekHeld = { board, id: e.id, top: board.scrollTop, at: anchorAt(e) };
+}
 function seekSection() {
   // A section on another inner tab switches to it first, so the anchor is on screen.
   const home = st.section && homeOf(st.tab, st.section);
   if (home && home[0] !== innerOf(st.tab, st.arg)[0]) innerGo(st.tab, home[0]);
+  const board = $(st.tab);
   const e = st.section && tabAnchors().find((x) => x.id === "sec-" + st.section);
-  if (!e) return;
+  if (!e) {
+    // A section still to paint is the new target: the old hold ends.
+    const h = !st.section && seekHeld;
+    const a = h && h.board === board && board.scrollTop === h.top && tabAnchors().find((x) => x.id === h.id);
+    if (!a) seekHeld = null;
+    else if (Math.abs(anchorAt(a) - h.at) > 1) seekTo(board, a);
+    return;
+  }
   st.section = null;
+  // A section in a hidden pane of a record's page (a project's Stage) shows that pane first.
+  const pin = e.closest?.("[data-pin][hidden]");
+  if (pin && TABS[st.tab] && TABS[st.tab].pin) TABS[st.tab].pin(pin.dataset.pin);
   // A section inside a fold (Log's history in Day detail) opens the fold it sits in.
   const fold = e.tagName === "DETAILS" ? e : e.closest?.("details");
   if (fold) fold.open = true;
-  if (e.scrollIntoView) e.scrollIntoView({ block: "start" });
+  seekTo(board, e);
 }
 // A URL fragment is `#tab` or `#tab/arg`: the arg is the note a Daily link opens
 // (`#daily/status/inbox`) or the project a `#p:` link opens (`#projects/notes-cockpit`).
 // The retired `#outbox` is Daily's outbox (`#daily/outbox`); `#focus/<note>` is `#daily/<note>`.
-// After a `?` is the tab's own view state, so a view can be linked (`#fleet?lane=deliver&s=failed`).
+// After a `?` is the tab's own view state, so a view can be linked (`#sessions/runners?rs=failed`).
 function route(hash) {
-  const [h, query = ""] = String(hash || "").replace(/^#/, "").split(/\?(.*)/s);
+  const [h, q = ""] = String(hash || "").replace(/^#/, "").split(/\?(.*)/s);
+  let query = q;
   const at = h.indexOf("/");
   const name = at < 0 ? h : h.slice(0, at);
   let arg = at < 0 ? "" : h.slice(at + 1);
   try { arg = decodeURIComponent(arg); } catch (e) { /* keep it as typed */ }
   if (name === "outbox" && !arg) arg = "outbox";
+  // A section that left its tab keeps the query as written: it is that section's view, not the
+  // retired tab's table (`#fleet/tokens?q=x` is Costs' q).
   const moved = MOVED[name + "/" + arg.toLowerCase()];
-  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query, section: moved[1] });
+  if (moved) return innerRoute({ name, tab: moved[0], arg: "", query: query || moved[2] || "", section: moved[1] });
+  const old = Object.hasOwn(RETIRED_TAB_PAGES, name) ? RETIRED_TAB_PAGES[name] : null;
+  if (old && query) {
+    // The retired tab's table keeps its view under the prefix it has on its new tab.
+    const p = new URLSearchParams(query);
+    for (const k of TBL_KEYS) if (p.has(k)) { p.set(old[2] + k, p.get(k)); p.delete(k); }
+    query = p.toString();
+  }
+  if (old && arg) return innerRoute({ name, tab: old[0], arg: old[1] + "/" + arg, query });
   // A retired tab that became a section (`#ci`, layout::section) opens the inner tab holding it.
   const tab = tabOf(name);
   if (tab !== name && !arg && homeOf(tab, name)) return innerRoute({ name, tab, arg: "", query, section: name });
+  // A bare `#log` link carrying Actions' view (`#log?q=actor:shepherd&hours=72`, from before the
+  // strip) opens Actions: its keys are the table's plain ones and `hours`, Work's are w-prefixed.
+  if (tab === "log" && !arg && query && [...TBL_KEYS, "hours"].some((k) => new URLSearchParams(query).get(k))) return innerRoute({ name, tab, arg: "actions", query });
   return innerRoute({ name, tab, arg, query });
 }
 // Show inner tab `id` of `tab` in place: the URL follows (no history entry, like a tab button),
-// the groups' visibility and the strip's marks flip without a repaint.
+// the groups' visibility and the strip's marks flip without a repaint. A tab whose inner tabs
+// each read their own data (Projects) is told, through its `inner`, which one now shows.
 function innerGo(tab, id) {
+  const page = st.page;
   st.arg = lastInner[tab] = id;
+  st.page = "";
   showUrl();
+  // Leaving a record's page (`#infra/ci/<run>`) shows the inner tab's own sections again.
+  if (page && st.tab === tab && TABS[tab]) TABS[tab].show();
   const board = $(tab);
   if (!board) return;
   board.querySelectorAll("[data-in]").forEach((e) => { e.hidden = e.dataset.in !== id; });
-  board.querySelectorAll("[data-itab]").forEach((b) => {
-    const on = b.dataset.itab === id;
+  stripMark(board, "itab", id);
+  // A tab that reads per inner tab (Log) reads the one now shown.
+  if (st.tab === tab && TABS[tab] && TABS[tab].inner) TABS[tab].inner(id);
+}
+// The strip: one button per inner tab, the open one marked, a count pill beside one whose
+// sections need a look (`flagged`: section ids, or `counts` by inner id) and only above zero.
+const innerStrip = (tab, flagged, counts) => stripHtml(INNER_TABS[tab].tabs, innerOf(tab, st.arg)[0], "itab", flagged, counts);
+// A strip's html: `tabs` are [id, title, sections] (an INNER_TABS or PROJECT_PAGE list), `on` the
+// open id, `attr` the data- key its buttons carry (itab, or ptab on a project's page). A count
+// comes from `flagged` (section ids) or from `counts` by id, and shows only above zero.
+function stripHtml(tabs, on, attr, flagged, counts) {
+  return `<div class="seg fseg istrip" role="tablist">` + tabs.map(([id, title, secs]) => {
+    const n = (counts && counts[id]) || secs.filter((s) => (flagged || []).includes(s)).length;
+    return `<button role="tab" data-${attr}="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
+  }).join("") + `</div>`;
+}
+// Mark strip button `id` open among the `attr` buttons inside `root`, for a strip that flips in place.
+function stripMark(root, attr, id) {
+  root.querySelectorAll(`[data-${attr}]`).forEach((b) => {
+    const on = b.dataset[attr] === id;
     b.classList.toggle("on", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
     b.tabIndex = on ? 0 : -1;
   });
 }
-// The strip: one button per inner tab, the open one marked, a count pill beside one whose
-// sections need a look (`flagged`: section ids) and only above zero.
-function innerStrip(tab, flagged) {
-  const on = innerOf(tab, st.arg)[0];
-  return `<div class="seg fseg istrip" role="tablist">` + INNER_TABS[tab].tabs.map(([id, title, secs]) => {
-    const n = secs.filter((s) => (flagged || []).includes(s)).length;
-    return `<button role="tab" data-itab="${id}" class="${id === on ? "on" : ""}" aria-selected="${id === on}" tabindex="${id === on ? 0 : -1}">${title}${n ? ` <span class="pill warn">${n}</span>` : ""}</button>`;
-  }).join("") + `</div>`;
-}
-// A section's html in its inner tab's group, hidden while another inner tab is open; a pinned
-// section, or a tab with no strip, is left as it is.
+// A section's html in its inner tab's group, hidden while another inner tab is open; a tab with
+// no strip leaves it as it is.
 function innerWrap(tab, section, html) {
   const home = homeOf(tab, section);
   if (!home || !html) return html;
@@ -410,29 +523,34 @@ function innerHide(tab, section, el) {
   el.dataset.in = home[0];
   el.hidden = !innerShown(tab, home);
 }
-// A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to the ends.
+// A strip's click, and the ARIA tabs keys: Left and Right move between tabs, Home and End go to
+// the ends. A project page's strip (data-ptab) is the same keys; its click is projects.js's.
 document.addEventListener("click", (e) => {
   const b = e.target.closest && e.target.closest("[data-itab]");
   if (b) innerGo(st.tab, b.dataset.itab);
 });
 document.addEventListener("keydown", (e) => {
-  const b = e.target.closest && e.target.closest("[data-itab]");
+  const b = e.target.closest && e.target.closest("[data-itab],[data-ptab]");
   if (!b) return;
-  const all = [...b.parentNode.querySelectorAll("[data-itab]")], i = all.indexOf(b);
+  const attr = b.dataset.itab ? "itab" : "ptab";
+  const all = [...b.parentNode.querySelectorAll(`[data-${attr}]`)], i = all.indexOf(b);
   const to = { ArrowRight: (i + 1) % all.length, ArrowLeft: (i + all.length - 1) % all.length, Home: 0, End: all.length - 1 }[e.key];
   if (to === undefined) return;
   e.preventDefault();
-  innerGo(st.tab, all[to].dataset.itab);
+  all[to].click();
   all[to].focus();
 });
 // Show tab t; arg is what it opens (blank for its front), query its view state, which a tab
 // button leaves as it was. A tab button replaces the URL, so tab hopping makes no history; an
-// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns.
-function setTab(t, arg, query) {
+// in-app link (`href="#daily/status/inbox"`) pushes one, so Back returns. page is the record an
+// inner tab opens on (innerRoute's `machines/<host>`), blank for none.
+function setTab(t, arg, query, page) {
   st.tab = t;
+  st.page = page || "";
   // A tab button (no arg) brings back the inner tab that tab last showed.
   st.arg = arg || (arg === undefined && lastInner[t]) || "";
-  if (INNER_TABS[t]) lastInner[t] = st.arg;
+  // A record open on it (a session's id) brings back the inner tab holding it.
+  if (INNER_TABS[t]) lastInner[t] = !st.arg || INNER_TABS[t].tabs.some((x) => x[0] === st.arg) ? st.arg : innerOf(t, st.arg)[0];
   st.views[t] = query ?? st.views[t] ?? "";
   // The open tab carries aria-current; web-kit's <kb-shell> marks it and names it on the bar.
   for (const n of TAB_NAMES) {
@@ -446,7 +564,10 @@ function setTab(t, arg, query) {
 }
 function showUrl() {
   const t = st.tab, q = st.views[t];
-  const frag = (st.arg ? "#" + t + "/" + st.arg.split("/").map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
+  // A page's id is one segment whatever it holds: `#infra/machines/<id>`.
+  const at = st.page ? st.page.indexOf("/") : -1;
+  const segs = st.page ? [st.page.slice(0, at), st.page.slice(at + 1)] : st.arg ? st.arg.split("/") : [];
+  const frag = (segs.length ? "#" + t + "/" + segs.map(encodeURIComponent).join("/") : "#" + t) + (q ? "?" + q : "");
   try { history.replaceState(null, "", t === TAB_NAMES[0] && !st.arg && !q ? location.pathname : frag); } catch (e) { /* not fatal */ }
 }
 // The open tab's view state changed: the URL follows it without a history entry.
@@ -456,27 +577,53 @@ function setQuery(q) {
 }
 for (const n of TAB_NAMES) $("tab-" + n).onclick = () => setTab(n);
 
+// The live line beside the dot, the worst of: the event stream is down (since when, and a Retry),
+// the page is catching up after a drop or a hidden spell, or the server could not watch some
+// paths (the user's inotify limit, usually; it retries). Nothing to say hides it.
+const conn = { open: false, down: 0, catching: false, retrying: false, off: [], html: "" };
+function showConn() {
+  const off = conn.off, el = $("live-off");
+  $("conn").classList.toggle("live", conn.open && !conn.down);
+  $("conn").classList.toggle("off", !conn.down && off.length > 0);
+  $("conn").title = conn.down ? "live updates down" : off.length ? "live updates off for " + off.join(", ") : "live updates";
+  el.className = "cchip live-off" + (conn.down || (!conn.catching && off.length) ? " warn" : "");
+  el.hidden = !conn.down && !conn.catching && !off.length;
+  el.title = conn.down ? "" : off.join("\n");
+  const html = conn.down ? `offline since ${clock(conn.down)} <button class="btn sm" id="live-retry"${conn.retrying ? " disabled>Retrying" : ">Retry"}</button>`
+    : conn.catching ? "catching up"
+    : off.length ? "live updates off, reload to refresh" : "";
+  // Only a change redraws, so an event landing mid-click never swaps the Retry button out.
+  if (html !== conn.html) el.innerHTML = conn.html = html;
+}
 function showLive(ev) {
-  // The server could not watch some paths (the user's inotify limit, usually); it retries.
-  const off = ev.off || [];
-  $("conn").classList.toggle("off", off.length > 0);
-  $("conn").title = off.length ? "live updates off for " + off.join(", ") : "live updates";
-  $("live-off").hidden = off.length === 0;
-  $("live-off").title = off.join("\n");
+  conn.off = ev.off || [];
+  showConn();
+}
+// Says "catching up" until `read`, the catch-up's sessions read, lands.
+function catchUp(read) {
+  conn.catching = true;
+  showConn();
+  Promise.resolve(read).then(() => { conn.catching = false; showConn(); });
 }
 
+// Returns the sessions read the event started, if any, which a catch-up waits on.
 function dispatch(ev) {
+  let read = null;
   if (ev.kind === "sessions" || ev.kind === "resync") {
-    refreshAgents();
+    read = refreshAgents();
     if (st.view === "screen") loadScreen();
     // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
     if (st.tab === "home") refreshHome();
   }
   if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
+  if (ev.kind === "transcript") noteWrite(ev.session);
+  // Back from a hidden tab with a session in view: the human is looking at it again.
+  if (ev.kind === "resync" && st.sel && viewing(st.sel.session)) markSeen(st.sel.session);
   if ((ev.kind === "transcript" && st.sel && ev.session === st.sel.session) || ev.kind === "resync") {
     if (st.view === "screen") loadScreen(); else loadNewer();
   }
   for (const t of Object.values(TABS)) t.onEvent(ev);
+  return read;
 }
 
 // A page in a background browser tab reads nothing: events (and poll ticks, ui.js) that arrive
@@ -486,13 +633,24 @@ let behind = false;
 document.addEventListener("visibilitychange", () => {
   if (document.hidden || !behind) return;
   behind = false;
-  dispatch({ kind: "resync" });
+  catchUp(dispatch({ kind: "resync" }));
 });
 
+// The stream: EventSource reconnects by itself after a drop, but not after the server answered an
+// error (a proxy's 502), so the line's Retry opens a new one.
+let es = null;
 function connect() {
-  const es = new EventSource("/api/events");
-  es.onopen = () => { $("conn").classList.add("live"); refreshAgents(); refreshAsks(); if (st.sel) load(); };
-  es.onerror = () => { $("conn").classList.remove("live"); }; // EventSource reconnects by itself
+  if (es) es.close();
+  es = new EventSource("/api/events");
+  es.onopen = () => {
+    const was = conn.down;
+    Object.assign(conn, { open: true, down: 0, retrying: false });
+    const read = refreshAgents();
+    refreshAsks();
+    if (st.sel) load();
+    if (was) catchUp(read); else showConn();
+  };
+  es.onerror = () => { Object.assign(conn, { down: conn.down || Date.now(), retrying: false }); showConn(); };
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.kind === "live") { showLive(ev); return; }
@@ -505,7 +663,7 @@ function connect() {
 window.addEventListener("hashchange", () => {
   const r = route(location.hash);
   if (r.section) st.section = r.section;
-  if (r.tab !== st.tab || r.arg !== st.arg || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query);
+  if (r.tab !== st.tab || r.arg !== st.arg || (r.page || "") !== st.page || r.query !== (st.views[r.tab] ?? "")) setTab(r.tab, r.arg, r.query, r.page);
 });
 
 // Every script has run by now (they sit at the end of <body>), so every tab is registered.
@@ -513,6 +671,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const r = route(location.hash);
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
-  setTab(r.tab, r.arg, r.query);
+  setTab(r.tab, r.arg, r.query, r.page);
+  $("live-off").addEventListener("click", (e) => {
+    if (e.target.id !== "live-retry") return;
+    conn.retrying = true;
+    showConn();
+    connect();
+  });
   connect();
 });

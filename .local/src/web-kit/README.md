@@ -2,9 +2,11 @@
 
 The shared site shell for every kblab site: design tokens, the two fonts, and `<kb-shell>`, the top bar with tabs under group headings. It shows as a fixed sidebar from 900px, and as a menu button with a dropdown below that. There is no build step and no dependency: plain CSS and one ES module, in light DOM, so a site's own CSS and server-rendered links work inside it.
 
+What the tokens should look like, and how a site uses them, is `../docs/ui.md`; a token change follows it.
+
 | File | What it is |
 |---|---|
-| `tokens.css` | `:root` palette, type scale, dark mode, the two `@font-face` rules, and the body base |
+| `tokens.css` | `:root` surface, accent and status hues with their soft tints, radii, the content cap, type scale, dark mode, the two `@font-face` rules, and the body base |
 | `shell.css` | The bar, the sidebar, and the phone dropdown. 900px is the one nav breakpoint |
 | `kb-shell.js` | The `<kb-shell>` custom element: adds the menu button and the open tab's name |
 | `inter.woff2`, `jetbrains-mono.woff2` | Latin-subset fonts, with their OFL licences beside them |
@@ -38,6 +40,7 @@ The site renders the whole nav as HTML. The element only adds the phone menu, so
 - The bar label is the item's `data-title`, else its first text node, so a count after the name is not read as part of it.
 - Other children under `.kb-nav` (agent-web's section outline) are allowed. Style them in the site.
 - `.kb-foot` sits at the bottom of the sidebar.
+- From 900px `.kb-main` sits left, beside the sidebar, up to `--page-max` wide. A site does not centre its content again inside it.
 - `tokens.css` names the fonts relative to itself (`url(inter.woff2?v={{v}})`), so serve the fonts beside it. A site that versions its assets substitutes `{{v}}`; one that does not serves the literal query, which is ignored.
 
 ## Who uses it, and how a change reaches them
@@ -49,4 +52,4 @@ A change that breaks the markup contract updates every site in the list above: a
 
 ## Checks
 
-`tests/agent-web/phone/render.mjs` renders agent-web at 390px and 1280px and checks the nav: at 390px the menu shows and opens every group and tab, and Escape closes it; at 1280px the sidebar shows; at both widths there is no sideways scroll. `--no-kit` serves no `kb-shell.js`, and must fail on "no menu button".
+`tests/agent-web/phone/render.mjs` renders agent-web at 390px and 1280px and checks the nav: at 390px the menu shows and opens every group and tab, and Escape closes it; at 1280px the sidebar shows; at both widths there is no sideways scroll. `--wide` shoots every tab at 1280px and `--dark` in the dark scheme, for the before-and-after a token change carries. `--no-kit` serves no `kb-shell.js`, and must fail on "no menu button".

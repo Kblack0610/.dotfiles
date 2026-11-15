@@ -134,7 +134,7 @@ function statusText() {
 }
 
 function handledHtml(v) {
-  const head = `<h2 class="sec">Handled today <span class="muted">${esc(v.counts || "")}</span></h2>`;
+  const head = secHead("", "Handled today", v.handled.length || null);
   if (!v.handled.length) return head + `<div class="muted">Nothing handled yet today.</div>`;
   return head + `<ul class="o-steps">${v.handled.map((s) => {
     const warn = s.action === "left" || s.action === "refused";
@@ -161,7 +161,7 @@ function build() {
   if (obx.built) return;
   obx.built = true;
   $("outbox").innerHTML =
-    `<div class="dhead"><div class="dtitle"><h2>Outbox</h2></div></div>` +
+    secHead("", "Outbox") +
     `<textarea id="o-doc" spellcheck="true" placeholder="One ask per line. Tag #plan to have it planned, #p:project to say where it goes."></textarea>` +
     `<div class="o-send"><button class="btn primary" id="o-send">Send</button><div id="o-said"></div></div><div id="o-handled"></div>`;
   const b = box();

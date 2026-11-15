@@ -116,6 +116,15 @@ pub(crate) fn stamp(epoch: i64, now: i64) -> String {
     }
 }
 
+/// A history cell's time, always with its date (`11-11 00:16`), so today's row reads like the
+/// ones beside it from earlier days.
+pub(crate) fn dated(epoch: i64) -> String {
+    Local
+        .timestamp_opt(epoch, 0)
+        .single()
+        .map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M").to_string())
+}
+
 fn mins(m: f64) -> String {
     crate::queue::dur(Some(m.round() as i64))
 }
@@ -126,13 +135,23 @@ impl Pipeline {
     }
 
     /// `bottleneck: waiting, age p90 9h (bound 4h)`, only when a step is past its bound.
-    pub fn bottleneck_text(&self) -> Option<String> {
+    /// `name` words the step as the surface calls it.
+    pub fn bottleneck_text(&self, name: impl Fn(&str) -> String) -> Option<String> {
         let b = self.bottleneck.as_ref()?;
-        let detail = match (b.age_p90_min, b.bound_min) {
-            (Some(a), Some(bd)) => format!(", age p90 {} (bound {})", mins(a), mins(bd)),
-            _ => String::new(),
-        };
-        Some(format!("bottleneck: {}{detail}", b.step))
+        let detail = self
+            .bottleneck_age()
+            .map_or(String::new(), |a| format!(", {a}"));
+        Some(format!("bottleneck: {}{detail}", name(&b.step)))
+    }
+
+    /// The bottleneck's age against its bound, `age p90 9h (bound 4h)`, when the snapshot has both.
+    pub fn bottleneck_age(&self) -> Option<String> {
+        let b = self.bottleneck.as_ref()?;
+        Some(format!(
+            "age p90 {} (bound {})",
+            mins(b.age_p90_min?),
+            mins(b.bound_min?)
+        ))
     }
 
     /// When the snapshot was written, if known; a date is added from an earlier day.
@@ -162,7 +181,7 @@ pub(crate) mod tests {
     fn a_bottleneck_names_its_step_age_and_bound() {
         let p = snapshot(&[("waiting", 2, 540.0, 2.25), ("queued", 3, 60.0, 0.5)]);
         assert_eq!(
-            p.bottleneck_text().unwrap(),
+            p.bottleneck_text(str::to_string).unwrap(),
             "bottleneck: waiting, age p90 9h (bound 4h)"
         );
     }
@@ -172,7 +191,7 @@ pub(crate) mod tests {
         let p = snapshot(&[("queued", 3, 90.0, 1.5), ("waiting", 2, 540.0, 3.0)]);
         assert_eq!(p.bottleneck.unwrap().step, "waiting");
         let p = snapshot(&[("waiting", 2, 90.0, 0.9), ("running", 1, 60.0, 1.0)]);
-        assert_eq!(p.bottleneck_text(), None);
+        assert_eq!(p.bottleneck_text(str::to_string), None);
     }
 
     #[test]
@@ -205,6 +224,9 @@ pub(crate) mod tests {
         assert_eq!(stamp(now - 60, now), clock(now - 60));
         let old = stamp(now - 3 * 86_400, now);
         assert_eq!(old.len(), "11-04 12:40".len(), "{old}");
+        // A history cell carries the date even for today.
+        assert_eq!(dated(now - 60).len(), "11-04 12:40".len());
+        assert!(dated(now - 60).ends_with(&clock(now - 60)));
     }
 
     #[test]

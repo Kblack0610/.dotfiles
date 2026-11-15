@@ -2,7 +2,8 @@
 //! Infra Jobs style, read through `hub_core::queue`, the same reader and the same `QueueRow` as
 //! agent-web's Queue tab. Its sections are `flow` (the pipeline line, `flowline`), `table` and `candidates`.
 //! `/ f s S x` are the shared table's keys; j/k pick a row (a done one too), Enter opens its
-//! detail, `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
+//! detail, where `l` marks each record it names in turn (`Item::links`: session, project, row,
+//! each PR and its CI runs) and Enter on a marked one opens it; `c` arms a cancel that waits on y and `+`/`-` move its priority one step, both for an
 //! active item only. Below the table the Candidates fold (`hub_core::queue::candidates`, the
 //! snapshot each `fleet-dispatch run` writes, `as of` its time): `C` opens it, j/k carry on into
 //! its rows, and `p` starts the selected one through the Projects tab's Start (`fleet-dispatch
@@ -10,9 +11,10 @@
 
 use chrono::{DateTime, Utc};
 use hub_core::flow::Rail;
-use hub_core::queue::{
-    money, Candidate, Candidates, Item, Queue, QueueRow, State, Timing, TABLE_OPEN_ROWS,
-};
+use hub_core::item_history::History;
+use hub_core::links::Link;
+use hub_core::queue::{money, Candidate, Candidates, Item, Queue, QueueRow, State};
+use hub_core::table::Row;
 use hub_core::tasks::Write;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
@@ -33,6 +35,8 @@ pub enum Ask {
     Bump(String, &'static str),
     /// Start a candidate: its label and the board write.
     Promote(String, Write),
+    /// Open a record the item names.
+    Follow(Link),
 }
 
 pub struct QueueView {
@@ -41,6 +45,9 @@ pub struct QueueView {
     pub table: DataTable,
     /// The selected row's detail replaces the table.
     pub detail: bool,
+    /// The detail's marked link (`l`): the item it was marked on and an index into its `links`;
+    /// Enter opens it. A refresh that puts another item under the selection drops the mark.
+    pub link: Option<(String, usize)>,
     pub cands_open: bool,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
@@ -50,6 +57,9 @@ pub struct QueueView {
     pub running: Option<String>,
     /// The last action's answer: agent-queue's output, or why it failed.
     pub said: Option<Result<String, String>>,
+    /// The open detail's history (hub-core item_history): the slug asked for and its read, None
+    /// while it reads. A shut detail drops it, so a reopen reads afresh.
+    pub history: Option<(String, Option<Result<History, String>>)>,
 }
 
 /// `now` (unix seconds) as the time the rows are measured at.
@@ -63,11 +73,13 @@ impl Default for QueueView {
         QueueView {
             table: DataTable::default(),
             detail: false,
+            link: None,
             cands_open: true,
             line: LineView::default(),
             confirm: None,
             running: None,
             said: None,
+            history: None,
         }
     }
 }
@@ -75,7 +87,8 @@ impl Default for QueueView {
 impl QueueView {
     /// A request for the tab (`hub --tab "queue running"`): an old section id opens the table on
     /// its state chip, `candidates` opens that fold, `flow` and `table` are the page as it is, and
-    /// any other word is the query. The table starts from its own view.
+    /// any other word is the query, over every row (a slug names a done item as often as a live one).
+    /// The table starts from its own view.
     pub fn open(&mut self, query: &str) {
         let q = query.trim();
         self.table.clear();
@@ -85,25 +98,52 @@ impl QueueView {
             Some(chip) => self.table.view.state = chip.into(),
             None if q.eq_ignore_ascii_case("candidates") => self.cands_open = true,
             None if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
-            None => self.table.view.q = q.into(),
+            None => {
+                self.table.view.q = q.into();
+                self.table.view.state = "all".into();
+            }
         }
     }
 
-    /// The rows the table draws, from every row in the table's own order: the view applied, then
-    /// capped at `TABLE_OPEN_ROWS`; and how many the cap left out.
-    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> (Vec<QueueRow<'a>>, usize) {
-        let mut rows: Vec<QueueRow<'a>> = self.table.view.apply(all).into_iter().copied().collect();
-        let older = rows.len().saturating_sub(TABLE_OPEN_ROWS);
-        rows.truncate(TABLE_OPEN_ROWS);
-        (rows, older)
+    /// The rows the table holds, from every row in the table's own order: every one the view
+    /// keeps, one line each, so j/k reaches every row; `page` formats only those on screen.
+    fn drawn<'a>(&self, all: &[QueueRow<'a>]) -> Vec<QueueRow<'a>> {
+        self.table.view.apply(all).into_iter().copied().collect()
     }
 
     pub fn shown<'a>(&self, q: &'a Queue, now: i64) -> Vec<QueueRow<'a>> {
-        self.drawn(&q.rows(at(now))).0
+        self.drawn(&q.rows(at(now)))
     }
 
     pub fn selected<'a>(&self, q: &'a Queue, now: i64) -> Option<&'a Item> {
         self.shown(q, now).get(self.table.sel).map(|r| r.item)
+    }
+
+    /// The slug whose history the open detail wants read, once per item; with no detail open the
+    /// last read is dropped.
+    pub fn wants_history(&mut self, q: Option<&Queue>, now: i64) -> Option<String> {
+        let slug = q
+            .filter(|_| self.detail)
+            .and_then(|q| self.selected(q, now))
+            .map(|i| i.slug.clone());
+        let Some(slug) = slug else {
+            self.history = None;
+            return None;
+        };
+        if self.history.as_ref().is_some_and(|(s, _)| *s == slug) {
+            return None;
+        }
+        self.history = Some((slug.clone(), None));
+        Some(slug)
+    }
+
+    /// A history read; one for an item left since is dropped.
+    pub fn read_history(&mut self, slug: String, h: Result<History, String>) {
+        if let Some((s, read)) = &mut self.history {
+            if *s == slug {
+                *read = Some(h);
+            }
+        }
     }
 
     /// The candidates the fold lists: none while it is shut.
@@ -123,6 +163,14 @@ impl QueueView {
     ) -> Option<&'a Candidate> {
         let i = self.table.sel.checked_sub(self.shown(q, now).len())?;
         self.shown_cands(c).get(i)
+    }
+
+    /// The marked link's index, when it was marked on this item.
+    fn mark(&self, i: &Item) -> Option<usize> {
+        self.link
+            .as_ref()
+            .filter(|(s, _)| *s == i.slug)
+            .map(|(_, at)| *at)
     }
 
     /// A new read keeps the selection on the same slug when it is still shown, and otherwise
@@ -163,7 +211,7 @@ impl QueueView {
         // `/ f s S x`, and every key while a query is being typed, are the shared table's.
         if !ctrl && (self.table.typing.is_some() || DataTable::owns(k.code)) {
             if self.table.key::<QueueRow>(k.code) == Took::View {
-                self.detail = false;
+                (self.detail, self.link) = (false, None);
             }
             return Ask::Done;
         }
@@ -173,6 +221,7 @@ impl QueueView {
             .table
             .moves(k, rows.len() + self.shown_cands(c).len(), page)
         {
+            self.link = None;
             return Ask::Done;
         }
         if ctrl {
@@ -180,9 +229,21 @@ impl QueueView {
         }
         let busy = || Some(Err("an action is still running".to_string()));
         let item = rows.get(self.table.sel).map(|r| r.item);
+        let links = item.filter(|_| self.detail).map_or(vec![], Item::links);
+        let mark = item.and_then(|i| self.mark(i));
         match k.code {
-            KeyCode::Enter if item.is_some() => self.detail = !self.detail,
-            KeyCode::Esc if self.detail => self.detail = false,
+            KeyCode::Char('l') if !links.is_empty() => {
+                let at = mark.map_or(0, |at| (at + 1) % links.len());
+                self.link = item.map(|i| (i.slug.clone(), at));
+            }
+            KeyCode::Enter if mark.is_some_and(|at| at < links.len()) => {
+                self.link = None;
+                return Ask::Follow(links[mark.unwrap_or_default()].link.clone());
+            }
+            KeyCode::Enter if item.is_some() => {
+                (self.detail, self.link) = (!self.detail, None);
+            }
+            KeyCode::Esc if self.detail => (self.detail, self.link) = (false, None),
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
             KeyCode::Char('C') => {
                 self.cands_open = !self.cands_open;
@@ -258,12 +319,14 @@ fn mins(m: Option<i64>) -> String {
 }
 
 /// The STATE column: what the item needs, or how it finished.
-fn state(i: &Item, p: Palette) -> Cell {
+fn state(r: &QueueRow, p: Palette) -> Cell {
+    let i = r.item;
     match i.state {
         State::Waiting => cell("needs you", p.warn()),
+        State::Running | State::Review if r.stuck() => cell(r.state_word(), p.warn()),
         State::Running => cell("running", p.good()),
-        State::Review => "on a PR".into(),
-        State::Queued if i.hold.is_some() => cell("held", p.warn()),
+        State::Review => r.state_word().into(),
+        State::Queued if i.is_held() => cell("held", p.warn()),
         State::Queued => "ready".into(),
         State::Done => {
             let st = i.status.clone().unwrap_or_else(|| "done".into());
@@ -277,8 +340,11 @@ fn state(i: &Item, p: Palette) -> Cell {
     }
 }
 
-const HEADER: [&str; 10] = [
-    "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
+/// hub-core `QueueRow::COLUMNS` in capitals, the web table's columns: the sort mark is an index
+/// into that list. The title leads; `#` is the start order of the ready items.
+const HEADER: [&str; 17] = [
+    "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN", "PR", "ROW",
+    "KIND", "SIZE", "ACCT", "MODE", "PLAN",
 ];
 
 fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
@@ -288,7 +354,7 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
         None if i.unproven() => cell("! none", p.warn()),
         None => "-".into(),
     };
-    let or_dash = |v: &Option<String>| match v.as_deref().map(str::trim) {
+    let or_dash = |v: Option<&str>| match v.map(str::trim) {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => "-".into(),
     };
@@ -296,17 +362,29 @@ fn row(r: &QueueRow, p: Palette) -> Vec<Cell> {
     if let Some(n) = &i.note {
         title = format!("{title}  ({n})");
     }
+    let prio = or_dash(Some(&i.priority));
     vec![
-        state(i, p),
+        r.start.map_or(String::new(), |n| n.to_string()).into(),
+        title.into(),
+        or_dash(Some(&i.project)).into(),
+        if prio == "urgent" {
+            cell(prio, p.warn())
+        } else {
+            prio.into()
+        },
+        state(r, p),
+        or_dash(r.val("hold").shown().as_deref()).into(),
+        or_dash(r.val("from").shown().as_deref()).into(),
         mins(r.timing.in_state).into(),
         mins(r.timing.wait).into(),
         mins(r.timing.run).into(),
-        or_dash(&Some(i.project.clone())).into(),
-        or_dash(&i.kind).into(),
-        or_dash(&i.size).into(),
-        or_dash(&i.account).into(),
         pr,
-        title.into(),
+        or_dash(r.val("row").shown().as_deref()).into(),
+        or_dash(i.kind.as_deref()).into(),
+        or_dash(i.size.as_deref()).into(),
+        or_dash(i.account.as_deref()).into(),
+        or_dash(Some(&i.mode)).into(),
+        or_dash(i.plan_label.as_deref()).into(),
     ]
 }
 
@@ -318,15 +396,72 @@ fn kv(k: &str, v: String, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
+/// The detail's history: a heading with the attempts, then one line a step, or why there is none.
+fn history(
+    h: Option<&Result<History, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let head = |rest: String| clip_line(heading("HISTORY", rest, p), w);
+    let h = match h {
+        None => return vec![head("  reading...".into())],
+        Some(Err(e)) => {
+            return vec![
+                head(String::new()),
+                kv("", format!("no history: {e}"), p, w),
+            ]
+        }
+        Some(Ok(h)) => h,
+    };
+    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    let cut = if h.steps > h.lines.len() {
+        format!(", last {}", h.lines.len())
+    } else {
+        String::new()
+    };
+    let mut out = vec![head(format!(
+        "  {}, {}{cut}",
+        plural(h.attempts, "attempt"),
+        plural(h.steps, "step")
+    ))];
+    if h.lines.is_empty() {
+        out.push(Line::styled(
+            format!("No steps in the last {} days.", h.days),
+            p.dim(),
+        ));
+    }
+    out.extend(h.lines.iter().map(|l| {
+        let when =
+            DateTime::parse_from_rfc3339(&l.at).map_or(l.at.clone(), |d| clock(d.timestamp(), now));
+        clip_line(
+            Line::from(vec![
+                Span::styled(format!("{when:<12}"), p.dim()),
+                Span::raw(l.text.clone()),
+            ]),
+            w,
+        )
+    }));
+    out
+}
+
 /// A header's text, or None when it is blank.
 fn some(v: &Option<String>) -> Option<&str> {
     v.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
 /// The selected row in full: every header, then the timeline queued -> ready -> started ->
-/// waiting -> finished -> merged with the minutes from the step before. The agent-queue log is
-/// `notes log --item <slug>`, named here and not read.
-fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// waiting -> finished -> merged with the minutes from the step before, then its history once
+/// read (`hist`: None not asked, Some(None) reading).
+fn detail(
+    r: &QueueRow,
+    mark: Option<usize>,
+    hist: Option<Option<&Result<History, String>>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let (i, t) = (r.item, r.timing);
     let mut out = vec![clip_line(
         Line::from(vec![
             Span::styled(i.slug.clone(), p.head()),
@@ -355,6 +490,7 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
         ("acct", some(&i.account).unwrap_or("").to_string()),
         ("harness", i.harness_label()),
         ("session", some(&i.session).unwrap_or("").to_string()),
+        ("health", r.state_why().unwrap_or_default()),
         ("tags", i.tags.clone()),
         ("area", some(&i.area).unwrap_or("").to_string()),
         ("from", some(&i.from).unwrap_or("").to_string()),
@@ -382,6 +518,22 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
             .filter(|(_, v)| !v.trim().is_empty())
             .map(|(k, v)| kv(k, v, p, w)),
     );
+    let links = i.links();
+    if !links.is_empty() {
+        out.push(Line::raw(""));
+        out.push(Line::styled("opens (l marks, Enter opens)", p.head()));
+        for (n, l) in links.iter().enumerate() {
+            let on = mark == Some(n);
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{} {:<9}", if on { ">" } else { " " }, l.what),
+                    p.dim(),
+                ),
+                Span::styled(l.text.clone(), if on { p.head() } else { p.dim() }),
+            ]);
+            out.push(clip_line(line, w));
+        }
+    }
     out.push(Line::raw(""));
     out.push(Line::styled("timeline", p.head()));
     for st in i.timeline() {
@@ -399,11 +551,10 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
         };
         out.push(kv(st.step, value, p, w));
     }
-    out.push(Line::raw(""));
-    out.push(clip_line(
-        Line::styled(format!("log: notes log --item {}", i.slug), p.dim()),
-        w,
-    ));
+    if let Some(h) = hist {
+        out.push(Line::raw(""));
+        out.extend(history(h, p, now, w));
+    }
     let task: Vec<&str> = i.task.lines().take(8).collect();
     if !task.is_empty() {
         out.push(Line::raw(""));
@@ -416,22 +567,39 @@ fn detail(i: &Item, t: Timing, p: Palette, now: i64, w: usize) -> Vec<Line<'stat
 }
 
 /// The table's lines (header first), one per drawn row, columns dropped by priority to fit `w`:
-/// ACCT, SIZE, KIND and WAIT go first, then PR, RUN, PROJECT and IN; STATE and TITLE stay.
+/// PLAN, MODE, ACCT, SIZE and KIND go first, then WAIT, ROW, FROM, RUN, PR and IN; STATE, TITLE,
+/// `#`, PROJECT, PRIORITY and HOLD stay longest.
 fn table(rows: &[QueueRow], v: &QueueView, p: Palette, w: usize) -> Vec<Line<'static>> {
     Table {
         header: HEADER.to_vec(),
         rows: rows.iter().map(|r| row(r, p)).collect(),
-        keep: vec![0, 1, 4, 3, 8, 2, 5, 6, 7],
-        flex: Some(9),
+        keep: vec![4, 0, 2, 3, 5, 7, 10, 9, 6, 11, 8, 12, 13, 14, 15, 16],
+        flex: Some(1),
         flexmin: 20,
         flexkeep: true,
-        right: vec![1, 2, 3],
-        cap: vec![(4, 18), (5, 8), (7, 10), (8, 14)],
+        right: vec![0, 7, 8, 9],
+        cap: vec![
+            (2, 18),
+            (5, 18),
+            (6, 8),
+            // PR: room for `home-config#875 +2`, an item landed in several repos.
+            (10, 20),
+            (11, 10),
+            (12, 8),
+            (14, 10),
+            (16, 20),
+        ],
         mark: v.table.mark::<QueueRow>(),
     }
     .fit(w, p.head())
 }
 
+/// The page, one line per table row. `win` is the app's scroll and the body's height: a row line
+/// outside both that window and a body's height around the selection (where the app scrolls to
+/// keep it in view) is left blank, so a frame formats a screen of rows, not thousands; the line
+/// count stays, so the scroll and every row's place are the same. None formats every row
+/// (`hub --once`).
+#[allow(clippy::too_many_arguments)]
 pub fn page(
     q: &Queue,
     v: &QueueView,
@@ -440,6 +608,7 @@ pub fn page(
     p: Palette,
     now: i64,
     w: usize,
+    win: Option<(usize, usize)>,
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let mut out = flowline::lines(flow.0, &v.line, flow.1, p, w);
     for e in &q.errors {
@@ -453,20 +622,31 @@ pub fn page(
     if let Some(l) = q.stats.as_ref().and_then(|s| s.sitting_line()) {
         out.push(clip_line(Line::raw(l), w));
     }
+    if let Some(d) = &q.dispatch {
+        let style = if d.warn() { p.warn() } else { p.dim() };
+        out.push(clip_line(Line::styled(d.line(), style), w));
+    }
     out.push(status_line(v, p, w));
     let all = q.rows(at(now));
-    let (rows, older) = v.drawn(&all);
+    let rows = v.drawn(&all);
     let mut chips = v.table.status(&all, p);
     chips.push(Span::styled(
-        format!("    {} of {}", rows.len() + older, all.len()),
+        format!("    {} of {}", rows.len(), all.len()),
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
+    out.extend(DataTable::legend::<QueueRow>(p, w));
+    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
         out.push(Line::raw(""));
         at_line = Some(out.len());
-        out.extend(detail(r.item, r.timing, p, now, w));
+        let hist = v
+            .history
+            .as_ref()
+            .filter(|(s, _)| *s == r.item.slug)
+            .map(|(_, h)| h.as_ref());
+        out.extend(detail(r, v.mark(r.item), hist, p, now, w));
     } else if rows.is_empty() {
         out.push(Line::styled(
             if all.is_empty() {
@@ -477,16 +657,37 @@ pub fn page(
             p.dim(),
         ));
     } else {
-        let mut t = table(&rows, v, p, w);
+        // The header is at `out.len()`, row i one line under it, the fold two under the last.
+        let head = out.len();
+        let total = head + 1 + rows.len() + 1 + more.len();
+        let on_screen = |i: usize| match win {
+            None => true,
+            Some((scroll, h)) => {
+                let top = scroll.min(total.saturating_sub(h));
+                let line = head + 1 + i;
+                (top..top + h).contains(&line) || i.abs_diff(v.table.sel) <= h + 2
+            }
+        };
+        let kept: Vec<QueueRow> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| on_screen(*i))
+            .map(|(_, r)| *r)
+            .collect();
+        let mut fitted = table(&kept, v, p, w).into_iter();
+        let mut t: Vec<Line<'static>> = fitted.next().into_iter().collect();
+        t.extend((0..rows.len()).map(|i| {
+            if on_screen(i) {
+                fitted.next().unwrap_or_default()
+            } else {
+                Line::default()
+            }
+        }));
         at_line = v.table.style(&mut t, p).map(|i| out.len() + i);
         out.append(&mut t);
-        if older > 0 {
-            out.push(Line::styled(format!("+{older} older"), p.dim()));
-        }
     }
     out.push(Line::raw(""));
     let top = out.len();
-    let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     out.extend(more);
     (out, at_line.or(cand_at.map(|a| a + top)))
 }
@@ -510,8 +711,8 @@ fn candidates(
         None => (String::new(), "reading".to_string()),
         Some(Err(_)) => (String::new(), String::new()),
         Some(Ok(c)) => (
-            format!(" ({}, {} auto)", c.total, c.auto),
-            match c.as_of.as_str() {
+            format!(" ({}, {} auto)", c.rows.len(), c.auto),
+            match c.as_of(chrono::Local::now()).as_str() {
                 "" => hint.into(),
                 t => format!("as of {t}  {hint}"),
             },
@@ -536,7 +737,7 @@ fn candidates(
         Some(Ok(c)) if v.cands_open => c,
         _ => return (out, None),
     };
-    let shown = v.shown_cands(&c.rows);
+    let shown = v.shown_cands(c.shown());
     if shown.is_empty() {
         out.push(Line::styled("No open board row to start.", p.dim()));
         return (out, None);
@@ -584,8 +785,9 @@ fn candidates(
     if c.more() > 0 {
         out.push(Line::styled(format!("+{} more", c.more()), p.dim()));
     }
-    if !c.reasons.is_empty() {
-        let by: Vec<String> = c.reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
+    let reasons = c.reasons();
+    if !reasons.is_empty() {
+        let by: Vec<String> = reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
         out.push(clip_line(
             Line::styled(format!("blocked: {}", by.join(", ")), p.dim()),
             w,
@@ -626,6 +828,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::fit::plain;
     use hub_core::queue::Stats;
+    use hub_core::table::Row;
 
     pub fn fixture() -> Queue {
         let jsonl = concat!(
@@ -643,11 +846,17 @@ pub(crate) mod tests {
         );
         Queue {
             items: hub_core::queue::parse(jsonl),
+            sessions: None,
             stats: Some(Stats {
                 since: "2026-10-27".into(),
                 done: [("ok".to_string(), 3), ("cancelled".to_string(), 1)].into(),
                 wait_minutes_median: Some(12),
                 to_pr_minutes_median: Some(95),
+                ..Default::default()
+            }),
+            dispatch: Some(hub_core::capacity::Dispatch {
+                held: Some("load 31.31 on 24 cores is over the 0.9 pace".into()),
+                runnable: 1,
                 ..Default::default()
             }),
             errors: vec![],
@@ -679,6 +888,7 @@ pub(crate) mod tests {
             Palette { no_color: true },
             now(),
             w,
+            None,
         )
         .0
         .iter()
@@ -708,6 +918,13 @@ pub(crate) mod tests {
         v.key(key(ch), Some(q), c, 10, now())
     }
 
+    /// The view on the `all` chip: the default `active` hides done rows.
+    fn all() -> QueueView {
+        let mut v = QueueView::default();
+        v.table.view.state = "all".into();
+        v
+    }
+
     fn slugs(v: &QueueView, q: &Queue) -> Vec<String> {
         v.shown(q, now())
             .iter()
@@ -725,16 +942,16 @@ pub(crate) mod tests {
     #[test]
     fn the_table_opens_exceptions_first_with_every_column() {
         let q = fixture();
-        let s = text(&q, &QueueView::default(), 160);
+        let s = text(&q, &all(), 160);
         let header = line(&s, "STATE");
-        let cols = [
-            "STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE",
-        ];
         assert_eq!(
             header.split_whitespace().collect::<Vec<_>>(),
-            cols,
+            HEADER,
             "columns in order"
         );
+        // The sort mark is an index into hub-core's columns, so the header is them in capitals.
+        let core: Vec<String> = QueueRow::COLUMNS.iter().map(|c| c.to_uppercase()).collect();
+        assert_eq!(HEADER.to_vec(), core);
         let order = ["Pick a side", "Fix the menu", "Next", "Sweep", "Landed"];
         let pos: Vec<usize> = order.iter().map(|t| s.find(t).unwrap()).collect();
         assert!(pos.windows(2).all(|w| w[0] < w[1]), "{s}");
@@ -750,13 +967,34 @@ pub(crate) mod tests {
             running.contains("running") && running.contains("2h40") && running.contains("10m"),
             "{running}"
         );
-        assert!(line(&s, "Sweep").contains("held"));
-        assert!(line(&s, "Next").contains("ready"));
+        let held = line(&s, "Sweep");
+        assert!(held.contains("held") && held.contains("night"), "{held}");
+        assert!(
+            !held.trim_start().starts_with('1'),
+            "a held item has no start place"
+        );
+        let next = line(&s, "Next");
+        assert!(next.contains("ready") && next.contains("urgent"), "{next}");
+        assert!(
+            next.trim_start().starts_with("1 "),
+            "the first ready item starts first: {next}"
+        );
         let done = line(&s, "Landed");
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
         assert!(
-            s.contains("all 5  needs you 1  running 1  on a PR 0  up next 2  done 1    5 of 5"),
+            s.contains(
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5    5 of 5"
+            ),
             "{s}"
+        );
+        assert!(
+            s.contains("Dispatch held: load 31.31 on 24 cores is over the 0.9 pace. It could start 0 of 1 runnable."),
+            "{s}"
+        );
+        let open = text(&q, &QueueView::default(), 160);
+        assert!(
+            !open.contains("Landed") && open.contains("Sweep"),
+            "it opens on active work, done one chip away\n{open}"
         );
         assert!(
             s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 95m"),
@@ -767,6 +1005,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_dispatch_line_is_amber_when_held_and_dim_when_running() {
+        let p = Palette { no_color: false };
+        let fg = |q: &Queue| {
+            let lines = page(
+                q,
+                &all(),
+                None,
+                (&Rail::build(Some(q), None, now()), false),
+                p,
+                now(),
+                160,
+                None,
+            )
+            .0;
+            let l = lines
+                .iter()
+                .find(|l| plain(l).starts_with("Dispatch "))
+                .expect("a dispatch line");
+            l.style.patch(l.spans[0].style).fg
+        };
+        let mut q = fixture();
+        assert_eq!(fg(&q), p.warn().fg, "held reads amber");
+        // NEGATIVE CONTROL: a running dispatch is dim, not amber.
+        q.dispatch = Some(hub_core::capacity::Dispatch {
+            could_start: 2,
+            runnable: 3,
+            ..Default::default()
+        });
+        assert_eq!(fg(&q), p.dim().fg);
+        assert_ne!(p.dim().fg, p.warn().fg);
+    }
+
+    #[test]
     fn at_80_columns_the_columns_drop_by_priority_and_the_title_stays() {
         let mut q = fixture();
         q.items.extend(hub_core::queue::parse(concat!(
@@ -774,7 +1045,7 @@ pub(crate) mod tests {
             "\n",
         )));
         let heads = |w: usize| -> Vec<String> {
-            let s = text(&q, &QueueView::default(), w);
+            let s = text(&q, &all(), w);
             line(&s, "STATE")
                 .split_whitespace()
                 .map(String::from)
@@ -782,24 +1053,27 @@ pub(crate) mod tests {
         };
         assert_eq!(
             heads(160),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "KIND", "SIZE", "ACCT", "PR", "TITLE"]
+            [
+                "#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "FROM", "IN", "WAIT", "RUN",
+                "PR", "ROW", "KIND", "SIZE", "ACCT", "MODE", "PLAN"
+            ]
         );
-        // ACCT, SIZE and KIND give way first (then WAIT, PR, RUN, PROJECT, IN); STATE and TITLE never do.
+        // PLAN, MODE, ACCT, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
         assert_eq!(
             heads(80),
-            ["STATE", "IN", "WAIT", "RUN", "PROJECT", "PR", "TITLE"],
+            ["#", "TITLE", "PROJECT", "PRIORITY", "STATE", "HOLD", "IN"],
             "{}",
-            text(&q, &QueueView::default(), 80)
+            text(&q, &all(), 80)
         );
-        let s = text(&q, &QueueView::default(), 80);
+        let s = text(&q, &all(), 80);
         assert!(s.lines().all(|l| l.chars().count() <= 80), "{s}");
         let r = line(&s, "Pick a side");
         assert!(
             r.contains("needs you") && r.contains("2h55") && r.contains("game"),
             "{r}"
         );
-        assert!(line(&s, "Wide row").contains("repo#1234"), "{s}");
-        let s = text(&q, &QueueView::default(), 40);
+        assert!(line(&s, "Wide row").contains("unity-core"), "{s}");
+        let s = text(&q, &all(), 40);
         assert!(line(&s, "Pick a side").contains("needs you"), "{s}");
         assert!(s.lines().all(|l| l.chars().count() <= 40), "{s}");
     }
@@ -811,16 +1085,18 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
         assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 6] = [
+        let want: [(&str, &[&str]); 8] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
             ("on a PR", &[]),
-            ("up next", &["next-up", "night-sweep"]),
+            ("ready", &["next-up"]),
+            ("held", &["night-sweep"]),
             ("done", &["landed"]),
             (
-                "",
+                "all",
                 &["pick-sides", "fix-menu", "next-up", "night-sweep", "landed"],
             ),
+            ("", &["pick-sides", "fix-menu", "next-up", "night-sweep"]),
         ];
         for (chip, slugs_in) in want {
             assert_eq!(press(&mut v, &q, &[], 'f'), Ask::Done);
@@ -830,13 +1106,19 @@ pub(crate) mod tests {
         }
         // s sorts by the next column, S flips it: by `in` the longest-waiting row goes last.
         press(&mut v, &q, &[], 's');
-        assert_eq!(v.table.view.sort, "state");
-        assert!(text(&q, &v, 160).contains("STATE ^") || text(&q, &v, 160).contains("STATE v"));
+        assert_eq!(v.table.view.sort, "#");
+        assert_eq!(
+            slugs(&v, &q)[0],
+            "next-up",
+            "by # the item that starts next comes first"
+        );
         press(&mut v, &q, &[], 'x');
         assert!(v.table.is_default());
-        press(&mut v, &q, &[], 's');
-        press(&mut v, &q, &[], 's');
-        assert_eq!(v.table.view.sort, "in");
+        v.table.view.state = "all".into();
+        while v.table.view.sort != "in" {
+            press(&mut v, &q, &[], 's');
+            assert!(!v.table.view.sort.is_empty(), "s reaches the in column");
+        }
         assert_eq!(
             slugs(&v, &q),
             ["pick-sides", "fix-menu", "night-sweep", "next-up", "landed"],
@@ -851,9 +1133,50 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_done_row_is_selectable_but_cancel_and_priority_refuse_it() {
+    fn l_marks_each_record_an_opened_item_names_and_enter_opens_it() {
+        use hub_core::links::{Kind, Link};
         let q = fixture();
         let mut v = QueueView::default();
+        assert_eq!(v.selected(&q, now()).unwrap().slug, "pick-sides");
+        assert_eq!(
+            press(&mut v, &q, &[], 'l'),
+            Ask::Pass,
+            "a closed row has no links to mark"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(v.detail);
+        let s = text(&q, &v, 160);
+        assert!(s.contains("opens (l marks, Enter opens)"), "{s}");
+        assert!(s.contains("  session  lab:game-agent-2"), "{s}");
+        press(&mut v, &q, &[], 'l');
+        assert!(text(&q, &v, 160).contains("> session  lab:game-agent-2"));
+        press(&mut v, &q, &[], 'l');
+        assert_eq!(
+            v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
+            Ask::Follow(Link::to(Kind::Project, "game"))
+        );
+        assert!(
+            v.detail && v.link.is_none(),
+            "the detail stays, the mark goes"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(
+            !v.detail,
+            "Enter with nothing marked closes the detail as before"
+        );
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        press(&mut v, &q, &[], 'l');
+        // A refresh that puts another item under the selection: its mark is not this item's.
+        v.link.as_mut().unwrap().0 = "another-item".into();
+        assert!(!text(&q, &v, 160).contains("> session"));
+        v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
+        assert!(!v.detail, "Enter follows no other item's mark");
+    }
+
+    #[test]
+    fn a_done_row_is_selectable_but_cancel_and_priority_refuse_it() {
+        let q = fixture();
+        let mut v = all();
         press(&mut v, &q, &[], 'G');
         assert_eq!(v.selected(&q, now()).unwrap().slug, "landed");
         for ch in ['c', '+', '-'] {
@@ -885,17 +1208,17 @@ pub(crate) mod tests {
                 "typed into the query"
             );
         }
-        assert_eq!(slugs(&v, &q).len(), 5, "nothing applies before Enter");
+        assert_eq!(slugs(&v, &q).len(), 4, "nothing applies before Enter");
         assert!(text(&q, &v, 160).contains("| /project:dotfiles_"));
         assert_eq!(
             v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
             Ask::Done
         );
-        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep", "landed"]);
+        assert_eq!(slugs(&v, &q), ["next-up", "night-sweep"]);
         assert_eq!(v.table.sel, 0);
         let s = text(&q, &v, 160);
         assert!(
-            s.contains("3 of 5") && s.contains("| /project:dotfiles"),
+            s.contains("2 of 5") && s.contains("| /project:dotfiles"),
             "{s}"
         );
         assert!(!s.contains("Pick a side"), "{s}");
@@ -917,7 +1240,7 @@ pub(crate) mod tests {
         for (old, chip, n) in [
             ("waiting", "needs you", 1),
             ("running", "running", 1),
-            ("queued", "up next", 2),
+            ("queued", "ready", 1),
             ("done", "done", 1),
         ] {
             let mut v = QueueView::default();
@@ -929,11 +1252,19 @@ pub(crate) mod tests {
         let mut v = QueueView::default();
         v.open("Running");
         assert_eq!(v.table.view.state, "running", "case does not matter");
+        v.open("landed");
+        assert_eq!(v.table.view.q, "landed");
+        assert_eq!(
+            slugs(&v, &q),
+            ["landed"],
+            "a slug finds its item, done ones too"
+        );
+        v.open("Running");
         v.open("project:game");
         assert_eq!(v.table.view.q, "project:game");
-        assert!(
-            v.table.view.state.is_empty(),
-            "a new request starts from the table's own view"
+        assert_eq!(
+            v.table.view.state, "all",
+            "a new request starts from the table's own view, over every row"
         );
         v.open("candidates");
         assert!(v.cands_open && v.table.is_default());
@@ -950,7 +1281,7 @@ pub(crate) mod tests {
             r#"{"slug":"shipped","project":"dotfiles","mode":"oneshot","weight":"heavy","priority":"high","type":"feat","size":"m","account":"a2","model":"opus","tags":"night","queued":"2026-11-03T08:00:00Z","ready":"2026-11-03T08:10:00Z","started":"2026-11-03T08:25:00Z","waiting":"2026-11-03T09:00:00Z","finished":"2026-11-03T09:30:00Z","state":"done","status":"ok","pr":"o/r#7","merged":"abcdef1234567","cost_usd":"6.10","task":"feat(x): Ship it\nthe body"}"#,
             "\n",
         )));
-        let mut v = QueueView::default();
+        let mut v = all();
         v.table.view.q = "shipped".into();
         assert_eq!(
             v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now()),
@@ -970,7 +1301,6 @@ pub(crate) mod tests {
             "PR r#7 merged",
             "$6.10",
             "in -  wait 15m  run 1h05  lead 1h30",
-            "log: notes log --item shipped",
         ] {
             assert!(s.contains(want), "{want} missing from\n{s}");
         }
@@ -992,15 +1322,47 @@ pub(crate) mod tests {
             ("waiting", "+35m"),
             ("finished", "+30m"),
         ] {
-            assert!(line(&s, &format!("{stage} ")).contains(gap), "{stage}\n{s}");
+            let row = s.lines().find(|l| l.starts_with(&format!("{stage} ")));
+            assert!(row.is_some_and(|l| l.contains(gap)), "{stage}\n{s}");
         }
         assert!(line(&s, "merged ").contains("abcdef1234"), "{s}");
         assert!(!s.contains("STATE "), "the detail replaces the table\n{s}");
-        // Esc closes the detail first, and the query stays.
+        assert!(
+            !s.contains("HISTORY"),
+            "a history not asked for draws nothing\n{s}"
+        );
+        // The open detail asks for its history once; it says it reads, then draws the steps under
+        // the timeline. A read for an item left since is dropped.
+        assert_eq!(v.wants_history(Some(&q), now()), Some("shipped".into()));
+        assert_eq!(v.wants_history(Some(&q), now()), None, "asked once");
+        assert!(text(&q, &v, 100).contains("HISTORY  reading..."));
+        v.read_history("other".into(), Ok(History::default()));
+        assert!(text(&q, &v, 100).contains("HISTORY  reading..."));
+        let step = hub_core::item_history::Line {
+            at: "2026-11-03T09:30:00Z".into(),
+            text: "merged o/r#7".into(),
+        };
+        let read = History {
+            attempts: 2,
+            steps: 25,
+            lines: vec![step],
+            days: 30,
+        };
+        v.read_history("shipped".into(), Ok(read));
+        let s = text(&q, &v, 100);
+        assert!(s.contains("HISTORY  2 attempts, 25 steps, last 1"), "{s}");
+        let (timeline, hist) = (s.find("\nmerged "), s.find("HISTORY"));
+        assert!(timeline.is_some() && timeline < hist, "{s}");
+        assert!(s.contains("merged o/r#7"), "{s}");
+        v.read_history("shipped".into(), Err("boom".into()));
+        assert!(text(&q, &v, 100).contains("no history: boom"));
+        // Esc closes the detail first, and the query stays; the history goes with it.
         let esc = || KeyEvent::from(KeyCode::Esc);
         assert_eq!(v.key(esc(), Some(&q), &[], 10, now()), Ask::Done);
         assert!(!v.detail && v.table.view.q == "shipped");
         assert!(text(&q, &v, 100).contains("STATE"));
+        assert_eq!(v.wants_history(Some(&q), now()), None);
+        assert!(v.history.is_none(), "a shut detail holds no history");
     }
 
     #[test]
@@ -1014,11 +1376,11 @@ pub(crate) mod tests {
             r#"{"slug":"broke","project":"dotfiles","state":"done","status":"failed","finished":"2026-11-03T12:00:00Z","task":"Broke"}"#,
             "\n",
         )));
-        let s = text(&q, &QueueView::default(), 200);
+        let s = text(&q, &all(), 200);
         assert!(line(&s, "Merged one").contains("r#7"), "{s}");
         assert!(line(&s, "Nothing shown").contains("! none"), "{s}");
         assert!(line(&s, "Broke").contains("failed"), "{s}");
-        let mut v = QueueView::default();
+        let mut v = all();
         v.table.view.q = "merged-one".into();
         v.key(KeyEvent::from(KeyCode::Enter), Some(&q), &[], 10, now());
         let s = text(&q, &v, 200);
@@ -1026,8 +1388,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_the_cap_of_rows_is_drawn_and_the_rest_are_counted_older() {
-        let n = TABLE_OPEN_ROWS + 5;
+    fn every_row_the_view_keeps_is_drawn_and_a_frame_formats_one_screen() {
+        let n = 200;
         let jsonl: Vec<String> = (0..n)
             .map(|i| {
                 format!(
@@ -1041,20 +1403,56 @@ pub(crate) mod tests {
             items: hub_core::queue::parse(&jsonl.join("\n")),
             ..Default::default()
         };
-        let v = QueueView::default();
-        assert_eq!(v.shown(&q, now()).len(), TABLE_OPEN_ROWS);
+        let v = all();
+        assert_eq!(v.shown(&q, now()).len(), n);
         let s = text(&q, &v, 120);
-        assert!(s.contains("+5 older"), "{s}");
+        assert!(!s.contains("older"), "{s}");
         assert!(
             s.contains(&format!("{n} of {n}")) && s.contains(&format!("done {n}")),
             "{s}"
         );
+        let frame = |v: &QueueView, win| {
+            page(
+                &q,
+                v,
+                None,
+                (&Rail::build(Some(&q), None, now()), false),
+                Palette { no_color: true },
+                now(),
+                120,
+                win,
+            )
+        };
+        let row = |l: &Line| plain(l).contains(" T");
+        let (every, _) = frame(&v, None);
+        let (top, at) = frame(&v, Some((0, 20)));
+        assert_eq!(
+            top.len(),
+            every.len(),
+            "the same lines, so the scroll means the same"
+        );
+        let formatted = top.iter().filter(|l| row(l)).count();
+        assert!(formatted < 50, "one screen of rows, not {n}: {formatted}");
+        let at = at.unwrap();
+        assert_eq!(
+            plain(&top[at]),
+            plain(&every[at]),
+            "the selected row is drawn"
+        );
+        let mut far = all();
+        for _ in 0..150 {
+            far.key(KeyEvent::from(KeyCode::Char('j')), Some(&q), &[], 20, now());
+        }
+        let (l, at) = frame(&far, Some((0, 20)));
+        let at = at.unwrap();
+        assert!(row(&l[at]), "a row far down is drawn once selected");
+        assert_eq!(plain(&l[at]), plain(&every[at]));
     }
 
     #[test]
     fn cancel_waits_on_y_and_bump_steps_the_selected_item() {
         let q = fixture();
-        let mut v = QueueView::default();
+        let mut v = all();
         assert_eq!(v.selected(&q, now()).unwrap().slug, "pick-sides");
         assert_eq!(press(&mut v, &q, &[], 'c'), Ask::Done);
         assert_eq!(v.confirm.as_deref(), Some("pick-sides"));
@@ -1112,7 +1510,7 @@ pub(crate) mod tests {
     #[test]
     fn a_new_read_keeps_the_selection_on_its_slug() {
         let q = fixture();
-        let mut v = QueueView::default();
+        let mut v = all();
         v.table.sel = 2;
         assert_eq!(v.selected(&q, now()).unwrap().slug, "next-up");
         let mut fewer = fixture();
@@ -1144,7 +1542,7 @@ pub(crate) mod tests {
         let s = text_with(&q, &shut, Some(&c), 200);
         assert!(s.contains("+ CANDIDATES (3, 2 auto)  C opens"), "{s}");
         assert!(
-            s.find("Landed").unwrap() < s.find("CANDIDATES").unwrap(),
+            s.find("Sweep").unwrap() < s.find("CANDIDATES").unwrap(),
             "below the queue\n{s}"
         );
         assert!(!s.contains("bar-17"), "no row shows while folded\n{s}");
@@ -1153,7 +1551,11 @@ pub(crate) mod tests {
         assert!(text_with(&q, &QueueView::default(), Some(&err), 200)
             .contains("No candidates: no snapshot yet, the next dispatch pass writes one"));
         let mut stamped = cands();
-        stamped.as_of = "08:07".into();
+        let today = chrono::Local::now()
+            .date_naive()
+            .and_hms_opt(8, 7, 0)
+            .unwrap();
+        stamped.written = Some(today.and_local_timezone(chrono::Local).unwrap().into());
         let s = text_with(&q, &shut, Some(&Ok(stamped)), 200);
         assert!(
             s.contains("+ CANDIDATES (3, 2 auto)  as of 08:07  C opens"),
@@ -1216,7 +1618,7 @@ pub(crate) mod tests {
             v.said
         );
         press(&mut v, &q, &c, 'C');
-        for _ in 0..5 {
+        for _ in 0..4 {
             press(&mut v, &q, &c, 'j');
         }
         assert_eq!(
@@ -1257,7 +1659,7 @@ pub(crate) mod tests {
 
         press(&mut v, &q, &c, 'C');
         assert_eq!(
-            v.table.sel, 4,
+            v.table.sel, 3,
             "folding brings the selection back to the rows"
         );
         v.running = Some("promote x".into());

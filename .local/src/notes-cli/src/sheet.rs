@@ -490,7 +490,10 @@ mod tests {
         let (got, _) = split("- [ ] #agent #plan #go\n  - [ ] a #p:one\n  - [ ] b #go\n");
         assert_eq!(
             got,
-            vec!["- [ ] a #p:one #agent #plan #go", "- [ ] b #go #agent #plan"]
+            vec![
+                "- [ ] a #p:one #agent #plan #go",
+                "- [ ] b #go #agent #plan"
+            ]
         );
     }
 

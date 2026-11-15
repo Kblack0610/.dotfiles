@@ -191,37 +191,6 @@ apply_dotfiles() {
 
     mkdir -p ~/.config
 
-    cat > .stow-local-ignore <<'EOF'
-^/\.git$
-^/\.gitignore$
-^/\.gitmodules$
-^/\.github$
-^/AGENTS\.md$
-^/README\.md$
-^/\.local/src/installation_scripts$
-^/etc$
-^/\.fonts$
-^/\.config/hypr$
-^/\.config/waybar$
-^/\.config/wofi$
-^/\.config/kitty$
-^/\.config/keyd$
-^/\.config/karabiner$
-^/\.config/aerospace$
-^/\.config/launchd$
-^/\.config/brewfile$
-^/\.config/spicetify$
-^/\.config/firefox$
-^/\.config/Code$
-^/\.config/Windsurf$
-^/\.config/cups$
-^/\.config/unity3d$
-^/\.config/zoomus\.conf$
-^/\.config/profile$
-^/\.config/windows$
-^/\.claude/skills$
-EOF
-
     stow .
 
     # Check out git submodules (.local/src/android-suite, gungan) so their symlinks

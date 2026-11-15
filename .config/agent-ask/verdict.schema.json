@@ -42,7 +42,8 @@
           "unclear-ask",
           "against-precedent",
           "reversible",
-          "grounded"
+          "grounded",
+          "impact"
         ],
         "properties": {
           "decision": {
@@ -174,6 +175,29 @@
               }
             },
             "description": "A rule or stated fact picks this option over every other listed one"
+          },
+          "impact": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "evidence",
+              "level"
+            ],
+            "properties": {
+              "evidence": {
+                "type": "string",
+                "description": "The words of the ask that show what a wrong answer would reach, quoted, written before level; empty when there are none"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "self",
+                  "repo",
+                  "fleet"
+                ]
+              }
+            },
+            "description": "Who a wrong answer on this item would reach (policy, Impact)"
           }
         }
       }

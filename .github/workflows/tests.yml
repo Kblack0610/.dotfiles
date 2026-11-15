@@ -1,6 +1,6 @@
 name: shell tests
 
-# Five jobs, by what they can catch:
+# The jobs, by what they can catch:
 #
 #   fast   the tmux-free tiers (unit + integ), in shards. Runs directly on the runner because
 #          it never starts a tmux server. On a pull request only the files the change can
@@ -9,9 +9,7 @@ name: shell tests
 #   ui     the tmux ui tier, inside the SAME container a developer uses locally
 #          (tests/docker.sh). Dev/CI parity is the point: if the image or the entry script
 #          breaks, this job goes red rather than only the developer's laptop.
-#   drift  weekly sweep across tmux versions. What a local hook cannot catch is the
-#          environment moving underneath the repo -- a new tmux, a new fzf, a distro bump --
-#          which surfaces precisely when nothing in the repo changed.
+#          The schedule and a manual run sweep five tmux versions (the drift sweep).
 #   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
 #          image, which has no Rust toolchain. On a pull request only the crates the change can
 #          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
@@ -21,7 +19,8 @@ name: shell tests
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
-#   lint   shellcheck + shfmt + house rules, in the pinned image.
+#   lint   shellcheck + house rules, in the pinned image.
+#   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
 on:
@@ -97,7 +96,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      APT_PKGS: parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
+      APT_PKGS: lua5.4 parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
     strategy:
       fail-fast: false
       matrix:
@@ -207,12 +206,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # On push/PR only the version the author runs. The weekly `drift` job sweeps wider.
-        tmux: ['3.8']
+        # A push or PR runs only the version the author runs. The weekly schedule and a manual
+        # run are the drift sweep: the environment moving underneath the repo (a new tmux, fzf
+        # or distro) surfaces when nothing in the repo changed. Only this tier starts tmux, so
+        # it is the only one swept. 3.4 is ubuntu-24.04's apt, 3.5a Debian trixie's, 3.6a the
+        # mac-mini's (Homebrew), 3.7b the first with floating panes, 3.8 (patched) the author's;
+        # the image builds each from source.
+        tmux: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.4", "3.5a", "3.6a", "3.7b", "3.8"]' || '["3.8"]') }}
     steps:
       - uses: actions/checkout@v4
-      # docker.sh builds the image, vendors bats on the host first, then runs the tier
-      # inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
+      # The test-image step loads the image (or builds it on a cache miss); docker.sh vendors
+      # bats on the host, then runs the tier inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
       # and capture-pane all work headless. Only display-popup needs an attached client, and
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
@@ -221,6 +225,10 @@ jobs:
       # so it is built here (the runner's glibc is older than trixie's) and read via the mount.
       - name: Build agent-panel for the ui tier
         run: cargo build --locked --manifest-path .local/src/agent-panel/Cargo.toml
+      # The image comes from the Actions cache when nothing it is built from changed.
+      - uses: ./.github/actions/test-image
+        with:
+          tmux: ${{ matrix.tmux }}
       - name: UI tier in the disposable container
         env:
           TMUX_REF: ${{ matrix.tmux }}
@@ -243,32 +251,25 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  drift:
-    name: drift sweep (tmux ${{ matrix.tmux }})
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+  # The one check branch protection requires. It is green only when every gating job ran and
+  # passed: a job that failed, was cancelled or was skipped reads red here, so a dropped shard
+  # or a job a bad `if:` skipped cannot merge. weights may fail (fast falls back to test
+  # counts) and report only draws, so neither is a gate. tests/unit/ci_gate.bats keeps `needs`
+  # complete: a new job either joins it or is named there as not a gate. always(), not
+  # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
+  gate:
+    name: gate
+    needs: [fast, ui, rust, skills, lint]
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        # 3.4 is what ubuntu-24.04's apt ships and what most machines have.
-        # 3.5a is Debian trixie's version. 3.7b is the first with floating panes, and 3.8 (patched) the author's.
-        # The image builds tmux from source, so all of them are reachable.
-        tmux: ['3.4', '3.5a', '3.7b', '3.8']
+    timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v4
-      - name: Whole suite in the container
+      - name: Every gating job passed
         env:
-          TMUX_REF: ${{ matrix.tmux }}
-        run: tests/docker.sh test-container
-      - name: Upload failure screens
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: drift-screens-tmux-${{ matrix.tmux }}
-          path: tests/artifacts/
-          if-no-files-found: ignore
-          retention-days: 14
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
 
   # Draws only: the tier jobs are the gate, and fail-on-error: false keeps a failed test from
   # failing this job too. The reporter writes the job summary (use-actions-summary, its
@@ -306,7 +307,7 @@ jobs:
           fail-on-empty: false
 
   rust:
-    name: rust crates (test + clippy + fmt)
+    name: rust crates (test + fmt, clippy on main)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -317,12 +318,15 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       # The ubuntu-24.04 image ships a stable Rust toolchain, so no third-party setup
       # action is needed -- consistent with this repo running zero tmux plugins by policy.
-      # `rustup component add` is idempotent and only guards against an image that ships
-      # cargo without clippy/rustfmt; rust.sh degrades to advisory on those two anyway.
+      # The version is tests/rust-toolchain, the same one rust.sh pins locally, so a runner image
+      # bump cannot change which clippy lints a run checks.
       - name: Toolchain
         id: toolchain
         run: |
-          rustup component add clippy rustfmt || true
+          tc=$(<tests/rust-toolchain)
+          rustup toolchain install "$tc" --profile minimal -c clippy,rustfmt
+          echo "RUSTUP_TOOLCHAIN=$tc" >>"$GITHUB_ENV"
+          export RUSTUP_TOOLCHAIN=$tc
           cargo --version && cargo clippy --version && cargo fmt --version
           echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
       # The registry and every crate's target/ in one cache. Cold, the Rust gate compiled six
@@ -343,14 +347,44 @@ jobs:
           key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
           restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
       # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
+      # Clippy runs everywhere but pull requests (tests/rust.sh, THE GATES), and on a pull request
+      # that touches the rust gate or tests/rust-toolchain, whose new lints would otherwise first
+      # show on main (2026-11-13, #2086).
       - name: Rust gate
         env:
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          CLIPPY: ${{ github.event_name == 'pull_request' && '0' || '1' }}
         run: |
           crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
           tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          if grep -q 'touches the rust gate' "$RUNNER_TEMP/why"; then export CLIPPY=1; fi
+          printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
           [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
           make -C tests test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
+      # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
+      # cell off screen, a pageerror, an "undefined" cell, a fixture table that no longer matches
+      # hub-core's columns, or a tab, inner tab or project inner tab taller than three screens at
+      # 1400x900 fails it. It runs when agent-web is picked (hub-core and web-kit pick it, and so
+      # does the harness, tests/rust-inputs.txt). playwright-core is pinned here and installs its
+      # own chromium; the dump reuses the target the gate just built. About 30 s, plus the download.
+      - name: Phone render harness
+        env:
+          PLAYWRIGHT_CORE: 1.62.1
+          CARGO_TARGET_DIR: ${{ github.workspace }}/.local/src/agent-web/target
+        run: |
+          grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          node_dir=~/.cache/agent-web-phone/node
+          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
+          node "$node_dir/node_modules/playwright-core/cli.js" install chromium
+          node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
+      - name: Phone screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-web-phone
+          path: ${{ runner.temp }}/phone
+          if-no-files-found: ignore
+          retention-days: 7
       # Right after the gate and on a red too: a red main must not leave every later run cold.
       - name: Save cargo
         if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}
@@ -365,7 +399,7 @@ jobs:
       - name: Board to queue join, on the real notes
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
-          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES=unit/agent_land.bats BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
+          NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
         run: NOTES_BIN="$PWD/.local/src/notes-cli/target/debug/notes" make -C tests test-files FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
 
@@ -374,15 +408,16 @@ jobs:
     uses: ./.github/workflows/skill-lint.yml
 
   lint:
-    name: shellcheck + shfmt
+    name: shellcheck + house rules
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      # Runs in the SAME image as the ui tier, which pins shellcheck and shfmt. Installing
-      # them from apt here instead would mean CI lints with a different shellcheck than the
+      # Runs in the SAME image as the ui tier, which pins shellcheck. Installing
+      # it from apt here instead would mean CI lints with a different shellcheck than the
       # developer does, and the first version bump would produce findings nobody can
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.
+      - uses: ./.github/actions/test-image
       - name: lint
         run: tests/docker.sh lint

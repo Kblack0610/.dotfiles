@@ -16,6 +16,7 @@
 #   stages                      the ladder `notes projects --stages` prints
 #   prios                       name  prio, what `notes projects --prios` prints
 #   board.json                  what `notes board --json` prints
+#   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -88,7 +89,8 @@ case "${1:-}" in
     proj="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
     case "${3:-}" in
       list|"") emit "ptask.${profile:-personal}.${proj}" ;;
-      *) : ;;                      # add/done/rm: recorded only
+      add) emit ptask.added ;;     # the row the real verb prints; recorded too
+      *) : ;;                      # done/rm: recorded only
     esac
     ;;
   # `notes row parse`: each stdin line looked up in row.parse (text TAB type TAB area TAB title

@@ -9,7 +9,7 @@
 #   keys --md            the rows as one markdown table, for a printed sheet
 #   keys preview <layer> <where> <key> <command>   one row's detail
 #
-# No list of its own: a key's meaning is its own bind (Hyprland bindd descriptions via
+# No list of its own: a key's meaning is its own bind (Hyprland bind descriptions via
 # hypr-binds, tmux -N notes, nvim desc), read live. The sheet shows the keys that carry one; a
 # bind with none is a tool's built-in default (tmux's mouse and copy-mode keys), still in --print.
 

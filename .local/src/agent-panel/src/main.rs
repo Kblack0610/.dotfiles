@@ -113,6 +113,19 @@ enum Cmd {
         #[arg(long, default_value = "", allow_hyphen_values = true)]
         query: String,
     },
+    /// Internal fzf transform callback for the keys a S-Tab grab changes (S-Tab, Up, Down,
+    /// Enter, Esc): prints the fzf actions to run (not meant to be run by hand).
+    #[command(hide = true)]
+    Move {
+        key: chooser::MoveKey,
+        #[arg(long)]
+        map_file: PathBuf,
+        /// The row's target; empty on a project header.
+        #[arg(default_value = "")]
+        target: String,
+    },
+    /// The shortcuts page (alt-? or F1 in the chooser): every key, the sorts, the row legend.
+    Keys,
     /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
     #[command(hide = true)]
     Match {
@@ -203,6 +216,12 @@ fn main() -> anyhow::Result<()> {
             sort,
             query,
         }) => chooser::run_rows(&map_file, asking, sort, &query),
+        Some(Cmd::Move {
+            key,
+            map_file,
+            target,
+        }) => chooser::run_move(key, &target, &map_file),
+        Some(Cmd::Keys) => agent_panel::help::run(chooser::saved_sort()),
         Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
         Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),

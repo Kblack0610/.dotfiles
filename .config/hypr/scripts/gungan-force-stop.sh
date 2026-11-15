@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Force-stop a stuck gungan take (Super+Ctrl+R in conf.d/keybindings.conf). Every kill is by
+# Force-stop a stuck gungan take (Super+Ctrl+R in conf/keybindings.lua). Every kill is by
 # a pid this checked, never a pkill -f pattern: a pattern also matches the command line of the
 # shell running it (hypr's sh -c), which then dies before the cleanup below runs.
 

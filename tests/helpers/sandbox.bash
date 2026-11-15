@@ -130,9 +130,25 @@ sandbox_init() {
   # route's model. Neither is a transport name, so the scrub.list unset below is not for them.
   unset CLAUDE_HEADLESS AGENTCTL_MODEL
 
+  # A suite run from a fleet-shepherd pass inherits what its .pass.sh exports and what agentctl-run
+  # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
+  # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
+  # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
+  # AGENTCTL_AGENT names the caller in the call log, and the DIR and FILE names point at live state.
+  # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here.
+  # A test that wants one of these sets it after sandbox_init.
+  unset MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
+    FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR \
+    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
+
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
+
+  # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
+  # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
+  # colour sets it itself, after sandbox_init.
+  unset NO_COLOR PANEL_NO_COLOR
 
   # `agent-ask answer` runs the ask's resume command, which would start a real headless
   # run. Off for every test; ask_resume.bats turns it back on, with agentctl-run stubbed,
@@ -142,6 +158,11 @@ sandbox_init() {
   # `agent-ask post` starts the answer judge, a real model call through agentctl-run. Off for
   # every test; agent_ask.bats turns it on with a fake judge command.
   export AGENT_ASK_NO_JUDGE=1
+
+  # A live judge answer posts an audit ask every Nth time per level, and a level ask-judge.conf
+  # does not rate is audited every time. Off in effect for every test (1 in a million);
+  # agent_ask.bats sets the rates it tests.
+  export AGENT_ASK_AUDIT_RATES='self=1000000 repo=1000000 fleet=1000000'
 
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude

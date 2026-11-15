@@ -191,7 +191,7 @@ The second rule needs the first to stay honest: if the ANSI ramp drifts past a l
 | neo-tree   | `NeoTreeModified` highlight patched                               | tracked  |
 | starship   | 7 color values patched in `starship.toml`                         | tracked  |
 | lazygit    | 11 color values patched in `config.yml` (restart lazygit to see)  | tracked  |
-| hyprland   | border + shadow rgba patched in `conf.d/look-and-feel.conf`, then `hyprctl reload` | tracked  |
+| hyprland   | `conf/theme.lua` colors rebuilt from the palette, then `hyprctl reload`; layout stays in the tracked `conf/look-and-feel.lua` | generated |
 | termux     | `colors.properties` rebuilt from the palette (no per-theme template) | tracked, see below |
 | wallpaper  | random pick matching prefix; backend: hyprpaper > swww > swaybg   | n/a      |
 
@@ -215,7 +215,7 @@ time would hand a fresh machine a dirty tree before first login.
 
 The remaining `tracked` rows are hand-authored config with a few values patched
 in place, so they still churn on a theme switch. Converting each to its tool's
-native include (hyprland `source =`, lazygit `LG_CONFIG_FILE`, an nvim palette
+native include (lazygit `LG_CONFIG_FILE`, an nvim palette
 module) is the follow-up that finishes the job.
 
 ### termux: generated, and tracked anyway

@@ -569,19 +569,41 @@ fn edit_link_puts_an_existing_row_under_its_systems_standing_epic() {
             "fix(sound): resume flickers again #size/s",
         ],
     );
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(!h.board().contains("resume flickers again"), "{}", h.board());
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !h.board().contains("resume flickers again"),
+        "{}",
+        h.board()
+    );
     // An edit that matches no row files no standing epic before it fails.
     let out = agent(
         &h,
-        &["edit", "no such row", "--link", "--text", "docs(docs): a setup guide #size/s"],
+        &[
+            "edit",
+            "no such row",
+            "--link",
+            "--text",
+            "docs(docs): a setup guide #size/s",
+        ],
     );
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(h.sheet().matches("to standard").count(), 1, "{}", h.sheet());
 }
 
 #[test]
-fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
+fn closing_an_epics_last_leaf_leaves_the_epic_open_and_files_no_row() {
+    // The verify is a queue item fleet-dispatch's reap files from the rollup (reconcile_epics),
+    // so the close itself writes nothing beyond its own row.
     let h = Home::new("verify");
     ok(&h.run(&[
         "ptask",
@@ -589,7 +611,6 @@ fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
         "add",
         "epic(ui): the pause menu feels instant",
     ]));
-    assert!(h.sheet().contains("id:dm-1"), "{}", h.sheet());
     ok(&agent(
         &h,
         &["add", "fix(ui): pause menu is slow #size/s #of/dm-1"],
@@ -598,43 +619,18 @@ fn closing_an_epics_last_leaf_files_one_verify_row_on_the_human_sheet() {
         &h,
         &["add", "feat(ui): a resume button #size/s #of/dm-1"],
     ));
-    let verify = |h: &Home| {
-        h.sheet()
-            .lines()
-            .filter(|l| l.contains("check(ui): verify dm-1 the pause menu feels instant"))
-            .count()
-    };
-    // NEGATIVE CONTROL: a close that leaves a leaf open asks nothing.
+    let before = h.sheet();
+    // A close that leaves a leaf open, then the last one: neither writes the human sheet.
     ok(&agent(&h, &["done", "dm-2", "--proof", "pr:1"]));
-    assert_eq!(verify(&h), 0, "{}", h.sheet());
-
+    assert_eq!(h.sheet(), before, "a leaf still open");
     ok(&agent(&h, &["done", "dm-3", "--proof", "pr:2"]));
-    assert_eq!(verify(&h), 1, "{}", h.sheet());
     let sheet = h.sheet();
-    let row = sheet.lines().find(|l| l.contains("verify dm-1")).unwrap();
-    assert!(row.starts_with("- [ ] ") && row.contains("#high"), "{row}");
-    assert!(
-        !row.contains("#of/"),
-        "the ask is no leaf of the epic: {row}"
-    );
+    assert_eq!(sheet, before, "the human sheet is untouched");
+    assert!(!sheet.contains("verify dm-1"), "{sheet}");
     assert!(
         sheet.contains("- [ ] epic(ui): the pause menu feels instant"),
         "nothing closes the epic: {sheet}"
     );
-
-    // Ticking the ask finishes nothing again, so it is never filed twice.
-    let id = ids(&sheet).into_iter().find(|i| i != "dm-1").unwrap();
-    ok(&h.run(&[
-        "ptask",
-        "demo",
-        "done",
-        &id,
-        "--proof",
-        "looked: it opens in 40ms",
-    ]));
-    // A re-close of the finished leaf (a re-run landing) matches no open row, so it files none.
-    let _ = agent(&h, &["done", "dm-3", "--proof", "pr:2"]);
-    assert_eq!(h.sheet().matches("verify dm-1").count(), 1, "{}", h.sheet());
 }
 
 #[test]
@@ -678,7 +674,11 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
     assert!(!pt(&["pass", "--build", "b9 #v9.9.9"]).status.success());
     // The next build is its own row, though only its id differs.
     ok(&pt(&["pass", "--build", "b2102"]));
-    assert!(h.sheet().contains("play build b2102, 3 checks"), "{}", h.sheet());
+    assert!(
+        h.sheet().contains("play build b2102, 3 checks"),
+        "{}",
+        h.sheet()
+    );
 
     // A tick is dated and stays in Done; the nightly sweep rolls off only what the window drops.
     ok(&pt(&["done", "lobby", "--unverified", "played it"]));

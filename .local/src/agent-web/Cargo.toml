@@ -11,16 +11,20 @@ path = "src/main.rs"
 [dependencies]
 agent-panel = { path = "../agent-panel" }
 hub-core = { path = "../hub-core" }
+project-map = { path = "../project-map" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 axum = "0.8"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "sync", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync", "io-util", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 [profile.release]
 strip = true
 opt-level = "z"
 lto = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

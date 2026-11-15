@@ -24,14 +24,13 @@
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
 
-# The linters are pinned, and that is not fussiness: a new shellcheck release finds new
-# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping these is a
+# shellcheck is pinned, and that is not fussiness: a new shellcheck release finds new
+# things, so an unpinned lint gate goes red on a repo nobody touched. Bumping it is a
 # deliberate, reviewable diff -- which is also when the severity ratchet gets revisited.
-# Each comes from its project's official image (a static binary at /bin, amd64 and arm64),
+# It comes from the project's official image (a static binary at /bin, amd64 and arm64),
 # pinned by digest, from the registry the base image already needs. Not the GitHub release
 # asset: that one can answer 504 for longer than any curl retry waits.
 FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
-FROM mvdan/shfmt:v3.13.1@sha256:f22f3936140be1ba02d493b5d2b91d0e8b4af93fd903e7f46c477822bca4a3be AS shfmt
 
 FROM debian:trixie-slim
 
@@ -49,16 +48,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 # it tmux falls back and the rendered grid differs. `column` comes from bsdextrautils on
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
 # nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
+# lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
+# inotify-tools: agent-ask wait-delivered, the questions panel's wait for an answer to go out.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 nodejs openssl xxd \
+      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 inotify-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # The tmux and fzf downloads below go to GitHub's release CDN, which answers a 504 now and then,
-# and the image is rebuilt on every CI run with no layer cache. curl reads this file, so the
-# retry lives in one place and each download keeps its plain `curl -fsSL`.
+# and a cold build (any change to what tests/docker.sh hashes) downloads them again. curl reads
+# this file, so the retry lives in one place and each download keeps its plain `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
 # python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
@@ -67,13 +68,12 @@ RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 # with python3 but no PyYAML it fails with the subject's own honest refusal,
 # `sentinel-manifest: PyYAML is required`. Both were red; both are fixed here.
 #
-# That was invisible because of WHICH job runs the whole suite. The `ui` tier runs only
-# tests/ui/, and `fast` runs on the bare runner where python3 exists -- only the weekly
-# DRIFT sweep runs every tier inside this image, so the failure surfaced once a week in a
-# job nobody was watching, and both PR-gating tiers stayed green. A gate that runs weekly
-# and is never read is the same as no gate.
+# CI never runs unit or integ in this image: `fast` runs them on the bare runner and `ui`
+# (the weekly drift sweep included) runs only tests/ui/. A runtime dependency missing here
+# therefore shows only in a local `tests/docker.sh` with no target, which runs every tier.
 
-# tmux from source. Debian trixie ships 3.5a; the author's machine runs 3.8 with the patch in
+# tmux from source. Debian trixie ships 3.5a, the mac-mini 3.6a (stock, like every version but
+# 3.8); the author's machine runs 3.8 with the patch in
 # .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
 # Floating panes only exist from 3.7. Release tarballs ship a generated ./configure, so no
 # autogen; `git apply` keeps the source's timestamps from asking for one.
@@ -102,11 +102,10 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -f /tmp/fzf.tar.gz \
     && fzf --version
 
-# shellcheck + shfmt, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
+# shellcheck, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
 # having to install a linter.
 COPY --from=shellcheck /bin/shellcheck /usr/local/bin/shellcheck
-COPY --from=shfmt /bin/shfmt /usr/local/bin/shfmt
-RUN shellcheck --version | grep version: && shfmt --version
+RUN shellcheck --version | grep version:
 
 # THE MARKER. tmux_harness.bash's require_disposable_host() checks for this together with
 # /.dockerenv, and hard-fails the test otherwise. Both are needed: the env var alone could

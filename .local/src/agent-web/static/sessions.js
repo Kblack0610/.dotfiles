@@ -1,20 +1,18 @@
 "use strict";
-// Sessions with no session open: the overview tiles, the capacity header, the table and the folds
-// under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// Sessions' Sessions inner tab, with no session open: the overview tiles, the capacity header, the
+// table and the folds under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
 // through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
-// row opens that session's conversation, `#sessions/<id>` (app.js); its Details page is hub-core's
+// row opens that session's conversation, `#sessions/sessions/<id>` (hub_core::links Kind::Session); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
 
-// A day's ended sessions on a busy day run to hundreds, so the table stops here until asked.
-const SESSIONS_OPEN = 200;
 const sst = tblTab({
-  tab: "sessions", id: "sessions", el: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
+  tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
-  shown: () => !st.sel && st.tab === "sessions", got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
-  chips: false, head: (t) => sessionsTiles(t.data) + sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+  shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
+  tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
-const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"] };
+const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], ctx: ["ctx", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
 
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
@@ -35,18 +33,6 @@ function capPart(p) {
   return `<span class="${p.warn ? "capwarn" : ""}">${esc(p.text)}</span>${start}`;
 }
 
-// The overview row: the table's state chips as tiles, and what the shown rows cost. A tile is the
-// chip it replaces, so a tap filters the table and a tap on the one in force clears it.
-const TILE_COLOR = { running: "var(--b-working)", "needs you": "var(--b-needs)", stalled: "var(--b-stalled)", "done today": "var(--b-done)" };
-function sessionsTiles(d) {
-  const t = d.table;
-  const states = t.states.slice(1).map((c) => {
-    const on = c.name === t.state;
-    return `<button class="tile${on ? " on" : ""}" data-ts="${on ? "" : esc(c.name)}" style="--c:${TILE_COLOR[c.name] || "var(--c-other)"}"><span class="tl">${esc(c.name.toUpperCase())}</span><span class="tv">${c.n}</span></button>`;
-  });
-  return `<div class="tiles stiles">${states.join("")}${tile("SPEND", usd(d.spend_usd), "var(--accent)", `${t.shown} shown`)}</div>`;
-}
-
 function sessionsHead() {
   const c = sst.cap;
   const line = c ? c.parts.map(capPart).join(" | ") : '<span class="muted">Reading capacity.</span>';
@@ -56,6 +42,40 @@ function sessionsHead() {
 }
 
 const sessionAgent = (r) => st.agents.find((a) => a.target === r.target || (r.session_id && a.session === r.session_id));
+
+// New output: a session that wrote since this browser last had it open carries an accent dot. Per
+// browser by design: when each session was last seen sits in localStorage, and a session never
+// opened here has none, so the dot says "moved since you looked", not "is busy". The last write is
+// the agent's transcript mtime (`wrote`, /api/agents), kept current between reads by the stream's
+// transcript events.
+const SEEN_K = "agent-web:seen", SEEN_MS = 7 * 86400000;
+// Milliseconds, the browser's clock, except `wrote`, the server's mtime in seconds.
+const readSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_K) || "{}"); } catch { return {}; } };
+const seen = Object.fromEntries(Object.entries(readSeen()).filter(([, v]) => v > Date.now() - SEEN_MS));
+const wroteAt = {};
+// Being seen: open, on Sessions, in a tab in view. One left open behind another tab is not.
+const viewing = (id) => !!st.sel && st.sel.session === id && st.tab === "sessions" && !document.hidden;
+// Another browser tab's marks are merged in first, so neither drops the other's.
+function markSeen(id) {
+  if (!id) return;
+  for (const [k, v] of Object.entries(readSeen())) if (!(seen[k] >= v)) seen[k] = v;
+  seen[id] = Date.now();
+  try { localStorage.setItem(SEEN_K, JSON.stringify(seen)); } catch { /* storage off: the dots last the page */ }
+}
+function hasNew(a) {
+  if (!a || !seen[a.session] || viewing(a.session)) return false;
+  return Math.max((a.wrote || 0) * 1000, wroteAt[a.session] || 0) > seen[a.session];
+}
+// A transcript event: the session in view is being seen; another one seen before gets its dot,
+// drawn once, when it turns on.
+function noteWrite(id) {
+  if (viewing(id)) return markSeen(id);
+  if (!seen[id]) return;
+  const a = st.agents.find((x) => x.session === id), was = hasNew(a);
+  wroteAt[id] = Date.now();
+  if (a && !was) { sst.render(); renderSide(); }
+}
+const newDot = (a) => (hasNew(a) ? '<span class="newdot" title="new output since you last opened it"></span>' : "");
 
 // What the row is beyond its columns: the human's own session, parked, a pending ask, no session
 // here, and where an ended row came from.
@@ -75,22 +95,32 @@ function sessionPr(r) {
   return `#${esc(r.pr)}${r.pr_state ? " " + esc(r.pr_state.toLowerCase()) : ""}${ci}`;
 }
 
-function sessionRow(r) {
-  const a = sessionAgent(r);
-  const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
-  const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
-  return `<tr class="click" data-key="${esc(r.key)}"><td><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
-    `<td>${esc(r.project)}</td><td class="wrap">${esc(r.task)} ${sessionTags(r, a)}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
-    `<td class="n">${idle}</td><td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td></tr>`;
+// How full the session's context window is: hub-core's rounded percent (SessionRow context_pct)
+// as a meter and its number, "-" when the model's window is unknown, never 0%.
+function ctxCell(r) {
+  if (r.context_pct == null) return '<td class="n">-</td>';
+  return `<td class="n" title="${kfmt(r.context_tokens || 0)} of ${kfmt(r.context_window)} tokens">${meter(r.context_pct / 100, "var(--accent)")} ${r.context_pct}%</td>`;
 }
 
+// The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
+function sessionRow(r) {
+  const a = sessionAgent(r), tags = sessionTags(r, a);
+  const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
+  const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
+  return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
+    `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
+    `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
+}
+
+// A day's ended sessions run to hundreds, so the table draws the server's open_rows (agent-web
+// sessions.rs TABLE_OPEN_ROWS) with the rest a click away; the chips, search and filters reach every row.
 function sessionsBody(d) {
   const t = d.table, shown = d.rows || [];
-  const rows = sst.all ? shown : shown.slice(0, SESSIONS_OPEN);
+  const rows = sst.all ? shown : shown.slice(0, d.open_rows);
   const more = shown.length - rows.length;
   return shown.length
     ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      tblMore(more) + `</div>`
+      tblMore(more, "more") + `</div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
 }
 
@@ -103,25 +133,28 @@ async function startTimer(name) {
 const sessionId = (a) => a.session || a.target;
 
 // A row is a link, so Back returns to the table as it was left.
+// The link carries the Sessions table's own view (its plain keys), never Runners' `r` or the
+// verdicts' `v` keys that share the URL.
 function sessionClick(r) {
-  const a = sessionAgent(r), q = st.views.sessions;
-  location.hash = `#sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
+  const a = sessionAgent(r), q = tblParams(st.views.sessions).toString();
+  location.hash = `#sessions/sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
 }
 
 // Open a session from another tab: the URL names it, and the tab opens what the URL names.
 function openAgent(a) {
-  setTab("sessions", sessionId(a));
+  openSessionId(sessionId(a));
 }
 
-// What `#sessions/<id>` names: its session on a pane here, else one with no pane (it ended, or
+// What `#sessions/sessions/<id>` names: its session on a pane here, else one with no pane (it ended, or
 // runs where this page cannot reach), which has its page and transcript and nothing to type into.
 async function openSession(id) {
   if (st.sel && (sessionId(st.sel) === id || st.sel.target === id)) return;
   if (!st.agents.length) {
     await refreshAgents();
-    if (st.arg !== id) return;
+    if (sessArg() !== id) return;
   }
-  const a = st.agents.find((x) => x.session === id || x.target === id);
+  // An item's link names its session by the item (hub_core::queue Item::links), as session_page::find resolves it.
+  const a = st.agents.find((x) => x.session === id || x.target === id) || st.agents.find((x) => (x.items || []).includes(id));
   select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
   sideShow(true);
 }
@@ -136,7 +169,7 @@ function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
   return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
-    `<span class="sn">${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
 function renderSide(scroll = false) {
@@ -144,10 +177,9 @@ function renderSide(scroll = false) {
   if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
   const d = sst.data;
   if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
-  const rows = (d.rows || []).slice(0, SESSIONS_OPEN);
-  const more = (d.rows || []).length - rows.length;
-  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>') +
-    (more ? `<div class="muted">+${more} more on the table</div>` : ""));
+  // The list scrolls in its own column, so it holds every row the view keeps.
+  const rows = d.rows || [];
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>'));
   if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
 }
 
@@ -167,13 +199,6 @@ $("side").addEventListener("click", (e) => {
   if (r) sessionClick(r);
 });
 
-const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
-
-function pagePart(p) {
-  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
-  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
-}
-
 // The Details view. The parts are hub-core's; what is drawn here is the card for a session still in
 // the state document, and the folds, each open until the reader folds it.
 function pageHtml(p) {
@@ -182,7 +207,7 @@ function pageHtml(p) {
   return `<div class="pghead"><span class="chip" style="--c:${bucketColor(p.bucket)}">${esc(p.bucket)}</span> <span class="muted">${esc(p.idle)}</span> ${esc(p.task)}</div>` +
     p.errors.map((e) => `<div class="card err">${esc(e)}</div>`).join("") +
     p.parts.map(pagePart).join("") +
-    outcome + (s ? fold("page-state", "Fleet state", card(s, maxContext(), Date.now())) : "");
+    outcome + (s ? fold("page-state", "Fleet state", card(s, Date.now())) : "");
 }
 
 const loadPage = coalesce(async () => {
@@ -216,14 +241,27 @@ $("scroll").addEventListener("click", (e) => {
   }
 });
 
-// fleet-state writes every minute and the shepherd on each pass; only the open tab reads them.
-const watchFeed = pushed("sessions", ["watch"], refreshWatch);
-const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd);
-const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions);
+// The inner tab shown: an inner id, or Sessions while a session's record is open.
+const sessInner = () => innerOf("sessions", st.arg)[0];
+const sessShows = (id) => st.tab === "sessions" && sessInner() === id;
+// The session `#sessions/sessions/<id>` names; "" on an inner tab.
+const sessArg = () => pageId("sessions", "sessions");
+
+// fleet-state writes every minute and the shepherd on each pass; only the inner tab shown reads
+// its own (rule 10), once when it first shows and again only after an event marked it stale: a
+// session's record, under the Sessions inner tab, reads the table's for its side list and facts.
+const watchFeed = pushed("sessions", ["watch"], refreshWatch, () => sessShows("sessions"));
+const tableFeed = pushed("sessions", ["watch", "queue"], refreshSessions, () => sessShows("sessions"));
+const shepFeed = pushed("sessions", ["shepherd", "sessions"], refreshShepherd, () => sessShows("shepherd"));
 TABS.sessions = {
   show() {
-    if (st.arg) openSession(st.arg); else overview();
-    watchFeed.show(!wst.data); shepFeed.show(!shst.data); tableFeed.show(!sst.data);
+    if (sessArg()) openSession(sessArg()); else overview();
+    this.inner(sessInner());
   },
-  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); },
+  inner(id) {
+    if (id === "sessions") { sst.render(); watchFeed.show(!wst.data); tableFeed.show(!sst.data); }
+    else if (id === "runners") runnersShow();
+    else if (id === "shepherd") { renderShepherd(); shepFeed.show(!shst.data); }
+  },
+  onEvent(ev) { watchFeed.onEvent(ev); shepFeed.onEvent(ev); tableFeed.onEvent(ev); runnersEvent(ev); },
 };

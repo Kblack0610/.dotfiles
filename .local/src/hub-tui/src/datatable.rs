@@ -6,11 +6,18 @@
 //! the next column, `S` flips the direction, `x` clears the whole view. The selection is the
 //! table's too: one cursor that moves, stays in range and goes to the top when the view changes.
 
+use hub_core::links::Link;
 use hub_core::table::{Dir, Row, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use crate::fit::wrap;
 use crate::fmt::Palette;
+
+/// The page section that marks a selected row's line (Home, Alerts, Infra), only so the app can
+/// keep it in view: the app takes it out of the sections `n`/`N` step through.
+pub const ROW: &str = "row";
 
 /// What a key did to the table.
 #[derive(Debug, PartialEq, Eq)]
@@ -121,6 +128,15 @@ impl DataTable {
         true
     }
 
+    /// What Enter on a row opens: its lead column's record, else the first column that names
+    /// one (`Row::link`, the resolver agent-web draws its anchors from).
+    pub fn opens<R: Row>(row: &R) -> Option<Link> {
+        std::iter::once(R::LEAD)
+            .chain(R::COLUMNS.iter().copied())
+            .filter(|c| !c.is_empty())
+            .find_map(|c| row.link(c))
+    }
+
     /// The selection within `n` rows.
     pub fn clamp(&mut self, n: usize) {
         self.sel = self.sel.min(n.saturating_sub(1));
@@ -179,7 +195,21 @@ impl DataTable {
         out
     }
 
-    /// The state chips with their counts, the one in force in the head style.
+    /// What the table's state words mean (`Row::LEGEND`, `hub_core::table::legend`), dim lines
+    /// for under its chips, wrapped between words to `w` (0: one line); none for a table without.
+    pub fn legend<R: Row>(p: Palette, w: usize) -> Vec<Line<'static>> {
+        let Some(text) = hub_core::table::legend::<R>() else {
+            return vec![];
+        };
+        let words: Vec<&str> = text.split(' ').collect();
+        wrap(&words, " ", w)
+            .into_iter()
+            .map(|l| Line::styled(l, p.dim()))
+            .collect()
+    }
+
+    /// The state chips with their counts in their hue (`Chip::tone`), the one in force in the
+    /// head style.
     pub fn chips<R: Row>(&self, rows: &[R], p: Palette) -> Vec<Span<'static>> {
         let mut out = vec![];
         for (i, c) in self.view.states(rows).iter().enumerate() {
@@ -189,11 +219,13 @@ impl DataTable {
                 self.view.state == c.name
             };
             let text = format!("{}{} {}", if i == 0 { "" } else { "  " }, c.name, c.n);
-            out.push(if on {
-                Span::styled(text, p.head())
-            } else {
-                Span::raw(text)
-            });
+            let hue = c
+                .tone
+                .map_or_else(Style::new, |l| crate::releases::level(l, p));
+            out.push(Span::styled(
+                text,
+                if on { hue.patch(p.head()) } else { hue },
+            ));
         }
         out
     }
@@ -231,6 +263,32 @@ mod tests {
     }
 
     #[test]
+    fn a_chip_wears_its_states_hue_only_while_it_holds_a_row() {
+        let p = Palette { no_color: false };
+        let chips = DataTable::default().chips(&jobs(), p);
+        let fg = |w: &str| {
+            chips
+                .iter()
+                .find(|s| s.content.trim_start().starts_with(w))
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(fg("failed"), p.bad().fg);
+        assert_eq!(fg("done"), p.good().fg);
+        assert_eq!(
+            (fg("running"), fg("waiting")),
+            (None, None),
+            "no hue for a neutral word or a zero count"
+        );
+        assert!(
+            chips[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD),
+            "the chip in force is the head"
+        );
+    }
+
+    #[test]
     fn the_keys_drive_the_one_view() {
         let mut t = DataTable::default();
         for c in "/source:unity".chars() {
@@ -239,7 +297,7 @@ mod tests {
         assert!(t.view.q.is_empty(), "typing applies on Enter");
         assert_eq!(
             status(&t),
-            "all 2  running 1  queued 0  done 1  failed 1 | /source:unity_"
+            "all 2  running 1  waiting 0  done 1  failed 1 | /source:unity_"
         );
         assert_eq!(t.key::<Job>(KeyCode::Enter), Took::View);
         assert_eq!(t.view.q, "source:unity");
@@ -255,6 +313,41 @@ mod tests {
         assert!(DataTable::owns(KeyCode::Char('S')) && !DataTable::owns(KeyCode::Char('j')));
         t.key::<Job>(KeyCode::Char('x'));
         assert!(t.is_default());
+    }
+
+    #[test]
+    fn enter_opens_the_lead_record_else_the_first_linked_column() {
+        use hub_core::links::{Kind, Link};
+        use hub_core::table::{Row, Val};
+        struct R(&'static str, bool);
+        impl Row for R {
+            const COLUMNS: &'static [&'static str] = &["state", "project", "pr"];
+            const STATES: &'static [&'static str] = &[];
+            const FACETS: &'static [&'static str] = &[];
+            const LEAD: &'static str = "item";
+            fn val(&self, _: &str) -> Val {
+                Val::Text(String::new())
+            }
+            fn in_state(&self, _: &str) -> bool {
+                true
+            }
+            fn link(&self, col: &str) -> Option<Link> {
+                match col {
+                    "item" if self.1 => Some(Link::to(Kind::Queue, self.0)),
+                    "project" => Some(Link::to(Kind::Project, "p")),
+                    "pr" => Some(Link::Url("https://x/pull/1".into())),
+                    _ => None,
+                }
+            }
+        }
+        assert_eq!(
+            DataTable::opens(&R("slug", true)),
+            Some(Link::to(Kind::Queue, "slug"))
+        );
+        assert_eq!(
+            DataTable::opens(&R("slug", false)),
+            Some(Link::to(Kind::Project, "p"))
+        );
     }
 
     #[test]

@@ -46,7 +46,8 @@ pub(super) fn gate_rows(gates: &[Series], at: i64) -> Vec<Job> {
             );
             j.secs = g.value.map(|v| v as i64);
             j.started = j.secs.map(|v| at - v);
-            j.detail = join(&[g.label("branch"), g.label("worktree"), g.label("host")]);
+            j.detail = join(&[g.label("branch"), g.label("worktree")]);
+            j.host = g.label("host").to_string();
             j
         })
         .collect()
@@ -198,7 +199,10 @@ mod tests {
             (j[0].name.as_str(), j[0].started),
             ("pg-agent-9 EditMode", Some(955))
         );
-        assert_eq!(j[0].detail, "fix/x pg-agent-9 workstation");
+        assert_eq!(
+            (j[0].detail.as_str(), j[0].host.as_str()),
+            ("fix/x pg-agent-9", "workstation")
+        );
     }
 
     #[test]

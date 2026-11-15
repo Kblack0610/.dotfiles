@@ -39,6 +39,9 @@
 #   NONASCII   the house plain-ASCII rule (em/en dash, arrows, >=, ellipsis...).
 #   NOHEADING  no `## Scope and triggers` heading, so a reader cannot find what the
 #              skill covers in the same place in every skill.
+#   ARGSUB     a `$N` in the body. Claude Code replaces it with argument N when the
+#              skill is called with that many arguments, so awk '{print $1}' or
+#              "costs $0" turn into argument text. It has no escape for `$N`.
 #
 # .claude/commands/**/*.md and .claude/agents/*.md are linted too, as command:<path>
 # and agent:<name>: NOFRONTMATTER, BADYAML, LONGDESC and NONASCII.
@@ -126,7 +129,9 @@
 #                                Prints the hide and restore lists; --json adds the object. The
 #                                nightly skill-toggle runner opens the PR (agentctl-skill-toggle).
 #                                Exit 2 when no use is counted at all: no transcripts is not
-#                                "nothing used".
+#                                "nothing used". Exit 3 when a transcript root does not reach
+#                                back the whole window (claude-recall stats "covered_from" after
+#                                "since"): a skill used only before then would read as unused.
 #   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
 #                                ~/.local/src/docs, the agentctl runbooks, every
@@ -415,6 +420,17 @@ check_ascii() {
   return 0
 }
 
+# Claude Code (2.1.325) runs /\$(\d+)(?!\w)/ over the body after the frontmatter and
+# swaps in argument N when it exists; `${1}` and `$(1)` do not match, so code keeps
+# working and the finding names the lines.
+check_argsub() {
+  local lines
+  lines=$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {fm=0; next} !fm {print NR": "$0}' "$2" \
+    | grep -P '\$\d+(?!\w)' | cut -d: -f1 | paste -sd, -)
+  [ -n "$lines" ] && add ARGSUB "$1" "SKILL.md:$lines" "\$N in the body becomes argument N when the skill is called with arguments"
+  return 0
+}
+
 check_heading() {
   grep -qE "^${HEADING}[[:space:]]*$" "$2" || add NOHEADING "$1" SKILL.md "no '$HEADING' heading"
   return 0
@@ -579,6 +595,8 @@ check_stale() {
 # releases; what this is for is finding the ones that are idle because the router
 # never picks them, which is the overlap problem skill-refine has had no data for.
 declare -A USED=() BYPASS=() BYPASS_COVERED=() DENIED=() REPLACES=()
+# The window start and the time every transcript root reaches back to, from the last load_usage.
+USAGE_SINCE="" USAGE_COVERED=""
 # load_usage [days] [bypass]: every skill with a use in the window (default USAGE_DAYS) into USED,
 # as the number of sessions that used it by any of USE_KINDS. With "bypass" the same scan fills
 # BYPASS (sessions with a call matching the skill's metadata.replaces) and BYPASS_COVERED (those
@@ -587,6 +605,8 @@ load_usage() {
   local s n c kinds="$USE_KINDS" json
   [ "${2:-}" = bypass ] && kinds="$kinds,bypass,denied"
   json="$("$RECALL" stats --days "${1:-$USAGE_DAYS}" --kind "$kinds" --top 0 --json 2>/dev/null)"
+  # "|", not a tab: whitespace IFS would collapse an empty since into covered_from's slot.
+  IFS='|' read -r USAGE_SINCE USAGE_COVERED < <(jq -r '"\(.since // "")|\(.covered_from // "")"' <<<"$json" 2>/dev/null)
   while IFS=$'\t' read -r s n; do
     [ -n "$s" ] && USED[$s]=$n
   done < <(jq -r '.skill_sessions // {} | to_entries[] | select(.value > 0) | "\(.key)\t\(.value)"' <<<"$json" 2>/dev/null)
@@ -670,12 +690,19 @@ check_registration() {
 
 # The whole listing, measured the way it arrives: one `- name: description` line per
 # skill and command that is listed. Over the deployed tree because only that holds both
-# repos. A `paths:` or `disable-model-invocation: true` entry costs nothing until used.
+# repos. A `paths:` or `disable-model-invocation: true` entry costs nothing until used,
+# and a skill the toggle keeps "name-only" in SETTINGS costs its name line, not its description.
 check_listing() {
   local total=0 f name n
+  local -A nameonly=()
+  if [ -f "$SETTINGS" ]; then
+    while IFS= read -r name; do [ -n "$name" ] && nameonly[$name]=1; done \
+      < <(jq -r '.skillOverrides // {} | to_entries[] | select(.value == "name-only") | .key' "$SETTINGS" 2>/dev/null)
+  fi
   while IFS=$'\t' read -r name f; do
     fm "$f" | grep -E '^paths:|^disable-model-invocation:[[:space:]]*true' >/dev/null && continue
-    n=$(desc_bytes "$f")
+    n=0
+    [ -z "${nameonly[$name]:-}" ] && n=$(desc_bytes "$f")
     total=$((total + ${#name} + 5 + ${n:-0}))
   done < <(
     for f in "$SKILLS"/*/SKILL.md; do
@@ -738,6 +765,7 @@ run_static() {
       check_desc_len "$s" "$m"
       check_ascii    "$s" "$m"
       check_heading  "$s" "$m"
+      check_argsub   "$s" "$m"
       check_replaces "$s" "$m"
     done < <(find_skills "$root")
   done
@@ -820,6 +848,11 @@ if [ "$MODE" = overrides ]; then
   cur=$(jq -c '.skillOverrides // {}' "$SETTINGS") || { echo "skill-drift --overrides: $SETTINGS does not parse" >&2; exit 2; }
   load_usage "$TOGGLE_DAYS"
   [ ${#USED[@]} -gt 0 ] || { echo "skill-drift --overrides: no use counted in ${TOGGLE_DAYS}d of transcripts, which is not the same as nothing used" >&2; exit 2; }
+  # Both are UTC in one format, so they compare as strings.
+  if [ -z "$USAGE_SINCE" ] || [ -z "$USAGE_COVERED" ] || [[ "$USAGE_COVERED" > "$USAGE_SINCE" ]]; then
+    echo "skill-drift --overrides: the transcripts are covered from ${USAGE_COVERED:-nothing}, not the ${TOGGLE_DAYS}d window from ${USAGE_SINCE:-an unknown start}, so a skill used before then would read as unused" >&2
+    exit 3
+  fi
   # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.
   AC="$HOME/.config/agentctl"
   mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md "$HOME"/.local/src/docs/*.md "$AC"/*.md "$AC"/triage-routes "$AC"/agents/*.conf "$AC"/roles/* "$AC"/prompts/*; do [ -f "$f" ] && printf '%s\n' "$f"; done)
@@ -1186,6 +1219,7 @@ cat <<'EOF'
   LONGDESC   -> cut the description to a trigger line (what it is, the main
                 "use when" phrases, one "not this, use X"); detail goes in the body
   NONASCII   -> plain ASCII (see the Writing Style rules)
+  ARGSUB     -> write `${1}` in shell and `$(1)` in awk; money in words ("5 dollars")
   NOHEADING  -> say what the skill covers and when under `## Scope and triggers`
                 (`--write-lint-baseline` freezes debt in these two, it does not make
                 the rule optional, and `--ratchet` refuses a line added to it)

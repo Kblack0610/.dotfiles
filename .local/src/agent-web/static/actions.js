@@ -10,13 +10,14 @@ const ACTION_HOURS = 24;
 // `read` is the view the data answers; `all` shows past the first LOG_ROWS.
 const ast = tblTab({
   tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
+  shown: () => logShows("actions"),
   wait: "Loading.", state: { read: null, all: false },
   params: (p, t) => { p.set("hours", actionHours()); t.asked = actionsView(); }, got: (t) => { t.read = t.asked; },
   days: () => ({ key: "hours", on: actionHours() === ACTION_HOURS ? "" : String(actionHours()), windows: ACTION_WINDOWS }),
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
 });
 
-// The URL's window, when it is one of the buttons: the head says what the server was asked for.
+// The URL's window, when it is one of the buttons: what the server is asked for.
 function actionHours() {
   const h = new URLSearchParams(st.views.log || "").get("hours");
   return h && ACTION_WINDOWS.some(([w]) => w === h) ? Number(h) : ACTION_HOURS;
@@ -33,7 +34,7 @@ function actionsView() {
 function showActions(actor, verb) {
   st.section = "actions";
   const q = [actor && `actor:${actor}`, verb && `verb:${verb}`].filter(Boolean).join(" ");
-  setTab("log", undefined, tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
+  setTab("log", "actions", tblSet(st.views.log, { q, s: "", sort: "", dir: "" }));
 }
 
 const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], prio: ["prio"], source: ["source"], text: ["text"] };
@@ -42,12 +43,10 @@ const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).to
   `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
   `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
 
+// Log's Actions fold carries the title (index.html); the window buttons and the state chips count
+// the rows, so the head is only what could not be read.
 function actionsHead(d) {
-  const inWindow = sumOf(Object.values(d.counts).map(sumOf));
-  const hours = actionHours();
-  const newest = d.table.total < inWindow ? `, newest ${d.table.total}` : "";
-  const errs = [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
-  return `<div class="bhead"><span>what the machinery did, ${d.table.shown} of ${inWindow} in ${hours}h${newest}</span></div>${errs}`;
+  return [ast.err, ...d.errors.map((e) => `unread: ${e}`)].filter(Boolean).map((e) => `<div class="card err">${esc(e)}</div>`).join("");
 }
 
 function actionsBody(d) {
@@ -60,8 +59,9 @@ function actionsBody(d) {
 
 // The shepherd's log and agent-notify's push "actions"; the dispatch log and the run ledger
 // arrive as "fleet", the queue as "queue", the ingest record as "outbox".
-const actionsFeed = pushed("log", ["actions", "fleet", "queue", "outbox"], ast.refresh);
+const actionsFeed = pushed("log", ["actions", "fleet", "queue", "outbox"], ast.refresh, () => logShows("actions"));
 LOG_PARTS.push({
+  sec: "actions",
   show() {
     // A view this page has not read asks the server, and when it came by a link opens its section.
     const view = actionsView(), fresh = ast.read !== view;

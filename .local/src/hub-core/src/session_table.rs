@@ -32,6 +32,16 @@ pub fn is_machine(s: &Value) -> bool {
     shepherd || matches!(s["bucket"].as_str(), Some("NIGHTLY" | "SHARED"))
 }
 
+/// A session's tmux target as a row names it: `lab/dotfiles-agent-3:1` is `dotfiles-agent-3`,
+/// `hub/dotfiles:2` stays as it is past the world.
+pub fn name_of(target: &str) -> String {
+    match target.split_once('/') {
+        Some(("lab", rest)) => rest.strip_suffix(":1").unwrap_or(rest).to_string(),
+        Some((_, rest)) => rest.to_string(),
+        None => target.to_string(),
+    }
+}
+
 /// A session the header counts as live: a parked one is in the table but not at work.
 pub fn is_live(s: &Value) -> bool {
     s["bucket"].as_str() != Some("PARKED")
@@ -41,6 +51,22 @@ pub fn is_live(s: &Value) -> bool {
 /// definition, which `fleet-sessions` publishes from the same document.
 pub fn is_unlinked(s: &Value) -> bool {
     !is_machine(s) && s["item"].is_null()
+}
+
+/// Who started a session, from its queue item's `origin`: `dispatch` (fleet-dispatch's run or
+/// redispatch), else the origin as written (`resume`, `hand`, or one this list does not know),
+/// blank when the item does not say.
+pub fn started_by(origin: &str) -> String {
+    match origin.trim() {
+        "run" | "redispatch" => "dispatch".into(),
+        o => o.into(),
+    }
+}
+
+/// `started_by` of an item's `origin` field, the one reader for a state document's item and a
+/// queue item's frontmatter alike.
+fn by_of(origin: Option<&Value>) -> String {
+    started_by(origin.and_then(Value::as_str).unwrap_or(""))
 }
 
 /// Where a row came from.
@@ -77,6 +103,8 @@ pub struct SessionRow {
     pub project: String,
     /// The queue item's title, else the session's topic.
     pub task: String,
+    /// Who started it (`started_by`).
+    pub by: String,
     /// The queue item, empty when it has none.
     pub item: String,
     /// `<target>` while the session has one.
@@ -89,6 +117,13 @@ pub struct SessionRow {
     pub phases_done: Option<i64>,
     pub phases_total: Option<i64>,
     pub idle_min: Option<i64>,
+    /// A live row's context tokens and the window they fill (fleet-sessions `context_tokens`,
+    /// `context_window`); the window is None for a model agent-panel does not know.
+    pub context_tokens: Option<i64>,
+    pub context_window: Option<i64>,
+    /// How full that window is, whole percent: the one rounding both surfaces print. None when
+    /// the window is unknown, so an unknown model reads as no data, never as an empty context.
+    pub context_pct: Option<i64>,
     /// What an ended row's idle column says instead: `ended`, or the item's non-ok status.
     pub ended: String,
     /// When it ended, unix seconds.
@@ -101,6 +136,8 @@ pub struct SessionRow {
     /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
     /// account and claude on any other.
     pub harness: String,
+    /// A live row's close verdict word (`fleet-sessions` `.close.verdict`: now, after or keep).
+    pub close: String,
     pub source: Source,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
@@ -114,15 +151,19 @@ pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
 
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
-        "bucket", "activity", "project", "task", "pr", "phases", "idle", "cost", "acct", "harness",
-        "item", "source", "session",
+        "bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost",
+        "acct", "harness", "close", "item", "source", "session",
     ];
     /// `all` comes first because the first chip keeps every row.
     const STATES: &'static [&'static str] =
         &["all", "running", "needs you", "stalled", "done today"];
-    const FACETS: &'static [&'static str] = &["project", "harness"];
+    const FACETS: &'static [&'static str] =
+        &["bucket", "project", "by", "acct", "harness", "close"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
+    /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("needs you", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| {
@@ -137,17 +178,20 @@ impl Row for SessionRow {
             "activity" => text(&self.activity),
             "project" => text(&self.project),
             "task" => text(&self.task),
+            "by" => text(&self.by),
             "pr" => text(&self.pr_state),
             "phases" => self.phases_done.map_or(Val::None, |n| Val::Num(n as f64)),
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
             "acct" => text(&self.account),
             "harness" => text(&self.harness),
+            "close" => text(&self.close),
             "item" if self.unlinked => Val::Text("none".into()),
             "item" => text(&self.item),
             "source" => Val::Text(self.source.name().into()),
             "session" if self.target.is_empty() => text(&self.session_id),
             "session" => text(&self.target),
+            "ctx" => self.context_pct.map_or(Val::None, |n| Val::Num(n as f64)),
             _ => Val::None,
         }
     }
@@ -196,9 +240,9 @@ pub struct Feed {
     pub errors: Vec<String>,
 }
 
-/// The state document's `sessions` and its bucket vocabulary, empty when it is missing or
-/// unreadable.
-pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
+/// The state document's `sessions`, its bucket vocabulary and its `silent` lines, empty when it
+/// is missing or unreadable.
+pub fn read_state(path: &Path) -> (Vec<Value>, Vocab, Vec<String>) {
     let doc = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -206,7 +250,27 @@ pub fn read_state(path: &Path) -> (Vec<Value>, Vocab) {
     (
         doc["sessions"].as_array().cloned().unwrap_or_default(),
         Vocab::from_state(&doc),
+        silent(&doc),
     )
+}
+
+/// One line per fleet worker that did not answer the pass (the state document's `silent`): its
+/// sessions are missing from the table, which must say so rather than show fewer rows as if
+/// that were all there is (dashboards.md rule 6).
+pub fn silent(doc: &Value) -> Vec<String> {
+    doc["silent"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            let (host, why) = (
+                s["host"].as_str().unwrap_or("?"),
+                s["why"].as_str().unwrap_or("?"),
+            );
+            crate::reading::State::NotRead(format!("{host} {why}, so its sessions are not shown"))
+                .words(host)
+        })
+        .collect()
 }
 
 /// The session registry's root, `~/.agent/sessions`.
@@ -293,6 +357,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         activity: str_of(s, "activity_line").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
+        by: by_of(s["item"].get("origin")),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
         session_id: sid.to_string(),
@@ -306,6 +371,11 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         phases_done: s["phases_done"].as_i64(),
         phases_total: s["phases_total"].as_i64(),
         idle_min: s["idle_min"].as_i64(),
+        context_tokens: s["context_tokens"].as_i64(),
+        context_window: s["context_window"].as_i64(),
+        context_pct: s["context_window"].as_i64().filter(|w| *w > 0).map(|w| {
+            (s["context_tokens"].as_i64().unwrap_or(0) as f64 * 100.0 / w as f64).round() as i64
+        }),
         cost_usd: feed.cost.get(sid).copied(),
         item_cost_usd: item.and_then(|i| {
             let mut sids = item_sessions(i);
@@ -316,6 +386,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         }),
         account: str_of(s, "account").to_string(),
         harness: item.map_or_else(String::new, |i| i.harness().to_string()),
+        close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         ..SessionRow::default()
     }
@@ -365,6 +436,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         bucket: "DONE".into(),
         project: i.project.clone(),
         task: i.title(),
+        by: by_of(i.extra.get("origin")),
         item: i.slug.clone(),
         session_id: sids.first().cloned().unwrap_or_default(),
         pr_state: if pr.is_none() {
@@ -464,7 +536,7 @@ pub fn rows(
             ended.push(outcome_row(e));
         }
     }
-    ended.sort_by(|a, b| b.finished.cmp(&a.finished));
+    ended.sort_by_key(|a| std::cmp::Reverse(a.finished));
     live.append(&mut ended);
     live
 }
@@ -564,6 +636,14 @@ mod tests {
     }
 
     #[test]
+    fn a_target_is_named_without_its_world_and_a_lab_window_one() {
+        assert_eq!(name_of("lab/dotfiles-agent-3:1"), "dotfiles-agent-3");
+        assert_eq!(name_of("lab/dotfiles:3"), "dotfiles:3");
+        assert_eq!(name_of("hub/dotfiles:2"), "dotfiles:2");
+        assert_eq!(name_of("bare"), "bare");
+    }
+
+    #[test]
     fn a_live_row_prices_its_item_across_all_of_the_items_sessions() {
         let mut f = feed();
         f.items[0].extra.insert("sessions".into(), "s0,s1".into());
@@ -572,6 +652,36 @@ mod tests {
         let own = r.iter().find(|x| x.target == "lab/d:1").unwrap();
         assert_eq!(own.cost_usd, Some(1.2));
         assert_eq!(own.item_cost_usd, Some(4.2));
+    }
+
+    #[test]
+    fn the_ctx_column_is_the_share_of_a_known_window_and_no_data_otherwise() {
+        let mut s = state();
+        s[0]["context_tokens"] = json!(150_000);
+        s[0]["context_window"] = json!(200_000);
+        s[1]["context_tokens"] = json!(150_000);
+        s[1]["context_window"] = Value::Null;
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let at = |t: &str| r.iter().find(|x| x.target == t).unwrap().val("ctx");
+        assert_eq!(at("lab/d:1"), Val::Num(75.0));
+        s[0]["context_tokens"] = json!(165_000);
+        let r2 = rows(&s, &vocab(), &feed(), &[]);
+        let half = r2.iter().find(|x| x.target == "lab/d:1").unwrap();
+        assert_eq!(
+            half.context_pct,
+            Some(83),
+            "82.5 rounds half away from zero, once, here"
+        );
+        assert_eq!(
+            at("lab/d:2"),
+            Val::None,
+            "an unknown window is no data, not 0%"
+        );
+        assert_eq!(
+            at("lab/d:3"),
+            Val::None,
+            "a row with no context fields is no data"
+        );
     }
 
     #[test]
@@ -622,7 +732,59 @@ mod tests {
         assert_eq!(own.activity, "waiting on CI 4m");
         assert_eq!(own.val("activity"), Val::Text("waiting on CI 4m".into()));
         let hand = r.iter().find(|x| x.target == "lab/d:2").unwrap();
-        assert_eq!(hand.val("activity"), Val::None, "no activity_line reads as blank");
+        assert_eq!(
+            hand.val("activity"),
+            Val::None,
+            "no activity_line reads as blank"
+        );
+    }
+
+    #[test]
+    fn a_row_says_who_started_it_and_the_by_facet_filters() {
+        let mut s = state();
+        s[0]["item"]["origin"] = json!("redispatch");
+        s[1]["item"] = json!({"slug": "", "origin": "hand"});
+        let mut f = feed();
+        f.items[1].extra.insert("origin".into(), "resume".into());
+        let r = rows(&s, &vocab(), &f, &[]);
+        let by = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("by");
+        assert_eq!(by("lab/d:1"), Val::Text("dispatch".into()));
+        assert_eq!(by("lab/d:2"), Val::Text("hand".into()));
+        assert_eq!(by("lab/d:3"), Val::None, "no item says nobody");
+        assert_eq!(by("ucp-394"), Val::Text("resume".into()), "a queue row");
+        assert_eq!(
+            started_by("bogus"),
+            "bogus",
+            "an origin this list does not know shows as written"
+        );
+        let mut f2 = feed();
+        f2.items[1].extra.insert("origin".into(), " sweep ".into());
+        let r2 = rows(&s, &vocab(), &f2, &[]);
+        let q = r2.iter().find(|x| x.key == "ucp-394").unwrap();
+        assert_eq!(
+            q.val("by"),
+            Val::Text("sweep".into()),
+            "a queue row's unknown origin too"
+        );
+        let v = View::new::<SessionRow>("by:dispatch", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
+    }
+
+    #[test]
+    fn a_live_row_carries_its_close_verdict_and_the_close_facet_filters() {
+        let mut s = state();
+        s[0]["close"] = json!({"verdict": "now", "why": "plan finished, PR merged"});
+        s[1]["close"] = json!({"verdict": "keep", "why": "working"});
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let c = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("close");
+        assert_eq!(c("lab/d:1"), Val::Text("now".into()));
+        assert_eq!(c("lab/d:2"), Val::Text("keep".into()));
+        assert_eq!(c("lab/d:3"), Val::None, "no close object reads as blank");
+        assert_eq!(c("ucp-394"), Val::None, "a queue row has no verdict");
+        let v = View::new::<SessionRow>("close:now", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:1"]);
     }
 
     #[test]
@@ -786,6 +948,12 @@ mod tests {
                 ("done today", 3)
             ]
         );
+        let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
+        assert_eq!(
+            tone("needs you"),
+            Some(Some(crate::vocab::Level::Bad)),
+            "red like its NEEDS badge"
+        );
         let v = View::new::<SessionRow>("", "Needs You", "", "");
         assert_eq!(v.apply(&r).len(), 1);
     }
@@ -916,5 +1084,21 @@ mod tests {
             .map(|e| e.session_id)
             .collect();
         assert_eq!(ids, ["today"]);
+    }
+
+    #[test]
+    fn a_worker_that_did_not_answer_is_named_not_dropped() {
+        let doc = json!({"sessions": [], "silent": [
+            {"host": "razer-laptop", "why": "did not answer"},
+            {"host": "mini", "why": "ran agent-panel, which exited 127"},
+        ]});
+        assert_eq!(
+            silent(&doc),
+            [
+                "not read: razer-laptop did not answer, so its sessions are not shown",
+                "not read: mini ran agent-panel, which exited 127, so its sessions are not shown",
+            ]
+        );
+        assert!(silent(&json!({"sessions": []})).is_empty());
     }
 }

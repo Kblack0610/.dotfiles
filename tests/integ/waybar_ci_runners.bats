@@ -22,6 +22,8 @@ case "$*" in
   *cc:pool_*) cat "$FX/cc.json" ;;
   *github_runner_state*) cat "$FX/runners.json" ;;
   *github_runner_withheld*) cat "$FX/withheld.json" ;;
+  *ci_governor_lent*) cat "$FX/lent.json" ;;
+  *ci_governor_power_state*) cat "$FX/power.json" ;;
   *) exit 22 ;;
 esac
 STUB
@@ -37,7 +39,8 @@ STUB
 # 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
 # CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
 # the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it), RATE_LEFT
-# the token's emptiest bucket.
+# the token's emptiest bucket. POWER is the governor's power state for aws-burst-1 (stopped
+# under cloud-off, else running).
 fixtures() {
   python3 - "$FX" "$1" <<'PY'
 import json, os, sys
@@ -95,6 +98,10 @@ runners = [
 ]
 out("runners", runners)
 out("withheld", [({"name": "hp-unity-3"}, "1")])
+# LENT names runners the governor says are lent to their pair; one not withheld stays a slot.
+out("lent", [({"name": n, "to": "tests"}, "1") for n in os.environ.get("LENT", "").split()])
+power = os.environ.get("POWER", "stopped" if mode == "cloud-off" else "running")
+out("power", [({"host": "aws-burst-1", "state": power}, "1")] if power != "running" else [])
 PY
 }
 
@@ -218,6 +225,21 @@ PY2
   refute_line --regexp "^aws-burst-1 +cloud"
 }
 
+# The governor powered it off, so its offline runners are by design, not DOWN.
+@test "a cloud host the governor powered off is not listed under DOWN" {
+  fixtures cloud-off
+  run "$MODULE"
+  refute_output --partial "DOWN"
+}
+
+# Negative control: the same offline runners on a host the governor says is running are DOWN.
+@test "...but offline runners on a host the governor runs are DOWN" {
+  POWER=running fixtures cloud-off
+  run "$MODULE"
+  run tip
+  assert_output --partial "  aws-burst-1  2 offline"
+}
+
 # Negative control: with no job on GitHub's runners the list does not name them.
 @test "no GitHub-hosted job running leaves github-hosted out" {
   python3 - "$FX/cc.json" <<'PY'
@@ -256,6 +278,15 @@ PY
   run tip
   refute_output --partial "PlayMode"
   refute_output --partial "Release: Mac"
+}
+
+# A slot withheld because its pair is using its cores is normal work: it reads lent, and a
+# lent row for a runner that is not withheld (the governor a cycle behind) changes nothing.
+@test "a withheld runner the governor says is lent reads lent, not withheld" {
+  LENT="hp-unity-3 hp-unity-2" fixtures idle
+  run "$MODULE"
+  run tip
+  assert_line --index 14 --regexp "^hp-victus +local +1/3  light 0/1 unity 1/2 unity lent 0/1$"
 }
 
 # Negative control for the withheld count: a machine with none withheld never says so.

@@ -143,6 +143,7 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
 
 @test "a session on the gateway is its metered line only, and a later row for a session replaces an earlier one" {
   { printf '{"session_id":"g","harness":"opencode","provider":"litellm","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
+    printf '{"session_id":"o","harness":"opencode-go","provider":"go","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
     printf '{"session_id":"l","harness":"claude-lazer","updated_epoch":%s,"cost_usd":40}\n' "$NOW"
     printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":9,"cost_src":"price"}\n' "$NOW"
     printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":1,"cost_src":"price"}\n' "$((NOW - 60))"

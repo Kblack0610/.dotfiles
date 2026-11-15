@@ -13,21 +13,19 @@ setup() {
   export FX="$BATS_TEST_TMPDIR"
   unset TMUX
 
-  # Super+D; the leader entry; a leaf that is three binds on one key (the described exec, the hint
-  # close, the submap reset); an Esc back that must not count as the way in; an undescribed bind.
+  # Super+D; the leader entry; a leader leaf; an Esc back that must not count as the way in; an
+  # undescribed bind. Rows are the registry .config/hypr/conf/keys.lua serves over `hyprctl repl`.
   jq -n '[
     {submap: "", modmask: 64, key: "D", dispatcher: "exec", arg: "wofi --show drun", has_description: true, description: "app launcher"},
     {submap: "", modmask: 64, key: "1", dispatcher: "workspace", arg: "1", has_description: true, description: "workspace 1"},
     {submap: "", modmask: 64, key: "Q", dispatcher: "killactive", arg: "", has_description: false, description: ""},
     {submap: "", modmask: 64, key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
-    {submap: "pinbar", modmask: 0, key: "k", dispatcher: "exec", arg: "pin-hint.sh close", has_description: false, description: ""},
     {submap: "pinbar", modmask: 0, key: "k", dispatcher: "exec", arg: "kitty -e keys", has_description: true, description: "keys sheet"},
-    {submap: "pinbar", modmask: 0, key: "k", dispatcher: "submap", arg: "reset", has_description: false, description: ""},
     {submap: "pinbar", modmask: 0, key: "escape", dispatcher: "submap", arg: "reset", has_description: true, description: "exit"}
   ]' > "$FX/binds.json"
   cat > "$SANDBOX/bin/hyprctl" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "binds -j" ] && exec cat "$FX/binds.json"
+[ "$*" = "repl return hypr_binds_json()" ] && exec cat "$FX/binds.json"
 exit 1
 EOF
 

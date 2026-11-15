@@ -3,7 +3,7 @@
 #
 # pr-ci.sh - the one reading of a PR's statusCheckRollup, for every script that asks gh whether a
 # PR is red: fleet-sessions (a live session's PR) and fleet-dispatch (a parked review item's PR,
-# fix_red_pr). Prefix it to a jq filter over a PR's JSON: ci and red are defs.
+# own_parked_pr). Prefix it to a jq filter over a PR's JSON: ci and red are defs.
 #
 # ci -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
 # red -> the red checks' Actions job ids, comma-separated, - for one that is not a job (fleet-sessions'

@@ -40,6 +40,11 @@ pub fn fleet_cost() -> PathBuf {
     fleet_state().with_file_name("fleet-cost.json")
 }
 
+/// `agent-usage budget --json`'s file, which fleet-bench's budget step writes beside fleet-cost.json.
+pub fn budget() -> PathBuf {
+    fleet_state().with_file_name("budget.json")
+}
+
 /// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
 pub fn asks_dir() -> PathBuf {
     env("AGENT_ASK_DIR").unwrap_or_else(|| home().join(".agent/asks"))
@@ -307,6 +312,56 @@ pub struct DayRow {
     pub repos: usize,
     /// The `TOTAL` row of `usage`, when the day has one.
     pub sessions: Option<u64>,
+    /// The day's CI time, when `ci-cost` measured any repo that day.
+    pub ci: Option<CiDay>,
+}
+
+/// One day of CI time, summed over every repo whose `ci.repos.<repo>.cost` the record holds
+/// (`day-log` copies it from `scripts/ci-cost.py --json`); a cost with no pool hours is not a
+/// measurement. Hours are runner-hours.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CiDay {
+    /// Every job on the self-hosted pool.
+    pub pool_h: f64,
+    /// The share of `pool_h` spent gating PRs.
+    pub gate_h: f64,
+    /// Runs on the pool, ci-cost's `runs` (not the repo's every workflow run).
+    pub runs: u64,
+    /// Median gate wall time in minutes, of the repo that gated the most; a median does not sum.
+    pub gate_p50_min: Option<f64>,
+}
+
+fn ci_day(rec: &Value) -> Option<CiDay> {
+    let costs: Vec<&Value> = rec["ci"]["repos"]
+        .as_object()?
+        .values()
+        .map(|r| &r["cost"])
+        .filter(|c| c["hours"]["pool"].is_number())
+        .collect();
+    if costs.is_empty() {
+        return None;
+    }
+    // Rounded to the hundredth ci-cost writes, so a sum does not print float noise.
+    let hours = |k: &str| {
+        (costs
+            .iter()
+            .filter_map(|c| c["hours"][k].as_f64())
+            .sum::<f64>()
+            * 100.0)
+            .round()
+            / 100.0
+    };
+    let busiest = costs
+        .iter()
+        .map(|c| &c["gate"]["wall"])
+        .filter_map(|w| Some((w["n"].as_u64().filter(|&n| n > 0)?, w)))
+        .max_by_key(|&(n, _)| n);
+    Some(CiDay {
+        pool_h: hours("pool"),
+        gate_h: hours("gate"),
+        runs: costs.iter().filter_map(|c| c["runs"].as_u64()).sum(),
+        gate_p50_min: busiest.and_then(|(_, w)| w["p50"].as_f64()),
+    })
 }
 
 pub fn day_row(date: &str, rec: &Value) -> DayRow {
@@ -331,20 +386,20 @@ pub fn day_row(date: &str, rec: &Value) -> DayRow {
         areas,
         repos: repos.len(),
         sessions: total.and_then(|t| t["sessions"].as_u64()),
+        ci: ci_day(rec),
     }
 }
 
 /// The project a merged PR counts under: the `project` day-log writes, or for a record from
-/// before it did, the repo name without its leading dot (`.dotfiles` -> `dotfiles`).
+/// before it did, its repo, each read through the name index (`project_map::canonical`), so an
+/// old spelling counts under today's key.
 pub fn pr_project(pr: &Value) -> String {
-    match pr["project"].as_str() {
-        Some(p) if !p.is_empty() => p.to_string(),
-        _ => pr["repo"]
-            .as_str()
-            .map(|r| r.trim_start_matches('.').to_string())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "other".into()),
-    }
+    let name = [&pr["project"], &pr["repo"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(project_map::canonical)
+        .find(|p| !p.is_empty());
+    name.unwrap_or_else(|| "other".into())
 }
 
 /// A day's merges per project per local hour, the one grid the Log tabs of both surfaces draw.
@@ -568,7 +623,11 @@ pub struct Watch {
 
 pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
     let state = self::state(state, r);
-    let log = std::fs::read_to_string(log).unwrap_or_default();
+    // Only the end is read: the log only grows (4.8 MB by 2026-11), and a line averages under
+    // 100 bytes, so a kilobyte per line kept covers the last `WATCH_LOG_LINES` with room.
+    let log = crate::fleet::tail(log, WATCH_LOG_LINES as u64 * 1024)
+        .map(|(t, _)| t)
+        .unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
     Watch {
@@ -1016,6 +1075,52 @@ mod tests {
     fn day_row_tolerates_an_old_or_partial_record() {
         let r = day_row("2026-10-14", &serde_json::json!({"schema": 1}));
         assert_eq!((r.merged, r.repos, r.sessions, r.live), (0, 0, None, false));
+        assert_eq!(r.ci, None);
+    }
+
+    #[test]
+    fn day_row_sums_ci_hours_over_the_repos_ci_cost_measured() {
+        let cost = |pool: f64, gate: f64, runs: u64, n: u64, p50: f64| {
+            serde_json::json!({"runs": runs, "hours": {"pool": pool, "gate": gate},
+                "gate": {"wall": {"n": n, "p50": p50, "p90": p50 * 3.0}}})
+        };
+        // 2026-11-11's record: one repo measured, the other repos carry no cost.
+        let rec: Value = serde_json::json!({"ci": {"repos": {
+            "org/game": {"runs": 959, "cost": cost(186.6, 161.02, 204, 131, 22.0)},
+            "org/tools": {"runs": 40, "cost": null},
+            "org/engine": {"runs": 3}
+        }}});
+        assert_eq!(
+            day_row("2026-11-11", &rec).ci,
+            Some(CiDay {
+                pool_h: 186.6,
+                gate_h: 161.02,
+                runs: 204,
+                gate_p50_min: Some(22.0)
+            })
+        );
+        // Two measured repos: hours and runs add, the median is the busier gate's.
+        let rec: Value = serde_json::json!({"ci": {"repos": {
+            "a": {"cost": cost(10.0, 4.0, 5, 3, 30.0)},
+            "b": {"cost": cost(1.5, 1.0, 2, 9, 12.5)}
+        }}});
+        assert_eq!(
+            day_row("2026-11-11", &rec).ci,
+            Some(CiDay {
+                pool_h: 11.5,
+                gate_h: 5.0,
+                runs: 7,
+                gate_p50_min: Some(12.5)
+            })
+        );
+        // A live day before ci-cost ran has an empty ci section; a cost without pool hours
+        // is not a measured zero.
+        assert_eq!(
+            day_row("2026-11-12", &serde_json::json!({"ci": {}})).ci,
+            None
+        );
+        let partial = serde_json::json!({"ci": {"repos": {"a": {"cost": {"runs": 3}}}}});
+        assert_eq!(day_row("2026-11-12", &partial).ci, None);
     }
 
     #[test]

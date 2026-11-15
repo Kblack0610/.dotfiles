@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# PreToolUse guard: deny a recursive search whose root contains a network mount.
+# PreToolUse(Grep|Glob) guard: deny a recursive search whose root contains a network mount.
+# The Bash forms (find, rg, grep -r from /) are a metadata.replaces row of the fleet-pace skill.
 # 2026-10-29 three sessions ran Grep/Glob from `/`; the bundled ugrep and bfs walked into
 # /mnt/nas (CIFS) and crawled the photo library and its snapshots for 25-43 minutes. About
 # 15 threads sat blocked on the share, load 28 on 24 cores with every process at 0% CPU.
@@ -43,61 +44,6 @@ glob_root() {
   echo "${out:-/}"
 }
 
-# code_of <command> -> the command as code: heredoc bodies dropped, quoted text blanked, each
-# `sh -c '<payload>'`, `eval "..."`, `ssh host "..."` and `$(...)` body kept as code. block-poll.py
-# owns that parse (guard=True is the strict mode), so this guard shares it. A quoted path
-# ("/", "/mnt/$x") stays a path. Fail-open: no python means the raw command.
-code_of() {
-  python3 -I - "$(dirname "${BASH_SOURCE[0]}")/block-poll.py" "$1" 2>/dev/null <<'PY' || printf '%s\n' "$1"
-import importlib.util, re, sys
-spec = importlib.util.spec_from_file_location("block_poll", sys.argv[1])
-bp = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bp)
-cmd = bp.strip_heredocs(sys.argv[2])
-cmd = re.sub(r"""(["'])((?:/|~)[^\s"'`\\()]*)\1""", r"\2", cmd)
-texts = bp.code_texts(cmd, True)
-for sub in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", cmd):
-    texts += bp.code_texts(sub[0] or sub[1], True)
-print("\n".join(texts))
-PY
-}
-
-check_bash() {
-  # Most commands name no search tool: skip the python parse for them.
-  grep -Eq 'find|bfs|fd|rg|grep' <<<"$1" || return 0
-  local clause tok cmd recursive onefs
-  local -a toks
-  # One clause per line: a search hidden behind `&&`, a pipe or `$(` is still a search.
-  while IFS= read -r clause; do
-    read -ra toks <<<"$clause"
-    cmd=""; recursive=0; onefs=0
-    for tok in "${toks[@]}"; do
-      if [ -z "$cmd" ]; then
-        case "${tok##*/}" in
-          find|bfs|fd|fdfind|rg|ugrep) cmd="${tok##*/}"; recursive=1 ;;
-          grep|egrep) cmd='grep' ;;
-        esac
-        continue
-      fi
-      case "$tok" in
-        -xdev|-mount|--one-file-system) onefs=1 ;;
-        --recursive|--dereference-recursive) recursive=1 ;;
-        --*) ;;
-        -*[rR]*) [ "$cmd" = grep ] && recursive=1 ;;
-      esac
-    done
-    [ -n "$cmd" ] && [ "$recursive" = 1 ] && [ "$onefs" = 0 ] || continue
-    local prev="" m
-    for tok in "${toks[@]}"; do
-      # find/bfs: a path after a primary (`-path /mnt`, `-newer /x`) is its argument, not a root.
-      if [[ "$cmd" =~ ^(find|bfs)$ && "$prev" == -* ]]; then prev="$tok"; continue; fi
-      prev="$tok"
-      case "$tok" in /*|"~"*) ;; *) continue ;; esac
-      m="$(covered "$tok")" && deny "$tok" "$m"
-    done
-  done < <(sed -E 's/(&&|\|\||;|\||\$\(|`|\(|\))/\n/g' <<<"$(code_of "$1")")
-}
-
 case "$TOOL" in
   Grep|Glob)
     path=$(jq -r '.tool_input.path // empty' <<<"$INPUT")
@@ -107,9 +53,6 @@ case "$TOOL" in
       root="$(glob_root "$pattern")"
       if m="$(covered "$root")"; then deny "$root" "$m"; fi
     fi
-    ;;
-  Bash)
-    check_bash "$(jq -r '.tool_input.command // empty' <<<"$INPUT")"
     ;;
 esac
 exit 0

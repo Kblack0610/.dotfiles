@@ -105,6 +105,101 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
 }
 
+# epics_fixture <json> -- what `notes projects --stats --json` prints: the stateful notes stub answers
+# every other call.
+epics_fixture() {
+  [ -f "$SANDBOX/bin/notes.rows" ] || mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.rows"
+  printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"
+  stub notes '[[ " $* " == *" projects --stats --json "* ]] && { cat "$NOTES_FIXTURE/stats.json"; exit 0; }; exec notes.rows "$@"'
+}
+
+@test "reap queues one verify item per epic whose leaves have all landed, once per landing round" {
+  project game beta "$SANDBOX/repos/game"
+  jq '.trackers.game += {code: "gm", lab: "bnb"}' "$DISPATCH_PROJECT_MAP" >"$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [
+      {"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 3},
+      {"id": "gm-6", "title": "still building", "system": "ui", "open": 1, "done": 2},
+      {"id": "gm-7", "title": "childless", "system": "", "open": 0, "done": 0}]},
+    {"name": "game", "profile": "work", "automation": false, "epics": [{"id": "gm-8", "title": "off", "open": 0, "done": 1}]}]'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+  # its story row is filed under the epic it checks (the real notes: "end to end: the verify row ...")
+  grep -q -- '--agent add -- .*#of/gm-5' "$NOTES_FIXTURE/calls.log" || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
+  it=$(agent-queue show verify-gm-5-3 --json)
+  assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
+  run jq -r .task <<<"$it"
+  assert_output --partial 'Verify epic gm-5 on game: "ranked matches".'
+  assert_output --partial 'notes --profile bnb ptask game done gm-5 --proof "<evidence>"'
+  assert_output --partial 'post one agent-ask'
+  # once: the next pass, and one after the item was cancelled, add nothing
+  reconcile_epics
+  agent-queue cancel verify-gm-5-3 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # a gap row landing raises the done count: the next round gets its own check
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+}
+
+# real_epic_board -- the built notes, and a game project whose epic gm-1 has one landed leaf (gm-2):
+# sets $board. Skips with no NOTES_BIN, as agent_land.bats's end-to-end cases do.
+real_epic_board() {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  local dir="$HOME/.notes/lab/projects/current/game"
+  board="$dir/agent/README.md"
+  mkdir -p "$dir/agent" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' '- [ ] epic(menu): live menus #size/xl <!-- id:gm-1 -->' >"$dir/README.md"
+  printf '%s\n' '# game' '' '## Tasks' '' '- [x] feat(menu): the title screen #size/s #of/gm-1 <!-- id:gm-2 done:2026-11-12 pr:7 -->' >"$board"
+  export PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  unset NOTES_PROFILE
+  project game beta "$SANDBOX/repos/game"
+  jq '.trackers.game += {code: "gm", lab: "personal"}' "$DISPATCH_PROJECT_MAP" >"$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
+}
+
+@test "end to end: the verify row sits under its epic, and closing it queues no second verify" {
+  real_epic_board
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-1-1'
+  grep -qE -- '^- \[/\] check\(epics\): verify gm-1 live menus .*#of/gm-1 .*id:gm-3' "$board" ||
+    fail "the verify row does not link its epic: $(cat "$board")"
+  # its row closing adds no leaf: the next pass files nothing
+  notes --profile personal ptask game --agent done gm-3 --proof run:1 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-1-1'
+  # NEGATIVE CONTROL: a gap row under the epic is a leaf, so its landing keys the next verify
+  notes --profile personal ptask game --agent add -- 'fix(menu): the back button #size/s #of/gm-1' >/dev/null
+  notes --profile personal ptask game --agent done gm-4 --proof pr:8 >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug | paste -sd,)" 'verify-gm-1-1,verify-gm-1-2'
+  # and an open verify row never holds its epic: the check closes it on its proof
+  grep -qE -- '^- \[/\] check\(epics\): verify gm-1 .*#of/gm-1 .*id:gm-5' "$board" ||
+    fail "no open verify row under gm-1: $(cat "$board")"
+  run notes --profile personal ptask game done gm-1 --proof run:2
+  assert_success
+}
+
+@test "reap queues no verify item when it is off or the epics or the queue cannot be read" {
+  project game beta "$SANDBOX/repos/game"
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  DISPATCH_EPIC_VERIFY=0 run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  epics_fixture 'not json'
+  run reconcile_epics
+  assert_success
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # negative control: the same fixture readable queues it
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "open": 0, "done": 3}]}]'
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
+}
+
 @test "reap fails a board item whose session ended without closing it, un-starts its row, records failed" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
@@ -552,7 +647,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" merged)" "ok $OID"
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
   # The reap and the settle are on the chain log, as the runner's own writes.
   run grep -o 'stage dispatch --action [a-z]* --from game --item fix-crash.* -- .*' "$NOTES_FIXTURE/calls.log"
   assert_output - <<OUT
@@ -609,10 +704,12 @@ OUT
   fj_item open success
   run cmd_reap
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
-  # a warning is a pass, as Forgejo's combined state reads it: still parked
+  # a warning is a pass, as Forgejo's combined state reads it: a lander, never fix-ci
   jq -c '.statuses[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   refute_output --partial 'fix-ci'
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 111111111111, try 1 of 2)'
+  agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null; agent-queue move fix-crash review >/dev/null
   jq -cn '{state: "failure", statuses: [{status: "failure"}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 111111111111, try 1 of 2)'
@@ -644,8 +741,8 @@ OUT
   pr_item OPEN
   run cmd_reap
   assert_output --partial 'review queue item fix-crash'
-  # checks still running or green: it stays parked, no owner
-  for ci in PENDING PASS NONE; do
+  # checks still running or none: it stays parked, no owner
+  for ci in PENDING NONE; do
     fix_ended "$h1" "$ci"
     run cmd_reap
     assert_success
@@ -659,14 +756,14 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries, .mode] | join("|")')" "queued|1 $h1|oneshot"
   # its brief is the fix, on the PR's own branch, and it never merges
   run item_brief "$(agent-queue show fix-crash --json)"
-  assert_line --index 0 '/my:fix-ci o/game#12'
+  assert_line --index 0 '/fix-ci o/game#12'
   assert_output --partial 'gh pr checkout 12 -R o/game'
   assert_output --partial 'fix-ci try 1 of 2'
   assert_output --partial 'run agent-queue move fix-crash review'
   refute_output --partial 'Run agent-land in the foreground'
   echo '{"harnesses": {"opencode": {"headless": true}}}' > "$SANDBOX/h.json"; HARNESSES=$SANDBOX/h.json
   run item_brief "$(agent-queue show fix-crash --json)" opencode
-  assert_line --index 0 'Read ~/.claude/commands/my/fix-ci.md and follow it for PR o/game#12.'
+  assert_line --index 0 'Read ~/.claude/skills/fix-ci/SKILL.md and follow it for PR o/game#12.'
   # the fix session pushed and it is red again: the second try
   fix_ended "$h2" FAIL
   run cmd_reap
@@ -686,6 +783,65 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+# 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
+@test "reap: a green PR parked in review gets a lander twice per head, then one human-sheet row; red and green keep their own counts" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash'
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_success
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries, .pr_owner, .mode, .fix_tries // ""] | join("|")')" "queued|1 $h1|land|oneshot|"
+  # its brief decides it: land through agent-land, close with a reason, or ask; never fix-ci
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 --partial 'Its PR o/game#12 is open and green at 111111111111'
+  assert_output --partial 'ingest-prs/SKILL.md'
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash'
+  assert_output --partial 'fleet-dispatch item-tier fix-crash'
+  assert_output --partial 'never deleting the branch'
+  refute_output --partial '/fix-ci'
+  # the lander pushed a base merge and it went red: fix-ci owns that head, on its own count
+  fix_ended "$h2" FAIL
+  run cmd_reap
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h2:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr_owner, .land_tries] | join("|")')" "fix|1 $h1"
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 '/fix-ci o/game#12'
+  # green again and the lander ended without landing, twice: one human row, then quiet
+  fix_ended "$h2" PASS
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 222222222222, try 2 of 2)'
+  fix_ended "$h2" PASS
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries, on the game sheet)'
+  assert_called "notes --profile bnb ptask game add chore(review): PR o/game#12 is green at ${h2:0:12} after 2 land tries; land it"
+  run cmd_reap
+  refute_output --partial 'fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # the human pushed a red head: both counts start again, so its green after fix-ci gets a lander, not a second row
+  fix_ended 3333333333333333333333333333333333333333 FAIL
+  run cmd_reap
+  assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 333333333333, try 1 of 2)'
+  fix_ended 4444444444444444444444444444444444444444 PASS
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 444444444444, try 1 of 2)'
+}
+
+@test "reap: a green tier-3 PR's lander runs on claude, and a green PR waits for admission like a red one" {
+  pr_item OPEN
+  run cmd_reap
+  agent-queue set fix-crash agent=codex tags=tier3 >/dev/null
+  fix_ended 1111111111111111111111111111111111111111 PASS
+  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries // ""] | join("|")')" "review|"
+  grep -q 'fix-crash: PR o/game#12 green at 111111111111; land held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "hold not logged"
+  run cmd_reap
+  assert_output --partial 'land queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .agent)" claude
 }
 
 @test "reap: a red PR in review waits for admission, and an item with no session recorded never reads as gone" {
@@ -802,9 +958,12 @@ OUT
 
 @test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
   project game beta "$SANDBOX/repos/game"
+  # after: is a list (ar-39): zero is done ok, so first alone still holds.
+  agent-queue add --project game --slug zero "the zeroth part" >/dev/null
+  agent-queue move zero done --status ok >/dev/null
   agent-queue add --project game --slug first "the first part" >/dev/null
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   run cmd_reap
   assert_success
   assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
@@ -812,7 +971,7 @@ OUT
   # Negative control: once its after: item is done, the unclosed run is the run's own failure.
   rm "$AGENT_QUEUE_DIR"/queued/*-second.md
   started_item second lab:game-agent-1
-  agent-queue set second after=first >/dev/null
+  agent-queue set second after=zero,first >/dev/null
   agent-queue move first done --status ok >/dev/null
   run cmd_reap
   assert_output --partial 'failed queue item second'
@@ -934,6 +1093,58 @@ OUT
   ! grep -q gm-1 "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "un-started row still tracked"
 }
 
+@test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
+  jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  grep -qP '^extra\tgame\tgm-4\t[0-9]+$' "$FLEET_DISPATCH_DIR/orphans.tsv" || fail "profile outside dispatch unseen"
+  printf 'extra\tgame\tgm-4\t%s\n' "$(( $(date +%s) - 73 * 3600 ))" > "$FLEET_DISPATCH_DIR/orphans.tsv"
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-4'
+  grep -qxF 'notes --profile extra ptask game --agent unstart gm-4' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "settled orphan still tracked"
+}
+
+@test "reap: a started legacy row without an id keeps its text key" {
+  row game agent 'legacy fix' '- [/] Legacy fix'
+  orphan_seen game 'legacy fix' 73
+  notes() {
+    if [ "$*" = 'board --json' ]; then
+      echo '{"rows":[{"profile":"bnb","project":"game","lane":"agent","id":null,"text":"Legacy fix","state":"doing"}]}'
+    else command notes "$@"; fi
+  }
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: legacy fix'
+  grep -qxF 'notes --profile bnb ptask game --agent unstart legacy fix' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "reap: unreadable or malformed board preserves orphan sightings and changes no rows" {
+  orphan_seen game gm-5 96
+  cp "$FLEET_DISPATCH_DIR/orphans.tsv" "$SANDBOX/seen"
+  notes() { return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": []}'; return 1; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  notes() { echo '{"rows": null}'; }
+  run unstart_orphans
+  assert_success
+  cmp "$SANDBOX/seen" "$FLEET_DISPATCH_DIR/orphans.tsv"
+  ! grep -q ' unstart ' "$NOTES_FIXTURE/calls.log"
+}
+
 @test "reap: a done item's PR merged after its session closed it records merged: and closes the row on merge proof" {
   landed_item MERGED
   run cmd_reap
@@ -941,7 +1152,7 @@ OUT
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .merged)" "$OID"
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
 }
 
 @test "reap: a done item with merged: recorded closes its row with no gh call" {
@@ -960,7 +1171,7 @@ OUT
   run cmd_reap
   assert_output --partial 'closed game: fix crash'
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:12 commit:${OID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/game#12 commit:${OID:0:12}"
 }
 
 @test "reap: an item whose PR is in another of the project's repos proves its commit in that repo's checkout" {
@@ -979,7 +1190,7 @@ OUT
   run cmd_reap
   assert_output --partial 'closed game: fix crash'
   run grep -F 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
-  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:9 commit:${TOID:0:12}"
+  assert_output "notes --profile bnb ptask game --agent done fix crash --proof pr:o/tools#9 commit:${TOID:0:12}"
 }
 
 @test "reap: an item whose PR names a repo with no checkout leaves its row started" {
@@ -1034,6 +1245,27 @@ OUT
   assert_success
   grep -qF -- '- [/] linked' "$NOTES_FIXTURE/rows.game.agent" || fail "a linked row was un-started"
   grep -qF -- '- [/] the human is on it' "$NOTES_FIXTURE/rows.game.human" || fail "a human row was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+@test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
+  # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
+  # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.
+  export DISPATCH_NIGHT_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  # The real `ptask list` key is the row's text with its tags, not its id: rows() must read the id off the marker.
+  row game agent 'fix(core): slots #tier/3 #size/m' '- [/] fix(core): slots #tier/3 #size/m #c1028 #low <!-- id:gm-4 run:1112 -->'
+  started_item slots lab:game-agent-4 '' '' 'board:game:gm-4'
+  sed -i 's/^lane: human$/lane: agent/' "$AGENT_QUEUE_DIR"/running/*-slots.md
+  printf 'game-agent-4\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  # Both keys seen past the grace, so a reap that read the text key would un-start now, not just record it.
+  orphan_seen game gm-4 96
+  orphan_seen game 'fix(core): slots #tier/3 #size/m' 96
+  run cmd_reap
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] fix(core): slots' "$NOTES_FIXTURE/rows.game.agent" || fail "a live item's tagged row was un-started"
+  [ -n "$(qitem running slots)" ] || fail "the live item moved"
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
 }
 
@@ -1102,6 +1334,31 @@ OUT
   [ -f "$LOST" ] && [ ! -f "$RECORD" ] || fail "record not kept as lost"
   "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_equal "$(grep -c 'agent-notify' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "a planned reboot (the session-snapshot marker, older than the boot) keeps the lost record and does not page" {
+  record_setup
+  : > "$HOME/.agent/maintenance"
+  touch -d '-10 minutes' "$HOME/.agent/maintenance"
+  export FLEET_BOOT_TIME=$(( $(date +%s) - 120 ))
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  [ -f "$LOST" ] || fail "record not kept as lost"
+  ! grep -q 'agent-notify' "$NOTES_FIXTURE/calls.log" || fail "a planned reboot paged"
+}
+
+@test "a marker newer than the boot (down, no reboot yet) still pages a server death" {
+  record_setup
+  : > "$HOME/.agent/maintenance"
+  export FLEET_BOOT_TIME=$(( $(date +%s) - 3600 ))
+  world '10 1000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_called 'agent-notify -p high -t tmux hub server died'
 }
 
 @test "record sees a server restarted between two records, and a later empty death keeps the lost record" {

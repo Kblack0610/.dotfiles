@@ -62,7 +62,7 @@ Container caveat: inside a worktree `.git` is a *file* pointing at the main repo
 
 Choose by what the thing under test *is*:
 
-- **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0` above the dispatch. Add it if missing.
+- **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0` above the dispatch. Add it if missing.
 - **A verb's output shape** (`--list` emits 7 tab-separated fields; `--task-op done` shells out to the right command) -> `integ`, using the stubs in `tests/helpers/stubs/`.
 - **State that IS tmux state** (a window option, a session's existence, what a keypress renders) -> `ui`. There is nothing to assert against a stub here: faking `set-option`/`show-options` only tests the fake.
 
@@ -75,7 +75,8 @@ Prefer the cheapest tier that can actually fail. The suite caught a real routing
 `require_disposable_host()` enforces it: it **fails** (never skips - a skip is how a safety tier quietly stops running) unless `/.dockerenv` *and* an image-set env marker are both present. There is deliberately **no override flag**.
 
 ```bash
-make -C tests test-fast     # unit + integ, host-safe, what the Stop hook gates on
+make -C tests test-pr       # the files the PR gate picks for this change: the local gate
+make -C tests test-fast     # unit + integ, every file: main and the nightly run it, not a session
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs
@@ -124,9 +125,9 @@ Every failure mode in this repo's tooling has been *silent success*. Watch for i
 ## 5. Run the gates
 
 ```bash
-make -C tests test-fast        # the Stop hook runs this; must be green
+make -C tests test-pr          # the gate: the files the PR picks, as CI does; must be green
 tests/docker.sh test-container # all tiers
-tests/docker.sh lint           # shellcheck at the current ratchet + shfmt (advisory)
+tests/docker.sh lint           # shellcheck at the current ratchet + house rules
 ```
 
 The lint ratchet lives in `tests/lint.sh` (`SEVERITY`, currently `error`), shared by make and CI so a local green cannot mean a CI red. Move it one notch per PR - `error -> warning -> info -> style` - and re-measure before each step; do not jump to `style`, that is a permanently red check nobody reads.

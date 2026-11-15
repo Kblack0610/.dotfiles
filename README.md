@@ -33,7 +33,7 @@ The tmux cockpit (`.tmux.conf`, `.local/src/tmux/`, `.config/tmux-servers/`) has
 
 - Build: nothing for the scripts. The Rust parts (`agent-panel`, `hub`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
 - Run: `stow --no-folding .`, then `tmx ensure hub` and `tmx hop hub`. `Prefix+r` re-reads the config.
-- Test: `make -C tests bootstrap` once, then `make -C tests test-fast` (unit + integ, host-safe). The tmux ui tier runs only in the container: `make -C tests test-ui`.
+- Test: `make -C tests bootstrap` once, then `make -C tests test-pr` (the unit and integ files your change can affect, host-safe; `test-fast` runs every file). The tmux ui tier runs only in the container: `make -C tests test-ui`.
 - Standards: `.local/src/tmux/CONVENTIONS.md` (panel rules, each with the test that enforces it).
 
 ## Agent runtime
@@ -42,7 +42,7 @@ The agent fleet (`agentctl` runners, `agentctl-run`, `agent-queue`, `fleet-dispa
 
 - Build: nothing for the scripts. The views (`agent-web`, `hub`, `agent-panel`) are built by the installer, or `cargo build --release` in their crate under `.local/src/`.
 - Run: `stow --no-folding .` in both repos, then `agentctl reload` and `agentctl list`. `agentctl pause` stops every oneshot runner, `agentctl resume` lifts it.
-- Test: `make -C tests bootstrap` once, then `make -C tests test-fast`, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
+- Test: `make -C tests bootstrap` once, then `make -C tests test-pr` for your change, or `make -C tests test-files FILES=unit/runner_contract.bats` for one file. `make -C tests test-rust` covers the crates.
 - Standards: `.local/src/docs/standards.md` (each invariant with the test that holds it).
 
 ## Submodules
@@ -133,8 +133,7 @@ This dir is loaded by Claude Code as the project's harness layer:
 - **`.claude/CLAUDE.md`** — workflow rules (plan-first, verification, lessons loop, memory routing).
 - **`.claude/agents/`** - subagents, each with an explicit tool ceiling: the generic specialists here (`deep-research-agent`, `technical-writer`, `quality-engineer`, `root-cause-analyst`, `security-engineer`, `compliance-counsel`); the `kb-*` delivery pipeline and `release-coordinator` live in the private overlay. Which ones actually run: `claude-recall stats --kind agent`.
 - **`.claude/skills/`** — 53 domain skills invoked by name; the canonical index is the list in `.claude/CLAUDE.md`, which spans both this repo and the private overlay.
-- **`.claude/commands/`** - 13 slash commands across four namespaces, counting the private overlay's:
-  `/sc:*` (analyze, manual-test), `/my:*` (autopilot, fix-ci, go, worktree-recycle), `/kb:*` (workflow, implement, ci), `/daily:*` (analysis, standup), plus `dream` and `remember`.
+- **`.claude/commands/`** - two slash commands, `dream` and the private overlay's `remember`. Everything else is a skill.
 
   These counts are load-bearing only as a rough orientation — treat `ls ~/.claude/{agents,skills,commands}` as the truth, since the live registry merges this repo with the private overlay.
 - **`.claude/hooks/`** - Stop-hook gate runs `stop-checks.d/` (git/node/cargo/python/go/shell-test health), then `stop-post.d/` (session register, plan sync to `~/.agent/plans/{project}/`, focus reconcile, anchor regen, ask-filed check, wind-down). Plus PreToolUse guards such as `block-pip.sh` and `large-read-guard.py`. Topology and the per-script list: `.claude/hooks/README.md`.

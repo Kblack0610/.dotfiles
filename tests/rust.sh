@@ -13,22 +13,15 @@
 # PREVIOUS binary on PATH. So a crate could stop compiling and the only symptom would be
 # a tool that quietly kept behaving like an older version.
 #
-# THE RATCHET
-# -----------
-# Same shape as lint.sh's SEVERITY ladder: each gate starts advisory if it is not green
-# across the whole tree today, and flips to blocking in a one-line diff once it is. No
-# baseline file, no per-crate suppressions to rot.
-#
-# Current state, measured 2026-08-09 (rustc/clippy 0.1.93, rustfmt 1.8.0):
-#   cargo test     188 passing, 0 failing   <- BLOCKING from day one
-#   cargo clippy   7 warnings, 0 errors     <- advisory (CLIPPY_GATE=1 to enforce)
-#   cargo fmt      3 of 3 crates unformatted <- advisory (RUSTFMT_GATE=1 to enforce)
-#
-# Do not flip the two advisory gates in the same PR that fixes their findings: a
-# `cargo fmt` over notes-cli alone rewrites 22 files, and burying the gate change in that
-# diff is how a formatting sweep gets reviewed as a no-op.
-CLIPPY_GATE="${CLIPPY_GATE:-0}"
-RUSTFMT_GATE="${RUSTFMT_GATE:-0}"
+# THE GATES
+# ---------
+# cargo test and cargo fmt (--all, so a workspace checks its member crates) block on every
+# run. cargo clippy blocks too, unless CLIPPY=0, which the CI rust job sets on a pull
+# request. Clippy is a full second compile, the slowest step of a PR's rust job. It still
+# runs on a pull request that touches the rust gate or tests/rust-toolchain (pick.sh says
+# so; pick.bats pins that line), and on main pushes, the schedule and a manual run, where a
+# red stops the line (docs/ci.md).
+CLIPPY="${CLIPPY:-1}"
 
 # No `-e`: this script runs several gates over several crates and accumulates rc, so one
 # failure must not abort the rest. That makes the explicit `|| exit` on cd load-bearing.
@@ -41,6 +34,19 @@ if ! command -v cargo >/dev/null 2>&1; then
   # must not turn into a red gate on one. CI installs the toolchain, so CI still runs it.
   echo "rust: cargo NOT INSTALLED (skipped)"
   exit 0
+fi
+
+# One Rust version for every run, local and CI: tests/rust-toolchain. Each release adds
+# clippy lints, so a gate on "whatever stable is installed" goes red when a runner image
+# moves, on a commit that changed no Rust (main, 2026-11-13: clippy 0.1.99 in CI, 0.1.93
+# here). Bump the file in a PR that fixes what the new version finds; it runs every crate.
+RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
+export RUSTUP_TOOLCHAIN
+# A cargo with no rustup (a distro package) cannot honor the pin, so it fails here rather
+# than checking with a different clippy.
+if ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1); then
+  printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
+  exit 1
 fi
 
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
@@ -60,7 +66,7 @@ fi
 }
 
 rc=0
-ran=() advisory=()
+ran=()
 
 for crate in "${CRATES[@]}"; do
   name="$(basename "$crate")"
@@ -77,29 +83,22 @@ for crate in "${CRATES[@]}"; do
   fi
 
   # --all-targets so tests and benches are linted too, not just the bin/lib.
-  if cargo clippy --manifest-path "$crate/Cargo.toml" --locked --all-targets --quiet -- -D warnings 2>/dev/null; then
-    echo "cargo clippy: $name clean"
+  if [ "$CLIPPY" = 1 ]; then
     ran+=("clippy:$name")
-  elif [ "$CLIPPY_GATE" = 1 ]; then
-    cargo clippy --manifest-path "$crate/Cargo.toml" --locked --all-targets -- -D warnings >&2
-    echo "cargo clippy: $name FAILED (CLIPPY_GATE=1)" >&2
-    rc=1
-  else
-    n="$(cargo clippy --manifest-path "$crate/Cargo.toml" --locked --all-targets --message-format short 2>&1 | grep -c 'warning:' || true)"
-    echo "cargo clippy: $name $n warnings (advisory; CLIPPY_GATE=1 to enforce)"
-    advisory+=("clippy:$name")
+    if cargo clippy --manifest-path "$crate/Cargo.toml" --locked --all-targets --quiet -- -D warnings; then
+      echo "cargo clippy: $name clean"
+    else
+      echo "cargo clippy: $name FAILED" >&2
+      rc=1
+    fi
   fi
 
-  if cargo fmt --manifest-path "$crate/Cargo.toml" --check --quiet 2>/dev/null; then
+  ran+=("fmt:$name")
+  if cargo fmt --all --manifest-path "$crate/Cargo.toml" --check; then
     echo "cargo fmt: $name clean"
-    ran+=("fmt:$name")
-  elif [ "$RUSTFMT_GATE" = 1 ]; then
-    cargo fmt --manifest-path "$crate/Cargo.toml" --check >&2
-    echo "cargo fmt: $name FAILED (RUSTFMT_GATE=1)" >&2
-    rc=1
   else
-    echo "cargo fmt: $name would reformat (advisory; RUSTFMT_GATE=1 to enforce)"
-    advisory+=("fmt:$name")
+    echo "cargo fmt: $name FAILED (run: cargo fmt --all --manifest-path $crate/Cargo.toml)" >&2
+    rc=1
   fi
 done
 
@@ -108,7 +107,7 @@ done
 # silent success this gate replaces.
 printf 'rust: %d crate(s): %s' "${#CRATES[@]}" "$(IFS=,; echo "${CRATES[*]}")"
 printf '\n      ran %s' "$(IFS=,; echo "${ran[*]:-none}")"
-[ "${#advisory[@]}" -gt 0 ] && printf '; ADVISORY (not enforced): %s' "$(IFS=,; echo "${advisory[*]}")"
+[ "$CLIPPY" = 1 ] || printf '; clippy skipped (CLIPPY=0)'
 printf '\n'
 
 exit $rc

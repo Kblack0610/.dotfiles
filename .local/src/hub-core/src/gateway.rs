@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::burn::{Account, Burn};
 use crate::session_actions::Runner;
-use crate::table::{Row, Summary, Val, View};
+use crate::table::{Keys, Row, Summary, Val};
 
 /// A snapshot older than this is amber: the timer writes it every 15 minutes.
 pub const STALE_SECS: i64 = 2 * 3600;
@@ -530,9 +530,9 @@ fn key_row(c: &Ctx, k: &Key, taken: &BTreeSet<&str>) -> Consumer {
     finish(row, c.mismatch(&prio, Some(k), team, None), stopped)
 }
 
-/// The section under one sort (`sort`/`dir` over `Consumer::COLUMNS`; blank is the section's own
-/// order: MISMATCH first, then must, low, off, runners before keys).
-pub fn build(r: &Read, burn: &Burn, now: i64, sort: &str, dir: &str) -> Consumers {
+/// The section under one view (a query, a state and a sort over `Consumer::COLUMNS`; no sort is the
+/// section's own order: MISMATCH first, then must, low, off, runners before keys).
+pub fn build(r: &Read, burn: &Burn, now: i64, k: Keys) -> Consumers {
     let c = Ctx {
         snap: r.snapshot.as_ref(),
         burn,
@@ -595,7 +595,7 @@ pub fn build(r: &Read, burn: &Burn, now: i64, sort: &str, dir: &str) -> Consumer
     } else {
         "ok"
     };
-    let (view_rows, table) = View::new::<Consumer>("", "", sort, dir).summary(&rows);
+    let (view_rows, table) = k.view::<Consumer>().summary(&rows);
     let view_rows: Vec<Consumer> = view_rows.into_iter().cloned().collect();
     let pools = pools(&c);
     Consumers {
@@ -781,7 +781,7 @@ mod tests {
             confs,
             errors: vec![],
         };
-        build(&r, &Burn::default(), NOW, "", "")
+        build(&r, &Burn::default(), NOW, Keys::default())
     }
 
     #[test]
@@ -823,7 +823,7 @@ mod tests {
             confs,
             errors: vec![],
         };
-        build(&r, &Burn::default(), NOW, "", "")
+        build(&r, &Burn::default(), NOW, Keys::default())
     }
 
     #[test]
@@ -922,7 +922,7 @@ mod tests {
             confs: vec![ke],
             errors: vec![],
         };
-        let c = build(&r, &Burn::default(), NOW, "", "");
+        let c = build(&r, &Burn::default(), NOW, Keys::default());
         assert_eq!(
             row(&c, "comms-triage").status,
             "MISMATCH: lazer-core is at its cap"
@@ -991,7 +991,7 @@ mod tests {
             confs: vec![],
             errors: vec![],
         };
-        let c = build(&r, &Burn::default(), NOW, "", "");
+        let c = build(&r, &Burn::default(), NOW, Keys::default());
         assert_eq!(c.level, "warn");
         assert!(c
             .stale
@@ -1003,7 +1003,7 @@ mod tests {
             confs: vec![gateway_conf("v", "rbw:litellm_comms_triage_key")],
             errors: vec!["no gateway snapshot".into()],
         };
-        let c = build(&r, &Burn::default(), NOW, "", "");
+        let c = build(&r, &Burn::default(), NOW, Keys::default());
         assert_eq!(c.level, "warn");
         assert_eq!(row(&c, "v").fallback, "?");
     }
@@ -1027,9 +1027,64 @@ mod tests {
             snapshot: Some(snap()),
             ..Read::default()
         };
-        let asc = build(&r, &Burn::default(), NOW, "priority", "asc");
+        let asc = build(
+            &r,
+            &Burn::default(),
+            NOW,
+            Keys {
+                sort: "priority",
+                dir: "asc",
+                ..Keys::default()
+            },
+        );
         assert_eq!(asc.rows[0].priority, "off");
-        let desc = build(&r, &Burn::default(), NOW, "priority", "desc");
+        let desc = build(
+            &r,
+            &Burn::default(),
+            NOW,
+            Keys {
+                sort: "priority",
+                dir: "desc",
+                ..Keys::default()
+            },
+        );
         assert_eq!(desc.rows[0].priority, "must");
+    }
+
+    #[test]
+    fn a_query_and_a_state_narrow_the_rows_and_the_count_says_of_how_many() {
+        let r = Read {
+            snapshot: Some(snap()),
+            ..Read::default()
+        };
+        let all = build(&r, &Burn::default(), NOW, Keys::default());
+        let must = build(
+            &r,
+            &Burn::default(),
+            NOW,
+            Keys {
+                q: "priority:must",
+                ..Keys::default()
+            },
+        );
+        assert!(!must.rows.is_empty() && must.rows.iter().all(|x| x.priority == "must"));
+        let t = must.table.unwrap();
+        assert!(
+            t.shown < t.total && t.total == all.rows.len(),
+            "{} of {}",
+            t.shown,
+            t.total
+        );
+        let mm = build(
+            &r,
+            &Burn::default(),
+            NOW,
+            Keys {
+                s: "mismatch",
+                ..Keys::default()
+            },
+        );
+        assert!(mm.rows.iter().all(|x| x.mismatch));
+        assert_eq!(mm.table.unwrap().state, "mismatch");
     }
 }

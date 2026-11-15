@@ -1,5 +1,5 @@
 "use strict";
-// The Board tab (every project's rows) and the rows under an opened project on Projects: the
+// Projects' All rows inner tab (every project's rows) and the rows under an opened project: the
 // shared table (table.js) over the rows from `notes board --json` (/api/board, which filters and
 // sorts by the view in the showing tab's URL query): the human sheet, the agent board, playtest,
 // open ones under their sheet sections (each row's `label`) then the closed ones, each row's
@@ -13,15 +13,15 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// The Board holds thousands of rows, so the table stops here until asked.
-const B_OPEN = 200;
-// One view serves both tabs, so what it reads and where its query lives follow the showing tab.
-const bOnBoard = () => st.tab === "board";
-const bTab = () => (bOnBoard() ? "board" : "projects");
+// All rows holds thousands of rows, so the table stops here until asked (a search reads every row
+// on the server; this caps only what is drawn): 30 rows drew 1,824 px at 1400x900 on 2026-11-12.
+const B_OPEN = 30;
+// One view serves both places, both on Projects, so what it reads follows the one showing.
+const bOnBoard = () => st.tab === "projects" && !pst.open && pTab() === "all";
 const bScope = () => (bOnBoard() ? "all" : pst.open);
 // The table is drawn under the add form (renderBoard), which a re-read leaves alone.
 const bst = tblTab({
-  get tab() { return bTab(); }, get scroller() { return bTab(); },
+  tab: "projects", scroller: "projects",
   id: "board", el: "b-tbl", on: "b-root", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
   shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
   state: {
@@ -34,10 +34,11 @@ const bst = tblTab({
   body: () => bBody(),
 });
 
-// The view moves to the tab that shows it; rows read for the other scope go with the move.
+// The view moves to the place that shows it; rows read for the other scope go with the move.
 function bMount(parent) {
-  $(parent).appendChild($("b-root"));
+  if ($("b-root").parentNode !== $(parent)) $(parent).appendChild($("b-root"));
   if (bst.scope === bScope()) return;
+  bst.scope = bScope();
   bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
 }
 
@@ -47,15 +48,17 @@ function bMount(parent) {
 const refreshBoard = coalesce(async () => {
   const scope = bScope();
   if (!scope) return;
-  const p = tblParams(st.views[bTab()]);
+  const p = tblParams(st.views.projects);
   if (scope !== "all") p.set("scope", scope);
   const q = p.toString();
   try {
     const got = await api("/api/board" + (q ? "?" + q : ""));
-    if (scope === bScope()) { bst.feed = got; bst.scope = scope; bst.err = null; }
+    if (scope === bScope()) {
+      bst.feed = got; bst.scope = scope; bst.err = null;
+      if (scope === "all") pCountSet("all", got?.table?.total);
+    }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
-  else if (bOnBoard()) renderBoard();
 });
 
 // A row's identity across re-reads: its sheet and its exact line.
@@ -95,6 +98,7 @@ function bRow(r, i) {
     `<span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span>`,
     esc(r.lane), r.state === "doing" ? "<b>in progress</b>" : "",
     r.since ? "since " + esc(r.since) : "", r.id ? `<code>${esc(r.id)}</code>` : "",
+    r.epic || r.parent ? "epic " + bEpic(r, i) : "",
   ].filter(Boolean).join(", ");
   let acts = "";
   if (r.state === "done") {
@@ -106,7 +110,7 @@ function bRow(r, i) {
       // Every close says how: done with a proof or why it has none, or dropped with why or the
       // id of the row it duplicates. A dropped row stays on the sheet, ticked, with its reason.
       const done = kind === "done";
-      const kinds = done ? [["proof", "proof"], ["unverified", "unverified, because"]] : [["why", "why"], ["dup", "duplicate of id"]];
+      const kinds = CLOSE_HOW[kind];
       acts = `<div class="opts">` +
         `<select data-formkind="${i}">${bOpt(kinds, kinds[0][0])}</select>` +
         `<input data-forminput="${i}" placeholder="${done ? "pr:123, a URL, or why it is unverified" : "stale, superseded, moved: ideas.md, or ar-142"}">` +
@@ -145,18 +149,31 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-const B_COLS = { section: ["section"], priority: ["priority"], project: ["project"], lane: ["lane"], state: ["state"], id: ["id"], version: ["version"], size: ["size"], tier: ["tier", "n"], since: ["since"], when: ["when"], text: ["text"] };
+// What a row is leads, then the epic it serves, then what to do about it. Version, size, tier,
+// since and the whole line are the opened row's (bRow), so the table fits the screen.
+const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
 const B_SPAN = Object.keys(B_COLS).length;
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
+// The row's epic as a link to that row, its parent's id when that row is not on the board,
+// or "" when it is under none.
+const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic || r.parent) : "";
 
-// One line of the table, and the opened record under it.
+// One line of the table, and the opened record under it. The title cell holds the row's area,
+// its title and what the title leaves out (hub_core::text::title); the epic cell opens
+// the epic. The opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
+  const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
+  const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
+  // An epic is the deliverable itself; any other row under none says so, for triage.
+  const epic = bEpic(r, i) || (r.section === "epics" ? "" : `<span class="muted">no epic</span>`);
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
-    `<td><b>${esc(r.label || "")}</b></td><td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td><td>${bDash(r.project)}</td><td>${esc(r.lane)}</td>` +
-    `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td><code>${bDash(r.id)}</code></td>` +
-    `<td>${bDash(r.lane === "playtest" ? r.game : r.version)}</td><td>${bDash(r.size)}</td><td class="n">${bDash(r.tier)}</td>` +
-    `<td>${bDash((r.since || "").slice(5))}</td><td>${bDash(r.when)}</td><td><div class="btext">${esc(r.text)}</div></td></tr>`;
+    `<td><b>${esc(r.label || "")}</b></td>` +
+    `<td class="btitle"><div class="bt">${area}${esc(r.title)}</div>${sum}</td>` +
+    `<td class="bepic">${epic}</td>` +
+    `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
+    `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td class="bwhen">${bDash(r.when)}</td>` +
+    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td></tr>`;
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
@@ -237,10 +254,6 @@ async function bAdd() {
   renderBoard();
 }
 
-function bTarget(r) {
-  return { profile: r.profile, project: r.project, lane: r.lane, raw: r.raw };
-}
-
 $("b-root").addEventListener("click", (e) => {
   const t = e.target, rows = bst.feed ? bst.feed.rows : [];
   if (t.id === "b-add") { bAdd(); return; }
@@ -248,6 +261,7 @@ $("b-root").addEventListener("click", (e) => {
   const d = t.dataset;
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
+    if (t.closest("a")) return;
     const line = t.closest("tr[data-row]");
     if (!line) return;
     const k = bSel(rows[line.dataset.row]);
@@ -257,10 +271,10 @@ $("b-root").addEventListener("click", (e) => {
     return;
   }
   const k = bKey(r);
-  if (d.start) { bWrite(Object.assign({ verb: "start" }, bTarget(r)), "Queued: it starts when you are away."); return; }
+  if (d.start) { bWrite(Object.assign({ verb: "start" }, rowTarget(r)), "Queued: it starts when you are away."); return; }
   if (d.promote || d.demote) {
     const verb = d.promote ? "promote" : "demote";
-    bWrite(Object.assign({ verb }, bTarget(r)), d.promote ? "One release sooner." : "One release later.");
+    bWrite(Object.assign({ verb }, rowTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
   const opened = d.done || d.drop || d.move || d.edit || d.tag;
@@ -278,8 +292,7 @@ $("b-root").addEventListener("click", (e) => {
     let body, ok;
     if (kind === "done" || kind === "drop") {
       const how = q("formkind").value;
-      const need = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
-      if (!v) { bst.msg = need[how]; renderBoard(); return; }
+      if (!v) { bst.msg = CLOSE_NEED[how]; renderBoard(); return; }
       body = { verb: kind, [how]: v }; ok = kind === "done" ? "Done." : "Dropped.";
     } else if (kind === "move") {
       const dest = q("movedest").value;
@@ -294,7 +307,7 @@ $("b-root").addEventListener("click", (e) => {
       body = { verb: "edit", text: v }; ok = "Edited.";
     }
     bst.form = null;
-    bWrite(Object.assign(body, bTarget(r)), ok);
+    bWrite(Object.assign(body, rowTarget(r)), ok);
   }
 });
 for (const ev of ["input", "change"]) $("b-root").addEventListener(ev, (e) => { if (e.target.closest(".badd")) bSaveDraft(); });
@@ -304,8 +317,3 @@ $("b-root").addEventListener("keydown", (e) => {
   const i = e.target.dataset.forminput || e.target.dataset.formremove;
   if (i != null) { e.preventDefault(); const b = $("b-root").querySelector(`[data-formgo="${i}"]`); if (b) b.click(); }
 });
-
-TABS.board = {
-  show() { bMount("board"); renderBoard(); refreshBoard(); },
-  onEvent(ev) { if (st.tab === "board" && ev.kind === "resync") refreshBoard(); },
-};

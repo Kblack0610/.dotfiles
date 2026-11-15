@@ -30,6 +30,7 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
+#                          type /wind-down into each session whose close verdict is now (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
@@ -85,7 +86,6 @@
 # Lease, orders and routing: the fleet-lead skill, "Verb: pass".
 
 set -uo pipefail
-export PATH="$HOME/.local/bin:$PATH"
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
 NAME="${AGENTCTL_NAME:-shepherd}"
@@ -98,7 +98,7 @@ DUE_LAST="$LEDGER/.due"      # <key>\t<role>\t<first seen epoch>\t<line>: what t
 HANDED="$LEDGER/.handed"     # <key>\t<epoch>: due lines handed to a pass and when, so only those can come back unhandled
 SKIPPED="$LEDGER/.skipped"   # <key>\t<why>\t<epoch>: due lines a pass chose to leave, and why
 PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while they stay due
-UNHANDLED="$LEDGER/.unhandled"  # how many checks in a row found an unhandled line that would start a pass
+UNHANDLED="$LEDGER/.unhandled"  # <key>\t<checks>: each owed line and how many checks in a row (that would start a pass) found it unhandled
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
@@ -133,10 +133,6 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_BUDGET_S:=12}" "${FLEET_SHEPHERD_BUDGET_M:=25}" "${FLEET_SHEPHERD_BUDGET_L:=50}"
 : "${FLEET_SHEPHERD_BUDGET_USD:=25}" # an item with no size tag
 : "${FLEET_SHEPHERD_BUDGET_EXTEND:=3}" # a session still WORKING is parked only at this many budgets
-# A CHAT row is the human's own conversation: nothing is due on it until it has sat this long, by
-# the smaller of its idle and age (an epoch-0 idle on a new session cannot fire it early), and
-# then it gets one wind-down nudge. The human set 24h when approving the CHAT bucket, 2026-11-05.
-: "${FLEET_CHAT_CLOSE_H:=24}"
 # A row nudged and escalated that still sits unchanged this long pages the human again, in plain
 # words naming the one decision that closes it, once per fact per day (remind_sample).
 # trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
@@ -223,17 +219,27 @@ tag_pane() {
 }
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
-# the fleet-states.md bucket table: a manual row is never moved; DONE, LANDED and STALLED are
-# nudged once (never while the session holds an open ask it filed: its window is where the
-# question waits), and CHAT once past FLEET_CHAT_CLOSE_H; a NEEDS row, or a nudged row whose fact
-# survived, is escalated once. A test red on several branches (shared) is owned by the queue item
-# shared_sample filed, and its sessions are told once; only one with no item escalates.
+# the fleet-states.md bucket table and the row's close verdict (`close`, the close table there): a
+# manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
+# verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
+# question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
+# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
+# branches (shared) is owned by the queue item shared_sample filed, and its sessions are told
+# once; only one with no item escalates.
 # PARKED is fleet-pace's, below.
+# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
+# (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
+# otherwise. cmd_due turns it into a due line for a pass, close_sample types it; one rule for both.
+CLOSE_NUDGE_JQ='def close_nudge:
+  if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now") then null
+  elif (.own_asks // 0) > 0 then "CLOSE"
+  elif (.bucket | IN("DONE","CHAT")) then .bucket
+  else null end;'
+
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" \
-    --argjson items "$(shared_items)" '
+  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ"'
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -244,13 +250,13 @@ cmd_due() {
         else empty end )
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
-      | ([.idle_min // 0, .age_min // 0] | min) as $quiet
-      | if (.own_asks // 0) > 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          empty
-        elif (.bucket | IN("DONE","LANDED","STALLED")) and (.nudged | not) then
-          "nudge \(.bucket): \(.target) \(.fact // "")"
-        elif .bucket == "CHAT" and (.nudged | not) and $quiet >= $chat then
-          "nudge CHAT: \(.target) \(.fact // "")"
+      | ((.own_asks // 0) > 0) as $ask
+      | close_nudge as $close
+      | if $close then
+          "nudge \($close): \(.target) \(.fact // "")"
+        elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+          if ($ask | not) and (.bucket | IN("LANDED","STALLED"))
+          then "nudge \(.bucket): \(.target) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
           "escalate \(.bucket): \(.target) \(.reason // "")"
@@ -622,6 +628,68 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
+# close_sample: the close nudge without a model. Each row CLOSE_NUDGE_JQ names (the ones cmd_due
+# would give a pass as `nudge DONE|CHAT|CLOSE`) gets its close typed into its pane: /wind-down
+# auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT /wind-down,
+# the human's standing order to close a chat quiet 24h. A pass could only send it by SendMessage,
+# and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the claude CLI has no
+# send, so typing is the one model-free way in, as claude-acct types /exit.
+# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
+# cancelling the human's copy mode, and reads the screen again after the mark, just before the
+# keys; any other screen is left for the pass, which sends the message by SendMessage. The mark
+# claims the fact first, so the two never both send it; a send that fails after it reaches the
+# human through the row's escalation. Having typed, it refreshes the document, so cmd_due reads
+# those rows as nudged.
+close_sample() {
+  local sid target pane close fact server cmd typed=""
+  while IFS=$'\t' read -r sid target pane close fact; do
+    case "$sid" in */*|.|..) continue ;; esac
+    server="${target%%/*}"
+    [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    pane_takes_keys "$server" "$pane" || continue
+    fleet-sessions mark "$sid" "$fact" >/dev/null 2>&1 || continue
+    if ! pane_takes_keys "$server" "$pane"; then
+      cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
+      continue
+    fi
+    cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
+    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
+      typed=1
+      cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null
+    else
+      cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
+    fi
+  done < <(jq -r "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
+    | close_nudge as $close | select($close)
+    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | [.session_id, .target, .pane, $close, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
+  [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
+}
+
+# pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
+pane_takes_keys() {
+  local screen
+  [ "$(tmux -L "$1" display-message -p -t "$2" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 1
+  screen="$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)" || return 1
+  idle_prompt "$screen"
+}
+
+# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working: the
+# lines between the screen's last two rule lines (a run of ─, the top one may carry the session's
+# name) hold no more than the prompt glyph and blanks,
+# and the footer has no "esc to interrupt" (cut short on a narrow pane, so its head is matched).
+# A draft, a ghost suggestion, a dialog or a screen it cannot read all fail, toward the pass.
+idle_prompt() {
+  grep -qF 'esc to inter' <<<"$1" && return 1
+  awk -v nb=$'\xc2\xa0' '
+    { l[NR] = $0 }
+    /^───/ && /─ *$/ { r2 = r1; r1 = NR }
+    END {
+      if (!r2 || r1 - r2 < 2) exit 1
+      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, "", s); gsub(/[ \t]/, "", s); if (s != "") exit 1 }
+    }' <<<"$1"
+}
+
 # remind_decision <bucket> <reason> <pr> <next phase> <plan> -> the one decision, in plain words.
 remind_decision() {
   local pr="#$3"
@@ -748,6 +816,8 @@ cmd_check() {
   cmd_holds 2>/dev/null && shared_sample
   # And so is a reminder: one writer of $REMINDED.
   cmd_holds 2>/dev/null && remind_sample
+  # And so is typing a close into a session: one writer of its nudge, beside the pass's mark.
+  cmd_holds 2>/dev/null && close_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
@@ -772,7 +842,7 @@ due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; 
 # first due: the debounce may hold it first) pages the human high, once: on 2026-11-04 the passes
 # reported "dispatch NOOP" for 6.5h and nobody was told.
 receipts() {
-  local line key out="" owed="" keys="" given="" rows="" now seen owe handed early=""
+  local line key out="" owed="" owed_keys="" keys="" given="" rows="" now seen owe handed early=""
   touch "$DUE_LAST" "$SKIPPED" "$PAGED" "$HANDED"
   now="$(date +%s)"
   ! last_working || early=1
@@ -788,6 +858,7 @@ receipts() {
     if [ -z "$early" ] && [ -n "$handed" ]; then
       owe=1
       owed+="unhandled: $line"$'\n'
+      owed_keys+="$key"$'\n'
       if [ $(( (now - handed) / 60 )) -ge "$(unhandled_min "$line")" ] && ! grep -qxF -- "$key" "$PAGED"; then
         # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
         # so its target is where the page points; other lines (pace, infra) point nowhere.
@@ -813,9 +884,12 @@ receipts() {
   printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
   if [ -n "$owed" ]; then
     # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
+    # Each owed line carries its own count, so two passes that each leave a different line are
+    # no streak; only the same line left again is (2026-11-11: disjoint lines read as stuck).
     if ! no_pass_why "$owed$out" >/dev/null; then
-      seen="$(cat "$UNHANDLED" 2>/dev/null)"
-      echo $(( ${seen//[!0-9]/} + 1 )) > "$UNHANDLED"
+      touch "$UNHANDLED"
+      awk -F'\t' 'FILENAME == ARGV[1] { n[$1] = $2; next } $0 != "" { print $0 "\t" (n[$0] + 1) }' \
+        "$UNHANDLED" <(printf '%s' "$owed_keys") > "$UNHANDLED.tmp" && mv -f "$UNHANDLED.tmp" "$UNHANDLED"
     fi
   elif [ -z "$early" ]; then
     rm -f "$UNHANDLED"
@@ -1071,14 +1145,16 @@ lane_cols() {
   missed="$(grep -c '^unhandled: ' <<<"${SCORE_DUE:-}")"
   end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
   # the targets (<server>/<session>:<window>) the pace line calls parked on a clear machine, and
-  # each one's session alone, since a park file is named <session> or <session>:<window>
+  # each one's session alone, since a park file is named <session> or <session>:%<pane>, and a window
+  # ledger by the window its target recorded
   clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
     tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
-    [ -z "$clear" ] || ! grep -qxF -- "${p##*/}" <<<"$clear" || wrong=$((wrong + 1))
+    [ -z "$clear" ] || ! { grep -qxF -- "${p##*/}" <<<"$clear" ||
+      grep -qxF -- "$(sed -n 's/^target=[^/]*\///p' "$p" | head -n 1)" <<<"$clear"; } || wrong=$((wrong + 1))
   done
   printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }
@@ -1482,7 +1558,7 @@ cmd_stats() {
       --arg attach "tmux -L $SERVER attach -t ${where:-$SESSION:$WINDOW}" \
       --argjson due "$(lines "$DUE_LAST")" \
       --argjson unhandled "$(cut -f4 "$DUE_LAST" 2>/dev/null | grep -c '^unhandled: ')" \
-      --argjson streak "$(c="$(cat "$UNHANDLED" 2>/dev/null)"; echo "${c//[!0-9]/}" | grep . || echo 0)" \
+      --argjson streak "$(cat "$UNHANDLED" 2>/dev/null | awk -F'\t' '$2 + 0 > m { m = $2 + 0 } END { print m + 0 }')" \
       --argjson skipped "$(lines "$SKIPPED")" \
       --argjson paged "$(lines "$PAGED")" \
       --argjson passes "$(awk -F'\t' -v c="$(date -u -d '24 hours ago' '+%F %H:%M')" '$1 >= c' "$PASSES" 2>/dev/null | grep -c .)" \

@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::table::{Row, Summary, Val, View};
+use crate::table::{Keys, Row, Summary, Val};
 
 /// The pinned first row's name.
 pub const ALL: &str = "All PRs";
@@ -147,8 +147,8 @@ pub struct Block {
     pub table: Option<Summary>,
 }
 
-/// The block under one sort. An empty read (no section roots, or the CLI failed) has no `table`.
-pub fn board(s: &Sections, sort: &str, dir: &str) -> Block {
+/// The block under one view (a query and sort over `Section::COLUMNS`). An empty read (no section roots, or the CLI failed) has no `table`.
+pub fn board(s: &Sections, k: Keys) -> Block {
     let mut b = Block {
         days: s.days,
         columns: Section::COLUMNS,
@@ -158,7 +158,7 @@ pub fn board(s: &Sections, sort: &str, dir: &str) -> Block {
     if s.rows.is_empty() && s.all.prs == 0 {
         return b;
     }
-    let (rows, table) = View::new::<Section>("", "", sort, dir).summary(&s.rows);
+    let (rows, table) = k.view::<Section>().summary(&s.rows);
     b.head = format!(
         "{} PRs in {}d, {} first try, {} gate min per PR, {} greens lost",
         s.all.prs,
@@ -216,7 +216,7 @@ mod tests {
     fn all_prs_is_named_and_the_rows_keep_fleet_benchs_order() {
         let s = parse(JSON).unwrap();
         assert_eq!(s.all.section, ALL);
-        let b = board(&s, "", "");
+        let b = board(&s, Keys::default());
         assert_eq!(names(&b), ["Assets/A", "docs", "other"]);
         assert_eq!(b.all[0], "All PRs");
         assert_eq!(
@@ -229,8 +229,22 @@ mod tests {
     fn every_column_sorts_both_ways_and_a_missing_figure_sorts_last_either_way() {
         let s = parse(JSON).unwrap();
         for col in Section::COLUMNS {
-            let d = board(&s, col, "desc");
-            let a = board(&s, col, "asc");
+            let d = board(
+                &s,
+                Keys {
+                    sort: col,
+                    dir: "desc",
+                    ..Keys::default()
+                },
+            );
+            let a = board(
+                &s,
+                Keys {
+                    sort: col,
+                    dir: "asc",
+                    ..Keys::default()
+                },
+            );
             let (d, a) = (names(&d), names(&a));
             assert_eq!(d.len(), 3, "{col}");
             if matches!(*col, "cost_per_pr" | "tokens_per_pr" | "work_min_per_pr") {
@@ -243,14 +257,37 @@ mod tests {
             }
         }
         assert_eq!(
-            names(&board(&s, "prs", "desc")),
+            names(&board(
+                &s,
+                Keys {
+                    sort: "prs",
+                    dir: "desc",
+                    ..Keys::default()
+                }
+            )),
             ["docs", "Assets/A", "other"]
         );
         assert_eq!(
-            names(&board(&s, "prs", "asc")),
+            names(&board(
+                &s,
+                Keys {
+                    sort: "prs",
+                    dir: "asc",
+                    ..Keys::default()
+                }
+            )),
             ["other", "Assets/A", "docs"]
         );
-        let t = board(&s, "prs", "desc").table.unwrap();
+        let t = board(
+            &s,
+            Keys {
+                sort: "prs",
+                dir: "desc",
+                ..Keys::default()
+            },
+        )
+        .table
+        .unwrap();
         let prs = t.columns.iter().find(|c| c.key == "prs").unwrap();
         assert_eq!(
             (prs.next_sort.as_str(), prs.next_dir),
@@ -259,8 +296,28 @@ mod tests {
     }
 
     #[test]
+    fn a_query_narrows_the_rows_and_all_prs_stays() {
+        let s = parse(JSON).unwrap();
+        let b = board(
+            &s,
+            Keys {
+                q: "section:docs",
+                ..Keys::default()
+            },
+        );
+        assert_eq!(names(&b), ["docs"]);
+        let t = b.table.unwrap();
+        assert_eq!((t.shown, t.total), (1, 3));
+        assert_eq!(
+            b.all,
+            board(&s, Keys::default()).all,
+            "All PRs is every PR, under any query"
+        );
+    }
+
+    #[test]
     fn the_note_says_both_things_and_counts_the_claimed_prs() {
-        let b = board(&parse(JSON).unwrap(), "", "");
+        let b = board(&parse(JSON).unwrap(), Keys::default());
         assert!(b.notes[0].contains("counts in every section it touches"));
         assert!(b.notes[1].contains("only the PRs a session claims (4 of 10"));
         assert_eq!(
@@ -273,8 +330,7 @@ mod tests {
     fn a_repo_with_no_sections_has_no_block_and_bad_json_is_an_error() {
         let b = board(
             &parse(r#"{"days":7,"all":{"prs":0},"sections":[]}"#).unwrap(),
-            "",
-            "",
+            Keys::default(),
         );
         assert!(b.table.is_none() && b.rows.is_empty() && b.head.is_empty());
         assert!(parse("not json").is_err());

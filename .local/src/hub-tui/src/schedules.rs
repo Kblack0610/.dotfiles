@@ -8,12 +8,15 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, wrap, Cell, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dur, Palette};
+use hub_core::reading::JobState;
+use hub_core::vocab::Level;
 
-/// `Schedule::COLUMNS` in capitals, in its order, the sort mark placed by that index. `repo`
-/// sorts and filters without a column: the name says it.
-const HEADER: [&str; 8] = [
-    "KIND", "NAME", "SCHEDULE", "NEXT", "LAST", "RESULT", "STREAK", "TRIAGE",
+/// `Schedule::COLUMNS` in capitals, in its order, the sort mark placed by that index. `result`
+/// and `repo` sort and filter without a column: the state and the name say them.
+const HEADER: [&str; 11] = [
+    "KIND", "NAME", "STATE", "SCHEDULE", "NEXT", "LAST", "TOOK", "PASSED", "FAILED", "STREAK",
+    "TRIAGE",
 ];
 /// The width of the pane's labels, as the longest one.
 const LABEL: usize = 14;
@@ -93,12 +96,13 @@ impl SchedulesView {
         let mut out = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![1, 5, 6, 2, 4, 3, 0],
-            flex: Some(7),
+            // The exceptions first: what it is, how it stands, its streak, when it last ran.
+            keep: vec![1, 2, 9, 5, 3, 4, 8, 6, 7, 0],
+            flex: Some(10),
             flexmin: 14,
             flexkeep: true,
-            right: vec![3, 4],
-            cap: vec![(1, name), (2, fit(SCHEDULE_FIT)), (5, 8)],
+            right: vec![4, 5, 6, 7, 8],
+            cap: vec![(1, name), (3, fit(SCHEDULE_FIT))],
             mark,
         }
         .fit(w, p.head());
@@ -122,10 +126,21 @@ fn short(name: &str, w: usize) -> String {
 }
 
 fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
-    let result = match r.ok {
-        Some(false) => cell(r.result.clone(), p.bad()),
-        _ if r.result.is_empty() => "-".into(),
-        _ => r.result.clone().into(),
+    let state = cell(
+        r.state.word(),
+        match r.state_level {
+            _ if r.state == JobState::Off => p.dim(),
+            Level::Bad => p.bad(),
+            Level::Warn => p.warn(),
+            Level::Ok => Style::default(),
+        },
+    );
+    // The day alone for an older time; the pane has the clock.
+    let day = |t: Option<i64>| -> Cell {
+        t.map_or("-".into(), |t| {
+            clock(t, now).split(' ').next().unwrap_or("-").to_string()
+        })
+        .into()
     };
     let streak = if r.streak < 0 {
         cell(r.streak_text(), p.bad())
@@ -143,16 +158,14 @@ fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
                 Style::default()
             },
         ),
+        state,
         r.schedule.clone().into(),
         // The time alone when it starts today, else the day too.
         r.next.map_or("-".into(), |t| clock(t, now)).into(),
-        // The day alone for an older run; the pane has its time.
-        r.last
-            .map_or("-".into(), |t| {
-                clock(t, now).split(' ').next().unwrap_or("-").to_string()
-            })
-            .into(),
-        result,
+        day(r.last),
+        r.took.map_or("-".into(), |t| dur(t as f64)).into(),
+        day(r.ok_at),
+        day(r.fail_at),
         streak,
         r.triage.clone().into(),
     ]
@@ -192,8 +205,19 @@ pub fn detail(r: &Schedule, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     }
     for u in &r.runs {
         let at = u.at.map_or("-".into(), |t| clock(t, now));
-        let failed = u.failed.join(", ");
-        part("Run", format!("{at} {} {failed}", u.result).trim());
+        let took = u
+            .took
+            .filter(|t| *t > 0)
+            .map_or(String::new(), |t| format!("in {}", dur(t as f64)));
+        let failed = if u.failed.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", u.failed.join(", "))
+        };
+        part(
+            "Run",
+            &(format!("{at} {} {took}", u.result).trim_end().to_string() + &failed),
+        );
     }
     out
 }
@@ -211,6 +235,12 @@ mod tests {
             r.name = name.into();
             r.schedule = "02:00 daily".into();
             r.streak = streak;
+            r.state = if streak > 0 {
+                JobState::Ok
+            } else {
+                JobState::Failing
+            };
+            r.state_level = r.state.level();
             r.ok = Some(streak > 0);
             r.result = if streak > 0 { "success" } else { "failure" }.into();
             r.purpose = purpose.into();
@@ -238,7 +268,7 @@ mod tests {
         let lower: Vec<String> = HEADER.iter().map(|h| h.to_lowercase()).collect();
         let all = Schedule::COLUMNS;
         assert_eq!(lower, all[..HEADER.len()]);
-        assert_eq!(all[HEADER.len()..], ["repo"]);
+        assert_eq!(all[HEADER.len()..], ["result", "repo"]);
     }
 
     #[test]
@@ -257,13 +287,14 @@ mod tests {
         s.rows[0].triage = "no fix ar-485".into();
         let t = SchedulesView::default().table(&s, Palette::default(), 80, false);
         let head = text(&t[0]);
-        for col in ["NAME", "SCHEDULE", "LAST", "RESULT", "STREAK", "TRIAGE"] {
+        for col in ["NAME", "STATE", "STREAK", "TRIAGE"] {
             assert!(head.contains(col), "{head}");
         }
         assert!(t.iter().all(|l| text(l).chars().count() <= 80));
         assert!(text(&t[1]).contains("~ / Perf round"), "{}", text(&t[1]));
         assert!(text(&t[1]).contains("no fix ar-485"), "{}", text(&t[1]));
         assert!(text(&t[1]).contains("red 3"), "{}", text(&t[1]));
+        assert!(text(&t[1]).contains("failing"), "{}", text(&t[1]));
     }
 
     #[test]
@@ -324,6 +355,7 @@ mod tests {
             ok: Some(false),
             failed: vec!["PlayMode 2".into()],
             url: String::new(),
+            took: Some(84),
         }];
         let lines: Vec<String> = detail(&r, Palette::default(), s.at, 60)
             .iter()
@@ -334,7 +366,12 @@ mod tests {
         let why: Vec<&String> = lines.iter().filter(|l| l.contains("word")).collect();
         assert!(why.len() > 1 && why[0].contains("Why it exists"), "{why:?}");
         assert!(lines.iter().all(|l| l.chars().count() <= 60), "{lines:?}");
-        assert!(lines.iter().any(|l| l.contains("failure PlayMode 2")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("failure in 1m: PlayMode 2")),
+            "{lines:?}"
+        );
 
         let none = detail(&s.rows[1], Palette::default(), s.at, 60);
         assert!(text(&none[2]).contains("no purpose written"));

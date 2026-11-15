@@ -75,7 +75,7 @@ pub struct ProjectType {
     /// `notes doctor --projects` reports one missing).
     #[serde(default)]
     pub files: Vec<String>,
-    /// Registry facts this type needs. Only `repo` is checked today (`Registry::has_repo`).
+    /// Registry facts this type needs. Only `repo` is checked today (`project_map::Registry::has_repo`).
     #[serde(default)]
     pub requires: Vec<String>,
 }
@@ -334,7 +334,7 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `/daily:analysis`, `notes inbox add`).
+    /// Dated capture drop (`/remember`, `notes inbox add`).
     /// Defaults to `inbox` so configs predating this field keep working.
     #[serde(default = "default_inbox")]
     inbox: String,
@@ -342,6 +342,10 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
+    /// Dirs `notes find` searches. Optional: when empty, resolve() uses knowledge, permanent,
+    /// refs, and the vault's employment/ and lab/ trees.
+    #[serde(default)]
+    search_dirs: Vec<String>,
     /// Other orgs this profile rolls up (`rollup = ["acmecorp"]`). Empty = own only. Read here
     /// only as the fallback for `index-orgs`.
     #[serde(default)]
@@ -504,6 +508,8 @@ pub struct Profile {
     pub inbox: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
+    /// Dirs searched by `notes find` (existing dirs only).
+    pub search_dirs: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
 }
@@ -601,6 +607,7 @@ fn builtin_default() -> RawConfig {
             meetings: None,
             inbox: "inbox".into(),
             tag_dirs: Vec::new(),
+            search_dirs: Vec::new(),
             rollup: Vec::new(),
             index_orgs: Vec::new(),
         },
@@ -765,6 +772,24 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     tag_scan.dedup();
     tag_scan.retain(|d| d.exists());
 
+    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the prose
+    // that holds knowledge: compiled articles, zettels, refs, and the vault-wide employment/
+    // (interview prep, job notes) and lab/ trees. Daily notes stay out: they are noise.
+    let mut search_dirs: Vec<PathBuf> = if rp.search_dirs.is_empty() {
+        vec![
+            join(&rp.knowledge),
+            join(&rp.zettel),
+            join(&rp.refs),
+            vault.join("employment"),
+            vault.join("lab"),
+        ]
+    } else {
+        rp.search_dirs.iter().map(|s| join(s)).collect()
+    };
+    search_dirs.sort();
+    search_dirs.dedup();
+    search_dirs.retain(|d| d.exists());
+
     Ok(Profile {
         name,
         source: format!("{how} (config: {config_src})"),
@@ -811,34 +836,60 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         outbox: vault.join(&raw.outbox),
         inbox: join(&rp.inbox),
         tag_scan,
+        search_dirs,
         state_dir,
         log_file,
     })
 }
 
-/// Every profile NAME defined in the active config, sorted. Cross-profile aggregation
-/// (`notes focus --all`) iterates this to visit all profiles without knowing them ahead
-/// of time. Falls back to the built-in default's single `personal` profile when no config
-/// file exists — the same source `resolve` reads, so the two never disagree.
+/// Every profile NAME this machine lists, sorted. Cross-profile aggregation
+/// (`notes focus --all`, the board, `config --profiles` and through it lab-sync) iterates this
+/// to visit all profiles without knowing them ahead of time. A work profile (one named in
+/// project-map.json `clients`) is listed only on its own machine ([`machine_profile`]), so the
+/// work Mac shows its job and the personal fleet does not; `--profile` still reaches it. Falls
+/// back to the built-in default's single `personal` profile when no config file exists — the
+/// same source `resolve` reads, so the two never disagree.
 pub fn all_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw.profile.keys().cloned().collect();
-    names.sort();
-    Ok(names)
+    Ok(listed(&raw, raw.profile.keys()))
 }
 
 /// The profiles board automation may write: [`all_profile_names`] less any with
 /// `automation = false`. Every fleet-wide loop that rewrites or judges sheets uses this.
 pub fn managed_profile_names() -> Result<Vec<String>> {
     let (raw, _src) = load_raw()?;
-    let mut names: Vec<String> = raw
+    let names = raw
         .profile
         .iter()
         .filter(|(_, p)| p.automation)
-        .map(|(n, _)| n.clone())
+        .map(|(n, _)| n);
+    Ok(listed(&raw, names))
+}
+
+/// This machine's own profile: what `resolve` picks with no `--profile` flag
+/// ($NOTES_PROFILE, then `[hostname_map]`, then `default_profile`).
+pub fn machine_profile() -> Result<String> {
+    let (raw, _src) = load_raw()?;
+    Ok(pick_profile(&raw, None).0)
+}
+
+/// `names` less the work profiles this machine does not list, sorted.
+fn listed<'a>(raw: &RawConfig, names: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let machine = pick_profile(raw, None).0;
+    listed_in(names, &machine, project_map::cached().as_deref())
+}
+
+fn listed_in<'a>(
+    names: impl Iterator<Item = &'a String>,
+    machine: &str,
+    reg: Option<&project_map::Registry>,
+) -> Vec<String> {
+    let mut out: Vec<String> = names
+        .filter(|n| reg.is_none_or(|r| r.profile_visible(n, machine)))
+        .cloned()
         .collect();
-    names.sort();
-    Ok(names)
+    out.sort();
+    out
 }
 
 /// Whether board automation may touch `profile` (see [`managed_profile_names`]). An unknown
@@ -1014,6 +1065,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         outbox: PathBuf::from(root).join("outbox.md"),
         inbox: r.join("inbox"),
         tag_scan: Vec::new(),
+        search_dirs: Vec::new(),
         state_dir: r.join(".state"),
         log_file: r.join(".state/journal.log"),
     }
@@ -1147,6 +1199,25 @@ mod tests {
         assert_eq!(name, "AcmeCorp");
         assert!(src.contains("hostname_map"));
         std::env::remove_var("NOTES_HOSTNAME");
+    }
+
+    // The personal fleet lists no work profile; the work machine lists its own and no other
+    // job's; no registry hides nothing. The rule itself: project-map's visibility fixture.
+    #[test]
+    fn a_work_profile_is_listed_only_on_its_own_machine() {
+        let reg = project_map::Registry::parse(
+            r#"{"clients":{"acme":{"profile":"acmework"},"globex":{"profile":"globex"}}}"#,
+        );
+        let names: Vec<String> = ["acmework", "bnb", "globex", "personal"]
+            .map(String::from)
+            .to_vec();
+        let on = |machine: &str, r| listed_in(names.iter(), machine, r);
+        assert_eq!(on("personal", reg.as_ref()), ["bnb", "personal"]);
+        assert_eq!(
+            on("acmework", reg.as_ref()),
+            ["acmework", "bnb", "personal"]
+        );
+        assert_eq!(on("personal", None), names);
     }
 
     // A profile nested under another's root (a work profile under personal's ~/.notes) is the case

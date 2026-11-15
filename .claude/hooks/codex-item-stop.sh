@@ -18,7 +18,7 @@ jq -e --arg s "$sid" '.state == "running" and (.pr // "") == ""
   and ((.sessions // "") | split(" ") | index($s) != null)' <<<"$show" >/dev/null || exit 0
 
 jq -n --arg i "$item" '{decision: "block", reason: ("Queue item \($i) is still running with no PR on it, so stopping now files it failed. Close it first, then stop:"
-  + " landed: agent-land <N> --item \($i) (a Forgejo repo: the way your brief says)."
+  + " landed: agent-land <N> --item \($i)."
   + " A PR that is not merging: agent-queue set \($i) pr=<owner>/<repo>#<N>; agent-queue move \($i) review."
   + " Blocked on the human: agent-ask post with your options and --recommend, then agent-queue requeue \($i) --ask <id> (the answer starts it again)."
   + " Done another way your brief names (proof, a doc and an ask): close it that way."

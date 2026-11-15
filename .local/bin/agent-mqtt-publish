@@ -26,7 +26,7 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
-OVERVIEW_TTL=45 # seconds: under fleet-state.timer's minute, so each tick's run renders afresh
+READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
 [ -r "$_WATCH_LIB" ] || _WATCH_LIB="$(dirname "$(realpath "$0")")/../lib/sentinel-watch.sh"
@@ -125,8 +125,30 @@ hand_fired() {
     ! grep -qE '^(SCHEDULE=["'"'"']?[^"'"'"' ]|AUTOSTART=["'"'"']?yes)' "$1"
 }
 
+# slow_reader <fd var> <kind/id> <cmd...> -> sets <fd var> to an fd that yields the command's output,
+# started now and printed only on success; or, outside a dry run, the last payload sent on that topic
+# when it is younger than READER_TTL.
+slow_reader() {
+    local var="$1" sent fd; sent="$(tfile "agents/$HOST_ID/$2")"; shift 2
+    if [ "$mode" != dry ] && [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < READER_TTL)); then
+        exec {fd}< "$sent"
+    else
+        exec {fd}< <(out="$("$@" 2>/dev/null)" && printf '%s' "$out")
+    fi
+    printf -v "$var" '%s' "$fd"
+}
+
 snapshot() {
-    local f name st
+    local f name st dfd='' ofd=''
+
+    # The two slow readers, fleet-dispatch stats and hub phone (2s and 4s at idle, 21s each at load 6
+    # with 600 queued items), start here and run while the runner and watch loops do, so a run costs
+    # the slowest part, not the sum (ar-1753). A run within READER_TTL of a reader's last send repeats
+    # that send instead: hooks (watch-companion-loop on each transition, agentctl's 5s status hook)
+    # fire many times a minute, and each one re-running the readers under the lock starved the --full
+    # timer run past its 60s (ar-2310).
+    command -v fleet-dispatch >/dev/null 2>&1 && slow_reader dfd summary/dispatch fleet-dispatch stats
+    command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do
@@ -196,9 +218,10 @@ snapshot() {
     # Dispatch: runnable queue work, starts and reaps in the last hour, flapping items, as
     # fleet-dispatch itself counts them (`fleet-dispatch stats`); nothing is derived here. A queue
     # it cannot read publishes nothing, so the sensor goes unavailable at expire_after.
-    if command -v fleet-dispatch >/dev/null 2>&1; then
+    if [ -n "$dfd" ]; then
         local dstats
-        dstats="$(fleet-dispatch stats 2>/dev/null)" && jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
+        dstats="$(cat <&"$dfd")"; exec {dfd}<&-
+        jq -e '.runnable | numbers' <<< "$dstats" >/dev/null 2>&1 &&
             emit summary dispatch mdi:tray-full "$dstats" '{"state_class":"measurement"}'
     fi
 
@@ -221,17 +244,11 @@ snapshot() {
     fi
 
     # Overview: `hub phone --json`, the phone widget's rows. They ride as attributes because an HA
-    # state over 255 chars is rejected; the state is the worst row. A run within OVERVIEW_TTL of the
-    # last send repeats it: hooks fire many times a minute, and hub reads Prometheus, which must not
-    # cost a hooked run its budget (PROM_TIMEOUT keeps a dead one inside agentctl's five seconds).
-    if command -v hub >/dev/null 2>&1; then
-        local overview sent
-        sent="$(tfile "agents/$HOST_ID/summary/overview")"
-        if [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < OVERVIEW_TTL)); then
-            overview="$(cat "$sent")"
-        else
-            overview="$(PROM_TIMEOUT=3 hub phone --json 2>/dev/null)"
-        fi
+    # state over 255 chars is rejected; the state is the worst row. A run within READER_TTL of the
+    # last send repeats it (slow_reader), and PROM_TIMEOUT keeps a dead Prometheus out of a hooked run.
+    if [ -n "$ofd" ]; then
+        local overview
+        overview="$(cat <&"$ofd")"; exec {ofd}<&-
         jq -e '.rows | arrays' <<< "$overview" >/dev/null 2>&1 &&
             emit summary overview mdi:view-dashboard "$overview"
     fi

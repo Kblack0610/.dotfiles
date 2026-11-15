@@ -7,9 +7,29 @@
 const $ = (id) => document.getElementById(id);
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+// The empty-state words, hub_core::reading's NOT_READ and NO_DATA; its guard test keeps them equal.
+const NOT_READ = "not read", NO_DATA = "no data";
+
+// The answer to one request. A fetch that got none (agent-web restarting or down, the network
+// gone) says that, never the browser's bare "NetworkError"; an abort stays an abort.
+async function reach(path, opts) {
+  try {
+    return await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    console.warn(path, e);
+    throw new Error(`agent-web did not answer ${path.split("?")[0]} (${(e && e.message) || e}). It may be restarting: retry in a few seconds.`);
+  }
+}
+
+// How a sheet row closes (`notes ptask done` or `drop`), shared by the board's form and Home's sheet
+// cards: each verb's kinds with their labels, what an empty field is told, and the row a write names.
+const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, because"]], drop: [["why", "why"], ["dup", "duplicate of id"]] };
+const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
+const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
 
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({ credentials: "same-origin" }, opts));
+  const r = await reach(path, opts);
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
     // What failed first, then the server's own words, then what to do (comms-standard, UI text).
@@ -24,7 +44,7 @@ const post = (path, body) => api(path, { method: "POST", headers: { "content-typ
 // One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
 // or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
 async function putBase(path, body, what, then = "") {
-  const r = await fetch(path, { method: "PUT", credentials: "same-origin", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const r = await reach(path, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (r.ok || r.status === 409) return { stale: r.status === 409, doc: await r.json() };
   const said = ((await r.text()) || r.statusText).trim().slice(0, 300);
@@ -32,27 +52,43 @@ async function putBase(path, body, what, then = "") {
 }
 
 // Run fn, and if it is asked for again while running, run it once more after.
-// An event storm becomes at most one trailing refetch, with no timer involved.
+// An event storm becomes at most one trailing refetch, with no timer involved. Every call returns
+// the run, trailing refetch included, so a caller can wait for the read to land.
 function coalesce(fn) {
-  let running = false, again = false;
-  return async function run() {
-    if (running) { again = true; return; }
-    running = true;
-    try { await fn(); } catch (e) { console.warn(e); }
-    running = false;
-    if (again) { again = false; run(); }
+  let running = null, again = false;
+  return function run() {
+    if (running) { again = true; return running; }
+    running = (async () => {
+      do { again = false; try { await fn(); } catch (e) { console.warn(e); } } while (again);
+      running = null;
+    })();
+    return running;
   };
 }
 
 // Epoch milliseconds as HH:MM local time.
 const clock = (ms) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
-// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday otherwise.
+// A hub level ("bad", "warn", other) as its CSS class, "" for none.
+const levelClass = (level) => (level === "bad" ? "bad" : level === "warn" ? "warn" : "");
+
+// A time (epoch seconds, or an ISO string) as HH:MM today, with its weekday within six days,
+// and with its MM-DD past that, where a weekday would name the wrong week.
 function when(t) {
   if (!t) return "-";
   const d = new Date(typeof t === "number" ? t * 1e3 : t);
   if (isNaN(d)) return esc(t);
-  return d.toDateString() === new Date().toDateString() ? clock(d.getTime())
-    : d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return clock(d.getTime());
+  const pad = (n) => String(n).padStart(2, "0");
+  return Math.abs(d - Date.now()) < 6 * 86400e3
+    ? `${d.toLocaleDateString([], { weekday: "short" })} ${clock(d.getTime())}`
+    : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${clock(d.getTime())}`;
+}
+// One labelled line of a record's page, and a hub_core page Part (session_page, machine_page)
+// drawn as one: its link opens in place, or a URL outside the hub in a new tab.
+const pageRow = (label, html, warn) => `<div class="pgrow"><span class="pgk">${esc(label)}</span><span class="pgv${warn ? " capwarn" : ""}">${html}</span></div>`;
+function pagePart(p) {
+  const out = p.link && !p.link.startsWith("#") ? ' target="_blank" rel="noopener"' : "";
+  return pageRow(p.label, p.link ? `<a href="${esc(p.link)}"${out}>${esc(p.text)}</a>` : esc(p.text), p.warn);
 }
 // A time (epoch seconds, or an ISO string) as epoch milliseconds, NaN when it is neither.
 const tms = (t) => new Date(typeof t === "number" ? t * 1e3 : t).getTime();
@@ -94,6 +130,13 @@ const tile = (l, v, c, sub, href) => {
   return `${open} style="--c:${c}"><span class="tl">${l}</span><span class="tv">${v}</span>${sub ? `<span class="ts1">${sub}</span>` : ""}${close}`;
 };
 
+// A section head: its title and its count, nothing else (docs/dashboards.md, Section head). A problem
+// the section holds is a line under the head while it holds, and level (warn, bad) hues the title,
+// so a shut fold still says so; detail is a fold; what the section is for is hub_core::layout's.
+const secHead = (id, title, n, level, tag = "h2") =>
+  `<${tag} class="sec${level === "warn" || level === "bad" ? ` ${level}` : ""}"${id ? ` id="sec-${id}"` : ""}>${esc(title)}` +
+  `${n == null || n === "" ? "" : ` <span class="n">${esc(n)}</span>`}</${tag}>`;
+
 // Card pieces for the tabs whose rows are cards (Queue, Waiting): a title row with chips, one
 // quiet line, then folds for what the human rarely needs. Every argument named html is already
 // escaped; text arguments are escaped here.
@@ -121,8 +164,10 @@ const PHONE_WIDTH = "(max-width: 760px)";
 const isPhone = () => typeof matchMedia === "function" && matchMedia(PHONE_WIDTH).matches;
 const PFOLD = {};
 const pfoldOpen = (k) => !isPhone() || !!PFOLD[k];
-const pfold = (k, summary, inner) =>
-  `<details class="pfold" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
+// `head`: the summary is the part's section head, so a wide screen shows it as the head (app.css .hfold)
+// and a phone taps it; one markup for both sides, so crossing the width needs no redraw.
+const pfold = (k, summary, inner, head = false) =>
+  `<details class="pfold${head ? " hfold" : ""}" data-pf="${esc(k)}"${pfoldOpen(k) ? " open" : ""}><summary>${summary}</summary>${inner}</details>`;
 // Crossing the width: every drawn fold, on every tab, takes the state for the new side.
 const pfoldFit = () => document.querySelectorAll("details.pfold").forEach((d) => { d.open = pfoldOpen(d.dataset.pf); });
 // The facts (text) that have a value, as a name/value grid for a fold.
@@ -132,21 +177,23 @@ function facts(rows) {
 }
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
 // or "overdue 2h" once it has passed. Empty without one.
-function etaText(p) {
+// `overdue`, when the server said it (Home's Running `overdue`, the clock its Overdue chip uses),
+// decides lateness so the cell and the chip agree; otherwise this page's clock does.
+function etaText(p, overdue) {
   if (!p || !p.eta_epoch) return "";
   const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return late > 0
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(late)} (ETA was ${stamp(p.eta_epoch)})</span>`
+  return (overdue ?? late > 0)
+    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(Math.max(late, 0))} (ETA was ${stamp(p.eta_epoch)})</span>`
     : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.
 function keepTyping(sel, draw) {
   const f = document.activeElement, card = f && f.closest && f.closest(sel);
-  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id, v: f.value } : null;
+  const keep = card && f.matches("[data-free]") ? { k: card.dataset.t || card.dataset.id || card.dataset.close, v: f.value } : null;
   draw();
   if (!keep) return;
-  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id) === keep.k);
+  const again = [...document.querySelectorAll(sel)].find((c) => (c.dataset.t || c.dataset.id || c.dataset.close) === keep.k);
   const input = again && again.querySelector("[data-free]");
   if (input) { input.value = keep.v; input.focus(); }
 }
@@ -162,36 +209,58 @@ function paint(el, html, open) {
   if (open) el.querySelectorAll("details[data-k]").forEach((d) => { open[d.dataset.k] = d.open; });
   el.innerHTML = html;
   el.scrollTop = y;
+  stripInView(el);
+}
+// A phone shows a few of an inner tab strip's tabs (Infra has six), so a repaint scrolls the open
+// one into its strip; the strip is new html each paint and starts scrolled to its left end.
+function stripInView(el) {
+  for (const s of el.querySelectorAll ? el.querySelectorAll(".istrip") : []) {
+    const b = s.querySelector?.("button.on");
+    if (!b?.getBoundingClientRect) continue;
+    const r = s.getBoundingClientRect(), o = b.getBoundingClientRect();
+    if (o.right > r.right || o.left < r.left) s.scrollLeft += o.left - r.left - (r.width - o.width) / 2;
+  }
 }
 
 // A tab whose source pushes nothing (Prometheus, journald) re-reads on a timer while it is
-// the open tab and the page is visible. A tick that falls while the page is hidden marks it
-// behind, so the resync on coming back (app.js) reads it once; the tab's onEvent must refresh
-// on "resync". One interval per tab, cleared as soon as the tab is left; `ms` is the source's
-// own cadence. Returns the tab's show(): read now, then keep reading.
-function poll(tab, refresh, ms) {
+// the open tab (or, given `shown`, while its part shows: an inner tab) and the page is visible. A
+// tick that falls while the page is hidden marks it behind, so the resync on coming back (app.js)
+// reads it once; the tab's onEvent must refresh on "resync". One interval per tab, cleared as soon
+// as it is not shown; `ms` is the source's own cadence. Returns the tab's show(): read now, then
+// keep reading.
+function poll(tab, refresh, ms, shown = () => st.tab === tab) {
   let timer = null;
   const tick = () => {
-    if (st.tab !== tab) { clearInterval(timer); timer = null; return; }
+    if (!shown()) { clearInterval(timer); timer = null; return; }
     if (document.hidden) behind = true; else refresh();
   };
   return () => { refresh(); if (!timer) timer = setInterval(tick, ms); };
 }
 
 // A tab whose source pushes file events re-reads on them (`kinds`, plus resync) only while it
-// is open; one that changed while closed is read once, the next time it is shown. show(force)
+// is open (`shown`; a Log part, while its inner tab is); one that changed while closed is read
+// once, the next time it is shown. show(force)
 // also reads when the tab has nothing yet, so a failed first read is retried on the next visit.
 // A folded Log section lists at most this many rows, then says how many older ones it left out.
 const LOG_ROWS = 50;
 const older = (n) => (n > 0 ? `<div class="muted more">+${n} older</div>` : "");
+// A table cell's text at most two lines (ui.md rule 9), the whole of it on hover.
+const clamp2 = (html, full) => `<div class="c2" title="${esc(full)}">${html}</div>`;
+// A table cell's text on one line, its second line on hover and in the selected row, the whole on hover.
+const clamp1 = (html, full) => `<div class="c12" title="${esc(full)}">${html}</div>`;
+// A record cell (ui.md rule 9): its name (html; `full` its text) on line one over a muted second
+// line (html; `subFull` its text), each one line cut with an ellipsis and whole on hover, so every
+// row is the same two lines high.
+const rec2 = (html, full, sub, subFull) =>
+  `<div class="c1" title="${esc(full)}">${html}</div><div class="c1 muted" title="${esc(subFull)}">${sub || "&nbsp;"}</div>`;
 
-function pushed(tab, kinds, refresh) {
+function pushed(tab, kinds, refresh, shown = () => st.tab === tab) {
   let stale = true;
   return {
     show(force) { if (stale || force) { stale = false; refresh(); } },
     onEvent(ev) {
       if (ev.kind !== "resync" && !kinds.includes(ev.kind)) return;
-      if (st.tab === tab) refresh(); else stale = true;
+      if (shown()) refresh(); else stale = true;
     },
   };
 }

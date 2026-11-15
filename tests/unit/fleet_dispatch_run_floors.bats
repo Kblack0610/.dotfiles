@@ -95,6 +95,69 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
+@test "red floor: a fleet past its pace target still starts a red, a tripped watch's first, up to the floor; a plain item waits" {
+  # 2026-11-12: 58 live sessions against a target of 30 returned NOOP before the red floor, and no red started for 21h.
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=1 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  agent-queue add --project game --slug r2 --tags 'red cause:b' "fix r2" >/dev/null
+  agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
+  # Negative control first: no red floor, the full fleet starts nothing.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'pace target: 8 live sessions, the away pace target is 6; red items start on the red floor (DISPATCH_RED_FLOOR=1, plus 1 for tripped watches)'
+  assert_equal "$(grep -o 'started queue item [a-z0-9]*' <<<"$output" | head -n 1)" 'started queue item w1'
+  assert_output --partial 'started queue item r1 on the red floor'
+  refute_output --partial 'started queue item r2'
+  refute_output --partial 'started queue item p'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "red floor: an urgent item no runner session can be parked for does not hold a red at a full fleet" {
+  # 2026-11-13: three heavy urgent items waited on run units every pass, and the pass returned there,
+  # before the red floor, so 13 watch reds stayed queued all day.
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=1 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue add --project game --slug big --priority urgent --weight heavy "big urgent" >/dev/null
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  # Negative control first: no red floor, the urgent item waits and nothing starts.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'run units: big (heavy needs 2 run units, 0 free)'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item r1 on the red floor'
+  refute_output --partial 'started queue item big'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "red floor: a fleet past its pace target with its live reds at the floor starts nothing" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=2 DISPATCH_PER_PASS=3
+  fleet_state 8
+  local s
+  for s in l1 l2; do
+    started_item "$s" "lab:game-agent-$s" run "area-$s"
+    sed -i "/^mode:/a tags: red cause:$s" "$AGENT_QUEUE_DIR"/running/*-"$s".md
+  done
+  printf 'game-agent-l1\ngame-agent-l2\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  # Negative control: one live red fewer opens a slot, and r1 starts on it.
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item r1 on the red floor'
+}
+
 @test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {
   red_held_machine
   export DISPATCH_RED_FLOOR=1
@@ -188,6 +251,67 @@ load 'fleet_dispatch/common'
   assert_output ''
 }
 
+# 2026-11-14: codex sat 18% used at 71% of its week (codex-underuse red, ar-2432, ar-2433) because the
+# pace target counts every harness (26 of 25) and only a hand start passed it.
+@test "source floor: a fleet past its pace target starts work on a source whose week is going unused; a source that is not under-used starts nothing" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  cpu 60 30 0 10   # real idle 10%: the floor goes past it, as the other floors do
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  # Negative control: codex is on pace for its week, so the full fleet starts nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  under_used codex
+  # The floor off: under-used, the same full fleet still starts nothing.
+  DISPATCH_SOURCE_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'under-used near its reset: codex 18% used, 72% of its week gone, resets in 46h, so codex takes work on the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_output --partial 'started queue item fix-menu on codex (sol), the source floor (DISPATCH_SOURCE_FLOOR=1)'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_equal "$(outcome)" WORKED
+  # One start a pass: the next item waits for the next pass.
+  assert_equal "$(grep -c 'agent-codex' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "source floor: past its pace target, a source with no room, a tier-3 item, a named model and a red still start nothing" {
+  route_ready
+  acct main:ok
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  under_used codex
+  srcs codex:reserve:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  # Room, but the item names its own model, or is a red (the red floor's): it stays queued.
+  srcs codex:ok:5
+  agent-queue set fix-menu model=opus >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  agent-queue set fix-menu model= >/dev/null
+  agent-queue set fix-menu "tags=red" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  agent-queue set fix-menu "tags=" >/dev/null
+  # Room, but the only item is tier 3: past the unattended ceiling, as a routed start.
+  srcs codex:ok:5
+  agent-queue move fix-menu done --status ok >/dev/null
+  agent-queue add --project game --slug ci-first "ci: the runner retries a dead batch" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  [ -n "$(qitem queued ci-first)" ] || fail "a tier-3 item left the queue on the source floor"
+}
+
 @test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
   idle_held_machine
   agent-queue add --project game --slug busy "game work" >/dev/null
@@ -206,6 +330,62 @@ load 'fleet_dispatch/common'
   assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
   refute_output --partial 'started queue item g2'
   refute_output --partial 'started queue item a2'
+}
+
+@test "project floor: a fleet past its pace target still starts an idle project's item; a busy project's waits" {
+  # 2026-11-12 18:08 to 11-13 21:00: hand-started game sessions held 58-78 live against a target of
+  # 25-50, the pass returned NOOP before the project floor, and trader's 15 queued items waited 27h.
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6
+  fleet_state 8
+  agent-queue add --project game --slug busy "game work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g2 "more game work" >/dev/null
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  agent-queue add --project app --slug a2 "more app work" >/dev/null
+  # Negative control first: no project floor, the full fleet starts nothing.
+  export DISPATCH_PROJECT_FLOOR=0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  export DISPATCH_PROJECT_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'pace target: 8 live sessions, the away pace target is 6; a project nothing is working on starts on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  assert_output --partial 'started queue item a1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
+  refute_output --partial 'started queue item g2'
+  refute_output --partial 'started queue item a2'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "project floor: past its pace target, agent-hold and an account in its reserve still hold an idle project's item" {
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
+  fleet_state 8
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+  stub agent-hold 'exit 0'
+  acct main:reserve
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+}
+
+@test "project floor: past its pace target, a finding that holds the idle project's item settles NOOP, not BLOCKED" {
+  idle_held_machine
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_PROJECT_FLOOR=1
+  fleet_state 8
+  agent-queue add --project app --slug a1 "app work" >/dev/null
+  findings "$(finding starved pool:unity '["app"]')"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  refute_output --partial 'under-used'
+  assert_equal "$(outcome)" NOOP
 }
 
 @test "project floor: an item parked on its PR keeps its project busy, as a running one does" {
@@ -281,9 +461,10 @@ load 'fleet_dispatch/common'
 
 @test "room gone by the start: BLOCKED names the closest account and how far past its pace, from room's own line" {
   game_ready
-  # the gate's ask finds room; the start's ask, a moment later, finds none
+  # the away target's and the gate's asks find room; the start's ask, a moment later, finds none
   acct alt:ok:/home/u/.claude-personal
   mv "$NOTES_FIXTURE/acct.json" "$NOTES_FIXTURE/acct.0.json"
+  cp "$NOTES_FIXTURE/acct.0.json" "$NOTES_FIXTURE/acct.1.json"
   acct "alt:pace:/home/u/.claude-personal:1 point over its weekly pace (15% used, 9% of its week gone, 5 points of slack)"
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -313,6 +494,26 @@ load 'fleet_dispatch/common'
   sed -i "s/^- [0-9-]* [0-9:]* present start:/- $(date -d '-61 min' '+%Y-%m-%d %H:%M') present start:/" "$LOG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
+}
+
+@test "run while the human is here promotes only what the trickle can start, not a pass's whole room" {
+  game_ready
+  local a; for a in save menu audio sound; do
+    row game human "fix crash on $a" "- [ ] fix crash on $a #high $T"
+    verdict game human "fix crash on $a" dispatch S 1 "$a"
+  done
+  stub fleet-presence 'echo "here 3 desktop"'
+  export DISPATCH_PER_PASS=5 DISPATCH_LOW_WATER=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
+  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
+  # Away, the same room promotes every row it can start (negative control).
+  stub fleet-presence 'echo "away 45 tmux"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(( $(grep -c 'wt new' "$NOTES_FIXTURE/calls.log") + $(ls "$AGENT_QUEUE_DIR/queued" | wc -l) ))" 5
 }
 
 @test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
@@ -466,17 +667,20 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "run publishes BLOCKED when a gate leaves a queue item waiting, NOOP when the human held dispatch" {
+@test "run publishes BLOCKED when a gate leaves a queue item waiting, the human's dispatch hold included, so its Stopped line and runner row show it" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'queue item fix-game waits'
   assert_equal "$(outcome)" BLOCKED
-  stub agent-hold 'echo "dispatch held"; exit 1'
+  stub agent-hold 'echo "held: dispatch since 2026-11-12T09:04:57-0800 by dotfiles: until the queue is set up"; exit 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'held (agent-hold'
-  assert_equal "$(outcome)" NOOP
+  assert_output --partial 'held (agent-hold dispatch) by dotfiles: until the queue is set up'
+  assert_equal "$(outcome)" BLOCKED
+  DISPATCH_STARVED_MIN=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --regexp '^Dispatch stopped [0-9]+s: held by dotfiles: until the queue is set up\. Clears with agent-hold release dispatch\.$'
   assert_not_called 'wt new'
 }
 
@@ -550,7 +754,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r '[.could_start, .runnable] | @tsv' "$FLEET_DISPATCH_DIR/headroom.json")" $'1\t1'
   run cmd_stats
   assert_equal "$(jq -r .could_start <<<"$output")" 1
-  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load]' <<<"$output")" '[0,6,0,0,0]'
+  assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live]' <<<"$output")" '[0,25,0,0,0,0]'
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'

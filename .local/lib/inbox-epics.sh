@@ -6,6 +6,7 @@
 # write time: an id the model invents would sit on the row as a dangling parent until `notes doctor
 # --projects` found it. A row left with no `#of/` goes under its system's standing epic, which
 # `notes ptask` links (`~/.local/src/docs/lifecycle.md`, "What an epic is").
+# It also holds read_board, the one board read both inbox runners make.
 
 # epics_open <board json>: `id<TAB>project<TAB>title` for every open epic.
 epics_open() {
@@ -71,4 +72,20 @@ epic_new() {
 under_epic() {
   [[ " $1 " == *' #of/'* ]] && { printf '%s\n' "$1"; return; }
   printf '%s #of/%s\n' "$1" "$2"
+}
+
+# read_board: `notes board --json` into BOARD, which holds the board only when it returns 0. A
+# failed read puts notes' own first error line and exit code in the log (the caller's say) and the
+# pass's reason (proof_why), so the red it raises names its cause.
+read_board() {
+  local err rc why
+  err="$(mktemp)"
+  BOARD="$(notes board --json 2>"$err")"; rc=$?
+  if [ "$rc" != 0 ]; then
+    why="$(grep -m1 '[^[:space:]]' "$err" | clean 120)"
+    why="notes board --json failed (exit $rc)${why:+: $why}"
+    say "$why"; proof_why "$why"
+  fi
+  rm -f -- "$err"
+  return "$rc"
 }

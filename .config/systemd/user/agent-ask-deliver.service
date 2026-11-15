@@ -1,0 +1,8 @@
+[Unit]
+Description=Deliver recorded ask answers (agent-ask deliver --all)
+
+[Service]
+Type=oneshot
+# Repeats until nothing is queued, so an answer given while it runs goes out in this run.
+ExecStart=%h/.local/bin/agent-ask deliver --all
+TimeoutStartSec=300

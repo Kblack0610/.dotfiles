@@ -1,24 +1,10 @@
-# notes-cockpit - machine-local config for version rolls and summaries
+# notes-cockpit - prompts for version summaries
 
-`notes-version-summary` (which `notes-roll` calls after every roll) reads one optional machine-local file from this directory, `repos`, which is NOT committed because it carries repo paths. The tracked files here are this README and `prompts/`. (The directory keeps its name from the retired tmux task cockpit; `NOTES_COCKPIT_CONF` overrides it.)
+The tracked files here are this README and `prompts/`. (The directory keeps its name from the retired tmux task cockpit.)
 
 ## Files
 
-### `repos` - project -> code repo (for version summaries)
-
-Used by `notes-version-summary` to pull the git log for a version's "critical changes". One
-`project=/abs/repo[:pathfilter]` per line. `~` is expanded. Optional - a project with no entry still
-gets a summary from the frozen note's own body, just without commit context.
-
-```
-# ~/.config/notes-cockpit/repos
-my-web-app=~/dev/monorepo:apps/web
-my-api-service=~/dev/my-api-service
-```
-
-The `pathfilter` scopes `git log` to a subdir (for monorepos). Ticket/PR refs (`#490`, `VK-123`,
-`CU-abc`) are auto-extracted from the note body + commit subjects and appended as a `Tickets:` line -
-shown only when refs are found.
+`notes-version-summary` pulls the git log for a version's "critical changes" from the project's checkout and its `path` inside it, both from the project registry (`project_repo_path` and `project_field <p> path` in `project-name.sh`). A project with no checkout on this machine still gets a summary from the frozen note's own body, just without commit context. Ticket/PR refs (`#490`, `VK-123`, `CU-abc`) are auto-extracted from the note body and commit subjects and appended as a `Tickets:` line, shown only when refs are found. A `repos` file left here from before is no longer read.
 
 ### `prompts/` - what the model is told (tracked)
 

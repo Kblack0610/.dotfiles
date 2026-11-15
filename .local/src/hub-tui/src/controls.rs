@@ -8,6 +8,7 @@
 use std::cell::Cell as Remembered;
 
 use hub_core::capacity::{Capacity, Part};
+use hub_core::links::Link;
 use hub_core::session_actions::{available, Action, Session, Snapshot};
 use hub_core::session_page::{Part as PagePart, SessionPage};
 use hub_core::session_table::{self, Feed, SessionRow, Source};
@@ -20,10 +21,8 @@ use serde_json::Value;
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, dur, older, Palette};
+use crate::fmt::{clock, dur, Palette};
 
-/// Rows drawn; a day's ended sessions run to hundreds, and `/` reaches the rest.
-const OPEN: usize = 200;
 /// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
 const ON_PAGE: [&str; 7] = ["SYNC", "CONFLICTS", "TREE", "PR", "PRS", "CI", "PLAN"];
 
@@ -82,6 +81,8 @@ pub struct Controls {
     pub state: Vec<Value>,
     /// The state document's bucket vocabulary, which orders the rows.
     vocab: Vocab,
+    /// One line per fleet worker the state says did not answer (`session_table::silent`).
+    silent: Vec<String>,
     /// fleet-bench forecast's `schedule` rows: each session's phases and finish p50.
     pub schedule: Vec<Value>,
     /// The selected session's detail is shown under the table (Enter).
@@ -115,14 +116,15 @@ impl Controls {
         self.snap.as_ref().map_or(&[], |s| s.agents.as_slice())
     }
 
-    /// The rows the view keeps, up to `OPEN`, in the table's own order or the view's sort.
+    /// Every row the view keeps, in the table's own order or the view's sort. agent-web draws its
+    /// first `open_rows`; here the page scrolls one-line rows and the frame paints the window
+    /// that follows the selection.
     pub fn rows(&self) -> Vec<Row<'_>> {
         let agents = self.agents();
         self.table
             .view
             .apply(&self.all)
             .into_iter()
-            .take(OPEN)
             .map(|r| {
                 let on = r.source == Source::Live;
                 Row {
@@ -141,8 +143,21 @@ impl Controls {
             .collect()
     }
 
+    /// Every row before the view, as Home's Sessions card counts them; None until the first
+    /// snapshot, so the card reads as reading and never as no sessions.
+    pub fn all(&self) -> Option<&[SessionRow]> {
+        self.snap.as_ref().map(|_| self.all.as_slice())
+    }
+
+    /// The shown row a session page id names (`hub_core::session_page::find`): a session id, a
+    /// live row's target or an ended row's item, as `#sessions/sessions/<id>` resolves on the web.
+    pub fn position(&self, id: &str) -> Option<usize> {
+        let key = &hub_core::session_page::find(&self.all, id)?.key;
+        self.rows().iter().position(|r| r.target == key)
+    }
+
     fn len(&self) -> usize {
-        self.table.view.apply(&self.all).len().min(OPEN)
+        self.table.view.apply(&self.all).len()
     }
 
     /// Rebuild the rows after `change`, keeping the selection on the same row when it is still
@@ -169,9 +184,11 @@ impl Controls {
         if let Some(doc) = state {
             let sessions = doc["sessions"].as_array().cloned().unwrap_or_default();
             let vocab = Vocab::from_state(doc);
+            let silent = session_table::silent(doc);
             self.moved(|c| {
                 c.state = sessions;
                 c.vocab = vocab;
+                c.silent = silent;
             });
         }
     }
@@ -391,7 +408,7 @@ impl Controls {
                 out.push(clip_line(Line::styled(t, p.dim()), w));
             }
         }
-        out.extend(self.feed.errors.iter().map(warn));
+        out.extend(self.feed.errors.iter().chain(&self.silent).map(warn));
         let mut chips = self.table.status(&self.all, p);
         let spend = session_table::spend(self.table.view.apply(&self.all));
         chips.push(Span::raw(format!(
@@ -422,32 +439,34 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first thirteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first sixteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
-                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "PR", "PLAN", "IDLE", "COST", "ACCOUNT",
-                    "HARNESS", "ITEM", "SOURCE", "SESSION", "ETA", "YOU", "ASK", "WHY",
+                    "STAGE", "ACTIVITY", "PROJECT", "TASK", "BY", "PR", "PLAN", "IDLE", "CTX",
+                    "COST", "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA",
+                    "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
-                keep: vec![0, 3, 4, 5, 6, 12, 2, 7, 8, 15, 14, 1, 13, 9, 10, 11],
-                flex: Some(16),
+                keep: vec![
+                    0, 3, 5, 6, 7, 15, 2, 9, 10, 18, 17, 8, 4, 1, 16, 11, 12, 13, 14,
+                ],
+                flex: Some(19),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
-                right: vec![6, 7],
+                right: vec![7, 8, 9],
                 cap: vec![
                     (1, 22),
                     (2, 16),
                     (3, 30),
-                    (9, 16),
-                    (10, 22),
-                    (12, fleet::NAME_MAX),
+                    (11, 16),
                     (13, 22),
+                    (15, fleet::NAME_MAX),
+                    (16, 22),
                 ],
             }
             .fit(w, p.head());
             self.table.style(&mut t, p);
             out.append(&mut t);
         }
-        out.extend(older(self.table.view.apply(&self.all).len(), rows.len(), p));
         out.push(self.status_line(p, w));
         if self.open {
             out.extend(self.detail(rows.get(self.table.sel), p, now, w));
@@ -538,12 +557,15 @@ impl Controls {
             dash(&x.activity),
             dash(&x.project),
             task,
+            dash(&x.by),
             pr,
             plan,
             idle,
+            x.context_pct.map_or("-".into(), |c| format!("{c}%").into()),
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
             dash(&x.account),
             dash(&x.harness),
+            dash(&x.close),
             dash(&x.item),
             x.source.name().into(),
             session.into(),
@@ -671,10 +693,13 @@ impl Controls {
     }
 }
 
-/// One part of the page. A URL is printed, since nothing here is clicked; a `#tab` link is
-/// agent-web's own.
-fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
-    let url = part.link.as_deref().filter(|l| l.starts_with("http"));
+/// One part of the page. A URL is printed, since nothing here is clicked; a link to a record in
+/// the hub is not, since its value already names that record.
+pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
+    let url = match &part.link {
+        Some(Link::Url(u)) => Some(u),
+        _ => None,
+    };
     let text = match url {
         Some(u) => format!("{}  {u}", part.text),
         None => part.text.clone(),
@@ -693,7 +718,7 @@ fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static> {
     )
 }
 
-fn dash(s: &str) -> Cell {
+pub(crate) fn dash(s: &str) -> Cell {
     if s.is_empty() { "-" } else { s }.into()
 }
 
@@ -924,6 +949,32 @@ pub mod tests {
         press(&mut c, KeyCode::Char('T'));
         assert!(c.starting.is_none());
         assert!(matches!(&c.said, Some(Err(e)) if e.contains("no timer")));
+    }
+
+    #[test]
+    fn every_ended_row_is_kept_past_the_webs_cap_and_j_reaches_the_last() {
+        let mut c = Controls::default();
+        c.set(fixture());
+        let items: Vec<String> = (0..250)
+            .map(|i| {
+                serde_json::json!({"slug": format!("end-{i}"), "project": "p", "state": "done",
+                    "task": format!("task {i}"), "finished": chrono::Local::now().to_rfc3339(),
+                    "sessions": format!("sid-{i}"), "status": "ok"})
+                .to_string()
+            })
+            .collect();
+        c.read_feed(Feed {
+            items: hub_core::queue::parse(&items.join("\n")),
+            ..Feed::default()
+        });
+        assert_eq!(c.rows().len(), 252, "two live rows and every ended one");
+        for _ in 0..300 {
+            press(&mut c, KeyCode::Char('j'));
+        }
+        assert_eq!(c.table.sel, 251, "j walks to the last row");
+        let out = text(&c, 200);
+        assert!(out.contains("task 0") && out.contains("task 249"), "{out}");
+        assert!(!out.contains("older"), "no row is left out");
     }
 
     #[test]

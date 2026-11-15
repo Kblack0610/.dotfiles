@@ -3,9 +3,8 @@
 # notes-projects - a fzf finder window over the notes vault's indexed projects.
 #
 # Two stages: pick a project (preview shows its summary.md), then pick a file
-# inside it (preview shows that file). Enter opens the file in nvim. Same shape
-# as notes-tags.sh, over the projects that populate the daily note's
-# `## Current Projects` block.
+# inside it (preview shows that file). Enter opens the file in nvim. Over the
+# projects that populate the daily note's `## Current Projects` block.
 #
 # Backed by the `notes projects` subcommand (Rust CLI): tab-delimited output,
 #   notes projects          -> "<name>\t<summary-path>\t<status>"

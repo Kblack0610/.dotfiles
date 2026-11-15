@@ -7,6 +7,7 @@ pub mod asks;
 pub mod chooser;
 pub mod dialog;
 pub mod fzf;
+pub mod help;
 pub mod jsonl;
 pub mod md;
 pub mod parked;

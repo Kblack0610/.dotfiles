@@ -73,6 +73,26 @@ EOF
   assert_equal "$(jq '.mcp[0].spawn_ms >= 0' <<<"$row")" true
 }
 
+@test "under Codex or OpenCode: the preflight answers and no row is written, even with CLAUDE_* inherited" {
+  # Both run this hook too (codex/hooks.json, opencode/plugins/preflight.ts). Codex rows had no
+  # ready time and blinded the watch; OpenCode rows, launched from a claude session, took that
+  # session's age as their process time and put the p50 at 402s (ar-1861).
+  # A live CLAUDE_PID from the launcher must not pass either start off as a Claude one.
+  mkfifo "$SANDBOX/hold"
+  bash -c 'read -r _ <"$1"' _ "$SANDBOX/hold" &
+  FAKE=$!
+  export DEPLOY
+  for tool in codex opencode; do
+    cp "$(command -v bash)" "$SANDBOX/bin/$tool"
+    CLAUDE_PID=$FAKE CLAUDE_CODE_EXECPATH=/opt/claude/versions/2.1.319 \
+      run "$SANDBOX/bin/$tool" -c 'echo "{\"source\":\"startup\",\"session_id\":\"sid-1\"}" | bash "$DEPLOY/session-preflight.sh"'
+    assert_success
+    assert_output --partial 'Session Preflight: repo'
+    [ ! -e "$CLAUDE_STARTUP_LOG" ] || fail "row written under $tool: $(cat "$CLAUDE_STARTUP_LOG")"
+  done
+  echo >"$SANDBOX/hold"
+}
+
 @test "a deploy without the telemetry lib keeps the preflight and writes no row" {
   rm "$DEPLOY/startup-telemetry.sh"
   run start

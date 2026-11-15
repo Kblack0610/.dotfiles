@@ -207,15 +207,6 @@
         ]
       },
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash ~/.claude/hooks/block-pkill-f.sh"
-          }
-        ]
-      },
-      {
         "matcher": "Bash|Read",
         "hooks": [
           {
@@ -256,7 +247,27 @@
         ]
       },
       {
-        "matcher": "Grep|Glob|Bash",
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/scratch-rm-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/python-write-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob",
         "hooks": [
           {
             "type": "command",

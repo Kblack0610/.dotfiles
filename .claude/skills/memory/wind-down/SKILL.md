@@ -41,16 +41,16 @@ re-run `/wind-down` when that work is finished.
 
 **The human asked** (they typed `/wind-down`, the shepherd's CHAT message passed on their standing order to close a chat quiet 24 hours, or they said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
 
-**You are winding yourself down** (`/wind-down auto`: the shepherd's DONE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
+**You are winding yourself down** (`/wind-down auto`: the shepherd's DONE or CLOSE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
 
-1. Your own row reads `finished: true`:
+1. Your own close verdict reads `now`:
 
    ```bash
-   fleet-sessions --json | jq -r --arg s "$CLAUDE_CODE_SESSION_ID" 'select(.session_id == $s) | "\(.finished) \(.bucket) \(.blockers | join("; "))"'
+   fleet-sessions close --self
    ```
 
-   Read `finished`, not `bucket`: you run this mid-turn, so your own bucket always reads WORKING busy, and `finished` is the DONE test without the status and idle checks. It is true when every line of your plan's `## Phases` checklist is `[x]` (landed, with its PR) or `[-]` (deferred by the human, with its board row), nothing you made is unlanded, and no ask of yours is open. A plan with no checklist, or no plan file, counts as one phase: true once its PR merged with the tree clean. `false` means you are not finished, and `blockers` names every reason: deal with each one (do the next phase, land what is left, or ask the human in this conversation and file it with `agent-ask post`) instead of closing. An open ask that is really a human-only action you will not wait on belongs on the human sheet: add the row (`notes ptask <project> add`), `agent-ask cancel <id> "on the human sheet"`, and you are free to close.
-2. Your last message to the human did not end with a question, an offer or a step for them that they have not answered ("want me to...", "should I...", "run this, then I..."). If it did, it should already be a pending ask (the Stop check `88-ask-filed.sh` makes you file it), and then step 1 reads `finished: false`. If it is not filed, file it now with `agent-ask post`, reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
+   It collects fresh facts and prints `<verdict>: <why>`, then one `blocker: <reason>` line per blocker; exit 0 only on `now`. It reads your row as at the end of this turn: mid-turn you always read WORKING, so that keep is not asked, and every other rule of the close table (`~/.local/src/docs/fleet-states.md`, "Close verdict") is. `now`: carry on to step 2; if a blocker reads `open ask <id>`, first run `agent-ask reopen-on-answer <id>` for each one, so the answer reopens this conversation once you are gone (one that refuses because the ask already resumes some other way is fine: that resume carries the answer). `after: <step>`: do that step (queue the next phases, or the human answers your ask), then run it again. `keep: <why>`: you are not finished; deal with each blocker (do the next phase, land what is left, or ask the human in this conversation and file it with `agent-ask post`) instead of closing. A plan with no checklist, or no plan file, counts as one phase, finished once its PR merged with the tree clean. An open ask that is really a human-only action you will not wait on belongs on the human sheet: add the row (`notes ptask <project> add`), `agent-ask cancel <id> "on the human sheet"`, and run it again.
+2. Your last message to the human did not end with a question, an offer or a step for them that they have not answered ("want me to...", "should I...", "run this, then I..."). If it did, it should already be a pending ask (the Stop check `88-ask-filed.sh` makes you file it), and step 1 has read it. If it is not filed, file it now with `agent-ask post`, reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
 
 ### 1. Write the wrap-up note
 
@@ -264,4 +264,3 @@ thing shown before the window closes.
   `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.
-- Scrollback is saved to `~/.local/share/tmux-history/<session>/` before the window dies.

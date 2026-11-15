@@ -155,7 +155,8 @@ mod tests {
         assert_eq!(v["table"]["dir"], "asc");
         assert_eq!(v["table"]["states"][4]["name"], "failed");
         assert_eq!(v["table"]["states"][4]["n"], 1);
-        assert_eq!(v["table"]["facets"][0]["on"], "unity");
+        assert_eq!(v["table"]["facets"][1]["key"], "source");
+        assert_eq!(v["table"]["facets"][1]["on"], serde_json::json!(["unity"]));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Ungroup every grouped window on the active workspace.
-# Bound to $mainMod ALT, G in conf.d/keybindings.conf.
+# Bound to Super+Alt+G in conf/keybindings.lua.
 # Targets any window whose .grouped array is non-empty (including stale
 # 1-window groups left behind by an earlier togglegroup press).
 
@@ -14,8 +14,10 @@ mapfile -t addrs < <(
 )
 ((${#addrs[@]} == 0)) && exit 0
 
-batch=""
+lua=""
 for a in "${addrs[@]}"; do
-    batch+=" dispatch focuswindow address:$a; dispatch moveoutofgroup;"
+    lua+="hl.dispatch(hl.dsp.focus({ window = \"address:$a\" }))
+hl.dispatch(hl.dsp.window.move({ out_of_group = true }))
+"
 done
-hyprctl --batch "$batch"
+hyprctl eval "$lua"

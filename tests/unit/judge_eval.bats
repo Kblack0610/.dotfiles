@@ -14,11 +14,12 @@ setup() {
   unset AGENT_ASK_DELAY_RULES
   mkdir -p "$AGENTCTL_CONF_DIR" "$FLEET_DISPATCH_DIR" "$HOME/.agent/asks/demo"
   echo 'ask policy v2' > "$HOME/ask-policy.md"; echo 'dispatch policy v1' > "$HOME/dispatch-policy.md"
-  printf 'PROMPT="%s"\nDELAY_RULES=fast=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  printf 'PROMPT="%s"\nDELAY_RULES=fast@repo=0\nSCORE=ask-answers\n' "$HOME/ask-policy.md" > "$AGENTCTL_CONF_DIR/ask-judge.conf"
   printf 'PROMPT="%s"\nSCORE=dispatch-queue\n' "$HOME/dispatch-policy.md" > "$AGENTCTL_CONF_DIR/dispatch-judge.conf"
-  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  echo 'SCORE=sweep-untouched' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   echo 'SCORE=triage-untouched' > "$AGENTCTL_CONF_DIR/inbox-triage.conf"
   echo 'SCORE=plan-dispatched' > "$AGENTCTL_CONF_DIR/inbox-plan.conf"
+  echo 'SCORE=priority-kept' > "$AGENTCTL_CONF_DIR/inbox-priority.conf"
   echo 'EFFECT=acts' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   NOW_ISO="$(date +%Y-%m-%dT%H:%M:%S%z)"
   local ask_sha dispatch_sha
@@ -80,6 +81,7 @@ ask_fixture() {
   ask old1 judge=take-recommend judge_call=c0 answer=yes
   ask live_over judge=take-recommend judge_rule=fast answered_by=judge judge_override=no answer=yes
   ask live_none judge=take-recommend judge_rule=fast answered_by=judge judge_override=none answer=yes
+  ask live_kept judge=take-recommend judge_rule=fast answered_by=judge judge_override=kept answer=yes
   ask live_wait judge=take-recommend judge_rule=fast answered_by=judge answer=yes
   ask pend judge=human status=pending answer=
   ask unclear judge=human judge_rule=unclear-ask answer=yes
@@ -90,15 +92,16 @@ ask_fixture() {
   run "$JUDGE_EVAL" ask-judge --json
   assert_success
   run jq -c '.agents[0].total | [.verdicts, .errors, .tp, .fp, .fn, .tn, .pending, .unscorable, .coverage, .precision, .false_defer_pct, .kappa]' <<<"$output"
-  # tp: tp1, live_none; fp: fp1, live_over; fn: fn1; tn: tn1, tn2 (the session text names "no");
-  # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault); gate and
-  # old1 (another prompt) are out
-  assert_output '[12,1,2,2,1,2,2,2,54.5,50,33.3,0.16]'
+  # tp: tp1, live_kept; fp: fp1, live_over; fn: fn1; tn: tn1, tn2 (the session text names "no");
+  # pending: live_wait, pend; unscorable: unsc (free text), unclear (the asker's fault) and
+  # live_none (a message naming no option is silence, never agreement); gate and old1 (another
+  # prompt) are out
+  assert_output '[13,1,2,2,1,2,2,3,58.3,50,33.3,0.16]'
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0].total | [.unscorable_pct, .unscorable_by]' <<<"$output"
-  assert_output '[18.2,{"answer naming no option":1,"unclear ask":1}]'
+  assert_output '[25,{"answer naming no option":1,"live answer not reviewed":1,"unclear ask":1}]'
   run "$JUDGE_EVAL" ask-judge
-  assert_line '  unscorable 2 of 11 (18.2%): 1 answer naming no option, 1 unclear ask'
+  assert_line '  unscorable 3 of 12 (25%): 1 answer naming no option, 1 live answer not reviewed, 1 unclear ask'
 }
 
 @test "ask-judge: an answer with a note is scored by the option it leads with, free text by none" {
@@ -152,16 +155,16 @@ ask_fixture() {
   assert_line '  assumed 2, 1 overridden'
 }
 
-@test "ask-judge: precision carries its 95% Wilson interval, each rule its live flag and distance to the bar" {
+@test "ask-judge: precision carries its 95% Wilson interval, and each rule its live flag" {
   ask_fixture
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [.total.precision_lo, .total.precision_hi, .live,
-    (.rules[] | select(.rule == "agent_policy") | [.live, .bar.labels, .bar.need, .bar.met]),
+    (.rules[] | select(.rule == "agent_policy") | [.live, has("bar")]),
     (.rules[] | select(.rule == "fast") | .live), (.misses | map(.id) | sort)]' <<<"$output"
-  assert_output '[15,85,["fast"],[false,2,30,false],true,["fp1","live_over"]]'
+  assert_output '[15,85,["fast@self","fast@repo"],[false,false],true,["fp1","live_over"]]'
   run "$JUDGE_EVAL" ask-judge
   assert_success
-  assert_line --regexp '^  agent_policy .* 2/30$'
+  assert_line --regexp '^  agent_policy .* shadow$'
   assert_line --regexp '^  fast .* live$'
   assert_line --partial 'calls 1, 0 failed'
 }
@@ -222,19 +225,23 @@ ask_fixture() {
   assert_line '[["row three","done/failed"]]'
 }
 
-@test "kpi --json: the five fleet-bench KPIs over 7 and 28 days, every prompt" {
+@test "kpi --json: the judge KPIs over 7 and 28 days, every prompt, and no ask false-defer KPI" {
   ask_fixture
   printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run "$JUDGE_EVAL" kpi --json
   assert_success
-  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_false_defer_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
-  # judge_precision needs 10 scored answers in a rule: none here. 3 of 12 asks were answered live.
-  assert_output '[2,null,25,33.3,8.3]'
+  # Every answer-judge deferral is a hard stop, so ask_answered_pct is its over-deferral alarm and
+  # the lane has no false-defer KPI; the dispatch judge's skips keep theirs.
+  assert_equal "$(jq -c 'has("ask_false_defer_pct"), has("dispatch_false_defer_pct")' <<<"$output" | paste -sd,)" 'false,true'
+  run jq -c '[.judge_errors["7d"], .judge_precision["7d"], .ask_answered_pct["7d"], .ask_unclear_pct["28d"]]' <<<"$output"
+  # judge_precision needs 10 scored answers in a rule. 3 of 12 asks were answered live.
+  assert_output '[2,null,30.8,7.7]'
 }
 
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
-  ask live1 judge=take-recommend answered_by=judge judge_override=none judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
+  ask live1 judge=take-recommend answered_by=judge judge_override=kept judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
+  ask live3 judge=take-recommend answered_by=judge judge_override=none 'answer=yes'
   ask would judge=take-recommend answer=no
   # a human criterion (knowledge) decided pass, so it scores nothing; skip was the judge's own call
   ask pass judge=human judge_rule=knowledge judge_type=agent_policy judge_reason=only-you answer=yes
@@ -248,7 +255,7 @@ ask_fixture() {
   run "$JUDGE_EVAL" log --json
   assert_success
   run jq -c 'sort_by(.id) | map([.id, .said, .you, .score])' <<<"$output"
-  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["old","passed","no","right"],["pass","passed","yes","-"],["skip","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
+  assert_output '[["err1","error","yes","-"],["live1","answered","kept","right"],["live2","answered","no","wrong"],["live3","answered","not reviewed","-"],["old","passed","no","right"],["pass","passed","yes","-"],["skip","passed","yes","needless"],["wait","passed","pending","pending"],["would","would answer","no","wrong"]]'
   run "$JUDGE_EVAL" log passed --json
   run jq -c 'map(.id) | sort' <<<"$output"
   assert_output '["old","pass","skip","wait"]'
@@ -264,10 +271,145 @@ ask_fixture() {
   # The dashboards read the same rows, with the week beside them; the scores stay current-prompt.
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [(.verdicts | length), .week.verdicts, .week.live_answered, .week.live_pct, .total.verdicts]' <<<"$output"
-  assert_output '[8,8,2,28.6,7]'
+  assert_output '[9,9,3,37.5,8]'
+}
+
+@test "kpi: judge_critical_live_pct is the share of critical verdicts the judge answered itself" {
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct' <<<"$output")" '{"7d":null,"28d":null}'
+  ask c_human judge=human judge_type=ship_deploy judge_rule=external judge_level=critical answer=no
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 0
+  ask c_live judge=take-recommend judge_type=fast judge_level=critical answered_by=judge judge_override=kept answer=yes
+  ask c_live2 judge=take-recommend judge_type=fast judge_level=critical answered_by=judge answer=yes
+  # negative control: a live answer at a lower level is no critical one
+  ask r_live judge=take-recommend judge_type=fast judge_level=repo answered_by=judge answer=yes
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_critical_live_pct["7d"]' <<<"$output")" 66.7
+}
+
+@test "cells: one per type and impact level, a live cell scored only on reviewed answers, and the floor's share" {
+  ask s_tp judge=take-recommend judge_type=ship_deploy judge_level=self answer=yes
+  ask s_fp judge=take-recommend judge_type=ship_deploy judge_level=self answer=no
+  ask r_kept judge=take-recommend judge_type=fast judge_level=repo judge_level_raised=true answered_by=judge judge_override=kept answer=yes
+  ask r_over judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=no answer=yes
+  # negative control: silence on a live answer is neither right nor audited
+  ask r_none judge=take-recommend judge_type=fast judge_level=repo answered_by=judge judge_override=none answer=yes
+  # the fast row stops at repo, so its fleet cell is not live
+  ask f_tp judge=take-recommend judge_type=fast judge_level=fleet answer=yes
+  ask c_crit judge=human judge_type=ship_deploy judge_rule=external judge_level=critical judge_level_raised=true answer=no
+  ask unrated judge=take-recommend judge_type=ship_deploy answer=yes
+  run "$JUDGE_EVAL" cells --json
+  assert_success
+  run jq -c 'map([.type, .level, .verdicts, .tp, .fp, .unscorable, .live, .audited, .level_raised_pct, .precision_lo])' <<<"$output"
+  assert_output '[["fast","repo",3,1,1,1,true,2,33.3,9.5],["fast","fleet",1,1,0,0,false,0,0,20.7],["ship_deploy","",1,1,0,0,false,0,0,20.7],["ship_deploy","self",2,1,1,0,false,0,0,9.5],["ship_deploy","critical",1,0,0,1,false,0,100,null]]'
+  run "$JUDGE_EVAL" cells
+  assert_success
+  assert_line --regexp '^fast +repo +3 +2 +50% \[9.5-90.5\] +0 +yes +2 +33.3%$'
+  run "$JUDGE_EVAL" cells --sideways
+  assert_failure 2
+}
+
+# cell <type> <level> <right> [wrong]: that many scored shadow answers of the type at the level
+cell() {
+  local i
+  for ((i = 0; i < $3; i++)); do ask "$1-$2-r$i" judge=take-recommend "judge_type=$1" "judge_rule=$1" "judge_level=$2" answer=yes; done
+  for ((i = 0; i < ${4:-0}; i++)); do ask "$1-$2-w$i" judge=take-recommend "judge_type=$1" "judge_rule=$1" "judge_level=$2" answer=no; done
+}
+
+@test "promote: the bar scales with level; fleet, critical, a hard stop, a live cell and a cell over a weak narrower one are not candidates" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  cell slow self 10        # Wilson low bound 72.2: past 70
+  cell mid repo 10         # 72.2: under 85
+  cell wide repo 25        # 86.7: past 85
+  cell wide fleet 25       # no bar for fleet
+  cell human_fact self 10  # a hard stop, whatever its precision
+  cell fast repo 10        # live: fast@repo is in DELAY_RULES
+  cell nar self 5 5        # scored and under 70 ...
+  cell nar repo 25         # ... so the repo row that would open it waits
+  run "$JUDGE_EVAL" promote --json
+  assert_success
+  run jq -c 'map([.type, .level, .precision_lo, .bar, .status]) | sort' <<<"$output"
+  assert_output '[["human_fact","self",72.2,70,"held"],["mid","repo",72.2,85,"below"],["nar","repo",86.7,85,"held"],["nar","self",23.7,70,"below"],["slow","self",72.2,70,"candidate"],["wide","fleet",86.7,null,"held"],["wide","repo",86.7,85,"candidate"]]'
+  run "$JUDGE_EVAL" promote
+  assert_success
+  assert_line --regexp '^wide +repo +25/25 +100% \[86.7-100\] +85% +candidate: low bound 86.7% past the 85% bar over 25 scored$'
+  assert_line --regexp '^nar +repo .* held: the row would also open self \(low bound 23.7%\), under its bar$'
+  # negative control: with no bars in the conf, nothing is a candidate
+  sed -i '/^PROMOTE_BARS=/d' "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  run "$JUDGE_EVAL" promote --json
+  assert_equal "$(jq '[.[] | select(.status == "candidate")] | length' <<<"$output")" 0
+  run "$JUDGE_EVAL" promote --sideways
+  assert_failure 2
+  run "$JUDGE_EVAL" promote --ask --any-prompt
+  assert_failure 2
+}
+
+@test "promote: a cell in the demote list is demoted only while a row still opens it" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  export AGENT_ASK_DEMOTED="$HOME/demoted"
+  printf 'fast@repo\t%s\toverride\nwide@repo\t%s\toverride\n' "$NOW_ISO" "$NOW_ISO" > "$AGENT_ASK_DEMOTED"
+  cell fast repo 25   # fast@repo=0 opens it, the demote list shuts it
+  cell wide repo 25   # negative control: listed, but no row opens it any more
+  run "$JUDGE_EVAL" promote --json
+  assert_success
+  run jq -c 'map([.type, .status, .demoted]) | sort' <<<"$output"
+  assert_output '[["fast","candidate",true],["wide","candidate",false]]'
+}
+
+@test "promote --ask: one approval ask per candidate, never sent to the judge, and not asked again while pending or lately answered" {
+  echo 'PROMOTE_BARS="self=70 repo=85"' >> "$AGENTCTL_CONF_DIR/ask-judge.conf"
+  cell slow self 10
+  cell wide_scope repo 25
+  unset AGENT_ASK_NO_JUDGE
+  printf '#!/usr/bin/env bash\ntouch "%s"\n' "$BATS_TEST_TMPDIR/judged" > "$BATS_TEST_TMPDIR/judge"; chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge" CLAUDE_CODE_SESSION_ID=the-briefing-caller
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'posted 2 promotion ask(s)'
+  run grep -lx 'task: promote ask-judge cell wide_scope@repo' -r "$HOME/.agent/asks/agent-runtime"
+  assert_success
+  local f="$output"
+  run grep -E '^(kind|status|judge|judge_rule|recommend|claude_session|question): ' "$f"
+  assert_output "$(printf '%s\n' 'claude_session: ' 'kind: approval' 'status: pending' 'question: Let the answer judge answer wide_scope asks at repo level on its own?' 'recommend: approve' 'judge: human' 'judge_rule: gate')"
+  [ ! -e "$BATS_TEST_TMPDIR/judged" ]
+  # pending: not asked again
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'wide_scope@repo: already asked'
+  assert_output --partial 'posted 0 promotion ask(s)'
+  # answered hold today: still quiet; answered 29 days ago: asked again
+  sed -i "s/^status: pending/status: answered/; s/^answer: $/answer: hold/; s/^answered_at: $/answered_at: $NOW_ISO/" "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_output --partial 'wide_scope@repo: already asked'
+  sed -i "s/^answered_at: .*/answered_at: $(date -d '-29 days' +%Y-%m-%dT%H:%M:%S%z)/" "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_success
+  assert_output --partial 'wide_scope@repo: asked '
+  assert_output --partial 'posted 1 promotion ask(s)'
+  # cancelled today: quiet, like an answer
+  f="$(grep -rlx 'status: pending' "$HOME/.agent/asks/agent-runtime" | xargs -d '\n' grep -lx 'task: promote ask-judge cell wide_scope@repo')"
+  sed -i "s/^status: pending/status: cancelled/; /^closed_at:/d" "$f"; printf 'closed_at: %s\n' "$NOW_ISO" >> "$f"
+  run "$JUDGE_EVAL" promote --ask
+  assert_output --partial 'wide_scope@repo: already asked'
+}
+
+@test "log --level keeps one impact level, and every row names its level and call" {
+  ask lv_self judge=take-recommend judge_level=self answer=yes
+  ask lv_repo judge=take-recommend judge_level=repo judge_level_raised=true answer=yes
+  run "$JUDGE_EVAL" log --level repo --json
+  assert_success
+  run jq -c 'map([.id, .level, .level_raised, .call])' <<<"$output"
+  assert_output '[["lv_repo","repo",true,"c1"]]'
+  run "$JUDGE_EVAL" log --level repo
+  assert_line '    level repo (raised)  call c1'
+  # negative control: a level the judge has not got is a usage error, not an empty list
+  run "$JUDGE_EVAL" log --level wide
+  assert_failure 2
 }
 
 @test "nothing to score reads as no verdicts, and an unknown lane is a usage error" {
+  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/demo-runner.conf"
   run "$JUDGE_EVAL"
   assert_success
   assert_line '  no verdicts in scope'
@@ -286,7 +428,7 @@ replay_stub() {
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HOME/replay.calls"
 printf '{"type":"ship_deploy","decisions":[{"decision":"d",%s}],"reason":"r","answer":""}\n' \
-  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true}'
+  '"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q","met":true},"grounded":{"evidence":"q","met":true},"impact":{"evidence":"q","level":"repo"}'
 SH
   chmod +x "$SANDBOX/bin/replay-stub"
   export JUDGE_EVAL_REPLAY_CMD=replay-stub
@@ -296,14 +438,17 @@ SH
   replay_stub
   ask right judge=human assume_at=2026-11-06T10:00:00-0800 assume_answer=yes assume_disarmed=2026-11-06T09:00:00-0800 answer=yes
   ask wrong judge=human answer=no
+  # An approval never reaches the judge, so replay leaves it out; a session's gate is replayed.
+  ask approved kind=approval judge=human answer=yes
   ask gated kind=gate judge=human answer=yes
   ask freetext judge=human 'answer=do something else entirely'
   local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
   run --separate-stderr "$JUDGE_EVAL" replay --out "$HOME/replay" --json
   assert_success
-  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '.agents[].rules[] | select(.rule == "ship_deploy") | [.tp, .fp]' <<<"$output")" '[2,1]'
   assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
-  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 3
+  refute [ -e "$HOME/replay/blind/demo/approved.md" ]
   # the copy the judge saw has the question and no answer
   run grep -c '^answer: .' "$HOME/replay/blind/demo/right.md"
   assert_output 0
@@ -351,7 +496,7 @@ SH
   run "$JUDGE_EVAL" --json
   assert_success
   assert_equal "$(jq -c '[.agents[] | [.agent, .score]]' <<<"$output")" \
-    '[["ask-judge","ask-answers"],["ask-sweep","unrecorded"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-triage","triage-untouched"]]'
+    '[["ask-judge","ask-answers"],["ask-sweep","sweep-untouched"],["dispatch-judge","dispatch-queue"],["inbox-plan","plan-dispatched"],["inbox-priority","priority-kept"],["inbox-triage","triage-untouched"]]'
   echo 'SCORE=no-such-source' > "$AGENTCTL_CONF_DIR/shepherd.conf"
   run "$JUDGE_EVAL" shepherd
   assert_success
@@ -381,25 +526,87 @@ SH
   assert_line '[["t-edited","edited by ab12cd34"],["t-moved","rehomed"]]'
 }
 
-@test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at the bar" {
+@test "inbox-priority: a priority the pass set is right when nobody else changes it for 48h; a later pass supersedes; triage ignores it" {
+  {
+    ev tagged p-kept "$(ago '-3 days')" by=inbox-priority 'why=+#low'
+    ev tagged p-moved "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-moved "$(ago '-3 days +2 hours')" by=human 'why=+#urgent'
+    ev tagged p-size "$(ago '-3 days')" by=inbox-priority 'why=+#high'; ev tagged p-size "$(ago '-3 days +1 hour')" by=human 'why=+#size/s'
+    ev tagged p-legacy "$(ago '-4 days')" by=inbox-triage 'why=+#high'
+    ev tagged p-retag "$(ago '-5 days')" by=inbox-priority 'why=+#high'; ev tagged p-retag "$(ago '-5 days +1 hour')" by=inbox-priority 'why=+#low'
+    ev tagged p-young "$(ago '-1 hour')" by=inbox-priority 'why=+#urgent'
+    # a human change before the next pass still counts against the first; the same priority again is no change
+    ev tagged p-over "$(ago '-3 days')" by=inbox-priority 'why=+#low'; ev tagged p-over "$(ago '-3 days +1 hour')" by=human 'why=+#urgent'
+    ev tagged p-over "$(ago '-3 days +2 hours')" by=inbox-priority 'why=+#low'
+    ev tagged p-same "$(ago '-3 days')" by=inbox-priority 'why=+#high'; ev tagged p-same "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#high +#size/m'
+    ev tagged p-other "$(ago '-3 days')" by=inbox-triage 'why=+#size/m'
+    # a triaged row the pass then prioritised stays untouched for the triager
+    ev filed t-prio "$(ago '-3 days')"; ev tagged t-prio "$(ago '-3 days +3 hours')" by=inbox-priority 'why=+#low'
+  } > "$INGEST"
+  run "$JUDGE_EVAL" inbox-priority --json
+  assert_success
+  # tp: p-kept, p-size, p-legacy, p-retag (its second tag), t-prio, p-over (its second), p-same; fp: p-moved, p-over (its first)
+  # pending: p-young; p-other is no priority
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]) | sort), (.rules | map([.rule, .tp, .fp]) | sort)' <<<"$output"
+  assert_line '[10,7,2,1]'
+  assert_line '[["p-moved","+#urgent by human"],["p-over","+#urgent by human"]]'
+  assert_line '[["high",3,0],["low",4,2],["urgent",0,0]]'
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].total | [.tp, .fp]' <<<"$output")" '[1,0]'
+}
+
+@test "ask-sweep: a row its model filed is right when nothing touches it for 48h; plan rows and rows from before its prompt are not counted" {
+  echo v1 > "$HOME/sweep-policy.md"
+  printf 'PROMPT="%s"\nSCORE=sweep-untouched\n' "$HOME/sweep-policy.md" > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
+  # the prompt ran 10 days ago, then an older one 7 days ago, then the current one again from 6 days ago;
+  # a call with no readable time is ignored
+  local sha at; sha="$(git hash-object "$HOME/sweep-policy.md")"
+  for at in '-10 days|'"$sha" '-7 days|an-older-prompt' '-6 days|'"$sha" '|'"$sha"; do
+    call s1 ask-sweep "${at#*|}" 8000 0.2 | jq -c --arg at "$([ -n "${at%%|*}" ] && date -d "${at%%|*}" +%Y-%m-%dT%H:%M:%S%z)" '.at = $at'
+  done >> "$AGENTCTL_CALLS"
+  {
+    ev added s-kept "$(ago '-3 days')" by=human 'text=fix x; asked 11-08 "make it so" #requested'
+    ev added s-dropped "$(ago '-3 days')" by=ab12cd34 'text=fix y; asked 11-08 "y please" #requested'
+    ev dropped s-dropped "$(ago '-3 days +4 hours')" by=human
+    ev added s-young "$(ago '-1 hour')" 'text=fix z; asked 11-11 "z" #requested'
+    ev added s-old "$(ago '-8 days')" 'text=fix w; asked 11-03 "w" #requested'
+    ev added s-between "$(ago '-6 days -12 hours')" 'text=fix v; asked 11-05 "v" #requested'
+    ev added s-child "$(ago '-3 days')" 'text=fix x part; asked 11-08 "make it so" #of/s-kept'
+    ev added s-plan "$(ago '-3 days')" 'text=chore(plan): finish foo #requested'
+  } > "$INGEST"
+  run "$JUDGE_EVAL" ask-sweep --json
+  assert_success
+  # tp: s-kept; fp: s-dropped; pending: s-young; s-old and s-between are under an older prompt,
+  # s-plan no model wrote, s-child the planner split
+  run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending], (.misses | map([.id, .answer]))' <<<"$output"
+  assert_line '[3,1,1,1]'
+  assert_line '[["s-dropped","dropped by human"]]'
+  run "$JUDGE_EVAL" ask-sweep --json --any-prompt
+  assert_equal "$(jq -c '.agents[0].total | [.verdicts, .tp]' <<<"$output")" '[5,3]'
+  # none of them is the triager's
+  run "$JUDGE_EVAL" inbox-triage --json
+  assert_equal "$(jq -c '.agents[0].total.verdicts' <<<"$output")" 0
+}
+
+@test "inbox-triage negative control: every filed row dropped scores 0, with n shown, and the KPI shows it at AGENT_ASK_LIVE_BAR rows" {
   local i
   for i in $(seq 1 30); do ev filed "t-$i" "$(ago '-3 days')"; ev dropped "t-$i" "$(ago '-3 days +1 hour')" by=ab12cd34; done > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
   assert_equal "$(jq -c '.agents[0].total | [.scored, .tp, .fp, .precision]' <<<"$output")" '[30,0,30,0]'
-  # the score cell: the week at the bar
+  # the score cell: the week at AGENT_ASK_LIVE_BAR rows
   assert_equal "$(jq -c '.agents[0].score_7d' <<<"$output")" '{"window":"7d","right":0,"n":30,"pending":0,"value":0,"text":"0% untouched","title":"7d, 0 of 30 right, 0 pending, triage-untouched"}'
   run "$JUDGE_EVAL" inbox-triage
   assert_line --regexp '^  all +30 +0 +100% +30 +0% \[0-11\.4\]'
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":0,"28d":0}'
-  # one short of the bar, no score
+  # one short of AGENT_ASK_LIVE_BAR rows, no score
   sed -i '1,2d' "$INGEST"
   run "$JUDGE_EVAL" kpi --json
   assert_equal "$(jq -c '.runner_score_inbox_triage' <<<"$output")" '{"7d":null,"28d":null}'
   run "$JUDGE_EVAL" inbox-triage --json
   assert_equal "$(jq -c '.agents[0].score_7d | [.n, .value, .text, .title]' <<<"$output")" '[29,null,"n<30","7d, 0 of 29 right, 0 pending, triage-untouched; a percent at 30 rows"]'
   # a lane with no counted outcome has no score word
+  echo 'SCORE=unrecorded' > "$AGENTCTL_CONF_DIR/ask-sweep.conf"
   run "$JUDGE_EVAL" ask-sweep --json
   assert_equal "$(jq -c '.agents[0].score_7d | [.text, .title]' <<<"$output")" '["-","unrecorded: no counted outcome"]'
 }
@@ -445,6 +652,32 @@ SH
   # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young
   run jq -c '.agents[0].total | [.deferred, .fn, .tn, .pending, .false_defer_pct]' <<<"$output"
   assert_output '[7,2,4,1,33.3]'
+  # 6 scored defers is under the KPI's floor of 10, where one defer swings it 10+ points
   run "$JUDGE_EVAL" kpi --json
-  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":33.3,"28d":33.3}'
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":null,"28d":null}'
+  { v skip q1 '-5 days'; v skip q2 '-5 days'; v skip q3 '-5 days'; v skip q4 '-5 days'; } >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.dispatch_false_defer_pct' <<<"$output")" '{"7d":20,"28d":20}'
+}
+
+@test "SENTINEL_SINCE: a window starts at a watch's fix, and an error after the fix still counts (negative control)" {
+  local at; at="$(date -d '-2 days' -Iseconds)"
+  printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$at" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # the fix merged a day ago: the error before it is out of both windows
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":0,"28d":0}'
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" dispatch-judge --any-prompt --days 7 --json
+  assert_equal "$(jq -c '.agents[0].total.errors' <<<"$output")" '0'
+  # a watermark older than the window leaves the window as it is, and a non-number is ignored
+  SENTINEL_SINCE="$(date -d '-10 days' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  SENTINEL_SINCE=yesterday run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
+  # negative control: an error after the fix is a new failure
+  printf '{"verdict":"error","project":"p","key":"k2","at":"%s"}\n' "$(date -Iseconds)" >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  SENTINEL_SINCE="$(date -d '-1 day' +%s)" run "$JUDGE_EVAL" kpi --json
+  assert_equal "$(jq -c '.judge_errors' <<<"$output")" '{"7d":1,"28d":1}'
 }

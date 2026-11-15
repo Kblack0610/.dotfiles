@@ -1,7 +1,7 @@
 ---
 name: rigor
 description: >-
-  Modifier (`/rigor <ask>`, `/rigor /one-shot X`): staff-architect mode. Investigate fully, design modular and reusable for the stated load, nothing sloppy or flaky. Use for "do it properly", "best practices", "no shortcuts". Autonomy is my:go.
+  Modifier (`/rigor <ask>`, `/rigor /one-shot X`): staff-architect mode. Investigate fully, design modular and reusable for the stated load, nothing sloppy or flaky. Use for "do it properly", "best practices", "no shortcuts". Autonomy is go.
 metadata:
   category: workstreams
   tags: [modifier, architecture, quality, investigation]
@@ -10,7 +10,7 @@ metadata:
 
 # rigor
 
-Work like a staff architect who has to own the result for years. Put `/rigor` in front of an ask or another skill (`/rigor /one-shot <task>`, `/rigor /my:autopilot`). It applies from that turn until the human says to drop it.
+Work like a staff architect who has to own the result for years. Put `/rigor` in front of an ask or another skill (`/rigor /one-shot <task>`, `/rigor /go all`). It applies from that turn until the human says to drop it.
 
 Rigor means correct and simple. A design with more layers than the problem needs is as sloppy as one with too few.
 
@@ -20,7 +20,7 @@ The global Core Principles already apply: Simplicity First, One Source of Truth,
 
 Covers a modifier you put in front of an ask or another skill (`/rigor <ask>`, `/rigor /one-shot X`): staff-architect mode, from that turn until the human drops it.
 
-Use for "do it properly", "best practices", "no shortcuts". Autonomy without the extra care: `my:go`.
+Use for "do it properly", "best practices", "no shortcuts". Autonomy without the extra care: `go`.
 
 ## Steps
 
@@ -31,7 +31,7 @@ Do the four stages in order. End each one with its exit line in the reply. A sta
 - Read the real code path end to end before proposing anything. Cite `file:line`, and never reconstruct a function from its name.
 - List every reader and writer of what you will touch: callers, configs, tests, docs, dashboards.
 - Before you write a fix, grep for the one that already exists one file over.
-- For wide scope, use parallel Explore agents. For live systems, use `deep-research-code`. For a failure with an unclear cause, use `root-cause-analyst`.
+- For wide scope, use parallel Explore agents. For live systems, use `deep-research-code`. For a failure with an unclear cause, follow `debug`.
 - Exit line: `verified: ...` and `assumed: ...`, two separate lists.
 
 ### 2. Design

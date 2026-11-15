@@ -46,7 +46,7 @@ s = {
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_human": 451, "summary_dispatch.board_playtest": 357,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
-    "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_load": 27.4,
+    "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
     "summary_dispatch.room_load_cap": 36, "summary_dispatch.room_idle": 45.2,
     "summary_dispatch.room_min_idle": 30, "summary_dispatch.room_held_slots": 0,
     "summary_dispatch.room_held_account": 0,
@@ -99,7 +99,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   assert_line --index 6 "drain 6h: 18 added, 30 finished, net -12: <span color='$G'>shrinking, empty in about 30h at that rate</span>"
   assert_line --index 7 "board: 1522 agent rows, 451 yours, 357 playtest checks"
   assert_line --index 8 "<b>Dispatch</b>  a pass every 15 minutes"
-  assert_line --index 9 "capacity: run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
+  assert_line --index 9 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
   assert_line --index 10 "can start now: - more; last pass 3m ago, last start 12m ago"
   assert_line --index 11 "self-heal last hour: reaped 7, flapping 0"
   refute_output --partial "<b>Sessions</b>"
@@ -129,7 +129,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 1522 12)"
   run tip
-  assert_output --partial "capacity: run units <span color='$Y'>24/24</span>"
+  assert_output --partial "capacity: sessions 21 of a 24 target; run units <span color='$Y'>24/24</span>"
   assert_output --partial "load <span color='$R'>40 of 36</span>"
   assert_output --partial "idle <span color='$R'>20% (floor 30%)</span>"
   feed summary_dispatch.room_load=29 summary_dispatch.room_idle=35
@@ -158,7 +158,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   feed summary_dispatch.room_held_slots=1
   run "$MODULE"
   run tip
-  assert_output --partial "paused by: <span color='$Y'>every run unit is used (DISPATCH_MAX_LIVE)</span>"
+  assert_output --partial "paused by: <span color='$Y'>the fleet is at its pace target (DISPATCH_TARGET_PRESENT; away, what the accounts carry, at most DISPATCH_TARGET_AWAY)</span>"
   feed summary_dispatch.room_held_account=1
   run "$MODULE"
   run tip
@@ -362,11 +362,11 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
 }
 
 @test "the hover ends with the vitals line, and has none when hub cannot read them" {
-  printf '#!/usr/bin/env bash\necho "5 of 7 off target: Flow"\necho "Flow  !  a row"\n' > "$SANDBOX/bin/fake-hub"
+  printf '#!/usr/bin/env bash\necho "2 of 4 off target: You, Outcome"\necho "You  !  a row"\n' > "$SANDBOX/bin/fake-hub"
   chmod +x "$SANDBOX/bin/fake-hub"
   HUB="$SANDBOX/bin/fake-hub" run "$MODULE"
   run tip
-  assert_output --partial $'\n\nvitals: 5 of 7 off target: Flow'
+  assert_output --partial $'\n\nvitals: 2 of 4 off target: You, Outcome'
   refute_output --partial 'a row'
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fake-hub"
   HUB="$SANDBOX/bin/fake-hub" run "$MODULE"

@@ -202,10 +202,18 @@ pub fn page(watch: &Watch, table: Vec<Line<'static>>, p: Palette, now: i64) -> V
         ));
         out.extend(table);
     } else {
-        let at = st["generated_epoch"].as_i64().unwrap_or(0);
+        let at = st["generated_epoch"].as_i64();
+        let age = hub_core::reading::State::of_age(at, now, hub_core::home::FLEET_STATE_STALE_SECS);
         out.push(Line::styled(
-            format!("SESSIONS   state {} old", ago(at, now)),
-            if now - at > 300 { p.warn() } else { p.dim() },
+            match at {
+                Some(at) => format!("SESSIONS   state {} old", ago(at, now)),
+                None => format!("SESSIONS   {}", age.words("state age")),
+            },
+            if age == hub_core::reading::State::Live {
+                p.dim()
+            } else {
+                p.warn()
+            },
         ));
         out.extend(table);
         if let Some(u) = st["unreadable"].as_array().filter(|u| !u.is_empty()) {

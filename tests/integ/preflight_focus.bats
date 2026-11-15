@@ -71,7 +71,7 @@ seed_focus() {
 @test "an app session still gets the commits scoped to its subtree" {
   export PROJECT_MAP_FILE="$SANDBOX/map.json"
   cat > "$PROJECT_MAP_FILE" <<EOF
-{ "paths": { "$REPO": "toolrepo" }, "aliases": {},
+{ "paths": { "$REPO": "toolrepo" },
   "trackers": { "shop": { "repo": "toolrepo", "path": "apps/shop" } } }
 EOF
   mkdir -p "$REPO/apps/shop"
@@ -115,7 +115,6 @@ seed_tracker_map() {
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
   "paths": { "$REPO": "toolrepo" },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a STRING value; an unguarded .value.repo dies on this",
     "notes-cockpit": { "system": "board", "repo": "toolrepo" },
@@ -241,7 +240,6 @@ EOF
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
   "paths": { "$REPO": "toolrepo" },
-  "aliases": {},
   "trackers": {
     "_comment": "a string value",
     "ticket-parent": { "system": "board" },

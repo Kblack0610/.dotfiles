@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+project-map = { path = "../project-map" }
 toml = "0.8"
 anyhow = "1"
 

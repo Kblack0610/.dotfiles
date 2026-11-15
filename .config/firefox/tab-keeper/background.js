@@ -1,5 +1,5 @@
 // Tab Keeper: carries out what rules.js decides. dryRun logs and touches nothing.
-const { fromPolicy, karakeepOrigin, hostOf, dedupeAction, planTick } = globalThis.TabKeeperRules;
+const { fromPolicy, karakeepOrigin, hostOf, homeSetFrom, homeSetAction, dedupeAction, planTick } = globalThis.TabKeeperRules;
 
 const TICK = "tick";
 const TICK_MINUTES = 60; // no event exists for "this tab has gone idle", so sample hourly
@@ -16,6 +16,36 @@ const saveFresh = () => browser.storage.session.set({ fresh: [...fresh] });
 
 // storage.managed throws when the policy has no entry for this add-on; fromPolicy names that.
 const policy = () => browser.storage.managed.get(["config", "karakeepKey"]).catch(() => null);
+
+// The profile's own home page (browser.startup.homepage in its user.js) names its home set.
+const homeSet = () => browser.browserSettings.homepageOverride.get({}).then(({ value }) => homeSetFrom(value));
+
+// Pins open home pages on every wake. Opening missing ones waits for the tick: at startup the
+// background can run before session restore brings the pinned tabs back, and there is no event
+// for "restore finished", so opening then would duplicate them. One run at a time, so two
+// callers never open the same page. Returns the home set it used, [] when it failed.
+let homeSetRun = Promise.resolve([]);
+function keepHomeSet({ openMissing }) {
+  homeSetRun = homeSetRun.then(async () => {
+    try {
+      const [{ config }, home] = await Promise.all([state(), homeSet()]);
+      if (!home.length) return home;
+      const action = homeSetAction(home, await browser.tabs.query({}));
+      const open = openMissing ? action.open : [];
+      if (!action.pin.length && !open.length) return home;
+      if (!config.dryRun) {
+        for (const tab of action.pin) await browser.tabs.update(tab.id, { pinned: true });
+        for (const url of open) await browser.tabs.create({ url, pinned: true, active: false });
+      }
+      await log({ kind: "home-set", dryRun: config.dryRun, pinned: action.pin.map((tab) => tab.url), opened: open });
+      return home;
+    } catch (error) {
+      await log({ kind: "home-set-failed", error: error.message });
+      return [];
+    }
+  });
+  return homeSetRun;
+}
 
 async function state() {
   const [stored, managed] = await Promise.all([browser.storage.local.get(["paused", "lastFailure"]), policy()]);
@@ -107,10 +137,11 @@ async function saveToKarakeep(tab, config, key) {
 }
 
 async function tick() {
+  const home = await keepHomeSet({ openMissing: true });
   const { config, karakeepKey } = await state();
   const [tabs, containers] = await Promise.all([browser.tabs.query({}), browser.contextualIdentities.query({})]);
   const names = Object.fromEntries(containers.map((c) => [c.cookieStoreId, c.name]));
-  const plan = planTick(tabs, Date.now(), config, names);
+  const plan = planTick(tabs, Date.now(), config, names, home);
   const counts = { discard: plan.discard.length, sweep: plan.sweep.length, close: plan.close.length };
 
   if (config.dryRun) {
@@ -167,3 +198,4 @@ browser.storage.local.remove(["config", "karakeepKey"]);
 // create() restarts the period, and this file runs on every wake, so only create it when missing.
 browser.alarms.get(TICK).then((alarm) => alarm ?? browser.alarms.create(TICK, { periodInMinutes: TICK_MINUTES }));
 showBadge();
+keepHomeSet({ openMissing: false });

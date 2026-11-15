@@ -1,0 +1,21 @@
+{
+  "clients": {
+    "_comment": "a string, not a client",
+    "acme": { "profile": "acmework" },
+    "globex": { "profile": "globex" }
+  },
+  "paths": {
+    "/src/.dotfiles": "dotfiles",
+    "/src/client/acme-platform": "acme-platform"
+  },
+  "trackers": {
+    "default": { "system": "none" },
+    "dotfiles": { "github": "Kblack0610/.dotfiles" },
+    "acme-platform": { "client": "acme" },
+    "acme_kiosk": { "client": "acme", "lab": "acmework" },
+    "globex_bot": { "client": "globex", "lab": "globex" },
+    "typo-client": { "client": "acmee" },
+    "number-client": { "client": 5 },
+    "finance": { "lab": "personal" }
+  }
+}

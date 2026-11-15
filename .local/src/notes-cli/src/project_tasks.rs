@@ -17,6 +17,7 @@ use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
 use anyhow::{bail, Context, Result};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -434,7 +435,7 @@ pub(crate) fn add_via(
             bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
         }
         if projects::size_of(&format!("- [ ] {text}")).is_none() {
-            bail!("an agent board row needs its #size/s, #size/m or #size/l, so nothing was added");
+            bail!("an agent board row needs its #pts/<n> or #size/s, #size/m or #size/l, so nothing was added");
         }
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
@@ -619,7 +620,7 @@ fn new_rows(
     details: &[String],
 ) -> Result<Vec<String>> {
     let today = chrono::Local::now().date_naive();
-    let code = crate::registry::Registry::load().and_then(|r| r.code(name));
+    let code = project_map::Registry::load().and_then(|r| r.code(name));
     if code.is_none() {
         eprintln!(
             "(no id: '{name}' has no `code` in project-map.json trackers; the row is unaddressable by id)"
@@ -959,7 +960,7 @@ fn link_standing(
         .map(|t| crate::standing::wants_link(t))
         .collect();
     if areas.iter().all(Option::is_none)
-        || crate::registry::Registry::load()
+        || project_map::Registry::load()
             .and_then(|r| r.code(name))
             .is_none()
     {
@@ -1200,7 +1201,8 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
-    let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to)? else {
+    let held = row_ids(&projects::project_dir(p, dest)?);
+    let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
         eprintln!("no open task matches '{pick}' in {src}");
         return Ok(1);
     };
@@ -1217,7 +1219,33 @@ pub fn move_to_project(
         &crate::ingest::Event::row("rehomed", src, dest, lane.name(), &moved.line),
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
+    if let Some(id) = &moved.unlinked {
+        // Kept in the journal log, so a child moved ahead of its epic can be linked again.
+        let why = format!("dropped #of/{id}: it names no row in {dest}");
+        log.info("ptask", &format!("{} {why}", moved.line.trim()));
+        println!("  {why}");
+    }
     Ok(0)
+}
+
+/// The ids of every row a project holds: its human sheet, its agent board and both lanes'
+/// `versions/` notes, the rows `notes doctor`'s tree (`epics::Index::of`) reads, so an `#of/`
+/// naming one of them is never dangling there.
+fn row_ids(dir: &Path) -> HashSet<String> {
+    let mut files = Vec::new();
+    for lane in [dir.to_path_buf(), projects::agent_dir(dir)] {
+        files.extend(task_sheet(&lane));
+        files.extend(
+            projects::version_notes(&lane.join("versions"))
+                .into_iter()
+                .map(|(_, p)| p),
+        );
+    }
+    files
+        .iter()
+        .filter_map(|f| fs::read_to_string(f).ok())
+        .flat_map(|t| t.lines().filter_map(md::row_id).collect::<Vec<_>>())
+        .collect()
 }
 
 /// What a cross-project move did: both sheets' new text and the row as it landed.
@@ -1226,6 +1254,8 @@ struct Lifted {
     src: String,
     dest: String,
     line: String,
+    /// The `#of/` parent the row lost: it names no row in the destination.
+    unlinked: Option<String>,
 }
 
 /// File half of `move_to_project`: read both sheets, compute both edits, then write.
@@ -1238,6 +1268,7 @@ fn transfer(
     dest_sheet: &Path,
     pick: &Pick,
     to: Option<&str>,
+    held: &HashSet<String>,
 ) -> Result<Option<Lifted>> {
     if same_sheet(src_sheet, dest_sheet) {
         bail!(
@@ -1251,7 +1282,7 @@ fn transfer(
     if let Some(v) = to {
         refuse_behind(v, dest_cur)?;
     }
-    let Some(moved) = lift_into(&src, &dest, pick, to, dest_cur)? else {
+    let Some(moved) = lift_into(&src, &dest, pick, to, dest_cur, held)? else {
         return Ok(None);
     };
     write_sheet(dest_sheet, &moved.dest)?;
@@ -1267,13 +1298,16 @@ fn transfer(
 
 /// Pure core of a cross-project move: the first open row matching `query` in `src`, cut from
 /// `src` and inserted into `dest`'s `## Tasks`. The source's `#v` tag means nothing on another
-/// project's roadmap, so it goes unless `to` names one. `None` on no match.
+/// project's roadmap, so it goes unless `to` names one, and so does an `#of/` naming no row
+/// in `held` (the destination's ids): it would dangle there, and `--link` files the row under
+/// one of that project's epics. `None` on no match.
 fn lift_into(
     src: &str,
     dest: &str,
     pick: &Pick,
     to: Option<V>,
     dest_cur: Option<V>,
+    held: &HashSet<String>,
 ) -> Result<Option<Lifted>> {
     // Refuse before looking at the source: a dest with no section to land in is the refusal,
     // whether or not the query would have matched.
@@ -1292,6 +1326,11 @@ fn lift_into(
         Some(v) => project_sweep::retag(line, v, Some(v) == dest_cur).0,
         None => md::split_version(line).0,
     };
+    let unlinked = crate::epics::parent_of(&line).filter(|id| !held.contains(id));
+    let line = match &unlinked {
+        Some(id) => md::drop_tag(&line, &format!("#of/{id}")),
+        None => line,
+    };
     let mut landed = vec![line.clone()];
     landed.extend(block);
     let grown = md::insert_under_heading(dest, sheet::TASKS, &landed);
@@ -1299,6 +1338,7 @@ fn lift_into(
         src: cut,
         dest: grown,
         line,
+        unlinked,
     }))
 }
 
@@ -1401,48 +1441,11 @@ pub fn done(
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
     let on = done_token(day);
-    let (code, row) = edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
         let ticked = md::add_marker(&closed(l), &on);
         Some(md::add_marker(&ticked, &stamp))
-    })?;
-    if let (0, Some(row)) = (code, row) {
-        ask_verify(p, log, name, &row);
-    }
-    Ok(code)
-}
-
-/// After a close: when it was the last open leaf of an epic, file one
-/// `check(<system>): verify <epic> ...` row on the human sheet. Nothing closes an epic on its
-/// own (lifecycle.md): the human checks the outcome, and this row is how they hear it is
-/// theirs. It names the epic in words, never `#of/`, so it is no leaf of it, and ticking it
-/// cannot finish the epic again. An open twin is not filed twice. A profile with
-/// `automation = false` gets none. It never fails the close that triggered it.
-fn ask_verify(p: &Profile, log: &Logger, name: &str, closed_row: &str) {
-    let Some(id) = md::row_id(closed_row) else {
-        return;
-    };
-    if !crate::config::automation(&p.name) {
-        return;
-    }
-    let Ok(dir) = projects::project_dir(p, name) else {
-        return;
-    };
-    let ix = crate::epics::Index::of(&dir, open_version_for(&dir));
-    let Some(e) = ix.landed_epic_above(&id) else {
-        return;
-    };
-    let area = if e.system.is_empty() {
-        "epic"
-    } else {
-        e.system.as_str()
-    };
-    let text = format!("check({area}): verify {} {} #high", e.id, e.title);
-    if let Err(err) = add_via(p, log, name, &text, &[], None, None, Lane::Human, None) {
-        eprintln!(
-            "{} has every leaf done; its verify row was not filed: {err}",
-            e.id
-        );
-    }
+    })?
+    .0)
 }
 
 /// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
@@ -1663,25 +1666,60 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
     if md::is_version_tag(t) {
         bail!("#{t} is a release: use move, promote or demote");
     }
+    if let Some(n) = t.strip_prefix("pts/") {
+        // Digits only, written back canonical: `+5` and `05` would parse but never match `#pts/5`.
+        let pts = Some(n)
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|&p| crate::epics::band(p).is_some());
+        let Some(pts) = pts else {
+            let scale: Vec<String> = crate::epics::POINTS
+                .iter()
+                .map(|(n, _)| n.to_string())
+                .collect();
+            bail!("#{t} is off the points scale: one of {}", scale.join(", "));
+        };
+        return Ok(format!("#pts/{pts}"));
+    }
     Ok(format!("#{t}"))
 }
 
 /// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
 /// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
+/// estimate too: adding a `#pts/<n>` replaces its old points and sets its `#size/` to the
+/// band they fall in ([`crate::epics::POINTS`]), over any `#size/` added beside them; adding a
+/// bare `#size/<s>` drops the points, which no longer hold. So the two never disagree. It has one
 /// created stamp too, its origin day, so an added `#cMMDD` lands only on a row with none:
 /// `--add c1105` on a `#c1104` row gave nc-71 both (nc-83).
 pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
     let stamped = md::split_created(line).1.is_some();
+    let band = add.iter().find_map(|t| {
+        t.strip_prefix("#pts/")
+            .and_then(|n| n.parse().ok())
+            .and_then(crate::epics::band)
+    });
+    let banded = band.map(|b| format!("#size/{b}"));
     let add: Vec<&String> = add
         .iter()
         .filter(|t| !(stamped && md::is_created_tag(&t[1..].to_lowercase())))
+        .filter(|t| banded.is_none() || !t.starts_with("#size/"))
+        .chain(banded.as_ref())
         .collect();
     let sized = add.iter().any(|t| t.starts_with("#size/"));
     let old = size_tag(line).filter(|t| sized && !add.iter().any(|a| *a == t));
+    // A new size, banded from new points or set bare, retires every points tag the row had.
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    let old_pts: Vec<String> = head
+        .split_whitespace()
+        .filter(|w| sized && w.starts_with("#pts/") && !add.iter().any(|a| a == w))
+        .map(str::to_string)
+        .collect();
     let mut l = old
         .into_iter()
-        .chain(remove.iter().map(String::as_str))
-        .fold(line.to_string(), |l, t| md::drop_tag(&l, t));
+        .map(str::to_string)
+        .chain(old_pts)
+        .chain(remove.iter().cloned())
+        .fold(line.to_string(), |l, t| md::drop_tag(&l, &t));
     if add.iter().any(|a| md::is_priority(a)) {
         l = md::strip_priority_tag(&l);
     }
@@ -1693,6 +1731,12 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
 pub(crate) fn size_tag(line: &str) -> Option<&str> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     head.split_whitespace().find(|w| w.starts_with("#size/"))
+}
+
+/// The row's `#pts/<n>` tag, read from its text before the marker comment.
+pub(crate) fn points_tag(line: &str) -> Option<&str> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().find(|w| w.starts_with("#pts/"))
 }
 
 /// The marker text a `done` will stamp, or the error explaining that it needs one.
@@ -2004,7 +2048,7 @@ fn start_as(
     running: bool,
 ) -> Result<i32> {
     let dir = projects::project_dir(p, name)?;
-    let id = crate::registry::Registry::load()
+    let id = project_map::Registry::load()
         .and_then(|r| r.code(name))
         .map(|code| next_id(&dir, &code));
     let today = chrono::Local::now().format("%m%d").to_string();
@@ -2984,6 +3028,79 @@ Version: v1.13.0
     }
 
     #[test]
+    fn points_set_the_size_band_and_replace_old_points() {
+        let t = |v: &[&str]| v.iter().map(|t| tag_token(t).unwrap()).collect::<Vec<_>>();
+        let row = "- [ ] row #size/s #ai <!-- id:ar-1 -->";
+        assert_eq!(
+            retag(row, &t(&["pts/5"]), &[]),
+            "- [ ] row #ai #pts/5 #size/m <!-- id:ar-1 -->",
+            "points rewrite the size to their band"
+        );
+        let scored = "- [ ] row #ai #pts/5 #size/m <!-- id:ar-1 -->";
+        assert_eq!(
+            retag(scored, &t(&["pts/2"]), &[]),
+            "- [ ] row #ai #pts/2 #size/s <!-- id:ar-1 -->",
+            "new points replace the old ones, and the band follows"
+        );
+        assert_eq!(
+            retag(scored, &t(&["pts/3"]), &[]),
+            "- [ ] row #ai #size/m #pts/3 <!-- id:ar-1 -->",
+            "the same band keeps the size where it is"
+        );
+        assert!(tag_token("pts/4").is_err(), "4 is off the scale");
+        assert!(tag_token("pts/x").is_err());
+        assert!(
+            tag_token("pts/21").is_err(),
+            "xl is an epic's #size/, never points"
+        );
+        assert!(tag_token("pts/+5").is_err(), "digits only");
+        assert_eq!(
+            tag_token("pts/05").unwrap(),
+            "#pts/5",
+            "written back canonical"
+        );
+        assert_eq!(
+            retag(scored, &t(&["pts/8", "size/s"]), &[]),
+            "- [ ] row #ai #pts/8 #size/l <!-- id:ar-1 -->",
+            "points win over a size added beside them"
+        );
+        assert_eq!(
+            retag(scored, &t(&["size/l"]), &[]),
+            "- [ ] row #ai #size/l <!-- id:ar-1 -->",
+            "a bare resize drops the points it overrides"
+        );
+        assert_eq!(
+            retag(
+                "- [ ] row #pts/3 #ai #pts/8 #size/m <!-- id:ar-1 -->",
+                &t(&["pts/1"]),
+                &[]
+            ),
+            "- [ ] row #ai #pts/1 #size/s <!-- id:ar-1 -->",
+            "every stray points tag goes"
+        );
+        assert_eq!(
+            projects::size_name("- [ ] r #pts/5"),
+            Some("m".into()),
+            "no size tag: the band"
+        );
+        assert_eq!(
+            projects::size_of("- [ ] r #pts/13 #size/l"),
+            Some(13),
+            "points are the weight"
+        );
+        assert_eq!(
+            projects::size_of("- [ ] r #size/l"),
+            Some(8),
+            "no points: the size weighs"
+        );
+        assert_eq!(
+            projects::points_of("- [ ] r #pts/4 #size/m"),
+            None,
+            "off-scale points are unscored"
+        );
+    }
+
+    #[test]
     fn a_tag_edit_adds_and_removes_whole_tags_and_keeps_one_size() {
         let row = "- [ ] row #size/s #ai <!-- id:ar-1 -->";
         let t = |v: &[&str]| v.iter().map(|t| tag_token(t).unwrap()).collect::<Vec<_>>();
@@ -3108,7 +3225,30 @@ Version: v1.2.0
     const SRC_CUR: Option<V> = Some((0, 4, 0));
 
     fn lift(pick: &Pick, to: Option<V>) -> Result<Option<Lifted>> {
-        lift_into(SRC, DEST, pick, to, Some((1, 2, 0)))
+        lift_into(SRC, DEST, pick, to, Some((1, 2, 0)), &HashSet::new())
+    }
+
+    #[test]
+    fn a_move_drops_an_of_naming_no_row_in_the_destination_and_keeps_one_it_holds() {
+        let src = SRC.replace("menu polish #low", "menu polish #low #of/ar-9");
+        let lifted = |held: &[&str]| {
+            let held = held.iter().map(|s| s.to_string()).collect();
+            let m = lift_into(&src, DEST, &w("menu polish"), None, None, &held)
+                .unwrap()
+                .unwrap();
+            (m.line, m.unlinked)
+        };
+        assert_eq!(
+            lifted(&[]),
+            (
+                "- [ ] dodgeball menu polish #low".into(),
+                Some("ar-9".into())
+            )
+        );
+        assert_eq!(
+            lifted(&["ar-9"]),
+            ("- [ ] dodgeball menu polish #low #of/ar-9".into(), None)
+        );
     }
 
     #[test]
@@ -3139,9 +3279,16 @@ Version: v1.2.0
             "- [ ] dodgeball spawn bug #v0.4.0 #urgent #game <!-- since:2026-10-01 carried:2 -->\n",
             "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n",
         );
-        let m = lift_into(&src, DEST, &w("spawn bug"), None, Some((1, 2, 0)))
-            .unwrap()
-            .unwrap();
+        let m = lift_into(
+            &src,
+            DEST,
+            &w("spawn bug"),
+            None,
+            Some((1, 2, 0)),
+            &HashSet::new(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(
             m.dest.contains(
                 "- [ ] dodgeball spawn bug #high\n  was: the spawn is off\n  - [ ] a child row\n"
@@ -3183,7 +3330,7 @@ Version: v1.2.0
     #[test]
     fn a_cross_project_move_refuses_a_dest_with_no_section() {
         let prose = "# prose only\n\nnothing here\n";
-        assert!(lift_into(SRC, prose, &w("spawn"), None, None).is_err());
+        assert!(lift_into(SRC, prose, &w("spawn"), None, None, &HashSet::new()).is_err());
     }
 
     #[test]
@@ -3191,9 +3338,16 @@ Version: v1.2.0
         assert!(lift(&w("no such row"), None).unwrap().is_none());
         // A closed row is not movable.
         let closed = SRC.replace("- [ ] dodgeball menu", "- [x] dodgeball menu");
-        assert!(lift_into(&closed, DEST, &w("menu polish"), None, None)
-            .unwrap()
-            .is_none());
+        assert!(lift_into(
+            &closed,
+            DEST,
+            &w("menu polish"),
+            None,
+            None,
+            &HashSet::new()
+        )
+        .unwrap()
+        .is_none());
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -3204,12 +3358,35 @@ Version: v1.2.0
     }
 
     #[test]
+    fn row_ids_reads_both_sheets_and_their_version_notes() {
+        let d = scratch("ids");
+        fs::create_dir_all(d.join("agent/versions")).unwrap();
+        fs::write(d.join("README.md"), "## Tasks\n- [ ] a <!-- id:hc-1 -->\n").unwrap();
+        fs::write(
+            d.join("agent/README.md"),
+            "## Tasks\n- [ ] b <!-- id:hc-2 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            d.join("agent/versions/v0.1.0.md"),
+            "## Tasks\n- [x] c <!-- id:hc-3 -->\n",
+        )
+        .unwrap();
+        let mut ids: Vec<_> = row_ids(&d).into_iter().collect();
+        ids.sort();
+        assert_eq!(ids, ["hc-1", "hc-2", "hc-3"]);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn transfer_writes_both_sheets() {
         let d = scratch("ok");
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let m = transfer(&s, &t, &w("spawn"), None).unwrap().unwrap();
+        let m = transfer(&s, &t, &w("spawn"), None, &HashSet::new())
+            .unwrap()
+            .unwrap();
         // Written swept: the same rows as returned, laid out in sections.
         let (src, dest) = (
             fs::read_to_string(&s).unwrap(),
@@ -3237,10 +3414,14 @@ Version: v1.2.0
         let (s, t) = (d.join("src.md"), d.join("dest.md"));
         fs::write(&s, SRC).unwrap();
         fs::write(&t, DEST).unwrap();
-        let same = transfer(&s, &s, &w("spawn"), None).unwrap_err().to_string();
+        let same = transfer(&s, &s, &w("spawn"), None, &HashSet::new())
+            .unwrap_err()
+            .to_string();
         assert!(same.contains("same sheet"), "{same}");
-        assert!(transfer(&s, &t, &w("spawn"), Some("next")).is_err());
-        assert!(transfer(&s, &t, &w("no such row"), None).unwrap().is_none());
+        assert!(transfer(&s, &t, &w("spawn"), Some("next"), &HashSet::new()).is_err());
+        assert!(transfer(&s, &t, &w("no such row"), None, &HashSet::new())
+            .unwrap()
+            .is_none());
         assert_eq!(fs::read_to_string(&s).unwrap(), SRC);
         assert_eq!(fs::read_to_string(&t).unwrap(), DEST);
         let _ = fs::remove_dir_all(&d);
@@ -3607,7 +3788,6 @@ mod inbox_tests {
         }
     }
 
-    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     #[test]
     fn row_writes_leave_a_record_with_id_words_and_lane() {
         let v = vault(
@@ -3866,6 +4046,90 @@ mod inbox_tests {
         .is_err());
     }
 
+    /// nc-1: a row aimed at a later release sits in `## Tasks` like any other, so `edit` and
+    /// `drop` reach it by its exact line, its words or its id, and it keeps its release tag.
+    /// Seen 2026-11-04, before `--migrate-rows` folded the old `## Wave` sections into
+    /// `## Tasks`: an exact `edit` on a planned row said "no open task matches".
+    #[test]
+    fn edit_and_drop_reach_a_row_aimed_at_a_later_release() {
+        let planned = "- [ ] fix(net): rotate the token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(
+            sheet::is_later(planned, Some((0, 1, 0))),
+            "the fixture's row is planned"
+        );
+        let v = vault(
+            "planned",
+            "",
+            &format!("- [ ] fix(ui): the menu flickers #high <!-- id:sc-1 -->\n{planned}\n"),
+        );
+        let edited = |pick: Pick, text: Option<&str>, details: &[String]| {
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &pick,
+                text,
+                None,
+                details,
+                false,
+                None,
+                Lane::Human,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            edited(
+                Pick::new(planned, true).unwrap(),
+                Some("fix(net): rotate the host token"),
+                &[]
+            ),
+            0
+        );
+        let row = "- [ ] fix(net): rotate the host token #high #v0.2.0 <!-- id:sc-2 -->";
+        assert!(v.read().contains(row), "{}", v.read());
+        assert_eq!(
+            edited(
+                Pick::new("host token", false).unwrap(),
+                None,
+                &["out of git".into()]
+            ),
+            0
+        );
+        assert!(
+            v.read().contains(&format!("{row}\n  out of git\n")),
+            "{}",
+            v.read()
+        );
+        assert_eq!(
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id("sc-2".into()),
+                Some("moot"),
+                None,
+                Lane::Human
+            )
+            .unwrap(),
+            0
+        );
+        let sheet = v.read();
+        let closed = sheet.lines().find(|l| l.contains("id:sc-2")).unwrap();
+        assert!(
+            closed.starts_with("- [x] fix(net): rotate the host token"),
+            "{sheet}"
+        );
+        assert!(
+            closed.contains("#v0.2.0") && closed.contains("dropped: moot"),
+            "{sheet}"
+        );
+        assert!(
+            sheet.contains("- [ ] fix(ui): the menu flickers"),
+            "{sheet}"
+        );
+    }
+
+    /// A vault with one project, `scratch`, whose sheet holds `inbox` and `tasks`.
     fn vault(tag: &str, inbox: &str, tasks: &str) -> Vault {
         let root = std::env::temp_dir().join(format!("notes-inbox-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

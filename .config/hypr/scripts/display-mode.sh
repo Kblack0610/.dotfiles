@@ -18,35 +18,41 @@ fi
 PRIMARY="${MONITORS[0]}"
 SECONDARY="${MONITORS[1]:-}"
 
+# mon <output> [field=value ...]: one hl.monitor() call. A live override, like the old
+# `hyprctl keyword monitor`: the next config reload restores conf/monitors.lua.
+mon() {
+    local out="$1" kv fields=""
+    shift
+    for kv in "$@"; do fields+=", $kv"; done
+    printf 'hl.monitor({ output = "%s"%s })\n' "$out" "$fields"
+}
+ON=('mode = "preferred"' 'scale = 1')
+
 apply() {
     local mode="$1"
     case "$mode" in
         mirror)
             [[ -z "$SECONDARY" ]] && { err "Mirror needs 2 displays"; exit 2; }
-            hyprctl --batch "\
-                keyword monitor $PRIMARY,preferred,auto,1 ; \
-                keyword monitor $SECONDARY,preferred,auto,1,mirror,$PRIMARY"
+            hyprctl eval "$(mon "$PRIMARY" "${ON[@]}" 'position = "auto"')
+$(mon "$SECONDARY" "${ON[@]}" 'position = "auto"' "mirror = \"$PRIMARY\"")"
             ;;
         extend)
             [[ -z "$SECONDARY" ]] && { err "Extend needs 2 displays"; exit 2; }
-            hyprctl --batch "\
-                keyword monitor $PRIMARY,preferred,0x0,1 ; \
-                keyword monitor $SECONDARY,preferred,auto-right,1"
+            hyprctl eval "$(mon "$PRIMARY" "${ON[@]}" 'position = "0x0"')
+$(mon "$SECONDARY" "${ON[@]}" 'position = "auto-right"')"
             ;;
         primary-only)
             if [[ -n "$SECONDARY" ]]; then
-                hyprctl --batch "\
-                    keyword monitor $PRIMARY,preferred,auto,1 ; \
-                    keyword monitor $SECONDARY,disable"
+                hyprctl eval "$(mon "$PRIMARY" "${ON[@]}" 'position = "auto"')
+$(mon "$SECONDARY" 'disabled = true')"
             else
-                hyprctl keyword monitor "$PRIMARY,preferred,auto,1"
+                hyprctl eval "$(mon "$PRIMARY" "${ON[@]}" 'position = "auto"')"
             fi
             ;;
         secondary-only)
             [[ -z "$SECONDARY" ]] && { err "Secondary-only needs 2 displays"; exit 2; }
-            hyprctl --batch "\
-                keyword monitor $SECONDARY,preferred,auto,1 ; \
-                keyword monitor $PRIMARY,disable"
+            hyprctl eval "$(mon "$SECONDARY" "${ON[@]}" 'position = "auto"')
+$(mon "$PRIMARY" 'disabled = true')"
             ;;
         *)
             err "Unknown mode: $mode"

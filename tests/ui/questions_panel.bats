@@ -168,7 +168,7 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until 'side_by_side'
 }
 
-@test "a number then enter answers in place: the row leaves and the count drops" {
+@test "a number then enter answers at once: the row says sending, the next question is up, and the row leaves once delivered" {
   TM_WIDTH=80 TM_HEIGHT=24 open_panel
   wait_until 'screen_has "list on top, card below"'
   tmux_keys 1
@@ -176,10 +176,42 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   keep_screen armed_80x24
   [ "$(status_of "$OLD")" = pending ]
   tmux_keys Enter
-  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?"'
-  screen_has 'sent "stacked" to'
+  # The answer is recorded before the key returns; the cursor is on the next question's card.
+  # At 80 columns the list cuts the header's "1 sending", so the row's own tag stands for it,
+  # and the footer puts each " . " part on its own line.
+  wait_until 'screen_has "2 asks waiting" && screen_has "sending alpha:1" && screen_has "drop it" && screen_lacks "list on top, card below"'
+  screen_has 'answered "stacked"'
+  screen_has 'sending it to alpha:1'
   [ "$(status_of "$OLD")" = answered ]
   grep -qx 'answer: stacked' "$(ask_file "$OLD")"
+  keep_screen sending_80x24
+  # What agent-ask-deliver.path runs on the workstation; the panel's wait sees it and reloads.
+  "$AGENT_ASK" deliver --all
+  wait_until 'screen_has "delivered to alpha:1" && screen_lacks "sending alpha:1" && screen_lacks "Make stacked the default?"'
+  screen_has '2 asks waiting'
+}
+
+@test "the next question answers while the last is still sending, and a key on a sending row sends nothing more" {
+  TM_WIDTH=80 TM_HEIGHT=24 open_panel
+  wait_until 'screen_has "list on top, card below"'
+  tmux_keys 1
+  wait_until 'screen_has "send 1 \"stacked\""'
+  tmux_keys Enter
+  wait_until 'screen_has "sending alpha:1" && screen_has "drop it"'
+  tmux_keys 1
+  wait_until 'screen_has "send 1 \"keep\""'
+  tmux_keys Enter
+  wait_until 'screen_has "1 ask waiting" && screen_has "sending beta:2" && screen_has "leave it"'
+  [ "$(status_of "$MID")" = answered ]
+  # Down to the first sending row: a number there only says the answer is on its way.
+  tmux_keys Down 1
+  wait_until 'screen_has "sending it to alpha:1" && screen_has "g goes there"'
+  tmux_keys Enter
+  wait_until 'screen_has "press a number, t, d or"'
+  [ "$(grep -c '^answer:' "$(ask_file "$OLD")")" = 1 ]
+  "$AGENT_ASK" deliver --all
+  wait_until 'screen_lacks "sending alpha:1" && screen_lacks "sending beta:2" && screen_lacks "Keep the merge queue?"'
+  screen_has '1 ask waiting'
 }
 
 @test "a number then esc sends nothing and keeps the panel open" {
@@ -213,14 +245,14 @@ close_panel() { tmux_keys Escape; wait_until '! _tm has-session 2>/dev/null'; tm
   wait_until "screen_has 'answering alpha:1'"
   tmux_type 'stacked'
   tmux_keys Enter
-  wait_until 'screen_has "2 asks waiting" && screen_lacks "Make stacked the default?"'
+  # The next question's card on screen; the answered one stays a sending row until delivered.
+  wait_until 'screen_has "2 asks waiting" && screen_has "sending alpha:1" && screen_has "drop it" && screen_lacks "answer> stacked"'
   tmux_keys t
   wait_until "screen_has 'answering beta:2:'"
   screen_matches '^│ answer> +│'
-  screen_lacks 'stacked'
   tmux_type 'keep'
   tmux_keys Enter
-  wait_until 'screen_has "1 ask waiting" && screen_lacks "Keep the merge queue?"'
+  wait_until 'screen_has "1 ask waiting" && screen_has "sending beta:2" && screen_has "leave it"'
   grep -qx 'answer: keep' "$(ask_file "$MID")"
   # esc from typing puts the count back in the header.
   tmux_keys t

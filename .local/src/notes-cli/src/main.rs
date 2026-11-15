@@ -16,6 +16,7 @@ mod config;
 mod daily;
 mod doctor;
 mod epics;
+mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
@@ -36,7 +37,6 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
-mod registry;
 mod sheet;
 mod show;
 mod standing;
@@ -72,6 +72,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "parsed once per process; boxing the Projects flags buys nothing"
+)]
 enum Cmd {
     /// Create today's daily note (idempotent), then link refs + backlogs
     Today {
@@ -254,6 +258,24 @@ enum Cmd {
         #[arg(long, value_enum, conflicts_with = "name")]
         kind: Option<md::TagKind>,
     },
+    /// Ranked lookup over the vault's knowledge: articles, zettels, refs, employment/ and lab/.
+    /// Words are OR-ed and ranked (notes with every word first), `#tag` filters, `"a phrase"`
+    /// boosts, `-word` excludes; typos and half-typed words still match. Prints
+    /// `path<TAB>line<TAB>score<TAB>title<TAB>snippet`, best first.
+    Find {
+        /// The query, e.g. `ai oauth`, `#interview system design`, `"cert pinning" -android`.
+        #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+        query: Vec<String>,
+        /// Most hits to print.
+        #[arg(short = 'n', long, default_value_t = 30)]
+        limit: usize,
+        /// Print hits as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Score the engine against an eval file (`query<TAB>path[;path]`, `-` for none).
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["query", "json"])]
+        eval: Option<std::path::PathBuf>,
+    },
     /// List the indexed projects behind the board and the daily note's footer link.
     /// No arg lists each as `name<TAB>summary-path<TAB>status`; `<name>` lists that
     /// project's note files as `path<TAB>label` (summary first).
@@ -347,6 +369,11 @@ enum Cmd {
         /// would never close it). `notes-roll` checks the target is above the newest tag
         #[arg(long)]
         renumber: bool,
+        /// With --release: the release tag closing the version (vX.Y.Z). The frozen note is
+        /// named from it; a tag below the open version gets a note with no planned rows and
+        /// leaves the sheet open (`agentctl-wave-roll`)
+        #[arg(long, value_name = "VERSION")]
+        tag: Option<String>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -478,9 +505,12 @@ enum Cmd {
     },
     /// Print the resolved profile + paths
     Config {
-        /// List every configured profile name instead
+        /// List every profile this machine lists instead (a work profile only on its own machine)
         #[arg(long)]
         profiles: bool,
+        /// Print this machine's own profile: the one picked with no --profile flag
+        #[arg(long, conflicts_with = "profiles")]
+        machine_profile: bool,
     },
 }
 
@@ -1190,7 +1220,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let op = playtest_op(sub, exact)?;
             let _lock = match op {
                 playtest::Op::List => None,
@@ -1208,7 +1238,7 @@ fn main() -> Result<()> {
             sub,
             ..
         } => {
-            let name = registry::canonical(&name);
+            let name = project_map::canonical(&name);
             let lane = if agent { Lane::Agent } else { Lane::Human };
             let sheet = project_tasks::sheet_of(&prof, &name, lane)?;
             let pick = |query: &[String]| -> anyhow::Result<Pick> {
@@ -1457,7 +1487,7 @@ fn main() -> Result<()> {
             ..
         } => {
             let filter = ingest::Filter {
-                project: project.map(|n| registry::canonical(&n)),
+                project: project.map(|n| project_map::canonical(&n)),
                 id,
                 action,
                 by,
@@ -1562,6 +1592,18 @@ fn main() -> Result<()> {
             }
             0
         }
+        Cmd::Find {
+            query,
+            limit,
+            json,
+            eval,
+        } => {
+            match eval {
+                Some(f) => find::run_eval(&prof, &f)?,
+                None => find::run(&prof, &query.join(" "), limit, json)?,
+            }
+            0
+        }
         Cmd::Projects {
             name,
             new,
@@ -1586,6 +1628,7 @@ fn main() -> Result<()> {
             carry,
             next,
             renumber,
+            tag,
             version_of,
             roadmap,
             stats,
@@ -1707,6 +1750,7 @@ fn main() -> Result<()> {
                         carry,
                         next.as_deref(),
                         renumber,
+                        tag.as_deref(),
                     )?;
                     lab_refresh::kick();
                 }
@@ -1755,8 +1799,13 @@ fn main() -> Result<()> {
         Cmd::Doctor {
             projects: false, ..
         } => doctor::run(&prof, &log)?,
-        Cmd::Config { profiles } => {
-            if profiles {
+        Cmd::Config {
+            profiles,
+            machine_profile,
+        } => {
+            if machine_profile {
+                println!("{}", config::machine_profile()?);
+            } else if profiles {
                 for name in config::all_profile_names()? {
                     println!("{name}");
                 }

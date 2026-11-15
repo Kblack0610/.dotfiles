@@ -10,8 +10,10 @@
 //! | `runs`         | agentctl (`runs.jsonl`)            | runner runs that FAILED or STALLED        |
 //! | `queue`        | `agent-queue` (through `queue::list`) | items queued and finished              |
 //! | `ingest`       | the notes CLI (`ingest.jsonl`)     | what intake did with each line, and why   |
+//! | `audit`        | agent-web, the hub TUI, agent-hold, claude-acct park (`crate::audit`) | who changed what, and how it went |
 //!
-//! Queue starts are not read from the queue: the dispatch log already records them.
+//! Queue starts are not read from the queue: the dispatch log already records them. Holds, go's
+//! and parks are read from the audit log, not from the titles of the pages that announce them.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -31,14 +33,19 @@ pub const MAX_ACTIONS: usize = 1000;
 pub struct Action {
     /// Epoch seconds.
     pub at: i64,
-    /// `shepherd`, `dispatch`, `sentinel`, `hold`, `park`, `agentctl`, `human`, `board`, ...
+    /// `shepherd`, `dispatch`, `sentinel`, `agentctl`, `human`, `board`, ..., or for an audited
+    /// change the signed-in login, local user or session that made it.
     pub actor: String,
-    /// `nudge`, `escalate`, `skip`, `start`, `reap`, `tripped`, `page`, `failed`, `queue`, ...
+    /// `nudge`, `escalate`, `skip`, `start`, `reap`, `tripped`, `page`, `failed`, `queue`, ...,
+    /// or an audited change's `noun.verb` (`hold.placed`, `queue.bumped`).
     pub verb: String,
     pub text: String,
     /// The page's priority, for an agent-notify action.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    /// An audited change whose outcome was not `ok`; it is under the `failed` chip.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
     /// Where an agent-notify page points (`tmux:`, `ask:`, `pr:`, `file:`, `url:`), as its
     /// sender wrote it; `agent-notify open` is what resolves it.
     #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
@@ -73,7 +80,7 @@ impl Row for Action {
     fn in_state(&self, state: &str) -> bool {
         match state {
             "loud" => self.priority.as_deref().is_some_and(|p| LOUD.contains(&p)),
-            "failed" => self.verb == "failed",
+            "failed" => self.verb == "failed" || self.failed,
             _ => true,
         }
     }
@@ -87,6 +94,7 @@ impl Action {
             verb: verb.into(),
             text: text.into(),
             priority: None,
+            failed: false,
             reference: None,
             source: source.into(),
         }
@@ -130,6 +138,8 @@ pub struct Paths {
     pub runs: PathBuf,
     /// The notes ingest record: intake's moves, filings and the reasons for them.
     pub ingest: PathBuf,
+    /// The operator audit log (`crate::audit`).
+    pub audit: PathBuf,
 }
 
 impl Paths {
@@ -147,6 +157,7 @@ impl Paths {
             ingest: crate::fleet::Paths::from_env()
                 .notes_state
                 .join("ingest.jsonl"),
+            audit: crate::audit::path(),
         }
     }
 }
@@ -210,12 +221,13 @@ pub fn window_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &T
             String::new()
         })
     };
-    let (shepherd, dispatch, notify, runs, ingest) = (
+    let (shepherd, dispatch, notify, runs, ingest, audit) = (
         read(&paths.shepherd_log),
         read(&paths.dispatch_log),
         read(&paths.notify_log),
         read(&paths.runs),
         read(&paths.ingest),
+        read(&paths.audit),
     );
     let (failed, bad) = failed_runs(&runs);
     if bad > 0 {
@@ -224,17 +236,26 @@ pub fn window_in<Tz: TimeZone>(paths: &Paths, since: i64, items: &[Item], tz: &T
             paths.runs.display()
         ));
     }
-    let ((sa, sr), (da, dr), (na, nr)) = (
+    let ((sa, sr), (da, dr), (na, nr), (aa, ar)) = (
         parse_shepherd(&shepherd),
         parse_dispatch(&dispatch, tz),
         parse_notify(&notify),
+        parse_audit(&audit),
     );
-    let mut all: Vec<Action> = [sa, da, na, failed, from_queue(items), parse_ingest(&ingest)]
-        .into_iter()
-        .flatten()
-        .filter(|a| a.at >= since)
-        .collect();
-    let mut rejects: Vec<Reject> = [sr, dr, nr]
+    let mut all: Vec<Action> = [
+        sa,
+        da,
+        na,
+        aa,
+        failed,
+        from_queue(items),
+        parse_ingest(&ingest),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|a| a.at >= since)
+    .collect();
+    let mut rejects: Vec<Reject> = [sr, dr, nr, ar]
         .into_iter()
         .flatten()
         .filter(|r| r.at >= since)
@@ -431,12 +452,27 @@ fn sentinel_verb(msg: &str) -> &'static str {
     }
 }
 
+/// Page titles whose change the audit log records: the page only announces it, so it is not
+/// listed twice.
+const AUDITED_PAGES: [&str; 3] = ["hold: ", "go: ", "park: "];
+
 /// agent-notify's ledger: `<rfc3339>\t<priority>\t<title>\t<message>[\t<ref>]`. The title says
-/// who paged; the ref, when there is one, says where the page points.
-/// Any other non-blank line (a message written with a raw newline) is a reject.
+/// who paged; the ref, when there is one, says where the page points. A hold, go or park page is
+/// left to the audit log. Any other non-blank line (a message written with a raw newline) is a
+/// reject.
 pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
+    let announced = |l: &str| {
+        l.split('\t')
+            .nth(2)
+            .is_some_and(|t| AUDITED_PAGES.iter().any(|p| t.starts_with(p)))
+    };
+    let text: String = text
+        .lines()
+        .filter(|l| !announced(l))
+        .map(|l| format!("{l}\n"))
+        .collect();
     read_lines(
-        text,
+        &text,
         "notify",
         "a line with no ledger fields (a message written with a raw newline)",
         |l| {
@@ -450,9 +486,6 @@ pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
             };
             let (actor, verb) = match head {
                 "Sentinel" => ("sentinel".to_string(), sentinel_verb(msg)),
-                "hold" => ("hold".to_string(), "hold"),
-                "go" => ("hold".to_string(), "go"),
-                "park" => ("park".to_string(), "park"),
                 _ => {
                     let w = title.split_whitespace().next().unwrap_or("notify");
                     (w.trim_end_matches(':').to_lowercase(), "page")
@@ -469,6 +502,43 @@ pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
             Some(a)
         },
     )
+}
+
+/// The audit log (`crate::audit`): each change under its actor, its `noun.verb` as the verb, and
+/// the target with what was asked as the text. A line that is not an entry is a reject.
+pub fn parse_audit(text: &str) -> (Vec<Action>, Vec<Reject>) {
+    read_lines(text, "audit", "not an audit entry", |l| {
+        let e: crate::audit::Entry = serde_json::from_str(l).ok()?;
+        let mut text = e.target.clone();
+        let change = [("from", &e.from), ("to", &e.to)]
+            .into_iter()
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| format!("{k} {}", words(v)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !change.is_empty() {
+            text = format!("{text}: {change}");
+        }
+        if !e.ok() {
+            text = format!("{text} ({})", e.outcome);
+        }
+        let mut a = Action::new(e.at, &e.actor, &e.action, &text, "audit");
+        a.failed = !e.ok();
+        Some(a)
+    })
+}
+
+/// A value as a reader says it: an object as `key=value` pairs, a string bare.
+fn words(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(o) => o
+            .iter()
+            .map(|(k, v)| format!("{k}={}", words(v)))
+            .collect::<Vec<_>>()
+            .join(" "),
+        v => v.to_string(),
+    }
 }
 
 /// agentctl's runs that FAILED or STALLED, and how many ledger lines could not be read.
@@ -703,6 +773,12 @@ not a line
 a continuation line of the message above
 ";
 
+    const AUDIT: &str = r#"{"at":1793810040,"actor":"agent-4","action":"hold.placed","target":"unity","outcome":"ok","via":"cli","to":"gate running"}
+{"at":1793810100,"actor":"kblack0610","action":"queue.bumped","target":"fix-x","outcome":"failed: agent-queue: no such item","via":"web","to":{"priority":"high"}}
+{"at":1793810160,"actor":"agent-4","action":"session.parked","target":"agent-4","outcome":"ok","via":"cli"}
+not json
+"#;
+
     const RUNS: &str = r#"{"name":"comms","started":1793810046,"finished":1793810123,"result":"success","exit":"0","outcome":"WORKED","out":[0,0],"err":[0,0]}
 {"name":"fleet-dispatch","started":1793808989,"finished":1793809001,"result":"exit-code","exit":"1","outcome":"FAILED","out":[0,0],"err":[0,0]}
 {"name":"lab-sync","started":1793809100,"finished":1793809200,"result":"success","exit":"0","outcome":"STALLED","out":[0,0],"err":[0,0]}
@@ -780,8 +856,8 @@ not json
     #[test]
     fn a_notify_ref_is_the_fifth_field_and_a_four_field_row_has_none() {
         let a = parse_notify(
-            "2026-11-05T10:00:00-08:00\tnormal\tgo: x\tSession is free.\ttmux:hub/x-agent-3:1
-2026-11-05T10:01:00-08:00\tnormal\tgo: y\tNo ref here.
+            "2026-11-05T10:00:00-08:00\tnormal\task: x\tSession is free.\ttmux:hub/x-agent-3:1
+2026-11-05T10:01:00-08:00\tnormal\task: y\tNo ref here.
 ",
         )
         .0;
@@ -820,15 +896,29 @@ not json
                 ("sentinel", "recovered", "high"),
                 ("sentinel", "page", "normal"),
                 ("shepherd", "page", "high"),
-                ("hold", "hold", "normal"),
-                ("hold", "go", "normal"),
-                ("park", "park", "low"),
                 ("ask", "page", "normal"),
-            ]
+            ],
+            "hold, go and park pages are the audit log's"
         );
         assert_eq!(a[0].at, utc("2026-11-04T16:18:29Z"));
         assert_eq!(a[0].text, "[fleet-liveness] TRIPPED - exit 1");
-        assert_eq!(a[4].text, "unity: HOLD set: gate running");
+        assert_eq!(a[4].text, "dotfiles: pick one");
+    }
+
+    #[test]
+    fn an_audit_line_names_who_changed_what_and_a_failure_is_under_the_failed_chip() {
+        let (a, r) = parse_audit(AUDIT);
+        assert_eq!(r.len(), 1, "the line that is not an entry");
+        assert_eq!(
+            (a[0].actor.as_str(), a[0].verb.as_str(), a[0].text.as_str()),
+            ("agent-4", "hold.placed", "unity: to gate running")
+        );
+        assert_eq!(
+            a[1].text,
+            "fix-x: to priority=high (failed: agent-queue: no such item)"
+        );
+        assert!(a[1].in_state("failed") && !a[0].in_state("failed"));
+        assert_eq!(a[2].text, "agent-4");
     }
 
     #[test]
@@ -927,6 +1017,7 @@ not json
             notify_log: d.join("notify"),
             runs: d.join("runs.jsonl"),
             ingest: d.join("ingest.jsonl"),
+            audit: d.join("audit.jsonl"),
         }
     }
 
@@ -1042,6 +1133,7 @@ not json"#;
         std::fs::write(&p.dispatch_log, DISPATCH).unwrap();
         std::fs::write(&p.notify_log, NOTIFY).unwrap();
         std::fs::write(&p.runs, RUNS).unwrap();
+        std::fs::write(&p.audit, AUDIT).unwrap();
         let items = [item("a", None, "2026-11-04T16:30:00Z", None)];
         let g = gather_in(&p, 0, &items, &pst());
         assert!(
@@ -1078,9 +1170,9 @@ not json"#;
             verbs(&late.actions),
             [
                 "page",
-                "park",
-                "go",
-                "hold",
+                "session.parked",
+                "queue.bumped",
+                "hold.placed",
                 "page",
                 "page",
                 "refused",

@@ -62,12 +62,11 @@ fi
 # plan_epic_dir <plan> -> $PLANS_ROOT/<project> for the project whose registry `code` the plan's
 # `epic: <code>-<N>` line carries, or nothing (no line, no map, an unknown code).
 plan_epic_dir() {
-  local code map proj
+  local code proj
   code=$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$1" 2>/dev/null | head -1)
   [ -n "$code" ] || return 0
-  declare -F project_map_file >/dev/null 2>&1 || return 0   # the resolver source above was skipped
-  map="$(project_map_file)"
-  proj=$(jq -r --arg c "$code" 'first(.trackers // {} | to_entries[] | select((.value | objects | .code) == $c) | .key) // empty' "$map" 2>/dev/null)
+  declare -F project_of_code >/dev/null 2>&1 || return 0   # the resolver source above was skipped
+  proj=$(project_of_code "$code")
   [ -n "$proj" ] && printf '%s\n' "$PLANS_ROOT/$proj"
 }
 

@@ -481,7 +481,7 @@ _focus_terminal() {
   [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v hyprctl >/dev/null 2>&1 || return 0
   wins=" $(hyprctl clients -j 2>/dev/null | jq -r '.[].pid' 2>/dev/null | tr '\n' ' ')"
   while [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null; do
-    case "$wins" in *" $pid "*) hyprctl dispatch focuswindow "pid:$pid" >/dev/null 2>&1; return 0 ;; esac
+    case "$wins" in *" $pid "*) hyprctl dispatch "hl.dsp.focus({ window = \"pid:$pid\" })" >/dev/null 2>&1; return 0 ;; esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
   done
   return 0

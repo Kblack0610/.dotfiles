@@ -1,5 +1,5 @@
 "use strict";
-// Sessions' fleet-state half (the Watch tab until phase 3 of the hub layout): each session's
+// Sessions' fleet-state half: each session's
 // card, the folded facts card above an open transcript, and the last day's fold under the
 // table. It reads what fleet-state.timer writes, `state.json` and `watch.log`,
 // through /api/watch; nothing is judged here.
@@ -81,7 +81,7 @@ function prList(prs, now) {
   return `<details><summary>${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}</summary><ul>${items}</ul></details>`;
 }
 
-function card(s, maxCtx, now) {
+function card(s, now) {
   const pr = s.pr && s.pr !== "-" ? `PR #${esc(s.pr)}${s.pr_state ? " " + esc(s.pr_state.toLowerCase()) : ""}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "no PR";
   const git = [s.ahead ? `ahead ${s.ahead}` : "", s.behind ? `behind ${s.behind}` : "", s.dirty ? `${s.dirty} dirty` : "", s.conflicts ? "<b class=\"ci fail\">conflicts</b>" : ""].filter(Boolean).join(", ");
   const phases = s.phases_total ? `<span class="kv">phases ${meter(s.phases_done / s.phases_total, "var(--b-done)")} ${s.phases_done}/${s.phases_total}</span>` : "";
@@ -94,7 +94,7 @@ function card(s, maxCtx, now) {
       <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
       ${timeUse(s.time)}
       <div class="wk">
-        <span class="kv">ctx ${meter((s.context_tokens || 0) / maxCtx, "var(--accent)")} ${kfmt(s.context_tokens)}</span>
+        <span class="kv">ctx ${s.context_window ? `${meter((s.context_tokens || 0) / s.context_window, "var(--accent)")} ${kfmt(s.context_tokens)} of ${kfmt(s.context_window)}` : kfmt(s.context_tokens)}</span>
         ${phases}
         <span class="kv">idle ${dur(s.idle_min)}</span><span class="kv">open ${dur(s.age_min)}</span>
         ${s.compactions ? `<span class="kv">compactions ${esc(s.compactions)}</span>` : ""}
@@ -131,8 +131,6 @@ $("log-changes").addEventListener("change", (e) => {
   if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
 });
 
-const maxContext = () => Math.max(200e3, ...sessionsOf().map((s) => s.context_tokens || 0));
-
 // The open session's fleet-state card above its transcript, open until the reader folds it to one line.
 function renderFacts() {
   const el = $("facts");
@@ -142,11 +140,12 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, maxContext(), Date.now())}</details>`, wst.open);
+  paint(el, `<details data-k="facts"${secOpen(wst.open, "facts") ? " open" : ""}><summary><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span></summary>${card(s, Date.now())}</details>`, wst.open);
 }
 
-// The folds under the table: how old the state is, the last day's swimlanes and the shepherd's
-// pass and due lines. The change feed, the rundowns and the ranked sessions are Log's.
+// The folds under the table: how old the state is and the last day's swimlanes, shut to one line
+// with its lane count so the table's rows come first. The shepherd is
+// its own inner tab (shepherd.js); the change feed, the rundowns and the ranked sessions are Log's.
 function overviewFolds() {
   if (!wst.data) return '<div class="empty">Loading the overview.</div>';
   const state = wst.data.state;
@@ -158,11 +157,14 @@ function overviewFolds() {
     const keep = lanes.filter((l) => wst.ended || !l.gone);
     const ended = lanes.length - lanes.filter((l) => !l.gone).length;
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
-    html += `<div class="bhead"><span class="muted">state ${age == null ? "?" : dur(age) + " old"}${(state.unreadable || []).length ? ", could not read " + esc(state.unreadable.join(", ")) : ""}</span></div>`;
-    html += fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label></div>` +
-      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`);
+    // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
+    const unread = (state.unreadable || []).length ? `<div class="cline warn">could not read ${esc(state.unreadable.join(", "))}</div>` : "";
+    // The unread warn stays outside the shut fold, so it is seen.
+    html += unread + fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
+      `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
+      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`, keep.length, true);
   }
-  return html + shepherdOverview();
+  return html;
 }
 
 // Log's Ranked sessions: the week's outcome rows worst first, by agentctl-session-outcomes'
@@ -181,16 +183,16 @@ function renderLogRanked() {
   const rows = ost.rows || [];
   const body = ost.err ? `<div class="card err">${esc(ost.err)}</div>` : !ost.rows ? '<div class="empty">Loading.</div>'
     : !rows.length ? '<div class="empty">No session with friction in the last 7 days.</div>'
-    : `<div class="panel scroll"><table class="tbl"><tr><th class="n">friction</th><th>session</th><th>project</th><th class="n">wall</th><th class="n">cost</th><th class="n">PRs</th><th>why</th></tr>${rows.map((r) => {
+    : `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance" data-named>friction</th><th data-role="lead">session</th><th>project</th><th class="n">wall</th><th class="n" data-role="glance" data-named>cost</th><th class="n">PRs</th><th data-role="glance">why</th></tr>${rows.map((r) => {
         const prs = r.prs_merged + r.prs_open + r.prs_closed_unmerged;
         const open = ost.open === r.session_id;
         const card = open ? `<tr><td colspan="7" class="wrap"><pre class="joblog">${ost.cards[r.session_id] == null ? "Loading the card." : esc(ost.cards[r.session_id])}</pre></td></tr>` : "";
         return `<tr class="click" data-sid="${esc(r.session_id)}"><td class="n">${r.friction}</td><td>${esc(r.title.split("\n")[0].slice(0, 60))} <span class="muted">${esc(r.session_id.slice(0, 8))}</span></td><td>${esc(r.project)}</td>` +
           `<td class="n">${r.duration_s == null ? "-" : dur(r.duration_s / 60)}</td><td class="n">${r.cost_usd == null ? "-" : "$" + r.cost_usd.toFixed(2)}</td><td class="n">${r.prs_merged}/${prs}</td><td class="wrap">${esc(r.why)}</td></tr>${card}`;
       }).join("")}</table></div>`;
-  $("log-ranked").innerHTML = `<div class="bhead"><span class="muted">${ost.rows ? `${rows.length} worst, 7d, by friction` : "7d, by friction"}</span></div>${body}`;
+  $("log-ranked").innerHTML = body;
 }
-$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows) loadRanked(); });
+$("sec-ranked").addEventListener("toggle", (e) => { if (e.target.open && !ost.rows && logShows("ranked")) loadRanked(); });
 $("log-ranked").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-sid]");
   if (!row) return;
@@ -198,10 +200,12 @@ $("log-ranked").addEventListener("click", (e) => {
   ost.open = ost.open === sid ? null : sid;
   if (ost.open && ost.cards[sid] == null) loadCard(sid); else renderLogRanked();
 });
-LOG_PARTS.push({ show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
+LOG_PARTS.push({ sec: "ranked", show() { renderLogRanked(); if ($("sec-ranked").open && !ost.rows) loadRanked(); }, onEvent() {} });
 
-// An overview section, open until the reader folds it; the fold is remembered across re-renders by its key.
-const fold = (k, title, body) => `<details class="ovsec" data-k="${k}"${secOpen(wst.open, k) ? " open" : ""}><summary><h2 class="sec">${title}</h2></summary>${body}</details>`;
+// An overview section, open until the reader folds it, or with `shut` shut until the reader opens it;
+// the fold is remembered across re-renders by its key. title is text, n the count its summary shows.
+const fold = (k, title, body, n, shut) =>
+  `<details class="ovsec" data-k="${k}"${(shut ? wst.open[k] === true : secOpen(wst.open, k)) ? " open" : ""}><summary>${secHead("", title, n)}</summary>${body}</details>`;
 
 $("scroll").addEventListener("change", (e) => {
   if (st.sel) return;
@@ -217,5 +221,5 @@ for (const id of ["scroll", "facts"]) {
   }, true);
 }
 
-const logWatchFeed = pushed("log", ["watch"], refreshWatch);
-LOG_PARTS.push({ show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });
+const logWatchFeed = pushed("log", ["watch"], refreshWatch, () => logShows("changes"));
+LOG_PARTS.push({ sec: "changes", show() { renderLogChanges(); logWatchFeed.show(!wst.data); }, onEvent: logWatchFeed.onEvent });

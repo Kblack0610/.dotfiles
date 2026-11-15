@@ -300,7 +300,8 @@ pub trait Runner {
     }
 }
 
-/// The real runner: the command with no shell and no stdin.
+/// The real runner: the command with no shell and no stdin, marked as audited by its caller
+/// (`crate::audit::AUDITED_ENV`).
 pub struct System;
 
 impl Runner for System {
@@ -309,6 +310,7 @@ impl Runner for System {
         let out = Command::new(cmd)
             .args(args)
             .stdin(Stdio::null())
+            .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         if out.status.success() {
@@ -328,6 +330,7 @@ impl Runner for System {
         let out = Command::new(cmd)
             .args(args)
             .stdin(Stdio::null())
+            .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         let code = out
@@ -404,7 +407,11 @@ pub fn gather(runner: &dyn Runner) -> Snapshot {
     with_items(&mut sessions, &items);
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
-        if a.mode == agent_panel::jsonl::Mode::Plan && !s.parked && is_word(&s.server) && is_id(&s.pane, '%') {
+        if a.mode == agent_panel::jsonl::Mode::Plan
+            && !s.parked
+            && is_word(&s.server)
+            && is_id(&s.pane, '%')
+        {
             let argv = ["tmux", "-L", &s.server, "capture-pane", "-p", "-t", &s.pane];
             let argv: Vec<String> = argv.iter().map(|x| x.to_string()).collect();
             s.approve_key = runner.run(&argv).ok().as_deref().and_then(plan_approve_key);

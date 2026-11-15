@@ -32,7 +32,9 @@ Verbs
                  watches) carries an expect_cmd that is not valid bash.
   validate --strict FILE
                  the above, plus the four legibility fields (what/why/where/
-                 action). This is a LINT, deliberately not part of plain
+                 action), an explicit expiry (`null` for a standing
+                 watch), and --paginate on a `gh api` read of a list
+                 endpoint in expect_cmd. This is a LINT, deliberately not part of plain
                  `validate`: the loop runs `validate` on every pass and sends a
                  manifest that fails it to ERROR *and notifies*, so promoting a
                  documentation gap to a runtime fault would have paged eleven
@@ -44,6 +46,8 @@ Timestamps are deliberately kept as strings: PyYAML would otherwise resolve
 caller feeds that value straight to `date -d`.
 """
 
+import json
+import os
 import re
 import shlex
 import subprocess
@@ -63,7 +67,25 @@ except ImportError:
 # Keep ISO timestamps as plain strings — the caller passes them to `date -d`,
 # and a round-trip through datetime would silently rewrite the format.
 class Loader(yaml.SafeLoader):
-    pass
+    # A repeated key is valid YAML to PyYAML, which keeps the last value. Three
+    # `signal:` lines in a manifest therefore ran one signal of three with no
+    # error (ar-1825), so a repeated key is refused here, for env and validate.
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            # Compare the key as written (tag and text), so `1` and `true` are not
+            # equal the way their Python values are, and no key is built twice.
+            if not isinstance(key_node, yaml.ScalarNode) or key_node.tag == "tag:yaml.org,2002:merge":
+                continue  # `<<:` overrides are the point of a merge, not a repeat
+            key = (key_node.tag, key_node.value)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping", node.start_mark,
+                    f"found repeated key {key_node.value!r}; only its last value would be kept, "
+                    "so write several values as a YAML list", key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 Loader.yaml_implicit_resolvers = {
@@ -80,6 +102,24 @@ DURATION = re.compile(r"^[0-9]+[smhd]?$")
 # exactly what a mis-read `expect_cmd: >-` degrades into, and why four watches
 # reported OK for weeks. Syntax-checking alone does NOT catch it; this does.
 LEADING_REDIRECT = re.compile(r"^\s*[|<>]")
+
+# A `gh api` read of a GitHub list endpoint returns one page (30 items) unless it
+# passes --paginate. unity-runners-online read page 1 of 54 org runners, found only
+# offline slots there and tripped while 3 unity runners were online (ar-2393).
+# One call's own arguments: from `gh api` to the first command boundary. A jq filter's
+# own `|` also ends it, so a --paginate written after -q reads as missing (a false
+# error the writer fixes by moving the flag), never the other way round.
+GH_API_CALL = re.compile(r"\bgh api\b([^|;&)\n]*)")
+GH_LIST_PATH = re.compile(
+    r"[^\s'\"]*/(?:actions/runners|runs|jobs|artifacts|workflows|pulls|issues|comments|"
+    r"reviews|files|releases|commits|check-runs|check-suites|alerts|events|labels|"
+    r"branches|tags|contributors)(?:\?[^\s'\"\\]*)?(?=[\s'\"\\]|$)"
+)
+# A write (a method other than GET, or a field with no method, which makes gh POST)
+# and a count-only read of .total_count need no pagination.
+GH_METHOD = re.compile(r"\s(?:-X|--method)[\s=]*['\"]?([A-Za-z]+)")
+GH_FIELD = re.compile(r"\s(?:-f|-F|--field|--raw-field|--input)\b")
+GH_COUNT_ONLY = re.compile(r"\s(?:-q|--jq)[\s=]+['\"]?\.total_count\b")
 
 PROBES = ("http", "metric", "kubectl", "command", "agent")
 METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
@@ -100,6 +140,27 @@ METRIC_OPS = ("<", "<=", ">", ">=", "==", "!=")
 # notification; a folded block scalar (`>-`) is the right way to write a long
 # one, an unfolded one (`|-`) is not.
 LEGIBILITY_FIELDS = ("what", "why", "where", "action")
+
+
+def project_map_path():
+    """The registry agent-queue checks `--project` against."""
+    return os.environ.get("AGENT_QUEUE_PROJECT_MAP") or os.environ.get("PROJECT_MAP_FILE") or os.path.join(
+        os.path.expanduser("~"), ".config/shared-hooks/project-map.json"
+    )
+
+
+def canonical_projects():
+    """The canonical project names in project-map.json: what `paths` maps to, plus the `trackers`
+    keys (a `_comment_*` key is not one). None when the machine has no map, so a host without the
+    private overlay checks nothing."""
+    try:
+        with open(project_map_path(), "r", encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except FileNotFoundError:
+        return None
+    names = set(reg.get("paths", {}).values())
+    names |= {k for k in reg.get("trackers", {}) if not k.startswith("_")}
+    return names
 
 
 def scalar(value):
@@ -197,6 +258,37 @@ def legibility_errors(doc):
     return errors
 
 
+def expiry_errors(path, doc):
+    """--strict only: expiry is the literal `null` (standing) or a value.
+
+    A missing key, a bare `expiry:`, `~` or `''` all read as standing at runtime, so a
+    forgotten bake-window expiry leaves a zombie watch. fleet-bench triage --coverage
+    also reads `null` as the standing marker when it asks for a route line.
+    """
+    if scalar(doc.get("expiry")):
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        if re.search(r"^expiry:[ \t]*null[ \t]*(#.*)?$", fh.read(), re.M):
+            return []
+    return ["missing 'expiry' -- write 'expiry: null' for a standing watch"]
+
+
+def pagination_errors(doc):
+    """--strict only: a `gh api` read of a list endpoint must pass --paginate."""
+    errors = []
+    for call in GH_API_CALL.finditer(scalar(doc.get("expect_cmd"))):
+        args = call.group(1)
+        path = GH_LIST_PATH.search(args)
+        method = GH_METHOD.search(args)
+        write = method.group(1).upper() != "GET" if method else bool(GH_FIELD.search(args))
+        if path and "--paginate" not in args and not write and not GH_COUNT_ONLY.search(args):
+            errors.append(
+                f"expect_cmd reads the list {path.group(0)!r} with gh api but no --paginate; "
+                "it sees page 1 only (30 items) and can trip on a fault that is not there"
+            )
+    return errors
+
+
 def cmd_validate(path, strict=False):
     try:
         doc = load(path)
@@ -207,6 +299,8 @@ def cmd_validate(path, strict=False):
     errors = []
     if strict:
         errors.extend(legibility_errors(doc))
+        errors.extend(expiry_errors(path, doc))
+        errors.extend(pagination_errors(doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
@@ -284,6 +378,23 @@ def cmd_validate(path, strict=False):
     confirm = scalar(doc.get("confirm"))
     if confirm and not (confirm.isdigit() and int(confirm) >= 1):
         errors.append(f"confirm {confirm!r} is not a whole number of probes (1 or more)")
+
+    # `project:` files the watch under one project on the Alerts tab and the Projects card;
+    # none means fleet-wide. A name the registry does not hold would file it under a project
+    # nothing else knows, so it is refused (another spelling too: the facet matches project keys).
+    project = scalar(doc.get("project"))
+    if "project" in doc and not project:
+        errors.append("project is empty; leave it out for a fleet-wide watch")
+    elif project:
+        try:
+            known = canonical_projects()
+        except (OSError, ValueError, AttributeError) as exc:
+            errors.append(f"cannot check project: {project_map_path()} is unreadable ({exc})")
+            known = None
+        if known is not None and project not in known:
+            errors.append(
+                f"project {project!r} is not a canonical project in {project_map_path()}"
+            )
 
     if errors:
         for err in errors:

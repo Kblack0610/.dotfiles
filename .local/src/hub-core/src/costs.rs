@@ -1,13 +1,13 @@
-//! The Costs tab, both surfaces: what the fleet spent over 24h, 7d or 30d, cut seven ways
-//! (session, model, harness, tool, project, runner, kind), with fleet-bench's model evaluation on
+//! The Costs tab, both surfaces: what the fleet spent over 24h, 7d or 30d, cut eight ways
+//! (session, model, harness, tool, skill, project, runner, kind), with fleet-bench's model evaluation on
 //! the model and harness cuts. One reader over the stores that already hold every figure, so
 //! nothing is written twice and the terminal and the browser cannot disagree (dashboards rule 8):
 //!
 //! | figure | store | read through |
 //! |---|---|---|
 //! | per session: cost, models, harness, project, runner, kind | outcomes rows | `agentctl-session-outcomes costs` |
-//! | per runner call | `calls.jsonl` | `fleet::parse_call`, the Fleet tab's parser |
-//! | per tool, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
+//! | per runner call | `calls.jsonl` | `fleet::parse_call`, the runners' parser |
+//! | per tool and per skill, allocated | `~/.agent/token-usage/<day>.json` (`TOKENS_DIR`) | the snapshot files |
 //! | landed rate, redo, reverts, $ per PR | `fleet-bench models --json` | a shell-out, so the scoring stays there |
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
@@ -27,13 +27,13 @@ use crate::fleet_cost::FleetCost;
 use crate::queue;
 use crate::sections::{self, Sections};
 use crate::session_actions::Runner;
-use crate::table::{self, Row, Summary, Val, View};
+use crate::table::{self, Keys, Row, Summary, Val, View};
 
 const DAY: i64 = 24 * 3600;
 
 /// The `by:` switch, in the bar's order.
-pub const CUTS: [&str; 7] = [
-    "session", "model", "harness", "tool", "project", "runner", "kind",
+pub const CUTS: [&str; 8] = [
+    "session", "model", "harness", "tool", "skill", "project", "runner", "kind",
 ];
 /// The window switch and its length. The read takes the longest, so a switch needs no re-read.
 pub const WINDOWS: [(&str, i64); 3] = [("24h", DAY), ("7d", 7 * DAY), ("30d", 30 * DAY)];
@@ -44,12 +44,14 @@ pub const DEFAULT_WINDOW: &str = "7d";
 pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
-/// The line a TUI tab prints where it would show spend: the Costs tab and its key.
-pub const SPEND_BADGE: &str = "spend: 9 Costs";
+/// The line a TUI tab prints where it would show spend: the Costs tab and its key, when it has one.
+pub fn spend_badge() -> String {
+    format!("spend: {}", crate::layout::bar_label("costs"))
+}
 
-/// What the tool cut says when its snapshots predate the allocation, on both surfaces.
+/// What the tool and skill cuts say when their snapshots predate the allocation, on both surfaces.
 pub const UNPRICED: &str =
-    "no snapshot in this window allocates dollars to tools yet: calls and tokens only";
+    "no snapshot in this window allocates dollars to this cut yet: calls and tokens only";
 
 /// What the direct figure covers and what it cannot, on both surfaces (the pool is a Burn row). opencode's
 /// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
@@ -133,6 +135,21 @@ pub struct ToolDay {
     pub allocated_cost_usd: Option<f64>,
 }
 
+/// One skill's day in a token-usage snapshot: the responses in its spans (a Skill call or loaded
+/// body to the next typed prompt, its subagents included). Its dollars are an allocation: each
+/// session's cost split over its spans by weighted tokens, never a metered figure.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillDay {
+    pub skill: String,
+    pub spans: u64,
+    pub sessions: u64,
+    pub responses: u64,
+    pub context: u64,
+    pub output: u64,
+    pub allocated_cost_usd: Option<f64>,
+}
+
 /// A snapshot's whole-day counts.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -152,6 +169,11 @@ pub struct Snapshot {
     pub unallocated_usd: Option<f64>,
     #[serde(skip)]
     pub commands: Vec<ToolDay>,
+    /// Summed into the skill cut's lines, so the raw days are not sent.
+    #[serde(skip)]
+    pub skills: Vec<SkillDay>,
+    #[serde(skip)]
+    pub skill_unallocated_usd: Option<f64>,
     #[serde(skip)]
     pub totals: Option<SnapshotTotals>,
     #[serde(skip)]
@@ -219,6 +241,8 @@ pub struct Costs {
     pub snapshots: Vec<Snapshot>,
     /// The whole fleet's 24h cost; `why` says so when its file could not be read.
     pub fleet_cost: FleetCost,
+    /// The Budget inner tab: this month's cash by bill; `why` says so when its file could not be read.
+    pub budget: crate::budget::Budget,
     /// The History section: the fleet's dollars per day, month and year from every snapshot.
     pub history: crate::spend_history::History,
     /// Every snapshot day with its session rows, for the day table; too big to send whole.
@@ -246,6 +270,8 @@ pub struct Paths {
     pub headroom: PathBuf,
     /// `agent-usage fleet-cost`'s file.
     pub fleet_cost: PathBuf,
+    /// `agent-usage budget`'s file.
+    pub budget: PathBuf,
     /// `claude-acct gateway`'s snapshot.
     pub gateway: PathBuf,
 }
@@ -258,6 +284,7 @@ impl Paths {
             headroom: crate::boards::dispatch_dir().join("headroom.json"),
             tokens: crate::boards::token_usage_dir(),
             fleet_cost: crate::boards::fleet_cost(),
+            budget: crate::boards::budget(),
             gateway: crate::boards::gateway_snapshot(),
         }
     }
@@ -337,6 +364,10 @@ fn read_files(c: &mut Costs, paths: &Paths, now: i64) {
         Ok(f) => crate::fleet_cost::build(&f, now),
         Err(e) => crate::fleet_cost::missing(e),
     };
+    c.budget = match crate::budget::load(&paths.budget) {
+        Ok(f) => crate::budget::build(&f, now),
+        Err(e) => crate::budget::missing(e),
+    };
 }
 
 /// The Burn section's sources: claude-acct's series and rate in Prometheus (`base`, when it
@@ -361,12 +392,9 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
 }
 
 /// The hold reason from the last pass's headroom, only when it names a kind: "nothing runnable"
-/// is an empty queue, not a hold. `fleet-dispatch headroom` itself walks the live units and takes
-/// seconds, so it stays off this path (the Sessions header runs it).
+/// is an empty queue, not a hold, and a stale pass holds nothing.
 fn held(path: &std::path::Path) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    v["held_kind"].as_str()?;
-    v["held"].as_str().map(String::from)
+    crate::capacity::Dispatch::read(path).held
 }
 
 /// The outcomes CLI's lines; one that does not parse is skipped, as every hub reader does.
@@ -377,7 +405,7 @@ pub fn sessions(out: &str) -> Vec<Spent> {
         .collect()
 }
 
-/// calls.jsonl's lines since `since`, through the Fleet tab's parser.
+/// calls.jsonl's lines since `since`, through the runners' parser.
 pub fn calls(text: &str, since: i64) -> Vec<Call> {
     text.lines()
         .filter_map(|l| crate::fleet::parse_call(l, ""))
@@ -414,6 +442,8 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
+        skills: serde_json::from_value(v["by_skill"].clone()).unwrap_or_default(),
+        skill_unallocated_usd: v["by_skill_unallocated_usd"].as_f64(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
         errors: v["errors"].as_array().map_or(0, Vec::len),
         langfuse: crate::tokens::langfuse(&v["langfuse"]),
@@ -593,12 +623,13 @@ pub fn slices(sessions: &[Spent], since: i64) -> Vec<Slice> {
 }
 
 /// One row of the table, whichever cut. Each cut fills its own columns (`columns`) and leaves
-/// the rest empty, so one row type serves all seven and the sort means the same on each.
+/// the rest empty, so one row type serves all eight and the sort means the same on each.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Line {
     pub session: Option<String>,
     pub title: Option<String>,
     pub tool: Option<String>,
+    pub skill: Option<String>,
     pub kind: Option<String>,
     pub project: Option<String>,
     pub harness: Option<String>,
@@ -623,9 +654,9 @@ pub struct Line {
 
 impl Row for Line {
     const COLUMNS: &'static [&'static str] = &[
-        "session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions",
-        "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr",
-        "at",
+        "session", "tool", "skill", "kind", "project", "harness", "model", "runner", "title",
+        "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr",
+        "src", "pr", "at",
     ];
     const STATES: &'static [&'static str] = &["all"];
     const FACETS: &'static [&'static str] = &["model", "runner"];
@@ -638,6 +669,7 @@ impl Row for Line {
             "session" => text(&self.session),
             "title" => text(&self.title),
             "tool" => text(&self.tool),
+            "skill" => text(&self.skill),
             "kind" => text(&self.kind),
             "project" => text(&self.project),
             "harness" => text(&self.harness),
@@ -678,6 +710,7 @@ pub fn columns(cut: &str) -> &'static [&'static str] {
             "per_pr", "src",
         ],
         "tool" => &["tool", "calls", "tokens", "cost", "share"],
+        "skill" => &["skill", "calls", "sessions", "tokens", "cost", "share"],
         "project" => &["project", "sessions", "tokens", "cost", "share"],
         "runner" => &["runner", "model", "calls", "tokens", "cost", "share"],
         "kind" => &["kind", "sessions", "tokens", "cost", "share"],
@@ -693,6 +726,9 @@ pub fn source(cut: &str) -> &'static str {
     match cut {
         "tool" => {
             "token-usage snapshots; dollars allocated by each session's carried tokens, not metered"
+        }
+        "skill" => {
+            "token-usage snapshots; a skill's span runs from its call to the next typed prompt, dollars allocated by each session's weighted tokens, not metered"
         }
         "runner" => "agentctl-run calls.jsonl",
         _ => "outcomes rows",
@@ -901,6 +937,42 @@ fn tool_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
     lines
 }
 
+/// The skill cut: each skill's spans (as calls), the sessions that ran it and its spans' tokens
+/// (context and output), summed over the window's snapshots. A session counts once per day it ran
+/// the skill. The "(no skill)" row is the responses in no span; the cost of sessions with no
+/// response that day closes the sum as "(no response)", so the column adds up to the window's cost.
+fn skill_lines<'a>(snaps: impl Iterator<Item = &'a Snapshot>) -> Vec<Line> {
+    let mut by: BTreeMap<String, Line> = BTreeMap::new();
+    let mut unallocated: Option<f64> = None;
+    for s in snaps {
+        for k in &s.skills {
+            let l = by.entry(k.skill.clone()).or_insert_with(|| Line {
+                skill: Some(k.skill.clone()),
+                calls: Some(0),
+                sessions: Some(0),
+                tokens: Some(0.0),
+                ..Line::default()
+            });
+            l.calls = l.calls.map(|n| n + k.spans);
+            l.sessions = l.sessions.map(|n| n + k.sessions);
+            l.tokens = l.tokens.map(|n| n + (k.context + k.output) as f64);
+            l.cost += k.allocated_cost_usd.unwrap_or(0.0);
+        }
+        if let Some(u) = s.skill_unallocated_usd {
+            *unallocated.get_or_insert(0.0) += u;
+        }
+    }
+    let mut lines: Vec<Line> = by.into_values().collect();
+    if let Some(u) = unallocated.filter(|u| *u > 0.0) {
+        lines.push(Line {
+            skill: Some("(no response)".into()),
+            cost: u,
+            ..Line::default()
+        });
+    }
+    lines
+}
+
 /// One window's total from the outcomes rows: what the tile prints and the 7d check sums.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Total {
@@ -976,6 +1048,7 @@ pub struct Board {
     pub windows: Vec<&'static str>,
     pub totals: Vec<Total>,
     pub fleet_cost: FleetCost,
+    pub budget: crate::budget::Budget,
     pub history: crate::spend_history::History,
     /// One day's sessions ranked by cost, and the opened session's own days.
     pub day: crate::spend_history::DayView,
@@ -986,7 +1059,7 @@ pub struct Board {
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
     /// a red behind an unselected one still shows: Burn off `ok`, a stale token snapshot, and
-    /// Langfuse with no figures or stale.
+    /// Langfuse with no figures or stale, and a Budget that needs a look or was not read.
     pub amber: Vec<&'static str>,
     /// Where the tokens go and what Langfuse sees: the newest week and day of snapshots, whatever
     /// the window (the snapshots are nightly).
@@ -999,7 +1072,7 @@ pub struct Board {
     /// What this cut's rows are read from.
     pub source: &'static str,
     pub eval_days: Option<u32>,
-    /// `UNPRICED` on the tool cut with no allocated dollars in its window: cost and share are
+    /// `UNPRICED` on the tool or skill cut with no allocated dollars in its window: cost and share are
     /// unknown. Both surfaces print this text.
     pub unpriced: Option<&'static str>,
     pub rows: Vec<Line>,
@@ -1027,12 +1100,15 @@ fn amber(c: &Costs, consumers: &crate::gateway::Consumers) -> Vec<&'static str> 
             out.push("langfuse");
         }
     }
+    if c.budget.flagged() {
+        out.push("budget");
+    }
     out
 }
 
-/// The Consumers section of one read under a sort (blank: its own order).
-pub fn consumers(c: &Costs, sort: &str, dir: &str) -> crate::gateway::Consumers {
-    crate::gateway::build(&c.consumers, &c.burn, c.at, sort, dir)
+/// The Consumers section of one read under a view (no sort: its own order).
+pub fn consumers(c: &Costs, k: Keys) -> crate::gateway::Consumers {
+    crate::gateway::build(&c.consumers, &c.burn, c.at, k)
 }
 
 /// A cut or window the tab knows, else its default, so a stale link still opens.
@@ -1054,7 +1130,7 @@ pub fn window(w: &str) -> (&'static str, i64) {
 
 /// The view `by`/`w`/`q`/`sort`/`dir` over one read.
 ///
-/// `sec` is the Sections block's own `(sort, dir)`, which the main table's sort does not touch, and
+/// `sec` is the Sections block's own view keys, which the main table's do not touch, and
 /// `spend` the Spend day table's own day, query, sort and opened session.
 #[allow(clippy::too_many_arguments)]
 pub fn board(
@@ -1064,7 +1140,7 @@ pub fn board(
     q: &str,
     sort: &str,
     dir: &str,
-    sec: (&str, &str),
+    sec: Keys,
     spend: &crate::spend_history::Pick,
 ) -> Board {
     let by = cut(by);
@@ -1079,9 +1155,11 @@ pub fn board(
     };
     // `total` is the cut's rows under no query, so "3 of 12" counts rows, not slices.
     let (mut lines, filter, total) = match by {
-        "runner" | "tool" => {
+        "runner" | "tool" | "skill" => {
             let all = if by == "runner" {
                 runner_lines(&c.calls, since)
+            } else if by == "skill" {
+                skill_lines(in_window(&c.snapshots, c.at, secs))
             } else {
                 tool_lines(in_window(&c.snapshots, c.at, secs))
             };
@@ -1103,12 +1181,18 @@ pub fn board(
             (lines, s, n)
         }
     };
-    // No snapshot in the window carries the allocation yet, so the tool cut has calls and
-    // tokens but no dollars: the surfaces print "-" and say why, never $0.
-    let unpriced = by == "tool"
-        && !in_window(&c.snapshots, c.at, secs).any(|s| {
+    // No snapshot in the window carries the allocation yet, so the tool or skill cut has calls
+    // and tokens but no dollars: the surfaces print "-" and say why, never $0.
+    let unpriced = match by {
+        "tool" => !in_window(&c.snapshots, c.at, secs).any(|s| {
             s.unallocated_usd.is_some() || s.tools.iter().any(|t| t.allocated_cost_usd.is_some())
-        });
+        }),
+        "skill" => !in_window(&c.snapshots, c.at, secs).any(|s| {
+            s.skill_unallocated_usd.is_some()
+                || s.skills.iter().any(|k| k.allocated_cost_usd.is_some())
+        }),
+        _ => false,
+    };
     let shown_usd: f64 = lines.iter().map(|l| l.cost).sum();
     for l in &mut lines {
         l.share = if shown_usd > 0.0 {
@@ -1144,8 +1228,10 @@ pub fn board(
             .into_iter()
             .filter(|f| !f.values.is_empty())
             .collect(),
+        links: vec![],
+        legend: None,
     };
-    let consumers = consumers(c, "", "");
+    let consumers = consumers(c, Keys::default());
     Board {
         at: c.at,
         by: by.into(),
@@ -1157,6 +1243,7 @@ pub fn board(
             .filter(|t| t.window != "24h")
             .collect(),
         fleet_cost: c.fleet_cost.clone(),
+        budget: c.budget.clone(),
         history: c.history.clone(),
         day: crate::spend_history::day_view(&c.spend_days, spend),
         totals_note: TOTALS_NOTE,
@@ -1165,7 +1252,7 @@ pub fn board(
         amber: amber(c, &consumers),
         consumers,
         tokens: c.tokens.clone(),
-        sections: sections::board(&c.sections, sec.0, sec.1),
+        sections: sections::board(&c.sections, sec),
         sources: sources(c),
         errors: c.errors.clone(),
         columns: cols,
@@ -1212,6 +1299,7 @@ mod tests {
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
@@ -1235,7 +1323,7 @@ mod tests {
             "",
             "",
             "desc",
-            ("", "desc"),
+            Keys::default(),
             &Default::default(),
         );
         assert!(b.tokens.is_some() && b.errors.len() == 1);
@@ -1252,7 +1340,7 @@ mod tests {
                 "",
                 "",
                 "desc",
-                ("", "desc"),
+                Keys::default(),
                 &Default::default(),
             )
             .amber
@@ -1283,7 +1371,7 @@ mod tests {
             .unwrap(),
             ..Costs::default()
         };
-        let names = |sec| {
+        let names = |sort, dir| {
             board(
                 &c,
                 "model",
@@ -1291,7 +1379,11 @@ mod tests {
                 "",
                 "cost",
                 "asc",
-                sec,
+                Keys {
+                    sort,
+                    dir,
+                    ..Keys::default()
+                },
                 &Default::default(),
             )
             .sections
@@ -1300,9 +1392,9 @@ mod tests {
             .map(|r| r[0].clone())
             .collect::<Vec<_>>()
         };
-        assert_eq!(names(("", "")), ["a", "b"], "fleet-bench's order");
-        assert_eq!(names(("prs", "desc")), ["b", "a"]);
-        assert_eq!(names(("prs", "asc")), ["a", "b"]);
+        assert_eq!(names("", ""), ["a", "b"], "fleet-bench's order");
+        assert_eq!(names("prs", "desc"), ["b", "a"]);
+        assert_eq!(names("prs", "asc"), ["a", "b"]);
         let b = board(
             &c,
             "model",
@@ -1310,7 +1402,11 @@ mod tests {
             "",
             "cost",
             "asc",
-            ("prs", "asc"),
+            Keys {
+                sort: "prs",
+                dir: "asc",
+                ..Keys::default()
+            },
             &Default::default(),
         );
         assert_eq!(b.table.sort, "cost", "the main table's sort is its own");
@@ -1322,7 +1418,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default()
         )
         .sections
@@ -1485,15 +1581,6 @@ mod tests {
     }
 
     #[test]
-    fn the_spend_badge_names_the_costs_key() {
-        assert_eq!(
-            crate::layout::bar_digit("costs")
-                .map(|d| format!("spend: {d} Costs"))
-                .as_deref(),
-            Some(SPEND_BADGE)
-        );
-    }
-    #[test]
     fn the_totals_are_the_outcomes_cost_per_window() {
         let t = totals(&costs().sessions, NOW);
         let usd: Vec<f64> = t.iter().map(|t| t.usd).collect();
@@ -1510,7 +1597,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(b.totals[0].usd, b.shown_usd, "the tile and the table agree");
@@ -1528,7 +1615,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "model"), ["opus-5-5", "haiku-4-5", "gpt-5.4"]);
@@ -1559,7 +1646,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "harness"), ["claude", "claude-lazer"]);
@@ -1575,7 +1662,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "session"), ["s1", "s2", "s3", "s4"]);
@@ -1587,7 +1674,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "harness"), ["claude", "codex", "claude-lazer"]);
@@ -1599,11 +1686,20 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "project"), ["dotfiles", "playground", "_runner"]);
-        let b = board(&c, "kind", "30d", "", "", "", ("", ""), &Default::default());
+        let b = board(
+            &c,
+            "kind",
+            "30d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "kind"), ["human", "automated"]);
         let b = board(
             &c,
@@ -1612,7 +1708,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "runner"), ["dream", "ask-judge"]);
@@ -1622,7 +1718,16 @@ mod tests {
             "the 2-day-old call is outside 24h"
         );
         assert_eq!(b.rows[0].model.as_deref(), Some("opus-5-5"));
-        let b = board(&c, "tool", "7d", "", "", "", ("", ""), &Default::default());
+        let b = board(
+            &c,
+            "tool",
+            "7d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
         assert_eq!(names(&b, "tool"), ["Bash", "Read", "(no tool)"]);
         assert!(
             (b.shown_usd - 10.0).abs() < 1e-9,
@@ -1642,7 +1747,7 @@ mod tests {
                 "",
                 "",
                 "",
-                ("", ""),
+                Keys::default(),
                 &Default::default()
             )
             .unpriced
@@ -1658,7 +1763,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(
@@ -1677,7 +1782,7 @@ mod tests {
             "",
             "cost",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&up, "project"), ["_runner", "playground", "dotfiles"]);
@@ -1688,7 +1793,7 @@ mod tests {
             "",
             "cost",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1702,7 +1807,7 @@ mod tests {
             "",
             "project",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1717,7 +1822,7 @@ mod tests {
             "",
             "landed",
             "asc",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(off.table.sort, "");
@@ -1738,7 +1843,7 @@ mod tests {
             "harness:codex",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "project"), ["dotfiles"]);
@@ -1755,7 +1860,7 @@ mod tests {
             "-model:opus",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(names(&b, "model"), ["haiku-4-5", "gpt-5.4"]);
@@ -1766,7 +1871,7 @@ mod tests {
             "-model:opus",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(
@@ -1785,7 +1890,7 @@ mod tests {
             "harness:nope",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert!(b.rows.is_empty());
@@ -1803,7 +1908,7 @@ mod tests {
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!(
@@ -1858,6 +1963,55 @@ mod tests {
     }
 
     #[test]
+    fn the_skill_cut_sums_each_skills_spans_and_closes_on_the_sessions_with_no_response() {
+        let mut c = costs();
+        let snap = snapshot(
+            "2027-01-14",
+            r#"{"by_skill":[{"skill":"one-shot","spans":2,"sessions":2,"responses":9,"context":900,"output":30,"allocated_cost_usd":6.0},{"skill":"(no skill)","spans":0,"sessions":3,"responses":4,"context":400,"output":10,"allocated_cost_usd":3.0}],"by_skill_unallocated_usd":1.0}"#,
+        )
+        .unwrap();
+        c.snapshots[0].skills = snap.skills;
+        c.snapshots[0].skill_unallocated_usd = snap.skill_unallocated_usd;
+        let b = board(
+            &c,
+            "skill",
+            "7d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
+        assert_eq!(b.columns, columns("skill"));
+        assert_eq!(
+            names(&b, "skill"),
+            ["one-shot", "(no skill)", "(no response)"]
+        );
+        assert_eq!(
+            (b.rows[0].calls, b.rows[0].sessions, b.rows[0].tokens),
+            (Some(2), Some(2), Some(930.0))
+        );
+        assert!(
+            (b.shown_usd - 10.0).abs() < 1e-9,
+            "the rows sum to the cost"
+        );
+        assert!(b.unpriced.is_none());
+        // Negative control: a snapshot from before by_skill has no rows and says it is unpriced.
+        let old = costs();
+        let b = board(
+            &old,
+            "skill",
+            "7d",
+            "",
+            "",
+            "",
+            Keys::default(),
+            &Default::default(),
+        );
+        assert!(b.rows.is_empty() && b.unpriced.is_some());
+    }
+
+    #[test]
     fn the_readers_take_the_lines_they_understand() {
         let out = r#"{"session_id":"a","project":"p","cost_usd":1.5,"updated_epoch":5}
 not json
@@ -1896,6 +2050,7 @@ not json
             dispatch_log: d.join("log.md"),
             headroom: d.join("headroom.json"),
             fleet_cost: d.join("fleet-cost.json"),
+            budget: d.join("budget.json"),
             gateway: d.join("gateway.json"),
         };
         std::fs::write(&paths.calls, "").unwrap();
@@ -1986,7 +2141,7 @@ not json
             "",
             "",
             "",
-            ("", ""),
+            Keys::default(),
             &Default::default(),
         );
         assert_eq!((b.direct.usd, b.direct.unpriced), (2.5, 0));

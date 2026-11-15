@@ -137,7 +137,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
   assert_failure 1
   assert_output --partial 'busy: mac-desktop'
-  assert_output --partial 'by agent-6: store-console sign-in'
+  assert_output --partial 'by agent-6 (other): store-console sign-in'
   run "$HOLD" check mac-desktop
   assert_failure 1
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir agent-6 && cd agent-6 && \"$HOLD\" check mac-desktop"
@@ -148,6 +148,46 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   "$HOLD" release mac-desktop
   run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
   assert_success
+}
+
+@test "claim --class records why the desktop is needed; busy names the holder's class and says when the caller outranks it" {
+  run "$HOLD" classes
+  assert_success
+  [ "$(cut -f1 <<<"$output" | paste -sd' ')" = "auth legal release listing other" ]
+  run "$HOLD" claim mac-desktop --by agent-6 --class nope "x"
+  assert_failure 2
+  assert_output --partial "unknown class 'nope'"
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  "$HOLD" claim mac-desktop --by agent-6 --class listing "screenshots"
+  grep -qx 'class: listing' "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" list
+  assert_output --partial $'agent-6\t[listing] screenshots'
+  # A better class is told it goes next; it does not take the claim.
+  run "$HOLD" claim mac-desktop --by agent-9 --class legal "xbox sign-up"
+  assert_failure 1
+  assert_output --partial 'by agent-6 (listing): screenshots (you outrank it'
+  grep -qx 'by: agent-6' "$AGENT_HOLD_DIR/mac-desktop"
+  # The same or a worse class hears only busy.
+  run "$HOLD" claim mac-desktop --by agent-9 "explore"
+  assert_failure 1
+  refute_output --partial 'outrank'
+  # A refresh with no --class keeps the class.
+  "$HOLD" claim mac-desktop --by agent-6 "more screenshots"
+  grep -qx 'class: listing' "$AGENT_HOLD_DIR/mac-desktop"
+  # A class the table no longer has ranks last, with no shell error.
+  sed -i 's/^class: .*/class: gone/' "$AGENT_HOLD_DIR/mac-desktop"
+  run --separate-stderr "$HOLD" claim mac-desktop --by agent-9 --class auth "2fa"
+  assert_failure 1
+  [[ "$stderr" == *"(gone): more screenshots (you outrank it"* ]]
+  [[ "$stderr" != *"integer"* ]]
+  "$HOLD" release mac-desktop
+  "$HOLD" claim mac-desktop --by agent-9 "explore"
+  grep -qx 'class: other' "$AGENT_HOLD_DIR/mac-desktop"
+  # A flag with no value is a usage error, not a hang.
+  run timeout 5 "$HOLD" claim mac-desktop --class
+  assert_failure 2
+  run timeout 5 "$HOLD" claim mac-desktop --by
+  assert_failure 2
 }
 
 @test "claim never replaces a set hold, and a set hold's owner is not let through by check" {
@@ -272,4 +312,24 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   assert_output --partial 'could not restore tmux-spawn-aaa.scope'
   run "$HOLD" show unity-tests
   assert_line 'lowered: tmux-spawn-aaa.scope'
+}
+
+@test "set, grant and release each write one audit line; a caller that records it writes none" {
+  run "$HOLD" set unity-tests --by coordinator "96 C"
+  assert_success
+  run "$HOLD" grant unity-tests agent-2
+  assert_success
+  run "$HOLD" release unity-tests
+  assert_success
+  log="$HOME/.agent/audit/actions.jsonl"
+  run jq -rc '[.actor, .action, .target, .outcome, .via, .to] | @tsv' "$log"
+  assert_line --index 0 $'coordinator\thold.placed\tunity-tests\tok\tcli\t96 C'
+  assert_line --index 1 --partial $'hold.granted\tunity-tests\tok\tcli\tagent-2'
+  assert_line --index 2 --partial $'hold.released\tunity-tests\tok\tcli\twas: 96 C'
+  # hub_core's System runner sets AGENT_AUDITED to its own pid, the tool's parent: here the
+  # bash that starts it (the trailing exit keeps bash from exec-ing the tool in its place).
+  run bash -c 'AGENT_AUDITED=$$ "$0" set unity-tests --by web x; exit $?' "$HOLD"
+  assert_success
+  run wc -l < "$log"
+  assert_output 3
 }

@@ -76,7 +76,7 @@ else
   for k in slots load idle account assess other; do
     [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
     case $k in
-      slots) paused="every run unit is used (DISPATCH_MAX_LIVE)" ;;
+      slots) paused="the fleet is at its pace target (DISPATCH_TARGET_PRESENT; away, what the accounts carry, at most DISPATCH_TARGET_AWAY)" ;;
       load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
@@ -156,7 +156,10 @@ else
     ul=0; [ "$units" -ge "$cap" ] && ul=1
     ll=0; [ $((load * 100)) -ge $((lcap * 80)) ] && ll=1; [ "$load" -gt "$lcap" ] && ll=2
     il=0; [ "$idle" -lt $((floor + 10)) ] && il=1; [ "$idle" -lt "$floor" ] && il=2
-    cl="capacity: run units $(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
+    cl="capacity: "
+    # Every live session, hand starts included, against the pace target the run units share.
+    [ -n "$(get dispatch.room_total_live)" ] && cl+="sessions $(d room_total_live) of a $cap target; "
+    cl+="run units $(paint "${LEVEL_COLOUR[$ul]}" "$units/$cap")"
     [ -n "$(get dispatch.room_live_hand)" ] && cl+=", +$(d room_live_hand) by hand"
     cl+="; load $(paint "${LEVEL_COLOUR[$ll]}" "$load of $lcap"); idle $(paint "${LEVEL_COLOUR[$il]}" "$idle% (floor $floor%)")"
   else

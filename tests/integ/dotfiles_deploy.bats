@@ -395,6 +395,25 @@ world_wt_private() {
   assert_equal "$(readlink -f "$HOME/.local/bin/brand-new")" "$(readlink -f "$PUB/.local/bin/brand-new")"
 }
 
+# The real tree, not a fixture: one tracked absolute symlink anywhere (a systemd enablement link)
+# aborts the whole `stow --no-folding .` apply_dotfiles runs, so stow deploys nothing at all.
+# Only TRACKED files are copied, so a clone's untracked runtime links cannot fail it.
+@test "stow deploys the real tracked tree with no conflict, .config/hypr included" {
+  command -v stow >/dev/null || skip 'stow not installed'
+  local src="$BATS_TEST_TMPDIR/tree" dst="$BATS_TEST_TMPDIR/target"
+  mkdir -p "$src" "$dst"
+  ( set -o pipefail
+    git -C "$REPO_ROOT" ls-files -z | tar -C "$REPO_ROOT" --null --no-recursion -T - -cf - \
+      | tar -xf - -C "$src" ) || fail 'copying the tracked tree failed'
+  run stow --no-folding -n -v -d "$src" -t "$dst" .
+  assert_success
+  refute_output --partial 'conflict'
+  local p
+  while IFS= read -r p; do
+    assert_output --partial "LINK: $p "
+  done < <(git -C "$REPO_ROOT" ls-files -- .config/hypr)
+}
+
 @test "--missing: --check sees only MISSING, --apply links it and leaves a physical copy alone" {
   world
   radd "$PUB"  .local/bin/new-tool 'v1'
@@ -466,6 +485,53 @@ world_wt_private() {
   assert_output --partial '2 path(s) linked'
   [ -d "$HOME/.config/newapp" ] && [ ! -L "$HOME/.config/newapp" ] || fail 'a real parent got a directory link'
   assert_equal "$(readlink "$HOME/.config/newapp/sub/b")" '../../../.dotfiles-private/.config/newapp/sub/b'
+}
+
+# hypr_world - the public repo ships the LIVE .stow-local-ignore and tracks every live
+# .config/hypr and .config/waybar path. $HOME has the two shapes these dirs hold on a real
+# machine: ~/.config/waybar one folded directory link, ~/.config/hypr a real directory with
+# links for conf, scripts and the top-level files and none for the rest (HYPR_UNLINKED).
+HYPR_LINKED='^\.config/hypr/(conf/|scripts/|hyprland\.lua$|hypridle\.conf$|hyprpaper\.conf$)'
+hypr_world() {
+  world
+  cp -- "$REPO_ROOT/.stow-local-ignore" "$PUB/.stow-local-ignore"
+  git -C "$PUB" add -- .stow-local-ignore
+  HYPR_PATHS=$(git -C "$REPO_ROOT" ls-files -- .config/hypr .config/waybar)
+  HYPR_UNLINKED=$(grep '^\.config/hypr/' <<<"$HYPR_PATHS" | grep -Ev "$HYPR_LINKED" || true)
+  [ -n "$HYPR_UNLINKED" ] || fail 'every live .config/hypr path is hand-linked: the fixture tests nothing'
+  local p
+  while IFS= read -r p; do radd "$PUB" "$p" "$p"; done <<<"$HYPR_PATHS"
+  mkdir -p "$HOME/.config/hypr"
+  stow_link "$HOME/.config/waybar" "$PUB/.config/waybar"
+  for p in conf scripts hyprland.lua hypridle.conf hyprpaper.conf; do
+    stow_link "$HOME/.config/hypr/$p" "$PUB/.config/hypr/$p"
+  done
+}
+
+@test "with the live ignore list, --apply --missing makes every tracked .config/hypr and waybar entry resolve" {
+  hypr_world
+  run "$DEPLOY" --apply --missing
+  assert_success
+  local p
+  while IFS= read -r p; do
+    [ "$HOME/$p" -ef "$PUB/$p" ] || fail "$p does not resolve to the tracked file"
+  done <<<"$HYPR_PATHS"
+  [ -L "$HOME/.config/waybar" ] || fail 'the folded waybar link was unfolded'
+}
+
+@test "negative control: .config/hypr back in the ignore list leaves exactly the unlinked entries missing" {
+  hypr_world
+  printf '%s\n' '^/\.config/hypr$' >> "$PUB/.stow-local-ignore"
+  run "$DEPLOY" --apply --missing
+  assert_success
+  local p
+  while IFS= read -r p; do
+    [ ! -e "$HOME/$p" ] || fail "$p deployed although .config/hypr is ignored"
+  done <<<"$HYPR_UNLINKED"
+  while IFS= read -r p; do
+    grep -qxF "$p" <<<"$HYPR_UNLINKED" && continue
+    [ "$HOME/$p" -ef "$PUB/$p" ] || fail "$p was hand-linked by the fixture but does not resolve"
+  done <<<"$HYPR_PATHS"
 }
 
 @test "a dangling directory link left by a move to the overlay is repointed at the overlay" {

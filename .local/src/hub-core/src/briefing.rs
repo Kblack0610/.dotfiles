@@ -26,6 +26,7 @@ use crate::home::{self, Home, Kind, Need};
 use crate::jobs::{self, Job};
 use crate::queue::money;
 use crate::queue::{self, Item, Queue, State};
+use crate::reading::State as Reading;
 use crate::releases::Release;
 use crate::text::{age, cap};
 
@@ -137,15 +138,18 @@ pub struct Inputs {
     /// Queue items finished since the start of yesterday: the priority and type each landed PR
     /// is ranked by.
     pub landed_items: Option<Vec<Item>>,
-    /// `release-state show --json`: what is live where, and what deployed.
+    /// `release-state show --json`: what is deployed where, and what deployed.
     pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
     pub sources: Option<Vec<Account>>,
     /// comms' one-line inbox summary.
     pub mail_stats: Option<String>,
-    /// What the app stores made yesterday (`store-sales`); None when it could not run, or for
+    /// What the app stores and Steam made yesterday (`store-sales`); None when it could not run, or for
     /// a caller that renders no Money section.
     pub sales: Option<Vec<crate::money::Source>>,
+    /// What the trader's paper accounts made yesterday (`money::trader`); None for a caller that
+    /// renders no Money section.
+    pub trader: Option<Vec<crate::money::Source>>,
     pub errors: Vec<String>,
 }
 
@@ -332,7 +336,7 @@ fn infra(i: &Inputs) -> Area {
             let word = match c.level {
                 home::Level::Red => "red",
                 home::Level::Warn => "warn",
-                _ => "no data",
+                _ => crate::reading::NO_DATA,
             };
             format!("{} {word}", c.name)
         })
@@ -455,7 +459,7 @@ fn workers(i: &Inputs) -> Area {
             level: Level::Warn,
             line: "the runner ledger could not be read".into(),
             details: vec![],
-            link: "#fleet",
+            link: "#sessions/runners",
         };
     };
     let last = newest(runs);
@@ -510,9 +514,9 @@ fn workers(i: &Inputs) -> Area {
             })
             .collect(),
         link: if failed.is_empty() {
-            "#fleet"
+            "#sessions/runners"
         } else {
-            "#fleet?s=failed"
+            "#sessions/runners?rs=failed"
         },
     }
 }
@@ -802,7 +806,7 @@ fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
 fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
     let Some((rec, _)) = yesterday_and_avg(i, merged) else {
         return (
-            vec!["Not read: no day-log record for yesterday.".into()],
+            vec![Reading::NotRead("no day-log record for yesterday.".into()).sentence("")],
             None,
         );
     };
@@ -860,7 +864,7 @@ fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
 fn builds(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match &i.releases {
-        None => out.push("Not read: release-state could not be read.".into()),
+        None => out.push(Reading::NotRead("release-state could not be read.".into()).sentence("")),
         Some(rows) => {
             for r in rows {
                 if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
@@ -967,10 +971,10 @@ fn overnight(i: &Inputs) -> Vec<String> {
     // A source that could not be read is said so, never folded into "Nothing broke overnight".
     let mut unread = vec![];
     if i.done.is_none() {
-        unread.push("Not read: finished work could not be read.".to_string());
+        unread.push(Reading::NotRead("finished work could not be read.".into()).sentence(""));
     }
     if i.releases.is_none() {
-        unread.push("Not read: release-state could not be read.".to_string());
+        unread.push(Reading::NotRead("release-state could not be read.".into()).sentence(""));
     }
     let failed = i
         .done
@@ -1020,8 +1024,8 @@ fn overnight(i: &Inputs) -> Vec<String> {
     out
 }
 
-/// Money: what yesterday cost, then one line per store of what it made. A store that could not
-/// be read says so, never $0; games and trader have no reader yet.
+/// Money: what yesterday cost, then one line per store and trader account of what it made. A
+/// source that could not be read says so, never $0.
 fn money_lines(i: &Inputs) -> Vec<String> {
     let mut out = vec![];
     match yesterday_and_avg(i, spent) {
@@ -1040,9 +1044,16 @@ fn money_lines(i: &Inputs) -> Vec<String> {
                 .iter()
                 .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
         ),
-        None => out.push("App stores: not read, store-sales could not run.".into()),
+        None => out.push("Stores: not read, store-sales could not run.".into()),
     }
-    out.push("Games and trader: not read yet, no reader is connected.".into());
+    match &i.trader {
+        Some(sources) => out.extend(
+            sources
+                .iter()
+                .map(|s| cap(&crate::money::line(s), ITEM_MAX)),
+        ),
+        None => out.push("Trader: not read, its reader did not run.".into()),
+    }
     out
 }
 
@@ -1434,16 +1445,33 @@ fn env_dir(k: &str, home: &Path, d: &str) -> PathBuf {
         .unwrap_or_else(|| home.join(d))
 }
 
+/// Could not read lines for the money sources that were not read.
+fn unread(sources: &[crate::money::Source]) -> impl Iterator<Item = String> + '_ {
+    sources
+        .iter()
+        .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name)))
+}
+
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
     // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
     // beside the other reads so their network waits overlap.
     let day = date_before(now, 1);
+    let trader = {
+        let day = day.clone();
+        std::thread::spawn(move || crate::money::trader_from_prom(&day))
+    };
     let sales =
         std::thread::spawn(move || crate::money::apps(&crate::session_actions::System, &day));
     let mut i = gather_from(since, now, || {
         let (state, queue, board, infra) = home::gather(true);
-        let home = home::build(&state, Some(&queue), Some(&board), infra.as_ref());
+        let home = home::build(
+            Some(&state),
+            Some(&queue),
+            Some(&board),
+            infra.as_ref(),
+            now,
+        );
         (state, queue, home)
     });
     match sales
@@ -1451,14 +1479,17 @@ pub fn gather(since: i64, now: i64) -> Inputs {
         .unwrap_or_else(|_| Err("store-sales: panicked".into()))
     {
         Ok(sources) => {
-            i.errors.extend(
-                sources
-                    .iter()
-                    .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name))),
-            );
+            i.errors.extend(unread(&sources));
             i.sales = Some(sources);
         }
         Err(e) => i.errors.push(e),
+    }
+    match trader.join() {
+        Ok(sources) => {
+            i.errors.extend(unread(&sources));
+            i.trader = Some(sources);
+        }
+        Err(_) => i.errors.push("trader: panicked".into()),
     }
     i
 }
@@ -1514,7 +1545,8 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
     let landed_items = queue::list_since(&System, "done", &date_before(now, 1))
         .map_err(|e| errors.push(format!("agent-queue list --since yesterday: {e}")))
         .ok();
-    let rel = crate::releases::read(&System);
+    // Channel rows only: the briefing says drift and deploys, no release's rows.
+    let rel = crate::releases::read(&System, &[]);
     errors.extend(rel.errors.iter().cloned());
     let releases = rel.errors.is_empty().then_some(rel.rows);
     let sources = sources
@@ -1574,6 +1606,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
             .ok()
             .filter(|s| !s.trim().is_empty()),
         sales: None,
+        trader: None,
         errors,
         home,
     }
@@ -1605,7 +1638,7 @@ mod tests {
             since: Some(since),
             lastrun: None,
             lasttrip: None,
-            place: String::new(),
+            ..Default::default()
         }
     }
 
@@ -1721,7 +1754,7 @@ mod tests {
             "{}",
             w.line
         );
-        assert_eq!(w.link, "#fleet?s=failed");
+        assert_eq!(w.link, "#sessions/runners?rs=failed");
         assert_eq!(w.details.len(), 1);
         let inf = area(&b, "Infra");
         assert_eq!(
@@ -1765,7 +1798,7 @@ mod tests {
             fix.task
                 .starts_with("Fix what the briefing's Workers overnight area reads bad since ")
                 && fix.task.contains(&w.area.line)
-                && fix.task.contains("#fleet?s=failed"),
+                && fix.task.contains("#sessions/runners?rs=failed"),
             "{}",
             fix.task
         );
@@ -2052,10 +2085,7 @@ mod tests {
         assert_eq!(b.landed, ["Not read: no day-log record for yesterday."]);
         assert!(b.money[0].starts_with("Spend not read"), "{:?}", b.money);
         assert!(!b.overview.contains("Yesterday"), "{}", b.overview);
-        assert!(b
-            .money
-            .iter()
-            .any(|l| l.starts_with("App stores: not read")));
+        assert!(b.money.iter().any(|l| l.starts_with("Stores: not read")));
     }
 
     #[test]
@@ -2080,6 +2110,12 @@ mod tests {
                 error: Some("no rbw entry store_sales_play".into()),
                 ..Default::default()
             },
+            Source {
+                name: "Steam".into(),
+                basis: "net".into(),
+                error: Some("no rbw entry store_sales_steam".into()),
+                ..Default::default()
+            },
         ]);
         let m = build(&i).money;
         assert_eq!(m[1], "App Store: $7.00 proceeds from 2 sales (Shape City).");
@@ -2088,7 +2124,33 @@ mod tests {
             m[2],
             "Google Play: not read, no rbw entry store_sales_play."
         );
-        assert_eq!(m.len(), 4, "{m:?}");
+        assert_eq!(m[3], "Steam: not read, no rbw entry store_sales_steam.");
+        assert_eq!(m[4], "Trader: not read, its reader did not run.");
+        assert_eq!(m.len(), 5, "{m:?}");
+        i.trader = Some(vec![
+            Source {
+                name: "Alpaca (paper)".into(),
+                basis: crate::money::PNL.into(),
+                made: Some(vec![Amount {
+                    currency: "USD".into(),
+                    amount: 12.5,
+                }]),
+                ..Default::default()
+            },
+            Source {
+                name: "Kalshi paper league".into(),
+                basis: crate::money::PNL.into(),
+                error: Some("no reading at 2026-11-13 00:00".into()),
+                ..Default::default()
+            },
+        ]);
+        let m = build(&i).money;
+        assert_eq!(m[4], "Alpaca (paper): made $12.50 yesterday.");
+        assert_eq!(
+            m[5],
+            "Kalshi paper league: not read, no reading at 2026-11-13 00:00."
+        );
+        assert_eq!(m.len(), 6, "{m:?}");
     }
 
     fn release(project: &str, channel: &str, last: Option<(&str, &str, i64)>) -> Release {
@@ -2103,6 +2165,7 @@ mod tests {
             state: st.into(),
             at,
             url: None,
+            ..Default::default()
         });
         r
     }

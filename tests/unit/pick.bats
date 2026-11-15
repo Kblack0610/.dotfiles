@@ -30,7 +30,7 @@ setup() {
 
 @test "a change the picker cannot judge runs the whole tier, and says why" {
   local c
-  for c in tests/helpers/sandbox.bash tests/shard.sh tests/broad.txt .github/workflows/tests.yml .local/lib/test-pick.sh; do
+  for c in tests/helpers/sandbox.bash tests/run-bats.sh tests/shard.sh tests/broad.txt .github/workflows/tests.yml .local/lib/test-pick.sh; do
     PICK_CHANGED=$c run --separate-stderr "$SUBJECT" unit HEAD
     assert_success
     [ "$output" = "$ALL_UNIT" ]
@@ -74,7 +74,7 @@ setup() {
 @test "rust: a change to the rust gate runs every crate" {
   local c all
   all=$(cd "$BATS_TEST_DIRNAME/../.." && tests/rust-crates.sh)
-  for c in tests/rust.sh tests/rust-crates.sh tests/rust-inputs.txt tests/pick.sh tests/Makefile .github/workflows/tests.yml; do
+  for c in tests/rust.sh tests/rust-crates.sh tests/rust-inputs.txt tests/rust-toolchain tests/pick.sh tests/Makefile .github/workflows/tests.yml; do
     PICK_CHANGED=$c run --separate-stderr "$SUBJECT" rust HEAD
     assert_success
     [ "$output" = "$all" ]

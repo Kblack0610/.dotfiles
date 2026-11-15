@@ -1,0 +1,12 @@
+[Unit]
+Description=Deliver recorded ask answers when one is given
+
+# agent-ask answer records the answer with `delivery: queued` and rewrites ~/.agent/asks/.deliver,
+# so the answer reaches its session within a second of the human giving it, with the board
+# already free. fleet-state.service drains the same queue each pass as the backstop.
+[Path]
+PathChanged=%h/.agent/asks/.deliver
+Unit=agent-ask-deliver.service
+
+[Install]
+WantedBy=default.target

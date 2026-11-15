@@ -2,9 +2,10 @@
 //! socket, so a request arrives as an event and needs no file watch (inotify can be full: an
 //! open Unity Editor takes nearly all of it). With no hub listening, the request is left in a
 //! file that the next hub to start takes, which is how a Prefix key that creates hub:board
-//! lands on its page. A request is the tab's name, then for the Projects tab an optional search
-//! (`projects bnb/demo`, what the projects popup sends to land on one project's rows) or for
-//! Infra the section to open (`infra ci`, what `hub tab ci` sends).
+//! lands on its page. A request is the tab's name, then for the Projects tab an optional word:
+//! a project (`projects bnb/demo`, what the projects popup sends to land on one project's rows),
+//! an inner tab (`projects all`), All rows searched (`projects all id:=ar-1`, a row's link), or
+//! for Infra the section to open (`infra ci`, what `hub tab ci` sends).
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -28,28 +29,40 @@ pub fn dir() -> PathBuf {
         .join("hub")
 }
 
-/// A page to show, and for the Board tab the search to show it with.
+/// A page to show, and the word it opens with: on Projects a project, an inner tab or a search
+/// of All rows, elsewhere a section.
 pub type Req = (Tab, Option<String>);
 
-/// `board bnb/demo` -> (Board, Some("bnb/demo")), `ci` -> (Infra, Some("ci")); any other
-/// bare name has no query.
+/// `projects bnb/demo` -> (Projects, Some("bnb/demo")), `ci` -> (Infra, Some("ci")), and the
+/// retired `board` -> (Projects, Some("board")), the section that is All rows (`board <search>`
+/// is All rows searched); any other bare name has no query.
 pub fn parse(s: &str) -> Option<Req> {
     let (t, q) = s
         .trim()
         .split_once(char::is_whitespace)
         .unwrap_or((s.trim(), ""));
-    let q = q.trim();
+    let asked = q.trim();
     // A retired name that became a section (`ci`) asks for that section of its new tab.
-    let q = Some(q.to_string())
+    let q = Some(asked.to_string())
         .filter(|q| !q.is_empty())
         .or_else(|| hub_core::layout::section(t).map(String::from));
     let tab = Tab::parse(t)?;
-    // A section that moved to another tab (`fleet tokens`) asks for it there.
+    // A section that moved to another tab (`fleet tokens`) asks for it there, matched by the name
+    // as asked so a retired tab's own rows still match; one that opens a table under a chip
+    // (`infra governor`) keeps its word, which the tab knows.
     if let Some((to, sec)) = q
         .as_deref()
-        .and_then(|q| hub_core::layout::moved(tab.title(), q))
+        .filter(|q| hub_core::layout::moved_chip(t, q).is_none())
+        .and_then(|q| hub_core::layout::moved(t, q))
     {
         return Some((Tab::parse(to.title)?, Some(sec.to_string())));
+    }
+    // Any other word on a retired tab that held pages (`fleet inbox-triage`) is that record's
+    // page where it lives now, as `#fleet/<runner>` is on the web: `fleet shepherd` is the
+    // runner named shepherd, never Sessions' Shepherd inner tab.
+    if let Some((to, arg)) = hub_core::links::retired_tab_page(t, asked).and_then(|l| l.tab_args())
+    {
+        return Some((Tab::parse(to)?, Some(arg)));
     }
     Some((tab, q))
 }
@@ -171,14 +184,50 @@ mod tests {
             parse("fleet accounts"),
             Some((Tab::Costs, Some("burn".into())))
         );
-        // Negative controls: a runner stays on Fleet, and Costs' own words are left alone.
-        assert_eq!(
-            parse("fleet inbox-triage"),
-            Some((Tab::Fleet, Some("inbox-triage".into())))
-        );
+        // Negative control: Costs' own words are left alone.
         assert_eq!(
             parse("costs tokens"),
             Some((Tab::Costs, Some("tokens".into())))
+        );
+    }
+
+    #[test]
+    fn fleet_lands_on_sessions_runners_and_a_runner_on_its_page() {
+        assert_eq!(parse("fleet"), Some((Tab::Sessions, Some("fleet".into()))));
+        assert_eq!(
+            parse("fleet inbox-triage"),
+            Some((Tab::Sessions, Some("runners/inbox-triage".into())))
+        );
+        assert_eq!(
+            parse("Fleet workers"),
+            Some((Tab::Sessions, Some("fleet".into()))),
+            "a moved name follows MOVED, never a runner named workers"
+        );
+        // `fleet <word>` is always that runner's page, as `#fleet/<word>` is on the web: a
+        // runner named like a Sessions inner tab still opens (rule 8).
+        for name in ["shepherd", "runners", "Sessions"] {
+            assert_eq!(
+                parse(&format!("fleet {name}")),
+                Some((Tab::Sessions, Some(format!("runners/{name}")))),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            parse("sessions shepherd"),
+            Some((Tab::Sessions, Some("shepherd".into()))),
+            "on the live tab the word is its inner tab"
+        );
+        // Negative control: a word on a live tab is never a retired tab's page.
+        assert_eq!(
+            parse("sessions inbox-triage"),
+            Some((Tab::Sessions, Some("inbox-triage".into())))
+        );
+        // The request a runner's page sends round-trips through the file.
+        let d = Scratch::new("runner");
+        request(&d.0, Tab::Sessions, Some("runners/inbox-triage")).unwrap();
+        assert_eq!(
+            take(&d.0),
+            Some((Tab::Sessions, Some("runners/inbox-triage".into())))
         );
     }
 
@@ -194,7 +243,11 @@ mod tests {
             take(&d.0),
             Some((Tab::Projects, Some("bnb/demo extra".into())))
         );
-        assert_eq!(parse("board  "), Some((Tab::Projects, None)));
+        assert_eq!(
+            parse("board  "),
+            Some((Tab::Projects, Some("board".into()))),
+            "the Board tab is Projects' All rows"
+        );
         assert_eq!(parse("nonsense bnb/demo"), None);
     }
 
@@ -209,7 +262,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || serve(l, tx));
         for (t, q) in [
-            (Tab::Fleet, None),
+            (Tab::Sessions, Some("runners")),
             (Tab::Projects, Some("bnb/demo")),
             (Tab::Home, None),
         ] {

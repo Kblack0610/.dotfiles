@@ -1,18 +1,19 @@
-//! The Fleet tab, read once for both surfaces (agent-web's Fleet tab and the hub TUI's): who
-//! is working, what each agentctl runner did, and how the two judges call it. What it costs (the
+//! The agentctl runners, read once for both surfaces (Sessions' Runners inner tab on agent-web and
+//! the hub TUI, and Log's Judges): who is working, what each runner did, and how the two judges
+//! call it. What it costs (the
 //! accounts, where the tokens go) is `crate::costs`. Nothing here keeps a
 //! copy; each part reads the file or series its writer owns:
 //!
 //! | part         | source                                                                   |
 //! |--------------|--------------------------------------------------------------------------|
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
-//! | who          | the workers and `state.json`'s live sessions, one row each, tiered (`who::build`)  |
-//! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane, session) to what it means (`who::legend`) |
+//! | who          | the workers, one row each, tiered; a lead counts the `state.json` live sessions it oversees (`who::build`) |
+//! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane) to what it means (`who::legend`) |
 //! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
 //!
-//! One runner's page (`#fleet/<name>`, read only when opened) is `runner::read`.
+//! One runner's page (`#sessions/runners/<name>`, read only when opened) is `runner::read`.
 //!
 //! Every part is a file read, fresh each time (judge-eval takes about a second).
 
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobs::systemd::AGENTCTL_PREFIX;
 use crate::jobs::{self, Job, State};
+use crate::table::{Row, Summary, Val, View};
 
 pub mod runner;
 pub mod who;
@@ -58,7 +60,7 @@ pub struct Paths {
     pub judge_eval: String,
     /// The notes CLI's state dir, which holds the ingest record (`ingest.jsonl`).
     pub notes_state: PathBuf,
-    /// fleet-sessions' `state.json`: the live sessions, tier 3 of the table.
+    /// fleet-sessions' `state.json`: the live sessions a lead row counts.
     pub state: PathBuf,
     /// agentctl's `lanes.tsv`: what each KIND in the table means, the legend above it.
     pub lanes: PathBuf,
@@ -95,8 +97,11 @@ pub struct Fleet {
     /// `<part>: <why>` for each part that could not be read; the rest still show.
     pub errors: Vec<String>,
     pub workers: Vec<Worker>,
-    /// The Fleet tab's one table: runners by tier, then the live sessions (`who`).
+    /// Sessions' Runners table: the runners by tier (`who`).
     pub who: Vec<who::Who>,
+    /// The line over that table counting the live sessions no lead oversees (`who::unled`),
+    /// empty when every one has a lead.
+    pub unled: String,
     /// The line above the table, one `kind meaning` per kind (`who::legend`).
     pub legend: Vec<String>,
     pub dispatch: Dispatch,
@@ -142,11 +147,11 @@ pub struct Worker {
     /// Its lane's counted score from judge-eval; None when judge-eval lists no such lane.
     pub score: Option<RunnerScore>,
     /// The extras block its page draws, the conf's `DETAIL=` (`runner::DETAILS`); empty for none.
-    /// The Fleet tab's judge tiles link to the runner whose block they summarise.
+    /// The judge tiles link to the runner whose block they summarise.
     pub detail: String,
     /// 1 for a supervisor (the conf's `TIER=1`), else 2.
     pub tier: u8,
-    /// What a tier 1 runner folds in the table: `sessions` or `dispatched` (the conf's `OVERSEES=`).
+    /// The live sessions a tier 1 runner counts: `sessions` or `dispatched` (the conf's `OVERSEES=`).
     pub oversees: String,
 }
 
@@ -254,15 +259,6 @@ pub struct Score {
     pub false_defer_pct: Option<f64>,
     #[serde(default)]
     pub live: bool,
-    pub bar: Option<Bar>,
-}
-
-/// How far a shadow rule is from going live: scored answers against the bar's count.
-#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
-pub struct Bar {
-    pub labels: u32,
-    pub need: u32,
-    pub met: bool,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -313,8 +309,6 @@ pub struct Judge {
     pub disagree: u32,
     /// The judge said this one is the human's ("asks-you").
     pub deferred: u32,
-    /// Deferred, and the human took the recommendation anyway.
-    pub false_defer: u32,
     /// Judged, still waiting on the human.
     pub pending: u32,
     /// Answered in the session as free text naming no option, which no call can match.
@@ -326,8 +320,47 @@ pub struct Judge {
     pub prompt: String,
     /// The last 7 days under any prompt, what a reader asks first.
     pub week: JudgeWeek,
-    /// Every verdict, newest first and under any prompt, as judge-eval lists them.
+    /// Every verdict, newest first and under any prompt, as judge-eval lists them; after
+    /// [`Judge::view`], the ones a surface lists.
     pub verdicts: Vec<AskVerdict>,
+    /// One per type and impact level under the current prompt, as judge-eval scores them.
+    pub cells: Vec<Cell>,
+    /// The verdicts' table controls, counted over every verdict: set by [`Judge::view`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<Summary>,
+}
+
+impl Judge {
+    /// The verdicts `view` keeps, cut to the first `cap`, with the summary over all of them.
+    pub fn view(&mut self, view: &View, cap: usize) {
+        let all = std::mem::take(&mut self.verdicts);
+        let (mut shown, mut table) = view.summary(&all);
+        crate::table::cap(&mut shown, &mut table, cap);
+        self.verdicts = shown.into_iter().cloned().collect();
+        self.table = Some(table);
+    }
+}
+
+/// judge-eval's numbers for one type at one impact level (self, repo, fleet, critical): what a
+/// promotion is weighed on. A live cell scores only the answers the human reviewed (`audited`).
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
+#[serde(default)]
+pub struct Cell {
+    /// Empty for a verdict that recorded no type or no level.
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub level: String,
+    pub verdicts: u32,
+    pub scored: u32,
+    pub pending: u32,
+    /// In percent, with its Wilson 95% interval; null with nothing scored.
+    pub precision: Option<f64>,
+    pub precision_lo: Option<f64>,
+    pub precision_hi: Option<f64>,
+    pub live: bool,
+    pub audited: u32,
+    /// The share of its verdicts a Fleet floor raised above the judge's own rating.
+    pub level_raised_pct: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -340,7 +373,7 @@ pub struct JudgeWeek {
     pub precision: Option<f64>,
 }
 
-/// The answer judge's filters on its verdict list, the first showing them all.
+/// The answer judge's filters on its verdict list, the first showing them all: its state tiles.
 pub const ASK_FILTERS: [&str; 5] = ["all", "answered", "would answer", "passed", "wrong"];
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq)]
@@ -375,6 +408,49 @@ impl AskVerdict {
             "wrong" => self.score == "wrong",
             said => self.said == said,
         }
+    }
+}
+
+impl Row for AskVerdict {
+    const COLUMNS: &'static [&'static str] =
+        &["when", "project", "type", "said", "question", "why", "you"];
+    const STATES: &'static [&'static str] = &ASK_FILTERS;
+    const FACETS: &'static [&'static str] = &[];
+    const LEAD: &'static str = "question";
+    const GLANCE: &'static [&'static str] = &["said", "why", "you"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        ("answered", "the judge answered the ask"),
+        ("would answer", "it would have answered, had it been live"),
+        ("passed", "it left the ask to you"),
+        ("wrong", "your answer was not the judge's"),
+    ];
+    const TONES: &'static [(&'static str, crate::vocab::Level)] =
+        &[("wrong", crate::vocab::Level::Bad)];
+
+    fn val(&self, col: &str) -> Val {
+        let text = |s: &str| Val::Text(s.to_string());
+        match col {
+            "when" => self.at.map_or(Val::None, |t| Val::Num(t as f64)),
+            "project" => text(&self.project),
+            "type" => text(if self.kind.is_empty() {
+                &self.rule
+            } else {
+                &self.kind
+            }),
+            "said" => text(&self.said),
+            "question" => text(&self.question),
+            "why" => Val::Text(
+                [&self.rule, &self.evidence, &self.reason]
+                    .map(|s| s.as_str())
+                    .join(" "),
+            ),
+            "you" => text(&self.you),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, state: &str) -> bool {
+        self.shown(state)
     }
 }
 
@@ -465,6 +541,7 @@ pub fn files(paths: &Paths) -> Fleet {
         }
     };
     let who = who::build(&workers, &sessions, at);
+    let unled = who::unled(&workers, &sessions);
     let mut legend = who::legend(&paths.lanes);
     legend.push(crate::fleet_cost::FLEET_LEGEND.into());
     let dispatch = read_dispatch(&paths.dispatch, at, &mut errors);
@@ -473,13 +550,14 @@ pub fn files(paths: &Paths) -> Fleet {
         errors,
         workers,
         who,
+        unled,
         legend,
         dispatch,
         judge,
     }
 }
 
-/// fleet-dispatch's verdicts and log.md counts, for the Fleet tab's tile and its runner page.
+/// fleet-dispatch's verdicts and log.md counts, for the runner page.
 fn read_dispatch(dir: &Path, at: i64, errors: &mut Vec<String>) -> Dispatch {
     let mut dispatch = match tail(&dir.join("verdicts.jsonl"), VERDICT_TAIL) {
         Ok((text, cut)) => verdicts(&text, cut, at),
@@ -1013,6 +1091,8 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         #[serde(default)]
         verdicts: Vec<AskVerdict>,
         #[serde(default)]
+        cells: Vec<Cell>,
+        #[serde(default)]
         live: Vec<String>,
         #[serde(default)]
         rules: Vec<Score>,
@@ -1027,8 +1107,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         score: Score,
         tp: u32,
         fp: u32,
-        #[serde(rename = "fn")]
-        false_defer: u32,
         deferred: u32,
         pending: u32,
         unscorable: u32,
@@ -1061,7 +1139,6 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         agree: t.tp,
         disagree: t.fp,
         deferred: t.deferred,
-        false_defer: t.false_defer,
         pending: t.pending,
         unscored: t.unscorable,
         precision: t.score.precision,
@@ -1069,6 +1146,8 @@ pub fn judges(json: &str) -> Result<Judges, String> {
         prompt: a.prompt_sha.chars().take(7).collect(),
         week: a.week,
         verdicts: a.verdicts,
+        cells: a.cells,
+        table: None,
     };
     Ok((judge, evals, scores))
 }
@@ -1358,19 +1437,16 @@ mod tests {
            "week":{"live_pct":25.0,"coverage":40.0,"precision":90.0},
            "verdicts":[{"id":"Ab1","project":"p","question":"q?","judge":"yes","reason":"because",
              "you":"no","rule":"r","type":"ship_deploy","said":"would answer","score":"wrong","at":1700000000},
-             {"id":"Ab2","said":"passed","score":"needless","at":null}]}]}"#;
+             {"id":"Ab2","said":"passed","score":"needless","at":null}],
+           "cells":[{"type":"ship_deploy","level":"repo","verdicts":3,"errors":0,"tp":2,"fp":1,"scored":3,"pending":0,
+             "precision":66.7,"precision_lo":20.8,"precision_hi":93.9,"live":true,"audited":3,"level_raised_pct":33.3},
+             {"type":"","level":"","verdicts":1,"scored":0,"pending":1,"precision":null,"precision_lo":null,
+              "precision_hi":null,"live":false,"audited":0,"level_raised_pct":0}]}]}"#;
         let (j, evals, _) = judges(json).unwrap();
         assert_eq!(evals["ask-judge"].prompt_sha, "60c840b");
         assert_eq!(
-            (
-                j.agree,
-                j.disagree,
-                j.deferred,
-                j.false_defer,
-                j.pending,
-                j.unscored
-            ),
-            (2, 1, 4, 3, 1, 2)
+            (j.agree, j.disagree, j.deferred, j.pending, j.unscored),
+            (2, 1, 4, 1, 2)
         );
         assert_eq!((j.precision, j.kappa), (Some(66.7), Some(0.12)));
         assert_eq!(j.prompt, "60c840b");
@@ -1380,6 +1456,29 @@ mod tests {
             (v.kind.as_str(), v.you.as_str(), v.at),
             ("ship_deploy", "no", Some(1_700_000_000))
         );
+        // Each cell is judge-eval's, untouched: nothing here recounts it.
+        let c = &j.cells[0];
+        assert_eq!(
+            (
+                c.kind.as_str(),
+                c.level.as_str(),
+                c.verdicts,
+                c.scored,
+                c.audited,
+                c.live
+            ),
+            ("ship_deploy", "repo", 3, 3, 3, true)
+        );
+        assert_eq!(
+            (
+                c.precision,
+                c.precision_lo,
+                c.precision_hi,
+                c.level_raised_pct
+            ),
+            (Some(66.7), Some(20.8), Some(93.9), Some(33.3))
+        );
+        assert_eq!((j.cells[1].precision, j.cells[1].pending), (None, 1));
         for (filter, want) in [
             ("all", 2),
             ("would answer", 1),
@@ -1396,8 +1495,47 @@ mod tests {
     }
 
     #[test]
+    fn the_verdict_tiles_count_every_verdict_past_the_cap() {
+        let v = |said: &str, score: &str, question: &str| AskVerdict {
+            said: said.into(),
+            score: score.into(),
+            question: question.into(),
+            ..Default::default()
+        };
+        let mut j = Judge {
+            verdicts: (0..55)
+                .map(|_| v("would answer", "wrong", "ship it?"))
+                .collect(),
+            ..Default::default()
+        };
+        j.verdicts
+            .extend((0..5).map(|_| v("passed", "-", "deploy now?")));
+        let mut cut = j.clone();
+        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 10);
+        assert_eq!(cut.verdicts.len(), 10);
+        let t = cut.table.as_ref().unwrap();
+        assert_eq!((t.total, t.shown), (60, 55));
+        let n = |name: &str| t.states.iter().find(|c| c.name == name).unwrap();
+        assert_eq!(
+            [
+                ASK_FILTERS[0],
+                ASK_FILTERS[2],
+                ASK_FILTERS[3],
+                ASK_FILTERS[4]
+            ]
+            .map(|f| n(f).n),
+            [60, 55, 5, 55]
+        );
+        assert_eq!(n("wrong").tone, Some(crate::vocab::Level::Bad));
+        assert_eq!(n("answered").n, 0);
+        // a word searches the question
+        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 10);
+        assert_eq!(j.verdicts.len(), 5);
+    }
+
+    #[test]
     fn each_lanes_score_cell_and_title_are_judge_evals_score_7d_as_written() {
-        let json = r#"{"bar":{"labels":30,"precision":90},"agents":[
+        let json = r#"{"agents":[
           {"agent":"ask-judge","prompt_sha":"a","score":"ask-answers",
            "total":{"verdicts":1,"tp":0,"fp":0,"fn":0,"tn":0},
            "score_7d":{"window":"7d","right":7,"n":9,"pending":4,"value":null,"text":"n<30",
@@ -1446,7 +1584,7 @@ mod tests {
           {"agent":"ask-judge","prompt_sha":"aaaaaaaaa","total":{"verdicts":40,"tp":6,"fp":0,"fn":0,"tn":0},
            "live":["ship_deploy"],
            "rules":[{"rule":"ship_deploy","verdicts":9,"errors":0,"scored":6,"precision":100.0,
-                     "false_defer_pct":null,"live":true,"bar":{"labels":6,"need":30,"met":false}},
+                     "false_defer_pct":null,"live":true},
                     {"rule":"taste","verdicts":31,"scored":28,"precision":null,"false_defer_pct":18.0,
                      "live":false}],
            "misses":[]},
@@ -1465,16 +1603,8 @@ mod tests {
             ("ship_deploy", 6, Some(100.0), true)
         );
         assert_eq!(
-            a.rules[0].bar,
-            Some(Bar {
-                labels: 6,
-                need: 30,
-                met: false
-            })
-        );
-        assert_eq!(
-            (a.rules[1].false_defer_pct, a.rules[1].bar.is_none()),
-            (Some(18.0), true)
+            (a.rules[1].false_defer_pct, a.rules[1].live),
+            (Some(18.0), false)
         );
         let d = &evals["dispatch-judge"];
         assert_eq!(

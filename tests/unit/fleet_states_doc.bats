@@ -47,7 +47,7 @@ check_cells() { # <doc>
 check_pinned() { # <doc>
   local b name bad=0
   while IFS=$'\037' read -r b name; do
-    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests" || { echo "$b: no @test \"$name\""; bad=1; }
+    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "$b: no @test \"$name\""; bad=1; }
   done < <(rows "$1" | awk -F'\037' '{ n = split($4, p, "`"); for (i = 2; i <= n; i += 2) print $1 "\037" p[i] }')
   return "$bad"
 }
@@ -93,10 +93,10 @@ check_shepherd() { # <doc> <fleet-shepherd>
   run check_cells "$t/no-actor.md"
   assert_failure
   assert_output 'LANDED: no actor'
-  sed -E '/^\| CHAT \|/ s/is due only past/is due past/' "$DOC" > "$t/dead.md"
+  sed -E '/^\| CHAT \|/ s/is due only on/is due on/' "$DOC" > "$t/dead.md"
   run check_pinned "$t/dead.md"
   assert_failure
-  assert_output --partial 'CHAT: no @test "a CHAT row is due past'
+  assert_output --partial 'CHAT: no @test "a CHAT row is due on'
   sed -E 's/"CHAT"/"CHATTY"/g' "$SHEPHERD" > "$t/shepherd"
   run check_shepherd "$DOC" "$t/shepherd"
   assert_failure

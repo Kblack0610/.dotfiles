@@ -1,0 +1,11 @@
+[package]
+name = "project-map"
+version = "0.1.0"
+edition = "2021"
+description = "The one Rust lookup of project-map.json: any spelling of a project to its key, and its tracker wiring"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"

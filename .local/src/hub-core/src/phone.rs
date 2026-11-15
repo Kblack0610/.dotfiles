@@ -80,6 +80,24 @@ fn repo(name: &str) -> &str {
     name.trim_start_matches('.')
 }
 
+/// The needs that wait on the human (an ask, a session, a queue item), as the phone and the
+/// widget's Needs you card count them; a condition (Stopped, Budget) is not a wait.
+pub fn waiting(home: &Home) -> Vec<&Need> {
+    home.needs
+        .iter()
+        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
+        .collect()
+}
+
+/// The repos whose nightly on main is red, as Home's needs carry them.
+pub fn red_repos(home: &Home) -> Vec<&str> {
+    home.needs
+        .iter()
+        .filter(|n| n.kind == Kind::Nightly)
+        .map(|n| repo(&n.project))
+        .collect()
+}
+
 fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     if waiting.is_empty() {
         return vec![row(Level::Ok, "needs", "Needs you: nothing")];
@@ -402,12 +420,7 @@ fn ci(infra: &Infra) -> Option<Row> {
 /// not be read is a row of its own, so a short view never reads as an all-clear.
 pub fn build(home: &Home, i: &Inputs) -> Phone {
     let mut rows = vec![];
-    let nightly: Vec<&str> = home
-        .needs
-        .iter()
-        .filter(|n| n.kind == Kind::Nightly)
-        .map(|n| repo(&n.project))
-        .collect();
+    let nightly = red_repos(home);
     if !nightly.is_empty() {
         rows.push(row(
             Level::Red,
@@ -420,11 +433,7 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
             .iter()
             .map(|e| row(Level::Warn, "error", cap(e, ASK_MAX))),
     );
-    let waiting: Vec<&Need> = home
-        .needs
-        .iter()
-        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
-        .collect();
+    let waiting = waiting(home);
     if !i.state.is_null() {
         rows.extend(needs(&waiting, i.now));
     }
@@ -631,7 +640,7 @@ mod tests {
     }
 
     fn phone(state: &Value, q: Option<&Queue>, inf: Option<&Infra>) -> Phone {
-        let h = home::build(state, q, None, inf);
+        let h = home::build(Some(state), q, None, inf, NOW);
         build(
             &h,
             &Inputs {
@@ -658,7 +667,7 @@ mod tests {
         let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
         let inf = infra(vec![]);
         let p = phone(&s, Some(&q), Some(&inf));
-        let shown = home::build(&s, Some(&q), None, Some(&inf))
+        let shown = home::build(Some(&s), Some(&q), None, Some(&inf), NOW)
             .needs
             .iter()
             .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
@@ -757,7 +766,7 @@ mod tests {
                 q.items.push(done_item(&format!("{name}{n}"), name, NOW));
             }
         }
-        let h = home::build(&state(), Some(&q), None, None);
+        let h = home::build(Some(&state()), Some(&q), None, None, NOW);
         let p = build(
             &h,
             &Inputs {
@@ -798,7 +807,7 @@ mod tests {
 
     #[test]
     fn done_is_absent_when_neither_source_could_be_read() {
-        let h = home::build(&state(), None, None, None);
+        let h = home::build(Some(&state()), None, None, None, NOW);
         let p = build(
             &h,
             &Inputs {
@@ -839,7 +848,7 @@ mod tests {
 
     #[test]
     fn an_all_green_fleet_is_one_line_a_section() {
-        let s = json!({"counts": {"WORKING": 2}, "asks": [], "main": [], "sessions": []});
+        let s = json!({"generated_epoch": NOW, "counts": {"WORKING": 2}, "asks": [], "main": [], "sessions": []});
         let q = queue_of(vec![(State::Running, "r1")]);
         let inf = infra(vec![]);
         let p = phone(&s, Some(&q), Some(&inf));
@@ -897,6 +906,7 @@ mod tests {
             started: None,
             target: None,
             phases: None,
+            ..Default::default()
         };
         Card {
             name: name.into(),
@@ -969,7 +979,7 @@ mod tests {
     #[test]
     fn build_carries_the_projects_rows_last() {
         let s = state();
-        let h = home::build(&s, None, None, None);
+        let h = home::build(Some(&s), None, None, None, NOW);
         let p = Projects {
             cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
             ..Projects::default()

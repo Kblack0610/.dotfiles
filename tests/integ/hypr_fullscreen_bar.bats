@@ -29,31 +29,31 @@ dispatched() { grep '^dispatch' "$LOG"; }
   win 2 2
   run "$SCRIPT"
   assert_success
-  assert_equal "$(dispatched)" "dispatch fullscreenstate 1 2"
+  assert_equal "$(dispatched)" "dispatch hl.dsp.window.fullscreen_state({ internal = 1, client = 2 })"
 }
 
 @test "under the bar goes back to true fullscreen" {
   win 1 2
   run "$SCRIPT"
   assert_success
-  assert_equal "$(dispatched)" "dispatch fullscreenstate 2 2"
+  assert_equal "$(dispatched)" "dispatch hl.dsp.window.fullscreen_state({ internal = 2, client = 2 })"
 }
 
 @test "a plain maximized window is not 'under the bar': it goes under the bar, not to fullscreen" {
   win 1 0
   run "$SCRIPT"
-  assert_equal "$(dispatched)" "dispatch fullscreenstate 1 2"
+  assert_equal "$(dispatched)" "dispatch hl.dsp.window.fullscreen_state({ internal = 1, client = 2 })"
 }
 
 @test "a window not fullscreen goes straight under the bar" {
   win 0 0
   run "$SCRIPT"
-  assert_equal "$(dispatched)" "dispatch fullscreenstate 1 2"
+  assert_equal "$(dispatched)" "dispatch hl.dsp.window.fullscreen_state({ internal = 1, client = 2 })"
 }
 
 @test "no focused window ({}) is not an error: it reads as not fullscreen" {
   echo '{}' > "$WIN"
   run "$SCRIPT"
   assert_success
-  assert_equal "$(dispatched)" "dispatch fullscreenstate 1 2"
+  assert_equal "$(dispatched)" "dispatch hl.dsp.window.fullscreen_state({ internal = 1, client = 2 })"
 }

@@ -1,7 +1,7 @@
 //! The header over Sessions on both surfaces: how many sessions are live and who started them,
 //! the run units `fleet-dispatch` has used, and whether the two timers that move work are on.
 //! The session counts come from the state document (`fleet-sessions`), the run units from
-//! `fleet-dispatch headroom --json`, the timers from `jobs::timer_starts`, and the shepherd's
+//! the last dispatch pass's `headroom.json`, the timers from `jobs::timer_starts`, and the shepherd's
 //! last pass from `fleet-shepherd stats`. Nothing here judges: a timer that is not on turns its
 //! part amber and offers [`start`], which only ever starts one of the two named here.
 
@@ -175,15 +175,103 @@ fn json(runner: &dyn Runner, cmd: &[&str], errors: &mut Vec<String>) -> Option<V
     }
 }
 
-/// Read every source. `fleet-dispatch headroom` walks the live units and takes seconds on a
-/// loaded machine, so a caller reads this on its own, off the table's path, and keeps it a while.
-pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
+/// A pass older than this is no answer, the age fleet-dispatch itself trusts (`find -mmin -45`).
+const HEADROOM_FRESH_SECS: u64 = 45 * 60;
+
+/// The last dispatch pass's `headroom.json`, or why there is none: missing, unparsable, or older
+/// than [`HEADROOM_FRESH_SECS`] (dispatch stopped writing it).
+pub fn headroom(path: &std::path::Path) -> Result<Value, String> {
+    let age = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map_err(|e| e.to_string())?
+        .elapsed()
+        .unwrap_or_default()
+        .as_secs();
+    if age > HEADROOM_FRESH_SECS {
+        return Err(format!("stale, last pass {}m ago", age / 60));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| e.to_string())
+}
+
+/// The last dispatch pass's verdict, the line above the Queue table: whether it may start work,
+/// why not, and how many ready items it could start of those it counts runnable.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Dispatch {
+    /// What holds it (`held` in `headroom.json`), only when the pass names a kind of hold:
+    /// "nothing runnable" is an empty queue, not a hold.
+    pub held: Option<String>,
+    pub could_start: u64,
+    pub runnable: u64,
+    /// Why there is no verdict: no file, a stale pass, or one that does not parse.
+    pub error: Option<String>,
+}
+
+impl Dispatch {
+    pub fn read(path: &std::path::Path) -> Dispatch {
+        match headroom(path) {
+            Ok(v) => {
+                let held = v["held_kind"]
+                    .as_str()
+                    .and(v["held"].as_str())
+                    .map(String::from);
+                // A pass with no counts is a changed schema, not an empty queue: no verdict,
+                // said so; its hold still holds.
+                match (v["could_start"].as_u64(), v["runnable"].as_u64()) {
+                    (Some(could_start), Some(runnable)) => Dispatch {
+                        held,
+                        could_start,
+                        runnable,
+                        error: None,
+                    },
+                    _ => Dispatch {
+                        held,
+                        error: Some("headroom.json: no could_start or runnable count".into()),
+                        ..Dispatch::default()
+                    },
+                }
+            }
+            Err(e) => Dispatch {
+                error: Some(format!("headroom.json: {e}")),
+                ..Dispatch::default()
+            },
+        }
+    }
+
+    /// The verdict in fleet-dispatch's own `headroom.json`.
+    pub fn now() -> Dispatch {
+        Dispatch::read(&crate::boards::dispatch_dir().join("headroom.json"))
+    }
+
+    /// `Dispatch held: <why>. It could start 0 of 192 runnable.`, or `Dispatch running: ...`.
+    pub fn line(&self) -> String {
+        if let Some(e) = &self.error {
+            return format!("Dispatch: no verdict ({e}).");
+        }
+        let n = format!(
+            "could start {} of {} runnable",
+            self.could_start, self.runnable
+        );
+        match &self.held {
+            Some(h) => format!("Dispatch held: {h}. It {n}."),
+            None => format!("Dispatch running: it {n}."),
+        }
+    }
+
+    /// Held, or no verdict to go on: the line is amber.
+    pub fn warn(&self) -> bool {
+        self.held.is_some() || self.error.is_some()
+    }
+}
+
+/// Read every source. The run units are the last dispatch pass's `headroom.json`, never a fresh
+/// `fleet-dispatch headroom`: that walks the live units and took over a minute on a loaded
+/// machine, and the header names the pass's timer beside it.
+pub fn read(runner: &dyn Runner, sessions: &[Value], headroom: &std::path::Path) -> Capacity {
     let mut errors = vec![];
-    let headroom = json(
-        runner,
-        &["fleet-dispatch", "headroom", "--json"],
-        &mut errors,
-    );
+    let headroom = self::headroom(headroom)
+        .map_err(|e| errors.push(format!("headroom.json: {e}")))
+        .ok();
     let shepherd = json(runner, &["fleet-shepherd", "stats"], &mut errors);
     let timers = crate::jobs::timer_starts()
         .map_err(|e| errors.push(format!("systemctl: {e}")))
@@ -201,7 +289,11 @@ pub fn read(runner: &dyn Runner, sessions: &[Value]) -> Capacity {
 
 /// [`read`] over the sessions in `fleet-sessions`' state document.
 pub fn read_fleet(runner: &dyn Runner) -> Capacity {
-    read(runner, &read_state(&crate::boards::fleet_state()).0)
+    read(
+        runner,
+        &read_state(&crate::boards::fleet_state()).0,
+        &crate::boards::dispatch_dir().join("headroom.json"),
+    )
 }
 
 /// Enable and start one of the two timers. Any other name is refused, and nothing here stops one.
@@ -230,9 +322,6 @@ mod tests {
             self.calls.borrow_mut().push(argv.to_vec());
             match (self.fail, argv[0].as_str()) {
                 (true, _) => Err("no such thing".into()),
-                (_, "fleet-dispatch") => {
-                    Ok(r#"{"live_runs":2,"max_live":40,"per_pass":3,"held":null}"#.into())
-                }
                 (_, "fleet-shepherd") => Ok(r#"{"last_pass_epoch":0,"stuck":false}"#.into()),
                 _ => Ok(String::new()),
             }
@@ -372,18 +461,88 @@ mod tests {
 
     #[test]
     fn read_parses_headroom_and_names_what_failed() {
-        let c = read(&Fake::default(), &sessions());
+        let d = std::env::temp_dir().join(format!("hub-capacity-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let h = d.join("headroom.json");
+        std::fs::write(
+            &h,
+            r#"{"live_runs":2,"max_live":40,"per_pass":3,"held":null}"#,
+        )
+        .unwrap();
+        let f = Fake::default();
+        let c = read(&f, &sessions(), &h);
         assert!(c.parts[0].text.contains("2/40 run units, 3 per pass"));
+        assert!(
+            f.calls.borrow().iter().all(|a| a[0] != "fleet-dispatch"),
+            "the slow headroom walk is never run"
+        );
+        let old =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(HEADROOM_FRESH_SECS + 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&h)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let stale = headroom(&h).unwrap_err();
+        assert!(stale.starts_with("stale, last pass 4"), "{stale}");
+        assert!(read(&f, &sessions(), &h).parts[0]
+            .text
+            .contains("run units unknown"));
         let c = read(
             &Fake {
                 fail: true,
                 ..Fake::default()
             },
             &sessions(),
+            &d.join("none.json"),
         );
+        std::fs::remove_dir_all(&d).unwrap();
         assert!(c.parts[0].text.contains("run units unknown"));
-        assert!(c.errors.iter().any(|e| e.starts_with("fleet-dispatch: ")));
+        assert!(c.errors.iter().any(|e| e.starts_with("headroom.json: ")));
         assert!(c.errors.iter().any(|e| e.starts_with("fleet-shepherd: ")));
+    }
+
+    #[test]
+    fn the_queue_line_says_whether_dispatch_is_held_and_what_it_could_start() {
+        let d = std::env::temp_dir().join(format!("hub-dispatch-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let h = d.join("headroom.json");
+        let line = |body: &str| {
+            std::fs::write(&h, body).unwrap();
+            let v = Dispatch::read(&h);
+            (v.line(), v.warn())
+        };
+        assert_eq!(
+            line(r#"{"could_start":0,"runnable":192,"held":"load 31.31 on 24 cores is over the 0.9 pace","held_kind":"load"}"#),
+            ("Dispatch held: load 31.31 on 24 cores is over the 0.9 pace. It could start 0 of 192 runnable.".into(), true)
+        );
+        assert_eq!(
+            line(r#"{"could_start":3,"runnable":40,"held":"nothing runnable"}"#),
+            (
+                "Dispatch running: it could start 3 of 40 runnable.".into(),
+                false
+            ),
+            "a held line with no kind is no hold"
+        );
+        assert_eq!(
+            line(r#"{"can_start":3,"held":"load","held_kind":"load"}"#),
+            (
+                "Dispatch: no verdict (headroom.json: no could_start or runnable count).".into(),
+                true
+            ),
+            "a renamed key is no verdict, never `0 of 0`"
+        );
+        let none = Dispatch::read(&d.join("none.json"));
+        std::fs::remove_dir_all(&d).unwrap();
+        assert!(
+            none.warn()
+                && none
+                    .line()
+                    .starts_with("Dispatch: no verdict (headroom.json: "),
+            "{}",
+            none.line()
+        );
     }
 
     #[test]

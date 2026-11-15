@@ -1,5 +1,5 @@
 // timebox lap-boundary flash: tint the whole screen red for a moment.
-// Applied briefly via `hyprctl keyword decoration:screen_shader` by timebox-flash.
+// Applied briefly via `hyprctl eval` (decoration.screen_shader) by timebox-flash.
 #version 300 es
 precision highp float;
 in vec2 v_texcoord;

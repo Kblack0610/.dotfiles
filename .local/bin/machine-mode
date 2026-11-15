@@ -22,16 +22,17 @@
 # (fleet-presence): the part's mode then applies at the first tick they are away. Inside a part
 # the clock changes nothing, so a hand switch stands until the next part begins.
 #
-# A mode sets four things, its numbers in .config/machine-mode/modes:
+# A mode sets three things, its numbers in .config/machine-mode/modes:
 #   runners      {"slots": N} under this host's key in the ci-runner-governor-override
 #                ConfigMap. The governor stays the only writer of runner labels, so a busy
 #                runner finishes its job. Takes minutes, and longer if a gate is running.
 #   local Unity  ~/.agent/machine-mode.env, which unity-core-playground's slots.sh reads. A
 #                file because slots.sh ignores its env overrides in an agent session.
-#   agent starts agent-hold on dispatch, by machine-mode. A hold set by anyone else is theirs:
-#                it is neither replaced nor released here.
 #   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
 #                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
+#
+# No mode stops dispatch: the low level is reserved's trickle, and `agent-hold set dispatch` is
+# the one full stop. The status shows a dispatch hold by anyone, and never sets or lifts one.
 #
 # If the cluster cannot be reached the two local parts still apply, the command exits 1, and
 # RUNNERS_PINNED=no in the state file turns the chip amber until a retry lands. There is no
@@ -48,7 +49,6 @@ STATE="$MACHINE_MODE_STATE"
 RUNNER_UNITS="${MACHINE_MODE_RUNNER_UNITS:-/etc/systemd/system/actions.runner.*-unity-pool-*.service}"
 CONFIGMAP=ci-runner-governor-override
 NAMESPACE=monitoring
-HOLD_BY=machine-mode
 HOST="$(uname -n)"
 
 die() { echo "machine-mode: $*" >&2; exit 1; }
@@ -63,22 +63,6 @@ next_mode() {
 
 # Who holds dispatch, empty when nobody does.
 dispatch_holder() { agent-hold list | awk -F'\t' '$1 == "dispatch" { print $3 }'; }
-
-set_hold() {
-  local mode="$1" want="$2" by
-  by="$(dispatch_holder)"
-  if [ "$want" = paused ]; then
-    if [ -z "$by" ]; then
-      agent-hold set dispatch --by "$HOLD_BY" "machine-mode $mode: the human needs this machine" >/dev/null
-    elif [ "$by" != "$HOLD_BY" ]; then
-      echo "machine-mode: dispatch is already held by $by, left as it is" >&2
-    fi
-  elif [ "$by" = "$HOLD_BY" ]; then
-    agent-hold release dispatch >/dev/null
-  elif [ -n "$by" ]; then
-    echo "machine-mode: dispatch is held by $by, left as it is" >&2
-  fi
-}
 
 kube() { kubectl --context "${CC_KUBE_CONTEXT:-}" --request-timeout=10s -n "$NAMESPACE" "$@"; }
 
@@ -175,28 +159,24 @@ runner_line() {
 }
 
 dispatch_line() {
-  local want="$1" mode="$2" by
+  local by
   by="$(dispatch_holder)"
-  if [ "$by" = "$HOLD_BY" ]; then
-    echo "new agent sessions: paused"
-  elif [ -n "$by" ]; then
+  if [ -n "$by" ]; then
     echo "new agent sessions: paused by $by"
-  elif [ "$want" = paused ]; then
-    echo "new agent sessions: as today, the hold was lifted: run machine-mode $mode to pause again"
   else
     echo "new agent sessions: as today"
   fi
 }
 
 status() {
-  local mode runners slots burst dispatch
+  local mode runners slots burst
   mode="$(current_mode)"
-  IFS='|' read -r _ runners slots burst dispatch _ <<< "$(mode_row "$mode")"
+  IFS='|' read -r _ runners slots burst _ <<< "$(mode_row "$mode")"
   echo "mode: $mode"
   echo "level: $(machine_level)"
   runner_line "$runners" "$mode"
   echo "local Unity runs: $slots, plus $burst when there is room"
-  dispatch_line "$dispatch" "$mode"
+  dispatch_line
   clock_line
 }
 
@@ -262,12 +242,11 @@ clock() {
 # switch <mode> [hand|clock] [part] -- apply a mode. A hand switch records the part it was made in,
 # so the clock leaves it until the next part begins.
 switch() {
-  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners slots burst dispatch pinned=yes rc=0
-  IFS='|' read -r _ runners slots burst dispatch _ <<< "$(mode_row "$mode")"
-  set_hold "$mode" "$dispatch"
+  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners slots burst pinned=yes rc=0
+  IFS='|' read -r _ runners slots burst _ <<< "$(mode_row "$mode")"
   if ! pin_runners "$runners"; then
     pinned=no rc=1
-    echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and agent sessions are set to $mode." >&2
+    echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and the level are set to $mode." >&2
   fi
   write_state "$mode" "$slots" "$burst" "$pinned" "$by" "$part" || die "could not write $STATE"
   pkill -RTMIN+10 waybar 2>/dev/null

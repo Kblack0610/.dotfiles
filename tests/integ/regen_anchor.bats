@@ -33,7 +33,6 @@ setup() {
   cat > "$MAP" <<'EOF'
 {
   "paths": { "/repos/toolrepo": "toolrepo" },
-  "aliases": {},
   "trackers": {
     "_comment_lab_projects": "a string value, to catch an unguarded jq",
     "proj": { "system": "board", "code": "pj" }
@@ -263,7 +262,7 @@ lab_row() {
 
 @test "regen-anchor: a repo key lists each of its lab projects, without a status line" {
   cat > "$MAP" <<'EOF2'
-{ "paths": {}, "aliases": {},
+{ "paths": {},
   "trackers": { "proj": {}, "app-a": { "repo": "proj", "path": "apps/a" },
                 "app-b": { "repo": "proj", "path": "apps/b" } } }
 EOF2
@@ -291,7 +290,7 @@ EOF2
     touch "$HOME/repo/docs/decisions/$f"
   done
   cat > "$MAP" <<EOF2
-{ "paths": { "$HOME/repo": "proj" }, "aliases": {}, "trackers": {} }
+{ "paths": { "$HOME/repo": "proj" }, "trackers": {} }
 EOF2
   run bash "$REGEN" proj
   assert_success
@@ -301,7 +300,7 @@ EOF2
 
 @test "regen-anchor --all: scaffolds every project's anchor, but none for a repo-only key" {
   cat > "$MAP" <<'EOF2'
-{ "paths": { "/repos/toolrepo": "toolrepo" }, "aliases": {},
+{ "paths": { "/repos/toolrepo": "toolrepo" },
   "trackers": { "default": { "system": "none" }, "_comment": "doc",
                 "game": { "repo": "toolrepo", "path": "games/g" },
                 "board-only": { "repo": "toolrepo" }, "proj": {} } }
@@ -327,7 +326,7 @@ EOF2
   mkdir -p "$HOME/proj"
 
   cat > "$MAP" <<EOF
-{ "paths": { "$HOME/proj": "proj" }, "aliases": {}, "trackers": {} }
+{ "paths": { "$HOME/proj": "proj" }, "trackers": {} }
 EOF
 
   CLAUDE_PROJECT_DIR="$HOME/proj" run bash "$HOOK" </dev/null

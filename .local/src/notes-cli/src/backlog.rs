@@ -1,6 +1,6 @@
 //! `notes backlog <fun|carryover>` — tidy a standing backlog file and print its
-//! path (for editor integration). Tidying = sweep checked items into `## Done`
-//! and recompute day-counts on remaining active items.
+//! path (for editor integration). Tidying = sweep checked items into `## Done`,
+//! stamped `#dYYMMDD`, and recompute day-counts on remaining active items.
 
 use crate::config::Profile;
 use crate::logging::Logger;
@@ -212,11 +212,10 @@ fn latest_daily(dir: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn ensure_done_stamp(line: &str, today: NaiveDate) -> String {
-    let l = line.trim_end();
-    if l.contains("(done:") {
-        l.to_string()
+    if md::has_done_tag(line) {
+        line.trim_end().to_string()
     } else {
-        format!("{} (done:{})", l, today.format("%Y-%m-%d"))
+        md::add_tag(line, &md::done_tag(today))
     }
 }
 
@@ -230,14 +229,25 @@ mod tests {
 
     #[test]
     fn sweep_moves_checked_to_done() {
-        let c = "# Fun\n\n## Active\n- [ ] keep me (1d) <!-- since:2026-06-02 -->\n- [x] finished\n\n## Done\n- [x] old (done:2026-05-01)\n";
+        let c = "# Fun\n\n## Active\n- [ ] keep me (1d) <!-- since:2026-06-02 -->\n- [x] finished\n\n## Done\n- [x] old #d260501\n";
         let out = sweep(c, d("2026-06-05"));
         // active keeps the unchecked item, restamped
         assert!(out.contains("- [ ] keep me #c0602"));
         // checked item moved under Done with a done stamp
-        assert!(out.contains("- [x] finished (done:2026-06-05)"));
+        assert!(out.contains("- [x] finished #d260605"));
         // existing done preserved
-        assert!(out.contains("- [x] old (done:2026-05-01)"));
+        assert!(out.contains("- [x] old #d260501"));
+        // a line already stamped is not stamped twice
+        assert_eq!(
+            ensure_done_stamp("- [x] a #d260501", d("2026-06-05")),
+            "- [x] a #d260501"
+        );
+        // the tag goes before a trailing marker, as add_tag places every tag
+        assert_eq!(md::task_text("- [x] finished #d260605"), "finished");
+        assert_eq!(
+            ensure_done_stamp("- [x] b <!-- id:x-1 -->", d("2026-06-05")),
+            "- [x] b #d260605 <!-- id:x-1 -->"
+        );
         // only one ## Done heading
         assert_eq!(out.matches("## Done").count(), 1);
         // finished no longer in the active region (before ## Done)

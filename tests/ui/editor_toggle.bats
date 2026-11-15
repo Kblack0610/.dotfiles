@@ -34,7 +34,6 @@ teardown() { ui_teardown; }
 # control that makes the return address load-bearing.
 start_session() {
   _tm new-session -d -s work -c "$SANDBOX" -n one "sleep 300" </dev/null
-  _tm set-option -g window-size manual 2>/dev/null || true
   _tm new-window -d -t work: -n two "sleep 300"
   _tm new-window -d -t work: -n three "sleep 300"
   wait_until '[ "$(win_count)" = 3 ]'

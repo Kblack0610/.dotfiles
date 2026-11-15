@@ -10,6 +10,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/hypr'
   sandbox_init basic
   W="$REPO_ROOT/.config/waybar"
   M="$W/audio_input.sh"
@@ -80,16 +81,16 @@ field() { jq -r ".$1" <<<"$LINE"; }
 }
 
 @test "each pinbar-input leaf sets the input of its own key" {
-  run awk '/^submap = pinbar-input$/,/^submap = pinbar-utils$/' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
-  local leaves
-  leaves="$(grep -E '^bindpd = ,[a-z], .*audio_input.sh set ' <<<"$output")"
+  run hypr_dump registry
+  assert_success
+  local reg=$output leaves
+  leaves=$(jq -r '.[] | select(.submap == "pinbar-input" and (.arg | test("audio_input.sh set "))) | "\(.key) \(.arg)"' <<<"$reg")
   [[ -n $leaves ]]
-  while read -r line; do
-    [[ $line =~ ^bindpd\ =\ ,([a-z]),.*audio_input\.sh\ set\ ([a-z])$ ]]
-    assert_equal "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  while read -r key arg; do
+    assert_equal "${arg##* }" "$key"
   done <<<"$leaves"
-  run grep -c 'bindpd = ,i, inputs >, submap, pinbar-input' "$REPO_ROOT/.config/hypr/conf.d/leader.conf"
-  assert_output 1
+  run jq -r '.[] | select(.submap == "pinbar" and .key == "i") | "\(.description)|\(.dispatcher) \(.arg)"' <<<"$reg"
+  assert_output 'inputs >|submap pinbar-input'
 }
 
 @test "with no list the chip prints nothing and exits" {

@@ -170,14 +170,12 @@ fn classify<'a>(text: &'a str, area: &str) -> (&'a str, String, &'a str) {
 /// The row type a label names: one of the filer types (never `epic`), or a near miss.
 fn label_type(word: &str) -> Option<&'static str> {
     let word = word.to_lowercase();
-    projects::filer_types()
-        .find(|t| *t == word)
-        .or_else(|| {
-            LABEL_TYPES
-                .iter()
-                .find(|(w, _)| *w == word)
-                .map(|(_, t)| *t)
-        })
+    projects::filer_types().find(|t| *t == word).or_else(|| {
+        LABEL_TYPES
+            .iter()
+            .find(|(w, _)| *w == word)
+            .map(|(_, t)| *t)
+    })
 }
 
 /// The type the words suggest; feature work when they suggest none.

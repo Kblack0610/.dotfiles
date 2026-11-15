@@ -8,13 +8,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Older than this the block says it is stale: four missed tries of the sampler's 30 minutes, the
-/// limit `fleet-bench kpi` uses for the same file.
-const STALE_SECS: i64 = 2 * 3600;
+/// limit `fleet-bench kpi` uses for the same file. `budget.json` shares it, from the same step
+/// (`FILE_STALE_SECS` in agent-usage-budget.py).
+pub(crate) const STALE_SECS: i64 = 2 * 3600;
 /// Below this a dollar figure is rounding, not money.
 const CENT: f64 = 0.005;
 
 pub const FOOT: &str = "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.";
-/// The Fleet tab's line for its COST 24H column.
+/// The Runners table's line for its COST 24H column.
 pub const FLEET_LEGEND: &str = "cost 24h from Costs' fleet figure, ~ when part is estimated";
 
 /// One cut of the file: an origin, a runner.

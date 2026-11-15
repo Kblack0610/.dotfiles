@@ -179,7 +179,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         "{} sessions",
         sessions(rec).map_or("-".into(), |n| n.to_string())
     ));
-    items.push(hub_core::costs::SPEND_BADGE.into());
+    items.push(hub_core::costs::spend_badge());
     if let Some(f) = rec["fleet"].as_object() {
         let mut b: Vec<(&String, i64)> = f
             .get("buckets")
@@ -236,7 +236,10 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
         out.push(clip_line(
             Line::from(vec![
                 Span::styled(format!("{n} waiting on you"), p.warn()),
-                Span::styled("  2 Home answers them", p.dim()),
+                Span::styled(
+                    format!("  {} answers them", hub_core::layout::bar_label("home")),
+                    p.dim(),
+                ),
             ]),
             w,
         ));
@@ -338,17 +341,20 @@ pub fn history(days: &[DayRow], sel: usize, p: Palette, w: usize) -> Vec<Line<'s
                 "#".repeat((d.merged * 20).div_ceil(max)).into(),
                 d.repos.to_string().into(),
                 d.sessions.map_or("-".into(), |n| n.to_string()).into(),
+                d.ci.as_ref()
+                    .map_or("-".into(), |c| format!("{:.1}", c.pool_h))
+                    .into(),
                 areas.join(", ").into(),
             ]
         })
         .collect();
     let mut lines = Table {
-        header: vec!["DAY", "MERGED", "", "REPOS", "SESSIONS", "AREAS"],
+        header: vec!["DAY", "MERGED", "", "REPOS", "SESSIONS", "CI H", "AREAS"],
         rows,
-        keep: vec![0, 1, 4, 3, 2],
-        flex: Some(5),
+        keep: vec![0, 1, 5, 4, 3, 2],
+        flex: Some(6),
         flexmin: 16,
-        right: vec![1, 3, 4],
+        right: vec![1, 3, 4, 5],
         ..Default::default()
     }
     .fit(w, p.head());
@@ -447,7 +453,7 @@ pub mod tests {
         let pg = today(Some(&record()), Palette { no_color: true }, NOW, 160);
         let t = text(&pg.lines);
         let at = |s: &str| t.find(s).unwrap_or_else(|| panic!("no {s} in\n{t}"));
-        assert!(at("3 waiting on you  2 Home answers them") < at("SESSIONS (1)"));
+        assert!(at("3 waiting on you  1 Home answers them") < at("SESSIONS (1)"));
         assert!(!t.contains("WAITING ON YOU"), "Home lists them");
         assert!(
             !t.contains("MERGED (2)") && !t.contains("STILL OPEN"),
@@ -463,7 +469,7 @@ pub mod tests {
                 .is_ascii_uppercase());
         }
         assert!(
-            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 9 Costs"),
+            t.contains("merged 2 in 2 repos  open 1 (+1 older)  65 sessions  spend: 0 Costs"),
             "{t}"
         );
         assert!(t.contains("fleet WORKING 27 NEEDS 8 unity runs 3"), "{t}");
@@ -509,12 +515,19 @@ pub mod tests {
         old["date"] = "2026-11-02".into();
         old["live"] = false.into();
         old["merged"] = serde_json::json!([]);
+        old["ci"] = serde_json::json!({"repos": {"a": {"cost": {"runs": 204, "hours": {"pool": 186.6, "gate": 161.02}}}}});
         let rows = vec![
             day_row("2026-11-02", &old),
             day_row("2026-11-03", &record()),
         ];
         let l = history(&rows, 1, Palette { no_color: false }, 120);
         let t = text(&l);
+        assert!(t.contains("CI H"), "{t}");
+        assert!(
+            t.lines()
+                .any(|r| r.contains("Mon 11-02") && r.contains("186.6")),
+            "{t}"
+        );
         assert!(
             t.find("Tue 11-03 live").unwrap() < t.find("Mon 11-02").unwrap(),
             "{t}"

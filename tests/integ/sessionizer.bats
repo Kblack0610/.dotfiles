@@ -499,8 +499,8 @@ in_world() {
 
 # ── A worktree lands on the agent world ──────────────────────────────────────
 #
-# wt cuts and recycles agent worktrees all day, so no manifest can name them. `@agents` says where
-# they all go. Taking the repo's world put dotfiles-agent-N on hub beside the human's own chats.
+# wt cuts and recycles worktrees all day, so no manifest can name them: every one goes to the
+# `@agents` world under its own name, whoever started it and whichever world declares its repo.
 
 # real_repo_with_worktree <repo-dir> <worktree-dir> -- a repo with one commit and a linked
 # worktree, because the route asks git which checkout a worktree belongs to.
@@ -512,22 +512,27 @@ real_repo_with_worktree() {
   git -C "$1" worktree add --quiet "$2" -b "${2##*/}"
 }
 
-@test "route sends a worktree of a repo hub declares to the agent world, under its own name" {
+@test "route sends a worktree to the @agents world under its own name, whichever world declares its repo" {
   real_repo_with_worktree "$HOME/declared-hub" "$HOME/.worktrees/declared-hub-agent-1"
   run "$WORLD" route "$HOME/.worktrees/declared-hub-agent-1"
   assert_success
   assert_output 'lab declared-hub-agent-1'
+  real_repo_with_worktree "$HOME/dev/declared-lab" "$HOME/.worktrees/declared-lab-agent-1"
+  run "$WORLD" route "$HOME/.worktrees/declared-lab-agent-1"
+  assert_output 'lab declared-lab-agent-1'
 }
 
-@test "route sends a worktree of an undeclared repo to the agent world too" {
+@test "route sends a worktree of an undeclared repo to the @agents world, not @repos" {
+  printf '@repos\n' >> "$TMUX_SERVERS_DIR/hub.conf"
   real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
   run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1"
   assert_success
   assert_output 'lab undeclared-agent-1'
 }
 
-@test "route sends a directory inside a worktree to the agent world, and one inside a base checkout does not" {
-  # A session resumed from a subdirectory is still an agent session.
+@test "route sends a directory inside a worktree to lab, and inside its main checkout to @repos" {
+  # A session resumed from a subdirectory is still that worktree's session.
+  printf '@repos\n' >> "$TMUX_SERVERS_DIR/hub.conf"
   real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
   mkdir -p "$HOME/.worktrees/undeclared-agent-1/docs" "$HOME/undeclared/docs"
   run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1/docs"
@@ -535,12 +540,12 @@ real_repo_with_worktree() {
   assert_output 'lab docs'
   run "$WORLD" route "$HOME/undeclared/docs"
   assert_success
-  assert_output 'here docs'
+  assert_output 'hub docs'
 }
 
-@test "route leaves a worktree here when no world declares @agents" {
-  # The negative control: the rule comes from the manifest, not from being a worktree.
-  printf 'platform ~/dev/declared-lab\n' > "$TMUX_SERVERS_DIR/lab.conf"
+@test "route leaves a worktree here when this machine hides the @agents world" {
+  # The negative control: with no agent world, a worktree opens where you are.
+  echo lab > "$TMUX_SERVERS_DIR/hidden"
   real_repo_with_worktree "$HOME/undeclared" "$HOME/.worktrees/undeclared-agent-1"
   run "$WORLD" route "$HOME/.worktrees/undeclared-agent-1"
   assert_success

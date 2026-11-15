@@ -5,8 +5,8 @@
 //! channels `releases::channels` read for the page's badge. This module only joins them and says
 //! the words.
 //!
-//! A run belongs to a path- or filter-scoped project when it ran on one of its commits, for one of
-//! its PRs, or on one of their branches; an unscoped project (the whole repo) owns every run. A
+//! A run belongs to a path- or filter-scoped project when it ran on one of its commits or on one of
+//! its PRs' branches (the release graph's run -> PR join); an unscoped project (the whole repo) owns every run. A
 //! run on a listed commit is said on that commit's line (`CI red`), the worst of them. Any other
 //! run is a line only when it is red, running or queued; a green or cancelled one is counted in
 //! the head, not listed (rule 4).
@@ -116,13 +116,15 @@ pub fn build(f: &Facts, now: i64) -> Timeline {
         .map(|(i, c)| (c.sha.as_str(), i))
         .collect();
     let merged_here: HashSet<u64> = f.commits.iter().flat_map(|c| c.prs.clone()).collect();
-    let mut prs = merged_here.clone();
-    prs.extend(f.prs.iter().map(|p| p.number));
+    // run -> PR is the release graph's branch join: a run on a PR's branch is that PR's. A merge
+    // run sits on its commit, which `on_commit` already holds.
     let heads: HashSet<&str> = f
         .prs
         .iter()
         .map(|p| p.branch.as_str())
-        .filter(|b| !b.is_empty() && *b != f.branch)
+        .filter(|b| {
+            !b.is_empty() && *b != f.branch && !crate::release_graph::SHARED_BRANCHES.contains(b)
+        })
         .collect();
     // The worst run on each commit; one that says nothing (`other`) is never kept.
     let mut ci: Vec<Option<Run>> = vec![None; f.commits.len()];
@@ -134,10 +136,7 @@ pub fn build(f: &Facts, now: i64) -> Timeline {
             continue;
         };
         let on_commit = shas.get(r.sha.as_str()).copied();
-        let mine = !f.scoped
-            || on_commit.is_some()
-            || r.prs.iter().any(|n| prs.contains(n))
-            || heads.contains(r.branch.as_str());
+        let mine = !f.scoped || on_commit.is_some() || heads.contains(r.branch.as_str());
         if !mine {
             continue;
         }
@@ -308,7 +307,7 @@ mod tests {
         chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339()
     }
 
-    fn run(sha: &str, branch: &str, conclusion: Option<&str>, t: i64, prs: &[u64]) -> Run {
+    fn run(sha: &str, branch: &str, conclusion: Option<&str>, t: i64) -> Run {
         Run {
             workflow: "Tests".into(),
             branch: branch.into(),
@@ -322,7 +321,6 @@ mod tests {
             conclusion: conclusion.map(String::from),
             created_at: iso(t),
             started_at: Some(iso(t)),
-            prs: prs.to_vec(),
             url: format!("https://x/runs/{sha}"),
             ..Default::default()
         }
@@ -372,16 +370,16 @@ mod tests {
                 },
             ],
             runs: vec![
-                run("c2", "main", Some("success"), at(14, 3), &[]),
-                run("c2", "main", Some("failure"), at(14, 4), &[]),
-                run("c1", "main", Some("cancelled"), at(9, 1), &[]),
-                run("h13", "agent-4/menu", Some("failure"), at(15, 5), &[13]),
-                run("h13b", "agent-4/menu", None, at(15, 30), &[]),
-                run("h12", "agent-3/cart", Some("success"), at(10, 5), &[12]),
-                run("other", "agent-9/api", Some("failure"), at(11, 0), &[99]),
+                run("c2", "main", Some("success"), at(14, 3)),
+                run("c2", "main", Some("failure"), at(14, 4)),
+                run("c1", "main", Some("cancelled"), at(9, 1)),
+                run("h13", "agent-4/menu", Some("failure"), at(15, 5)),
+                run("h13b", "agent-4/menu", None, at(15, 30)),
+                run("h12", "agent-3/cart", Some("success"), at(10, 5)),
+                run("other", "agent-9/api", Some("failure"), at(11, 0)),
                 Run {
                     created_at: "not a time".into(),
-                    ..run("c1", "main", Some("failure"), at(9, 2), &[])
+                    ..run("c1", "main", Some("failure"), at(9, 2))
                 },
             ],
             tags: vec![Tag {
@@ -397,12 +395,14 @@ mod tests {
                             state: "fail".into(),
                             at: at(14, 45),
                             url: Some("https://x/runs/d".into()),
+                            ..Default::default()
                         },
                         crate::releases::Deploy {
                             version: "v1.1.0".into(),
                             state: "ok".into(),
                             at: at(0, 0) - 1,
                             url: None,
+                            ..Default::default()
                         },
                     ],
                     ..Default::default()

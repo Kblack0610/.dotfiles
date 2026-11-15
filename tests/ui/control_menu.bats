@@ -25,10 +25,10 @@ jq -cn '{text: "OK 3", tooltip: "<b>Good hover</b> line one\nline two", class: "
 EOF
   printf '#!/usr/bin/env bash\necho "prometheus down" >&2\nexit 4\n' > "$FX/bad.sh"
   chmod +x "$FX/ok.sh" "$FX/bad.sh"
-  # hyprctl: one described launcher; anything but `binds -j` is logged.
+  # hyprctl: `repl` serves one described launcher; anything else is logged.
   cat > "$SANDBOX/bin/hyprctl" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "binds -j" ] && exec echo '[{"submap":"","modmask":64,"key":"D","dispatcher":"exec","arg":"wofi --show drun","has_description":true,"description":"app launcher"}]'
+[ "$*" = "repl return hypr_binds_json()" ] && exec echo '[{"submap":"","modmask":64,"key":"D","dispatcher":"exec","arg":"wofi --show drun","has_description":true,"description":"app launcher"}]'
 printf '%s\n' "$*" >> "$FX/dispatched"
 EOF
   chmod +x "$SANDBOX/bin/hyprctl"
@@ -92,5 +92,5 @@ gone() { ! _tm has-session 2>/dev/null; }
   tmux_keys Enter
   wait_until gone
   wait_until '[ -s "$FX/dispatched" ]'
-  assert_equal "$(cat "$FX/dispatched")" "dispatch exec wofi --show drun"
+  assert_equal "$(cat "$FX/dispatched")" "dispatch hl.dsp.exec_cmd([==[wofi --show drun]==])"
 }

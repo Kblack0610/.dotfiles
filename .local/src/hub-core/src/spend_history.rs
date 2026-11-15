@@ -14,13 +14,13 @@ use std::time::SystemTime;
 pub const DAY_ROWS: usize = 14;
 /// Calendar days the day chart covers, ending on the newest snapshot.
 pub const CHART_DAYS: usize = 30;
-/// Session rows a day shows before the "+N more" line; the query reaches the rest.
+/// Session rows a day shows before the "+N more" line.
 pub const SESSION_ROWS: usize = 50;
 
 /// The days the newest day is set against in the headline.
 const MEDIAN_DAYS: usize = 7;
 
-pub const NOTE: &str = "$ is the whole fleet's day from the nightly token snapshot; vs prev compares $/day with the period before; est. is the share priced from tokens, not billed, and it is 100% on a day priced after Prometheus aged out its bills, and that day's $ is a floor, since helper calls never reach a transcript.";
+pub const NOTE: &str = "$ is the whole fleet's day from the nightly token snapshot; vs prev compares $/day with the period before; $/session is what one session cost on an average day, from the day's session rows (- before they were kept); est. is the share priced from tokens, not billed, and it is 100% on a day priced after Prometheus aged out its bills, and that day's $ is a floor, since helper calls never reach a transcript.";
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -88,6 +88,8 @@ pub struct Period {
     pub total: String,
     pub days: usize,
     pub per_day: String,
+    /// The period's session rows over their count: one session's day, `-` with no rows.
+    pub per_session: String,
     pub vs_prev: String,
     pub est: String,
 }
@@ -96,7 +98,10 @@ pub struct Period {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct History {
     pub why: Option<String>,
-    pub head: String,
+    /// The headline's two clauses: this month's pace against the last, then the last day
+    /// against its median. Each surface draws them on lines of their own.
+    pub month: String,
+    pub last_day: String,
     pub rows: Vec<Period>,
     /// Priced days older than the day rows shown.
     pub older: usize,
@@ -183,9 +188,7 @@ pub fn build(all: &[Day], today: &str) -> History {
             period(
                 "day",
                 d.date.get(5..).unwrap_or(&d.date),
-                d.usd,
-                d.estimated,
-                1,
+                Sums::of(d),
                 prev.map(|p| p.usd),
             )
         })
@@ -194,9 +197,11 @@ pub fn build(all: &[Day], today: &str) -> History {
     let older = daily.len().saturating_sub(DAY_ROWS);
     daily.truncate(DAY_ROWS);
     rows.extend(daily);
+    let (month, last_day) = headline(days);
     History {
         why: None,
-        head: headline(days),
+        month,
+        last_day,
         rows,
         older,
         missing: (span as usize).saturating_sub(days.len()),
@@ -313,7 +318,7 @@ impl Row for SessRow {
         "session", "project", "origin", "agent", "harness", "cost", "share", "est", "days",
     ];
     const STATES: &'static [&'static str] = &["all"];
-    const FACETS: &'static [&'static str] = &["project", "origin"];
+    const FACETS: &'static [&'static str] = &[];
     const LEAD: &'static str = "session";
     const GLANCE: &'static [&'static str] = &["cost", "share", "project"];
 
@@ -352,7 +357,7 @@ impl Row for SessRow {
     }
 }
 
-/// One day's sessions under the query, and the opened session's own days.
+/// One day's sessions, and the opened session's own days.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DayView {
     /// The day shown (`YYYY-MM-DD`); empty when no snapshot has session rows yet.
@@ -360,9 +365,9 @@ pub struct DayView {
     pub head: String,
     pub why: Option<String>,
     pub rows: Vec<SessRow>,
-    /// Rows under the query past the `SESSION_ROWS` shown.
+    /// Rows past the `SESSION_ROWS` shown.
     pub more: usize,
-    /// What the rows under the query add up to.
+    /// What the day's rows add up to.
     pub shown_usd: String,
     /// The table's controls; None when there are no session rows to show.
     pub table: Option<Summary>,
@@ -378,22 +383,20 @@ pub struct Series {
     pub bars: Vec<Bar>,
 }
 
-/// Which day's sessions to show, the table's own query and sort, and the session opened.
+/// Which day's sessions to show, the table's own sort, and the session opened.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick<'a> {
     pub day: &'a str,
-    pub q: &'a str,
     pub sort: &'a str,
     pub dir: &'a str,
     pub sid: &'a str,
 }
 
-/// The table for `day` (the newest day with session rows when empty or unknown), under the shared
-/// query and sort, with the session `sid` opened when it is set.
+/// The table for `day` (the newest day with session rows when empty or unknown), under its own
+/// sort, with the session `sid` opened when it is set.
 pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
     let Pick {
         day,
-        q,
         sort,
         dir,
         sid,
@@ -454,7 +457,7 @@ pub fn day_view(all: &[Day], pick: &Pick) -> DayView {
         })
         .collect();
     all_rows.sort_by(|a, b| b.cost.total_cmp(&a.cost).then_with(|| a.sid.cmp(&b.sid)));
-    let v = View::new::<SessRow>(q, "", sort, dir);
+    let v = View::new::<SessRow>("", "", sort, dir);
     let (kept, table) = v.summary(&all_rows);
     let shown: f64 = kept.iter().map(|r| r.cost).sum();
     let more = kept.len().saturating_sub(SESSION_ROWS);
@@ -527,66 +530,91 @@ fn date_of(n: i64) -> String {
 /// Year or month rows, newest first, each against the calendar period before it by $/day; a period
 /// after one with no priced day is set against nothing.
 fn rollup(days: &[Day], kind: &'static str, len: usize) -> Vec<Period> {
-    let mut groups: Vec<(String, f64, f64, usize)> = vec![];
+    let mut groups: Vec<(String, Sums)> = vec![];
     for d in days {
         let key = d.date.get(..len).unwrap_or(&d.date);
         match groups.last_mut() {
-            Some(g) if g.0 == key => {
-                g.1 += d.usd;
-                g.2 += d.estimated;
-                g.3 += 1;
-            }
-            _ => groups.push((key.to_string(), d.usd, d.estimated, 1)),
+            Some(g) if g.0 == key => g.1.add(Sums::of(d)),
+            _ => groups.push((key.to_string(), Sums::of(d))),
         }
     }
     let mut out: Vec<Period> = groups
         .iter()
         .enumerate()
-        .map(|(i, (key, usd, est, n))| {
+        .map(|(i, (key, sums))| {
             let prev = i
                 .checked_sub(1)
                 .map(|j| &groups[j])
                 .filter(|g| g.0 == previous(key))
-                .map(|g| g.1 / g.3 as f64);
-            period(kind, key, *usd, *est, *n, prev)
+                .map(|g| g.1.usd / g.1.days as f64);
+            period(kind, key, *sums, prev)
         })
         .collect();
     out.reverse();
     out
 }
 
-fn period(
-    kind: &'static str,
-    key: &str,
+/// What a period adds up: the fleet's dollars and the estimated part, its priced days, and its
+/// session rows (a session on two days is two rows) and what they cost.
+#[derive(Clone, Copy, Default)]
+struct Sums {
     usd: f64,
     est: f64,
-    n: usize,
-    prev_per_day: Option<f64>,
-) -> Period {
-    let per_day = usd / n as f64;
-    Period {
-        kind,
-        period: key.to_string(),
-        total: dollars(usd),
-        days: n,
-        per_day: dollars(per_day),
-        vs_prev: prev_per_day.map_or("-".into(), |p| change(per_day, p)),
-        est: format!("{:.0}%", (est / usd * 100.0).clamp(0.0, 100.0)),
+    days: usize,
+    sess_usd: f64,
+    sess_n: usize,
+}
+
+impl Sums {
+    fn of(d: &Day) -> Sums {
+        Sums {
+            usd: d.usd,
+            est: d.estimated,
+            days: 1,
+            sess_usd: d.sessions.iter().map(|s| s.usd).sum(),
+            sess_n: d.sessions.len(),
+        }
+    }
+    fn add(&mut self, o: Sums) {
+        self.usd += o.usd;
+        self.est += o.est;
+        self.days += o.days;
+        self.sess_usd += o.sess_usd;
+        self.sess_n += o.sess_n;
     }
 }
 
-/// `Nov $1,579/day vs Oct $1,102/day (+43%); 11-09 $1,312 vs 7d median $1,120 (+17%)`.
-fn headline(days: &[Day]) -> String {
+fn period(kind: &'static str, key: &str, s: Sums, prev_per_day: Option<f64>) -> Period {
+    let per_day = s.usd / s.days as f64;
+    Period {
+        kind,
+        period: key.to_string(),
+        total: dollars(s.usd),
+        days: s.days,
+        per_day: dollars(per_day),
+        per_session: if s.sess_n == 0 {
+            "-".into()
+        } else {
+            dollars(s.sess_usd / s.sess_n as f64)
+        },
+        vs_prev: prev_per_day.map_or("-".into(), |p| change(per_day, p)),
+        est: format!("{:.0}%", (s.est / s.usd * 100.0).clamp(0.0, 100.0)),
+    }
+}
+
+/// The month clause and the last day clause: `Nov $1,579/day vs Oct $1,102/day (+43%)` and
+/// `11-09 $1,312 vs 7d median $1,120 (+17%)`; either is empty with nothing to say.
+fn headline(days: &[Day]) -> (String, String) {
     let months = rollup(days, "month", 7);
     let per_day = |p: &Period| format!("{} {}/day", month_name(&p.period), p.per_day);
-    let mut parts = vec![];
+    let mut month = String::new();
     if let Some(now) = months.first() {
-        let mut s = per_day(now);
+        month = per_day(now);
         if let Some(prev) = months.get(1).filter(|m| m.period == previous(&now.period)) {
-            s += &format!(" vs {} ({})", per_day(prev), now.vs_prev);
+            month += &format!(" vs {} ({})", per_day(prev), now.vs_prev);
         }
-        parts.push(s);
     }
+    let mut day = String::new();
     if let Some((last, before)) = days.split_last() {
         let mut s = format!(
             "{} {}",
@@ -613,9 +641,9 @@ fn headline(days: &[Day]) -> String {
                 change(last.usd, med)
             );
         }
-        parts.push(s);
+        day = s;
     }
-    parts.join("; ")
+    (month, day)
 }
 
 /// The period before `2026` or `2026-01`: `2025`, `2025-12`.
@@ -638,7 +666,7 @@ fn change(now: f64, prev: f64) -> String {
     format!("{:+.0}%", (now - prev) / prev * 100.0)
 }
 
-fn month_name(ym: &str) -> String {
+pub(crate) fn month_name(ym: &str) -> String {
     const NAMES: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -709,8 +737,11 @@ mod tests {
             ("year", "2026", "$350", 3)
         );
         assert_eq!(
-            h.head,
-            "Nov $150/day vs Oct $100/day (+50%); 11-01 $150 vs 2d median $100 (+50%)"
+            (h.month.as_str(), h.last_day.as_str()),
+            (
+                "Nov $150/day vs Oct $100/day (+50%)",
+                "11-01 $150 vs 2d median $100 (+50%)"
+            )
         );
         assert!(!h.stale);
     }
@@ -752,7 +783,8 @@ mod tests {
             ("-".into(), "+14%".into(), "+10%".into())
         );
         assert_eq!(
-            h.head, "Mar $75/day; 03-09 $60 vs 1d median $90 (-33%)",
+            (h.month.as_str(), h.last_day.as_str()),
+            ("Mar $75/day", "03-09 $60 vs 1d median $90 (-33%)"),
             "February is empty; 03-03 is the one day in the 7 before 03-09"
         );
     }
@@ -864,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn the_day_table_ranks_queries_and_opens_a_sessions_own_days() {
+    fn the_day_table_ranks_and_opens_a_sessions_own_days_and_rows_carry_a_session_day() {
         let mut a = day("2026-11-08", 40.0, 0.0);
         a.sessions = vec![sess("s1", 10.0, 10.0, "dotfiles")].into();
         let mut b = day("2026-11-09", 100.0, 0.0);
@@ -886,14 +918,28 @@ mod tests {
             (20.0, 75.0, 2)
         );
         assert_eq!(v.head, "2026-11-09: 2 sessions, $90 of the day's $100");
-        let q = day_view(
-            &all,
-            &Pick {
-                q: "project:dotfiles",
-                ..Pick::default()
-            },
+        assert!(
+            v.table.as_ref().unwrap().facets.is_empty(),
+            "no dropdowns over the table"
         );
-        assert_eq!((q.rows.len(), q.shown_usd.as_str()), (1, "$20"));
+        // $/session: a day's session rows over their count, a month weighted by its rows, and a
+        // day from before rows were kept is `-`, never $0.
+        let h = build(&all, "2026-11-10");
+        let per = |k: &str| {
+            h.rows
+                .iter()
+                .find(|r| r.period == k)
+                .map(|r| r.per_session.clone())
+                .unwrap()
+        };
+        assert_eq!(per("11-09"), "$45");
+        assert_eq!(per("11-08"), "$10");
+        assert_eq!(per("11-07"), "-");
+        assert_eq!(
+            per("2026-11"),
+            "$33",
+            "three rows cost $100, not the mean of $45 and $10"
+        );
         let back = day_view(
             &all,
             &Pick {
