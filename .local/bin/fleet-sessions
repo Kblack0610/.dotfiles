@@ -75,8 +75,9 @@ set -uo pipefail
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
-: "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck}" # processes that are a gate waiting for its landing turn
-                                  # behind another PR (checks every 120s, gives up after 280m): live, never idle
+: "${FLEET_QUEUE_GATES:=gate-and-land.sh|ci-gate.sh|gate-line.py --recheck|agent-land}" # processes that are a gate waiting for its landing turn
+                                  # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
+                                  # waits on a queued run with no limit, and ends itself): live, never idle, whatever the output age
 : "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
