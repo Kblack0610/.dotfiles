@@ -447,6 +447,25 @@ check_heading() {
 # A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
 # `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
 # stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
+# A path with a space is one path only inside a backtick span; bare prose cuts at the
+# space. The token regex stops at the space, so when the cut token is missing, try the
+# span that starts with it, whole and then one trailing word shorter at a time
+# (`~/Library/Application Support/x --flag`).
+spaced_path_exists() {
+  local span cand c
+  while IFS= read -r span; do
+    span="${span#\`}"; span="${span%\`}"
+    case "$span" in "$2 "*) ;; *) continue ;; esac
+    cand="$span"
+    while :; do
+      c="${cand/#\~\//$HOME/}"; c="${c/#\$HOME\//$HOME/}"; c="${c%/}"
+      [ -e "$c" ] && return 0
+      case "$cand" in *' '*) cand="${cand% *}" ;; *) break ;; esac
+    done
+  done < <(grep -v 'skill-drift: ignore' "$1" | grep -oE '`(~|\$HOME)/[^`]* [^`]*`')
+  return 1
+}
+
 check_paths() {
   local skill="$1" f="$2" p orig
   while IFS= read -r p; do
@@ -466,10 +485,10 @@ check_paths() {
     p="${p/#\~\//$HOME/}"
     p="${p/#\$HOME\//$HOME/}"
     p="${p%/}"
-    [ -e "$p" ] || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
+    [ -e "$p" ] || spaced_path_exists "$f" "$orig" || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
     grep -v 'skill-drift: ignore' "$f" \
-      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?-]*[A-Za-z0-9._>}*?-]' \
+      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?@-]*[A-Za-z0-9._>}*?@-]' \
       | sort -u
   )
   return 0

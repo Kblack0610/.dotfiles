@@ -87,3 +87,25 @@ setup() {
   # a definition in a js fence does not excuse deploy-xyz in the bash fence
   assert_output 'deploy-xyz no-such-tool-xyz'
 }
+
+@test "an @ is part of a path (agentctl@.service), a dead one keeps it in the report" {
+  touch "$HOME/real/agentctl@.service"
+  printf 'Unit `~/real/agentctl@.service` and `~/real/gone@.service`.\n' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '.findings[] | .item' <<< "$output"
+  # negative control: the missing unit is still found, whole
+  assert_output '~/real/gone@.service'
+}
+
+@test "a space is part of a path inside backticks only" {
+  mkdir -p "$HOME/real/App Support"
+  touch "$HOME/real/App Support/x.md"; mkdir -p "$HOME/real/Bare Dir"; touch "$HOME/real/Bare Dir/z.md"
+  printf '%s\n' \
+    'In ticks `~/real/App Support/x.md` and `~/real/App Support/x.md --flag`.' \
+    'Bare ~/real/Bare Dir/z.md is cut at the space.' \
+    'Dead in ticks `~/real/Nope Dir/y.md`.' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '[.findings[] | .item] | sort | join(" ")' <<< "$output"
+  # the live spans pass; the bare line and the dead span are still reported
+  assert_output '~/real/Bare ~/real/Nope'
+}
