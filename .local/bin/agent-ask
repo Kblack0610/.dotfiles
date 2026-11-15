@@ -153,9 +153,10 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 : "${AGENT_ASK_JUDGE_CMD:=agentctl-run --agent ask-judge}"
 # The guard on post's foreground judge call (seconds); past it the ask stays with the human.
 : "${AGENT_ASK_JUDGE_TIMEOUT:=30}"
-# The bar judge-eval shows beside each type: AGENT_ASK_LIVE_BAR scored answers at
-# AGENT_ASK_LIVE_PRECISION percent. A type goes live on the human's call (ask-judge.conf).
-: "${AGENT_ASK_LIVE_BAR:=30}" "${AGENT_ASK_LIVE_PRECISION:=90}"
+# The scored rows a judge lane's 7-day score and runner KPI need before they show a percent
+# (judge-eval), and the window of live answers a demote counts. A cell goes live on the human's
+# call (ask-judge.conf), weighed by judge-eval promote against PROMOTE_BARS for its level.
+: "${AGENT_ASK_LIVE_BAR:=30}"
 # A live type goes back to shadow when precision over its last AGENT_ASK_LIVE_BAR live answers
 # falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
