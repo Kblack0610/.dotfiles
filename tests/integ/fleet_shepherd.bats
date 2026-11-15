@@ -1654,19 +1654,40 @@ gw_accts() {
   assert_failure 1
 }
 
-@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is accepted" {
+@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is refused, not recomputed" {
   doc "[]"
   run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_failure 2
-  assert_output --partial 'nothing is due now'
+  assert_output --partial 'the last check found nothing due'
   run "$SH" skip 'unhandled: ' 'why'
   assert_failure 2
   assert_output --partial 'is empty'
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
-  # no check has seen this line: it is due now, so it is a due line
+  # no check has seen this line: skip reads what the last check wrote, so it is refused until one does
   doc "[$(row a DONE false false)]"
   run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_failure 2
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_success
+  # a skipped line is left out of .due while it is due, but it is still a due line: a second reason is accepted
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge DONE: a f-a' 'a better why'
+  assert_success
+}
+
+@test "skip does not rebuild the due lines: it validates against the last check's .due" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  # a copy whose cmd_due fails loudly: skip must not call it
+  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/sh-nocmd"
+  chmod +x "$BATS_TEST_TMPDIR/sh-nocmd"
+  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/sh-nocmd"   # the sed matched
+  FLEET_LEAD_FUNCTIONS="$(dirname "$(readlink -f "$SH")")/../../.config/fleet-lead/functions.tsv" \
+    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge DONE: a f-a' 'why'
+  assert_success
+  refute_output --partial 'cmd_due called'
 }
 
 @test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
