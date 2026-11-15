@@ -24,3 +24,8 @@ ExecStartPost=-%h/.local/bin/hub needs --page
 ExecStartPost=-/usr/bin/systemctl --user start --no-block agent-mqtt-sessions.service
 StandardOutput=null
 TimeoutStartSec=120
+# Every scratch dir of the pass (fleet-sessions' $CACHE) lives here, and systemd removes it when the
+# unit stops: a timeout kills the whole cgroup, the EXIT trap's rm with it, and 22 timed-out passes
+# had left 158 MB in /tmp, which is RAM (nc-42).
+RuntimeDirectory=fleet-state
+Environment=TMPDIR=%t/fleet-state

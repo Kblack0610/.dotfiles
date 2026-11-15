@@ -1709,6 +1709,40 @@ keep_blind() {
   ' "$3" "$1" "$2"
 }
 
+# pass: one collect, its rows in PASS_ROWS, with $CACHE the scratch dir every helper of the pass
+# writes. collect runs as a job in its own process group (set -m; stdin is /dev/null, so no read in
+# it can stop it on SIGTTIN), so end_pass can end every process of the pass, its pipeline,
+# subshells and process substitutions, before $CACHE goes. Before, an interrupt removed $CACHE under
+# them: a subshell whose child handles SIGINT itself (gh, python) reads a plain non-zero exit and
+# runs on into the removed dir, and a SIGINT sent to this pid alone waited out the whole pass (nc-42).
+# Under fleet-state.service TMPDIR is the unit's RuntimeDirectory, which systemd removes on stop:
+# its timeout kills the whole cgroup, the trap's rm with it.
+pass() {
+  CACHE="$(mktemp -d)"
+  trap end_pass EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  set -m
+  collect < /dev/null > "$CACHE/rows" &
+  PASS_PID=$!
+  set +m
+  wait "$PASS_PID"
+  PASS_PID=
+  PASS_ROWS="$(< "$CACHE/rows")"
+}
+
+# end_pass: the EXIT trap. TERM, not KILL, so a git in the pass removes its lock files; pidwait
+# returns once every process of the group has exited (run-bats.sh reaps the same way), bounded in
+# case one ignores TERM, so nothing still writes into $CACHE when rm runs.
+end_pass() {
+  if [ -n "${PASS_PID:-}" ]; then
+    kill -TERM -- "-$PASS_PID" 2>/dev/null
+    wait "$PASS_PID" 2>/dev/null
+    timeout 10 pidwait -g "$PASS_PID"
+  fi
+  rm -rf "$CACHE"
+}
+
 # tick: one pass with a fetch first (FLEET_FETCH=1), for the hub Sessions tab. git, gh and the
 # transcripts have no change event to await, so fleet-state.timer runs it every minute; a pass
 # costs ~12s of gh and git. It logs what moved since the last tick to watch.log (the state file
@@ -1716,10 +1750,9 @@ keep_blind() {
 # compare, and writes the state document with each session's eta.
 tick() {
   export FLEET_FETCH=1
-  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows cur new now t0
   t0="$(date +%s)"
-  rows="$(collect)"
+  pass; rows="$PASS_ROWS"
   eta_cells > "$CACHE/eta"
   cur="$CACHE/cells"; board_cells "$CACHE/eta" <<<"$rows" > "$cur"
   now="$(date '+%Y-%m-%d %H:%M')"
@@ -2007,10 +2040,9 @@ main() {
       else shift; close_view "$@"; return; fi ;;
     -h|--help) sed -n '2,29p' "$0"; return ;;
   esac
-  CACHE="$(mktemp -d)"; trap 'rm -rf "$CACHE"' EXIT
   local rows t0
   t0="$(date +%s)"
-  rows="$(collect)"
+  pass; rows="$PASS_ROWS"
   case "${1:-}" in
     --json) [ -n "$rows" ] && json_rows <<<"$rows"; return 0 ;;
     --write) write_state "$t0" "$rows"; return ;;
