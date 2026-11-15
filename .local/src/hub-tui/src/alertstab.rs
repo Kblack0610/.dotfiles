@@ -789,9 +789,9 @@ pub(crate) mod tests {
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(s.contains("FIRING  "), "{s}");
         assert!(at("playground-nightly") < at("dream"), "{s}");
-        assert!(at("ar-9 fixing") < at("watch mac_studio_mlx"), "{s}");
+        assert!(at("ar-9 fixing") < at("watch gateway-errors"), "{s}");
         assert!(
-            at("watch mac_studio_mlx") < at("ci runner mini-1 offline"),
+            at("watch gateway-errors") < at("ci runner mini-1 offline"),
             "{s}"
         );
         assert!(s.contains("stuck run: platform develop"), "{s}");
