@@ -3588,7 +3588,10 @@ verdict() {
 
 @test "close verdict: each rule of the fleet-states.md close table, first match wins" {
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # Manual permission mode keeps it too, after the rules that name what to do first (land it, plan mode).
   [ "$(verdict '{manual_mode: true}')" = "keep: manual permission mode: the human keeps it" ]
+  [ "$(verdict '{manual_mode: true, blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
+  [ "$(verdict '{manual_mode: true, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "PARKED"}')" = "keep: parked: its claude is gone" ]
   [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
   # Negative control: finished and dispatched, but its work is not on main.

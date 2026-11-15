@@ -64,12 +64,12 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 
 | # | Facts | Verdict |
 |---|---|---|
-| 1 | label `manual`, or the session in Claude's manual permission mode (`manual_mode`, from `agent-panel`: investigate-only, so it does no work on its own) | keep: the human keeps it |
+| 1 | label `manual` | keep: the human keeps it |
 | 2 | PARKED | keep: its claude is gone |
 | 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
 | 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |
 | 5 | WORKING, STALLED (unless rule 10's own item is its only blocker), or NEEDS on a dialog in its pane (its reason is not a pending ask) | keep |
-| 6 | in plan mode (`in_plan_mode`), its approval dialog open or not | keep: the human approves or ends it |
+| 6 | in plan mode (`in_plan_mode`), its approval dialog open or not; or in Claude's manual permission mode (`manual_mode`, from `agent-panel`: investigate-only, so it does no work on its own) | keep: the human approves or ends it, or keeps it |
 | 7 | `finished` and no ask of its own | now |
 | 8 | dispatched, and its own asks are its only blockers | now: the answer carries on without the window (`/wind-down auto` sets each ask to reopen it, `agent-ask reopen-on-answer`) |
 | 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere) | now: the queue holds the rest |
