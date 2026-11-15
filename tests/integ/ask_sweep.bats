@@ -173,6 +173,21 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'after the cut'
 }
 
+@test "a cwd-less transcript beside a good one does not hide its dir, and none readable is FAILED" {
+  message 'add a slide'
+  echo '{"type":"summary"}' > "$ASK_SWEEP_TRANSCRIPTS/x-board/a.jsonl"
+  touch -d '1 hour ago' "$ASK_SWEEP_TRANSCRIPTS/x-board/a.jsonl"
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial '2 transcripts (0 unreadable, 1 new messages)'
+  rm "$ASK_SWEEP_TRANSCRIPTS/x-board/s.jsonl"
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial '0 transcripts (1 unreadable'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
+}
+
 @test "a missed ask is filed with its quote, and a small clear one joins the downtime queue" {
   message 'add a slide to the gym' board '40 hours ago'
   message 'and something else'

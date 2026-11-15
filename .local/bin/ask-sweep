@@ -66,12 +66,12 @@ board_of() { project_board "$1"; }
 sweep_plans() {
   local first live f slug done_n total next project board rows
   first="$ASK_SWEEP_DIR/first-run"
+  [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   # The first real run only starts the clock, and a dry run before it has nothing to report.
   if [ ! -f "$first" ]; then
     [ "$DRY" = 1 ] || touch "$first"
     return 0
   fi
-  [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty' 2>/dev/null)"
   while IFS= read -r -d '' f; do
     [ "$f" -ot "$first" ] && continue
@@ -99,26 +99,34 @@ sweep_plans() {
 
 # transcripts -> "<board>\t<checkout>\t<file>" for each quiet transcript written inside the lookback,
 # in a repo with a board and no client. A session's cwd names its project (resolve_project_name),
-# read once a dir; the checkout is where that project's merged PRs are listed. A dir with no cwd
-# counts its transcripts as unreadable. Run it in this shell: it counts into UNREAD, NO_BOARD, FAULT.
+# read once a dir from the first of its quiet transcripts that has one; the checkout is where that
+# project's merged PRs are listed. A dir where none has a cwd counts them all as unreadable. Run it
+# in this shell: it counts into UNREAD, NO_BOARD and FAULT.
 transcripts() {
-  local d f cwd p b r
+  local d f cwd p b r ws
   [ -d "$ASK_SWEEP_TRANSCRIPTS" ] || {
     FAULT=1; say "no transcripts dir: $ASK_SWEEP_TRANSCRIPTS"; proof_why "no transcripts dir"; return 0; }
   while IFS= read -r d; do
-    f="$(find "$d" -maxdepth 1 -name '*.jsonl' -print -quit)"
-    cwd="$(head -n 50 "$f" | jq -Rr 'fromjson? | objects | select(.cwd? | type == "string") | .cwd' 2>/dev/null | head -1)"
-    [ -n "$cwd" ] || {
-      UNREAD=$((UNREAD + $(find "$d" -maxdepth 1 -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" -printf . | wc -c)))
-      continue; }
+    mapfile -t ws < <(quiet "$d" -maxdepth 1)
+    cwd=""
+    for f in "${ws[@]}"; do
+      cwd="$(head -n 50 "$f" | jq -Rr 'fromjson? | objects | select(.cwd? | type == "string") | .cwd' 2>/dev/null | head -1)"
+      [ -n "$cwd" ] && break
+    done
+    [ -n "$cwd" ] || { UNREAD=$((UNREAD + ${#ws[@]})); continue; }
     p="$(resolve_project_name "$cwd")"
     [ -z "$(project_inherited "$p" client)" ] || continue
     b="$(board_of "$p")"
     [ -n "$b" ] || { NO_BOARD["$p"]=1; continue; }
     r="$(project_repo_path "$p")"
-    find "$d" -maxdepth 1 -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" -printf "$b\t${r:--}\t%p\n"
-  done < <(find "$ASK_SWEEP_TRANSCRIPTS" -mindepth 2 -maxdepth 2 -name '*.jsonl' \
-             -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" -printf '%h\n' 2>/dev/null | sort -u)
+    for f in "${ws[@]}"; do printf '%s\t%s\t%s\n' "$b" "${r:--}" "$f"; done
+  done < <(quiet "$ASK_SWEEP_TRANSCRIPTS" -mindepth 2 -maxdepth 2 | sed 's|/[^/]*$||' | sort -u)
+}
+
+# quiet <dir> <depth args>: the transcripts under it a sweep reads, quiet and inside the lookback.
+quiet() {
+  local d="$1"; shift
+  find "$d" "$@" -name '*.jsonl' -mmin +"$ASK_SWEEP_QUIET_MIN" -mmin -"$ASK_SWEEP_LOOKBACK_MIN" 2>/dev/null
 }
 
 # human_messages <since file> <file>...: "<file>\t<timestamp>\t<message as a JSON string>" for what
@@ -257,6 +265,9 @@ cmd_run() {
   mkdir -p "$ASK_SWEEP_DIR"
   sweep_plans
   sweep_asks || rc=1
+  # Transcripts found and none readable is no read at all, not a quiet one.
+  [ "$READ" = 0 ] && [ "$UNREAD" -gt 0 ] && {
+    FAULT=1; say "no transcript was readable"; proof_why "$UNREAD transcripts, none readable"; }
   [ "$FAULT" = 0 ] || rc=1
   summary="read $PLANS_READ plans and $READ transcripts ($UNREAD unreadable, $MSGS new messages), asked $ASKED boards, filed $FILED, over the cap $OVER, ${#NO_BOARD[@]} projects with no board, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED"
   say "$summary"
