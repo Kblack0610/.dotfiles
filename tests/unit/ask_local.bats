@@ -137,18 +137,17 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   assert_equal "$(jq -r '.choices[0].finish_reason' <<<"$output")" "stop"
 }
 
-@test "no key stops before any call, exit 2" {
+@test "a route with no key still calls, and the refusal says no key was sent" {
   run "$ASK_LOCAL" hi </dev/null
-  assert_failure 2
-  assert_output --partial "route gateway-local gave no key"
-  [ ! -e "$STUB_DIR/$KEY.json" ]
+  assert_failure 1
+  assert_output --partial "the route sent no key (401)"
 }
 
 @test "a route that does not exist stops before any call, exit 2, with the resolver's reason" {
   key good
   run "$ASK_LOCAL" --route nope hi </dev/null
   assert_failure 2
-  assert_output --partial "route nope did not resolve"
+  assert_output --partial "unknown route 'nope'"
   [ ! -e "$STUB_DIR/$KEY.json" ]
 }
 
@@ -187,7 +186,8 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   key empty
   run "$ASK_LOCAL" hi </dev/null
   assert_failure 1
-  assert_output --partial "empty answer (finish_reason length)"
+  assert_output --partial "no content (local (qwen3.5-9b), finish_reason length)"
+  assert_output --partial "raise --max-tokens?"
 }
 
 @test "--chat keeps the conversation and /reset clears it" {
@@ -218,5 +218,14 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   assert_failure 2
   run "$ASK_LOCAL" </dev/null
   assert_failure 2
+  [ ! -e "$STUB_DIR/$KEY.json" ]
+}
+
+@test "a key that curl would parse as config stops before any call, exit 2" {
+  key good
+  printf '%s\n' 'bad"key' >"$HOME/.local/state/ask-local/key"
+  run "$ASK_LOCAL" hi </dev/null
+  assert_failure 2
+  assert_output --partial "the key has a quote, backslash or newline"
   [ ! -e "$STUB_DIR/$KEY.json" ]
 }
