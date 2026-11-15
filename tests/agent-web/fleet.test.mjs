@@ -76,8 +76,8 @@ const data = {
       eval: {
         prompt_sha: "3fa1c2d", live: ["ship_deploy"], total: {},
         rules: [
-          { rule: "ship_deploy", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true, bar: { labels: 6, need: 30, met: false } },
-          { rule: "taste", verdicts: 31, errors: 0, scored: 28, precision: null, false_defer_pct: 18, live: false, bar: { labels: 6, need: 30, met: false } },
+          { rule: "ship_deploy", verdicts: 9, errors: 0, scored: 6, precision: 100, false_defer_pct: null, live: true },
+          { rule: "taste", verdicts: 31, errors: 0, scored: 28, precision: null, false_defer_pct: 18, live: false },
         ],
       },
     }),

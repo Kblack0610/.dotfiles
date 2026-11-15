@@ -4,7 +4,7 @@
 #   judge-eval [lane|--all] [--any-prompt] [--days N] [--json]
 #       one scored lane (a runner conf with SCORE=) or all of them (the default): per lane and rule the
 #       verdicts, errors, coverage, scored, precision with its 95% interval, false-defer %, kappa,
-#       p95 and cost per verdict, the live rules and each shadow rule's distance to the bar.
+#       p95 and cost per verdict, and which rules are live.
 #       --any-prompt counts verdicts under every prompt; --days keeps the last N days.
 #   judge-eval kpi [--json]
 #       fleet-bench's judge KPIs over 7 and 28 days, every prompt.
@@ -39,8 +39,8 @@
 
 set -uo pipefail
 
-# agent-ask's helpers (ask root, named_option, live_rules) and its live bar, the one bar for every
-# lane; judge.sh comes with it (judge_ask_docs, the calls.jsonl path).
+# agent-ask's helpers (ask root, named_option, live_rules) and AGENT_ASK_LIVE_BAR, the scored rows a
+# lane's score needs; judge.sh comes with it (judge_ask_docs, the calls.jsonl path).
 # shellcheck source=agent-ask
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-ask"
 # shellcheck source=../lib/end-reasons.sh
@@ -118,7 +118,7 @@ eval_json() {
     --argjson shas "$shas" --arg sweepre "$SWEEP_ROW_RE" --argjson live "$(live_rules | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --arg want "$want" --argjson any "$any" --arg days "$days" --argjson now "$(date +%s)" --argjson wm "$WATERMARK" \
     --arg hard "$JUDGE_HARD_STOPS" --argjson unrated "$(unrated_json)" --argjson levels "$LEVELS_JSON" \
-    --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson barp "$AGENT_ASK_LIVE_PRECISION" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
+    --argjson bar "$AGENT_ASK_LIVE_BAR" --argjson nmiss "$MISSES" --argjson nverdicts "$VERDICTS" \
     '$A[0] as $asks | $C[0] as $calls | $V[0] as $verdicts | $Q[0] as $queue | $P[0] as $picks | '"$JQ_EVAL" || rc=$?
   rm -rf "$tmp"
   return "$rc"
@@ -323,7 +323,6 @@ JQ_EVAL="$JQ_EPOCH"'
         at: (.at | epoch)};
 
   {at: $now, scope: {prompt: (if $any == 1 then "any" else "current" end), days: (if $days == "" then null else ($days | tonumber) end)},
-   bar: {labels: $bar, precision: $barp},
    agents: [($want | split(" "))[] as $ag
      | ($all | map(select(.agent == $ag and inscope($ag)))) as $mine
      | ($calls | map(select(.agent == $ag and ((.at | epoch) as $e | $since == null or ($e != null and $e >= $since))
@@ -348,9 +347,7 @@ JQ_EVAL="$JQ_EPOCH"'
                 cost_usd: (($cl | map(.cost_usd // 0) | add // 0) * 10000 | round / 10000)},
         total: ($mine | stats),
         rules: ($mine | group_by(.rule) | map(.[0].rule as $rl | stats + {rule: $rl,
-                  live: any($lv[]; . == "*" or startswith($rl + "@"))}
-                  | . + {bar: {labels: (.tp + .fp), need: $bar,
-                               met: ((.tp + .fp) >= $bar and (.precision // 0) >= $barp)}})
+                  live: any($lv[]; . == "*" or startswith($rl + "@"))})
                 | sort_by(-.verdicts)),
         misses: ($mine | map(select(.outcome == "fp")) | sort_by(-(.answered_at // .at | epoch // 0)) | .[0:$nmiss]
                  | map({id, project, question, judge: .want, reason, answer: .human, rule,
@@ -395,7 +392,7 @@ report() {
     def row($name): "  " + ($name | pad(15)) + (.verdicts | lpad(6)) + (.errors | lpad(5)) + (.coverage | p | lpad(7))
       + (.scored | lpad(7)) + ((.precision | p) + (if .precision == null then "" else " [\(.precision_lo)-\(.precision_hi)]" end) | lpad(18))
       + (.false_defer_pct | p | lpad(8)) + (.kappa | n | lpad(7)) + (.p95_ms | ms | lpad(7)) + (.cost_per_verdict | money(3) | lpad(7));
-    "scope: \(.scope.prompt) prompt\(if .scope.days then ", last \(.scope.days) days" else "" end); bar: \(.bar.labels) scored answers at \(.bar.precision)% precision",
+    "scope: \(.scope.prompt) prompt\(if .scope.days then ", last \(.scope.days) days" else "" end)",
     (.agents[] | "",
       "\(.agent)  prompt \(.prompt_sha[0:7] | if . == "" then "none" else . end)  live: \(if .live == ["*"] then "every rule" elif .live == [] then "none" else .live | join(", ") end)",
       "  truth: \(.truth)",
@@ -403,11 +400,11 @@ report() {
       (if .total.assumed > 0 then "  assumed \(.total.assumed), \(.total.assumed_overridden) overridden" else empty end),
       (if .total.verdicts == 0 then "  no verdicts in scope" else
         "  " + ("rule" | pad(15)) + ("verd" | lpad(6)) + ("err" | lpad(5)) + ("cover" | lpad(7)) + ("scored" | lpad(7))
-          + ("precision [95%]" | lpad(18)) + ("f-defer" | lpad(8)) + ("kappa" | lpad(7)) + ("p95" | lpad(7)) + ("$/v" | lpad(7)) + "  bar",
+          + ("precision [95%]" | lpad(18)) + ("f-defer" | lpad(8)) + ("kappa" | lpad(7)) + ("p95" | lpad(7)) + ("$/v" | lpad(7)) + "  live",
         (.rules[] | row(if .rule == "" then "(no rule)" else .rule end)
-           + "  " + (if .live then "live" elif .bar.met then "past bar" else "\(.bar.labels)/\(.bar.need)" end)),
+           + "  " + (if .live then "live" else "shadow" end)),
         (.total | row("all")),
-        # The share no human answer can label, and why: a lane mostly unscorable never earns its bar.
+        # The share no human answer can label, and why: a lane mostly unscorable never earns a score.
         (.total | select(.unscorable > 0) | "  unscorable \(.unscorable) of \(.verdicts - .errors) (\(.unscorable_pct)%): "
            + (.unscorable_by | to_entries | sort_by(-.value, .key) | map("\(.value) \(.key)") | join(", "))) end),
       (if (.misses | length) > 0 then "  wrong answers, newest first:",
@@ -418,10 +415,9 @@ report() {
 kpi_json() {
   local w7 w28
   w7="$(VERDICTS=0 eval_json "$AGENTS" 1 7)" && w28="$(VERDICTS=0 eval_json "$AGENTS" 1 28)" || return 1
-  jq -cn --argjson a "$w7" --argjson b "$w28" --argjson min "$KPI_LABELS" '
+  jq -cn --argjson a "$w7" --argjson b "$w28" --argjson min "$KPI_LABELS" --argjson need "$AGENT_ASK_LIVE_BAR" '
     def fdefer: if .fn + .tn >= $min then .false_defer_pct else null end;
-    def k: .bar.labels as $need
-           | {judge_errors: ([.agents[] | if .score == "unrecorded" then .calls.errors else .total.errors end] | add),
+    def k: {judge_errors: ([.agents[] | if .score == "unrecorded" then .calls.errors else .total.errors end] | add),
             judge_precision: ([.agents[] | select(.score | IN("ask-answers", "dispatch-queue")) | .rules[]
               | select(.tp + .fp >= $min) | .precision] | min),
             ask_answered_pct: (.agents[] | select(.score == "ask-answers") | .total.live_pct),
@@ -433,7 +429,7 @@ kpi_json() {
               | (.rules | map(select(.rule == "unclear-ask") | .verdicts) | add // 0) as $u
               | if $t.verdicts - $t.errors > 0 then ($u * 1000 / ($t.verdicts - $t.errors) | round) / 10 else null end),
             dispatch_false_defer_pct: ([.agents[] | select(.score == "dispatch-queue") | .total | fdefer] | .[0])}
-         # A runner lane scores from the one bar: below it a single miss swings the number.
+         # A runner lane scores from AGENT_ASK_LIVE_BAR rows: below it a single miss swings the number.
          + ([.agents[] | select(.score | IN("triage-untouched", "plan-dispatched", "priority-kept", "sweep-untouched"))
              | {("runner_score_" + (.agent | gsub("-"; "_"))): (if (.total.tp + .total.fp) >= $need then .total.precision else null end)}]
             | add // {});

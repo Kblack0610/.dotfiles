@@ -155,16 +155,16 @@ ask_fixture() {
   assert_line '  assumed 2, 1 overridden'
 }
 
-@test "ask-judge: precision carries its 95% Wilson interval, each rule its live flag and distance to the bar" {
+@test "ask-judge: precision carries its 95% Wilson interval, and each rule its live flag" {
   ask_fixture
   run "$JUDGE_EVAL" ask-judge --json
   run jq -c '.agents[0] | [.total.precision_lo, .total.precision_hi, .live,
-    (.rules[] | select(.rule == "agent_policy") | [.live, .bar.labels, .bar.need, .bar.met]),
+    (.rules[] | select(.rule == "agent_policy") | [.live, has("bar")]),
     (.rules[] | select(.rule == "fast") | .live), (.misses | map(.id) | sort)]' <<<"$output"
-  assert_output '[15,85,["fast@self","fast@repo"],[false,2,30,false],true,["fp1","live_over"]]'
+  assert_output '[15,85,["fast@self","fast@repo"],[false,false],true,["fp1","live_over"]]'
   run "$JUDGE_EVAL" ask-judge
   assert_success
-  assert_line --regexp '^  agent_policy .* 2/30$'
+  assert_line --regexp '^  agent_policy .* shadow$'
   assert_line --regexp '^  fast .* live$'
   assert_line --partial 'calls 1, 0 failed'
 }
