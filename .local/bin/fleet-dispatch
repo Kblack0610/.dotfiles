@@ -2315,10 +2315,11 @@ record_world() {
   was=$(jq -r '.instance // empty' "$file" 2>/dev/null)
   [ -z "$was" ] || [ "$was" = "$inst" ] || world_lost "$srv"
   [ -n "$inst" ] && [ -n "$panel" ] || return 0
-  panes=$(tmux -L "$srv" list-panes -a -F $'#{pane_id}\037#{session_name}\037#{window_name}\037#{pane_current_path}' 2>/dev/null) || return 0
+  # Tab, not \037: tmux 3.4 and 3.5a print a control byte in a -F format as octal text, and a tab raw.
+  panes=$(tmux -L "$srv" list-panes -a -F $'#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_current_path}' 2>/dev/null) || return 0
   jq -Rn --arg server "$srv" --arg instance "$inst" --arg at "$(date -Iseconds)" --slurpfile panel "$panel" '
     (reduce $panel[] as $row ({}; .[$row.pane] = $row)) as $by |
-    {server: $server, instance: $instance, at: $at, panes: [inputs | split("\u001f") | $by[$server + "/" + .[0]] as $c |
+    {server: $server, instance: $instance, at: $at, panes: [inputs | split("\t") | $by[$server + "/" + .[0]] as $c |
       {session: .[1], window: .[2], cwd: ($c.cwd // .[3]), claude: ($c.session_id // "")}]}' \
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
 }
