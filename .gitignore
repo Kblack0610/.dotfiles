@@ -282,7 +282,6 @@ test_notifications.sh
 .local/bin/agentctl-nightly-sync
 .local/bin/agentctl-project-index
 .local/bin/audio-stream
-.local/bin/binks
 .local/bin/fork-sync
 .local/bin/notes-bootstrap
 .local/bin/notes-sync
