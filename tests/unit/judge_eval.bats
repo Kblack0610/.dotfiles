@@ -534,6 +534,29 @@ SH
   run --separate-stderr "$JUDGE_EVAL" replay --ids other,kept --limit 1 --json
   assert_success
   assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["other"]'
+  # a glob is no id, and a repeated id is replayed once
+  run "$JUDGE_EVAL" replay --ids '*'
+  assert_failure
+  assert_output --partial 'is no ask id'
+  rm -f "$HOME/replay.calls"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids kept,kept --json
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["kept"]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 1
+}
+
+@test "replay --ids: a lapsed park is pending, a judge's answer is not yours, and an old --out copy is not judged again" {
+  replay_stub
+  ask lapsed judge=human status=pending answer= parked_until=2026-01-01T00:00:00Z
+  ask bythejudge judge=take-recommend answered_by=judge answer=yes
+  ask stale judge=human answer=yes
+  run --separate-stderr "$JUDGE_EVAL" replay --ids stale --out "$HOME/replay"
+  rm -f "$HOME/replay.calls"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids lapsed,bythejudge --out "$HOME/replay" --json
+  assert_success
+  assert_equal "$(jq -c '.[0] | [.status, .human]' <<<"$output")" '["pending",""]'
+  assert_equal "$(jq -c '.[1] | [.by, .same]' <<<"$output")" '["judge",null]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
+  refute grep -q '^question: stale' "$HOME/replay.calls"
 }
 
 # --- the registry and the runner lanes ------------------------------------------------------
