@@ -1015,6 +1015,8 @@ pub enum Look {
 }
 
 impl Look {
+    pub const ALL: [Look; 2] = [Look::Ask, Look::Investigate];
+
     /// The tag's word without its `#`, as `notes outbox list --json` and the inbox capture name it.
     pub fn word(self) -> &'static str {
         match self {
@@ -1026,9 +1028,7 @@ impl Look {
 
 fn look_word(w: &str) -> Option<Look> {
     let t = w.strip_prefix('#')?;
-    [Look::Ask, Look::Investigate]
-        .into_iter()
-        .find(|l| t.eq_ignore_ascii_case(l.word()))
+    Look::ALL.into_iter().find(|l| t.eq_ignore_ascii_case(l.word()))
 }
 
 /// A word that says where a line goes, not what it says: `#p:`, `#agent`, `#plan`, `#go` or a

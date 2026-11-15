@@ -13,7 +13,7 @@
 const OUTBOX_SAVE_IDLE_MS = 1500;
 
 // `flush` is a Send: the next save takes every line, the one under the cursor too.
-const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false, flush: false };
+const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false, flush: false, tagsDrawn: false };
 
 const norm = (s) => {
   const ls = String(s || "").split("\n").map((l) => l.replace(/\s+$/, ""));
@@ -152,7 +152,11 @@ function tagsHtml(tags) {
   return `<details class="o-tags"><summary class="muted">Tags</summary><ul>${tags.map((t) =>
     `<li><code>${esc(t.tag)}</code> <span class="muted">${esc(t.does)}</span></li>`).join("")}</ul></details>`;
 }
-function renderTags() { const el = $("o-tags"); if (obx.view && !el.innerHTML) el.innerHTML = tagsHtml(obx.view.doc.tags); }
+function renderTags() {
+  if (obx.tagsDrawn || !obx.view) return;
+  obx.tagsDrawn = true;
+  $("o-tags").innerHTML = tagsHtml(obx.view.doc.tags);
+}
 
 function renderStatus() { $("o-said").innerHTML = statusText(); }
 function renderHandled() { if (obx.view) $("o-handled").innerHTML = handledHtml(obx.view); renderTags(); renderStatus(); OUTBOX.changed(); }

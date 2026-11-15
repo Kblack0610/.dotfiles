@@ -265,18 +265,21 @@ pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool
 }
 
 /// `notes outbox list [--json]`: TSV `line<TAB>text`, or one JSON array of
-/// `{line, raw, text, details, project, ask}`, `project` the `#p:` name when the line forces one
-/// and `ask` the look it is marked for, `"ask"` or `"investigate"`, else null.
+/// `{line, raw, text, details, project, look, question}`, `project` the `#p:` name when the line
+/// forces one, `look` the look it is marked for (`"ask"` or `"investigate"`, else null) and
+/// `question` a look line's text without its tags (null on any other line).
 pub fn list(p: &Profile, json: bool) -> Result<i32> {
     let lines = lines(p)?;
     if json {
         let rows: Vec<serde_json::Value> = lines
             .iter()
             .map(|l| {
+                let look = md::look_tag(&l.raw);
                 serde_json::json!({
                     "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
                     "project": md::project_tag(&l.raw),
-                    "ask": md::look_tag(&l.raw).map(md::Look::word),
+                    "look": look.map(md::Look::word),
+                    "question": look.map(|_| question(&l.text)),
                 })
             })
             .collect();
@@ -336,6 +339,11 @@ pub fn move_line(
     Ok(0)
 }
 
+/// A look line's question: its text without the `#p:` and look tags.
+fn question(text: &str) -> String {
+    md::without_look_tag(&md::without_project_tag(text))
+}
+
 /// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
 /// for byte out of the outbox and write it, with the answer, to today's `inbox/<date>.md` as
 /// `- HH:MM <look>: <question> - <answer's first line>` (`ask` or `investigate`, the line's tag;
@@ -354,7 +362,7 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
         return Ok(1);
     };
     let look = md::look_tag(&line.raw).unwrap_or(md::Look::Ask);
-    let question = md::without_look_tag(&md::without_project_tag(&line.text));
+    let question = question(&line.text);
     let mut rows = answer.lines();
     let mut body = format!(
         "{}: {question} - {}",
@@ -554,10 +562,17 @@ mod tests {
         for (tag, does) in md::INTAKE_TAGS {
             assert!(s.contains(&format!("| `{tag}` | {does} |")), "{s}");
         }
-        // The table's words are the ones the parsers read: each look, each priority.
-        for look in [md::Look::Ask, md::Look::Investigate] {
+        // The table's words are the ones the parsers read: each look, each priority, and every
+        // other `#` row a routing word.
+        for look in md::Look::ALL {
             let word = format!("#{}", look.word());
             assert!(md::INTAKE_TAGS.iter().any(|(t, _)| *t == word), "{word}");
+        }
+        for (tag, _) in md::INTAKE_TAGS {
+            let w = tag.split_whitespace().next().unwrap().replace("<name>", "nas");
+            if w.starts_with('#') && !md::Look::ALL.iter().any(|l| w == format!("#{}", l.word())) {
+                assert!(md::is_routing_word(&w), "{tag}");
+            }
         }
         for (_, tag, _) in md::PRIORITIES {
             assert!(

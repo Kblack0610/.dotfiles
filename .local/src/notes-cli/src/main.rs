@@ -848,7 +848,7 @@ enum OutboxCmd {
     Split,
     /// The lines waiting, oldest first (TSV `line<TAB>text`)
     List {
-        /// One JSON array of `{line, raw, text, details, project, ask}` instead
+        /// One JSON array of `{line, raw, text, details, project, look, question}` instead
         #[arg(long)]
         json: bool,
     },
