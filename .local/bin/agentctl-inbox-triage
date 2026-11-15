@@ -64,7 +64,7 @@ LIB="$HERE/../lib"
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
-REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0
+REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'
 FLAG=""; RECORD=""; OUTBOX=""
 STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
@@ -557,7 +557,7 @@ backlog() {
   # halved size, and a single row that caps alone is passed over.
   while [ "$off" -lt "$total" ]; do
     size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
-    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$names" "$homes" "$epics" "$ids"; r=$?
+    backlog_batch "$p" "$lane" "$(jq -c --argjson o "$off" --argjson m "$size" '.[$o:$o + $m]' <<<"$mine")" "$names" "$homes" "$epics"; r=$?
     [ "$r" = "$CALLS_RC_CAPPED" ] && [ "$size" -gt 1 ] && continue
     [ "$r" = "$EX_BUDGET" ] && break
     [ "$r" = 0 ] || rc=1
@@ -566,10 +566,10 @@ backlog() {
   return "$rc"
 }
 
-# backlog_batch <project> <lane> <batch json> <names> <homes> <epics> <lane ids>: one call
+# backlog_batch <project> <lane> <batch json> <names> <homes> <epics>: one call
 # over the batch, each answer applied by backlog_row; a --dry-run keeps the answers in backlog_cache.
 backlog_batch() {
-  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" epics="$6" all="$7" listing prompt out cache
+  local p="$1" lane="$2" batch="$3" names="$4" homes="$5" epics="$6" listing prompt out cache
   local -a raws ids states kids
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$batch")
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
@@ -607,9 +607,10 @@ $listing"
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    [ "$DRY" = 1 ] && jq -cn --arg l "$lane" --arg r "${raws[n - 1]}" --arg a "$action" --arg i "$id" --arg d "$dest" \
+    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$(printf '%s\n' "${ids[@]}")" "$action" "$id" "$dest" "$row" "$why" "$epic"
+    # The verdict as printed, after backlog_row's guards, so the replay writes what the dry run showed.
+    [ "$DRY" = 1 ] && jq -cn --arg l "$lane" --arg r "${raws[n - 1]}" --arg a "$VERDICT" --arg i "$id" --arg d "$VDEST" \
       --arg w "$row" --arg y "$why" --arg e "$epic" '{lane: $l, raw: $r, action: $a, id: $i, project: $d, row: $w, why: $y, epic: $e}' >>"$cache"
-    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$all" "$action" "$id" "$dest" "$row" "$why" "$epic"
   done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$BACKLOG_JQ")
   for ((n = 1; n <= ${#raws[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
   return 0
@@ -618,10 +619,12 @@ $listing"
 # backlog_row <project> <lane> <raw> <own id> <state> <child count> <epics> <lane ids>
 #   <action> <id> <project> <row> <why> <epic>: one backlog answer applied through ptask. A row in
 # progress is only kept or rewritten, a heading over child rows is never closed, and a dup names
-# another open row of the same board.
+# another of <ids> (a live answer: its batch's; a replay: the board's open rows). VERDICT and
+# VDEST say what it wrote, or under --dry-run would write: keep when a guard or ptask said no.
 backlog_row() {
-  local p="$1" lane="$2" raw="$3" own="$4" state="$5" kids="$6" epics="$7" all="$8"
+  local p="$1" lane="$2" raw="$3" own="$4" state="$5" nkids="$6" epics="$7" all="$8"
   local action="$9" id="${10}" dest="${11}" row="${12}" why="${13}" epic="${14}" eid
+  VERDICT=keep VDEST=""
   dest="$(clean 60 <<<"$dest")"
   [ "$dest" = "$p" ] && dest=""
   if [ "$state" = doing ]; then
@@ -629,7 +632,7 @@ backlog_row() {
     [ "$action" = rewrite ] || action=keep
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
-  [ "$kids" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
+  [ "$nkids" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
   case "$action" in
     rewrite)
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
@@ -637,9 +640,9 @@ backlog_row() {
         row="$(under_epic "$row" "$eid")"
       fi
       if [ -n "$row" ] && pt "$p" "$lane" --exact edit --was --text "$row" -- "$raw"; then
-        REWROTE=$((REWROTE + 1))
+        REWROTE=$((REWROTE + 1)) VERDICT=rewrite
         # the row's line changed, so the move names it by its id
-        [ -n "$dest" ] && pt "$p" "$lane" move --project "$dest" "$own" && MOVED=$((MOVED + 1))
+        [ -n "$dest" ] && pt "$p" "$lane" move --project "$dest" "$own" && MOVED=$((MOVED + 1)) VDEST="$dest"
       else
         KEPT=$((KEPT + 1))
       fi
@@ -648,7 +651,7 @@ backlog_row() {
       id="$(clean 40 <<<"$id")"
       if [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
         pt "$p" "$lane" --exact drop --dup "$id" -- "$raw"; then
-        DROPPED=$((DROPPED + 1))
+        DROPPED=$((DROPPED + 1)) VERDICT=dup
       else
         KEPT=$((KEPT + 1))
       fi
@@ -656,14 +659,14 @@ backlog_row() {
     drop)
       why="$(clean 100 <<<"$why")"
       if [ -n "$why" ] && pt "$p" "$lane" --exact drop --why "triage: $why" -- "$raw"; then
-        DROPPED=$((DROPPED + 1))
+        DROPPED=$((DROPPED + 1)) VERDICT=drop
       else
         KEPT=$((KEPT + 1))
       fi
       ;;
     *)
       if [ -n "$dest" ] && pt "$p" "$lane" --exact move --project "$dest" -- "$raw"; then
-        MOVED=$((MOVED + 1))
+        MOVED=$((MOVED + 1)) VDEST="$dest"
       else
         KEPT=$((KEPT + 1))
       fi
@@ -671,9 +674,34 @@ backlog_row() {
   esac
 }
 
+# answers_kept <cache> <project>: the cached --dry-run answers (one JSON object a line) whose row,
+# by lane and raw, is still among the rows on stdin (a JSON array; those of <project> count), one
+# a line. A line cut short (a run killed mid-write) is dropped alone, never the whole cache. A dry
+# run rewrites the cache to those, and appends its new answers after. The rows go in on stdin and
+# the answers as a file: either can pass the 128 KB an argument holds.
+answers_kept() {
+  local cache="$1" p="$2" kept=''
+  mkdir -p "$(dirname "$cache")"
+  # shellcheck disable=SC2016 # jq source, not shell
+  [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --rawfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
+    | $c | split("\n")[] | fromjson? | select($live["\(.lane)\u0000\(.raw)"])')"
+  [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
+  printf '%s' "$kept"
+}
+
+# answers_done <project> <cache> <refused before>: a dry run names its cache; an apply removes it,
+# unless a write was refused since, so the retry writes the same verdicts rather than new ones.
+answers_done() {
+  if [ "$DRY" = 1 ]; then
+    say "$1: answers kept in $2; the apply writes them, and deleting the file asks afresh"
+  elif [ "$FAILED" -eq "$3" ]; then
+    rm -f -- "$2"
+  fi
+}
+
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
-  local board names homes rc=0 p lane cache kept
+  local board names homes rc=0 p lane cache kept failed
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
@@ -682,19 +710,13 @@ backlog_pass() {
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(backlog_cache "$p")" kept=''
-    mkdir -p "$(dirname "$cache")"
-    # The cached answers for rows still open as they were (backlog_cache); a line cut short is dropped alone.
-    # shellcheck disable=SC2016 # jq source, not shell
-    [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --rawfile c "$cache" '([.rows[] | select(.project == $p and .id != null and (.state == "open" or .state == "doing"))
-        | "\(.lane)\u0000\(.raw)"] | INDEX(.)) as $live
-      | $c | split("\n")[] | fromjson? | select($live["\(.lane)\u0000\(.raw)"])' <<<"$board")"
-    [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
+    cache="$(backlog_cache "$p")" failed="$FAILED"
+    kept="$(jq -c '[.rows[] | select(.id != null and (.state == "open" or .state == "doing"))]' <<<"$board" | answers_kept "$cache" "$p")"
     for lane in human agent; do
       backlog "$p" "$lane" "$board" "$names" "$homes" "$kept" || rc=1
       [ "$BUDGET_STOP" = 0 ] || break 2
     done
-    [ "$DRY" = 1 ] || rm -f -- "$cache"
+    answers_done "$p" "$cache" "$failed"
   done < <(jq -r '[.rows[] | select(.project != null and (.lane == "human" or .lane == "agent") and .state != "done")]
     | group_by(.project) | sort_by(-length) | .[][0].project' <<<"$board")
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
@@ -966,7 +988,7 @@ $listing"
 # project with the most first. A project with no system list is passed over: there is no
 # standing epic to fall back on.
 link_pass() {
-  local board epics rows p lane tsv cache kept mine total off size r rc=0 raw sys of epic
+  local board epics rows p lane tsv cache kept failed mine total off size r rc=0 raw sys of epic
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   epics="$(epics_open "$board")"
@@ -981,14 +1003,8 @@ link_pass() {
     tsv="$(project-stage-check "$p" --list 2>/dev/null)"
     [ -n "$tsv" ] || { say "$p: no system list, passed over"; continue; }
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
-    cache="$(link_cache "$p")" kept=''
-    mkdir -p "$(dirname "$cache")"
-    # The cached answers for rows still as they were (link_cache). The rows go in on stdin and the answers as a file: either can pass the 128 KB an argument holds.
-    # shellcheck disable=SC2016 # jq source, not shell
-    # A line cut short (a run killed mid-write) is dropped alone, never the whole cache.
-    [ -s "$cache" ] && kept="$(jq -c --arg p "$p" --rawfile c "$cache" '(map(select(.project == $p) | "\(.lane)\u0000\(.raw)") | INDEX(.)) as $live
-      | $c | split("\n")[] | fromjson? | select($live["\(.lane)\u0000\(.raw)"])' <<<"$rows")"
-    [ "$DRY" = 1 ] && printf '%s' "${kept:+$kept$'\n'}" >"$cache"
+    cache="$(link_cache "$p")" failed="$FAILED"
+    kept="$(answers_kept "$cache" "$p" <<<"$rows")"
     if [ -n "$kept" ]; then
       while IFS=$'\x1f' read -r lane raw sys of epic; do
         link_row "$p" "$lane" "$raw" "$sys" "$of" "$epic" "$epics" "$tsv"
@@ -1009,7 +1025,7 @@ link_pass() {
         off=$((off + size))
       done
     done
-    [ "$DRY" = 1 ] || rm -f -- "$cache"
+    answers_done "$p" "$cache" "$failed"
   done < <(jq -r 'group_by(.project) | sort_by(-length) | .[][0].project' <<<"$rows")
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
   return "$rc"
