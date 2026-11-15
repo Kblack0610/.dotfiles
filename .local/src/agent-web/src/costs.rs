@@ -55,10 +55,10 @@ pub async fn forget() {
     LAST.clear().await;
 }
 
-/// A read that found no spend (no live file, no nightly day, no outcome) and hit an error is
-/// not kept: the next refresh tries again.
+/// A read that found no spend (no live file, no nightly day) and hit an error is not kept: the
+/// next refresh tries again.
 fn kept(c: &Costs) -> bool {
-    c.live.is_some() || !c.spend_days.is_empty() || !c.sessions.is_empty() || c.errors.is_empty()
+    c.live.is_some() || !c.spend_days.is_empty() || c.errors.is_empty()
 }
 
 /// The one kept read, the tab's and Home's Costs card's.
@@ -113,9 +113,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_read_that_found_no_outcome_is_not_kept() {
+    fn a_read_that_found_no_spend_is_not_kept() {
         let failed = Costs {
-            errors: vec!["no outcomes".into()],
+            errors: vec!["fleet-cost.json: missing".into()],
             ..Costs::default()
         };
         assert!(!kept(&failed));

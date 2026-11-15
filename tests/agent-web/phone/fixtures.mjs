@@ -312,7 +312,7 @@ const costs = {
     total: { name: "total", sessions: 6, cost: 1140, share: 87, est: 40, per_session: 190 },
     groups: [{ name: "queue items", sessions: 3, cost: 760, share: 58, est: 50, per_session: 253 }, { name: "shepherd", sessions: 2, cost: 280, share: 21, est: 0, per_session: 140 }, { name: "dream", sessions: 1, cost: 100, share: 8, est: 30, per_session: 100 }],
   },
-  sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d", eval_days: 7, unpriced: null,
+  sources: [{ name: "token snapshot", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),
   shown_usd: 300,
   table: table(6, LINE_COLS.filter((k) => COST_CUT.includes(k)), ["all"], { model: ["opus-5-5", "gpt-5-codex"], runner: ["queue"] }),

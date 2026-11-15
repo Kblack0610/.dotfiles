@@ -12,7 +12,7 @@
 //! | live 24h | the Prometheus `cc:` rule | `prom::instant` |
 //! | every source's window, room and dollars (Burn: Claude accounts, Codex, the gateway keys, the Lazer pool) | claude-acct's textfile, `claude_account_*{kind}` | `burn::build` |
 //! | every LLM consumer: priority, what it runs on, budget, spend, fallback (Consumers) | `claude-acct gateway`'s snapshot and `agentctl list --json` | `gateway::read` |
-//! | Lazer direct (opencode `lazer/*`), which the pool cannot see | outcomes rows with `provider: lazer` | `agentctl-session-outcomes costs` |
+//! | Lazer direct (opencode `lazer/*`), which the pool cannot see | the nightly days' session and unpriced rows with `provider: lazer`, this month | `spend_history::read` |
 //!
 //! The query filters slices (a session's cost on one model) before grouping, so `-model:opus`
 //! narrows every outcomes cut; runner and tool cuts filter their own rows; the sort is over groups.
@@ -40,7 +40,7 @@ pub const WINDOWS: [(&str, i64); 3] = [("24h", DAY), ("7d", 7 * DAY), ("30d", 30
 /// What the tab opens on: the model cut over a week, the view of the mockup in the plan.
 pub const DEFAULT_CUT: &str = "model";
 pub const DEFAULT_WINDOW: &str = "7d";
-/// A source older than this turns amber: outcomes and the token snapshot are written nightly.
+/// A source older than this turns amber: the token snapshot is written nightly.
 pub const STALE_SECS: i64 = 36 * 3600;
 /// The Grafana board with the spend trends; the tab draws no chart (dashboards rule 3).
 pub const DASHBOARD: &str = "kb-agents-overview";
@@ -54,25 +54,9 @@ pub const UNPRICED: &str =
     "no snapshot in this window allocates dollars to this cut yet: calls and tokens only";
 
 /// What the direct figure covers and what it cannot, on both surfaces (the pool is a Burn row). opencode's
-/// own DB prices a `lazer/*` session and the nightly outcomes run carries it; a direct call from
+/// own DB prices a `lazer/*` session and the nightly snapshot carries it; a direct call from
 /// anything else (a curl probe, another machine) reaches Lazer with no record here.
 pub const DIRECT_NOTE: &str = "opencode lazer/*, nightly; other direct use unseen";
-
-/// One session's newest outcomes row, as `agentctl-session-outcomes costs` prints it: only the
-/// Lazer direct figure reads these; every cut reads the fleet-cost session rows.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Spent {
-    pub session_id: String,
-    pub cost_usd: Option<f64>,
-    pub cost_by_model: Option<BTreeMap<String, f64>>,
-    /// An opencode session's provider: `lazer` went to Lazer direct, past the gateway.
-    pub provider: Option<String>,
-    pub tokens_total: Option<f64>,
-    pub updated_epoch: Option<i64>,
-    /// When the nightly writer last looked at the session, RFC 3339.
-    pub observed: Option<String>,
-}
 
 /// One `fleet-bench models --json` row: a model on a harness, and how its queue items went.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -176,8 +160,9 @@ pub struct Snapshot {
 }
 
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
-/// provider `lazer` active since the 1st (UTC), the pool's own period, each at its whole cost (a
-/// session from last month still running counts all of it). Nightly, as the outcomes rows are.
+/// provider `lazer` in this month's nightly days, the pool's own period, each at its whole cost (a
+/// session from last month still running counts all of it). Nightly: whole days to the newest
+/// snapshot, never the live 24h, which overlaps that day (as the 7D and 30D tiles).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Direct {
     pub usd: f64,
@@ -186,34 +171,45 @@ pub struct Direct {
     pub note: &'static str,
 }
 
-/// 00:00 UTC on the 1st of `now`'s month, when the Lazer pool resets.
-pub fn month_start(now: i64) -> i64 {
-    use chrono::Datelike;
+/// The snapshot date (`YYYY-MM-DD`, local, as the snapshots are named) of the 1st of `now`'s month.
+pub fn month_first(now: i64) -> String {
     chrono::DateTime::from_timestamp(now, 0)
-        .and_then(|t| t.date_naive().with_day(1))
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map_or(now, |d| d.and_utc().timestamp())
+        .map(|t| {
+            t.with_timezone(&chrono::Local)
+                .format("%Y-%m-01")
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
-pub fn direct(sessions: &[Spent], now: i64) -> Direct {
-    let since = month_start(now);
+/// `days` oldest first, as `spend_history::read` gives them. A session's row is its running total,
+/// so one seen on several days counts once, from its newest day: summing the days would count its
+/// early part again on every later day.
+pub fn direct(days: &[crate::spend_history::Day], now: i64) -> Direct {
+    let first = month_first(now);
+    let lazer = |s: &&crate::spend_history::Sess| s.provider.as_deref() == Some("lazer");
+    // a session's newest day: Some(usd) priced, None unpriced
+    let mut newest: BTreeMap<&str, Option<f64>> = BTreeMap::new();
+    for d in days.iter().filter(|d| d.date >= first) {
+        for s in d.sessions.iter().filter(lazer) {
+            newest.insert(&s.sid, Some(s.usd));
+        }
+        for s in d.unpriced.iter().filter(lazer) {
+            newest.insert(&s.sid, None);
+        }
+    }
     // a fold from 0.0, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
     let init = Direct {
         note: DIRECT_NOTE,
         ..Direct::default()
     };
-    sessions
-        .iter()
-        .filter(|s| s.provider.as_deref() == Some("lazer"))
-        .filter(|s| s.updated_epoch.unwrap_or(0) >= since)
-        .fold(init, |mut d, s| {
-            match cost(s).filter(|c| *c > 0.0) {
-                Some(c) => d.usd += c,
-                None if s.tokens_total.unwrap_or(0.0) > 0.0 => d.unpriced += 1,
-                None => {}
-            }
-            d
-        })
+    newest.into_values().fold(init, |mut d, usd| {
+        match usd {
+            Some(c) => d.usd += c,
+            None => d.unpriced += 1,
+        }
+        d
+    })
 }
 
 /// Everything one read gathered, over the longest window. `board` cuts it for a view.
@@ -222,8 +218,6 @@ pub struct Costs {
     pub at: i64,
     /// `<part>: <why>` for each source that could not be read; the rest still show.
     pub errors: Vec<String>,
-    /// The outcomes rows, for the Lazer direct figure only.
-    pub sessions: Vec<Spent>,
     pub evals: Vec<Eval>,
     /// fleet-bench's own window for the evaluation columns.
     pub eval_days: Option<u32>,
@@ -295,18 +289,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         grafana: crate::infra::grafana(),
         ..Costs::default()
     };
-    // Back to the 1st: the direct figure's period, the only one the outcomes rows serve.
-    let days = ((now - month_start(now)) / DAY + 1).to_string();
     let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    match runner.run(&argv(&[
-        "agentctl-session-outcomes",
-        "costs",
-        "--days",
-        &days,
-    ])) {
-        Ok(out) => c.sessions = sessions(&out),
-        Err(e) => c.errors.push(format!("outcomes: {e}")),
-    }
     match runner.run(&argv(&["fleet-bench", "models", "--json"])) {
         Ok(out) => match serde_json::from_str::<Evals>(out.trim()) {
             Ok(e) => {
@@ -391,14 +374,6 @@ fn read_burn(base: Option<&str>, paths: &Paths, now: i64, errors: &mut Vec<Strin
 /// is an empty queue, not a hold, and a stale pass holds nothing.
 fn held(path: &std::path::Path) -> Option<String> {
     crate::capacity::Dispatch::read(path).held
-}
-
-/// The outcomes CLI's lines; one that does not parse is skipped, as every hub reader does.
-pub fn sessions(out: &str) -> Vec<Spent> {
-    out.lines()
-        .filter_map(|l| serde_json::from_str::<Spent>(l).ok())
-        .filter(|s| !s.session_id.is_empty())
-        .collect()
 }
 
 /// calls.jsonl's lines since `since`, through the runners' parser.
@@ -534,16 +509,6 @@ impl Row for Slice {
     fn in_state(&self, _: &str) -> bool {
         true
     }
-}
-
-/// What a session's lazer row cost: its `cost_usd`, else the sum of its split; none when it
-/// records neither.
-fn cost(s: &Spent) -> Option<f64> {
-    s.cost_usd.or_else(|| {
-        s.cost_by_model
-            .as_ref()
-            .map(|m| m.values().filter(|v| **v > 0.0).sum())
-    })
 }
 
 /// The session rows a window reads: the live last 24h from `fleet-cost.json`, else the window's
@@ -1026,14 +991,8 @@ fn sources(c: &Costs) -> Vec<Source> {
         as_of,
         stale: as_of.is_none_or(|t| c.at - t > STALE_SECS),
     };
-    let outcomes = c
-        .sessions
-        .iter()
-        .filter_map(|s| s.observed.as_deref().and_then(epoch))
-        .max();
     let snap = c.snapshots.first().and_then(|s| s.generated_at);
     vec![
-        fresh("outcomes", outcomes),
         fresh("token snapshot", snap),
         Source {
             name: "calls",
@@ -1249,7 +1208,7 @@ pub fn board(
         history: c.history.clone(),
         day: crate::spend_history::day_view(&c.spend_days, c.live.as_ref(), spend),
         totals_note: TOTALS_NOTE,
-        direct: direct(&c.sessions, c.at),
+        direct: direct(&c.spend_days, c.at),
         burn: c.burn.clone(),
         amber: amber(c, &consumers),
         consumers,
@@ -1477,6 +1436,7 @@ mod tests {
             usd: rows.iter().map(|s| s.usd).sum(),
             estimated: 0.0,
             sessions: Arc::new(rows),
+            ..Day::default()
         }
     }
 
@@ -2014,16 +1974,11 @@ mod tests {
     #[test]
     fn the_sources_say_how_old_they_are() {
         let mut c = costs();
-        c.sessions.push(Spent {
-            session_id: "lazer".into(),
-            observed: Some("2020-01-01T00:00:00Z".into()),
-            ..Spent::default()
-        });
         let s = sources(&c);
-        assert!(s[0].stale, "outcomes from 2020");
-        assert!(!s[1].stale, "a snapshot an hour old");
+        assert_eq!(s[0].name, "token snapshot");
+        assert!(!s[0].stale, "a snapshot an hour old");
         c.snapshots.clear();
-        assert!(sources(&c)[1].stale, "no snapshot at all is stale");
+        assert!(sources(&c)[0].stale, "no snapshot at all is stale");
     }
 
     #[test]
@@ -2077,10 +2032,6 @@ mod tests {
 
     #[test]
     fn the_readers_take_the_lines_they_understand() {
-        let out = r#"{"session_id":"a","project":"p","cost_usd":1.5,"updated_epoch":5}
-not json
-{"project":"no id"}"#;
-        assert_eq!(sessions(out).len(), 1);
         let snap = snapshot(
             "2027-01-14",
             r#"{"generated_at":"2027-01-15T03:40:00-08:00","by_tool":[{"tool":"Bash","calls":3,"chars":9,"carried_tokens":40,"allocated_cost_usd":1.25}],"by_tool_unallocated_usd":0.5}"#,
@@ -2162,32 +2113,51 @@ not json
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    #[test]
-    fn direct_lazer_is_this_months_opencode_lazer_sessions_and_unpriced_ones_are_counted() {
-        // 1_800_000_000 is 2027-01-15T08:00:00Z
-        let since = month_start(NOW);
-        assert_eq!(since, 1_798_761_600); // 2027-01-01T00:00:00Z
-        let oc = |id: &str, provider: &str, cost: f64, tokens: f64, at: i64| Spent {
-            session_id: id.into(),
+    /// An opencode row on `provider` costing `usd`.
+    fn oc(id: &str, provider: &str, usd: f64) -> Sess {
+        Sess {
             provider: Some(provider.into()),
-            cost_usd: Some(cost),
-            tokens_total: Some(tokens),
-            updated_epoch: Some(at),
-            ..Spent::default()
-        };
-        let d = direct(
-            &[
-                oc("a", "lazer", 1.25, 500.0, NOW - 10),
-                oc("b", "lazer", 0.0, 800.0, NOW - 20),
-                oc("probe", "lazer", 0.0, 0.0, NOW - 30),
-                oc("gw", "litellm", 4.0, 900.0, NOW - 40),
-                oc("old", "lazer", 9.0, 900.0, since - 1),
-            ],
-            NOW,
-        );
-        assert_eq!((d.usd, d.unpriced, d.note), (1.25, 1, DIRECT_NOTE));
+            ..sess(
+                id,
+                "_unscoped",
+                "opencode",
+                "interactive",
+                &[("claude-haiku-4.5", usd)],
+            )
+        }
+    }
+
+    /// A nightly day with its session rows and its unpriced list.
+    fn day_with(date: &str, rows: Vec<Sess>, unpriced: Vec<Sess>) -> Day {
+        Day {
+            unpriced: Arc::new(unpriced),
+            ..day(date, rows)
+        }
+    }
+
+    #[test]
+    fn direct_lazer_counts_this_months_nightly_lazer_sessions_once_and_the_unpriced_ones() {
+        // NOW is 2027-01-15: this month's days are from 2027-01-01
+        assert_eq!(month_first(NOW), "2027-01-01");
+        let days = [
+            day("2026-12-31", vec![oc("old", "lazer", 9.0)]),
+            day_with(
+                "2027-01-12",
+                vec![oc("a", "lazer", 0.5), oc("gw", "litellm", 4.0)],
+                vec![oc("flip", "lazer", 0.0)],
+            ),
+            day("2027-01-13", vec![oc("flip", "lazer", 0.25)]),
+            // a's row is its running total: the 1.25 already holds the 0.5 of 01-12
+            day_with(
+                "2027-01-14",
+                vec![oc("a", "lazer", 1.25)],
+                vec![oc("b", "lazer", 0.0), oc("cx", "codex", 0.0)],
+            ),
+        ];
+        let d = direct(&days, NOW);
+        assert_eq!((d.usd, d.unpriced, d.note), (1.5, 1, DIRECT_NOTE));
         // negative control: no session on Lazer direct is $0 over none, not a missing figure
-        let d = direct(&[oc("gw", "litellm", 4.0, 900.0, NOW)], NOW);
+        let d = direct(&[day("2027-01-14", vec![oc("gw", "litellm", 4.0)])], NOW);
         assert_eq!((d.usd, d.unpriced), (0.0, 0));
         assert!(d.usd.is_sign_positive(), "{}", d.usd);
     }
@@ -2195,14 +2165,10 @@ not json
     #[test]
     fn the_board_carries_direct_lazer_beside_the_live_tile() {
         let mut c = costs();
-        c.sessions.push(Spent {
-            session_id: "oc-direct".into(),
-            provider: Some("lazer".into()),
-            cost_usd: Some(2.5),
-            tokens_total: Some(10.0),
-            updated_epoch: Some(NOW - 60),
-            ..Spent::default()
-        });
+        Arc::make_mut(&mut c.spend_days[3].sessions).push(oc("oc-direct", "lazer", 2.5));
+        // the live 24h overlaps the newest nightly day, so it never adds to direct
+        let live = c.live.as_mut().unwrap();
+        Arc::make_mut(&mut live.sessions).push(oc("oc-live", "lazer", 7.0));
         let b = board(
             &c,
             "harness",

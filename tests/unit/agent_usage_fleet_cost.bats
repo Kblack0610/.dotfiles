@@ -218,3 +218,17 @@ PY
   assert_success
   assert_output '[["billed",{"claude-opus-5-5":10},4],["j",{"gpt-5.4+gpt-5.4-mini":5},null],["unbilled",{"claude-opus-5-5":24},2000000],["x",{"gpt-5.4":9},70],["z",{"gpt-5.4":3,"gpt-5.4-mini":1},null]]'
 }
+
+@test "an opencode row names its provider, and a session with tokens and no price is listed unpriced, never a \$0 row" {
+  { printf '{"session_id":"lz","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.5,"tokens_total":90}\n' "$NOW"
+    printf '{"session_id":"lz0","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":800}\n' "$NOW"
+    printf '{"session_id":"probe","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":0}\n' "$NOW"
+    printf '{"session_id":"cx","harness":"codex","updated_epoch":%s,"cost_usd":null,"tokens_total":50}\n' "$NOW"
+  } > "$OUTCOMES_ROOT/p/2026-11.jsonl"
+  run cost '[[.by_session[] | select(.harness != "claude") | [.sid, .provider]], .unpriced_sessions]'
+  assert_success
+  assert_output '[[["lz","lazer"]],[{"sid":"cx","harness":"codex","provider":null,"tokens":50},{"sid":"lz0","harness":"opencode","provider":"lazer","tokens":800}]]'
+  # negative control: a Claude row names no provider
+  run cost '[.by_session[] | select(.harness == "claude") | has("provider")] | any'
+  assert_output 'false'
+}
