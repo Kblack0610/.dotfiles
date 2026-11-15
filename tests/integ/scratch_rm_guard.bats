@@ -84,6 +84,28 @@ allowed() { assert_success; assert_output ''; }
   done
 }
 
+@test "an rm -r of / or a top-level dir is denied, what rm -rf /* expands to (ucp-734)" {
+  local c
+  for c in "rm -rf /*" "rm -rf /" "rm -r -f /usr" "rm -rf /home/" "cd / && rm -rf usr" "rm -rf /{usr,nonexistent-x}"; do
+    run at /tmp "$c"
+    denied
+    assert_output --partial 'a root dir'
+  done
+  run at /tmp "rm -rf /tmp/x.ABC123 $C/mine/$ME"
+  allowed
+  run at /tmp "rm -f /usr"
+  allowed
+  run at /tmp "rm -rf /nonexistent-ucp734"
+  allowed
+  # On merged-usr /lib is a symlink to usr/lib, and lib/ with a slash removes that tree.
+  if [ -L /lib ]; then
+    run at /tmp "rm -rf /lib/"
+    denied
+    run at /tmp "rm -rf /usr/lib"
+    denied
+  fi
+}
+
 @test "a non-recursive rm, quoted text and a heredoc body pass" {
   local c
   for c in "rm -f $C/hub-spend-history/top.json" "echo 'rm -rf $C/hub-spend-history'" "rmdir $C/plain/sub" \

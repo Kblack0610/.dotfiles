@@ -43,7 +43,6 @@
       "Bash(su)",
       "Bash(su *)",
       "Bash(rm -rf /)",
-      "Bash(rm -rf /*)",
       "Bash(rm -rf ~)",
       "Bash(rm -rf ~/)",
       "Bash(rm -rf $HOME)",

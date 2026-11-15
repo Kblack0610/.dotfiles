@@ -4,7 +4,7 @@
 Claude enforces its `Bash(...)` denies itself. Codex gets them two ways: sync-codex-home.sh renders
 the whole-word ones as execpolicy `forbidden` rules (they bind even where hooks are not trusted),
 and this hook applies every entry with Claude's glob meaning, so the ones execpolicy cannot express
-(`rm -rf ~`, `rm -rf /*`, `curl * | sh`, `git clean -fd*` as `-fdq`) bind too. One list: the deny
+(`rm -rf ~`, `curl * | sh`, `git clean -fd*` as `-fdq`) bind too. One list: the deny
 entries in $CLAUDE_HOME/settings.json; nothing is listed here.
 
 Each simple command of the line is matched as written and past each wrapper word (VAR=value,
