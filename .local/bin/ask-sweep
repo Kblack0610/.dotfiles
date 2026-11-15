@@ -100,7 +100,7 @@ transcripts() {
   local d f cwd p b r
   while IFS= read -r d; do
     f="$(find "$d" -maxdepth 1 -name '*.jsonl' -print -quit)"
-    cwd="$(head -n 50 "$f" | jq -r 'select(.cwd? | type == "string") | .cwd' 2>/dev/null | head -1)"
+    cwd="$(jq -rn 'first(limit(50; inputs) | select(.cwd? | type == "string") | .cwd)' "$f" 2>/dev/null)"
     [ -n "$cwd" ] || continue
     p="$(resolve_project_name "$cwd")"
     [ -z "$(project_inherited "$p" client)" ] || continue

@@ -569,9 +569,9 @@ resolve_sid() {
     echo "$CLAUDE_CODE_SESSION_ID"; return
   fi
   local sid
-  sid="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -r --arg w "$who" '
-    select(.session_id == $w or .target == $w or (.target | sub("^[^/]*/"; "")) == $w
-           or (.target | sub("^[^/]*/"; "") | sub(":[^:]*$"; "")) == $w) | .session_id' | head -1)"
+  sid="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg w "$who" '
+    [inputs | select(.session_id == $w or .target == $w or (.target | sub("^[^/]*/"; "")) == $w
+           or (.target | sub("^[^/]*/"; "") | sub(":[^:]*$"; "")) == $w) | .session_id] | .[:1][]')"
   [ -n "$sid" ] || { echo "fleet-sessions: no live session matches '$who'" >&2; return 2; }
   echo "$sid"
 }
@@ -642,7 +642,7 @@ tmux_project() {
 # session too new to be in it gets its labels at the next tick.
 tmux_labels() {
   local t l
-  t="$(jq -r --arg s "$1" '.sessions[] | select(.session_id == $s) | .target' "$STATE_FILE" 2>/dev/null | head -1)"
+  t="$(jq -r --arg s "$1" 'first(.sessions[] | select(.session_id == $s) | .target)' "$STATE_FILE" 2>/dev/null)"
   [[ "$t" == */*:* ]] || return 0
   l="$(paste -sd, "$LABELS/$1" 2>/dev/null)" || l=""
   if [ -n "$l" ]; then tmux -L "${t%%/*}" set-option -wq -t "=${t#*/}" @fleet_labels "$l" >/dev/null 2>&1
@@ -1458,9 +1458,9 @@ collect() {
     case "$item" in
       own:* | moved:* | here:* | review:*)
         irel="${item%%:*}"; islugs="${item#*:}"; islugs="${islugs%% *}"; islug="${islugs%%,*}"
-        IFS=$'\t' read -r irow iorigin < <(jq -r --arg s "$islug" 'select(.slug == $s)
+        IFS=$'\t' read -r irow iorigin < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
-              | if . == "" then "-" else . end), (.origin // "-")] | @tsv' <<<"$qall" 2>/dev/null | head -1)
+              | if . == "" then "-" else . end), (.origin // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
         irow="${irow:--}"; iorigin="${iorigin:--}" ;;
     esac
     local sjob=-; [ "$status" = shell ] && sjob="$ojob"

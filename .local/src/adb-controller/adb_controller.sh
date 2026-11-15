@@ -377,7 +377,7 @@ cmd_device_info() {
     echo ""
 
     echo "  Battery:"
-    adb_cmd shell "dumpsys battery | head -20" 2>/dev/null | grep -E "level|status|powered|temperature" | head -6 | sed 's/^/  /'
+    adb_cmd shell "dumpsys battery | head -20" 2>/dev/null | grep -E "level|status|powered|temperature" | awk 'NR<=6' | sed 's/^/  /'
     echo ""
 
     echo "  Storage:"

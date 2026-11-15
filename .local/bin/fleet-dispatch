@@ -218,7 +218,7 @@ prio_rank() {
 # prio_of <listed path> -> only|focus|high|low from the `#prio/<word>` the human set in the front page's
 # head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
 prio_of() {
-  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(only|focus|high|low)\b' | head -1 | sed 's|.*#prio/||'
+  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(only|focus|high|low)\b' | awk 'NR==1' | sed 's|.*#prio/||'
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): cleanup of an AI system
@@ -290,7 +290,7 @@ dispatch_event() { chain_event dispatch "$@" --by fleet-dispatch; }
 # Only the text before a `<!--` marker counts: a tag inside a proof stamp is record, not routing.
 tag_value() {
   local body="${1%%<!--*}"
-  grep -oE "(^|[[:space:]])#$2/[A-Za-z0-9_.-]+" <<<"$body" | head -1 | sed "s|.*#$2/||"
+  grep -oE "(^|[[:space:]])#$2/[A-Za-z0-9_.-]+" <<<"$body" | awk 'NR==1' | sed "s|.*#$2/||"
 }
 
 # row_tier <text> -> 1|2|3, or nothing when the row carries no tier. A row typed or scoped ci

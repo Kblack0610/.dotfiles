@@ -60,8 +60,7 @@ HISTORY="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/history.jsonl"
 FIRST_PROMPT=""
 if [ -f "$HISTORY" ]; then
   # first non-slash-command prompt for this session; fallback to first display
-  FIRST_PROMPT=$(jq -rc --arg s "$SID" 'select(.sessionId==$s) | .display' "$HISTORY" 2>/dev/null \
-                  | grep -v '^/' | awk 'NR==1')
+  FIRST_PROMPT=$(jq -rn --arg s "$SID" 'first(inputs | select(.sessionId==$s) | .display | strings | select(startswith("/") | not))' "$HISTORY" 2>/dev/null)
   [ -z "$FIRST_PROMPT" ] && FIRST_PROMPT=$(jq -rcn --arg s "$SID" '[inputs | select(.sessionId==$s) | .display] | .[:1][]' "$HISTORY" 2>/dev/null)
 fi
 FIRST_PROMPT=$(printf '%s' "$FIRST_PROMPT" | tr '\n' ' ' | cut -c1-140)

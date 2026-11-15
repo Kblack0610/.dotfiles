@@ -45,7 +45,7 @@ plan_epic() { _epic_line epic "$1"; }
 # last phase lands, so the row the human filed closes with the work and not by hand.
 plan_rows() {
   [ -f "$1" ] || return 0
-  sed -nE 's/^rows: *(.*)$/\1/p' "$1" | head -1 | tr -cs 'A-Za-z0-9-' '\n' | { grep -xiE '[a-z0-9]+-[0-9]+' || true; } | tr 'A-Z' 'a-z' | sort -u
+  sed -nE '/^rows: *(.*)$/{s//\1/p;q;}' "$1" | tr -cs 'A-Za-z0-9-' '\n' | { grep -xiE '[a-z0-9]+-[0-9]+' || true; } | tr 'A-Z' 'a-z' | sort -u
 }
 
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
@@ -53,7 +53,7 @@ brief_epic() { _epic_line Epic "$1"; }
 
 # _epic_line <key> <file>: the one parse of an epic id after `<key>:`
 _epic_line() {
-  [ -f "$2" ] && sed -nE "s/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/\\1/p" "$2" | head -1
+  [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
 }
 
 # plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when

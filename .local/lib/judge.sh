@@ -70,8 +70,8 @@ judge_floor_hit() {
 # and the widest impact. `level` is that, or `critical` when external holds or reversible fails
 # on any decision, both hard stops already; `level_evidence` the quote behind it.
 judge_derive() {
-  jq -c --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
-    ($human | split(" ")) as $human
+  jq -cn --arg human "$JUDGE_HUMAN_CRITERIA" --arg needed "$JUDGE_NEEDED_CRITERIA" --arg levels "$JUDGE_LEVELS" '
+    first(inputs | ($human | split(" ")) as $human
     | ($needed | split(" ")) as $needed
     | ($human + $needed + ["grounded"]) as $all
     | ($levels | split(" ")) as $levels
@@ -92,7 +92,7 @@ judge_derive() {
            ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
              | select(. != "")] | first // "")
          else ($top.impact.evidence // "") end),
-       reason: (.reason // ""), answer: (.answer // "")}' 2>/dev/null | head -1
+       reason: (.reason // ""), answer: (.answer // "")})' 2>/dev/null
 }
 
 # judge_call_id: a fresh call id, in the form agentctl-run gives its own.

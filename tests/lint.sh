@@ -102,19 +102,24 @@ fi
 # producer's next write hits a closed pipe, and under pipefail its death is the pipeline's status:
 # jq prints "writing output failed: Broken pipe", and under systemd's IgnoreSIGPIPE=yes grep and
 # sed print "write error: Broken pipe" per write (ar-1795: 311 lines from one release-state grep).
-# Cap inside the producer when it reads a file or here-string: jq `.[:$max][]` or `limit(n; ...)`,
-# `grep -m N`, `sed -n '/re/{s///p;q;}'`. A producer fed by another process, or one that cannot
-# cap (sort, cut, tr, grep -o), pipes into a consumer that reads to EOF, `awk 'NR<=N'`, so
-# nothing upstream meets a closed pipe either. A script with no pipefail is not flagged.
+# Cap inside the producer when it reads a file or here-string: jq `first(...)` or `limit(n; ...)`,
+# `grep -m N`, `sed -n '/re/{s///p;q;}'`. A producer fed by another process must read to EOF
+# (jq `[inputs | ...] | .[:$max][]`), and one that cannot cap (sort, cut, tr, grep -o) pipes into
+# a consumer that does, `awk 'NR<=N'`, so nothing upstream meets a closed pipe either. A script
+# with no pipefail is not flagged; a library (a lib/ directory) is, as it runs under its caller's.
+# The match, quote-aware and across continued lines, is tests/lint-head.awk.
 pipe_hits=()
 for f in "${FILES[@]}"; do
-  grep -qE '^\s*set -[a-zA-Z]*o pipefail|^\s*set -[a-zA-Z]*[[:space:]]+-o pipefail' "$f" 2>/dev/null || continue
-  while IFS= read -r hit; do pipe_hits+=("$f:$hit"); done < <(grep -nE '(^|[^[:alnum:]_.-])(jq|grep|sed|tr|awk|sort|cut)\b[^|]*\|[[:space:]]*head\b' "$f")
+  case "$f" in
+    */lib/*) ;;
+    *) grep -qE '^\s*set -[a-zA-Z]*o pipefail|^\s*set -[a-zA-Z]*[[:space:]]+-o pipefail' "$f" 2>/dev/null || continue ;;
+  esac
+  while IFS= read -r hit; do pipe_hits+=("$f:$hit"); done < <(awk -f tests/lint-head.awk "$f")
 done
 if [ "${#pipe_hits[@]}" -gt 0 ]; then
   echo "house-rules: FAILED - text producer piped into head in a pipefail script (it dies of SIGPIPE):" >&2
   printf '  %s\n' "${pipe_hits[@]}" >&2
-  echo "  Cap inside the producer (jq .[:\$max][], grep -m N, sed '/re/{s///p;q;}') or read to EOF (| awk 'NR<=N'). See tests/lint.sh." >&2
+  echo "  Cap inside the producer (jq first(...), grep -m N, sed '/re/{s///p;q;}') or read to EOF (| awk 'NR<=N'). See tests/lint.sh." >&2
   rc=1
 else
   echo "house-rules: no text producer piped into head under pipefail"
