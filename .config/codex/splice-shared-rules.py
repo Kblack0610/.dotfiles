@@ -10,11 +10,13 @@ had when each was kept by hand. The sync runs this on its staged copy, never on 
 A section runs from its `## ` heading to the next `## ` heading or `---` rule, and a marker matches a
 heading by its leading words, so "Writing Style" finds "Writing Style (all artifacts: ...)".
 A marker with no section exits 1: rulesync would ship the comment without a word.
---check writes nothing: it exits 1 listing each non-blank line of the spliced body (frontmatter
-dropped, as rulesync drops it) that is not a line of <AGENTS.md>, the generated file a repo tracks.
-The private repo's pre-commit and tests/unit/rules_shared_block.bats run it, so a shared-section
-edit cannot land without the regenerated opencode AGENTS.md (it once did: ar-1404).
+--check writes nothing: it exits 3 with a diff when the non-blank lines of the spliced body
+(frontmatter dropped, as rulesync drops it) are not, in order, those of <AGENTS.md>, the generated
+file a repo tracks, so an added, changed, moved or deleted line all count. The private repo's
+pre-commit and tests/unit/rules_shared_block.bats run it, so a shared-section edit cannot land
+without the regenerated opencode AGENTS.md (it once did: ar-1404).
 """
+import difflib
 import re
 import sys
 from pathlib import Path
@@ -61,15 +63,16 @@ def splice(text: list[str], source: Path) -> list[str] | None:
     return out
 
 
-def stale_lines(spliced: list[str], generated: Path) -> list[str]:
-    """Non-blank lines of the spliced body, past the frontmatter, that are not lines of generated."""
+def drift(spliced: list[str], generated: Path) -> list[str]:
+    """Diff of the spliced body, past the frontmatter, against generated, blank lines aside."""
     lines = "\n".join(spliced).splitlines()
     if lines and lines[0] == "---":
         end = next((i for i in range(1, len(lines)) if lines[i] == "---"), None)
         if end is not None:
             lines = lines[end + 1 :]
-    have = set(generated.read_text().splitlines())
-    return [line for line in lines if line.strip() and line not in have]
+    want = [line for line in lines if line.strip()]
+    have = [line for line in generated.read_text().splitlines() if line.strip()]
+    return list(difflib.unified_diff(have, want, str(generated), "spliced rules", n=0, lineterm=""))
 
 
 def main() -> int:
@@ -81,18 +84,20 @@ def main() -> int:
         print(__doc__, file=sys.stderr)
         return 2
     overview, source = Path(args[0]), Path(args[1])
-    out = splice(overview.read_text().splitlines(), source)
+    text = overview.read_text().splitlines()
+    out = splice(text, source)
     if out is None:
         return 1
     if not check:
-        overview.write_text("\n".join(out) + "\n")
+        if out is not text:
+            overview.write_text("\n".join(out) + "\n")
         return 0
-    stale = stale_lines(out, Path(args[2]))
-    if stale:
-        print(f"{args[2]} lacks {len(stale)} line(s) of the current rules; re-run the sync into it:", file=sys.stderr)
-        for line in stale:
-            print(f"    {line}", file=sys.stderr)
-    return 1 if stale else 0
+    diff = drift(out, Path(args[2]))
+    if diff:
+        print(f"{args[2]} is stale: it differs from the spliced rules (- it has, + they say):", file=sys.stderr)
+        print("\n".join(diff[:40]), file=sys.stderr)
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

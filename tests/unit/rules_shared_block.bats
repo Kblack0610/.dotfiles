@@ -83,22 +83,39 @@ MD
   assert_output "$(printf '<!-- shared: Gone -->\nmine')"
 }
 
-@test "check: a generated file with every spliced body line passes, and nothing is written" {
+@test "check: a generated file with the spliced body, blank lines aside, passes and nothing is written" {
   printf -- '---\nroot: true\n---\n# Top\n<!-- shared: Core Principles -->\n' >"$T/o.md"
-  printf '# Top\n## Core Principles\n    Simplicity First.\nmore\n' >"$T/AGENTS.md"
+  printf '# Top\n## Core Principles\n    Simplicity First.\n\n' >"$T/AGENTS.md"
   run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
   assert_success
   run grep -c '^<!-- shared: ' "$T/o.md"
   assert_output 1
 }
 
-@test "check: a shared line the generated file lacks exits 1, naming the line" {
+@test "check: a changed shared line exits 3, showing both sides and not the frontmatter" {
   printf -- '---\nroot: true\n---\n<!-- shared: Core Principles -->\n' >"$T/o.md"
   printf '## Core Principles\n    Simplicity Last.\n' >"$T/AGENTS.md"
   run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
-  assert_failure 1
-  assert_output --partial '    Simplicity First.'
+  assert_failure 3
+  assert_output --partial '+    Simplicity First.'
+  assert_output --partial '-    Simplicity Last.'
   refute_output --partial 'root: true'
+}
+
+@test "check: a line deleted from the source and still in the generated file exits 3" {
+  printf -- '---\nroot: true\n---\n<!-- shared: Core Principles -->\n' >"$T/o.md"
+  printf '## Core Principles\n    Simplicity First.\n- A rule since removed.\n' >"$T/AGENTS.md"
+  run "$SPLICE" --check "$T/o.md" "$T/CLAUDE.md" "$T/AGENTS.md"
+  assert_failure 3
+  assert_output --partial '-- A rule since removed.'
+}
+
+@test "splice: an overview with no marker is not rewritten" {
+  printf '# Top\r\nmine' >"$T/o.md"
+  cp "$T/o.md" "$T/before"
+  run "$SPLICE" "$T/o.md" "$T/CLAUDE.md"
+  assert_success
+  cmp "$T/before" "$T/o.md"
 }
 
 # Headings of the real files, by their words before any bracket.
