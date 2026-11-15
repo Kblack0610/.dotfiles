@@ -82,6 +82,31 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output 'first-run'
 }
 
+# 2026-11-10..14 (ar-2111): a board's list outgrew the pipe, so `grep -q` in a pipe cut `notes` off, the
+# 141 under pipefail read as "no row", and one plan was filed seven times. The newest row lists first,
+# as a board's does, with about 2 MB behind it so the writer is still writing when grep quits; the stub execs cat so it dies of SIGPIPE as notes does.
+@test "a plan's row is found when the board's list is longer than a pipe: two runs add one row" {
+  plan bigplan '1 day ago 1 hour ago' "$OPEN"
+  local rows="$NOTES_FIXTURE/rows.board"
+  for i in $(seq 1 20000); do printf 'p\t%s\tk\t- [ ] unrelated row %s with enough words to be long, padding padding padding padding\n' "$i" "$i"; done > "$rows"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; rows="$NOTES_FIXTURE/rows.board"
+    case "$4" in add) { echo "p	0	k	- [ ] ${@: -1}"; cat "$rows"; } > "$rows.new"; mv "$rows.new" "$rows" ;; list) exec cat "$rows" ;; esac; exit 0'
+  run "$SWEEP" run
+  assert_success
+  run "$SWEEP" run
+  assert_success
+  run grep -c 'finish bigplan' "$rows"
+  assert_output 1
+}
+
+@test "a board that cannot be listed files nothing: unreadable is not 'no row'" {
+  plan unread '1 day ago 1 hour ago' "$OPEN"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = list ] && exit 1; exit 0'
+  run "$SWEEP" run
+  assert_success
+  assert_not_called ' add '
+}
+
 @test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
   plan recent '1 hour ago' "$OPEN"

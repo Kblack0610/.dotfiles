@@ -12,7 +12,7 @@ setup() {
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
-  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at"), no PRs when there is neither,
+  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title"), no PRs when there is neither,
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -36,7 +36,7 @@ case "$1" in
     f="$LEDGER_DIR/prs_${2//\//_}.tsv"; [ -f "$f" ] || f="$LEDGER_DIR/prs.tsv"
     [ -f "$f" ] || { echo '[]'; exit 0; }
     jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
-      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end)}]' "$f" ;;
+      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7]}]' "$f" ;;
   *) exit 2 ;;
 esac
 SS
@@ -1106,9 +1106,9 @@ MD
 # panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
 # s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
 # (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
-# open job $PANEL_JOB (default none known).
+# open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600).
 panel() {
-  local since=$(( $(date +%s) - 3600 )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
+  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
     "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
     > "$SANDBOX/bin/agent-panel"
@@ -3256,6 +3256,52 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+@test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
+  # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
+  # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
+  # one's own Checks was red only because the landing slot turned it away.
+  landed_fixture
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip
+  oid="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -b train/20261113T101500Z-a1b2 origin/main
+  "${g[@]}" merge -q --no-ff -m '#2415' feat/x
+  tip="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q feat/x
+  # store <train state> <train branch> <title> [<member ci>]: the member PR and its train, newest first
+  store() {
+    printf '%s\t2467\t%s\tPENDING\t%s\t-\t\t%s\n' "$2" "$1" "$tip" "$3" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2415\tOPEN\t%s\t%s\t-\n' "${4:-FAIL}" "$oid" >> "$LEDGER_DIR/prs.tsv"
+  }
+  local title='chore(train): land #2415, #2417, #2444'
+  store OPEN train/20261113T101500Z-a1b2 "$title"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
+  jq -e '.blockers | index("PR #2415 open, riding train #2467")' <<<"$output" >/dev/null
+  # a member whose own gate is green waits on the train too, not on a lander
+  store OPEN train/20261113T101500Z-a1b2 "$title" PASS
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
+
+  # negative controls: the train does not name it (#24150 is not #2415), it closed, its branch is
+  # not a train's, the knob is off, or the session pushed past the head the train holds
+  for t in 'OPEN train/20261113T101500Z-a1b2 chore(train): land #24150, #2417' "CLOSED train/20261113T101500Z-a1b2 $title" \
+           "OPEN feat/y $title"; do
+    read -r st br ti <<<"$t"; store "$st" "$br" "$ti"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+  done
+  store OPEN train/20261113T101500Z-a1b2 "$title"
+  FLEET_TRAIN_BRANCH='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+  "${g[@]}" commit -q --allow-empty -m fix
+  oid="$("${g[@]}" rev-parse HEAD)"; store OPEN train/20261113T101500Z-a1b2 "$title"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+}
+
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
   # 2026-11-03 agent-51 feat/tourney-daily-cap read "N file(s) not on the default branch, no PR"
   # while its commits were inside #1674, the PR of the branch built on it.
@@ -3668,4 +3714,69 @@ verdict() {
   [[ "$stderr" == *"m old: is fleet-state.timer running?"* ]]
   [[ "$stderr" == *"1 session(s) carry no verdict"* ]]
   assert_line --index 0 "now 0, after 0, keep 0"
+}
+
+# api_error_transcript <file> [after]: the tail of a session that a transient Cloudflare 403 stopped
+# (2026-11-13 01:51 PST, 10 main-account sessions), as Claude Code writes it; "after" appends the
+# human's next message.
+api_error_transcript() {
+  cat > "$1" <<'JSONL'
+{"type":"assistant","timestamp":"2026-11-13T09:50:12.000Z","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"make test"}}]}}
+{"type":"user","timestamp":"2026-11-13T09:50:40.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}}
+{"type":"assistant","timestamp":"2026-11-13T09:51:03.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 403 <html>Attention Required! | Cloudflare</html>"}]}}
+{"type":"system","subtype":"turn_duration","timestamp":"2026-11-13T09:51:03.500Z"}
+JSONL
+  [ -z "${2:-}" ] || echo '{"type":"user","timestamp":"2026-11-13T09:58:00.000Z","message":{"content":"continue"}}' >> "$1"
+}
+
+@test "a turn that ended on an API Error at an idle prompt is STALLED, not WORKING (ar-2143)" {
+  landed_fixture
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  api_error_transcript "$SANDBOX/t.jsonl"
+  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'turn ended on API Error 403' ]
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T09:51' ]
+  # Negative controls: a later message (the nudge worked), just stopped (under the grace), a busy
+  # row, and prose that quotes the text without the CLI's marker.
+  api_error_transcript "$SANDBOX/t.jsonl" after
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  api_error_transcript "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'busy' ]
+  # a background subagent running: its result wakes the session
+  PANEL_JOB=agent PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  # an error line with no code (a usage limit) is the limit watch's, not this row's
+  sed 's/API Error: 403/Usage limit reached/' "$SANDBOX/t.jsonl" > "$SANDBOX/t2.jsonl"
+  PANEL_TRANSCRIPT="$SANDBOX/t2.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  sed -i 's/"isApiErrorMessage":true,//' "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+}
+
+@test "a second API Error at a later minute is a new fact, and a finished session is left to DONE (ar-2143)" {
+  landed_fixture
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
+  api_error_transcript "$SANDBOX/t.jsonl"
+  sed -i 's/09:51:03/10:12:03/' "$SANDBOX/t.jsonl"
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T10:12' ]
+  # every phase ticked and the PR merged: finished, so not this row's
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }

@@ -3578,13 +3578,44 @@ triage_filed() {
   done <<<"$1"
 }
 
+# row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
+row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
+
+# triage_twins <rows> <filed keys> <kept>: a row lives in exactly one lane, the one its route names, so
+# once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
+# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin, unless
+# <kept> names it (a spent cause's human row stands beside its agent row). Read from every pass, so a
+# twin left by an earlier route or a drop that failed is retried. Closing a twin is the only write.
+triage_twins() {
+  local key route sheet have agent kpi
+  agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
+  while IFS=$'\t' read -r key _ _ route _; do
+    [ -n "$key" ] || continue
+    case "$route" in human:?*) ;; *) continue ;; esac
+    sheet=${route#human:}
+    have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null </dev/null) || continue
+    row_open "$have" "$key" && row_open "$agent" "$key" || continue
+    $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent drop "$key" --why "moved to the $sheet sheet" >/dev/null 2>&1 </dev/null \
+      || say "twin: could not drop the agent row for $key"
+  done <<<"$1"
+  [ -n "$2" ] || return 0
+  kpi=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) || return 0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    grep -qxF -- "$key" <<<"$3" && continue
+    row_open "$kpi" "$key" || continue
+    $BENCH_NOTES_CMD ptask "$KPI_BOARD" drop "$key" --why "moved to the agent board" >/dev/null 2>&1 </dev/null \
+      || say "twin: could not drop the sheet row for $key"
+  done <<<"$2"
+}
+
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
   local key text pri route sheet have n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
-    awk -F'\t' -v p="${key,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$have" && continue
+    row_open "$have" "$key" && continue
     $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
@@ -4072,7 +4103,7 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key extra
+  local rows filed dry=0 q h text re route skill fix tags key extra spent
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -4114,7 +4145,9 @@ cmd_triage() {
   fi
   filed=$(triage_filed "$rows")
   if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
-  h=$(triage_human "$rows"$'\n'"$(triage_spent "$rows")")
+  spent=$(triage_spent "$rows")
+  h=$(triage_human "$rows"$'\n'"$spent")
+  triage_twins "$rows" "$(cut -f1 <<<"$filed")" "$(cut -f1 <<<"$spent")"
   q=$(triage_promote "$rows")
   extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
   upsert_report "$rows" "$extra"
