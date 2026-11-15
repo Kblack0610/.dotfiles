@@ -45,11 +45,13 @@ PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
 plan_pointer() {
   [ -f "$1" ] || return 0
   local path n
-  IFS=$'\t' read -r n path < <(head -n 8 "$1" | sed -nE 's/^Phase ([0-9]+) of ((~|\/)[^(:]*\.md)([ :(].*)?$/\1\t\2/p' | head -n 1)
+  # A stub is short (agent-queue writes about ten lines); a longer plan that opens the same way is its own.
+  [ "$(wc -l <"$1")" -le 40 ] || return 0
+  IFS=$'\t' read -r n path < <(head -n 8 "$1" | sed -nE 's/^Phase ([0-9]+) of ((~|\/)[^(:]*\.md).*$/\1\t\2/p' | head -n 1)
   [ -n "${path:-}" ] || return 0
   path="${path/#\~/$HOME}"
   [ -f "$path" ] || return 0
-  printf '%s\t%s\n' "$(realpath -q -- "$path" || printf '%s' "$path")" "$n"
+  printf '%s\t%s\n' "$(realpath -q -- "$path" || printf '%s' "$path")" "$((10#$n))"
 }
 
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.

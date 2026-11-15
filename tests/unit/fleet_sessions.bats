@@ -3872,3 +3872,13 @@ JSONL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
+
+@test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  printf '# canon\n' > "$SANDBOX/canon.md"
+  printf 'Phase 02 of %s.\n\n## Phases\n\n- [ ] x\n' "$SANDBOX/canon.md" > "$SANDBOX/s.md"
+  [ "$(plan_pointer "$SANDBOX/s.md")" = "$(printf '%s\t2' "$(realpath "$SANDBOX/canon.md")")" ]
+  # a plan with a body of its own that opens the same way is not a stub
+  { cat "$SANDBOX/s.md"; seq 1 60; } > "$SANDBOX/long.md"
+  [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
+}
