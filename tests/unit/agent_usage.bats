@@ -61,6 +61,23 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   assert_equal "$(usage_field .requests)" '2'
 }
 
+@test "a gateway transcript with no requestId is counted once per message.id" {
+  # claude-lazer and glm sessions write no requestId; before this they read as zero tokens.
+  GW="$HOME/.claude/projects/-x/gateway.jsonl"
+  {
+    for _ in 1 2; do
+      echo '{"type":"assistant","timestamp":"2026-01-01T00:00:00.000Z","message":{"id":"msgA","model":"g1","usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}'
+    done
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:01:00.000Z","message":{"id":"msgB","model":"g1","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}'
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:02:00.000Z","message":{"model":"g1","usage":{"input_tokens":999}}}'
+  } > "$GW"
+  run "$AU" session gateway --json
+  assert_success
+  assert_equal "$(jq -r .requests <<<"$output")" '2'
+  assert_equal "$(jq -r .tokens.input <<<"$output")" '11'
+  assert_equal "$(jq -r .tokens.output <<<"$output")" '22'
+}
+
 @test "non-assistant records are ignored" {
   assert_equal "$(usage_field .requests)" '2'
 }
