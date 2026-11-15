@@ -19,33 +19,30 @@ Passed: content the code computes (regex, json, joins, loops over lines), files 
 from argv (an unresolved path), bytes, appends, scripts run from a file. Not covered: sed -i,
 `cat >`, tee, and python run from a script file. Fail-open: any error allows the command.
 """
-import ast
-import importlib.util
 import json
 import os
 import re
-import shlex
 import sys
-import warnings
 
+# ast, shlex and the sibling modules load past main's prefilter: this hook runs on every Bash call.
 HERE = os.path.dirname(os.path.abspath(__file__))
 PYTHON = re.compile(r"python[0-9.]*$")
+PATH_CALLS = {"Path", "PurePath", "PosixPath", "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath"}
+SAME_PATH = {"os.path.expanduser", "os.path.abspath", "os.path.realpath", "os.path.normpath"}
 # Calls a patch may make and still be one Edit: file and path plumbing, plain str methods, asserts.
-PATCH_FUNCS = {"open", "print", "len", "exit", "quit", "SystemExit", "AssertionError", "Path", "PurePath",
-               "pathlib.Path", "sys.exit", "os.path.join", "os.path.expanduser", "os.path.abspath",
-               "os.path.exists", "os.path.isfile"}
+PATCH_FUNCS = PATH_CALLS | SAME_PATH | {"open", "print", "len", "exit", "quit", "SystemExit", "AssertionError",
+                                        "sys.exit", "os.path.join", "os.path.exists", "os.path.isfile"}
 PATCH_METHODS = {"read", "read_text", "write", "write_text", "replace", "count", "find", "rfind", "index",
                  "close", "seek", "truncate", "expanduser", "resolve", "absolute", "exists", "is_file",
                  "startswith", "endswith", "encode", "decode"}
-PATH_CALLS = {"Path", "PurePath", "PosixPath", "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath"}
-SAME_PATH = {"os.path.expanduser", "os.path.abspath", "os.path.realpath", "os.path.normpath"}
+SCRATCH = None  # the scratch roots, normalised and resolved, built on first need
 
+VERB = {"Edit": "patches", "Write": "writes a literal string to"}
 EDIT_MSG = (
-    "python-write-guard: this python {what} {path}, a change {tool} makes one-for-one, so the Edit/Write "
-    "guards (ai-comment-guard, context-budget-guard, manual-mode-investigate) never see it. Use {tool}: "
-    "Edit takes old_string/new_string (replace_all for a repeated string), Write takes the whole text. "
-    "Python still passes when it computes the content (regex, json, generated text), changes files it "
-    "finds in a loop, or writes scratch (/tmp, ~/.cache)."
+    "python-write-guard: this python {verb} {path}, a change {tool} makes one-for-one, so the Edit/Write "
+    "guard hooks never see it. Use {tool}: Edit takes old_string/new_string (replace_all for a repeated "
+    "string), Write takes the whole text. Python still passes when it computes the content (regex, json, "
+    "generated text), changes files it finds in a loop, or writes scratch (/tmp, ~/.cache)."
 )
 MANUAL_MSG = (
     "python-write-guard: manual mode is investigate-only, and this python writes {path}. Answer without "
@@ -55,6 +52,8 @@ MANUAL_MSG = (
 
 
 def _load(name, file):
+    import importlib.util
+
     spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -98,31 +97,17 @@ def codes(cmd, cwd, forge, poll):
         if c is not None and c + 1 < len(argv):
             found.append((argv[c + 1], d))
 
-    lines, end, q = cmd.split("\n"), None, None
-    for i, line in enumerate(lines):
-        if end is not None:
-            if line.strip() == end:
-                end = None
-            continue
-        flags, q = poll.quote_flags(line, q)
-        m = next((m for m in poll.HEREDOC.finditer(line) if not flags[m.start()]), None)
+    lines = cmd.split("\n")
+    for i, line, m, body in poll.heredoc_lines(cmd):
         if not m:
             continue
-        end = m.group(2)
-        before = re.split(r"[;&|(]", line[:m.start()])[-1]
         try:
-            words = shlex.split(before)
+            words = shlex.split(re.split(r"[;&|(]", line[:m.start()])[-1])
         except ValueError:
             continue
-        if not is_python_code(words):
-            continue
-        body = []
-        for b in lines[i + 1:]:
-            if b.strip() == end:
-                break
-            body.append(b)
-        at = pythons(poll.strip_heredocs("\n".join(lines[:i + 1])))
-        found.append(("\n".join(body), at[-1][1] if at else cwd))
+        if is_python_code(words):
+            at = pythons(poll.strip_heredocs("\n".join(lines[:i + 1])))
+            found.append(("\n".join(body), at[-1][1] if at else cwd))
     return found
 
 
@@ -204,8 +189,8 @@ class Writes:
         return None
 
     def scan(self):
-        """(writes, read paths, calls only a patch makes)."""
-        handles, writes, reads, patchy = {}, [], set(), True
+        """(writes, read paths): each write as (path or None, content node or None, mode)."""
+        handles, writes, reads = {}, [], set()
         for n in ast.walk(self.tree):
             items = n.items if isinstance(n, ast.With) else []
             pairs = [(i.context_expr, i.optional_vars) for i in items]
@@ -218,55 +203,47 @@ class Writes:
         for n in ast.walk(self.tree):
             if not isinstance(n, ast.Call):
                 continue
-            name, attr = dotted(n.func), n.func.attr if isinstance(n.func, ast.Attribute) else None
-            if name not in PATCH_FUNCS and attr not in PATCH_METHODS:
-                patchy = False
+            attr = n.func.attr if isinstance(n.func, ast.Attribute) else None
             o = self.opened(n)
             if o:
                 p, mode = o
-                if mode is None or set(mode) & set("wax+"):
+                if writing(mode):
                     writes.append((p, None, mode or "w"))
-                if mode is not None and (not set(mode) & set("wax") or "+" in mode) and p is not None:
+                if p is not None and mode is not None and ("r" in mode or "+" in mode):
                     reads.add(p)
-                continue
-            if attr in ("read_text", "read_bytes"):
-                p = self.path(n.func.value)
-                if p is not None:
-                    reads.add(p)
+            elif attr in ("read_text", "read_bytes"):
+                reads.add(self.path(n.func.value))
             elif attr in ("write_text", "write_bytes"):
                 writes.append((self.path(n.func.value), n.args[0] if n.args else None,
                                "w" if attr == "write_text" else "wb"))
             elif attr == "write" and n.args:
                 recv = n.func.value
                 o = self.opened(recv) or (handles.get(recv.id) if isinstance(recv, ast.Name) else None)
-                if o and (o[1] is None or set(o[1]) & set("wax+")):
+                if o and writing(o[1]):
                     writes.append((o[0], n.args[0], o[1] or "w"))
         # An open whose handle the code also .write()s is counted once, at its .write.
         written = {p for p, c, _ in writes if c is not None}
-        writes = [w for w in writes if w[1] is not None or w[0] not in written]
-        return writes, reads, patchy
+        return [w for w in writes if w[1] is not None or w[0] not in written], reads - {None}
 
 
-def absolute(p, cwd):
-    p = os.path.expanduser(p)
-    if not os.path.isabs(p):
-        if not cwd:
-            return p
-        p = os.path.join(cwd, p)
-    return os.path.normpath(p)
+def writing(mode):
+    """An open mode that writes; None (a mode the code computes) counts as one."""
+    return mode is None or bool(set(mode) & set("wax+"))
+
+
+def patchy(tree):
+    """True when every call in tree is one a patch makes (PATCH_FUNCS, PATCH_METHODS)."""
+    return all(dotted(n.func) in PATCH_FUNCS or (isinstance(n.func, ast.Attribute) and n.func.attr in PATCH_METHODS)
+               for n in ast.walk(tree) if isinstance(n, ast.Call))
 
 
 def scratch(p):
-    roots = ["/tmp", "/var/tmp", "/dev", os.path.expanduser("~/.cache")]
-    roots += [os.environ[k] for k in ("TMPDIR", "XDG_CACHE_HOME") if os.environ.get(k)]
-    if not os.path.isabs(p):
-        return False
-    for cand in {p, os.path.realpath(p)}:
-        for r in roots:
-            for root in {os.path.normpath(r), os.path.realpath(r)}:
-                if cand == root or cand.startswith(root.rstrip("/") + "/"):
-                    return True
-    return False
+    global SCRATCH
+    if SCRATCH is None:
+        roots = ["/tmp", "/var/tmp", "/dev", os.path.expanduser("~/.cache")]
+        roots += [os.environ[k] for k in ("TMPDIR", "XDG_CACHE_HOME") if os.environ.get(k)]
+        SCRATCH = {f(r).rstrip("/") + "/" for r in roots for f in (os.path.normpath, os.path.realpath)}
+    return any((c + "/").startswith(r) for c in (p, os.path.realpath(p)) for r in SCRATCH)
 
 
 def literal(node):
@@ -275,36 +252,44 @@ def literal(node):
     return isinstance(node, ast.JoinedStr) and all(isinstance(v, ast.Constant) for v in node.values)
 
 
-def verdict(code, cwd, manual):
-    """The deny reason for one block of python code, or None."""
+def verdict(code, cwd, manual, resolve):
+    """The deny reason for one block of python code, or None. resolve(cwd, path) is forge-guard's:
+    None for a path it cannot place."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # an invalid escape in the agent's code is not ours to print
             tree = ast.parse(code)
     except (SyntaxError, ValueError):
         return None
-    writes, reads, patchy = Writes(tree).scan()
-    reads = {absolute(r, cwd) for r in reads}
+    writes, reads = Writes(tree).scan()
+    reads = {resolve(cwd, r) for r in reads}
     for p, content, mode in writes:
-        target = absolute(p, cwd) if p is not None else None
+        if not manual and (p is None or content is None or "b" in mode or "a" in mode):
+            continue
+        target = resolve(cwd, p) if p is not None else None
         if target is not None and scratch(target):
             continue
         if manual:
             return MANUAL_MSG.format(path=target or "a file it computes")
-        if target is None or "b" in mode or "a" in mode or content is None:
+        if target is None:
             continue
-        if target in reads and patchy:
-            return EDIT_MSG.format(what="patches", path=target, tool="Edit")
-        if literal(content) and "+" not in mode:
-            return EDIT_MSG.format(what="writes a literal string to", path=target, tool="Write")
+        tool = ("Edit" if target in reads and patchy(tree) else
+                "Write" if literal(content) and "+" not in mode else None)
+        if tool:
+            return EDIT_MSG.format(verb=VERB[tool], path=target, tool=tool)
     return None
 
 
 def reason(cmd, cwd, manual):
+    global ast, shlex, warnings
+    import ast
+    import shlex
+    import warnings
+
     forge = _load("forge_guard", "forge-guard.py")
     poll = _load("block_poll", "block-poll.py")
     for code, d in codes(cmd, cwd, forge, poll):
-        r = verdict(code, d, manual)
+        r = verdict(code, d, manual, forge.resolve)
         if r:
             return r
     return None
