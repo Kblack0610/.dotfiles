@@ -76,21 +76,27 @@ def quote_flags(line, q):
     return flags, q
 
 
+def heredoc_lines(cmd):
+    """(index, line, opener, body) for each line of cmd outside a heredoc body: opener is the
+    line's first `<<WORD` outside quoted text (None when it has none), body the lines it feeds."""
+    lines, q, i = cmd.split("\n"), None, 0
+    while i < len(lines):
+        line = lines[i]
+        flags, q = quote_flags(line, q)
+        m = next((m for m in HEREDOC.finditer(line) if not flags[m.start()]), None)
+        body = []
+        if m:
+            for b in lines[i + 1:]:
+                if b.strip() == m.group(2):
+                    break
+                body.append(b)
+        yield i, line, m, body
+        i += 1 + len(body) + (1 if m else 0)
+
+
 def strip_heredocs(cmd):
     """Drop heredoc bodies. A `<<WORD` inside quoted text opens no heredoc."""
-    out, end, q = [], None, None
-    for line in cmd.split("\n"):
-        if end is not None:
-            if line.strip() == end:
-                end = None
-            continue
-        flags, q = quote_flags(line, q)
-        for m in HEREDOC.finditer(line):
-            if not flags[m.start()]:
-                end = m.group(2)
-                break
-        out.append(line)
-    return "\n".join(out)
+    return "\n".join(line for _, line, _, _ in heredoc_lines(cmd))
 
 
 def code_texts(cmd, guard=False):
