@@ -2799,10 +2799,11 @@ cmd_sources() {
 # A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
 # median work over the median of the calibrated weight-1 size with the most items. Percentiles
 # are nearest rank. .bands is the median work of each #pts band (s, m, l: notes-cli
-# epics::POINTS, the row's size) over the items closed ok in the last BENCH_BANDS_DAYS, the
-# population size_rule's minutes came from, and whether they climb: inverted when l is not
-# slower than m or m not slower than s (a tie counts), each pair read only when both its bands
-# have BENCH_SIZES_MIN items; thin when no pair is out of order but a band is under that.
+# epics::POINTS) over the items closed ok in the last BENCH_BANDS_DAYS whose row carries #pts (a
+# bare #size/ tag is not scored by size_rule, and most closes have only that), whether they
+# climb: inverted when l is not slower than m or m not slower than s (a tie counts), each pair
+# read only when both its bands have BENCH_SIZES_MIN items; thin when no pair is out of order
+# but a band is under that.
 # size_rule's minutes in agentctl-inbox-triage are provisional on that order.
 sizes_json() {
   local since bands_since rows projects p items
@@ -2811,7 +2812,7 @@ sizes_json() {
   projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
   # the roadmaps go in as a file: a big project's is past the length of one argument
   rows=$(for p in $projects; do
-      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind}}'
+      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind, pts}}'
     done | jq -cs 'from_entries')
   jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
      --argjson since "$since" --argjson bsince "$bands_since" \
@@ -2822,7 +2823,7 @@ sizes_json() {
     $rows[0] as $R
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
-       | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+       | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
           landed: (.status == "ok" and (.pr // "") != ""),
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
@@ -2833,7 +2834,7 @@ sizes_json() {
        | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
               work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
     | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
-    | ($read | map(select(.fin >= $bsince and .ok and .work != null)) as $bt
+    | ($read | map(select(.fin >= $bsince and .ok and .work != null and .pts != null)) as $bt
        | ["s", "m", "l"] | map(. as $k | $bt | map(select(.size == $k) | .work) | {key: $k, value: {n: length, p50: pct(0.5)}})
        | from_entries) as $b
     | {days: $days, min_n: $min, base: ($base.size // null),
