@@ -1083,32 +1083,61 @@ done_from_inside() {
   [ -d "$WT_ROOT/repo-agent-1" ]
 }
 
-@test "done refuses while another window of its session runs claude, and kills nothing" {
-  # ar-120: the kill is by session name, so a second window running claude died with it.
+# agent_row <session> <window> <pane id> -- one `agent-panel list --json` row of the stub, on the
+# `default` server the done tests run on.
+agent_row() {
+  printf '{"server":"default","tmux_session":"%s","target":"default/%s:%s","pane":"default/%s"}\n' "$1" "$1" "$2" "$3" >> "$NOTES_FIXTURE/agent-panel.list.json"
+}
+
+# done_session_setup -- the setup the ar-120 tests share: the tree's session live, its
+# agents as the test wrote them with agent_row.
+done_session_setup() {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
   printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
   rm -f "$NOTES_FIXTURE/tmux.no-session"
-  printf '%%12 0 claude\n%%15 2 claude\n' > "$NOTES_FIXTURE/tmux.panes"
   cd "$WT_ROOT/repo-agent-1"
+}
+
+@test "done refuses while another window of its session runs claude, and kills nothing" {
+  # ar-120: the kill is by session name, so a second window running claude died with it.
+  done_session_setup
+  agent_row repo-agent-1 1 %12
+  agent_row repo-agent-1 3 %15
   TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 run cmd_done
   assert_failure
-  assert_output --partial 'kept repo-agent-1: window 2 (pane %15) still runs claude'
+  assert_output --partial 'kept repo-agent-1: window 3 (pane %15) still runs claude'
   [ ! -s "$NOTES_FIXTURE/tmux.jobs" ]
   [ -d "$WT_ROOT/repo-agent-1" ]
 }
 
-@test "done ignores its own claude pane and a session's non-claude panes" {
-  make_repo
-  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
-  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
-  rm -f "$NOTES_FIXTURE/tmux.no-session"
-  printf '%%12 0 claude\n%%15 2 zsh\n' > "$NOTES_FIXTURE/tmux.panes"
-  cd "$WT_ROOT/repo-agent-1"
+@test "done without TMUX_PANE (the keybinding) cannot tell its own claude, so it refuses" {
+  # The binding sets TMUX_PANE itself (.tmux.conf): run-shell leaves it unset.
+  done_session_setup
+  agent_row repo-agent-1 1 %12
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" run cmd_done
+  assert_failure
+  assert_output --partial 'still runs claude'
+}
+
+@test "done ignores its own claude pane and the agents of other sessions" {
+  done_session_setup
+  agent_row repo-agent-1 1 %12
+  agent_row elsewhere 1 %15
   TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 run cmd_done
   assert_success
   assert_output --partial 'done: killing repo-agent-1'
   [ -s "$NOTES_FIXTURE/tmux.jobs" ]
+}
+
+@test "done refuses when agent-panel could not finish its read" {
+  # A gap in the read may hide a live claude: not the same as none.
+  done_session_setup
+  : > "$NOTES_FIXTURE/agent-panel.fail"
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 run cmd_done
+  assert_failure
+  assert_output --partial 'agent-panel could not say'
+  [ ! -s "$NOTES_FIXTURE/tmux.jobs" ]
 }
 
 @test "an editor on ANOTHER project does not pin the worktree" {

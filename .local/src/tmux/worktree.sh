@@ -1226,15 +1226,19 @@ cmd_reap() {
   printf 'reaped %s\n' "$name"
 }
 
-# wt_other_claude <session> -- print "<window index> <pane id>" for each pane of <session> that
-# runs claude other than the pane `done` was run from ($TMUX_PANE), nothing when there is none.
-# `done` kills the whole session by name, so a second window running claude dies with it.
+# wt_other_claude <session> -- print "<window index> <pane id>" for each Claude agent in <session>
+# other than the pane `done` was run from ($TMUX_PANE, on the caller's own server), nothing when
+# there is none; rc 2 when agent-panel cannot say. `done` kills the whole session by name, so a
+# second window running claude dies with it. agent-panel finds an agent by its session file in
+# the pane's process tree, which holds where pane_current_command shows a version string, `node`
+# or the wrapper; a read it could not finish is refused, not read as "no agent".
 wt_other_claude() {
-  local srv args=()
+  local srv rows me=''
   srv=$(wt_session_server "$1") || return 0
-  [ "$srv" = "${WT_SERVER:-$(wt_current_server)}" ] || args=(-L "$srv")
-  tmux "${args[@]}" list-panes -s -t "=$1" -F '#{pane_id} #{window_index} #{pane_current_command}' 2>/dev/null |
-    awk -v me="${TMUX_PANE:-}" '$1 != me && $3 == "claude" { print $2, $1 }'
+  [ -z "${TMUX_PANE:-}" ] || me="$(wt_current_server)/$TMUX_PANE"
+  rows=$(agent-panel list --json 2>/dev/null) || return 2
+  jq -r --arg s "$srv" --arg t "$1" --arg me "$me" \
+    'select(.server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
 }
 
 # wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was
@@ -1289,7 +1293,8 @@ cmd_done() {
   # run from: a second window running claude would die with it, mid-turn. Refused here, while
   # the reason can still be read; close this window alone (wind-down, no --session) and run
   # `done` from the last one.
-  other=$(wt_other_claude "$name" | head -1)
+  other=$(wt_other_claude "$name") || panel_die "kept $name: agent-panel could not say whether another window runs claude"
+  other=${other%%$'\n'*}
   [ -z "$other" ] || panel_die "kept $name: window ${other% *} (pane ${other#* }) still runs claude; close only this window, then run done from the last one"
 
   if ! panel_in_tmux && ! wt_session_exists "$name"; then
