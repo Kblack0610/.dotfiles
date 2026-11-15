@@ -437,6 +437,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
+  sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
+  # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)
+  answer '{"n": 1, "action": "rewrite", "row": "chore(ci): finish plan lazy-otter, 2 phases left #size/m"}' \
+    '{"n": 2, "action": "rewrite", "row": "chore(docs): finish beta-plan-tidy-crow, 1 phase left #size/s", "project": "other"}' \
+    '{"n": 3, "action": "rewrite", "row": "chore(ci): finish the gamma plan, 3 phases left #size/m"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 2'
+  assert_output --partial 'sc-1 kept: the rewrite drops plan slug alpha-plan-lazy-otter'
+  assert_output --partial 'sc-2 stays: ask-sweep finds plan beta-plan-tidy-crow'
+  run tasks
+  assert_output --partial 'finish alpha-plan-lazy-otter: 2 phases left'
+  assert_output --partial 'chore(docs): finish beta-plan-tidy-crow, 1 phase left'
+  assert_output --partial 'finish gamma_plan.v2: 3 phases left'
+}
+
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
   sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
   # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)
