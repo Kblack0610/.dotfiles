@@ -84,7 +84,10 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         p,
     )];
     if h.hours.is_empty() {
-        out.push(Line::styled("  no reading in the window", p.dim()));
+        out.push(Line::styled(
+            format!("  {} in the window", hub_core::reading::NO_DATA),
+            p.dim(),
+        ));
         return out;
     }
     let room = w.saturating_sub(12).max(1);

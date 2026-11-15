@@ -202,7 +202,7 @@ fn summed(rows: Vec<Row>) -> Vitals {
     };
     let (off, unread, total) = (named(Level::Warn), named(Level::Nodata), rows.len());
     let head = if total == 0 {
-        "no reading from fleet-bench".to_string()
+        format!("{} from fleet-bench", crate::reading::NO_DATA)
     } else if !off.is_empty() {
         format!("{} of {total} off target", off.len())
     } else if !unread.is_empty() {
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn no_gauges_says_so_and_prometheus_down_is_homes_error_to_report() {
         let v = read(&infra(vec![])).unwrap();
-        assert_eq!(v.head, "no reading from fleet-bench");
+        assert_eq!(v.head, "no data from fleet-bench");
         assert!(
             !v.all_ok,
             "the control: nothing read is not 0 of 0 on target"

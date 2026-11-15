@@ -76,7 +76,7 @@ async function jobLogText(j) {
   try {
     return await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
   } catch (e) {
-    return "Could not read the log: " + e.message;
+    return NOT_READ + ": the log, " + e.message;
   }
 }
 
