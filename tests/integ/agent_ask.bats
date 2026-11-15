@@ -216,7 +216,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
-@test "answer and cancel fail the queued items the ask can no longer release, and only those" {
+@test "an answer fails the queued items it can no longer release, and only those; a cancel leaves them queued and flagged" {
   local opts='go=run it now|later=run it later' a b c d e
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
@@ -231,10 +231,16 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'state: queued'
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
-  "$AGENT_ASK" cancel "$b" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-b
-  assert_line 'status: failed'
-  assert_line "note: dead hold: ask:$b=go (cancelled)"
+  # 2026-11-13: cancelling yaZGII closed consoles-p3 unfinished. A cancel decides nothing, so the item
+  # stays queued and held, flagged, and the canceller is told; a second settle adds no second flag.
+  run --separate-stderr "$AGENT_ASK" cancel "$b"
+  assert_success
+  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b"* ]]
+  "$AGENT_ASK_QUEUE_CMD" settle-ask "$b" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" show on-b --json
+  [ "$(jq -r '"\(.state) \(.hold)"' <<<"$output")" = "queued ask:$b=go (cancelled)" ]
+  [ "$(jq -r '.note | [scan("dead hold")] | length' <<<"$output")" = 1 ]
+  [[ "$(jq -r .note <<<"$output")" == "dead hold: ask:$b=go (cancelled), still queued: "* ]]
   # A judge answer is not the human's, who can still answer: the item stays queued.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
