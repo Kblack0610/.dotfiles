@@ -6463,7 +6463,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5"
             ),
             "{s}"
         );
@@ -7153,7 +7153,7 @@ mod tests {
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         // cc:red_now is a need; the Infra card counts the machines from the same read.
-        assert!(at("NEEDS YOU (1)") < at("watch mac_studio_mlx"));
+        assert!(at("NEEDS YOU (1)") < at("watch gateway-errors"));
         assert!(at("INFRA") < at("NEEDS YOU (1)"), "the cards lead: {s}");
         assert!(
             !s.contains("HEALTH") && !s.contains("ci NODATA"),
@@ -8426,7 +8426,7 @@ mod tests {
         let s = screen(&mut a, 160, 80);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(
-            at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch mac_studio_mlx"),
+            at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch gateway-errors"),
             "{s}"
         );
         assert!(!s.contains("FIXES"), "Fixes is its own inner tab: {s}");

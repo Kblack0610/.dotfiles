@@ -307,6 +307,20 @@ test("a state cell says what the item is, and how a done one ended", () => {
   assert.match(h, /<td>done<\/td>/);
 });
 
+test("a cancelled row's state cell and its opened detail say who cancelled it and why", () => {
+  const why = "cancelled by 9fd0d2fd: dead chain";
+  const c = item("c", { state: "done", status: "cancelled", state_word: "cancelled", state_why: why, cancelled_by: "9fd0d2fd", cancel_why: "dead chain" });
+  load({ ...data, items: [c] });
+  assert.match(draw(), /<td class="muted" title="cancelled by 9fd0d2fd: dead chain">cancelled<\/td>/);
+  load({ ...data, items: [c] }, { sel: "c" });
+  const h = draw();
+  assert.match(h, /cancelled by<\/[^>]+>[^]*9fd0d2fd/);
+  assert.match(h, /cancel reason<\/[^>]+>[^]*dead chain/);
+  // negative control: a finish that ran has no such line
+  load({ ...data, items: [item("d", { state: "done", status: "ok" })] }, { sel: "d" });
+  assert.doesNotMatch(draw(), /cancelled by/);
+});
+
 test("a stuck running or review row is amber with the server's word and its why on hover; a fine one is plain", () => {
   load({ ...data, items: [
     item("s", { state: "running", state_word: "stalled", stuck: true, state_why: "STALLED 42m idle: PR #7 CI red" }),

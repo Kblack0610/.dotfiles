@@ -243,11 +243,15 @@ raw_agent() {
   printf 'NAME=summer\nKIND=call\nLANE=observe\nROLE=watcher\nDESCRIPTION=x\nHARNESS=raw\nROUTE=origin\nMAX_TOKENS=300\nTEMPERATURE=0.2\nPROMPT="%s"\n' "$PROMPT_FILE" \
     > "$AGENTCTL_CONF_DIR/summer.conf"
   printf '%s\n' "$1" > "$SANDBOX/curl.reply"
+  # A stand-in for the curl the raw harness runs: it reads the request body from the file named
+  # by --data-binary @file, writes the canned reply to the -o file, and prints the -w status.
   {
     echo '#!/usr/bin/env bash'
     echo "printf '%s\n' \"\$@\" > '$SANDBOX/curl.argv'"
-    echo "cat > '$SANDBOX/curl.body'"
-    echo "cat '$SANDBOX/curl.reply'"
+    echo 'while [ $# -gt 0 ]; do case "$1" in -o) o=$2; shift ;; --data-binary) b=${2#@}; shift ;; esac; shift; done'
+    echo "cat \"\$b\" > '$SANDBOX/curl.body'"
+    echo "cat '$SANDBOX/curl.reply' > \"\$o\""
+    echo "printf 200"
   } > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
 }

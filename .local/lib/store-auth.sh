@@ -1,12 +1,13 @@
 # shellcheck shell=bash
 # store-auth.sh - read-only store credentials from rbw, and the signed tokens the store APIs take.
-# Sourced by release-state and store-sales. A credential or token only ever reaches curl on stdin
+# Sourced by release-state, store-sales and store-reviews. A credential or token only ever reaches curl on stdin
 # and openssl through a process substitution: never argv, never a file on disk.
 #
 #   store_google_token <rbw entry> <scope>  -> STORE_TOKEN, or STORE_WHY (a service-account JSON)
 #   store_asc_jwt <rbw entry>               -> STORE_TOKEN, or STORE_WHY ({key_id, issuer_id, p8})
 #   Both leave the entry in STORE_RAW, so a caller reads its other fields without a second get.
 #   store_rbw_ready                         -> 0, or 1 with STORE_WHY (missing, locked)
+#   store_api_error <file>                  -> the error text Apple or Google answered with, else empty
 #
 # The caller sets PROBE_TIMEOUT (seconds, the guard on every external call; default 20).
 
@@ -47,6 +48,9 @@ store_fetch() {
     sleep "$wait"
   done
 }
+
+# store_api_error <file> -> Apple's or Google's error text in a store answer, else empty.
+store_api_error() { jq -r '[.errors[]?.detail, .error.message?] | map(select(. != null)) | first // empty' "$1" 2>/dev/null; }
 
 b64url() { basenc --base64url -w0 | tr -d '='; }
 

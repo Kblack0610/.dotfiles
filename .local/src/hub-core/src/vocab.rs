@@ -18,6 +18,10 @@ pub const QUEUE: &[(&str, &str)] = &[
         "held",
         "waits on its hold: after another item, until a PR merges, until night or a set time; HOLD says which",
     ),
+    (
+        "cancelled",
+        "closed without running to an end; hover the state for who and why; the done chip counts these too",
+    ),
     ("stalled", "its session is STALLED"),
     ("no session", "running 10m+, and no session works it"),
     ("PR red, yours", "its fix-ci tries are spent; yours now"),
@@ -110,7 +114,9 @@ mod tests {
         let legend = s.legend.expect("the table carries its legend");
         for (word, _) in R::LEGEND {
             assert!(legend.contains(&format!("{word}: ")), "{legend}");
-            let n = View::new::<R>(&format!("{col}:\"{word}\""), "", "", "")
+            // A word that is also a chip is read on that chip: the default view drops a finished row.
+            let chip = if R::STATES.contains(word) { word } else { "" };
+            let n = View::new::<R>(&format!("{col}:\"{word}\""), chip, "", "")
                 .apply(rows)
                 .len();
             assert_eq!(n, 1, "`{col}:{word}` finds its one row");
@@ -135,8 +141,11 @@ mod tests {
             bucket: "STALLED".into(),
             ..Default::default()
         };
+        let mut cancelled = item("x", State::Done, None);
+        cancelled.status = Some("cancelled".into());
         let q = Queue {
             items: vec![
+                cancelled,
                 item("r", State::Queued, None),
                 item("h", State::Queued, Some("after r")),
                 item("s", State::Running, None),
