@@ -161,9 +161,9 @@ _gr_highest() {
   [ -n "$all" ] || return 0
   stable=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   if [ -n "$stable" ]; then
-    printf '%s' "$(printf '%s\n' "$stable" | head -1)"
+    printf '%s' "${stable%%$'\n'*}"
   else
-    printf '%s' "$(printf '%s\n' "$all" | head -1)"
+    printf '%s' "${all%%$'\n'*}"
   fi
 }
 
@@ -189,7 +189,7 @@ _gr_glob() {
     set -- "${name}-v*" "v*"
   fi
   for g in "$@"; do
-    if [ -n "$(git -C "$repo" tag --list "$g" 2>/dev/null | head -1)" ]; then
+    if [ -n "$(git -C "$repo" tag --list "$g" 2>/dev/null)" ]; then
       printf '%s' "$g"
       return 0
     fi
@@ -357,7 +357,7 @@ git_prev_tag() {
   if ! printf '%s\n' "$tag" | grep -qE -- "$_GR_PRERELEASE"; then
     all=$(printf '%s\n' "$all" | grep -vE -- "$_GR_PRERELEASE" || true)
   fi
-  printf '%s' "$(printf '%s\n' "$all" | head -1)"
+  printf '%s' "${all%%$'\n'*}"
 }
 
 # git_first_tag <repo> <name> <scoped> <glob> <sha> - "<tag> <epoch>": the oldest tag of the
