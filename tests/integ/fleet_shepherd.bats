@@ -1671,6 +1671,10 @@ gw_accts() {
   "$SH" check >/dev/null
   run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_success
+  # a skipped line is left out of .due while it is due, but it is still a due line: a second reason is accepted
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge DONE: a f-a' 'a better why'
+  assert_success
 }
 
 @test "skip does not rebuild the due lines: it validates against the last check's .due" {

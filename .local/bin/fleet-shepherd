@@ -921,7 +921,7 @@ receipts() {
   awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$HANDED" > "$HANDED.tmp" \
     && mv -f "$HANDED.tmp" "$HANDED"
   [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || hand_keys "$given"
-  printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
+  printf '%s' "$rows" > "$DUE_LAST.tmp" && mv -f "$DUE_LAST.tmp" "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due); a rename, because skip reads it too
   if [ -n "$owed" ]; then
     # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
     # Each owed line carries its own count, so two passes that each leave a different line are
@@ -965,13 +965,13 @@ last_working() {
 # lines, because a skip stored under a shortened or reworded line never matches the due line, which
 # then comes back as unhandled (2026-11-09: a pass skipped 'overdue: lab/...-agent-58:1' and the
 # next check reported agent-58 and agent-59 unhandled). The due lines are the ones the last check
-# wrote to $DUE_LAST: cmd_due rebuilds them in full (about 80s a call, one hung past 120s on
-# 2026-11-13), and a pass is only ever handed lines a check wrote. A line that came due since is
-# refused here and reaches the next check's pass.
+# wrote to $DUE_LAST plus the lines already skipped (a skipped line is left out of .due while it is
+# still due): cmd_due rebuilds them all, too slow for an interactive verb, and a pass is only ever
+# handed lines a check wrote. A line that came due since is refused here and reaches the next check.
 skip_known() {
   local key="$1" k n bestn=-1 near="" cnt=0 pre="" suf="" keys
   [ -n "$key" ] || { echo "fleet-shepherd: not skipped: the line is empty" >&2; return 1; }
-  keys="$(cut -f4 "$DUE_LAST" 2>/dev/null | while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done)"
+  keys="$({ cut -f4- "$DUE_LAST" 2>/dev/null; cut -f1 "$SKIPPED" 2>/dev/null; } | while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done)"
   # exact, whole-line compare: grep would treat a multi-line key as several patterns
   KEY="$key" awk 'ENVIRON["KEY"] == $0 { f = 1 } END { exit !f }' <<<"$keys" && return 0
   if [ -z "$keys" ]; then
