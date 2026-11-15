@@ -31,9 +31,10 @@ Cleanly wrap up and spin down the current Claude session - write a short status 
 
 The kill is **gated on the Stop checks**: if content checks are FAILING, the teardown is
 deferred (the sentinel stays armed) and fires on the next clean Stop instead. So `/wind-down`
-never closes the window over broken or unpushed work. A new prompt from the user disarms it
-(`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session is not done, so
-re-run `/wind-down` when that work is finished.
+never closes the window over broken or unpushed work. A new prompt, typed or a cross-session
+message, disarms it (`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session
+is not done, so re-run `/wind-down` when that work is finished. Trust the hook's line over your
+own memory: a resumed session whose teardown already fired is told "wind-down is not armed".
 
 ## Steps
 

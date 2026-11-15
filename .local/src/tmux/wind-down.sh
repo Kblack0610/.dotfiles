@@ -276,23 +276,32 @@ is_session_id() {
   [[ "${1:-}" =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]
 }
 
-# UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
-# deferred by failing Stop checks otherwise fires at the next clean Stop, even when the
-# human has since started new work. Never blocks a prompt. Also clears a
-# "<project>__<sid>" file written before the key was the session id alone.
+# UserPromptSubmit hook: a new prompt, typed or a cross-session message, cancels this
+# session's pending teardown. A teardown deferred by failing Stop checks otherwise fires at
+# the next clean Stop, even when the human has since started new work. Never blocks a prompt.
+# Also clears a "<project>__<sid>" file written before the key was the session id alone.
+# A .fired marker on a prompt means the teardown already ran and this conversation is still
+# talking (resumed, or its window survived); its transcript still reads "wind-down armed",
+# so say it is not, or it waits on a Stop that closes nothing (ar-1197, 2026-11-08).
 cmd_disarm() {
-  local sid='' payload f removed=0
+  local sid='' payload f removed=0 fired=0
   [ ! -t 0 ] && payload=$(cat 2>/dev/null)
   if [ -n "${payload:-}" ] && command -v jq >/dev/null 2>&1; then
     sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
-  rm -f -- "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired
+  for f in "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired; do
+    [ -f "$f" ] && rm -f -- "$f" && fired=1
+  done
   for f in "$SPIN_DIR/$sid.request" "$SPIN_DIR"/*__"$sid".request; do
     [ -f "$f" ] && rm -f -- "$f" && removed=1
   done
-  [ "$removed" = 1 ] && echo "wind-down disarmed: a new prompt arrived; run /wind-down again when this work is done."
+  if [ "$removed" = 1 ]; then
+    echo "wind-down disarmed: a new prompt or message arrived, so nothing fires at this Stop; run /wind-down again when this work is done."
+  elif [ "$fired" = 1 ]; then
+    echo "wind-down is not armed: this session's earlier teardown already fired, so nothing fires at this Stop; run /wind-down again when this work is done."
+  fi
   return 0
 }
 
