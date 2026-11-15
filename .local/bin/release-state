@@ -234,6 +234,7 @@ store_credentials() {
   grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
   grep -qx play <<<"$kinds" && need+=(play "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher)
   grep -qx testflight <<<"$kinds" && need+=(asc "$RBW_ASC")
+  # store_tokens checks rbw first, with no store named too: steam needs that check alone.
   store_tokens "${need[@]}" || { STEAM_WHY="$STORE_WHY"; return 0; }
   if grep -qx steam <<<"$kinds"; then
     STEAM_KEY="$(rbw_read "$RBW_STEAM")"

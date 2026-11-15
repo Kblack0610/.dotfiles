@@ -9,8 +9,9 @@
 #   store_rbw_ready                         -> 0, or 1 with STORE_WHY (missing, locked)
 #   store_tokens [play <entry> <scope>] [asc <entry>]
 #                                           -> PLAY_TOKEN and PLAY_RAW, else PLAY_WHY; ASC_TOKEN and
-#                                              ASC_RAW, else ASC_WHY; for the stores named. 1 with
-#                                              STORE_WHY, each named store's why too, when rbw is not ready
+#                                              ASC_RAW, else ASC_WHY; for the stores named, each RAW the
+#                                              entry without its key. 1 with STORE_WHY, each named
+#                                              store's why too, when rbw is not ready
 #   store_api_error <file>                  -> the error text Apple or Google answered with, else empty
 #
 # The caller sets PROBE_TIMEOUT (seconds, the guard on every external call; default 20).
@@ -122,16 +123,20 @@ store_asc_jwt() {
   [ -n "$STORE_TOKEN" ] || { STORE_WHY="cannot sign with rbw entry $entry"; return 1; }
 }
 
+# keyless <entry json> <key field> -> the entry without its key, for the fields a caller reads.
+keyless() { printf '%s' "$1" | jq -c --arg k "$2" 'del(.[$k])' 2>/dev/null; }
+
 # One token per store, made once in the caller's main shell, before its readers fork; a bad entry
-# is that store's why, and the other store still reads.
+# is that store's why, and the other store still reads. PLAY_RAW and ASC_RAW hold no key, and
+# STORE_RAW is emptied, so no private key outlives the signing.
 store_tokens() {
   local play="" scope="" asc=""
   PLAY_TOKEN="" PLAY_WHY="" PLAY_RAW="" ASC_TOKEN="" ASC_WHY="" ASC_RAW=""
   while [ $# -gt 0 ]; do
-    case "$1" in
-      play) play="$2" scope="$3"; shift 3 ;;
-      asc) asc="$2"; shift 2 ;;
-      *) return 2 ;;
+    case "$1:$#" in
+      play:[3-9]*) play="$2" scope="$3"; shift 3 ;;
+      asc:[2-9]*) asc="$2"; shift 2 ;;
+      *) echo "store_tokens: bad arguments at '$1'" >&2; return 2 ;;
     esac
   done
   if ! store_rbw_ready; then
@@ -140,10 +145,11 @@ store_tokens() {
     return 1
   fi
   if [ -n "$play" ]; then
-    if store_google_token "$play" "$scope"; then PLAY_TOKEN="$STORE_TOKEN" PLAY_RAW="$STORE_RAW"; else PLAY_WHY="$STORE_WHY"; fi
+    if store_google_token "$play" "$scope"; then PLAY_TOKEN="$STORE_TOKEN" PLAY_RAW="$(keyless "$STORE_RAW" private_key)"; else PLAY_WHY="$STORE_WHY"; fi
   fi
   if [ -n "$asc" ]; then
-    if store_asc_jwt "$asc"; then ASC_TOKEN="$STORE_TOKEN" ASC_RAW="$STORE_RAW"; else ASC_WHY="$STORE_WHY"; fi
+    if store_asc_jwt "$asc"; then ASC_TOKEN="$STORE_TOKEN" ASC_RAW="$(keyless "$STORE_RAW" p8)"; else ASC_WHY="$STORE_WHY"; fi
   fi
+  STORE_RAW=""
   return 0
 }
