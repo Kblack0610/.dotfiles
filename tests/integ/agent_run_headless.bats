@@ -105,3 +105,37 @@ EOF
   run grep -qx -- '--max-turns' "$SANDBOX/claude-argv.txt"
   assert_success
 }
+
+# opencode takes its message from stdin too: `opencode run` appends piped stdin to it.
+stub_opencode_io() {
+  cat > "$SANDBOX/bin/opencode" <<EOF2
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$SANDBOX/opencode-argv.txt"
+cat > "$SANDBOX/opencode-stdin.txt"
+EOF2
+  chmod +x "$SANDBOX/bin/opencode"
+  # the shipped routes each name their harness, so opencode needs one of its own
+  mkdir -p "$HOME/.config/agentctl/routes"
+  printf 'ROUTE_DESC=fixture\nROUTE_TRANSPORT=anthropic-native\nROUTE_PAYER=subscription\nROUTE_PERSONAL_SAFE=yes\nROUTE_WORK_SAFE=yes\nROUTE_FALLBACK_SAFE=yes\n' > "$HOME/.config/agentctl/routes/ocfix.route"
+  mkdir -p "$HOME/.config/opencode"
+  printf '{"agent":{"fixture":{"tools":{"write":false,"edit":false,"bash":true}}}}\n' > "$HOME/.config/opencode/opencode.json"
+}
+
+@test "opencode: a print call's input reaches it on stdin, not as an argument" {
+  stub_opencode_io
+  run "$RUN" --harness opencode --route ocfix --role fixture -p "the input"
+  assert_success
+  assert_equal "$(cat "$SANDBOX/opencode-stdin.txt")" "the input"
+  assert_equal "$(cat "$SANDBOX/opencode-argv.txt")" "$(printf 'run\n--agent\nfixture')"
+}
+
+@test "opencode: a 128 KiB-plus input still runs, on stdin past the argument cap" {
+  stub_opencode_io
+  run bash -c "head -c 200000 /dev/zero | tr '\\0' x | '$RUN' --harness opencode --route ocfix --role fixture -p --model m"
+  assert_success
+  assert_equal "$(tr -d '\n' < "$SANDBOX/opencode-stdin.txt" | wc -c)" 200000
+  run grep -qx -- '--model' "$SANDBOX/opencode-argv.txt"
+  assert_success
+  run grep -qx -- '-p' "$SANDBOX/opencode-argv.txt"
+  assert_failure
+}
