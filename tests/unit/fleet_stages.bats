@@ -92,6 +92,16 @@ EOF
   refute_output --partial freqtrade
 }
 
+@test "new: and gone rows ending in sid=<id> replay the same as rows without it (ar-2013)" {
+  stages
+  local plain="$output"
+  sed -E '/  (new: .*|gone)$/ s/$/ sid=sid-1/' "$LOG" > "$SANDBOX/watch.sid.log"
+  [ "$(grep -c ' sid=sid-1$' "$SANDBOX/watch.sid.log")" -eq 8 ]
+  LOG="$SANDBOX/watch.sid.log"
+  stages
+  assert_equal "$(jq -cS . <<<"$output")" "$(jq -cS . <<<"$plain")"
+}
+
 @test "without the finished buckets in state.json it stops, never guessing a list" {
   echo '{}' > "$STATE"
   run python3 "$SUBJECT" --log "$LOG" --state "$STATE" --from "$FROM" --to "$TO" --json

@@ -54,7 +54,7 @@
 # band, is a session that ran elsewhere (claude.ai/code): it gets a line of its own, harness
 # claude-cloud, observed by the same rule as a registry row, on a run that has any session due.
 # Each merged PR whose repo has a clone gets `project` from its changed paths (agent-queue credit-of),
-# and `projects` on the line is the session's project plus its PRs', which `worst --project` matches.
+# and `projects` on the line is the session's project plus its PRs' and its queue items', which `worst --project` matches.
 
 set -uo pipefail
 
@@ -97,14 +97,16 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 # shellcheck source=/dev/null
 . "$LIB_DIR/harness-projects.sh"   # harness_run_dbs: a sandboxed harness's own opencode.db
 
-# queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, refs}}: the work
-# items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
-# several), the harness it ran on and, for a headless harness (opencode, codex), the PR the brief
-# set. An unreadable queue writes {} and returns 1.
+# queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs}}: the
+# work items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
+# several), their projects (the queue's project_credit, so a session in the dotfiles checkout that ran
+# an agent-runtime item counts for agent-runtime), the harness it ran on and, for a headless harness
+# (opencode, codex), the PR the brief set. An unreadable queue writes {} and returns 1.
 queue_index() {
   "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
       | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
         .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug]),
+                   iprojects: ((.[$x.s].iprojects // []) + [$x.i.project // empty | select(. != "")] | unique),
                    refs: ((.[$x.s].refs // []) + [{row: ($x.i.row // ""), type: ($x.i.type // "")}])})' > "$1" && return 0
   printf '{}' > "$1"
   return 1
@@ -223,6 +225,7 @@ cmd_run() {
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
   jq -c --slurpfile q "$work/queue.json" --slurpfile rm "$work/roadmap.json" --argjson hm "$(harness_map)" "$HARNESS_DEF"'($q[0][.session_id] // {}) as $i
       | .items = ($i.items // [])
+      | .item_projects = ($i.iprojects // [])
       | .class = (([($i.refs // [])[] | ($rm[0][.row] // {}) as $r
                    | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
                    | select(.size != null or .kind != null)] | first) // .prior_class)
@@ -438,7 +441,7 @@ cmd_run() {
          else $row.project end) as $proj
       | { session_id: $row.session_id,
           project: $proj,
-          projects: ([$proj] + [$prs[].project | select(.)] | unique),
+          projects: ([$proj] + [$prs[].project | select(.)] + ($row.item_projects // []) | unique),
           runner: $runner,
           harness: $row.harness,
           provider: $row.provider,

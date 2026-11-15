@@ -5,7 +5,8 @@
 
 `fleet-sessions stages` runs this; `fleet-sessions tick` writes the log (one line per session
 per minute in which something moved: "YYYY-MM-DD HH:MM  <session>  <field a -> b>, ...", a stage
-change ending in "(<reason>)", plus "new: <STAGE> (<reason>)" and "gone"). A session's project is its
+change ending in "(<reason>)", plus "new: <STAGE> (<reason>) sid=<id>" and "gone sid=<id>"; rows
+from before the id was logged have neither suffix). A session's project is its
 `project` field there, the one fleet-sessions wrote on its state.json row; the finished buckets are
 state.json's `vocab.finished`. Nothing here names a project or a bucket. The whole log is
 replayed so a stage entered before the window is known; then:
@@ -32,6 +33,7 @@ LINE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d)  (\S+)  (.*)$")
 STAGE = re.compile(r"stage ([A-Z]+) -> ([A-Z]+)(?:,.*?)?(?: \((.*)\))?$")
 FIELDS = "sync|conflicts|tree|pr|ci|plan|quality|labels|project"
 FIELD = re.compile(rf"({FIELDS}) (.+?) -> (.*?)(?=, (?:{FIELDS}|stage) |$| \()")
+SID = re.compile(r"^(new: .*|gone) sid=\S+$")   # the session id the new: and gone rows end in; the replay keys on the target
 PLAN = re.compile(r"^(\d+)/(\d+)$")
 PR = re.compile(r"^#(\d+) (open|merged)$")
 # Why a session waits, first match wins: the reasons fleet-sessions writes (fleet_stages.bats pins each one),
@@ -244,6 +246,7 @@ def replay(lines, w):
         if not m:
             continue
         stamp, name, body = m.groups()
+        body = SID.sub(r"\1", body)
         t = epoch(stamp)
         if t >= w.end:
             break

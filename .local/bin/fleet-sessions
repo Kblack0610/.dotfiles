@@ -1672,14 +1672,16 @@ board_cells() {
 }
 
 # transitions <previous cells file> <current cells file> -> one line per session that
-# appeared, left, or changed a stage cell: "target  ci pending -> fail, stage ... (reason)".
+# appeared, left, or changed a stage cell: "target  ci pending -> fail, stage ... (reason)". The
+# new: and gone rows end in " sid=<session id>": a target like hub/dotfiles:3 is reused within a
+# day, so only the id ties a close to the shepherd nudge that preceded it (ar-2013).
 transitions() {
   awk -F'\t' '
     BEGIN { split("- - sync conflicts tree pr ci plan quality stage labels", name, " ") }
     NR == FNR { prev[$1] = $0; next }
     {
       seen[$1] = 1
-      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ")"; print $2 "  project - -> " $21; next }
+      if (!($1 in prev)) { print $2 "  new: " $10 " (" $14 ") sid=" $1; print $2 "  project - -> " $21; next }
       split(prev[$1], p, "\t"); out = ""
       for (i = 3; i <= 11; i++)
         if (p[i] != $i) out = out (out == "" ? "" : ", ") name[i] " " p[i] " -> " $i
@@ -1687,7 +1689,7 @@ transitions() {
       if (p[21] != $21) out = out (out == "" ? "" : ", ") "project " (p[21] == "" ? "-" : p[21]) " -> " $21
       if (out != "") print $2 "  " out (p[10] != $10 ? " (" $14 ")" : "")
     }
-    END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone" } }' "$1" "$2"
+    END { for (s in prev) if (!(s in seen)) { split(prev[s], p, "\t"); print p[2] "  gone sid=" s } }' "$1" "$2"
 }
 
 # keep_blind <previous cells file> <current cells file> <blind file> -> the current cells with each
