@@ -141,10 +141,13 @@ save_state() {
 # This session's tool calls, one per line: `TOOL <name>` for every call and `BASH <command>`
 # for Bash ones (newlines folded). The grep prefilter keeps a large transcript cheap; jq
 # then reads only real tool_use blocks, so a tool name quoted in prose cannot count.
+# A call on a plan file (`.claude*/plans/`) is dropped: plan mode allows only that Write, so
+# counting it told a turn that only planned that it had changed code (ar-1342).
 session_calls() {
   grep -F '"tool_use"' "$TRANSCRIPT" 2>/dev/null \
     | jq -r 'select(.type == "assistant") | .message.content[]?
              | select(.type == "tool_use")
+             | select((.input.file_path // .input.notebook_path // "") | test("/[.]claude[^/]*/plans/") | not)
              | "TOOL \(.name)", (select(.name == "Bash") | "BASH \(.input.command // "" | gsub("\n"; " "))")' \
       2>/dev/null || true
 }
