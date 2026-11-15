@@ -51,7 +51,7 @@ test("a read chained on the last one's answer holds the mark off", async () => {
   assert.equal(p.main.dataset.drawn, "home");
 });
 
-test("a new read takes the mark off until it answers; a failed read still counts as answered", async () => {
+test("a read of a new path takes the mark off until it answers; a failed read still counts as answered", async () => {
   const p = page();
   p.api("/api/home");
   await p.answer("/api/home");
@@ -62,6 +62,16 @@ test("a new read takes the mark off until it answers; a failed read still counts
   await p.answer("/api/alerts", 500);
   p.frame();
   assert.equal(p.main.dataset.drawn, "home");
+});
+
+test("a refetch of an answered path (a poll, a pushed event) never holds the mark off", async () => {
+  const p = page();
+  p.api("/api/home/cards"); p.api("/api/home");
+  await p.answer("/api/home/cards");
+  p.api("/api/home/cards"); // an event re-reads the cards while Home's first read is still out
+  await p.answer("/api/home");
+  p.frame();
+  assert.equal(p.main.dataset.drawn, "home", "the cards' refetch is still out, and does not count");
 });
 
 test("a tab shown from what it already read is marked by setTab's check", () => {
