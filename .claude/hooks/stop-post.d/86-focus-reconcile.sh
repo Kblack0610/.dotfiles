@@ -5,7 +5,8 @@
 # session having shipped three things the cockpit never heard about.
 #
 # Fires only when ALL of these hold:
-#   1. the session did real work — an Edit/Write tool call, or a commit/push/PR via Bash
+#   1. the session did real work — an Edit/Write tool call (not to a harness plan file), or a
+#                                  commit/push/PR via Bash
 #   2. no queue item             - no `$AGENT_QUEUE_ITEM` from the dispatcher, and no item
 #                                  whose `sessions:` lists this one
 #   3. the work went untracked   - no `notes ptask add|start|done|toggle`, `agent-queue
@@ -141,13 +142,16 @@ save_state() {
 # This session's tool calls, one per line: `TOOL <name>` for every call and `BASH <command>`
 # for Bash ones (newlines folded). The grep prefilter keeps a large transcript cheap; jq
 # then reads only real tool_use blocks, so a tool name quoted in prose cannot count.
-# A call on a plan file (`.claude*/plans/`) is dropped: plan mode allows only that Write, so
-# counting it told a turn that only planned that it had changed code (ar-1342).
+# A call on a harness plan file (`$HOME/.claude*/plans/`) is dropped: plan mode allows only that
+# Write, so counting it told a turn that only planned that it had changed code (ar-1342). A plan
+# file edited while implementing is bookkeeping beside real edits, so it is dropped in every mode.
+# A repo's own `.claude/plans/` is committed work and still counts.
 session_calls() {
   grep -F '"tool_use"' "$TRANSCRIPT" 2>/dev/null \
-    | jq -r 'select(.type == "assistant") | .message.content[]?
+    | jq -r --arg plans "$HOME/" 'select(.type == "assistant") | .message.content[]?
              | select(.type == "tool_use")
-             | select((.input.file_path // .input.notebook_path // "") | test("/[.]claude[^/]*/plans/") | not)
+             | select((((.input.file_path // .input.notebook_path // "") | tostring) | ltrimstr($plans)
+                        | test("^[.]claude[^/]*/plans/")) | not)
              | "TOOL \(.name)", (select(.name == "Bash") | "BASH \(.input.command // "" | gsub("\n"; " "))")' \
       2>/dev/null || true
 }
