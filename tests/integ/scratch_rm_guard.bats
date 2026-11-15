@@ -3,7 +3,6 @@
 # The cache is a fixture under the test dir; the other session is a real process holding the
 # fixture id in CLAUDE_CODE_SESSION_ID, started here and killed in teardown.
 
-OTHER=0b7e5a00-0000-4000-8000-00000000aaaa
 ME=0b7e5a00-0000-4000-8000-00000000bbbb
 DEAD=0b7e5a00-0000-4000-8000-00000000dddd
 
@@ -12,6 +11,8 @@ setup() {
   load '../vendor/bats-assert/load'
   GUARD="$BATS_TEST_DIRNAME/../../.claude/hooks/scratch-rm-guard.py"
   T="$BATS_TEST_TMPDIR"
+  # One id per test: the gate runs this file's tests in parallel, each with its own live process.
+  OTHER=0b7e5a00-0000-4000-8000-$(printf '%012x' "$BASHPID")
   export XDG_CACHE_HOME="$T/cache"
   C="$XDG_CACHE_HOME"
   mkdir -p "$C/hub-spend-history/$OTHER/snap" "$C/mine/$ME" "$C/stale/$DEAD" "$C/plain/sub"
