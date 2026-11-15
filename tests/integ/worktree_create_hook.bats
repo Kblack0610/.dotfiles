@@ -75,7 +75,7 @@ remove_hook() {
 }
 
 @test "worktree-remove: a landed tree is removed with its branch, a held lock and all" {
-  git -C "$REPO" worktree add -q --lock "$SANDBOX/own" -b agent-2
+  git -C "$REPO" worktree add -q --lock --reason "held by wt: test" "$SANDBOX/own" -b agent-2
   run --separate-stderr remove_hook "$SANDBOX/own"
   assert_success
   [ ! -d "$SANDBOX/own" ]
