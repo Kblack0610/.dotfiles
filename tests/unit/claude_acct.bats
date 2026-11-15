@@ -1822,6 +1822,16 @@ pro_rollout() {
   [[ "$stderr" == *"res: unknown option 'alert=maybe'"* ]] || fail "$stderr"
 }
 
+@test "check pace: the shipped sources alert on the lazer-core team and mute the lazer-pool test pool" {
+  # A capped lazer-core team 429s every key in it (the classifier, knowledge-engine), so it must trip.
+  run grep -E '^core +litellm-team ' "$REPO_ROOT/.config/claude-acct/sources"
+  assert_success
+  [[ "$output" != *alert=off* ]] || fail "$output"
+  run grep -E '^lazer +litellm-team ' "$REPO_ROOT/.config/claude-acct/sources"
+  assert_success
+  [[ "$output" == *alert=off* ]] || fail "$output"
+}
+
 @test "check pace: the Claude accounts are one pool, so one past its own line trips nothing while the pool lasts to the resets" {
   # 2026-11-10 (ar-1529): main, alt and bnb past their own lines kept the watch red for days while
   # the four weeks, each refilled at its reset, carried the fleet's burn.
