@@ -109,6 +109,14 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Who cancelled it: a session id, or the slug of the item the caller works; agent-queue's
+    /// `cancel_stamp` writes it. None for a cancel from before it did, or one a human made at
+    /// a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_by: Option<String>,
+    /// The reason that cancel gave (`--why`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_why: Option<String>,
     /// `yes` while an item that landed one PR still has its final landing to make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial: Option<String>,
@@ -545,6 +553,30 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// True for a finished item that was cancelled, not run to an end.
+    pub fn cancelled(&self) -> bool {
+        self.state == State::Done && self.status.as_deref() == Some("cancelled")
+    }
+
+    /// Who cancelled it; a cancel from before agent-queue recorded that says so, never a blank.
+    pub fn canceller(&self) -> &str {
+        said(&self.cancelled_by).unwrap_or("an unrecorded canceller")
+    }
+
+    /// Its reason, or that none was recorded.
+    pub fn cancel_reason(&self) -> &str {
+        said(&self.cancel_why).unwrap_or("no reason recorded")
+    }
+
+    /// Who cancelled it and why, in words.
+    pub fn cancel_words(&self) -> String {
+        format!(
+            "cancelled by {}: {}",
+            self.canceller(),
+            self.cancel_reason()
+        )
     }
 
     /// Why an item in review or waiting sits there, in the words of what its headers record:
@@ -1228,6 +1260,9 @@ impl QueueRow<'_> {
         if let Some(st) = self.stuck {
             return st.word();
         }
+        if self.item.cancelled() {
+            return "cancelled";
+        }
         match self.item.state {
             State::Waiting => "needs",
             State::Running => "running",
@@ -1254,6 +1289,7 @@ impl QueueRow<'_> {
                 self.item.session.as_deref().unwrap_or("none recorded")
             )),
             (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
+            _ if self.item.cancelled() => Some(self.item.cancel_words()),
             _ => None,
         }
     }
@@ -1314,6 +1350,7 @@ impl crate::table::Row for QueueRow<'_> {
         "ready",
         "held",
         "done",
+        "cancelled",
         "all",
     ];
     const FACETS: &'static [&'static str] = &[
@@ -1405,6 +1442,7 @@ impl crate::table::Row for QueueRow<'_> {
             "ready" => i.state == State::Queued && !i.is_held(),
             "held" => i.state == State::Queued && i.is_held(),
             "done" => i.state == State::Done,
+            "cancelled" => i.cancelled(),
             "all" => true,
             _ => false,
         }
@@ -2979,6 +3017,7 @@ mod tests {
                 ("ready", 0),
                 ("held", 0),
                 ("done", 1),
+                ("cancelled", 0),
                 ("all", 3)
             ]
         );
@@ -3205,5 +3244,58 @@ mod tests {
         );
         assert_eq!(t[4].sha.as_deref(), Some("abc123"));
         assert!(items[1].timeline().is_empty(), "no stamp, no step");
+    }
+
+    #[test]
+    fn a_cancelled_chip_lists_cancels_and_the_state_hover_says_who_and_why() {
+        use crate::table::{Row, View};
+        let q = Queue {
+            items: parse(concat!(
+                r#"{"slug":"a","state":"done","status":"cancelled","cancelled_by":"9fd0d2fd","cancel_why":"dead chain","finished":"2026-11-12T10:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"b","state":"done","status":"cancelled","finished":"2026-11-12T11:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"c","state":"done","status":"ok","finished":"2026-11-12T12:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"d","state":"queued","task":"t"}"#,
+            )),
+            ..Default::default()
+        };
+        let rows = q.rows(chrono::Utc::now());
+        let slugs = |v: View| -> Vec<String> {
+            v.summary(&rows)
+                .0
+                .iter()
+                .map(|r| r.item.slug.clone())
+                .collect()
+        };
+        assert_eq!(
+            slugs(View::new::<QueueRow>("", "cancelled", "", "")),
+            ["b", "a"],
+            "newest first, and only the cancelled"
+        );
+        assert_eq!(slugs(View::new::<QueueRow>("", "done", "", "")).len(), 3);
+        let why = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .and_then(|r| r.state_why())
+        };
+        assert_eq!(
+            why("a").as_deref(),
+            Some("cancelled by 9fd0d2fd: dead chain")
+        );
+        assert_eq!(
+            why("b").as_deref(),
+            Some("cancelled by an unrecorded canceller: no reason recorded"),
+            "an old cancel says it is unrecorded, never a blank"
+        );
+        assert_eq!(why("c"), None, "a finish that ran says nothing");
+        assert!(!rows
+            .iter()
+            .find(|r| r.item.slug == "c")
+            .unwrap()
+            .item
+            .cancelled());
+        assert!(<QueueRow as Row>::STATES.contains(&"cancelled"));
     }
 }

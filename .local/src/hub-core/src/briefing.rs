@@ -946,6 +946,55 @@ fn builds(i: &Inputs) -> Vec<String> {
     out
 }
 
+/// How much of a cancel's reason the briefing line quotes.
+const CANCEL_WHY_MAX: usize = 30;
+
+/// One line when anything finished as cancelled in the window, whatever its project (a mass
+/// cancel is the thing to see): how many, how many the human asked for (`from: human`), and who
+/// cancelled the most with their first reason. The Queue tab's cancelled chip lists them.
+fn cancelled_line(i: &Inputs) -> Option<String> {
+    let all: Vec<&Item> = i
+        .done
+        .iter()
+        .flatten()
+        .filter(|it| it.cancelled())
+        .collect();
+    if all.is_empty() {
+        return None;
+    }
+    let mut by: BTreeMap<&str, Vec<&Item>> = BTreeMap::new();
+    for it in &all {
+        by.entry(it.canceller()).or_default().push(it);
+    }
+    // The most cancels first; a tie keeps the sorted name.
+    let (who, theirs) = by
+        .iter()
+        .max_by_key(|(w, v)| (v.len(), std::cmp::Reverse(**w)))?;
+    let why = theirs
+        .iter()
+        .find(|it| {
+            it.cancel_why
+                .as_deref()
+                .is_some_and(|w| !w.trim().is_empty())
+        })
+        .map_or_else(
+            || theirs[0].cancel_reason().to_string(),
+            |it| cap(it.cancel_reason(), CANCEL_WHY_MAX),
+        );
+    let mine = all.iter().filter(|it| it.source() == Some("human")).count();
+    let more = match by.len() - 1 {
+        0 => String::new(),
+        n => format!(", and {}", plural(n, "other canceller", "other cancellers")),
+    };
+    Some(cap(
+        &format!(
+            "{} cancelled, {mine} you asked for: by {who}, {why}{more}. See Queue, cancelled.",
+            all.len()
+        ),
+        ITEM_MAX,
+    ))
+}
+
 /// Overnight: critical mail, product work that failed, and product watches still red. The
 /// fleet's own failures are the agent briefing's.
 fn overnight(i: &Inputs) -> Vec<String> {
@@ -991,6 +1040,7 @@ fn overnight(i: &Inputs) -> Vec<String> {
         })
         .collect();
     capped(failed, "failed work items", &mut out);
+    out.extend(cancelled_line(i));
     let watches = i
         .releases
         .iter()
@@ -2318,6 +2368,49 @@ mod tests {
         i.landed_items = Some(vec![it]);
         let (_, summary) = landed(&i);
         assert_eq!(summary.as_deref(), Some("Yesterday 1 PR, 1 urgent, 1 fix."));
+    }
+
+    #[test]
+    fn overnight_says_who_cancelled_how_many_and_how_many_the_human_asked_for() {
+        let cancelled = |slug: &str, by: Option<&str>, why: Option<&str>, from: &str| {
+            let mut it = item(slug, "p:1", "normal");
+            it.state = State::Done;
+            it.status = Some("cancelled".into());
+            it.cancelled_by = by.map(Into::into);
+            it.cancel_why = why.map(Into::into);
+            it.from = Some(from.into());
+            it
+        };
+        let mut i = green();
+        i.releases = Some(vec![]);
+        i.done = Some(vec![
+            cancelled("a", Some("9fd0d2fd"), Some("dead chain"), "human"),
+            cancelled("b", Some("9fd0d2fd"), None, "board:x:1"),
+            cancelled("c", Some("9fd0d2fd"), Some("later"), "human"),
+            cancelled("d", None, None, "human"),
+        ]);
+        let o = build(&i).overnight;
+        assert_eq!(
+            o,
+            ["4 cancelled, 3 you asked for: by 9fd0d2fd, dead chain, and 1 other canceller. See Queue, cancelled."]
+        );
+        // negative controls: a cancel before the window is not read, and a run that ended ok or
+        // failed is no cancel
+        let mut ok = item("e", "p:2", "normal");
+        ok.state = State::Done;
+        ok.status = Some("ok".into());
+        let mut j = green();
+        j.releases = Some(vec![]);
+        j.done = Some(vec![ok]);
+        assert_eq!(build(&j).overnight, ["Nothing broke overnight."]);
+        // an unknown canceller with no reason is said so
+        let mut k = green();
+        k.releases = Some(vec![]);
+        k.done = Some(vec![cancelled("f", None, None, "shepherd")]);
+        assert_eq!(
+            build(&k).overnight,
+            ["1 cancelled, 0 you asked for: by an unrecorded canceller, no reason recorded. See Queue, cancelled."]
+        );
     }
 
     #[test]

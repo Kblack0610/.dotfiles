@@ -6385,7 +6385,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5"
             ),
             "{s}"
         );

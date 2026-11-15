@@ -985,7 +985,7 @@ pub(crate) mod tests {
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5    5 of 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5    5 of 5"
             ),
             "{s}"
         );
@@ -1096,13 +1096,14 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
         assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 8] = [
+        let want: [(&str, &[&str]); 9] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
             ("on a PR", &[]),
             ("ready", &["next-up"]),
             ("held", &["night-sweep"]),
             ("done", &["landed"]),
+            ("cancelled", &[]),
             (
                 "all",
                 &["pick-sides", "fix-menu", "next-up", "night-sweep", "landed"],
