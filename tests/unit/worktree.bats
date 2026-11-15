@@ -1083,6 +1083,34 @@ done_from_inside() {
   [ -d "$WT_ROOT/repo-agent-1" ]
 }
 
+@test "done refuses while another window of its session runs claude, and kills nothing" {
+  # ar-120: the kill is by session name, so a second window running claude died with it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf '%%12 0 claude\n%%15 2 claude\n' > "$NOTES_FIXTURE/tmux.panes"
+  cd "$WT_ROOT/repo-agent-1"
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 run cmd_done
+  assert_failure
+  assert_output --partial 'kept repo-agent-1: window 2 (pane %15) still runs claude'
+  [ ! -s "$NOTES_FIXTURE/tmux.jobs" ]
+  [ -d "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "done ignores its own claude pane and a session's non-claude panes" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf '%%12 0 claude\n%%15 2 zsh\n' > "$NOTES_FIXTURE/tmux.panes"
+  cd "$WT_ROOT/repo-agent-1"
+  TMUX="$SANDBOX/tmp/tmux-0/default,1,0" TMUX_PANE=%12 run cmd_done
+  assert_success
+  assert_output --partial 'done: killing repo-agent-1'
+  [ -s "$NOTES_FIXTURE/tmux.jobs" ]
+}
+
 @test "an editor on ANOTHER project does not pin the worktree" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main

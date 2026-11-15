@@ -1226,6 +1226,17 @@ cmd_reap() {
   printf 'reaped %s\n' "$name"
 }
 
+# wt_other_claude <session> -- print "<window index> <pane id>" for each pane of <session> that
+# runs claude other than the pane `done` was run from ($TMUX_PANE), nothing when there is none.
+# `done` kills the whole session by name, so a second window running claude dies with it.
+wt_other_claude() {
+  local srv args=()
+  srv=$(wt_session_server "$1") || return 0
+  [ "$srv" = "${WT_SERVER:-$(wt_current_server)}" ] || args=(-L "$srv")
+  tmux "${args[@]}" list-panes -s -t "=$1" -F '#{pane_id} #{window_index} #{pane_current_command}' 2>/dev/null |
+    awk -v me="${TMUX_PANE:-}" '$1 != me && $3 == "claude" { print $2, $1 }'
+}
+
 # wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was
 # run from, when that is the session being cleaned up: a Claude session (its id is in the
 # env) whose pane is in <name>'s session, at <path>. Anything else (the keybinding, a plain
@@ -1254,7 +1265,7 @@ wt_done_arm() {
 # terminal left to print a refusal to. A worktree holding real work must be refused while
 # you can still read why.
 cmd_done() {
-  local target="${1:-$PWD}" path name reason
+  local target="${1:-$PWD}" path name reason other
 
   case "$target" in
   */*) path="$(realpath "$target" 2>/dev/null)" ;;
@@ -1273,6 +1284,13 @@ cmd_done() {
   # Ask about the WORK, not the session -- the session is the thing we are about to kill, so
   # wt_reap_reason would refuse every time by design.
   reason=$(wt_work_reason "$path") || panel_die "kept $name: $reason"
+
+  # The kill below is by session name, and a session can hold more than the window `done` was
+  # run from: a second window running claude would die with it, mid-turn. Refused here, while
+  # the reason can still be read; close this window alone (wind-down, no --session) and run
+  # `done` from the last one.
+  other=$(wt_other_claude "$name" | head -1)
+  [ -z "$other" ] || panel_die "kept $name: window ${other% *} (pane ${other#* }) still runs claude; close only this window, then run done from the last one"
 
   if ! panel_in_tmux && ! wt_session_exists "$name"; then
     # Nothing to defer around: no session to kill and no shell to lose.
