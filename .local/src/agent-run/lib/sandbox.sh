@@ -89,8 +89,8 @@ SANDBOX_CLAUDE_NEEDS="${SANDBOX_CLAUDE_NEEDS:-bwrap socat}"
 # sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
 sandbox_claude_version_ok() {
   local v
-  v="$(claude --version 2>/dev/null | grep -oE '^[0-9]+(\.[0-9]+)+' | head -n1)"
-  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$SANDBOX_CLAUDE_MIN" "$v" | sort -V | head -n1)" = "$SANDBOX_CLAUDE_MIN" ]
+  v="$(claude --version 2>/dev/null | grep -oE '^[0-9]+(\.[0-9]+)+' | awk 'NR==1')"
+  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$SANDBOX_CLAUDE_MIN" "$v" | sort -V | awk 'NR==1')" = "$SANDBOX_CLAUDE_MIN" ]
 }
 
 # sandbox_claude_settings -> the --settings JSON for claude: the profile, with the switches that

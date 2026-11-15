@@ -814,7 +814,7 @@ cmd_liveness() {
     fi
     for n in $(list_agent_names); do
         # Read raw first: a switched-off conf is out of scope even when it would not load.
-        [ "$(sed -n 's/^ENABLED=//p' "$CONFIG_DIR/$n.conf" | head -1 | tr -d "\"' ")" = no ] && continue
+        [ "$(sed -n '/^ENABLED=/{s///p;q;}' "$CONFIG_DIR/$n.conf" | tr -d "\"' ")" = no ] && continue
         if ! conf=$(load_agent "$n" 2>&1); then
             printf '%s: invalid conf (%s)\n' "$n" "${conf//$'\n'/; }"; rc=1; continue
         fi

@@ -63,7 +63,7 @@ fi
 # `epic: <code>-<N>` line carries, or nothing (no line, no map, an unknown code).
 plan_epic_dir() {
   local code proj
-  code=$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$1" 2>/dev/null | head -1)
+  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
   [ -n "$code" ] || return 0
   declare -F project_of_code >/dev/null 2>&1 || return 0   # the resolver source above was skipped
   proj=$(project_of_code "$code")

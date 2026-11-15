@@ -616,7 +616,7 @@ remind_sample() {
   while IFS=$'\t' read -r sid target bucket fact reason pr next plan; do
     case "$sid" in ''|*/*|.|..) continue ;; esac
     awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
-    at="$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null | head -1)"
+    at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
     when="$(date -d "$at" +%s 2>/dev/null)" || continue
     [ $((now - when)) -ge $((min * 60)) ] || continue
     decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
@@ -765,10 +765,10 @@ shared_sample() {
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
-      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p' <<<"$out" | head -1)"
+      slug="$(sed -n '/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
-        slug="$(sed -n 's/.*already in the queue: //p' <<<"$out" | head -1)"
+        slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"
         [ -z "$slug" ] || shared_owners "$test" | grep -qxF -- "$slug" || slug=""
       fi
     fi
@@ -1193,7 +1193,7 @@ lane_cols() {
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
     [ -z "$clear" ] || ! { grep -qxF -- "${p##*/}" <<<"$clear" ||
-      grep -qxF -- "$(sed -n 's/^target=[^/]*\///p' "$p" | head -n 1)" <<<"$clear"; } || wrong=$((wrong + 1))
+      grep -qxF -- "$(sed -n '/^target=[^/]*\//{s///p;q;}' "$p")" <<<"$clear"; } || wrong=$((wrong + 1))
   done
   printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }
@@ -1634,7 +1634,7 @@ cmd_stuck() {
   jq -r '"stuck: \(.stuck_why)",
     "last pass: \(.last_pass_id // "none" | .[:8]) \(.last_verdict // "")",
     (if .pass_id then "pass now: \(.pass_id[:8]) \(.pass_status), \(.pass_age_s // 0 | . / 60 | floor)m: \(.attach)" else empty end)' <<<"$s"
-  cut -f4 "$DUE_LAST" 2>/dev/null | head -n 5
+  head -n 5 "$DUE_LAST" 2>/dev/null | cut -f4
   return 1
 }
 

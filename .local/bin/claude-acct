@@ -421,7 +421,7 @@ cmd_link() {
 # nothing without data
 best() {
     # Stable sort keeps file order on a tie, so the first account (main) wins it.
-    scores | sort -s -t$'\037' -g -k1,1 | head -n1 | cut -d$'\037' -f2-
+    scores | sort -s -t$'\037' -g -k1,1 | awk 'NR==1' | cut -d$'\037' -f2-
 }
 
 cmd_pick() {
@@ -469,7 +469,7 @@ PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}"
 # number, which stops the script below: a missing number must not quietly become a default
 pace_get() {
     local v
-    v=$(sed -n "s/^$1=//p" "$PACE_CONF" 2>/dev/null | head -1)
+    v=$(sed -n "/^$1=/{s///p;q;}" "$PACE_CONF" 2>/dev/null)
     if [[ ! "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         echo "claude-acct: $1 is not set to a number in $PACE_CONF" >&2
         return 0
@@ -1275,7 +1275,7 @@ shells_refusal() {
 
 # dialog_choice <screen> -> the number of /exit's "Exit and stop tasks" option
 dialog_choice() {
-    grep -oE '([0-9])\. Exit and stop tasks' <<< "$1" | head -n1 | cut -c1
+    grep -oE '([0-9])\. Exit and stop tasks' <<< "$1" | awk 'NR==1' | cut -c1
 }
 
 # bg_shells <pid> -> "pid  command" for each background shell that claude runs: a child
@@ -1448,7 +1448,7 @@ record() {
 }
 
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
-ledger_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }
+ledger_get() { sed -n "/^$2=/{s///p;q;}" "$1" 2>/dev/null; }
 
 # refuse <why...> -- one line naming the caller's $verb and its target ($what, else $session), exit 1
 refuse() { echo "claude-acct: $verb ${what:-$session}: $*" >&2; return 1; }
@@ -1614,7 +1614,7 @@ park_flow() {
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
     if [[ "$verb" == move && -n "$to_name" ]]; then
         # The named account's own score line, the same numbers best() ranks.
-        b=$(scores | awk -F'\037' -v n="$to_name" '$3 == n' | head -n1 | cut -d$'\037' -f2-)
+        b=$(scores | awk -F'\037' -v n="$to_name" '$3 == n && !c++' | cut -d$'\037' -f2-)
         IFS=$'\037' read -r score name to note <<< "$b"
         name="$to_name" to="$to_dir"
         why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop" chosen)
@@ -1638,7 +1638,7 @@ park_flow() {
     [[ "$from" == "$GATEWAY_FROM" ]] && base="env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN $base"
     # The queue item a pane claude's launch line carried (fleet-dispatch's), for its respawn.
     local item=""
-    ((direct)) && item=$(tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
+    ((direct)) && item=$(tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | awk 'NR==1')
     if [[ "$verb" == move ]]; then
         echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else

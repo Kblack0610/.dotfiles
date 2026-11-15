@@ -433,6 +433,5 @@ git_open_prs() {
   name=$(origin_repo "$repo") || return 0
   host=$(origin_host "$repo"); [ "$host" = github.com ] || name="$host/$name"
   { "${SCHEDULES_SYNC:-schedules-sync}" prs "$name" --state open 2>/dev/null || true; } \
-    | jq -r --arg f "$filt" '.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"' 2>/dev/null \
-    | head -"$limit" || true
+    | jq -r --arg f "$filt" --argjson n "$limit" '[.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"] | .[:$n][]' 2>/dev/null || true
 }

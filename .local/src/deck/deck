@@ -111,7 +111,7 @@ cmd_themes() {
   local f name
   shopt -s nullglob
   for f in "$THEMES_DIR"/theme-*.css; do
-    name="$(sed -n 's|^/\* @theme \([a-zA-Z0-9_-]*\) \*/|\1|p' "$f" | head -1)"
+    name="$(sed -n '\|^/\* @theme \([a-zA-Z0-9_-]*\) \*/|{s||\1|p;q;}' "$f")"
     printf '%-14s %s\n' "${name:-?}" "$f"
   done
 }
@@ -260,7 +260,7 @@ cmd_list() {
   shopt -s nullglob
   for f in "$dir"/*.md; do
     is_deck "$f" || continue
-    theme="$(sed -n 's/^theme: *//p' "$f" | head -1)"
+    theme="$(sed -n '/^theme: */{s///p;q;}' "$f")"
     printf '%-30s %s\n' "$(basename "$f")" "${theme:+[$theme]}"
   done
 }

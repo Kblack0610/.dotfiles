@@ -143,7 +143,7 @@ title_of() {
 stage_epic() {
   local out id
   out="$(notes ptask "$NAME" add "epic(stage): $1 to standard")" || return 1
-  id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | head -1)"
+  id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR==1')"
   [ -n "$id" ] || return 1
   printf 'epic    %-10s  %s to standard (%s)\n' "$1" "$1" "${id#id:}" >&2
   printf '%s\n' "${id#id:}"
@@ -449,7 +449,7 @@ if [ -z "$TARGET" ]; then
 fi
 lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check: unknown stage \"$TARGET\" (want: $LAB_STAGES)" >&2; exit 2; }
 
-enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
+enforced_from="$(sed -n '/^Enforced from: *\([0-9-]*\).*/{s//\1/p;q;}' "$STAGES_DOC")"
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
 fails=0 res=""

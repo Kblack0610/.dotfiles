@@ -147,14 +147,14 @@ cmd_fire() {
 
   # shellcheck source=/dev/null
   local scope target session pane socket label worktree sid
-  scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
-  sid=$(grep '^sid=' "$sentinel" | head -1 | cut -d= -f2-)
-  worktree=$(grep '^worktree=' "$sentinel" | head -1 | cut -d= -f2-)
-  target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
-  session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
-  pane=$(grep '^pane=' "$sentinel" | head -1 | cut -d= -f2-)
-  socket=$(grep '^socket=' "$sentinel" | head -1 | cut -d= -f2-)
-  label=$(grep '^label=' "$sentinel" | head -1 | cut -d= -f2-)
+  scope=$(grep -m1 '^scope=' "$sentinel" | cut -d= -f2-)
+  sid=$(grep -m1 '^sid=' "$sentinel" | cut -d= -f2-)
+  worktree=$(grep -m1 '^worktree=' "$sentinel" | cut -d= -f2-)
+  target=$(grep -m1 '^target=' "$sentinel" | cut -d= -f2-)
+  session=$(grep -m1 '^session=' "$sentinel" | cut -d= -f2-)
+  pane=$(grep -m1 '^pane=' "$sentinel" | cut -d= -f2-)
+  socket=$(grep -m1 '^socket=' "$sentinel" | cut -d= -f2-)
+  label=$(grep -m1 '^label=' "$sentinel" | cut -d= -f2-)
   scope="${scope:-window}"
 
   [ -n "$target" ] || { echo "wind-down fire: no target in sentinel" >&2; return 1; }
