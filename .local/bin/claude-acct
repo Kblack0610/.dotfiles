@@ -47,7 +47,7 @@
 #                        # <target> is [server/]session[:window] or a pane id (%N). A session
 #                        # holds one claude; a window or pane picks one claude in a shared
 #                        # session (hub/dotfiles:2). The ledger <key> is the session, or
-#                        # session:window for a window or pane target.
+#                        # session:%pane for a window or pane target (its pane id, which a closed window does not renumber).
 #   claude-acct trust <server> <pane> <ready text>
 #                        # wait for a claude just started in that pane to show <ready text>
 #                        # (its mode footer), answering the folder trust prompt on the way
@@ -1573,7 +1573,7 @@ park_flow() {
     fi
 
     # A session target's ledger is the session; a window or pane is one claude among others, so
-    # its ledger is session:window, and only that window or pane is searched.
+    # its ledger is session:%pane, and only that window or pane is searched.
     local hits pid pane pane_pid reg win
     hits=$(find_claude "$server" "$session" "$window" "$pane_t")
     if [[ -z "$hits" ]]; then
@@ -1590,12 +1590,16 @@ park_flow() {
     key="$session"
     if [[ -n "$window$pane_t" ]]; then
         [[ -n "$win" ]] || { refuse "cannot read the window index of pane $pane"; return; }
-        key="$session:$win"
-    fi
-    if [[ "$key" != "$session" && -f "$PARKED/$key" && "$(ledger_get "$PARKED/$key" pane)" != "$pane" ]]; then
-        refuse "window $key already holds a parked pane ($(ledger_get "$PARKED/$key" pane)); unpark it first"; return
+        # The pane id outlives a renumber; a window index does not, and keyed by it one pane
+        # could be filed under two names, or two panes under one.
+        key="$session:$pane"
     fi
     what="$key"
+    # Pane ids restart with the tmux server, so a ledger that outlived a reboot can hold the
+    # same key: it is another claude's resume, never overwritten.
+    if [[ "$key" != "$session" && -f "$PARKED/$key" ]] && [[ "$(ledger_get "$PARKED/$key" session_id)" != "$(jq -r '.sessionId // empty' "$reg")" ]]; then
+        refuse "ledger $PARKED/$key holds another session; unpark it or delete it first"; return
+    fi
 
     local status sid cwd from b score name to note why shells=""
     status=$(jq -r '.status // empty' "$reg"); sid=$(jq -r '.sessionId // empty' "$reg"); cwd=$(jq -r '.cwd // empty' "$reg")
@@ -1763,8 +1767,22 @@ unpark_ledger() {
 cmd_park() { park_flow park "$@"; }
 cmd_move() { park_flow move "$@"; }
 
-# unpark <target>|--all -- the target names its ledger: session, session:window, or a pane id,
-# which matches the ledger that holds that pane
+# window_ledgers <session> <window> -> the window ledgers of that session whose pane is in that
+# window now (by index or name; the window its ledger recorded when the pane is gone)
+window_ledgers() {
+    local f srv cur w
+    for f in "$PARKED/$1":*; do
+        [[ -f "$f" ]] || continue
+        srv=$(ledger_get "$f" server)
+        cur=$(tmux -L "$srv" display-message -p -t "$(ledger_get "$f" pane)" '#{window_index} #{window_name}' 2>/dev/null)
+        if [[ -z "$cur" ]]; then w=$(ledger_get "$f" target); cur="${w##*:} "; fi
+        [[ "${cur%% *}" == "$2" || "${cur#* }" == "$2" ]] && printf '%s\n' "$f"
+    done
+    return 0
+}
+
+# unpark <target>|--all -- the target names its ledger: session, session:window (the window its
+# pane is in now), or a pane id, which matches the ledger that holds that pane
 cmd_unpark() {
     local verb=unpark session="" what="" f rc=0 n=0 srv win pane_t
     case "${1:-}" in
@@ -1789,13 +1807,20 @@ cmd_unpark() {
         for f in "$PARKED"/*; do
             [[ -f "$f" && "$(ledger_get "$f" pane)" == "$pane_t" ]] || continue
             [[ -z "$srv" || "$(ledger_get "$f" server)" == "$srv" ]] || continue
-            ((n++)) && { refuse "more than one ledger holds that pane; unpark it by session:window"; return; }
+            ((n++)) && { refuse "more than one ledger holds that pane; name its ledger (session:%pane)"; return; }
             session="${f##*/}"
         done
         ((n)) || { refuse "not parked: no ledger holds that pane"; return; }
         win=""
     fi
     f="$PARKED/$session${win:+:$win}"
+    if [[ -n "$win" && ! -f "$f" ]]; then
+        # a window is named by where its pane is now, not by the index its ledger was written under
+        local hits
+        hits=$(window_ledgers "$session" "$win")
+        (($(grep -c . <<< "$hits") > 1)) && { what="$1"; refuse "more than one ledger holds that window; unpark it by pane id"; return; }
+        [[ -z "$hits" ]] || f="$hits"
+    fi
     [[ -z "$srv" || ! -f "$f" || "$(ledger_get "$f" server)" == "$srv" ]] ||
         { what="$1"; refuse "parked on server $(ledger_get "$f" server), not $srv"; return; }
     unpark_ledger unpark "$f"

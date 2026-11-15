@@ -1895,7 +1895,7 @@ research_item() {
   [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
 }
 
-@test "end to end: a session:window ledger stays PARKED beside the shared session's other live claudes; the row carries its account" {
+@test "end to end: a session:%pane ledger stays PARKED beside the shared session's other live claudes; the row carries its account" {
   landed_fixture
   PANEL_ACCOUNT=alt panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   mkdir -p "$HOME/.agent/parked"
@@ -1905,8 +1905,8 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -sr 'map("\(.target) \(.bucket) \(.account)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED alt,lab/s1:3 PARKED null' ]
-  # Negative control: a claude live in that window again makes the ledger stale
-  sed -i 's|lab/s1:3|lab/s1:1|' "$HOME/.agent/parked/s1:3"
+  # Negative control: a claude live in that pane again makes the ledger stale, whatever window its target recorded
+  sed -i 's|pane=%9|pane=%7|' "$HOME/.agent/parked/s1:3"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
 }
