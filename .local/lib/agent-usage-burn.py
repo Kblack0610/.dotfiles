@@ -693,11 +693,23 @@ def runner_calls(state_dir):
     return out
 
 
-def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item):
-    """One by_session row: what one session cost in the window, and who it was."""
+def session_row(sid, measured, estimated, origin, harness, agent, account, project, title, item, *, models, tokens):
+    """One by_session row: what one session cost in the window, on which models, and who it was."""
     return {"sid": sid, "usd": measured + estimated, "measured": measured, "estimated": estimated,
             "origin": origin, "harness": harness, "agent": agent, "account": account,
-            "project": project, "title": title, "item": item}
+            "project": project, "title": title, "item": item,
+            "models": {m: round(v, 3) for m, v in sorted(models.items()) if v > 0}, "tokens": tokens}
+
+
+def outcome_models(r):
+    """An outcomes row's dollars by model: its own split, else its whole cost on its models joined
+    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model."""
+    real = lambda m: m and not m.startswith("<")
+    split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if real(m) and (v or 0) > 0}
+    if split:
+        return split
+    names = sorted({m for m in r.get("models") or [] if real(m)})
+    return {"+".join(names): r["cost_usd"]} if names else {}
 
 
 def other_harnesses(start, end, root):
@@ -730,7 +742,8 @@ def other_harnesses(start, end, root):
             b["sources"].add(r.get("cost_src") or "harness")
             if sid and r["cost_usd"] > 0:   # priced from a table or the harness's own sum: estimated, as in total
                 rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
-                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None))
+                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
+                                        models=outcome_models(r), tokens=r.get("tokens_total")))
     return out, rows
 
 
@@ -749,12 +762,14 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
     def bucket():
         return {"usd": 0.0, "measured": 0.0, "estimated": 0.0, "sessions": 0, "sessions_measured": 0}
     by = {k: defaultdict(bucket) for k in ("origin", "runner", "account", "model")}
-    sess = defaultdict(lambda: {"measured": 0.0, "estimated": 0.0, "priced": 0.0, "whole": True, "runner": None})
+    sess = defaultdict(lambda: {"measured": 0.0, "estimated": 0.0, "priced": 0.0, "whole": True, "runner": None,
+                                "models": defaultdict(float), "tokens": 0})
     # a name the direct bills also fit is direct traffic, whatever the gateway calls its own routes
     gateway_models = {r["metric"].get("model") for r in prom("sum by (model)(litellm_spend_metric_total)", end)} - fitted
     for (sid, model), (usd, runner) in measured.items():
         if usd > 0 and model not in gateway_models:
             sess[sid]["measured"] += usd
+            sess[sid]["models"][model] += usd
             sess[sid]["runner"] = sess[sid]["runner"] or runner
             by["model"][model]["measured"] += usd
     tokens_all = tokens_est = 0
@@ -771,6 +786,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
         usd = sum(rates[model][k] * t[k] / 1e6 for k in TOKEN_TYPES) if model in rates else None
         s["priced"] += usd or 0.0
         s["whole"] = s["whole"] and usd is not None
+        s["tokens"] += n
         if s["measured"] > 0:
             continue
         tokens_est += n
@@ -779,6 +795,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
             unpriced[model]["sessions"].add(sid)
         else:
             s["estimated"] += usd
+            s["models"][model] += usd
             by["model"][model]["estimated"] += usd
 
     # Calls a transcript never records (helper Haiku, compaction) show as billed sessions costing more
@@ -805,7 +822,7 @@ def fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home):
             agent = name if origin in ("runner", "shepherd") else ((it or {}).get("tmux") or os.path.basename(cwd.rstrip("/")) or None)
             by_session.append(session_row(sid, s["measured"], s["estimated"], origin, reg.get("harness") or "claude",
                                           agent, account, (it or {}).get("project") or reg.get("project"),
-                                          reg.get("title"), (it or {}).get("slug")))
+                                          reg.get("title"), (it or {}).get("slug"), models=s["models"], tokens=s["tokens"]))
         if s["measured"] > 0 and s["priced"] > 0 and s["whole"]:
             billed[origin] += s["measured"]
             priced[origin] += s["priced"]

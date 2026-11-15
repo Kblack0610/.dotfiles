@@ -278,15 +278,15 @@ const schedules = {
 };
 
 // Costs: hub_core::costs, the shape costs.test.mjs pins.
-const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src", "pr", "at"];
-const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, pr: null, at: null, ...o });
+const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
+const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, ...o });
 const account = (name, live, used, gone, burn, sustain) => ({ name, kind: "claude", unpaced: false, reserve: null, parent: null, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live, used, used_text: `${used}%`, gone, burn, sustain, over: burn / sustain, idle_at: NOW + 3600, burn_at: null, run_out: null, resets: NOW + 200000, cost_24h: 80 });
 // costs::columns("model"), which is also all the server keeps of the table's columns.
 const COST_CUT = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 const costs = {
   at: NOW, by: "model", window: "7d", cuts: ["session", "model", "harness", "tool", "project", "runner", "kind"], windows: ["24h", "7d", "30d"],
-  totals: [{ window: "7d", usd: 2204, sessions: 512, unpriced: 2 }, { window: "30d", usd: 8120, sessions: 2040, unpriced: 2 }],
-  totals_note: "whole-life cost of the sessions touched in the window, from outcomes",
+  totals: [{ window: "7d", usd: 2204, estimated: 0, sessions: 512, days: 7, through: "2026-11-14" }, { window: "30d", usd: 8120, estimated: 0, sessions: 2040, days: 30, through: "2026-11-14" }],
+  totals_note: "7d and 30d are whole nightly days to the newest snapshot; the cut table's 24h is the live file",
   fleet_cost: {
     why: null, usd: "about $859", measured: "$320", estimated: "$539", as_of: NOW - 600, stale: false,
     coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
@@ -312,7 +312,7 @@ const costs = {
     total: { name: "total", sessions: 6, cost: 1140, share: 87, est: 40, per_session: 190 },
     groups: [{ name: "queue items", sessions: 3, cost: 760, share: 58, est: 50, per_session: 253 }, { name: "shepherd", sessions: 2, cost: 280, share: 21, est: 0, per_session: 140 }, { name: "dream", sessions: 1, cost: 100, share: 8, est: 30, per_session: 100 }],
   },
-  sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "outcomes rows", eval_days: 7, unpriced: null,
+  sources: [{ name: "outcomes", as_of: NOW - 600, stale: false }], errors: [], columns: COST_CUT, source: "fleet-cost session rows: the live file for 24h, the nightly snapshot days for 7d and 30d", eval_days: 7, unpriced: null,
   rows: rows(6, (i) => line({ model: pick(["opus-5-5", "sonnet-4-5", "gpt-5-codex", "haiku-4-5", "lazer/qwen3-coder-next-long-model-name", "lazer/deepseek-v3-2-exp"], i), harness: pick(["claude", "codex", "opencode"], i), sessions: 120 - i * 15, tokens: 9e9 - i * 1e9, cost: 900 - i * 120, share: 0.4 - i * 0.05, landed: 0.8 - i * 0.05, redo: i, reverts: i % 2, per_pr: 5.14 + i, src: pick(["outcomes", "mixed"], i) })),
   shown_usd: 300,
   table: table(6, LINE_COLS.filter((k) => COST_CUT.includes(k)), ["all"], { model: ["opus-5-5", "gpt-5-codex"], runner: ["queue"] }),

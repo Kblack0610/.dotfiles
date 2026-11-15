@@ -209,3 +209,12 @@ PY
   assert_success
   assert_output 'null'
 }
+
+@test "a session row carries its dollars by model and its tokens; an outcomes row books its split, else its models joined" {
+  turn unbilled claude-opus-5-5 1000000 1000000 0 0
+  turn billed claude-opus-5-5 1 1 1 1
+  printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":9,"models":["gpt-5.4","<synthetic>"],"tokens_total":70}\n{"session_id":"z","harness":"codex","updated_epoch":%s,"cost_usd":4,"models":["gpt-5.4","gpt-5.4-mini"],"cost_by_model":{"gpt-5.4":3,"gpt-5.4-mini":1,"<synthetic>":2}}\n{"session_id":"j","harness":"codex","updated_epoch":%s,"cost_usd":5,"models":["gpt-5.4-mini","gpt-5.4"]}\n' "$NOW" "$NOW" "$NOW" > "$OUTCOMES_ROOT/p/2026.jsonl"
+  run cost '[.by_session[] | select(.sid != "ghost") | [.sid, .models, .tokens]] | sort_by(.[0])'
+  assert_success
+  assert_output '[["billed",{"claude-opus-5-5":10},4],["j",{"gpt-5.4+gpt-5.4-mini":5},null],["unbilled",{"claude-opus-5-5":24},2000000],["x",{"gpt-5.4":9},70],["z",{"gpt-5.4":3,"gpt-5.4-mini":1},null]]'
+}
