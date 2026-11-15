@@ -571,6 +571,12 @@ real_epic_board() {
     > "$FLEET_DISPATCH_DIR/panes/lab.lost.json"
   jq -n '{server: "hub", instance: "2 2", panes: [{session: "dotfiles", window: "h", cwd: "/x", claude: "conv-hub"}]}' \
     > "$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  # A record that will not read holds every session of its server.
+  started_item odd default:game-agent-5 run
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  echo '{"server": "default", "pan' > "$FLEET_DISPATCH_DIR/panes/default.lost.json"
+  # A miss from before the death is no witness once the record holds the item.
+  mkdir -p "$FLEET_DISPATCH_DIR/reap-miss" && date +%s > "$FLEET_DISPATCH_DIR/reap-miss/hub-work"
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-9:1\",\"status\":\"busy\",\"session_id\":\"someone-else\"}"'
   stub agent-ask 'exit 0'
   run cmd_reap; run cmd_reap
@@ -578,6 +584,8 @@ real_epic_board() {
   [ -n "$(qitem running fix-crash)" ] || fail "reaped a session its lost record still owes a reopen"
   grep -qF -- '- [/] fix crash' "$NOTES_FIXTURE/rows.game.human" || fail "un-started the row of a session owed a reopen"
   [ -n "$(qitem running hub-work)" ] || fail "reaped a hub conversation its lost record still owes a reopen"
+  [ ! -e "$FLEET_DISPATCH_DIR/reap-miss/hub-work" ] || fail "kept a miss mark while the record held the item"
+  [ -n "$(qitem running odd)" ] || fail "an unreadable lost record let reap settle its server's session"
   # Negative control: a session no record holds is gone as before.
   [ -z "$(qitem running other)" ] || fail "kept a gone session no lost record holds"
 
@@ -1476,6 +1484,14 @@ OUT
   assert_equal "$(jq -c '[.panes[].claude] | sort' "$LOST")" '["conv-1","conv-2"]'
   grep -qF 'died with 1 conversation(s) on it, 2 owed to restore in all' "$FLEET_DISPATCH_DIR/log.md" || fail "log: $(cat "$FLEET_DISPATCH_DIR/log.md")"
   [ ! -f "$RECORD" ] || fail "the merged record stayed"
+  # A lost record that will not parse owes nothing restore could read: the next death replaces it.
+  echo '{"server": "hub", "pan' > "$LOST"
+  world '12 3000' "$PANE1"
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  world ''
+  "$REPO_ROOT/.local/bin/fleet-dispatch" record 2>/dev/null
+  assert_equal "$(jq -c '[.panes[].claude]' "$LOST")" '["conv-1"]'
+  [ ! -f "$LOST.tmp" ] || fail "left the failed merge's temp file"
 }
 
 @test "restore keeps a record that grew during its walk, so a rerun reopens the new death's conversations" {

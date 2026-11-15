@@ -729,17 +729,22 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
 # restoring <server> <tmux session> <session ids> -- exit 0 when a lost pane record (world_lost) still
 # holds a conversation in that tmux session, or one of those Claude sessions: restore has not reopened
-# it yet. REAP_LOST caches one read per pass.
+# it yet. A record that will not read holds every session of its server, since cannot-tell is live.
+# REAP_LOST caches one read per pass.
 restoring() {
   if [ -z "${REAP_LOST+set}" ]; then
-    local f files=()
-    for f in "$PANES"/*.lost.json; do [ -r "$f" ] && files+=("$f"); done
+    local f srv held
     REAP_LOST=''
-    [ ${#files[@]} -eq 0 ] || REAP_LOST=$(jq -r '.server as $s | .panes[]? | select(.claude != "")
-      | "\($s)/\(.session)", "sid:\(.claude)"' "${files[@]}" 2>/dev/null)
+    for f in "$PANES"/*.lost.json; do
+      [ -e "$f" ] || continue
+      srv=${f##*/}; srv=${srv%.lost.json}
+      held=$(jq -r --arg s "$srv" '.panes[] | select(.claude != "") | "\($s)/\(.session)", "sid:\(.claude)"' "$f" 2>/dev/null) ||
+        held="$srv/*"
+      REAP_LOST+="$held"$'\n'
+    done
   fi
   [ -n "$REAP_LOST" ] || return 1
-  { [ -n "$2" ] && grep -qxF "$1/$2" <<<"$REAP_LOST"; } ||
+  { [ -n "$2" ] && grep -qxF -e "$1/$2" -e "$1/*" <<<"$REAP_LOST"; } ||
     { [ -n "$3" ] && grep -qxF -f <(printf 'sid:%s\n' $3) <<<"$REAP_LOST"; }
 }
 
@@ -2160,18 +2165,22 @@ planned_reboot() {
 
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
 # A record with no conversations has nothing to restore, so it never replaces one that does. A lost
-# record restore has not consumed still owes its conversations, so a later death adds its own to
-# them: on 2026-11-13 a reboot during the boot restore replaced 68 owed with the 18 reopened (ar-2140).
+# record restore has not consumed still owes its conversations, so a later death (a reboot during
+# the boot restore) adds its own to them and never replaces them (ar-2140). One that will not parse
+# owes nothing restore could read, so the new record replaces it. Callers hold $PANES/.lock.
 world_lost() {
   local srv=$1 n lost="$PANES/$1.lost.json" owed=''
   n=$(jq '[.panes[] | select(.claude != "")] | length' "$PANES/$srv.json" 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -gt 0 ] && [ -e "$lost" ]; then
-    jq -s '.[1] as $new | [$new.panes[].claude | select(. != "")] as $ids
+  if [ "$n" -gt 0 ] && [ -e "$lost" ] && jq -s '.[1] as $new | [$new.panes[].claude | select(. != "")] as $ids
       | $new + {panes: ($new.panes + [.[0].panes[] | select(.claude != "" and (.claude | IN($ids[]) | not))])}' \
-      "$lost" "$PANES/$srv.json" > "$lost.tmp" && mv -f "$lost.tmp" "$lost" && rm -f "$PANES/$srv.json" &&
-      owed=$(jq '[.panes[] | select(.claude != "")] | length' "$lost")
-  elif [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$lost"
+      "$lost" "$PANES/$srv.json" > "$lost.tmp" 2>/dev/null; then
+    mv -f "$lost.tmp" "$lost" && rm -f "$PANES/$srv.json"
+    owed=$(jq '[.panes[] | select(.claude != "")] | length' "$lost")
+  elif [ "$n" -gt 0 ]; then
+    rm -f "$lost.tmp"
+    [ ! -e "$lost" ] || logline "tmux server $srv: its lost record would not parse, so the new one replaces it"
+    mv -f "$PANES/$srv.json" "$lost"
   else rm -f "$PANES/$srv.json"; fi
   logline "tmux server $srv died with $n conversation(s) on it${owed:+, $owed owed to restore in all}"
   # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
@@ -2231,11 +2240,11 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # it was in, through start, with the running or waiting queue item that lists its Claude session
 # (`agent-queue mine --sid`), so the item records where it runs again. The manifest brings back the
 # declared sessions and windows first; a plain shell is listed, not reopened. Consumed only when
-# every reopen worked, so a rerun finishes, and only as read at the start: a death world_lost adds
-# to it meanwhile stays owed.
+# every reopen worked, so a rerun finishes, and only as read at the start, under record's lock: a
+# death world_lost adds to it meanwhile stays owed.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0 read
-  read=$(sha256sum < "$f")
+  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0 walked
+  walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
@@ -2257,8 +2266,11 @@ restore_world() {
   [ "$dry" = 1 ] && return 0
   echo "$srv: reopened $opened, failed $failed"
   [ "$failed" = 0 ] || return 1
-  [ "$(sha256sum < "$f")" = "$read" ] || { echo "$srv: its record grew during the restore; rerun fleet-dispatch restore"; return 1; }
-  mv -f "$f" "${f%.lost.json}.restored.json"
+  (
+    flock 7 || exit 1
+    [ "$(sha256sum < "$f")" = "$walked" ] || { echo "$srv: its record grew during the restore; rerun fleet-dispatch restore"; exit 1; }
+    mv -f "$f" "${f%.lost.json}.restored.json"
+  ) 7>"$PANES/.lock"
 }
 
 # cmd_restore -- the one verb after a lost server or a reboot. A record first, so a death the
@@ -4116,10 +4128,11 @@ cmd_reap() {
     # pages a session that stops moving), and a live one there is beyond this agent-panel's sight:
     # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
     # A session or conversation a lost pane record still holds is owed a reopen by restore, so its
-    # absence says nothing until restore consumes the record (ar-2140); one whose tmux session is back is read as usual.
+    # absence is no witness, and clears any miss, until restore consumes the record (ar-2140). One
+    # whose tmux session is back is read as usual.
     gone='' live=0
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
-    if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then continue
+    if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then reap_seen "$slug"; continue
     elif [ "$live" = 1 ]; then gone=1
     elif [ -n "$host" ]; then continue
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
