@@ -570,7 +570,11 @@ mod tests {
             assert!(md::INTAKE_TAGS.iter().any(|(t, _)| *t == word), "{word}");
         }
         for (tag, _) in md::INTAKE_TAGS {
-            let w = tag.split_whitespace().next().unwrap().replace("<name>", "nas");
+            let w = tag
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .replace("<name>", "nas");
             if w.starts_with('#') && !md::Look::ALL.iter().any(|l| w == format!("#{}", l.word())) {
                 assert!(md::is_routing_word(&w), "{tag}");
             }

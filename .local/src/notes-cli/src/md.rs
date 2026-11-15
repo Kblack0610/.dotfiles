@@ -1028,7 +1028,9 @@ impl Look {
 
 fn look_word(w: &str) -> Option<Look> {
     let t = w.strip_prefix('#')?;
-    Look::ALL.into_iter().find(|l| t.eq_ignore_ascii_case(l.word()))
+    Look::ALL
+        .into_iter()
+        .find(|l| t.eq_ignore_ascii_case(l.word()))
 }
 
 /// A word that says where a line goes, not what it says: `#p:`, `#agent`, `#plan`, `#go` or a
