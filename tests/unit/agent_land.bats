@@ -324,9 +324,14 @@ moved_again() {
   second_wait
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 0
-  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
-  assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
-  assert_line --index 2 'git rev-parse HEAD'
+  # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
+  local m d p
+  m=$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)
+  d=$(grep -n '^git -C /nowhere diff --raw -z --no-abbrev --no-renames --diff-filter=M 0123456789abcdef HEAD$' "$LOG" | cut -d: -f1)
+  p=$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)
+  [ "$m" -lt "$d" ] && [ "$d" -lt "$p" ]
+  run grep -A1 '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_line --index 1 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
 }
@@ -1763,4 +1768,117 @@ EOF
   assert_output --partial 'is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists'
   run grep -c '^gh \|^curl ' "$LOG"
   assert_output 0
+}
+
+# sub_fixture: real git, no stubs. A superproject on branch pr pins sub at c1 with its checkout there,
+# then merges a main that pins c2, a commit pushed to sub's origin only after sub was cloned, so the
+# move has to fetch it, as a merge of a busy base does. PRE is the head before that merge. c1 brings
+# a.txt, so a test can dirty the checkout.
+sub_fixture() {
+  export PATH="${PATH#"$SANDBOX/bin:"}"
+  # file:// submodules are refused by default since git 2.38.1; this sandbox is all local.
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  local w="$SANDBOX/subwork"
+  git init -q --bare -b main "$SANDBOX/sub.git"
+  git clone -q "$SANDBOX/sub.git" "$w" 2>/dev/null
+  echo one >"$w/a.txt" && git -C "$w" add a.txt && git -C "$w" commit -q -m c1
+  C1=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  SUP="$SANDBOX/super"
+  git init -q -b main "$SUP"
+  cd "$SUP"
+  git submodule add -q "$SANDBOX/sub.git" sub
+  # Detached, as `git submodule update --init` (wt new) leaves every agent worktree's checkout.
+  git -C sub checkout -q --detach
+  git commit -q -m 'sub at c1'
+  git -C "$w" commit -q --allow-empty -m c2
+  C2=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  git checkout -q -b pr
+  git commit -q --allow-empty -m 'pr work'
+  PRE=$(git rev-parse HEAD)
+  git update-index --cacheinfo "160000,$C2,sub"
+  git commit -q -m 'sub at c2'
+  git branch -q -f main HEAD
+  git reset -q --hard "$PRE"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  export C1 C2 PRE SUP
+}
+
+follow() { git merge -q --no-edit main && . "$REPO_ROOT/.local/lib/submodule-follow.sh" && submodule_follow "$PRE"; }
+
+@test "submodule: a clean checkout on the old pin moves to the merged pin, fetching it (ucp-671 #2506)" {
+  sub_fixture
+  run follow
+  assert_success
+  assert_output "submodule: moved sub from ${C1:0:8} to the new pin ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$C2" ]
+  run git status --porcelain
+  assert_output ''
+}
+
+@test "submodule: a checkout with uncommitted changes stays on the old pin and says so" {
+  sub_fixture
+  echo two >sub/a.txt
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on the old pin ${C1:0:8}: it has uncommitted changes"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  [ "$(cat sub/a.txt)" = two ]
+}
+
+@test "submodule: a checkout on a commit of its own stays there and says so" {
+  sub_fixture
+  git -C sub commit -q --allow-empty -m local-only
+  local mine
+  mine=$(git -C sub rev-parse HEAD)
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on ${mine:0:8}, neither the old pin ${C1:0:8} nor the new ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$mine" ]
+}
+
+@test "submodule: an uninitialized submodule and an unchanged pin print nothing" {
+  sub_fixture
+  git submodule deinit -q -f sub
+  run follow
+  assert_success
+  assert_output ''
+  [ ! -e sub/.git ]
+}
+
+@test "submodule: a checkout already on the new pin is left alone, silently" {
+  sub_fixture
+  git -C sub fetch -q origin && git -C sub checkout -q "$C2"
+  run follow
+  assert_success
+  assert_output ''
+}
+
+@test "submodule: run from a subdirectory, the paths are read from the toplevel and the checkout still moves" {
+  sub_fixture
+  mkdir deep && git merge -q --no-edit main && cd deep
+  . "$REPO_ROOT/.local/lib/submodule-follow.sh"
+  run submodule_follow "$PRE"
+  assert_success
+  assert_output "submodule: moved sub from ${C1:0:8} to the new pin ${C2:0:8}"
+  [ "$(git -C ../sub rev-parse HEAD)" = "$C2" ]
+}
+
+@test "submodule: a checkout on a branch at the old pin stays on that branch and says so" {
+  sub_fixture
+  git -C sub checkout -q -b wip
+  run follow
+  assert_success
+  assert_output "submodule: left sub on branch wip at the old pin ${C1:0:8}: move it by hand to the new pin ${C2:0:8}"
+  [ "$(git -C sub symbolic-ref --short HEAD)" = wip ]
+}
+
+@test "submodule: an old rev that is not a commit says nothing was compared" {
+  sub_fixture
+  . "$REPO_ROOT/.local/lib/submodule-follow.sh"
+  run submodule_follow deadbeef
+  assert_success
+  assert_output --partial 'submodule: no pins compared, deadbeef is not a commit'
 }

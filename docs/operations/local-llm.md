@@ -42,8 +42,8 @@ ask-local "say ok"
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ask-local: route gateway-local did not resolve` | the private overlay is not stowed on this machine | stow `~/.dotfiles-private`, or run on the workstation |
-| `ask-local: route gateway-local gave no key` | no `~/.local/state/ask-local/litellm.key` | mint it per home-config `apps/litellm/README.md` "Local model key", `chmod 600` |
+| `ask-local: agentctl-run: unknown route 'gateway-local'` | the private overlay is not stowed on this machine | stow `~/.dotfiles-private`, or run on the workstation |
+| `ask-local: the gateway refused the call, and the route sent no key (401)` | no `~/.local/state/ask-local/litellm.key` | mint it per home-config `apps/litellm/README.md` "Local model key", `chmod 600` |
 | `failed (500)` with a connection error | llama-server is down or the workstation is off | `systemctl --user status llama-server`; `journalctl --user -u llama-server` |
 | unit shows `condition failed` | the model file is missing | `install.sh --with llm` downloads and checks it |
 | `install.sh --with llm` stops with `UFW is inactive` | the server checks no key, so it only starts behind a firewall | allow SSH, `sudo ufw enable`, re-run |

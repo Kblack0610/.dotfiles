@@ -2,7 +2,8 @@
 # ask-local - talk to the home-only local model (Qwen3.5-9B on the workstation 4060 Ti).
 # Which gateway, model and key come from the agent-run route gateway-local (private
 # overlay); that route has no fallback, so a down model fails here instead of spilling
-# onto a paid one. Guide: docs/operations/local-llm.md
+# onto a paid one. The call is `agentctl-run --harness raw -p` (agent-run harnesses/raw.sh).
+# Guide: docs/operations/local-llm.md
 #
 #   ask-local "why is the sky blue"                 one-shot answer on stdout
 #   git diff | ask-local "write a commit message"   stdin is appended to the prompt
@@ -40,22 +41,11 @@ case "$MAX_TOKENS" in ''|*[!0-9]*) die "--max-tokens must be a whole number" ;; 
 MAX_TOKENS=$((10#$MAX_TOKENS))
 case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
 command -v jq >/dev/null || die "needs jq"
-command -v curl >/dev/null || die "needs curl"
 
-out="$(mktemp)" err="$(mktemp)" req="$(mktemp)"
-trap 'rm -f "$out" "$err" "$req"' EXIT
+out="$(mktemp)" err="$(mktemp)" hist="$(mktemp)" status="$(mktemp)"
+trap 'rm -f "$out" "$err" "$hist" "$status"' EXIT
 
-# The route owns the endpoint, model and key (agent-run lib/route.sh); --print-env only
-# resolves them, and the raw harness grants no tools.
-env_out="$("${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$ROUTE" --harness raw --print-env 2>"$err")" \
-  || die "route $ROUTE did not resolve: $(cat "$err")"
-eval "$env_out"
-MODEL="$LLM_MODEL" ENDPOINT="${LLM_BASE_URL%/}/chat/completions" key="$LLM_API_KEY"
-[ -n "$key" ] || die "route $ROUTE gave no key (its ROUTE_KEY_SOURCE has nothing yet)"
-# The key goes into a curl config line, where a quote or backslash would be parsed as config.
-case "$key" in *[\"\\]*) die "the key has a quote or backslash" ;; esac
-
-response_format='null'
+response_format=''
 case "$FORMAT" in
   json)   response_format='{"type":"json_object"}' ;;
   schema) [ -r "$SCHEMA" ] || die "cannot read schema $SCHEMA"
@@ -69,41 +59,44 @@ case "${AGENT_QUEUE_ITEM:-}" in
   *) tags="ask-local,queue:$AGENT_QUEUE_ITEM" ;;
 esac
 
-# call <messages-json>: one chat completion. Prints the answer (or the raw JSON with --raw)
+# call <messages-json>: one chat completion through agentctl-run's raw harness, which owns the
+# route, the key, the request and the error text (harnesses/raw.sh). The last message is the
+# input; the ones before it go in as history. Prints the answer (or the raw JSON with --raw)
 # and returns 0, or prints why on stderr and returns 1.
 call() {
-  local meta code msg content
-  jq -nc --arg m "$MODEL" --argjson msgs "$1" --argjson n "$MAX_TOKENS" --argjson rf "$response_format" \
-    '{model: $m, messages: $msgs, max_tokens: $n} + (if $rf then {response_format: $rf} else {} end)' >"$req"
-  # The key goes in on stdin (-K -), never argv, where any `ps` would show it, so the body
-  # comes from a file. curl prints the -w line even when the transfer fails (code 000).
-  meta="$(printf 'header = "Authorization: Bearer %s"\n' "$key" | curl -sS -K - -m "$TIMEOUT" -o "$out" \
-    -w '%{http_code}' -H 'Content-Type: application/json' -H "x-litellm-tags: $tags" \
-    --data-binary @"$req" "$ENDPOINT" 2>"$err")" || true
-  code="${meta:-000}"
-  if [ "$code" = 000 ]; then
-    echo "ask-local: no answer from $ENDPOINT: $(tr '\n' ' ' <"$err")" >&2
+  local rc=0 content code
+  jq -c '.[:-1]' <<<"$1" >"$hist"
+  : >"$status"
+  # What a calling agent exported (its name, model, schema) must not reach this call: it would
+  # be recorded and budgeted as that agent's, on its model. The temperature is llama-server's
+  # own default, which the call sent before it went through the raw harness.
+  jq -j '.[-1].content' <<<"$1" \
+    | env -u AGENT_PROMPT -u AGENT_SCHEMA -u AGENTCTL_AGENT -u AGENTCTL_NAME -u AGENTCTL_MODEL -u MODEL \
+        AGENT_MAX_TOKENS="$MAX_TOKENS" AGENT_TEMPERATURE=0.8 RAW_TIMEOUT_S="$TIMEOUT" RAW_TAGS="$tags" \
+        RAW_MESSAGES="$hist" RAW_RESPONSE_FORMAT="$response_format" RAW_STATUS_FILE="$status" \
+        RAW_REPLY="$([ "$RAW" = 1 ] && echo json)" \
+        "${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$ROUTE" --harness raw -p >"$out" 2>"$err" || rc=$?
+  code="$(cat "$status")"
+  # Nothing was asked of the model: the route, the key or the request will not do (78, 69), or
+  # the gateway turned away a call that carried no key.
+  case "$rc" in 69|78) die "$(tr '\n' ' ' <"$err")" ;; esac
+  if [ "$rc" != 0 ] && grep -q 'route sent no key' "$err"; then die "$(tr '\n' ' ' <"$err")"; fi
+  if [ "$rc" != 0 ]; then
+    sed 's/^agentctl-run: raw: /ask-local: /' "$err" >&2
+    if grep -q 'has no content' "$err"; then echo "ask-local: raise --max-tokens?" >&2
+    else
+      case "$code" in
+        ""|000|200|401|403) ;;
+        *) echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
+      esac
+    fi
     return 1
   fi
-  if [ "$code" != 200 ]; then
-    msg="$(jq -r '(.error.message // .detail // empty) | tostring | .[:600]' "$out" 2>/dev/null)"
-    [ -n "$msg" ] || msg="$(head -c 300 "$out")"
-    case "$code" in
-      401|403) echo "ask-local: the gateway refused the key ($code): $msg" >&2 ;;
-      *) echo "ask-local: $MODEL failed ($code): $msg" >&2
-         echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
-    esac
-    return 1
-  fi
-  [ "$RAW" = 1 ] && { cat "$out"; echo; return 0; }
-  content="$(jq -r '.choices[0].message.content // empty' "$out")"
-  if [ -z "$content" ]; then
-    echo "ask-local: $MODEL returned an empty answer (finish_reason $(jq -r '.choices[0].finish_reason // "none"' "$out")); raise --max-tokens?" >&2
-    return 1
-  fi
+  [ "$RAW" = 1 ] && { cat "$out"; return 0; }
+  content="$(cat "$out")"
   check='type == "object"'; [ "$FORMAT" = schema ] && check='true'
   if [ "$FORMAT" != text ] && ! jq -e "$check" >/dev/null 2>&1 <<<"$content"; then
-    echo "ask-local: $MODEL did not return valid JSON:" >&2
+    echo "ask-local: the model did not return valid JSON:" >&2
     printf '%s\n' "$content" >&2
     return 1
   fi
@@ -115,7 +108,7 @@ messages='[]'
 
 if [ "$MODE" = chat ]; then
   [ ${#prompt[@]} -eq 0 ] || die "--chat takes no prompt; type it at the prompt"
-  echo "ask-local chat with $MODEL. Empty line or Ctrl-D quits, /reset clears the history." >&2
+  echo "ask-local chat on route $ROUTE. Empty line or Ctrl-D quits, /reset clears the history." >&2
   while IFS= read -e -r -p 'you> ' line; do
     [ -n "$line" ] || break
     if [ "$line" = /reset ]; then
@@ -126,7 +119,7 @@ if [ "$MODE" = chat ]; then
     fi
     history -s -- "$line"
     turn="$(jq -c --arg u "$line" '. + [{role: "user", content: $u}]' <<<"$messages")"
-    answer="$(RAW=0 call "$turn")" || continue
+    answer="$(RAW=0 call "$turn")" || { [ $? != 2 ] || exit 2; continue; }
     printf '%s\n\n' "$answer"
     messages="$(jq -c --arg a "$answer" '. + [{role: "assistant", content: $a}]' <<<"$turn")"
   done

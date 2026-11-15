@@ -17,6 +17,15 @@
 # and, for a named call, writes the calls.jsonl line (lib/calls.sh), so an HTTP model
 # call gets the same record, budget and prompt_sha as a claude one.
 #
+# A caller with no conf (ask-local) shapes one call with environment, all optional:
+#   RAW_MESSAGES         a file holding a JSON array of earlier chat messages (a system message,
+#                        the conversation so far); the input is appended to it as the user turn
+#   RAW_RESPONSE_FORMAT  the request's response_format, as a JSON object
+#   RAW_TAGS             sent as the x-litellm-tags header
+#   RAW_TIMEOUT_S        the curl --max-time (240)
+#   RAW_STATUS_FILE      the HTTP status of the call is written here (000: no answer at all)
+#   RAW_REPLY=json       print the whole response object instead of the reply text
+#
 # WHY harness_supports IS UNCONDITIONALLY TRUE, which looks wrong and is not:
 # contract rule 3 says a harness that cannot ENFORCE a role's denials must refuse
 # rather than degrade. `raw` grants no tools whatsoever -- no Write, no Bash, no
@@ -72,32 +81,62 @@ raw_print() {
   if [ -n "$(calls_name)" ]; then calls_record raw raw_chat; exit $?; fi
   local resp rc=0
   resp="$(raw_chat)" || rc=$?
-  jq -r '.choices[0].message.content // empty' <<<"$resp" 2>/dev/null
+  if [ "${RAW_REPLY:-}" = json ]; then printf '%s\n' "$resp"
+  else jq -r '.choices[0].message.content // empty' <<<"$resp" 2>/dev/null; fi
   exit "$rc"
 }
 
 # raw_chat -> the response JSON on stdout. The input goes through a file, never argv: a
-# version's whole changelog outgrew ARG_MAX once (notes-version-summary, #264).
+# version's whole changelog outgrew ARG_MAX once (notes-version-summary, #264). The key goes to
+# curl as a config line on stdin, never argv, where any `ps` would show it. Its files live in one
+# directory that goes when the call ends, a signal included.
 raw_chat() {
-  local tmp resp rc=0 auth=()
+  local resp code msg rc=0 tags=() cargs
   [ -n "${LLM_BASE_URL:-}" ] || { echo "agentctl-run: raw: route '${ROUTE_NAME:-}' set no LLM_BASE_URL" >&2; return 69; }
-  [ -n "${LLM_API_KEY:-}" ] && auth=(-H "Authorization: Bearer $LLM_API_KEY")
-  tmp="$(mktemp)" || return 1
-  printf '%s' "$RAW_INPUT" >"$tmp"
-  resp="$(jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$tmp" \
+  # In a curl config line a quote or backslash would be parsed, and a newline would end the line.
+  case "${LLM_API_KEY:-}" in *[\"\\$'\n']*) echo "agentctl-run: raw: the key has a quote, backslash or newline" >&2; return 78 ;; esac
+  [ -z "${RAW_MESSAGES:-}" ] || [ -r "$RAW_MESSAGES" ] || { echo "agentctl-run: raw: cannot read RAW_MESSAGES $RAW_MESSAGES" >&2; return 78; }
+  [ -z "${RAW_TAGS:-}" ] || tags=(-H "x-litellm-tags: $RAW_TAGS")
+  RAW_TMP="$(mktemp -d)" || return 1
+  trap 'rm -rf -- "$RAW_TMP"' EXIT
+  printf '%s' "$RAW_INPUT" >"$RAW_TMP/in"
+  jq -n --arg m "${LLM_MODEL:-}" --rawfile s "${AGENT_PROMPT:-/dev/null}" --rawfile u "$RAW_TMP/in" \
+      --slurpfile h "${RAW_MESSAGES:-/dev/null}" --argjson rf "${RAW_RESPONSE_FORMAT:-null}" \
       --argjson mt "${AGENT_MAX_TOKENS:-1024}" --argjson t "${AGENT_TEMPERATURE:-0}" \
-      '{model: $m, temperature: $t, max_tokens: $mt, stream: false,
-        messages: ((if $s == "" then [] else [{role: "system", content: $s}] end)
-                   + [{role: "user", content: $u}])}' \
-    | curl -sS --max-time "${RAW_TIMEOUT_S:-240}" "${LLM_BASE_URL%/}/chat/completions" \
-        "${auth[@]}" -H 'Content-Type: application/json' --data-binary @-)" || rc=$?
-  rm -f "$tmp"
+      '{model: $m, temperature: $t, max_tokens: $mt, stream: false}
+       + (if $rf then {response_format: $rf} else {} end)
+       + {messages: ((if $s == "" then [] else [{role: "system", content: $s}] end)
+                     + ($h[0] // []) + [{role: "user", content: $u}])}' >"$RAW_TMP/body" \
+    || { echo "agentctl-run: raw: RAW_MESSAGES or RAW_RESPONSE_FORMAT is not JSON" >&2; return 78; }
+  # curl prints the -w status even when the transfer fails (000), so a caller can tell which.
+  cargs=(-sS --max-time "${RAW_TIMEOUT_S:-240}" -o "$RAW_TMP/out" -w '%{http_code}' -H 'Content-Type: application/json'
+         "${tags[@]}" --data-binary @"$RAW_TMP/body" "${LLM_BASE_URL%/}/chat/completions")
+  if [ -n "${LLM_API_KEY:-}" ]; then
+    code="$(printf 'header = "Authorization: Bearer %s"\n' "$LLM_API_KEY" | curl -K - "${cargs[@]}" 2>"$RAW_TMP/err")" || rc=$?
+  else
+    code="$(curl "${cargs[@]}" </dev/null 2>"$RAW_TMP/err")" || rc=$?
+  fi
+  code="${code:-000}"
+  [ -z "${RAW_STATUS_FILE:-}" ] || printf '%s\n' "$code" >"$RAW_STATUS_FILE"
+  if [ "$code" = 000 ]; then
+    echo "agentctl-run: raw: no answer from ${LLM_BASE_URL%/}/chat/completions: $(tr '\n' ' ' <"$RAW_TMP/err")" >&2
+    return "$((rc > 0 ? rc : 1))"
+  fi
+  resp="$(cat "$RAW_TMP/out")"
   printf '%s\n' "$resp"
-  [ "$rc" = 0 ] || return "$rc"
-  if jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
-    printf 'agentctl-run: raw: %s\n' "$(jq -r '.error.message // .error' <<<"$resp")" >&2
+  if [ "$code" != 200 ] || jq -e '.error' <<<"$resp" >/dev/null 2>&1; then
+    msg="$(jq -r '(.error.message // .detail // .error // empty) | tostring | .[:600]' <<<"$resp" 2>/dev/null)"
+    [ -n "$msg" ] || msg="$(printf '%s' "$resp" | head -c 300)"
+    case "$code" in
+      401|403) printf 'agentctl-run: raw: the gateway refused the %s (%s): %s\n' \
+                 "$([ -n "${LLM_API_KEY:-}" ] && echo key || echo 'call, and the route sent no key')" "$code" "$msg" >&2 ;;
+      *)       printf 'agentctl-run: raw: %s failed (%s): %s\n' "${LLM_MODEL:-the model}" "$code" "$msg" >&2 ;;
+    esac
     return 1
   fi
+  # RAW_REPLY=json hands the whole response over, an empty answer included: that is what it is for.
+  [ "${RAW_REPLY:-}" != json ] || return 0
   jq -e '(.choices[0].message.content // "") != ""' <<<"$resp" >/dev/null 2>&1 || {
-    echo "agentctl-run: raw: the reply has no content (${LLM_MODEL:-})" >&2; return 1; }
+    printf 'agentctl-run: raw: the reply has no content (%s, finish_reason %s)\n' "${LLM_MODEL:-}" \
+      "$(jq -r '.choices[0].finish_reason // "none"' <<<"$resp" 2>/dev/null)" >&2; return 1; }
 }
