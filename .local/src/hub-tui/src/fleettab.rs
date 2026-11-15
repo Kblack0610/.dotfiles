@@ -974,9 +974,7 @@ fn why(x: &AskVerdict) -> String {
 pub mod tests {
     use super::*;
     use crate::fit::plain;
-    use hub_core::fleet::{
-        Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker,
-    };
+    use hub_core::fleet::{Call, Calls, JudgeWeek, Outcome, RunnerScore, Score, Verdict, Worker};
 
     pub const NOW: i64 = 1_793_661_428;
 
