@@ -43,6 +43,15 @@ SO_PR_JQ='
   def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
 '
 
+# so_canon_init MAP - the store host and the alias list, read once per run (so_canon_claims reads them
+# from SO_CANON_STORE and SO_CANON_ALIASES, or from MAP when unset). An unreadable MAP is rc 1; no MAP file
+# is no store host, so nothing is rewritten.
+so_canon_init() {
+  SO_CANON_STORE=""
+  [ ! -e "$1" ] || SO_CANON_STORE="$(jq -r '.forges.forgejo // ""' "$1")" || return 1
+  SO_CANON_ALIASES="$(printf '%s\n' "$(so_forgejo_hosts)" | jq -Rc 'ascii_downcase | [splits("\\s+")] | map(select(. != ""))')" || return 1
+  export SO_CANON_STORE SO_CANON_ALIASES
+}
 # so_canon_claims MAP - stdin: JSON values with a `prs` list of {repo, number} (a transcript's metrics, a
 # registry row). stdout: the same with a Forgejo claim's host rewritten to the PR store's. A Forgejo repo
 # is keyed `host/owner/repo` and the store holds it under MAP's `forges.forgejo` host (schedules-sync
@@ -51,13 +60,11 @@ SO_PR_JQ='
 # dropped by the caller's store read. One alias source: SO_FORGEJO_HOSTS, the list that also gates where
 # the token goes.
 so_canon_claims() {
-  local store aliases
-  store="$(jq -r '.forges.forgejo // ""' "$1" 2>/dev/null)" || store=""
-  aliases="$(printf '%s\n' "$(so_forgejo_hosts)" | jq -Rc 'ascii_downcase | split(" ") | map(select(. != ""))')" || aliases='[]'
-  jq -c --arg store "$store" --argjson al "$aliases" '
-    def canon: if $store != "" and test("^[^/]+/[^/]+/[^/]+$") and (split("/")[0] | ascii_downcase | IN($al[]))
+  [ -n "${SO_CANON_ALIASES+set}" ] || so_canon_init "$1" || return 1
+  jq -c --arg store "$SO_CANON_STORE" --argjson al "$SO_CANON_ALIASES" '
+    def canon: if $store != "" and type == "string" and test("^[^/]+/[^/]+/[^/]+$") and (split("/")[0] | ascii_downcase | IN($al[]))
                then ([$store] + split("/")[1:]) | join("/") else . end;
-    if type == "object" and (.prs | type) == "array" then .prs |= (map(.repo |= canon) | unique) else . end'
+    if type == "object" and (.prs | type) == "array" then .prs |= map(.repo |= canon) else . end'
 }
 
 # so_mapped_repos MAP - the PR-store keys of the repos the project map lists, one per line, lower-cased:

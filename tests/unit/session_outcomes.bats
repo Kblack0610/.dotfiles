@@ -433,7 +433,7 @@ fj_alias_setup() {
   export SO_FORGEJO_HOSTS="git.example.test GIT.public.test"
   printf '{"forges":{"forgejo":"git.example.test"}}' > "$BATS_TEST_TMPDIR/m.json"
   run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1},{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
-  assert_output '{"prs":[{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
+  assert_output '{"prs":[{"repo":"git.example.test/o/r","number":1},{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
   run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'null'
   assert_output null
   run so_canon_claims "$BATS_TEST_TMPDIR/none.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
@@ -449,6 +449,10 @@ fj_alias_setup() {
   assert_equal "$(outcome)" STALLED
   assert_equal "$(field e .session_id)" null
   assert_equal "$(field a .prs_merged)" 1
+  # an unreadable project map is no "nothing is mapped": the run stalls rather than drop the claim as a note
+  printf 'not json' > "$SANDBOX/bad.json"; SO_PROJECT_MAP="$SANDBOX/bad.json" run "$SUBJECT" run
+  assert_failure
+  assert_output --partial "could not read the Forgejo host and aliases"
   # negative control: the same drop for a repo the map does not list stays a note
   jq 'del(.trackers.audio)' "$SANDBOX/map.json" > "$SANDBOX/map2.json"; export SO_PROJECT_MAP="$SANDBOX/map2.json"
   run "$SUBJECT" run

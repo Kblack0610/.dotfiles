@@ -237,6 +237,7 @@ cmd_run() {
           .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
+  so_canon_init "$PROJECT_MAP" || die_stalled "could not read the Forgejo host and aliases from $PROJECT_MAP"
   so_canon_claims "$PROJECT_MAP" < "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not key the due sessions' Forgejo claims to the PR store's host"
 
@@ -255,7 +256,7 @@ cmd_run() {
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
       so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
     elif jq -e '.harness == "codex" and .metrics' <<<"$row" >/dev/null 2>&1; then
-      jq -c '.metrics' <<<"$row" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json"
+      jq -c '.metrics' <<<"$row" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       jq -c '.metrics.time_use' <<<"$row" > "$work/t.$sid.json"
     else
       null_metrics "$work" "$sid"
@@ -298,13 +299,13 @@ cmd_run() {
   jq -cs 'add // {}' "$work/index.jsonl" > "$work/index.json" || die_stalled "could not merge the PR indexes"
   # A due claim in a repo the project map lists is no stray URL: the store's list lacks a repo the map
   # says it holds (or the claim's host is no alias), so its sessions are held, not recorded without
-  # the PR, and the run ends STALLED once the rest is written.
+  # the PR, and the run ends STALLED once the rest is written (a GitHub-only repo the map lists counts too).
   : > "$work/repos.unstored"
   if [ -s "$work/repos.gone" ]; then
-    so_mapped_repos "$PROJECT_MAP" > "$work/repos.mapped" 2>/dev/null || : > "$work/repos.mapped"
+    : > "$work/repos.mapped"
+    [ ! -e "$PROJECT_MAP" ] || so_mapped_repos "$PROJECT_MAP" > "$work/repos.mapped" || die_stalled "could not read the repos $PROJECT_MAP lists"
     while IFS= read -r repo; do
-      grep -qixF -- "$repo" "$work/repos.due" && grep -qixF -- "$repo" "$work/repos.mapped" &&
-        printf '%s\n' "$repo" >> "$work/repos.unstored"
+      grep -qixF -- "$repo" "$work/repos.mapped" && grep -ixF -- "$repo" "$work/repos.due" >> "$work/repos.unstored"
     done < "$work/repos.gone"
     if [ -s "$work/repos.unstored" ]; then
       grep -vixFf "$work/repos.unstored" "$work/repos.gone" > "$work/repos.gone.next"
