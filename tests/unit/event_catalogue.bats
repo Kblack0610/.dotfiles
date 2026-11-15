@@ -120,3 +120,46 @@ names() { jq -r '[.events[].name] | sort | join(",")' "$EVENT_CATALOGUE_DIR/$1.j
   assert_failure
   assert_output --partial 'no department catalog'
 }
+
+@test "one unreadable source of a product writes no file for it, and drops the last good one" {
+  "$EC" build
+  [ -f "$EVENT_CATALOGUE_DIR/beta.json" ]
+  printf 'analytics\tfixture-platform:analytics/gone.ts\tfile\tbeta\tx\n' >> "$DEPARTMENTS_TSV"
+  run "$EC" build
+  assert_failure
+  assert_output --partial 'beta: cannot read fixture-platform:analytics/gone.ts'
+  [ ! -e "$EVENT_CATALOGUE_DIR/beta.json" ]
+  run "$EC" check beta
+  assert_failure
+  [ -f "$EVENT_CATALOGUE_DIR/alpha.json" ]
+}
+
+@test "a note comment inside a group does not change the group or its scope" {
+  sed -i 's|^  HOMECARE_VIEWED|  // TODO: rename this one\n  HOMECARE_VIEWED|' "$SANDBOX/platform/analytics/types.ts"
+  "$EC" build
+  assert_equal "$(names beta)" 'app_banner_shown,user_logged_in,user_signed_up'
+  run jq -r '.events[] | select(.name == "homecare_viewed") | .group' "$EVENT_CATALOGUE_DIR/alpha.json"
+  assert_output 'Alpha specific events'
+}
+
+@test "a value with a backslash and quotes stays valid JSON" {
+  sed -i "s|^  USER_SIGNED_UP: 'user_signed_up',|  USER_SIGNED_UP: 'user\\\\\\\\up\"x',|" "$SANDBOX/platform/analytics/types.ts"
+  grep -q 'USER_SIGNED_UP' "$SANDBOX/platform/analytics/types.ts"
+  run "$EC" build
+  assert_success
+  run jq -r '.events[] | select(.name | startswith("user\\")) | .name' "$EVENT_CATALOGUE_DIR/alpha.json"
+  assert_output 'user\\up"x'
+}
+
+@test "show and check take a project name, never a path, and help works without jq" {
+  run "$EC" check ../x
+  assert_failure
+  assert_output --partial 'not a project name'
+  run "$EC" show 'a/b'
+  assert_failure
+  mkdir -p "$BATS_TEST_TMPDIR/nojq"
+  local t; for t in sed dirname realpath; do ln -s "$(command -v $t)" "$BATS_TEST_TMPDIR/nojq/$t"; done
+  PATH="$BATS_TEST_TMPDIR/nojq" run /bin/bash "$EC" --help
+  assert_success
+  assert_output --partial 'write ~/.agent/event-catalogue'
+}

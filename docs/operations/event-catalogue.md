@@ -21,6 +21,8 @@ A source is an `analytics` row of kind `file` in `departments.tsv` (the departme
 
 A group headed "<Product> specific events" goes to that product only (squashed to lowercase letters and digits, `Alpha` is `alpha`); every other group goes to each product that names the file. Unity's six session events sit in `unity-core-playground`'s `docs/operations/online.md`, so that row, not `UsageSharing.cs`, is the source. The table gives a Props cell per row, so `session_start` carries `seconds` here although only the end event does.
 
+A product whose rows include a source that cannot be read gets no file at all, and its last good file is removed: a catalogue missing some of its events is worse than none, and `check` then fails instead of passing on a stale file. A Props or When cell holding a literal `|` shifts the table columns; none does today.
+
 To add a product: add its `analytics` file row to `departments.tsv`. To add a reader: a function in `.local/bin/event-catalogue` and a case on the file's suffix.
 
 ## Troubleshooting
@@ -30,7 +32,8 @@ To add a product: add its `analytics` file row to `departments.tsv`. To add a re
 | `cannot read <source>` | The repo is not cloned here, or the path moved. Check the `paths` entry in `project-map.json` and the row in `departments.tsv` |
 | `no events in <source>` | The const or the `## Usage events` heading was renamed. The reader looks for `export const AnalyticsEvents =` and the exact heading |
 | `no reader for <source>` | The row names a file that is neither `.ts` nor `.md`; point it at the doc that lists the events |
-| `check` fails for a product | No file yet: run `event-catalogue build`, or the product has no analytics row |
+| The files are missing or a day old | The runner `event-catalogue` (private overlay, `.config/agentctl/agents/event-catalogue.conf`) is not armed: `agentctl reload`. A hand run is `event-catalogue build` |
+| `check` fails for a product | No file yet (run `event-catalogue build`), the product has no analytics row, or one of its sources could not be read (the build says which) |
 
 ## Not built yet
 

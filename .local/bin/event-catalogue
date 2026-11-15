@@ -22,35 +22,39 @@ OUT_DIR="${EVENT_CATALOGUE_DIR:-$HOME/.agent/event-catalogue}"
 die() { echo "event-catalogue: $*" >&2; exit 2; }
 usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
-command -v jq >/dev/null 2>&1 || die "jq is not installed"
+need_jq() { command -v jq >/dev/null 2>&1 || die "jq is not installed"; }
 
-# parse_ts <file> <project>: events as JSON lines {name, group, props}. A group named
-# "<Product> specific events" is kept only when <Product>, squashed to lowercase letters and
-# digits, is the squashed project name.
+# parse_ts <file> <project>: events as JSON lines {name, group, props}. A `// ` comment is a
+# group heading only when a blank line or the const opening precedes it; any other comment is a
+# note and changes nothing. A group named "<Product> specific events" is kept only when <Product>,
+# squashed to lowercase letters and digits, is the squashed project name.
 parse_ts() {
   awk -v proj="$(squash "$2")" '
     function squash(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
-    function esc(s) { gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s); return s }
-    /export const AnalyticsEvents[ ]*=/ { on = 1; next }
+    /export const AnalyticsEvents[ ]*=/ { on = 1; blank = 1; next }
     on && /^[ ]*}[ ]*as const/ { on = 0 }
     !on { next }
+    /^[ ]*$/ { blank = 1; next }
     /^[ ]*\/\/ / {
+      if (!blank) next
       g = $0; sub(/^[ ]*\/\/ /, "", g)
       props = ""
       if (match(g, / *\(all carry [^)]*\)/)) {
         note = substr(g, RSTART, RLENGTH); g = substr(g, 1, RSTART - 1)
-        while (match(note, /`[^`]+`/)) { props = props (props == "" ? "" : ",") "\"" esc(substr(note, RSTART + 1, RLENGTH - 2)) "\""; note = substr(note, RSTART + RLENGTH) }
+        while (match(note, /`[^`]+`/)) { props = props (props == "" ? "" : ",") substr(note, RSTART + 1, RLENGTH - 2); note = substr(note, RSTART + RLENGTH) }
       }
       scope = ""
       if (match(g, / specific events$/)) scope = squash(substr(g, 1, RSTART - 1))
-      group = g
+      group = g; blank = 0
       next
     }
+    { blank = 0 }
     /^[ ]*[A-Z0-9_]+:[ ]*'\''[^'\'']+'\''/ {
       if (scope != "" && scope != proj) next
       v = $0; sub(/^[^'\'']*'\''/, "", v); sub(/'\''.*$/, "", v)
-      printf "{\"name\":\"%s\",\"group\":\"%s\",\"props\":[%s]}\n", esc(v), esc(group), props
-    }' "$1"
+      printf "%s\t%s\t%s\n", v, group, props
+    }' "$1" \
+    | jq -Rc 'split("\t") | {name: .[0], group: .[1], props: (.[2] // "" | split(",") | map(select(. != "")))}'
 }
 
 # parse_md <file>: the `## Usage events` table as JSON lines {name, group, props, when}. A Kind
@@ -87,25 +91,26 @@ resolve() {
   return 0
 }
 
-# build_one <project> <source>...: write the product's file from its readable sources, in row
-# order; returns 1 and writes nothing when no source gave an event.
+# build_one <project> <source>...: write the product's file from its sources, in row order;
+# returns 1 and writes nothing when any source gave no events.
 build_one() {
-  local proj="$1" src file lines="" got ok=0 srcs=()
+  local proj="$1" src file lines="" got bad=0 srcs=()
   shift
   for src in "$@"; do
     file="$(resolve "$src")"
-    [ -n "$file" ] || { echo "event-catalogue: $proj: cannot read $src" >&2; continue; }
+    [ -n "$file" ] || { echo "event-catalogue: $proj: cannot read $src" >&2; bad=1; continue; }
     case "$file" in
       *.ts) got="$(parse_ts "$file" "$proj")" ;;
       *.md) got="$(parse_md "$file")" ;;
-      *) echo "event-catalogue: $proj: no reader for $src" >&2; continue ;;
+      *) echo "event-catalogue: $proj: no reader for $src" >&2; bad=1; continue ;;
     esac
-    [ -n "$got" ] || { echo "event-catalogue: $proj: no events in $src" >&2; continue; }
+    [ -n "$got" ] || { echo "event-catalogue: $proj: no events in $src" >&2; bad=1; continue; }
     lines+="$got"$'\n'
     srcs+=("$src")
-    ok=1
   done
-  [ "$ok" = 1 ] || return 1
+  # One unreadable source means a catalogue that is missing events: write none, and drop the last
+  # good file, so check and the Analytics tab say "no catalogue" instead of showing a stale one.
+  [ "$bad" = 0 ] || { rm -f "$OUT_DIR/$proj.json"; return 1; }
   mkdir -p "$OUT_DIR" || die "cannot make $OUT_DIR"
   local tmp
   tmp="$(mktemp "$OUT_DIR/.$proj.XXXXXX")" || die "cannot write in $OUT_DIR"
@@ -130,10 +135,13 @@ build() {
   return "$fail"
 }
 
+# project_arg <name>: a project key, never a path.
+project_arg() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "not a project name: $1"; }
+
 case "${1:-build}" in
-  build) [ "$#" -le 1 ] || usage; build ;;
-  show) [ "$#" -eq 2 ] || usage; [ -f "$OUT_DIR/$2.json" ] || die "no catalogue for $2"; cat "$OUT_DIR/$2.json" ;;
-  check) [ "$#" -eq 2 ] || usage; jq -e '.events | length > 0' "$OUT_DIR/$2.json" >/dev/null 2>&1 ;;
+  build) [ "$#" -le 1 ] || usage; need_jq; build ;;
+  show) [ "$#" -eq 2 ] || usage; project_arg "$2"; [ -f "$OUT_DIR/$2.json" ] || die "no catalogue for $2"; cat "$OUT_DIR/$2.json" ;;
+  check) [ "$#" -eq 2 ] || usage; project_arg "$2"; need_jq; jq -e '.events | length > 0' "$OUT_DIR/$2.json" >/dev/null 2>&1 ;;
   -h|--help|help) usage 0 ;;
   *) usage ;;
 esac
