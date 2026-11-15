@@ -2234,14 +2234,17 @@ STUB
   "$AQ" add --project game --slug bare --from human "chore(x): no row of its own" >/dev/null
   # The row the item works scores 5 points, band m; the other item's row is unscored.
   echo '{"rows":[{"project":"level","id":"lv-9","points":5,"size":"m"}],"done":[]}' > "$NOTES_FIXTURE/board.json"
-  run "$AQ" list --json
+  run "$AQ" list --json --points
   assert_success
   [ "$(jq -r 'select(.slug == "menus") | "\(.size)/\(.points)"' <<<"$output")" = m/5 ]
   run "$AQ" list
   assert_line --regexp '^queued	.*	menus	.*	m/5$'
-  # NEGATIVE CONTROL: no board feed, and the list is still the queue, with no points.
-  rm "$NOTES_FIXTURE/board.json"
+  # NEGATIVE CONTROLS: --json without --points never reads the board; with no board feed the list is still the queue.
   run "$AQ" list --json
+  assert_success
+  [ "$(jq -r 'select(.slug == "menus") | .points // "none"' <<<"$output")" = none ]
+  rm "$NOTES_FIXTURE/board.json"
+  run "$AQ" list --json --points
   assert_success
   [ "$(jq -r 'select(.slug == "menus") | .points // "none"' <<<"$output")" = none ]
   run "$AQ" list

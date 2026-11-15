@@ -932,7 +932,7 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     }
 }
 
-/// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
+/// `agent-queue list --json --points` prints one object per line (`points` and the board row's `size` joined in); a line that does not parse is skipped.
 /// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
 /// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
@@ -960,7 +960,7 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--state", state]))
+        .run(&argv(&["list", "--json", "--points", "--state", state]))
         .map(|out| parse(&out))
 }
 
@@ -971,7 +971,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--state", state, "--since", since,
+            "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1894,7 +1894,7 @@ mod tests {
         let items = list(&fake, "all").unwrap();
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all"
+            "agent-queue list --json --points --state all"
         );
         let slugs: Vec<&str> = items.iter().map(|i| i.slug.as_str()).collect();
         assert_eq!(slugs, ["w", "q", "d"], "no state is not an item");
@@ -2071,7 +2071,7 @@ mod tests {
         assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all --since 2026-10-30"
+            "agent-queue list --json --points --state all --since 2026-10-30"
         );
         assert!(list_since(&fake, "all", "--state").is_err());
         assert_eq!(days_ago(0).len(), 10);

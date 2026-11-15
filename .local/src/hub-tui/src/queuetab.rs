@@ -1061,10 +1061,14 @@ pub(crate) mod tests {
             ]
         );
         let wide = text(&q, &all(), 160);
-        assert!(
-            line(&wide, "Wide row").contains(" m  ") && line(&wide, "Wide row").contains(" 5 "),
-            "the band and its points show: {wide}"
-        );
+        // Each value sits in its own column: the cell under the header's own span.
+        let (head, row) = (line(&wide, "STATE"), line(&wide, "Wide row"));
+        let under = |h: &str, len: usize| {
+            let at = head.find(h).unwrap();
+            row[at..at + len].trim().to_string()
+        };
+        assert_eq!(under("SIZE", 4), "m", "{wide}");
+        assert_eq!(under("PTS", 3), "5", "{wide}");
         // PLAN, MODE, ACCT, PTS, SIZE and KIND give way first (then WAIT, ROW, FROM, RUN, PR, IN, HOLD); STATE and TITLE never do.
         assert_eq!(
             heads(80),

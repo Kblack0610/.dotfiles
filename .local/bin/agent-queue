@@ -15,9 +15,10 @@
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
-#   list [--json] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
-#       list joins each item's board row (`notes board --json`): the last column is `<band>/<points>`
-#       (`m/5`, the band alone when the row is unscored, `-` with none); --json adds `points` and the row's `size`
+#   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
+#       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
+#       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
+#       only with --points, which adds `points` and the row's current `size`, so a caller that reads neither pays no board read
 #   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
@@ -959,7 +960,8 @@ project_board() {
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
 # `notes ptask` links, at the item's priority, on the board project_board names, with no size: the
-# machine load the item runs at was no estimate, so the nightly `agentctl-inbox-triage --backlog --size` scores the row. Started, so dispatch never promotes it a second time. An open
+# machine load the item runs at was no estimate, so the nightly `agentctl-inbox-triage --backlog --size`
+# scores the row. The row is started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
@@ -1346,10 +1348,11 @@ sizing_join() {
 }
 
 cmd_list() {
-  local json="" state=active date="" since=""
+  local json="" state=active date="" since="" points=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;
+      --points) points=1; shift ;;
       --state) state="${2:?}"; shift 2 ;;
       --date) date="${2:?}"; shift 2 ;;
       --since) since="${2:?}"; shift 2 ;;
@@ -1368,7 +1371,8 @@ cmd_list() {
   # A queue that cannot be read is a failure, never an empty list: a reader that acts on what is
   # missing (plans_orphaned) would read every item as gone.
   local items; items="$(collect $states ${date:+--date "$date"} ${since:+--since "$since"})" || die "could not read the queue"
-  items="$(sizing_join "$items")"
+  [ -n "$points" ] || [ -n "$json" ] || points=1
+  [ -z "$points" ] || items="$(sizing_join "$items")"
   if [ -n "$json" ]; then
     jq -c '.[]' <<<"$items"
     return 0
