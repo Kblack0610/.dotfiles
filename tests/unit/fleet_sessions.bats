@@ -3844,3 +3844,41 @@ JSONL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
 }
+
+@test "end to end: a session plan that is a pointer stub reads the canonical plan's queued phases as queued (ar-2421)" {
+  # 2026-11-14 school-front-foliage-cleanup, camera-npc-pan-beats, hometown-town-simulation: each
+  # session's plan was a stub ("Phase 2 of <plan>.md") under another name, and its phase was a
+  # queue item of the canonical plan, so the row read LANDED and drew a queue-next-phases nudge.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  stub() { printf '# stub\n\n%s\n\n## Phases\n\n- [ ] rollout\n' "$1" > "$SANDBOX/stub.md"; }
+  panel "$SANDBOX/wt" "$SANDBOX/stub.md"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  # negative control: a stub that points nowhere is its own plan, and nothing names it
+  stub 'Phase 2 of /nowhere/plan.md'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  # pointing at the canonical plan, whose phase 2 is the queued item
+  stub "Phase 2 of $SANDBOX/plan.md (Phase 1 landed in #875)"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
+  # the stub's phase is the canonical's phase N: an item holding another phase does not hold it
+  stub "Phase 3 of $SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
+@test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  printf '# canon\n' > "$SANDBOX/canon.md"
+  printf 'Phase 02 of %s.\n\n## Phases\n\n- [ ] x\n' "$SANDBOX/canon.md" > "$SANDBOX/s.md"
+  [ "$(plan_pointer "$SANDBOX/s.md")" = "$(printf '%s\t2' "$(realpath "$SANDBOX/canon.md")")" ]
+  # a plan with a body of its own that opens the same way is not a stub
+  { cat "$SANDBOX/s.md"; seq 1 60; } > "$SANDBOX/long.md"
+  [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
+}
