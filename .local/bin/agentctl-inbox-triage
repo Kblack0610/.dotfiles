@@ -138,7 +138,7 @@ $details" 1 ask "$INBOX_ASK_CMD"; rc=$?
     [ "$rc" = "$CALLS_RC_CAPPED" ] && { note refused outbox "the answer call stopped at the per-call cap" "$text"; FAILED=$((FAILED + 1)); }
     return "$rc"
   fi
-  reply="$(sed -n '/^INBOX-ANSWER-START$/,/^INBOX-ANSWER-END$/p' <<<"$OUT" | sed '1d;$d' | md_ascii | tr -cd '\n -~' | cut -c1-300 | head -n 12)"
+  reply="$(sed -n '/^INBOX-ANSWER-START$/,/^INBOX-ANSWER-END$/p' <<<"$OUT" | sed '1d;$d' | md_ascii | tr -cd '\n -~' | cut -c1-300 | awk 'NR<=12')"
   if [ -z "$(tr -d '[:space:]' <<<"$reply")" ]; then
     say "outbox: the answer came back with no block, left: $raw"
     note refused outbox "the model returned no answer block" "$text"
@@ -225,7 +225,7 @@ file_line() {
     rm -f -- "$errf"
     printf '%s\n' "$out"
     # A written row's marker, never the echoed `filed <words>` line, which holds the person's words.
-    FILED_ID="$(sed -n 's/^  - \[ \] .*<!-- id:\([a-z][a-z0-9]*-[0-9][0-9]*\).*/\1/p' <<<"$out" | head -n 1)"
+    FILED_ID="$(sed -n '/^  - \[ \] .*<!-- id:\([a-z][a-z0-9]*-[0-9][0-9]*\).*/{s//\1/p;q;}' <<<"$out")"
     FILED=$((FILED + 1))
   else
     err="$(<"$errf")"; rm -f -- "$errf"
@@ -250,7 +250,7 @@ move_out() {
     rm -f -- "$errf"
     printf '%s\n' "$out"
     # The line as the inbox holds it now: the `#p:` word is gone, so this is what to file.
-    MOVED_RAW="$(sed -n 's/^  line: //p' <<<"$out" | head -n 1)"; MOVED_RAW="${MOVED_RAW:-$raw}"
+    MOVED_RAW="$(sed -n '/^  line: /{s///p;q;}' <<<"$out")"; MOVED_RAW="${MOVED_RAW:-$raw}"
     ROUTED=$((ROUTED + 1))
   else
     rc=$?; err="$(<"$errf")"; rm -f -- "$errf"
@@ -1229,7 +1229,7 @@ sweep() {
 # runner); `drop` takes it out of the outbox. Any other answer leaves it, with why.
 answer_ask() {
   local id="$1" ans text raw p
-  ans="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^answer: //p' | head -n 1)"
+  ans="$(agent-ask show "$id" 2>/dev/null | sed -n 's/^answer: //p' | awk 'NR==1')"
   # The first word, as a slug: `Scratch.` and `scratch, the menu one` both answer scratch.
   ans="$(awk '{print tolower($1)}' <<<"$ans" | tr -cd 'a-z0-9_-')"
   [ -n "$ans" ] || { say "ask $id: no answer yet"; return 1; }
@@ -1384,8 +1384,8 @@ main() {
   fi
   cfg="$(notes config 2>/dev/null)"
   # `key   value`, the value to the end of the line: a path may hold a space.
-  dir="$(sed -n 's/^state  *//p' <<<"$cfg" | head -n 1)"
-  OUTBOX="$(sed -n 's/^outbox  *//p' <<<"$cfg" | head -n 1)"
+  dir="$(sed -n '/^state  */{s///p;q;}' <<<"$cfg")"
+  OUTBOX="$(sed -n '/^outbox  */{s///p;q;}' <<<"$cfg")"
   [ -n "$dir" ] && { FLAG="$dir/inbox.changed"; RECORD="$dir/ingest.jsonl"; }
   if [ -n "$ANSWER_ID" ]; then answer_ask "$ANSWER_ID"; return; fi
   if [ "$WATCH" = 1 ]; then

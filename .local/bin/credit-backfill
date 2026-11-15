@@ -273,7 +273,7 @@ add_row() {
     detail=(--detail "$text"); text="${text:0:80}"; [[ "$text" != *' '* ]] || text="${text% *}"
   fi
   out="$(ptask "$p" $lane add "${detail[@]}" -- "$text${4:+ $4}" 2>&1)" || rc=$?
-  id="$(sed -nE 's/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/\1/p' <<<"$out" | head -1)"
+  id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   { [ "$rc" = 0 ] || [ "$rc" = 3 ]; } && [ -n "$id" ] || { echo "credit-backfill: ${out##*$'\n'}" >&2; return 1; }
   echo "$id"
 }

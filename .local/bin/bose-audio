@@ -39,7 +39,7 @@ notify() {  # best-effort desktop notification; never fail the command
 
 refresh_bar() { command -v sketchybar >/dev/null 2>&1 && sketchybar --trigger bose_audio >/dev/null 2>&1 || true; }
 
-bose_device() { "$SAS" -a -t "$1" 2>/dev/null | grep -i bose | head -1; }   # $1 = output|input
+bose_device() { "$SAS" -a -t "$1" 2>/dev/null | grep -i bose | awk 'NR==1'; }   # $1 = output|input
 current_output() { "$SAS" -c -t output 2>/dev/null || true; }
 is_connected() { [ "$("$BU" --is-connected "$MAC" 2>/dev/null)" = "1" ]; }
 claimed() { [ -f "$FLAG" ]; }

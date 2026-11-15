@@ -230,7 +230,7 @@ undefined_terms() {
 }
 
 # field <file> <key> -> first value (text after "key: ")
-field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
+field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # load_ask <file>: every `key: value` of one ask into the global ASK, read once with no fork
 # (a `field` call per key made a card take half a second). The first `key: ` line wins, as in

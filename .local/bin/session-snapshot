@@ -15,7 +15,7 @@ set -uo pipefail
 MARKER="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}"
 
 say() { printf 'session-snapshot: %s\n' "$*"; }
-field() { sed -n "s/^$1: //p" "$MARKER" 2>/dev/null | head -1; }
+field() { sed -n "/^$1: /{s///p;q;}" "$MARKER" 2>/dev/null; }
 dispatch_held() { agent-hold list 2>/dev/null | awk -F'\t' '$1 == "dispatch" { found = 1 } END { exit !found }'; }
 # agentctl has no read verb for the pause; list leads with it.
 fleet_paused() { agentctl list 2>/dev/null | grep -q '^PAUSED since'; }

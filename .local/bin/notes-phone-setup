@@ -53,7 +53,7 @@ fi
 
 # 3. Notes remote URL (env -> existing config -> prompt).
 if [ -z "${NOTES_REMOTE:-}" ] && [ -f "$HOME/.config/notes-sync.env" ]; then
-    NOTES_REMOTE="$(sed -n 's/^NOTES_PRIMARY_REMOTE_URL=//p' "$HOME/.config/notes-sync.env" | head -1)"
+    NOTES_REMOTE="$(sed -n '/^NOTES_PRIMARY_REMOTE_URL=/{s///p;q;}' "$HOME/.config/notes-sync.env")"
 fi
 if [ -z "${NOTES_REMOTE:-}" ] && [ -d "$NOTES_DIR/.git" ]; then
     NOTES_REMOTE="$(git -C "$NOTES_DIR" remote get-url origin 2>/dev/null || true)"

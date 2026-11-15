@@ -450,7 +450,7 @@ _newest_client() {
   while IFS= read -r s; do
     [ -n "$s" ] && tmux -L "$s" list-clients \
       -F "#{client_activity} $s #{client_name} #{client_pid}" 2>/dev/null
-  done < <(panel_live_servers) | sort -rn | head -1 | cut -d' ' -f2-
+  done < <(panel_live_servers) | sort -rn | awk 'NR==1' | cut -d' ' -f2-
 }
 
 # _drive_newest <server> <mode> -- hop the newest client to <server> and focus its terminal.
@@ -605,7 +605,7 @@ _recent_session() {
   tmux -L "$srv" list-sessions \
       -F '#{session_last_attached} #{session_name}' 2>/dev/null \
     | sort -rn | cut -d' ' -f2- \
-    | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | head -1
+    | grep -vxF -e "$(_landing "$srv")" -e "$exclude" | awk 'NR==1'
 }
 
 # A world is a known name or a running server, hidden ones included: _enter explains those.

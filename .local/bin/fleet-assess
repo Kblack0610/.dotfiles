@@ -559,7 +559,7 @@ gh_callers() {
   [ -f "$dir/$(date +%F).tsv" ] || return 0
   tail -n 20000 "$dir/$(date +%F).tsv" | awk -F'\t' -v since=$(( $(date +%s) - GH_CALLERS_WINDOW_S )) \
     '$1 >= since && $2 ~ /^user/ { n[$4]++ } END { for (c in n) print n[c], c }' |
-    sort -rn | head -3 | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+    sort -rn | awk 'NR <= 3 { printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
 }
 
 # gh_budget -> one line: REST calls left this hour in the emptier bucket, and who is spending

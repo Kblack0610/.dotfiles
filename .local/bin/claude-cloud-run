@@ -36,7 +36,7 @@ if [ "$rc" -ne 0 ]; then
   echo "claude-cloud-run: claude --cloud exited $rc; no session was created" >&2
   exit 1
 fi
-url=$(grep -aoE 'https://claude\.ai/code/(session|cse)_[A-Za-z0-9]+' "$log" | head -n 1)
+url=$(grep -aoE 'https://claude\.ai/code/(session|cse)_[A-Za-z0-9]+' "$log" | awk 'NR==1')
 [ -z "$url" ] || agent-queue set "$slug" "note=cloud session $url" >/dev/null || true
 echo "claude-cloud-run: ${url:-no session URL}; waiting for the PR with the line \"Item: $slug\" in $repo"
 
