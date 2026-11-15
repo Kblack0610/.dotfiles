@@ -77,7 +77,7 @@ function prList(prs, now) {
   if (!(prs || []).length) return "";
   const merged = prs.filter((p) => p.state === "MERGED");
   const last = Math.max(0, ...merged.map((p) => Date.parse(p.merged_at) || 0));
-  const items = prs.map((p) => `<li><a href="https://github.com/${esc(p.repo)}/pull/${esc(p.number)}" target="_blank" rel="noopener">${esc(p.repo)}#${esc(p.number)}</a> ${esc((p.state || "unknown").toLowerCase())}</li>`).join("");
+  const items = prs.map((p) => `<li><a href="https://github.com/${esc(p.repo)}/pull/${esc(p.number)}" target="_blank" rel="noopener">${esc(p.repo)}#${esc(p.number)}</a> ${esc((p.state || NO_DATA).toLowerCase())}</li>`).join("");
   return `<details><summary>${merged.length}/${prs.length} PRs merged${last ? `, last ${dur((now - last) / 60e3)} ago` : ""}</summary><ul>${items}</ul></details>`;
 }
 
@@ -158,7 +158,7 @@ function overviewFolds() {
     const ended = lanes.length - lanes.filter((l) => !l.gone).length;
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
     // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
-    const unread = (state.unreadable || []).length ? `<div class="cline warn">could not read ${esc(state.unreadable.join(", "))}</div>` : "";
+    const unread = (state.unreadable || []).length ? `<div class="cline warn">${NOT_READ}: ${esc(state.unreadable.join(", "))}</div>` : "";
     // The unread warn stays outside the shut fold, so it is seen.
     html += unread + fold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
       `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +

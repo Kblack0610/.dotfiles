@@ -156,7 +156,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     if let Some(u) = rec["unreadable"].as_array().filter(|u| !u.is_empty()) {
         let names: Vec<&str> = u.iter().filter_map(Value::as_str).collect();
         head.push(Span::styled(
-            format!("  could not read: {}", names.join(", ")),
+            format!("  {}: {}", hub_core::reading::NOT_READ, names.join(", ")),
             p.warn(),
         ));
     }
