@@ -115,3 +115,41 @@ T
   run grep -c '^personality = "pragmatic"' "$CODEX_HOME/config.toml"
   assert_output 1
 }
+
+# OPENCODE_HOME stands in for the stow symlink into the private overlay: a real repo whose
+# AGENTS.md is tracked, so a regenerated copy that differs leaves it dirty (ar-1397).
+init_opencode_repo() {
+  mkdir -p "$OPENCODE_HOME"
+  git -C "$OPENCODE_HOME" init -q
+  git -C "$OPENCODE_HOME" config user.name test
+  git -C "$OPENCODE_HOME" config user.email test@example.invalid
+  printf '%s\n' "$1" > "$OPENCODE_HOME/AGENTS.md"
+  git -C "$OPENCODE_HOME" add AGENTS.md
+  git -C "$OPENCODE_HOME" commit -q -m base
+}
+
+@test "opencode: a regenerated AGENTS.md that differs from the tracked copy warns and names the repo, but still syncs" {
+  init_opencode_repo "old tracked rules"
+  run "$SUBJECT"
+  assert_success
+  assert_output --partial "note: $OPENCODE_HOME/AGENTS.md changed and left $OPENCODE_HOME dirty"
+  assert_output --partial 'agent-land cannot otherwise'
+  assert_equal "$(cat "$OPENCODE_HOME/AGENTS.md")" rules
+  run git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md
+  assert_output --partial 'M AGENTS.md'
+}
+
+@test "opencode: a regenerated AGENTS.md that matches the tracked copy stays quiet" {
+  init_opencode_repo "rules"
+  run "$SUBJECT"
+  assert_success
+  refute_output --partial 'AGENTS.md changed'
+  run git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md
+  assert_output ""
+}
+
+@test "opencode: AGENTS.md outside any git repo (the common case) is never checked" {
+  run "$SUBJECT"
+  assert_success
+  refute_output --partial 'AGENTS.md changed'
+}
