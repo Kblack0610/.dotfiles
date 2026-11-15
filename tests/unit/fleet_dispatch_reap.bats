@@ -1083,7 +1083,7 @@ OUT
 
 @test "reap: an opencode item whose newest session never got a model reply reads its older session" {
   oc_end_item ses_evalo 'error|provider.auth'
-  sqlite3 "$OPENCODE_DB" "INSERT INTO session_message VALUES ('m9', 'ses_evalnew', 'user', 1, 1794200100000, 1794200100000, '{}')"
+  sqlite3 "$OC_DB" "INSERT INTO session_message VALUES ('m9', 'ses_evalnew', 'user', 1, 1794200100000, 1794200100000, '{}')"
   agent-queue claim oc --sid ses_evalnew >/dev/null
   run cmd_reap
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" refused
@@ -1091,7 +1091,7 @@ OUT
 
 @test "reap: an opencode item whose sessions are in no database records no end_reason" {
   oc_end_item ses_evalx 'stop'
-  sqlite3 "$OPENCODE_DB" "UPDATE session_message SET session_id = 'ses_elsewhere'"   # its session is in no database
+  sqlite3 "$OC_DB" "UPDATE session_message SET session_id = 'ses_elsewhere'"   # its session is in no database
   agent-queue claim oc --sid ses_nothere >/dev/null
   run cmd_reap
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" ''

@@ -593,7 +593,7 @@ oc_end_item() {
   local db="$HOME/.local/share/opencode/opencode.db" finish etype
   mkdir -p "$HOME/.local/lib" "${db%/*}"
   cp "$REPO_ROOT/.local/lib/opencode-session.jq" "$HOME/.local/lib/opencode-session.jq"
-  OPENCODE_SESSION_JQ="$HOME/.local/lib/opencode-session.jq"; OPENCODE_DB="$db"
+  OC_SESSION_JQ="$HOME/.local/lib/opencode-session.jq"; OC_DB="$db"
   jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   IFS='|' read -r finish etype <<<"$2"

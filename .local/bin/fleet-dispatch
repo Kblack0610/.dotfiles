@@ -161,8 +161,8 @@ LOG="$DIR/log.md"
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
 DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
-OPENCODE_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
-OPENCODE_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
+OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
+OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds are the work route() keeps off a headless harness
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
@@ -2561,9 +2561,9 @@ item_oc_end() {
       rows=$(sqlite3 -readonly -json "$db" "SELECT type, time_created, time_updated, json_extract(data, '\$.finish') AS finish,
         json_extract(data, '\$.error.type') AS etype FROM session_message WHERE session_id = '$id' ORDER BY seq" 2>/dev/null) || continue
       [ -n "$rows" ] || continue
-      why=$(jq -r --argjson timeout_s "$2" -f "$OPENCODE_SESSION_JQ" <<<"$rows" 2>/dev/null)
+      why=$(jq -r --argjson timeout_s "$2" -f "$OC_SESSION_JQ" <<<"$rows" 2>/dev/null)
       [ -z "$why" ] || { echo "$why"; return 0; }
-    done < <(printf '%s\n' "$OPENCODE_DB"; harness_run_dbs "$HARNESSES")
+    done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
   done
 }
 
