@@ -2143,12 +2143,23 @@ planned_reboot() {
 }
 
 # world_lost <server> -- the recorded server is gone: keep its record for restore, and page.
-# A record with no conversations has nothing to restore, so it never replaces one that does.
+# A record with no conversations has nothing to restore, so it never replaces one that does. A
+# restore that reopened only some keeps its lost record (a rerun finishes it), so when the server dies
+# again the new record's conversations join that one, each id once, instead of replacing it.
 world_lost() {
-  local srv=$1 n
+  local srv=$1 n lost="$PANES/$1.lost.json"
   n=$(jq '[.panes[] | select(.claude != "")] | length' "$PANES/$srv.json" 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -gt 0 ]; then mv -f "$PANES/$srv.json" "$PANES/$srv.lost.json"; else rm -f "$PANES/$srv.json"; fi
+  if [ "$n" -eq 0 ]; then
+    rm -f "$PANES/$srv.json"
+  elif [ -s "$lost" ] && jq --slurpfile old "$lost" '
+      ([$old[0].panes[].claude] | map(select(. != ""))) as $had
+      | .panes = $old[0].panes + [.panes[] | select(.claude != "" and (. as $p | $had | index($p.claude) | not))]' \
+      "$PANES/$srv.json" > "$lost.new"; then
+    mv -f "$lost.new" "$lost"; rm -f "$PANES/$srv.json"
+  else
+    rm -f "$lost.new"; mv -f "$PANES/$srv.json" "$lost"
+  fi
   logline "tmux server $srv died with $n conversation(s) on it"
   # A planned reboot (session-snapshot down) is not an outage: its `up` pages what came back.
   ! planned_reboot || return 0
@@ -2190,14 +2201,8 @@ cmd_record() {
 }
 
 # conversation_live <id> -- a claude with that id is running now, so reopening it would be a second.
-conversation_live() {
-  local pid
-  for pid in $(awk 1 "$HOME/.claude/sessions"/*.json 2>/dev/null |
-    jq -Rr --arg id "$1" 'fromjson? | select(.sessionId == $id) | .pid'); do
-    kill -0 "$pid" 2>/dev/null && return 0
-  done
-  return 1
-}
+# Every account's sessions dir counts (claude_pid_live reads ~/.claude*/sessions), not only ~/.claude's.
+conversation_live() { claude_pid_live "$1"; }
 
 # wound_down <id> -- it asked to close: armed, or fired since its window last showed in a record.
 # wind-down.sh disarm clears both on the next prompt, so a conversation taken up again is reopened.
