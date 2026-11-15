@@ -161,6 +161,8 @@ LOG="$DIR/log.md"
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
 DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
+OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
+OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
 MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds are the work route() keeps off a headless harness
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
@@ -2534,16 +2536,38 @@ unstart_orphans() {
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
 }
 
-# item_end <item json> -> why a Codex item's run ended (end_reason), from its rollout: the one
-# classifier is codex-rollout.jq. Nothing for an item on another harness, or one whose rollout cannot be
-# found: no evidence is not a reason, and such an end rates as before. The item's `sessions:` hold the
-# thread ids agent-codex claimed; the launcher's timeout tells a timeout from a cut.
+# item_end <item json> -> why an item's run ended (end_reason), from its harness's own record: a Codex
+# rollout (codex-rollout.jq) or an opencode session (opencode-session.jq), the one classifier for each.
+# Nothing for an item on another launcher, or one whose record cannot be found: no evidence is not a
+# reason, and such an end rates as before. The item's `sessions:` hold the ids its run claimed; the
+# launcher's timeout tells a timeout from a cut.
 item_end() {
-  local agent f t
+  local agent f launcher t
   agent=$(jq -r '.agent // "claude"' <<<"$1")
-  read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
+  launcher=$(harness_launcher "$agent")
+  case "$launcher" in codex | opencode) ;; *) return 0 ;; esac
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
+  if [ "$launcher" = opencode ]; then item_oc_end "$1" "${t:-0}"; return; fi
+  read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
   jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null
+}
+
+# item_oc_end <item json> <timeout seconds> -> the end_reason of the newest opencode session the item
+# claimed that an opencode.db holds: the shared one, then each lane-sandboxed harness's own (ocfree's runs
+# never reach the shared one). The id comes from the item and goes into SQL, so only ses_<alnum> passes.
+item_oc_end() {
+  local id db rows why
+  for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
+    [[ "$id" =~ ^ses_[A-Za-z0-9]+$ ]] || continue
+    while IFS= read -r db; do
+      [ -r "$db" ] || continue
+      rows=$(sqlite3 -readonly -json "$db" "SELECT type, time_created, time_updated, json_extract(data, '\$.finish') AS finish,
+        json_extract(data, '\$.error.type') AS etype FROM session_message WHERE session_id = '$id' ORDER BY seq" 2>/dev/null) || continue
+      [ -n "$rows" ] || continue
+      why=$(jq -r --argjson timeout_s "$2" -f "$OC_SESSION_JQ" <<<"$rows" 2>/dev/null)
+      [ -z "$why" ] || { echo "$why"; return 0; }
+    done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
+  done
 }
 
 # item_rollout <item json> -> "<thread id> <rollout file>" of the newest thread its last run, on a Codex
@@ -2567,7 +2591,7 @@ item_rollout() {
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
-# A Codex run that ends without closing also records why (item_end, --end): this is the only live writer of
+# A Codex or opencode run that ends without closing also records why (item_end, --end): this is the only live writer of
 # end_reason, and the reason is named in the note. A run that was blocked, not wrong, goes back to queued/
 # instead of failing: one with a pending ask for its item is held on that ask (PR or not), and one that
 # ended at the plan's usage limit, after a partial landing, or before its `after:` item finished, waits

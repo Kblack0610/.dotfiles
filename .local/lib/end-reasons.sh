@@ -2,7 +2,7 @@
 # end-reasons.sh -- why a queue item's run ended (its end_reason:), the one list every reader sources:
 # agent-queue (check_end, lane_outcome), fleet-dispatch (settle_row), fleet-bench and judge-eval.
 #
-# END_REASONS: set by fleet-dispatch's settle_item from the rollout (codex-rollout.jq); a run that
+# END_REASONS: set by fleet-dispatch's settle_item from the harness's record (codex-rollout.jq, opencode-session.jq); a run that
 # ended before settle_item recorded it gets the same reason by `agent-queue set`, beside its
 # `model-lane void`, from that classifier's reviewed dry-run.
 # UNRATED_ENDS: the ends that say nothing about the model (a refusal, a usage limit, a provider
