@@ -140,6 +140,9 @@ pub struct Item {
     /// None for an item added by hand or started before it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+    /// The effort points of the board row the item works (`#pts/<n>`), which `agent-queue list` joins in; None when the row is unscored or the item has no row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<u32>,
     /// `heavy` or `light`: the run units it holds; agent-queue derives one when the item has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<String>,
@@ -929,7 +932,7 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     }
 }
 
-/// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
+/// `agent-queue list --json --points` prints one object per line (`points` and the board row's `size` joined in); a line that does not parse is skipped.
 /// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
 /// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
@@ -957,7 +960,7 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--state", state]))
+        .run(&argv(&["list", "--json", "--points", "--state", state]))
         .map(|out| parse(&out))
 }
 
@@ -968,7 +971,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--state", state, "--since", since,
+            "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1299,7 +1302,7 @@ impl crate::table::Row for QueueRow<'_> {
     /// The title leads; `#` is the start order, so a sort on it reads what starts next.
     const COLUMNS: &'static [&'static str] = &[
         "#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr",
-        "row", "kind", "size", "acct", "mode", "plan",
+        "row", "kind", "size", "pts", "acct", "mode", "plan",
     ];
     /// `active` first, the view the table opens on: every item not done. Then the states in the
     /// table's own order, done, and `all`.
@@ -1338,6 +1341,7 @@ impl crate::table::Row for QueueRow<'_> {
             "row" => text(i.board_row().map(|(_, id)| id)),
             "kind" => text(said(&i.kind)),
             "size" => text(said(&i.size)),
+            "pts" => i.points.map_or(Val::None, |n| Val::Num(f64::from(n))),
             "acct" => text(said(&i.account)),
             "mode" => text(Some(i.mode.trim()).filter(|m| !m.is_empty())),
             "pr" => text(said(&i.pr)),
@@ -1890,7 +1894,7 @@ mod tests {
         let items = list(&fake, "all").unwrap();
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all"
+            "agent-queue list --json --points --state all"
         );
         let slugs: Vec<&str> = items.iter().map(|i| i.slug.as_str()).collect();
         assert_eq!(slugs, ["w", "q", "d"], "no state is not an item");
@@ -2067,7 +2071,7 @@ mod tests {
         assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all --since 2026-10-30"
+            "agent-queue list --json --points --state all --since 2026-10-30"
         );
         assert!(list_since(&fake, "all", "--state").is_err());
         assert_eq!(days_ago(0).len(), 10);
@@ -2680,6 +2684,31 @@ mod tests {
             back["type"], "feat",
             "it serializes under the ledger's own key"
         );
+    }
+
+    #[test]
+    fn points_come_from_the_joined_board_row_and_a_missing_one_is_a_dash_column() {
+        let items = parse(
+            r#"{"slug":"a","state":"queued","size":"m","points":5,"task":"t"}
+{"slug":"b","state":"queued","size":"s","points":null,"task":"t"}
+{"slug":"c","state":"queued","task":"t"}"#,
+        );
+        let q = Queue {
+            items,
+            ..Queue::default()
+        };
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let pts = |slug: &str| {
+            use crate::table::Row;
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .map(|r| r.val("pts").shown())
+                .unwrap()
+        };
+        assert_eq!(pts("a").as_deref(), Some("5"));
+        assert_eq!(pts("b"), None);
+        assert_eq!(pts("c"), None);
+        assert_eq!(serde_json::to_value(&q.items[0]).unwrap()["points"], 5);
     }
 
     #[test]

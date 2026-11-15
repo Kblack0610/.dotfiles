@@ -76,7 +76,7 @@ function openRows(file) {
 const QUEUE_ROWS = openRows("queue.rs");
 const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
 const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
-const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
+const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
 QUEUE_TABLE.states = [["active", 637], ["needs you", 6], ["running", 9], ["on a PR", 40], ["ready", 197], ["held", 385], ["done", 2370], ["all", 3007]].map(([name, n]) => ({ name, n, tone: TONE[name] }));
 // Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first CANDIDATES_SHOWN
 // rows on the shared table), and the counts its `?counts=1` read sends for the heading.
@@ -249,6 +249,43 @@ const fleet = {
   },
 };
 
+// One runner's page, hub_core::fleet::runner at the counts its reader sends (runs, activity and
+// calls at 20, an extras block's rows at 10, every conf line), sized from live inbox-triage and
+// shepherd on 2026-11-15, which read 4,955 and 3,310 px at 1400x900 before the page capped them.
+// `shown` is the cap agent-web sends beside them, read from its source.
+const RUNNER_ROWS = Number(readFileSync(new URL("../../../.local/src/agent-web/src/fleet.rs", import.meta.url), "utf8").match(/pub const RUNNER_ROWS: usize = (\d+);/)[1]);
+const ACTIVITY = ["moved 0 from the outbox, filed 0, left 0, refused 0, answered 0, asked you 0, batch 40", "2 due, none urgent, last pass 30m ago: no new pass"];
+const score = (rule, i) => ({ rule, verdicts: 6 + i, errors: 0, scored: i, precision: i ? 80 + i : null, false_defer_pct: null, live: i % 2 === 0 });
+const runnerPage = (name, { running, runs, older, calls, conf, rules = 0, extras = { kind: "none" } }) => ({
+  at: NOW, name, shown: RUNNER_ROWS, errors: [], lane: "agent", description: TEXT[7], enabled: true, state: running ? "running" : "idle", running_since: running ? ago(480) : null, next: null,
+  registry: { kind: "persistent", trigger: "always on", role: "distill", role_desc: "reads and returns data", caps: "write no, task no, bash no, mcp none", model: "claude-opus-5-5", effect: "acts", prompt: "", calls: { n_24h: calls, errors_24h: 0, cost_24h: 4.86, tokens_24h: 634602, p95_ms: 12568, prompt_sha: "", recent: [] },
+    eval: rules ? { prompt_sha: "3fa1c2d", live: [], total: score("", rules), rules: rows(rules, (i) => score(pick(["proceed_or_hold", "credential_or_account", "scope", "agent_policy"], i) + (i >= 4 ? `_${i}` : ""), i)) } : null },
+  conf: rows(conf, (i) => ({ key: `KEY_${i}`, value: i % 5 ? `value-${pick(SLUGS, i)}` : TEXT[i % TEXT.length] })),
+  status: { detail: ACTIVITY[0], item: "unity-core-playground", next: "", project: "", state: "working", updated: String(ago(2)) },
+  activity: rows(20, (i) => ({ word: pick(["NOOP", "WORKED"], i), ok: true, at: ago(2 + i * 30), text: pick(ACTIVITY, i) })),
+  runs: rows(runs, (i) => ({ source: "agentctl", name, state: running && !i ? "running" : "done", ok: running && !i ? null : true, result: running && !i ? "running" : pick(["NOOP", "WORKED"], i), started: ago(480 + i * 600), finished: running && !i ? null : ago(470 + i * 600), secs: 171, detail: `inv ${(0x35a8b1da + i).toString(16)}`, log: { kind: "runner", name, out: [0, 100], err: [0, 0] }, runs: 1 })),
+  runs_total: runs + older, runs_older: older, failed_total: 0,
+  days: rows(14, (i) => ({ day: `11-${String(2 + i).padStart(2, "0")}`, runs: runs ? 3 + i : 0, failed: 0 })),
+  calls: { day: { calls, errors: 0, tokens: 634602, cost: calls ? 4.86 : null, p50_ms: 9000 }, week: { calls: calls * 5, errors: 0, tokens: 3e6, cost: calls ? 24.3 : null, p50_ms: 9000 }, partial: false,
+    recent: rows(calls, (i) => ({ id: `fac8221${i}`, at: ago(30 + i * 60), ms: 12568, ok: true, model: "claude-opus-5-5", cost: 0.73, tokens: 89929, link: `https://langfuse.example/sessions/${i}` })) },
+  extras,
+});
+const ingest = { kind: "ingest", partial: false, counts_7d: { moved: 40, filed: 12, planned: 9, refused: 30 },
+  steps: rows(10, (i) => ({ ts: iso(ago(20 + i * 5)), action: pick(["refused", "planned"], i), from: "unity-core-playground", to: "", lane: "", text: `${TEXT[i % TEXT.length]} #size/m #plan`, id: i % 2 ? `ucp-${2277 + i}` : null, why: i % 2 ? "12 plan lines" : `no open task matches '- [ ] ${TEXT[i % TEXT.length]}'`, row: null, by: "inbox-plan" })) };
+// The judges' pages at their live counts: the dispatch judge's newest 10 verdicts (runner::PAGE_ROWS),
+// the answer judge's 8 cells and its newest RUNNER_ROWS verdicts, cut by Judge::view and counted in `table`.
+const dispatchVerdicts = { kind: "dispatch-verdicts", dispatch: { ...fleet.dispatch, recent: fleet.dispatch.recent.slice(0, 10) } };
+const askJudge = { kind: "ask-judge", judge: { ...fleet.judge, verdicts: fleet.judge.verdicts.slice(0, RUNNER_ROWS),
+  cells: rows(8, (i) => ({ type: pick(["credential_or_account", "agent_policy", "scope", ""], i), level: pick(["self", "repo", "fleet", "critical"], i), verdicts: 4 + i, scored: i, pending: 1, precision: i ? 66.7 : null, precision_lo: i ? 20.8 : null, precision_hi: i ? 93.9 : null, live: i % 2 === 0, audited: i, level_raised_pct: i % 3 ? 25 : null })),
+  table: table(200, ["when", "project", "type", "said", "question", "why", "you"], ["all", "answered", "would answer", "passed", "wrong"]) } };
+// The runner pages render.mjs measures, each `#sessions/runners/<name>`.
+export const RUNNER_PAGES = {
+  "inbox-triage": runnerPage("inbox-triage", { running: true, runs: 20, older: 12, calls: 20, conf: 20, extras: ingest }),
+  shepherd: runnerPage("shepherd", { runs: 20, older: 1118, calls: 0, conf: 22 }),
+  "dispatch-judge": runnerPage("dispatch-judge", { runs: 0, older: 0, calls: 20, conf: 19, rules: 12, extras: dispatchVerdicts }),
+  "ask-judge": runnerPage("ask-judge", { runs: 0, older: 0, calls: 20, conf: 23, rules: 6, extras: askJudge }),
+};
+
 // Alerts: hub_core::alerts, the firing rows a hub_core::table view of Alert.
 const alertRows = rows(6, (i) => ({ sev: pick(["high", "normal", "low"], i), what: SLUGS[i], source: pick(["sentinel", "red_now", "infra"], i), since: ago(20 + i * 45),
   project: pick(PROJECTS, i), owner: i % 2 ? "-" : `${SLUGS[i]} fixing`, state: pick(["fixing", "no owner", "error"], i), slug: i % 2 ? undefined : SLUGS[i], about: TEXT[i], place: TEXT[i + 1], action: TEXT[i + 2] || "", evidence: "" }));
@@ -404,4 +441,5 @@ export const FIXTURES = {
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
   "/api/fleet": fleet, "/api/schedules": schedules, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
   "/api/pipelines": pipelines, "/api/tests": tests,
+  ...Object.fromEntries(Object.entries(RUNNER_PAGES).map(([name, r]) => [`/api/fleet/runner?name=${name}`, r])),
 };

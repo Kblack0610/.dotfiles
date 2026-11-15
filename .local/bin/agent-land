@@ -402,11 +402,13 @@ fj_repo=${fj#*/}
 # The token is read once, in this shell, so every $(...) below inherits it. A dry run calls nothing.
 [ -z "$fj" ] || [ "$dry" -eq 1 ] || so_forgejo_auth "$fj" || die "$SO_FORGEJO_ERR"
 # fj_send METHOD PATH JSON: one authed write to the PR's Forgejo repo. A refusal ends stderr with
-# Forgejo's reason (a protected branch, a 409 stale head), which fail prints as its last line.
+# Forgejo's reason (a protected branch, a 409 stale head), or so_forgejo_get's line naming the proxy
+# that refused it before Forgejo saw it, which fail prints as its last line.
 fj_send() {
   local out
   out=$(so_forgejo_get "$fj" "$2" -X "$1" -H 'Content-Type: application/json' --data-binary "$3") && return 0
-  printf 'Forgejo: %s\n' "$(jq -r '.message // empty' <<<"$out" 2>/dev/null || printf '%s' "$out")" >&2
+  out=$(jq -r '.message // empty' <<<"$out" 2>/dev/null || printf '%s' "$out")
+  [ -z "$out" ] || printf 'Forgejo: %s\n' "$out" >&2
   return 1
 }
 # pr_view FIELDS JQ: `gh pr view --json FIELDS -q JQ`; on Forgejo the API's PR in gh's field names,

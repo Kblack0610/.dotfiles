@@ -2187,6 +2187,7 @@ case " $* " in
 *' done '*) [ ! -e "$NOTES_FIXTURE/done.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' run '*) [ ! -e "$NOTES_FIXTURE/run.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
+*' board '*) cat "$NOTES_FIXTURE/board.json" 2>/dev/null; exit 0 ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
@@ -2217,7 +2218,7 @@ STUB
   assert_line "story lv-9 on the level agent board, under lv-3"
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #size/s #low #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
   f="$(item queued menus)"
   [ "$(field "$f" project)" = level ]
@@ -2225,6 +2226,39 @@ STUB
   [ "$(field "$f" lane)" = agent ]
   [ "$(field "$f" profile)" = bnb ]
   [ "$(jq -r .row <<<"$("$AQ" show menus --json)")" = level:lv-9 ]
+}
+
+@test "list joins the item's board row: its points and size band, in --json and as an m/5 column" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug menus "feat(menu): live main menus" >/dev/null
+  "$AQ" add --project game --slug bare --from human "chore(x): no row of its own" >/dev/null
+  # The row the item works scores 5 points, band m; the other item's row is unscored.
+  echo '{"rows":[{"project":"level","id":"lv-9","points":5,"size":"m"}],"done":[]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" list --json --points
+  assert_success
+  [ "$(jq -r 'select(.slug == "menus") | "\(.size)/\(.points)"' <<<"$output")" = m/5 ]
+  run "$AQ" list
+  assert_line --regexp '^queued	.*	menus	.*	m/5$'
+  # NEGATIVE CONTROLS: --json without --points never reads the board; with no board feed the list is still the queue.
+  run "$AQ" list --json
+  assert_success
+  [ "$(jq -r 'select(.slug == "menus") | .points // "none"' <<<"$output")" = none ]
+  rm "$NOTES_FIXTURE/board.json"
+  run "$AQ" list --json --points
+  assert_success
+  [ "$(jq -r 'select(.slug == "menus") | .points // "none"' <<<"$output")" = none ]
+  run "$AQ" list
+  assert_line --regexp '^queued	.*	menus	.*	-$'
+}
+
+@test "add files the story row with no #size/: the nightly --backlog --size pass scores it" {
+  story_notes
+  run "$AQ" add --project game --epic lv-3 --slug light --weight light "feat(menu): a light one"
+  assert_success
+  run "$AQ" add --project game --epic lv-3 --slug heavy --weight heavy "feat(menu): a heavy one"
+  assert_success
+  run grep -c '#size/' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 # The row's section follows the item (Now while it runs, Next up once requeued), so every move to
@@ -2388,8 +2422,8 @@ notes --profile work ptask level run lv-8'
   run "$AQ" add --project game --epic lv-3 --slug own --from human "feat(menu): c"
   assert_success
   run grep 'ptask level --agent add' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 0 --partial 'add --want voice -- feat(menu): a #size/s #high #of/lv-3'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #size/s #high #of/lv-3'
+  assert_line --index 0 --partial 'add --want voice -- feat(menu): a #high #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #high #of/lv-3'
 }
 
 @test "--want is refused with --plan: plan items are agent-made and carry no channel" {
@@ -2407,7 +2441,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep -c -- '--agent propose -- lv P1: P1 one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- '--agent add -- feat(level): lv P1: one #size/m #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent add -- feat(level): lv P1: one #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -2607,7 +2641,7 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$f" row)" = level:lv-9 ]
   [ "$(field "$f" profile)" = bnb ]
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #size/s #high"
+  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #high"
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --running --project app --row lv-2 --slug linked "x"
   assert_success
