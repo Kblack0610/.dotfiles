@@ -59,8 +59,9 @@ STEAM_BUILDS=50
 STEAM_API=https://partner.steam-api.com/ISteamApps
 PLAY_API=https://androidpublisher.googleapis.com/androidpublisher/v3
 ASC_API=https://api.appstoreconnect.apple.com/v1
-# Set once by store_credentials, before the probes' subshells: the value, or why there is none.
-STEAM_KEY="" STEAM_WHY="" PLAY_TOKEN="" PLAY_WHY="" ASC_JWT="" ASC_WHY=""
+# Set once by store_credentials, before the probes' subshells: the value, or why there is none. The
+# Play and App Store Connect tokens are store_tokens' PLAY_* and ASC_*.
+STEAM_KEY="" STEAM_WHY=""
 # One call per target. The REST list has no status on it, which would be one more call per row.
 DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
@@ -225,32 +226,19 @@ pin_value() {
   printf '%s' "$v"
 }
 
-play_credentials() {
-  store_google_token "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher
-  PLAY_TOKEN="$STORE_TOKEN" PLAY_WHY="$STORE_WHY"
-}
-
-asc_credentials() {
-  store_asc_jwt "$RBW_ASC"
-  ASC_JWT="$STORE_TOKEN" ASC_WHY="$STORE_WHY"
-}
-
 # store_credentials <targets> -> read once what these targets need. Runs in the main shell because
 # each probe is a subshell.
 store_credentials() {
-  local kinds
+  local kinds need=()
   kinds="$(jq -r '.target.live | objects | keys[]' <<<"$1" 2>/dev/null | sort -u)"
   grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
-  if ! store_rbw_ready; then
-    STEAM_WHY="$STORE_WHY" PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
-    return 0
-  fi
+  grep -qx play <<<"$kinds" && need+=(play "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher)
+  grep -qx testflight <<<"$kinds" && need+=(asc "$RBW_ASC")
+  store_tokens "${need[@]}" || { STEAM_WHY="$STORE_WHY"; return 0; }
   if grep -qx steam <<<"$kinds"; then
     STEAM_KEY="$(rbw_read "$RBW_STEAM")"
     [ -n "$STEAM_KEY" ] || STEAM_WHY="no rbw entry $RBW_STEAM"
   fi
-  grep -qx play <<<"$kinds" && play_credentials
-  grep -qx testflight <<<"$kinds" && asc_credentials
   return 0
 }
 
@@ -306,8 +294,8 @@ live_testflight() {
   local t="$1" app src body ver build
   app="$(jq -r '.live.testflight.app' <<<"$t")"
   src="testflight $app"
-  [ -n "$ASC_JWT" ] || { probe_failed "$src" "$ASC_WHY"; return; }
-  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_JWT")" \
+  [ -n "$ASC_TOKEN" ] || { probe_failed "$src" "$ASC_WHY"; return; }
+  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_TOKEN")" \
     || { probe_failed "$src" "app store connect request failed"; return; }
   build="$(jq -r '.data[0].attributes.version // empty' <<<"$body" 2>/dev/null)"
   ver="$(jq -r '[.included[]? | select(.type == "preReleaseVersions")][0].attributes.version // empty' <<<"$body" 2>/dev/null)"

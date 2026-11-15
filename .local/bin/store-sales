@@ -116,10 +116,10 @@ http_failed() { local d; d="$(store_api_error "$4")"; failed "$1" "$2" "HTTP $3$
 
 app_store() {
   local name="App Store" basis=proceeds vendor code
-  store_asc_jwt "$RBW_ASC" || { failed "$name" "$basis" "$STORE_WHY"; return; }
-  vendor="$(secret_field "$STORE_RAW" vendor_number)"
+  [ -n "$ASC_TOKEN" ] || { failed "$name" "$basis" "$ASC_WHY"; return; }
+  vendor="$(secret_field "$ASC_RAW" vendor_number)"
   [ -n "$vendor" ] || { failed "$name" "$basis" "rbw entry $RBW_ASC has no vendor_number"; return; }
-  code="$(store_fetch "$ASC_API/salesReports?filter[frequency]=DAILY&filter[reportDate]=$DAY&filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[vendorNumber]=$vendor&filter[version]=$ASC_REPORT_VERSION" "$STORE_TOKEN" "$TMP/asc.gz")" \
+  code="$(store_fetch "$ASC_API/salesReports?filter[frequency]=DAILY&filter[reportDate]=$DAY&filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[vendorNumber]=$vendor&filter[version]=$ASC_REPORT_VERSION" "$ASC_TOKEN" "$TMP/asc.gz")" \
     || { failed "$name" "$basis" "sales report request failed"; return; }
   case "$code" in
     200) gzip -dc "$TMP/asc.gz" > "$TMP/asc.tsv" 2>/dev/null || { failed "$name" "$basis" "report is not gzip"; return; }
@@ -135,11 +135,11 @@ app_store() {
 
 google_play() {
   local name="Google Play" basis=charged bucket obj code
-  store_google_token "$RBW_PLAY" "$GCS_SCOPE" || { failed "$name" "$basis" "$STORE_WHY"; return; }
-  bucket="$(secret_field "$STORE_RAW" bucket)"
+  [ -n "$PLAY_TOKEN" ] || { failed "$name" "$basis" "$PLAY_WHY"; return; }
+  bucket="$(secret_field "$PLAY_RAW" bucket)"
   [ -n "$bucket" ] || { failed "$name" "$basis" "rbw entry $RBW_PLAY has no bucket"; return; }
   obj="sales/salesreport_$(date -d "$DAY" +%Y%m).zip"
-  code="$(store_fetch "$GCS_API/b/$bucket/o/${obj//\//%2F}?alt=media" "$STORE_TOKEN" "$TMP/play.zip")" \
+  code="$(store_fetch "$GCS_API/b/$bucket/o/${obj//\//%2F}?alt=media" "$PLAY_TOKEN" "$TMP/play.zip")" \
     || { failed "$name" "$basis" "sales report request failed"; return; }
   case "$code" in
     200) unzip -p "$TMP/play.zip" > "$TMP/play.csv" 2>/dev/null || { failed "$name" "$basis" "report is not a zip"; return; }
@@ -174,7 +174,7 @@ steam() {
   parsed "$name" "$basis" steam "$TMP/steam.pages"
 }
 
-if store_rbw_ready; then
+if store_tokens play "$RBW_PLAY" "$GCS_SCOPE" asc "$RBW_ASC"; then
   # The stores run side by side, each into its own file, so the wait is the slowest one.
   app_store > "$TMP/asc.json" & google_play > "$TMP/play.json" & steam > "$TMP/steam.json" & wait
   sources="$(cat "$TMP/asc.json" "$TMP/play.json" "$TMP/steam.json")"

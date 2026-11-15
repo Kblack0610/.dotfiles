@@ -7,11 +7,16 @@
 #   store_asc_jwt <rbw entry>               -> STORE_TOKEN, or STORE_WHY ({key_id, issuer_id, p8})
 #   Both leave the entry in STORE_RAW, so a caller reads its other fields without a second get.
 #   store_rbw_ready                         -> 0, or 1 with STORE_WHY (missing, locked)
+#   store_tokens [play <entry> <scope>] [asc <entry>]
+#                                           -> PLAY_TOKEN and PLAY_RAW, else PLAY_WHY; ASC_TOKEN and
+#                                              ASC_RAW, else ASC_WHY; for the stores named. 1 with
+#                                              STORE_WHY, each named store's why too, when rbw is not ready
 #   store_api_error <file>                  -> the error text Apple or Google answered with, else empty
 #
 # The caller sets PROBE_TIMEOUT (seconds, the guard on every external call; default 20).
 
 STORE_TOKEN="" STORE_WHY="" STORE_RAW=""
+PLAY_TOKEN="" PLAY_WHY="" PLAY_RAW="" ASC_TOKEN="" ASC_WHY="" ASC_RAW=""
 
 declare -F now_epoch >/dev/null || now_epoch() { date +%s; }
 
@@ -115,4 +120,30 @@ store_asc_jwt() {
   STORE_TOKEN="$(jwt ES256 "$(jq -nc --arg k "$kid" '{alg: "ES256", kid: $k, typ: "JWT"}')" \
     "$(jq -nc --arg i "$iss" --argjson now "$now" '{iss: $i, iat: $now, exp: ($now + 900), aud: "appstoreconnect-v1"}')" "$pem")"
   [ -n "$STORE_TOKEN" ] || { STORE_WHY="cannot sign with rbw entry $entry"; return 1; }
+}
+
+# One token per store, made once in the caller's main shell, before its readers fork; a bad entry
+# is that store's why, and the other store still reads.
+store_tokens() {
+  local play="" scope="" asc=""
+  PLAY_TOKEN="" PLAY_WHY="" PLAY_RAW="" ASC_TOKEN="" ASC_WHY="" ASC_RAW=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      play) play="$2" scope="$3"; shift 3 ;;
+      asc) asc="$2"; shift 2 ;;
+      *) return 2 ;;
+    esac
+  done
+  if ! store_rbw_ready; then
+    [ -z "$play" ] || PLAY_WHY="$STORE_WHY"
+    [ -z "$asc" ] || ASC_WHY="$STORE_WHY"
+    return 1
+  fi
+  if [ -n "$play" ]; then
+    if store_google_token "$play" "$scope"; then PLAY_TOKEN="$STORE_TOKEN" PLAY_RAW="$STORE_RAW"; else PLAY_WHY="$STORE_WHY"; fi
+  fi
+  if [ -n "$asc" ]; then
+    if store_asc_jwt "$asc"; then ASC_TOKEN="$STORE_TOKEN" ASC_RAW="$STORE_RAW"; else ASC_WHY="$STORE_WHY"; fi
+  fi
+  return 0
 }

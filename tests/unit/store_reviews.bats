@@ -1,18 +1,19 @@
 #!/usr/bin/env bats
 # store-reviews: each product's store reviews, read from its project-map store targets. rbw and
-# curl are stubs; the curl stub reads its stdin config the way real curl does, writes the reply
-# named by the URL to the output file and prints the status. The client is .local/lib/store-auth.sh.
+# curl are the store stubs (helpers/store.bash), the client .local/lib/store-auth.sh; this file
+# routes each review URL to its reply.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/store'
   sandbox_init basic
 
   SR="$REPO_ROOT/.local/bin/store-reviews"
   export SANDBOX STORE_RETRY_BASE=0 PROJECT_MACHINE_PROFILE=personal
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json" PROM_TEXTFILE_DIR="$SANDBOX/textfile"
-  mkdir -p "$SANDBOX/rbw" "$SANDBOX/reply" "$PROM_TEXTFILE_DIR"
+  mkdir -p "$PROM_TEXTFILE_DIR"
   cat > "$PROJECT_MAP_FILE" <<'EOF'
 {"trackers": {
   "shape-city": {"type": "game", "targets": [
@@ -23,23 +24,8 @@ setup() {
   "apociseum": {"type": "game", "targets": [{"id": "steam", "live": {"steam": {"app": 5376830}}}]},
   "infra": "not an object"}}
 EOF
-  cat > "$SANDBOX/bin/rbw" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/rbw.calls"
-case "$1" in
-  unlocked) [ "${RBW_LOCKED:-0}" != 1 ] ;;
-  get) cat "$SANDBOX/rbw/$2" 2>/dev/null ;;
-  *) exit 1 ;;
-esac
-STUB
-  cat > "$SANDBOX/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-cfg="$(cat)"
-printf '%s\n' "$cfg" >> "$SANDBOX/curl.config"
-url="$(sed -n 's/^url = "\(.*\)"$/\1/p' <<<"$cfg")"
-out="$(sed -n 's/^output = "\(.*\)"$/\1/p' <<<"$cfg")"
+  store_stubs <<'ROUTE'
 case "$url" in
-  *oauth2.googleapis.com/token*) printf '%s' '{"access_token":"play-token"}'; exit 0 ;;
   *appreviews/*) r="steam.$(sed 's#.*appreviews/\([0-9]*\).*#\1#' <<<"$url")"
     c="$(sed -n 's/.*[?&]cursor=\([^&]*\).*/\1/p' <<<"$url")"
     [ "$c" = "%2A" ] || r="$r.$c" ;;
@@ -49,20 +35,15 @@ case "$url" in
   *"/reviews?"*) r=play ;;
   *) exit 22 ;;
 esac
-[ -f "$SANDBOX/reply/$r.code" ] || exit 7
-cp "$SANDBOX/reply/$r.body" "$out"
-printf '%s' "$(cat "$SANDBOX/reply/$r.code")"
-STUB
-  chmod +x "$SANDBOX/bin/rbw" "$SANDBOX/bin/curl"
+answer "$r"
+ROUTE
   NOW="$(date +%s)"
   OLD=$((NOW - 8 * 86400))
 }
 
 keys() {
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$SANDBOX/asc.pem" 2>/dev/null
-  jq -nc --arg p "$(base64 -w0 < "$SANDBOX/asc.pem")" '{key_id: "KID1", issuer_id: "ISS1", p8: $p}' > "$SANDBOX/rbw/release_state_asc"
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$SANDBOX/play.pem" 2>/dev/null
-  jq -nc --rawfile k "$SANDBOX/play.pem" '{client_email: "rs@acme.iam", private_key: $k}' > "$SANDBOX/rbw/release_state_play"
+  store_asc_key release_state_asc
+  store_play_key release_state_play
 }
 
 # reply <name> <code> <json>
@@ -116,7 +97,7 @@ steam_page() {
   assert_equal "$(app shape-city play)" '{"error":"rbw is locked"}'
   assert_equal "$(app shape-city app_store)" '{"error":"rbw is locked"}'
   assert_equal "$(app shape-city steam | jq .recent)" 2
-  run grep -c '^get' "$SANDBOX/rbw.calls"
+  run grep -c '^rbw get' "$SANDBOX/rbw/calls.log"
   assert_output 0
 }
 
