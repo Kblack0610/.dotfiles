@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # store-auth.sh - read-only store credentials from rbw, and the signed tokens the store APIs take.
-# Sourced by release-state, store-sales and store-reviews. A credential or token only ever reaches curl on stdin
+# Sourced by release-state, store-sales, store-reviews and sentry-issues. A credential or token only ever reaches curl on stdin
 # and openssl through a process substitution: never argv, never a file on disk.
 #
 #   store_google_token <rbw entry> <scope>  -> STORE_TOKEN, or STORE_WHY (a service-account JSON)
@@ -31,7 +31,7 @@ STORE_RETRY_MAX=30
 # store_fetch <url> <bearer-token> <out-file> -> the HTTP status on stdout, the body (an error's
 # too) in out-file. An empty token sends no Authorization header (Steam's key rides in the URL,
 # which reaches curl on stdin too). Only for GETs: a 429 or 5xx is retried. Exit 1 when curl could
-# not get an answer at all.
+# not get an answer at all. With STORE_KEEP_HEADERS=1 the response headers stay in <out-file>.h.
 store_fetch() {
   local try=0 code wait
   while :; do
@@ -39,7 +39,8 @@ store_fetch() {
       printf 'output = "%s"\ndump-header = "%s.h"\nwrite-out = "%%{http_code}"\n' "$3" "$3"; } \
       | timeout "${PROBE_TIMEOUT:-20}" curl -sS -g --max-time "${PROBE_TIMEOUT:-20}" -K - 2>/dev/null)" || { rm -f "$3.h"; return 1; }
     if [[ ! "$code" =~ ^(429|5[0-9][0-9])$ ]] || [ "$try" -ge "$STORE_RETRIES" ]; then
-      rm -f "$3.h"; printf '%s' "$code"; return 0
+      [ -n "${STORE_KEEP_HEADERS:-}" ] || rm -f "$3.h"
+      printf '%s' "$code"; return 0
     fi
     wait="$(sed -n 's/^[Rr]etry-[Aa]fter: *\([0-9][0-9]*\).*/\1/p' "$3.h" 2>/dev/null | tail -n 1)"
     try=$((try + 1))
