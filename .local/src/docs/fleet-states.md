@@ -60,7 +60,7 @@ Thresholds are the `FLEET_*` block at the top of `fleet-sessions`. A red default
 
 ## Close verdict
 
-Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label). A DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on quiet. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
+Each session object carries `close` {`verdict`, `why`}: may it close `now`, `after` one named step, or must it `keep`. `fleet-sessions close` lists it, close-now first (the shepherd skill's `triage`); `fleet-sessions close --self` is one session's own verdict from a fresh collect, read as at the end of its turn (rule 5 skips its WORKING fact), which `/wind-down auto` checks before closing. A window is kept by what waits on the human in it (an ask, a dialog, plan mode, the `manual` label, manual permission mode). A DONE row is already idle `FLEET_IDLE_MIN` (20), and only a CHAT row, which files nothing, closes on quiet. `fleet-shepherd due` nudges on it (CLOSE, DONE, CHAT), and the hub Sessions tab shows it as the CLOSE column. The rules are `CLOSE_JQ` in `fleet-sessions`, pinned rule by rule in `tests/unit/fleet_sessions.bats` ("close verdict"), first match wins:
 
 | # | Facts | Verdict |
 |---|---|---|
@@ -69,7 +69,7 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 | 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
 | 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |
 | 5 | WORKING, STALLED (unless rule 10's own item is its only blocker), or NEEDS on a dialog in its pane (its reason is not a pending ask) | keep |
-| 6 | in plan mode (`in_plan_mode`), its approval dialog open or not | keep: the human approves or ends it |
+| 6 | in plan mode (`in_plan_mode`), its approval dialog open or not; or in Claude's manual permission mode (`manual_mode`, from `agent-panel`: investigate-only, so it does no work on its own) | keep: the human approves or ends it, or keeps it |
 | 7 | `finished` and no ask of its own | now |
 | 8 | dispatched, and its own asks are its only blockers | now: the answer carries on without the window (`/wind-down auto` sets each ask to reopen it, `agent-ask reopen-on-answer`) |
 | 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere) | now: the queue holds the rest |

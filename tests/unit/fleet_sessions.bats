@@ -1157,7 +1157,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"manual_mode\":${PANEL_MANUAL_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -1314,6 +1314,19 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .open_job <<<"$output")" = "null" ]
+}
+
+@test "end to end: a session in manual permission mode keeps its window, as the manual label does (ar-2260)" {
+  landed_fixture
+  PANEL_MANUAL_MODE=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r '"\(.manual_mode) \(.close.verdict): \(.close.why)"' <<<"$output")" = "true keep: manual permission mode: the human keeps it" ]
+  # Negative control: the same row out of manual mode is not kept by this rule.
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .manual_mode <<<"$output")" = false ]
+  [ "$(jq -r .close.why <<<"$output")" != "manual permission mode: the human keeps it" ]
 }
 
 @test "end to end: plan mode with no approval dialog open is not NEEDS plan awaiting approval" {
@@ -3622,6 +3635,10 @@ verdict() {
 
 @test "close verdict: each rule of the fleet-states.md close table, first match wins" {
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # Manual permission mode keeps it too, after the rules that name what to do first (land it, plan mode).
+  [ "$(verdict '{manual_mode: true}')" = "keep: manual permission mode: the human keeps it" ]
+  [ "$(verdict '{manual_mode: true, blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
+  [ "$(verdict '{manual_mode: true, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "PARKED"}')" = "keep: parked: its claude is gone" ]
   [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
   # Negative control: finished and dispatched, but its work is not on main.
