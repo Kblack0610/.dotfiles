@@ -743,7 +743,7 @@ load 'fleet_dispatch/common'
   harness_sandboxed glm
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
   assert_failure 2
-  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), and fix-menu is not one'
+  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:) or a trainee row, and it carries no #pts/N (fix-menu)'
   # A canary tag without its task id is refused too: the score step would have nothing to score.
   agent-queue set fix-menu tags=canary >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
@@ -761,6 +761,116 @@ load 'fleet_dispatch/common'
   assert_not_called 'opencode run'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
+}
+
+# trainee_start_ready -- glm sandboxed and allowlisted to game, a trainee lane naming it (model-lane
+# trainee), and t-one, a one-point tier-1 row.
+trainee_start_ready() {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
+  harness_sandboxed glm
+  git init -q "$SANDBOX/repos/game"
+  sonnet_lane
+  export TRAINEE_LANE='{"candidates":[{"harness":"glm","model":"glm"}],"points":1,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
+  agent-queue add --project game --slug t-one --priority high --tags tier1 "Fix the menu title #pts/1" >/dev/null
+}
+
+@test "a trainee run is the sandboxed opencode run, then its review hand-off outside the sandbox however the run ends, with no canary steps" {
+  trainee_start_ready
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness glm --model glm
+  assert_success
+  assert_equal "$(qfield "$(qitem running t-one)" trainee)" glm:glm
+  qr=$(printf %q "$SANDBOX/oc-public/run")
+  line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
+  [[ "$line" == *":: { timeout 180m env -i "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "the run is not inside srt: $line"
+  [[ "$line" == *" </dev/null; fleet-dispatch trainee-review t-one; }; rm -f $qr/srt-ses_eval"*".json" ]] || fail "no review hand-off after the run: $line"
+  [[ "$line" != *"fleet-bench canary"* ]] || fail "a trainee run carries canary steps: $line"
+  # The brief: the task, and that the run leaves its edits uncommitted.
+  [[ "$line" == *"Fix the menu title"* && "$line" == *"Do not commit, push or open a pull request"* ]] || fail "no trainee brief: $line"
+  # The pane line as a shell runs it: the hand-off runs after a run that timed out too.
+  pane="$SANDBOX/pane" && mkdir -p "$pane"
+  printf '#!/usr/bin/env bash\necho "timeout $1" >> %q; exit 124\n' "$pane/log" > "$pane/timeout"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
+  chmod +x "$pane"/*
+  PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one')"
+}
+
+@test "trainee-review: the diff is a patch and a review item pinned to the reviewer model, the worktree is put back; no diff, and trainee-reject, send the row back on claude" {
+  trainee_start_ready
+  agent-queue add --project game --slug t-empty --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
+  for s in t-one t-empty; do agent-queue set "$s" agent=glm model=glm trainee=glm:glm >/dev/null; agent-queue move "$s" running >/dev/null; done
+  # The run's worktree is a linked one: in the main checkout the review refuses, since its reset would discard work there.
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
+  git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  printf 'mine\n' > "$m/menu.txt"
+  run bash -c "cd $(printf %q "$m") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
+  assert_failure 1; assert_output --partial 'is no linked worktree'
+  assert_equal "$(cat "$m/menu.txt")" mine
+  git -C "$m" checkout -q -- menu.txt
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
+  base=$(git -C "$w" rev-parse HEAD)
+  # No diff: a reject, the row back in the queue on claude, its trainee kept so no trainee takes it again.
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-empty"
+  assert_success
+  assert_output --partial 'trainee-reject: t-empty is back in the queue, on claude: glm:glm left no diff'
+  f=$(qitem queued t-empty)
+  [ -n "$f" ] || fail "the row with no diff did not go back to the queue"
+  assert_equal "$(qfield "$f" agent)" claude
+  assert_equal "$(qfield "$f" trainee)" glm:glm
+  [ -z "$(agent-queue show review-t-empty --json 2>/dev/null)" ] || fail "a review item for no diff"
+  run trainee_why "$(agent-queue show t-empty --json)"
+  assert_failure; assert_output 'a trainee ran it once already (glm:glm)'
+  # A review that cannot be queued leaves the row running and the diff in the worktree as well as the patch.
+  printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
+  mkdir -p "$SANDBOX/aqfail"
+  printf '#!/usr/bin/env bash\n[ "$1 $2" != "add --from" ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
+  chmod +x "$SANDBOX/aqfail/agent-queue"
+  PATH="$SANDBOX/aqfail:$PATH" run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
+  assert_failure 1; assert_output --partial 'could not queue review-t-one; t-one stays running'
+  assert_equal "$(cat "$w/menu.txt")" b
+  assert_equal "$(jq -r .state <<<"$(agent-queue show t-one --json)")" running
+  # A diff, an edit and a new file: saved as a patch that applies on the base, the worktree put back.
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
+  assert_success
+  patch="$HOME/.local/state/agentctl/dispatch/trainee/t-one.patch"
+  assert_output --partial "trainee-review: t-one's diff is $patch; review-t-one reviews it on opus"
+  grep -q '^+++ b/title.txt' "$patch" || fail "the new file is not in the patch: $(cat "$patch")"
+  assert_equal "$(git -C "$w" status --porcelain)" ''
+  assert_equal "$(git -C "$w" rev-parse HEAD)" "$base"
+  git -C "$w" apply --check "$patch" || fail "the patch does not apply on its base"
+  # The review item: pinned to claude on the reviewer's model, tier 1, its brief naming the patch and both verbs.
+  rf=$(qitem queued review-t-one)
+  [ -n "$rf" ] || fail "no review item queued"
+  assert_equal "$(qfield "$rf" model)" opus
+  assert_equal "$(qfield "$rf" from)" trainee
+  rv=$(agent-queue show review-t-one --json)
+  [[ " $(jq -r .tags <<<"$rv") " == *" trainee-review "* ]] || fail "no trainee-review tag: $rv"
+  run jq -r .task <<<"$rv"
+  assert_output --partial "git apply --3way $patch"
+  assert_output --partial "fleet-dispatch trainee-reject t-one --why"
+  assert_output --partial "agent-land <N> --item t-one"
+  run trainee_why "$rv"
+  assert_failure; assert_output 'it is a canary, verify or review item'
+  it=$(agent-queue show t-one --json)
+  assert_equal "$(jq -r .state <<<"$it")" review
+  assert_equal "$(jq -r .note <<<"$it")" 'trainee glm:glm left a diff; review-t-one lands it or sends the row back'
+  # The review rejects it: the row goes back on claude and the patch goes.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one --why "edits the wrong menu"
+  assert_success
+  it=$(agent-queue show t-one --json)
+  assert_equal "$(jq -r .state <<<"$it")" queued
+  assert_equal "$(jq -r .note <<<"$it")" 'trainee glm:glm rejected: edits the wrong menu'
+  assert_equal "$(jq -r .agent <<<"$it")" claude
+  [ ! -e "$patch" ] || fail "the rejected patch is still there"
+  # A row no trainee ran is refused by both verbs.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject fix-menu --why x
+  assert_failure 2; assert_output --partial 'trainee-reject: no trainee ran fix-menu'
+  # A row that is not running (here, the rejected one, back in the queue) is no run's tail.
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
+  assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
 }
 
 @test "an opencode harness with no config_dir keeps ~/.config/opencode: no isolation env on its launch" {
