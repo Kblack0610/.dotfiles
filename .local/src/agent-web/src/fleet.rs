@@ -85,15 +85,47 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         })
 }
 
-/// One runner's page, read only when `#sessions/runners/<name>` opens. An unknown name is the
-/// caller's 404.
+/// How many rows each list on a runner's page draws before its "+N more": the runs, the
+/// activity, the calls, the per-rule eval, the extras block's rows (the answer judge's cells too)
+/// and the conf. The reader keeps its own caps (hub-core `fleet::runner`: 20 runs, activity lines
+/// and calls), so "+N more" draws the rest with no read; the answer judge's verdicts are cut here
+/// too, so theirs is "+N older". Holds a runner page under three screens at 1400x900
+/// (tests/agent-web/phone/fixtures.mjs reads this line). Live data, 2026-11-15, every list drawn:
+/// inbox-triage 4,955 px, shepherd 3,310; at 3 the fixtures read ask-judge 2,380 (the tallest),
+/// at 4 it was 2,606, too close to 2,700. Revisit when a list's row height or the page's sections
+/// change. Web only: the hub TUI scrolls the whole page.
+pub const RUNNER_ROWS: usize = 3;
+
+/// One runner's page, read only when `#sessions/runners/<name>` opens, with `shown`, its lists'
+/// cap. An unknown name is the caller's 404.
 pub async fn runner(q: RunnerQuery) -> Result<String, String> {
     let name = q.name.clone();
     let mut r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
     if let fleet::runner::Extras::AskJudge { judge } = &mut r.extras {
-        judge.view(&q.verdicts.view(), fleet::runner::PAGE_ROWS);
+        let cap = match q.verdicts.vall {
+            Some(_) => usize::MAX,
+            None => RUNNER_ROWS,
+        };
+        judge.view(&q.verdicts.view(), cap);
     }
-    serde_json::to_string(&r).map_err(|e| e.to_string())
+    page(&r)
+}
+
+/// The runner page's JSON: the reader's fields and `shown` (`RUNNER_ROWS`), so the page holds no
+/// copy of the cap.
+#[derive(serde::Serialize)]
+struct Page<'a> {
+    #[serde(flatten)]
+    runner: &'a fleet::runner::Runner,
+    shown: usize,
+}
+
+fn page(r: &fleet::runner::Runner) -> Result<String, String> {
+    serde_json::to_string(&Page {
+        runner: r,
+        shown: RUNNER_ROWS,
+    })
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -206,5 +238,22 @@ mod tests {
             ..FleetQuery::default()
         });
         assert_eq!(v["who"][0]["who"], "shepherd");
+    }
+
+    #[test]
+    fn a_runner_page_sends_its_lists_cap_beside_every_row_the_reader_kept() {
+        let r = fleet::runner::Runner {
+            name: "inbox-triage".into(),
+            activity: vec![Default::default(); 20],
+            ..Default::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&page(&r).unwrap()).unwrap();
+        assert_eq!(v["shown"], RUNNER_ROWS);
+        assert_eq!(
+            v["activity"].as_array().unwrap().len(),
+            20,
+            "the page cuts, not the server"
+        );
+        assert_eq!(v["name"], "inbox-triage");
     }
 }
