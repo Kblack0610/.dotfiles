@@ -2205,7 +2205,7 @@ STUB
   [ "$(field "$(item queued r1)" from)" = research:dotfiles-hooks ]
   run "$AQ" add --project game --from robot --slug c2 "x"
   assert_failure
-  assert_output --partial 'human, shepherd, canary, research:<facet>, auto:<filer> or board'
+  assert_output --partial 'human, shepherd, canary, trainee, research:<facet>, auto:<filer> or board'
   run "$AQ" add --project game --from research: --slug c3 "x"
   assert_failure
 }
