@@ -38,6 +38,12 @@ MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
 # whole run (the snapshot scan and lock wait are outside it); agentctl's status hook does
 # that with its own timeout, since it runs inside a runner's lifecycle.
 PUB_TIMEOUT="${AGENT_MQTT_TIMEOUT:-3}"
+# A broker miss (a restart, a dropped connection) is retried on the same message before the
+# run gives up: RETRIES more attempts, BACKOFF seconds before the first, doubling. A retained
+# publish is idempotent, so a repeat cannot act twice. A dead broker still fails, after
+# (RETRIES+1) x PUB_TIMEOUT plus the backoffs; the 5-min timer catches up on what was not sent.
+PUB_RETRIES="${AGENT_MQTT_RETRIES:-2}"
+PUB_BACKOFF="${AGENT_MQTT_BACKOFF:-1}"
 # 3x the timer cadence (agent-mqtt-publish.timer, 5 min): a workstation that is off or
 # asleep turns its sensors `unavailable` instead of leaving them stale-but-green.
 EXPIRE_AFTER=900
@@ -303,8 +309,15 @@ snapshot() {
 tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
 
 publish() {
-    timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
-        -t "$1" -m "$2" 2>/dev/null
+    local try=0 wait="$PUB_BACKOFF"
+    while ! timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
+        -t "$1" -m "$2" 2>/dev/null; do
+        [ "$try" -lt "$PUB_RETRIES" ] || return 1
+        try=$((try + 1))
+        # Backoff, not a wait on a signal: the broker has no event to await.
+        sleep "$wait"
+        wait=$((wait * 2))
+    done
 }
 
 main() {

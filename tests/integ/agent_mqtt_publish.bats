@@ -25,6 +25,11 @@ while [ $# -gt 0 ]; do
   case "$1" in -t) t="$2"; shift 2 ;; -m) m="$2"; shift 2 ;; *) shift ;; esac
 done
 [ -n "${MQTT_STUB_FAIL:-}" ] && exit 1
+# MQTT_STUB_MISSES=N: the first N calls fail, then the broker answers.
+if [ -n "${MQTT_STUB_MISSES:-}" ]; then
+  n=$(cat "$NOTES_FIXTURE/mqtt.calls" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/mqtt.calls"
+  [ "$n" -lt "$MQTT_STUB_MISSES" ] && exit 1
+fi
 printf '%s\t%s\n' "$t" "$m" >> "$NOTES_FIXTURE/mqtt.log"
 EOF
   chmod +x "$SANDBOX/bin/mosquitto_pub"
@@ -32,6 +37,7 @@ EOF
   # Stubbed so the host's own hub never reads the host's Prometheus into a test.
   overview_stub 'exit 1'
 
+  export AGENT_MQTT_BACKOFF=0
   export AGENT_MQTT_HOST=stub AGENT_MQTT_HOST_ID=testhost TZ=UTC
 
   seed_runner alpha
@@ -324,6 +330,19 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   run "$PUB" --quiet
   assert_success
   [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
+@test "broker miss: a message is retried and the run still succeeds, so one miss loses nothing" {
+  MQTT_STUB_MISSES=2 run "$PUB" --quiet
+  assert_success
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
+@test "broker miss: retries are bounded, so a broker that stays down still fails the run" {
+  MQTT_STUB_MISSES=99 AGENT_MQTT_RETRIES=2 run "$PUB" --quiet
+  assert_failure
+  [ ! -s "$PUBLOG" ]
+  [ "$(cat "$NOTES_FIXTURE/mqtt.calls")" = 3 ]
 }
 
 @test "dry-run prints the snapshot and never calls the broker" {
