@@ -3278,6 +3278,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
+  jq -e '.blockers | index("PR #2415 open, riding train #2467")' <<<"$output" >/dev/null
   # a member whose own gate is green waits on the train too, not on a lander
   store OPEN train/20261113T101500Z-a1b2 "$title" PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

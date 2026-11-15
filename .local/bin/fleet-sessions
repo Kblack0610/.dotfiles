@@ -416,6 +416,7 @@ work_blockers() {
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr"; then merged=1
+          elif [ "${21:--}" != - ]; then b+=("PR #$pr open, riding train #${21}")
           else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
     CLOSED) [ "$merged" = 1 ] || b+=("PR #$pr closed without merging") ;;
     *)
@@ -717,7 +718,7 @@ prs_for() {
       # The open trains (train_of), "number \t head \t member numbers": the title is the store's, the body is not.
       [ -z "$FLEET_TRAIN_BRANCH" ] || jq -r --arg p "$FLEET_TRAIN_BRANCH" '.[] | select(.state == "OPEN" and ((.branch // "") | startswith($p)))
           | [.number, .head_sha // "-", ([(.title // "") | scan("#([0-9]+)")[0]] | join(" "))] | @tsv' \
-          <<<"$out" > "$key.trains" 2>/dev/null || : > "$key.trains"
+          <<<"$out" > "$key.trains" 2>/dev/null || { : > "$key.trains"; unreadable "PR store trains ($repo)"; }
     elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
@@ -1544,7 +1545,7 @@ collect() {
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then
