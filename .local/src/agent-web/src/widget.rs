@@ -2,7 +2,10 @@
 //! snapshots. The cards are Home's own (`hub_core::cards`), put in the page as JSON, so the widget
 //! makes one request with no cookie. It opens for a signed-in browser or for `?t=` matching the
 //! widget key (`auth::widget_token`), and that key opens this page only: never `/api/*`, a write
-//! or a keystroke route.
+//! or a keystroke route. Each hit the key opens is kept in `last_hit_file`, since reqlog says
+//! nothing of a request that answered in time.
+
+use std::path::{Path, PathBuf};
 
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -18,11 +21,6 @@ pub struct WidgetQuery {
     t: Option<String>,
     /// The cards to show, by card id, comma separated; `cards::WIDGET` when absent.
     cards: Option<String>,
-}
-
-/// A signed-in browser, or a request carrying the current widget key.
-fn allowed(s: &crate::AppState, headers: &HeaderMap, t: Option<&str>) -> bool {
-    crate::signed_in(s, headers).is_some() || key_opens(t, auth::widget_token().as_deref())
 }
 
 /// The key opens the page only when one is set and the request names it exactly.
@@ -48,7 +46,9 @@ pub async fn page(
     headers: HeaderMap,
     Query(q): Query<WidgetQuery>,
 ) -> Response {
-    if !allowed(&s, &headers, q.t.as_deref()) {
+    // A signed-in browser, or a request carrying the current widget key.
+    let by_key = key_opens(q.t.as_deref(), auth::widget_token().as_deref());
+    if !by_key && crate::signed_in(&s, &headers).is_none() {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let (mut all, home) = tokio::join!(crate::cards::read(&s), crate::home_read(&s));
@@ -63,12 +63,41 @@ pub async fn page(
         .collect();
     let shown = cards::pick(all, &names);
     let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
+    // Only the key's hits: the widget app holds the key, and a signed-in browser opening the page
+    // would hide a widget that stopped refreshing.
+    if by_key {
+        let hit = serde_json::json!({
+            "at": now,
+            "cards": q.cards,
+            "ua": headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("-"),
+        });
+        tokio::task::spawn_blocking(move || {
+            let f = last_hit_file();
+            if let Err(e) = record(&f, &hit) {
+                eprintln!("agent-web: widget hit not recorded: {}: {e}", f.display());
+            }
+        });
+    }
     // Asks, titles and costs: kept by no cache, browser history included.
     (
         [(header::CACHE_CONTROL, "no-store, private")],
         Html(crate::assets::widget(&data)),
     )
         .into_response()
+}
+
+/// The widget's last hit, read by the Sentinel watch `agent-web-widget-fresh`.
+fn last_hit_file() -> PathBuf {
+    agent_panel::session::home().join(".local/state/agent-web/widget.json")
+}
+
+/// A plain overwrite: only the watch reads the file, and its `confirm: 2` rides out a read that
+/// lands mid-write.
+fn record(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
+    if let Some(dir) = f.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(f, hit.to_string())
 }
 
 /// Needs you and Main red, from Home's read; a Home that could not be read is NO DATA on both.
@@ -111,6 +140,20 @@ mod tests {
             "the page's own four, no more"
         );
         assert!(!page.contains("{{"), "every mark filled");
+    }
+
+    #[test]
+    fn a_hit_makes_its_directory_and_the_next_one_replaces_it() {
+        let dir = std::env::temp_dir().join(format!("agent-web-widget-{}", std::process::id()));
+        let f = dir.join("state/widget.json");
+        let first = serde_json::json!({ "at": 10, "cards": "needs,red", "ua": "WebsiteWidget" });
+        let next = serde_json::json!({ "at": 20, "cards": null, "ua": "-" });
+        record(&f, &first).unwrap();
+        record(&f, &next).unwrap();
+        let hit: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(hit, next);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
