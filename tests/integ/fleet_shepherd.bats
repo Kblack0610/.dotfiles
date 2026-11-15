@@ -353,10 +353,10 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
   for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" 'just a shell prompt $' ''; do
     STUB_PANE="$screen" run checked
-    assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+    assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
   done
   STUB_IN_MODE=1 STUB_PANE="$IDLE" run checked
-  assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+  assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
   # Nothing typed, nothing to refresh: one write per check.
@@ -1940,4 +1940,42 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run "$SH" run
   assert_output --partial 'pace: parked lab/q:1 while the machine reads CLEAR'
   assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '1\t3')"
+}
+
+# paned <target> <bucket> <pane>: a session row whose fact does not name its target, so only the
+# target differs between two renumberings of the same window
+paned() { row "$1" "$2" false false | jq -c --arg p "$3" '.pane = $p | .fact = "stalled"'; }
+
+@test "a session line keeps its identity when the window renumbers: the pane id, not the index, keys it" {
+  doc "[$(paned hub/demo:5 LANDED %7)]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:5 [%7] stalled'
+  # renumber-windows closed an earlier window: same pane, now :4. It is the line the pass was
+  # handed and left, so it comes back owed, not as a new line.
+  doc "[$(paned hub/demo:4 LANDED %7)]"
+  run checked
+  assert_output 'unhandled: nudge LANDED: hub/demo:4 [%7] stalled'
+  "$SH" skip 'nudge LANDED: hub/demo:4 [%7] stalled' 'waits on purpose'
+  doc "[$(paned hub/demo:3 LANDED %7)]"
+  run checked
+  assert_failure 1
+  # Negative control: another pane at the same index is another session, and a new line
+  doc "[$(paned hub/demo:3 LANDED %8)]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:3 [%8] stalled'
+}
+
+@test "an overdue line keeps its identity while its basis count grows: a skip still matches" {
+  phase s1 shell 40 200
+  sed -i 's/"fact":"f"/"fact":"f","pane":"%3"/' "$HOME/rows"
+  sed -i 's/"basis":"b"/"basis":"project-median(274) x1.06 (n=1019)"/' "$HOME/eta"
+  phases_doc
+  run checked
+  assert_output --partial "overdue: t-s1 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))"
+  "$SH" skip "overdue: t-s1 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))" 'moving'
+  # a phase closed elsewhere: n grows, the age moves, the line is the same one
+  sed -i 's/n=1019/n=1020/; s/x1.06/x1.07/' "$HOME/eta"
+  phases_doc
+  run checked
+  assert_failure 1
 }
