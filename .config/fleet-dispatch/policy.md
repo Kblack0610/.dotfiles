@@ -66,7 +66,7 @@ Each row comes with its project's stage, its lane and its tagged tier:
 - `tier3_only`: true only when tier 3 is the one reason for `skip`: the row would be `dispatch` if tier 3 could run, and `rule` is then `tier3`. False for every row below tier 3.
 - `verdict`: `dispatch` only when size is `S` or `M`, clear is true, agent_only is true, area is one word and your tier is no higher than the row's `tier`. Otherwise `skip`.
 - `reason`: one short sentence a human can scan, naming the deciding fact.
-- `rule`: the id in parentheses of the one rule that decided the verdict, from the rules below and above.
+- `rule`: the id, written without its parentheses (`stage`, never `(stage)`), of the one rule that decided the verdict, from the rules below and above.
 
 ## Rules for the verdict
 
