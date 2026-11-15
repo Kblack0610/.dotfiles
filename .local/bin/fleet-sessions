@@ -1738,7 +1738,7 @@ end_pass() {
   if [ -n "${PASS_PID:-}" ]; then
     kill -TERM -- "-$PASS_PID" 2>/dev/null
     wait "$PASS_PID" 2>/dev/null
-    timeout 10 pidwait -g "$PASS_PID" 2>/dev/null
+    timeout 10 pidwait -g "$PASS_PID"
   fi
   rm -rf "$CACHE"
 }
