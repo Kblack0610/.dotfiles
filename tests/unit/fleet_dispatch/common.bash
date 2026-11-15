@@ -680,7 +680,7 @@ record_setup() {
   stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
   stub agent-panel 'cat "$NOTES_FIXTURE/panel.json"'
   echo '{"pane":"hub/%1","session_id":"conv-1","cwd":"/work/tree"}' > "$NOTES_FIXTURE/panel.json"
-  PANE1=$'%1\037dotfiles\037crash\037/shell/dir' PANE2=$'%2\037dotfiles\037zsh\037/plain/dir'
+  PANE1=$'%1\tdotfiles\tcrash\t/shell/dir' PANE2=$'%2\tdotfiles\tzsh\t/plain/dir'
   RECORD="$FLEET_DISPATCH_DIR/panes/hub.json" LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
 }
 
