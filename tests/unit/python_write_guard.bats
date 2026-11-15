@@ -30,6 +30,8 @@ denied() { assert_output --partial 'python-write-guard: '; }
     $'python3 - <<EOF\nimport os\nroot = os.path.expanduser("~/r")\np = f"{root}/a.md"\ns = open(p).read()\ns = s.replace("x", "y")\ns = s.replace("z", "w")\nopen(p, "w").write(s)\nEOF' \
     $'python3 - <<EOF\nwith open("/w/a", "r+") as f:\n    s = f.read(); f.seek(0); f.write(s.replace("a", "b")); f.truncate()\nEOF' \
     $'python3 - <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF\necho done # shlex cannot split this comment\'s quote' \
+    $'python3 - 2>&1 <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
+    $'python3 -W ignore -X utf8 - <<EOF\np = "/w/a"\nopen(p, "w").write(open(p).read().replace("a", "b"))\nEOF' \
     "bash -c \"python3 -c 's = open(\\\"/w/a\\\").read(); open(\\\"/w/a\\\", \\\"w\\\").write(s.replace(\\\"a\\\", \\\"b\\\"))'\""; do
     run decision "$c"
     denied
@@ -40,6 +42,16 @@ denied() { assert_output --partial 'python-write-guard: '; }
 @test "a cd moves the path a relative write resolves against" {
   run decision $'cd /w && python3 <<EOF\nfrom pathlib import Path\np = Path("f.txt")\np.write_text(p.read_text().replace("a", "b"))\nEOF'
   assert_output --partial 'patches /w/f.txt'
+}
+
+@test "a heredoc run through a wrapper resolves against the cwd at its own line" {
+  run decision $'cd /a && python3 x.py; cd /b; uv run python - <<EOF\nopen("f", "w").write("x")\nEOF'
+  assert_output --partial "literal string to /b/f"
+}
+
+@test "a handle name reused for a read still counts its write" {
+  run decision $'python3 - <<EOF\nwith open("/w/a", "w") as f:\n    f.write("x")\nwith open("/w/a") as f:\n    s = f.read()\nEOF'
+  denied
 }
 
 @test "a literal string written to a named file is denied, naming Write" {
@@ -67,6 +79,9 @@ denied() { assert_output --partial 'python-write-guard: '; }
     "python3 -c 'open(\"$HOME/.cache/t/x\", \"w\").write(\"hi\")'" \
     "python3 -c 'print(open(\"/w/x\").read())'" \
     'echo "open(x) python"' \
+    "python3 tool.py -c 'open(\"/w/a\", \"w\").write(\"x\")'" \
+    "python3 2> /w/err - <<EOF"$'\nprint(1)\nEOF' \
+    "python3 -c 'open(\"/proc/sys/vm/drop_caches\", \"w\").write(\"3\")'" \
     $'python3 - <<EOF\nthis is not python (\nEOF'; do
     run decision "$c"
     assert_output allow
@@ -85,6 +100,8 @@ denied() { assert_output --partial 'python-write-guard: '; }
   run decision "python3 -c 'open(\"/tmp/x\", \"w\").write(\"hi\")'" default
   assert_output allow
   run decision "python3 -c 'print(open(\"/w/x\").read())'" default
+  assert_output allow
+  run decision $'python3 - <<EOF\nimport os, tempfile, subprocess\nd = tempfile.mkdtemp()\nopen(os.path.join(d, "x"), "w").write("y")\nsubprocess.run(["ls"], stdout=open(os.devnull, "w"))\nEOF' default
   assert_output allow
 }
 

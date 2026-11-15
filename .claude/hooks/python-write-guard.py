@@ -16,7 +16,8 @@ Denied, outside scratch (/tmp, /var/tmp, /dev, $TMPDIR, ~/.cache, $XDG_CACHE_HOM
 - a literal: a str constant written (mode w or x) to a named file, which is Write.
 - In manual permission mode, any python write: that mode is investigate-only.
 Passed: content the code computes (regex, json, joins, loops over lines), files found in a loop or
-from argv (an unresolved path), bytes, appends, scripts run from a file. Not covered: sed -i,
+from argv (an unresolved path), bytes, appends, scripts run from a file, and outside manual mode
+kernel files under /proc and /sys. Not covered: sed -i,
 `cat >`, tee, and python run from a script file. Fail-open: any error allows the command.
 """
 import json
@@ -27,6 +28,8 @@ import sys
 # ast, shlex and the sibling modules load past main's prefilter: this hook runs on every Bash call.
 HERE = os.path.dirname(os.path.abspath(__file__))
 PYTHON = re.compile(r"python[0-9.]*$")
+REDIRECT = re.compile(r"\d*(?:[<>]+|&>+)")  # a whole word when its target is the next word
+VIRTUAL = ("/proc/", "/sys/")  # kernel files: Edit and Write cannot make that change either
 PATH_CALLS = {"Path", "PurePath", "PosixPath", "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath"}
 SAME_PATH = {"os.path.expanduser", "os.path.abspath", "os.path.realpath", "os.path.normpath"}
 # Calls a patch may make and still be one Edit: file and path plumbing, plain str methods, asserts.
@@ -60,17 +63,29 @@ def _load(name, file):
     return mod
 
 
-def is_python_code(words):
-    """True when words (a simple command) run python on code from stdin: no script, -c or -m."""
+def source(words):
+    """What the python in words (a simple command) runs: ("stdin", None), ("c", payload), or None
+    for a script, -m, or no python. Options before the first non-option word are python's own."""
     i = next((j for j, w in enumerate(words) if PYTHON.match(os.path.basename(w))), None)
     if i is None:
-        return False
-    for w in words[i + 1:]:
+        return None
+    rest = iter(words[i + 1:])
+    for w in rest:
         if w == "-":
-            return True
-        if not w.startswith("-") or re.fullmatch(r"-[A-Za-z]*[cm][A-Za-z]*", w):
-            return False
-    return True
+            return "stdin", None
+        if REDIRECT.match(w):
+            if REDIRECT.fullmatch(w):
+                next(rest, None)  # `2> file`: the file is the redirect's, not a script
+            continue
+        if not w.startswith("-"):
+            return None
+        if re.fullmatch(r"-[A-Za-z]*c", w):
+            return "c", next(rest, None)
+        if re.fullmatch(r"-[A-Za-z]*m[A-Za-z]*", w):
+            return None
+        if re.fullmatch(r"-[A-Za-z]*[WX]", w):
+            next(rest, None)  # -W ignore, -X utf8: the option's value
+    return "stdin", None
 
 
 def codes(cmd, cwd, forge, poll):
@@ -78,13 +93,12 @@ def codes(cmd, cwd, forge, poll):
     found = []
 
     def pythons(text):
-        """(argv, cwd) of each python command the walker reaches in text; none when shlex
+        """(argv, cwd) of each command the walker reaches in text; none when shlex
         cannot split it (an unbalanced quote), so the heredocs are still read."""
         seen = []
 
         def check(head, argv, env, d):
-            if PYTHON.match(head):
-                seen.append((argv, d))
+            seen.append((argv, d))
 
         try:
             forge.reason(text, cwd, check)
@@ -93,19 +107,20 @@ def codes(cmd, cwd, forge, poll):
         return seen
 
     for argv, d in pythons(cmd):
-        c = next((j for j, a in enumerate(argv[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", a)), None)
-        if c is not None and c + 1 < len(argv):
-            found.append((argv[c + 1], d))
+        src = source(argv)
+        if src and src[0] == "c" and src[1] is not None:
+            found.append((src[1], d))
 
     lines = cmd.split("\n")
     for i, line, m, body in poll.heredoc_lines(cmd):
         if not m:
             continue
         try:
-            words = shlex.split(re.split(r"[;&|(]", line[:m.start()])[-1])
+            words = shlex.split(re.split(r"[;|(]|(?<![<>])&(?!>)", line[:m.start()])[-1])
         except ValueError:
             continue
-        if is_python_code(words):
+        if source(words) == ("stdin", None):
+            # The heredoc's own command is the last one the walker reaches in the prefix.
             at = pythons(poll.strip_heredocs("\n".join(lines[:i + 1])))
             found.append(("\n".join(body), at[-1][1] if at else cwd))
     return found
@@ -139,6 +154,8 @@ class Writes:
             return None
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
+        if dotted(node) == "os.devnull":
+            return "/dev/null"
         if isinstance(node, ast.Name) and node.id in self.values:
             return self.path(self.values[node.id], depth + 1)
         if isinstance(node, ast.JoinedStr):
@@ -159,6 +176,9 @@ class Writes:
             name = dotted(node.func)
             if name == "Path.home" or name == "pathlib.Path.home":
                 return "~"
+            if name in ("tempfile.gettempdir", "tempfile.mkdtemp") and len(node.args) < 3:
+                import tempfile
+                return os.path.join(tempfile.gettempdir(), "tmp")
             args = [self.path(a, depth + 1) for a in node.args]
             if None in args:
                 return None
@@ -199,7 +219,7 @@ class Writes:
             for expr, var in pairs:
                 o = self.opened(expr)
                 if o and isinstance(var, ast.Name):
-                    handles[var.id] = o
+                    handles.setdefault(var.id, []).append(o)
         for n in ast.walk(self.tree):
             if not isinstance(n, ast.Call):
                 continue
@@ -218,8 +238,9 @@ class Writes:
                                "w" if attr == "write_text" else "wb"))
             elif attr == "write" and n.args:
                 recv = n.func.value
-                o = self.opened(recv) or (handles.get(recv.id) if isinstance(recv, ast.Name) else None)
-                if o and writing(o[1]):
+                opens = [self.opened(recv)] + (handles.get(recv.id, []) if isinstance(recv, ast.Name) else [])
+                o = next((o for o in opens if o and writing(o[1])), None)
+                if o:
                     writes.append((o[0], n.args[0], o[1] or "w"))
         # An open whose handle the code also .write()s is counted once, at its .write.
         written = {p for p, c, _ in writes if c is not None}
@@ -267,7 +288,7 @@ def verdict(code, cwd, manual, resolve):
         if not manual and (p is None or content is None or "b" in mode or "a" in mode):
             continue
         target = resolve(cwd, p) if p is not None else None
-        if target is not None and scratch(target):
+        if target is not None and (scratch(target) or not manual and target.startswith(VIRTUAL)):
             continue
         if manual:
             return MANUAL_MSG.format(path=target or "a file it computes")
