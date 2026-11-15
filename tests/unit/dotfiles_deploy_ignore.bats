@@ -146,7 +146,7 @@ ign() {
   # Every entry in the public list is a top-level anchor, so nothing under .local/bin or
   # .local/lib may be caught by it. A regression here silently shrinks the manifest.
   ign '^/\.git$' '^/\.gitignore$' '^/\.github$' '^/AGENTS\.md$' '^/README\.md$' \
-      '^/\.local/src/installation_scripts$' '^/etc$' '^/\.config/hypr$' '^/\.config/waybar$'
+      '^/\.local/src/installation_scripts$' '^/etc$' '^/\.config/karabiner$' '^/\.config/aerospace$'
   local p
   for p in .local/bin/dotfiles-deploy .local/bin/dotfiles-drift .local/lib/lab-feed.sh \
            .config/shared-hooks/lab-roots.sh .local/src/tmux/fleet.sh; do
@@ -154,5 +154,18 @@ ign() {
   done
   # and it DOES catch what it is meant to
   stow_ignored '.local/src/installation_scripts/install_arch.sh' || fail
-  stow_ignored '.config/waybar/style.css' || fail
+  stow_ignored '.config/karabiner/karabiner.json' || fail
+}
+
+@test "the live public list deploys every tracked file under .config/hypr, waybar, wofi and kitty" {
+  # A listed dir gets no link for a new file under it: hypr/shaders went undeployed that way.
+  # One subprocess, not a loop under bats: its per-command trap made the loop take 7s.
+  run bash -c 'source "$1"; load_ignore "$2"; n=0
+    while IFS= read -r p; do
+      n=$((n + 1)); if stow_ignored "$p"; then echo "IGNORED $p"; fi
+    done < <(git -C "$2" ls-files -- .config/hypr .config/waybar .config/wofi .config/kitty)
+    echo "checked $n"' _ "$REPO_ROOT/.local/bin/dotfiles-deploy" "$REPO_ROOT"
+  assert_success
+  refute_output --partial 'IGNORED'
+  assert_output --regexp 'checked [1-9][0-9]*'
 }
