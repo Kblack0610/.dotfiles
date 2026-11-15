@@ -22,8 +22,9 @@
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). A file that
 # differs from HEAD only in JSON key order or spacing holds no local work, so when every file in the
-# way is one, they are restored and the merge retried (restore_reordered). Fail-soft: every path
-# exits 0, so no network or repo state can break a shell start or a landing.
+# way is one, they are restored and the merge retried (restore_reordered). One pass at a time owns
+# the pull, the builds and the restarts (run_locked), so agent-web is restarted once per landing.
+# Fail-soft: every path exits 0, so no network or repo state can break a shell start or a landing.
 
 set -uo pipefail
 
@@ -40,6 +41,7 @@ FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agent-web from clean takes minutes
 BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
+LOCK_SECS="${DOTFILES_AUTOPULL_LOCK_SECS:-1500}" # a --now pass waits this long for the one before it
 
 command -v git >/dev/null 2>&1 || exit 0
 
@@ -197,6 +199,23 @@ attach_all() {
   attach_runners
 }
 
+# run_locked <flock wait flag...> -- <args...>: run this script again with <args> under the pass lock,
+# then exit 0. Two agent-land live steps at once each built and each restarted agent-web (2026-11-15
+# 06:14 and 06:48, ar-7); under the lock the second finds the work done (checkout current, cargo a
+# no-op, the unit newer than its binary) and restarts nothing. flock -o keeps the lock off the
+# children, so a detached `git gc` cannot hold it. A pass that could not take it says so, unless it is
+# the silent shell pass. No flock (macOS): the pass runs unlocked.
+run_locked() {
+  local -a wait=()
+  while [ "$1" != -- ]; do wait+=("$1") && shift; done
+  shift
+  [ -z "${DOTFILES_AUTOPULL_LOCKED:-}" ] && command -v flock >/dev/null 2>&1 && mkdir -p "$CACHE_DIR" 2>/dev/null || return 0
+  DOTFILES_AUTOPULL_LOCKED=1 flock -o "${wait[@]}" -E 75 "$CACHE_DIR/pass.lock" "${BASH_SOURCE[0]}" "$@"
+  [ "$?" -ne 75 ] || [ "${wait[0]}" = -n ] ||
+    say "~: another dotfiles-autopull pass held the lock past ${LOCK_SECS}s, nothing done; rerun: dotfiles-autopull --now ${2:-.}"
+  exit 0
+}
+
 # restore_reordered <checkout> <name> <refused merge output> -> succeeds when it restored every file
 # in the way, one line each. Claude Code rewrites ~/.claude/settings.json (a stow link into the
 # checkout) with its keys in its own order, so the checkout reads dirty with no change in it, and
@@ -282,6 +301,7 @@ if [ "${1:-}" = --now ]; then
   common=$(phys "$common") || exit 0
   for repo in "${REPOS[@]}"; do
     [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
+    run_locked -w "$LOCK_SECS" -- "$@"
     line=$(pull "$repo")
     echo "$line"
     attach_all
@@ -297,6 +317,8 @@ if [ -f "$STAMP" ]; then
   last=$(cat "$STAMP" 2>/dev/null || echo 0)
   [ "$((now - last))" -lt "$THROTTLE_SECS" ] && exit 0
 fi
+# Backgrounded from every shell start: skip while a pass runs, and leave the stamp for the next shell.
+run_locked -n -- "$@"
 mkdir -p "$CACHE_DIR"
 echo "$now" >"$STAMP"
 
