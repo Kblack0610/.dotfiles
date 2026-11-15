@@ -848,11 +848,11 @@ enum OutboxCmd {
     Split,
     /// The lines waiting, oldest first (TSV `line<TAB>text`)
     List {
-        /// One JSON array of `{line, raw, text, details, project}` instead
+        /// One JSON array of `{line, raw, text, details, project, ask}` instead
         #[arg(long)]
         json: bool,
     },
-    /// The items as agent-web's Daily outbox edits them (`--json`: `{path, hash, text, waiting}`)
+    /// The items as agent-web's Daily outbox edits them (`--json`: `{path, hash, text, waiting, tags}`)
     Show {
         #[arg(long)]
         json: bool,
@@ -878,8 +878,8 @@ enum OutboxCmd {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
-    /// Take the `#ask` line that is RAW byte for byte out of the outbox and write it, with the
-    /// answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a question)
+    /// Take the `#ask` or `#investigate` line that is RAW byte for byte out of the outbox and write
+    /// it, with the answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a look)
     Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
@@ -889,6 +889,12 @@ enum OutboxCmd {
     Drop {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
+    },
+    /// The intake tags a line may carry and what each does (TSV `tag<TAB>does`, `--json`:
+    /// `[{tag, does}]`), the table the outbox header and agent-web's legend print
+    Tags {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1468,6 +1474,7 @@ fn main() -> Result<()> {
                 outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
             Some(OutboxCmd::Drop { raw }) => outbox::drop_line(&prof, &log, &raw.join(" "))?,
+            Some(OutboxCmd::Tags { json }) => outbox::tags(json)?,
         },
         Cmd::Log {
             steps: true, json, ..

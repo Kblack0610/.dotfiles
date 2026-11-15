@@ -42,7 +42,7 @@ fn step(name: &str) -> Option<&'static str> {
 /// An intake line's subject: its words without the project tag, case and spacing folded, so
 /// the outbox line, the inbox line it moved to and the line the sweep filed are one subject.
 fn line_key(text: &str) -> Key {
-    let t = crate::md::without_ask_tag(&crate::md::without_agent_tag(
+    let t = crate::md::without_look_tag(&crate::md::without_agent_tag(
         &crate::md::without_project_tag(text),
     ))
     .to_lowercase();

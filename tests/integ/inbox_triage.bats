@@ -904,6 +904,30 @@ ask_stub() {
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
 }
 
+@test "outbox: a tags-first #investigate line runs the longer look, its findings in today's notes inbox under its own word" {
+  sheet '' ''
+  ask_stub
+  export INBOX_INVESTIGATE_CMD='ask-stub investigate'
+  { echo INBOX-ANSWER-START; echo 'Disk 3 is resyncing.'; seq -f 'evidence %g' 1 14; echo INBOX-ANSWER-END; } >"$NOTES_FIXTURE/ask.out"
+  outbox '- [ ] #p:scratch #high #investigate why is the nas slow\n'
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_line 'would investigate [outbox] - [ ] #p:scratch #high #investigate why is the nas slow'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'answered 1'
+  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  assert_output --regexp '- [0-9]{2}:[0-9]{2} investigate: #high why is the nas slow - Disk 3 is resyncing\.'
+  # negative control: a #ask reply stops at 12 lines, so line 14 is the longer look's alone
+  assert_output --partial '  evidence 14'
+  grep -qx -- 'investigate -p' "$NOTES_FIXTURE/ask.log" || fail "not the investigate call: $(cat "$NOTES_FIXTURE/ask.log")"
+  grep -q 'Question: #high why is the nas slow' "$NOTES_FIXTURE/ask-prompt.txt" || fail "$(cat "$NOTES_FIXTURE/ask-prompt.txt")"
+  grep -q 'the next step you would take' "$NOTES_FIXTURE/ask-prompt.txt" || fail "not the investigate prompt"
+  grep -q 'Change nothing' "$NOTES_FIXTURE/ask-prompt.txt" || fail "the prompt never said read-only"
+  run tasks
+  refute_output --partial 'nas'
+}
+
 @test "outbox: a #ask line beside other lines never reaches the routing call, and --dry-run answers nothing" {
   sheet '' ''
   ask_stub

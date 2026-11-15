@@ -287,15 +287,6 @@ fn dedent_orphans(body: &[&str]) -> Vec<String> {
     out
 }
 
-/// A heading word every item of its list takes: where it goes, its lane, plan-first, priority.
-fn is_inherited(w: &str) -> bool {
-    md::project_tag_word(w).is_some()
-        || md::agent_tag(w)
-        || w.eq_ignore_ascii_case("#plan")
-        || w.eq_ignore_ascii_case("#go")
-        || (w.starts_with('#') && md::is_priority(w))
-}
-
 /// `words` with each `heading` tag it does not already set, before any marker comment. A `#p:`
 /// or a priority it carries replaces the heading's: the item's own word is the later one.
 fn with_inherited(words: &str, heading: &[&str]) -> String {
@@ -320,14 +311,15 @@ fn with_inherited(words: &str, heading: &[&str]) -> String {
 
 /// The lines a list block becomes, or None when it stays one line: a block is a list when it has
 /// two or more open checkboxes directly under its top line (`words - [ ] first` counts its inline
-/// box), unless the top line is a typed row or a `#ask`, which say what they are. Each direct
-/// bullet is an item; a line of words joins the item before it; anything deeper stays that item's
-/// detail, its checkbox off so the item is whole on the next pass. A ticked item is finished.
+/// box), unless the top line is a typed row or a look (`#ask`, `#investigate`), which say what
+/// they are. Each direct bullet is an item; a line of words joins the item before it; anything
+/// deeper stays that item's detail, its checkbox off so the item is whole on the next pass. A
+/// ticked item is finished.
 fn list_items(block: &[&str]) -> Option<Vec<String>> {
     let text = inbox_text(block[0]);
     let text = text[..text.find("<!--").unwrap_or(text.len())].trim();
     if block[0].trim_start().starts_with("<!--")
-        || md::ask_tag(block[0])
+        || md::look_tag(block[0]).is_some()
         || projects::is_typed(text)
     {
         return None;
@@ -380,11 +372,11 @@ fn list_items(block: &[&str]) -> Option<Vec<String>> {
     }
     let tags: Vec<&str> = head
         .split_whitespace()
-        .filter(|w| is_inherited(w))
+        .filter(|w| md::is_routing_word(w))
         .collect();
     let words: Vec<&str> = head
         .split_whitespace()
-        .filter(|w| !is_inherited(w))
+        .filter(|w| !md::is_routing_word(w))
         .collect();
     let words = words.join(" ");
     let under = (!words.is_empty()).then_some(words).into_iter().chain(lead);
