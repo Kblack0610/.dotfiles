@@ -436,17 +436,6 @@ check_heading() {
   return 0
 }
 
-# Pull every ~/... or $HOME/... token out of the prose and test it. A path is
-# only CHECKABLE if it is concrete: placeholders (<repo>, {project}, *.md, ...)
-# describe a shape, not a file, and testing them would produce pure noise.
-#
-# The token keeps its < > { } * ? so the placeholder test below can see them:
-# `~/.cache/x/p<N>/` cut at the < read as a missing `~/.cache/x/p`; now it is
-# checked as `~/.cache/x`.
-#
-# A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
-# `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
-# stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
 # A path with a space is one path only inside a backtick span; bare prose cuts at the
 # space. The token regex stops at the space, so when the cut token is missing, try the
 # span that starts with it, whole and then one trailing word shorter at a time
@@ -466,6 +455,17 @@ spaced_path_exists() {
   return 1
 }
 
+# Pull every ~/... or $HOME/... token out of the prose and test it. A path is
+# only CHECKABLE if it is concrete: placeholders (<repo>, {project}, *.md, ...)
+# describe a shape, not a file, and testing them would produce pure noise.
+#
+# The token keeps its < > { } * ? so the placeholder test below can see them:
+# `~/.cache/x/p<N>/` cut at the < read as a missing `~/.cache/x/p`; now it is
+# checked as `~/.cache/x`.
+#
+# A trailing - or . means the regex stopped mid-template (`.../briefs/YYYY-MM-DD-`,
+# `.../2026-04-30-<slug>`), not that a file is missing. Capitalised sanitisation
+# stand-ins (AcmeCorp, YYYY) are the same story as *.example.internal.
 check_paths() {
   local skill="$1" f="$2" p orig
   while IFS= read -r p; do

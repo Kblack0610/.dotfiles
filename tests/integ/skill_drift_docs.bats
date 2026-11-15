@@ -109,3 +109,14 @@ setup() {
   # the live spans pass; the bare line and the dead span are still reported
   assert_output '~/real/Bare ~/real/Nope'
 }
+
+@test "a spaced backtick path works in the \$HOME form and with several trailing words" {
+  mkdir -p "$HOME/real/App Support"
+  touch "$HOME/real/App Support/x.md"
+  printf '%s\n' \
+    'Home form `$HOME/real/App Support/x.md` and `~/real/App Support/x.md then more words`.' \
+    'Dead with words `$HOME/real/Nope Dir/y.md and more`.' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '[.findings[] | .item] | join(" ")' <<< "$output"
+  assert_output '~/real/Nope'
+}
