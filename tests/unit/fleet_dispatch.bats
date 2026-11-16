@@ -1916,7 +1916,7 @@ J
   queued_item mine urgent "$old"
   run cmd_starved
   assert_failure
-  assert_output --partial 'dispatch is held (dispatch since 2026-11-10T09:00:00-0800 by binks: load 72.9; no new sessions; agent-hold release dispatch clears it)'
+  assert_output --partial "dispatch is held (agent-hold dispatch) by binks: load 72.9; no new sessions; the human's urgent items wait on it"
   assert_output --partial 'mine (urgent from the human'
   refute_output --partial 'agents'
   refute_output --partial 'fresh'
@@ -1927,10 +1927,14 @@ J
   run cmd_starved
   assert_success
   assert_output --partial 'held by load'
+  # An item with no from: line is the human's (agent-queue's default), and the load verdict is named.
   queued_item mine urgent "$old"
+  sed -i '/^from: /d' "$AGENT_QUEUE_DIR/queued/20261103-100000-mine.md"
   run cmd_starved
   assert_failure
-  assert_output --partial 'mine (urgent'
+  assert_output --partial "held by load (load 30.00 on"
+  assert_output --partial "the human's urgent items wait on it"
+  assert_output --partial 'mine (urgent from the human'
 }
 
 @test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {

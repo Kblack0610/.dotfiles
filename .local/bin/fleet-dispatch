@@ -11,6 +11,7 @@
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
+#                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time while the human was away,
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
@@ -3917,16 +3918,17 @@ cmd_stopped() {
 # low water starves: runnable under DISPATCH_LOW_WATER, rows a pass would pick, and no run start in
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
-  local items board low last cut started why stopped dead queue qrc human hold
+  local items board low last cut started why stopped dead queue qrc human
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   queue=$(runnable); qrc=$?
   # The human's urgent items over the window: their standing rule keeps them clear of every limit, so
   # neither a hold nor load makes their wait on purpose, and it pages (queue-starved) for the human to
   # decide. 2026-11-10: four sat 4h, 2h of it under a dispatch hold that read as nothing starved (ar-1432).
   human=$(human_urgent "$queue" | jq -r --argjson cut "$cut" 'select((.waits | not) and .t != null and .t < $cut) | "\(.slug) (urgent from the human, queued \(.queued))"')
-  if ! hold=$(agent-hold check dispatch 2>/dev/null); then
+  if ! agent-hold check dispatch >/dev/null 2>&1; then
     [ -n "$human" ] || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
-    echo "dispatch is held (${hold#held: }${hold:+; }agent-hold release dispatch clears it), and the human's urgent items wait on it:"
+    # gate stops at the hold and names it in the words the Stopped line uses.
+    echo "dispatch is $(gate); the human's urgent items wait on it (agent-hold release dispatch clears it):"
     sed 's/^/  /' <<<"$human"
     return 1
   fi
@@ -3976,8 +3978,10 @@ cmd_starved() {
   acct_room || room=$?
   why=$(gate)
   if [ -n "$why" ] && ! sed 's/; /\n/g' <<<"$why" | grep -qvE '^(fleet-assess says HOLD|load |real idle )' &&
-    [ "$room" = 0 ] && [ -z "$human" ]; then
-    echo "held by load ($why), so nothing is starved"; [ -z "$dead" ]; return
+    [ "$room" = 0 ]; then
+    [ -n "$human" ] || { echo "held by load ($why), so nothing is starved"; [ -z "$dead" ]; return; }
+    echo "held by load ($why), and the human's urgent items wait on it:"
+    sed 's/^/  /' <<<"$human"
   fi
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null &&
