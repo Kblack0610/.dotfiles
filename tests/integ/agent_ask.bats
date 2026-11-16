@@ -658,14 +658,31 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 31 tab-separated fields per ask, delivery and its answers after parked_until" {
+@test "list emits 32 tab-separated fields per ask, delivery and its answers after parked_until, previews last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '31'
+  assert_output '32'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
   assert_output '2026-11-06T14:30:00-0800'
+}
+
+@test "--preview stores each image's full path, |-joined, as the last list field, and refuses a missing file" {
+  mkdir -p "$SANDBOX/img"; : >"$SANDBOX/img/a.png"; : >"$SANDBOX/img/b.png"
+  "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a.png" --preview "$SANDBOX/img/b.png" 'ship it?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | cut -f32'
+  assert_output "$(realpath "$SANDBOX/img/a.png")|$(realpath "$SANDBOX/img/b.png")"
+  run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/none.png" 'ship it?'
+  assert_failure 2
+  assert_output --partial 'no preview file'
+  # a tab in the path would shift every list column after it
+  : >"$SANDBOX/img/a"$'\t'"b.png"
+  run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a"$'\t'"b.png" 'ship it?'
+  assert_failure 2
+  run "$AGENT_ASK" post --project demo --preview
+  assert_failure 2
+  assert_output --partial 'no preview file'
 }
 
 @test "the last three fields are judge_rule, judge_reason and answer_note, for agent-web's Details fold" {
