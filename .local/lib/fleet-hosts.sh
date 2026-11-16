@@ -161,12 +161,15 @@ fleet_state_host() { fleet_state_addr | cut -d. -f1; }
 fleet_is_home() { local a; a=$(fleet_state_addr); [ -z "$a" ] || fleet_addr_is_me "$a"; }
 
 # fleet_addr_is_me <addr> -> rc 0 when the address names this machine: its short name is FLEET_HOST,
-# or it resolves to one of this machine's IPv4 addresses. The inventory may name a machine by its
-# DHCP name (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main).
+# or one of its A records is a non-loopback IPv4 address of this machine. The inventory may name a
+# machine by its DHCP name (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main).
+# The lookup needs the LAN's DNS: while that is down the home cannot tell it is home.
+: "${FLEET_RESOLVE_SECS:=2}"   # seconds the lookup may take, so a hung resolver never blocks a call
 fleet_addr_is_me() {
+  [ -n "$1" ] || return 1
   [ "${1%%.*}" != "$FLEET_HOST" ] || return 0
-  local ip; ip=$(getent ahostsv4 "$1" 2>/dev/null | awk 'NR == 1 { print $1 }')
-  [ -n "$ip" ] && ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF "$ip"
+  local ips; ips=$(timeout "$FLEET_RESOLVE_SECS" getent ahostsv4 "$1" 2>/dev/null | awk '$1 !~ /^127\./ { print $1 }' | sort -u)
+  [ -n "$ips" ] && ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF -f <(printf '%s\n' "$ips")
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
