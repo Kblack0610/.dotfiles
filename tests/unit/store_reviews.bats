@@ -127,6 +127,46 @@ steam_page() {
   assert_failure
 }
 
+# Under agentctl a pass that declares no outcome is promoted to STALLED and trips fleet-liveness.
+@test "under agentctl a published pass is WORKED with its unread apps counted; one that wrote nothing is FAILED" {
+  keys
+  reply steam.5553740 200 "$(steam_page)"
+  reply steam.5376830 302 ''
+  reply play 403 '{"error": {"message": "The caller does not have permission"}}'
+  reply asc 200 '{"data": [], "meta": {"paging": {"total": 0}}}'
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" WORKED
+  run grep -E 'outcome=WORKED [0-9]+ apps, 1 unread' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+  PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -F "no textfile directory $SANDBOX/none" "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+  # negative control: outside agentctl nothing is declared
+  AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$SR" publish
+  [ ! -e "$SANDBOX/bstate" ]
+}
+
+@test "under agentctl a pass that read no app is FAILED, whether none were listed or none answered" {
+  echo '{"trackers": {}}' > "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -F 'no store app could be read (0 apps)' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+}
+
+@test "a pass that dies under agentctl is FAILED once with its reason, never left to read STALLED" {
+  rm -f "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_failure
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -c 'outcome=FAILED' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_output 1
+  run grep -F 'could not read the store targets' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+}
+
 @test "a store answer without its summary is an error, never a zero" {
   reply steam.5553740 200 '{"success": 2}'
   reply steam.5376830 500 '{}'
