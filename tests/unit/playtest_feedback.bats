@@ -66,3 +66,27 @@ setup() {
   run grep -Fx 'playtest_feedback_up 0' "$PROM_TEXTFILE_DIR/playtest_feedback.prom"
   assert_success
 }
+
+# Under agentctl a pass that declares no outcome is promoted to STALLED and trips fleet-liveness.
+@test "under agentctl a published pass is WORKED, an unread sheet counted; a failed project list is FAILED" {
+  AGENTCTL_NAME=playtest-feedback AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$PF" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/playtest-feedback/last-outcome")" WORKED
+  run grep -F 'outcome=WORKED 2 projects, 1 unread' "$SANDBOX/astate/playtest-feedback/activity.log"
+  assert_success
+  : > "$NOTES_FIXTURE/stats.fail"
+  AGENTCTL_NAME=playtest-feedback AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$PF" publish
+  assert_equal "$(cat "$SANDBOX/astate/playtest-feedback/last-outcome")" FAILED
+  run grep -F 'notes projects --stats --json failed' "$SANDBOX/astate/playtest-feedback/activity.log"
+  assert_success
+}
+
+@test "an unwritable textfile is a FAILED pass; outside agentctl no outcome is written" {
+  chmod 0555 "$PROM_TEXTFILE_DIR"
+  AGENTCTL_NAME=playtest-feedback AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$PF" publish
+  chmod 0755 "$PROM_TEXTFILE_DIR"
+  assert_equal "$(cat "$SANDBOX/astate/playtest-feedback/last-outcome")" FAILED
+  AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$PF" publish
+  assert_success
+  [ ! -e "$SANDBOX/bstate" ]
+}

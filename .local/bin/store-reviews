@@ -20,6 +20,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 
 # Timeout guard on every external call, in seconds.
 PROBE_TIMEOUT="${STORE_REVIEWS_TIMEOUT:-15}"
@@ -46,7 +48,10 @@ ASC_PAGE=200
 PLAY_PAGE=100
 PAGES=5
 
-die() { echo "store-reviews: $*" >&2; exit 2; }
+# outcome VERDICT WORDS: under agentctl (the store-reviews runner) a pass that declares no
+# outcome is promoted to STALLED, which trips fleet-liveness.
+outcome() { [ -z "${AGENTCTL_NAME:-}" ] || proof_outcome "$AGENTCTL_NAME" "$1" "$2"; }
+die() { echo "store-reviews: $*" >&2; outcome FAILED "$*"; exit 2; }
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 for t in jq curl openssl; do
@@ -206,6 +211,13 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  prom_textfile store_reviews.prom prom_lines "$doc" || echo "store-reviews: could not write store_reviews.prom" >&2
+  # An app that could not be read is in the file (store_reviews_up 0 for its store), so a locked
+  # vault on one store is not a failed pass; a pass that wrote nothing is.
+  if prom_textfile store_reviews.prom prom_lines "$doc"; then
+    outcome WORKED "$(jq -r '"\(.apps | length) apps, \([.apps[] | select(.error)] | length) unread"' <<<"$doc")"
+  else
+    echo "store-reviews: could not write store_reviews.prom" >&2
+    outcome FAILED "could not write store_reviews.prom"
+  fi
 fi
 printf '%s\n' "$doc"

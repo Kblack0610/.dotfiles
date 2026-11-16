@@ -15,13 +15,18 @@ set -uo pipefail
 
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 
 NOTES="${NOTES_BIN:-notes}"
 # The ending feedback-to-ptask gives each row (playtest-bot scripts/feedback-to-ptask): the title
 # and the author are free text, so either may hold a comma or a parenthesis.
 FEEDBACK_RE='\(playtest .+, .+\)$'
 
-die() { echo "playtest-feedback: $*" >&2; exit 2; }
+# outcome VERDICT WORDS: under agentctl (the playtest-feedback runner) a pass that declares no
+# outcome is promoted to STALLED, which trips fleet-liveness.
+outcome() { [ -z "${AGENTCTL_NAME:-}" ] || proof_outcome "$AGENTCTL_NAME" "$1" "$2"; }
+die() { echo "playtest-feedback: $*" >&2; outcome FAILED "$*"; exit 2; }
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -61,6 +66,12 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  prom_textfile playtest_feedback.prom prom_lines "$doc" || echo "playtest-feedback: could not write playtest_feedback.prom" >&2
+  # A sheet that could not be read is in the file (playtest_feedback_up 0); a pass that wrote
+  # nothing, or read no project list, is FAILED.
+  if ! prom_textfile playtest_feedback.prom prom_lines "$doc"; then
+    echo "playtest-feedback: could not write playtest_feedback.prom" >&2
+    outcome FAILED "could not write playtest_feedback.prom"
+  elif [ -n "$err" ]; then outcome FAILED "$err"
+  else outcome WORKED "$(jq -r '"\(.projects | length) projects, \([.projects[] | select(.error)] | length) unread"' <<<"$doc")"; fi
 fi
 printf '%s\n' "$doc"

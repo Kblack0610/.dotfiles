@@ -127,6 +127,36 @@ steam_page() {
   assert_failure
 }
 
+# Under agentctl a pass that declares no outcome is promoted to STALLED and trips fleet-liveness.
+@test "under agentctl a published pass is WORKED with its unread apps counted; one that wrote nothing is FAILED" {
+  keys
+  reply steam.5553740 200 "$(steam_page)"
+  reply steam.5376830 302 ''
+  reply play 403 '{"error": {"message": "The caller does not have permission"}}'
+  reply asc 200 '{"data": [], "meta": {"paging": {"total": 0}}}'
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" WORKED
+  run grep -E 'outcome=WORKED [0-9]+ apps, 1 unread' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+  chmod 0555 "$PROM_TEXTFILE_DIR"
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  chmod 0755 "$PROM_TEXTFILE_DIR"
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  # negative control: outside agentctl nothing is declared
+  AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$SR" publish
+  [ ! -e "$SANDBOX/bstate" ]
+}
+
+@test "a pass that dies under agentctl is FAILED with its reason, never left to read STALLED" {
+  rm -f "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_failure
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -F 'no registry at' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+}
+
 @test "a store answer without its summary is an error, never a zero" {
   reply steam.5553740 200 '{"success": 2}'
   reply steam.5376830 500 '{}'
