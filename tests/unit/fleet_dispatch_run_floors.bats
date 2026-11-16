@@ -88,7 +88,7 @@ load 'fleet_dispatch/common'
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
 
-@test "human floor lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
+@test "human floor: it lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
   project game beta "$SANDBOX/repos/game"
   cpu 5 5 0 90
   export DISPATCH_RUN_FLOOR=0
@@ -102,7 +102,7 @@ load 'fleet_dispatch/common'
   acct alt:pace:/home/u/.claude-personal
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'over the'
+  assert_output --partial 'is over the'
   assert_not_called 'wt new'
 }
 
