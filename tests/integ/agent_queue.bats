@@ -2066,11 +2066,13 @@ teardown() {
   "$AQ" add --project game --slug held --tags "rbw:trading/key" "deploy the key" >/dev/null
   "$AQ" list --json > "$SANDBOX/read.out" 3>&- &
   READER=$!
-  read -r _ < "$SANDBOX/rbw.in"
+  # Opened read-write, a fifo never blocks the open: the read's timeout and the go are the only waits,
+  # so a reader that never stalls, or a fake already killed, fails the test instead of hanging it.
+  read -t 10 -r _ <> "$SANDBOX/rbw.in"
   # The reader is mid-derive. A writer must not wait on it (timeout: the guard, under the 10s give-up).
   run timeout 5 "$AQ" add --project game --slug later "added while the read runs"
   assert_success
-  echo go > "$SANDBOX/rbw.go"
+  echo go 1<> "$SANDBOX/rbw.go"
   wait "$READER"
   # The read answers from what it read before the write, hold included.
   [ "$(jq -sr 'map(.slug) | join(",")' "$SANDBOX/read.out")" = held ]

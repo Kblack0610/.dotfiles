@@ -1445,14 +1445,18 @@ cmd_mine() {
     *) die "usage: agent-queue mine [--session s | --sid id]" ;;
   esac
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
+  # One read answers both asks, so they see the queue at one moment; none when neither is asked.
+  local items=""
   if [ -z "$session" ] && [ -n "$sid" ]; then
-    slugs="$(collect running waiting review | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')" ||
+    items="$(collect running waiting review)" || die "could not read the queue"
+    slugs="$(jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug' <<<"$items")" ||
       die "could not read the queue"
   fi
   [ "$only" -eq 0 ] || [ -n "${slugs:-}" ] || return 1
   if [ -z "${slugs:-}" ]; then
     [ -n "$session" ] || session="$(own_session)" || { [ -n "$sid" ] && return 1; die "not in tmux: pass --session <server>:<session>"; }
-    slugs="$(collect running | jq -r --arg s "$session" '.[] | select(.session == $s) | .slug')" || die "could not read the queue"
+    [ -n "$items" ] || items="$(collect running waiting review)" || die "could not read the queue"
+    slugs="$(jq -r --arg s "$session" '.[] | select(.state == "running" and .session == $s) | .slug' <<<"$items")" || die "could not read the queue"
   fi
   [ -n "$slugs" ] || return 1
   if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
