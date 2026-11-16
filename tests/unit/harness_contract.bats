@@ -24,7 +24,7 @@ KEYS="end_reason tokens cost hard_errors tests effort"
 
 # reader <launcher> <map> -> the facts that launcher's reader gives on its fixture, as one JSON object
 # with a key per contract fact it proves (null when the reader gave none); {} for a launcher with no reader.
-# Read once per launcher, map and fixture dir: several harnesses share a launcher (glm and opencode).
+# Read once per launcher, map and fixture dir: several harnesses share a launcher (opencode-go and opencode).
 reader() {
   local w="$BATS_TEST_TMPDIR/reader/$1/$(printf '%s\n' "$2" "$FIX" | md5sum | cut -c1-12)"
   [ -f "$w.json" ] || { mkdir -p "$w"; read_facts "$1" "$2" "$w" > "$w.json"; }
@@ -100,7 +100,7 @@ fixture_map() {
   jq -n '{harnesses: {
     codex: {launcher: "codex", resume: true, reports: {end_reason: true, tokens: true, cost: true, hard_errors: true, tests: true, effort: true},
             prices: {"gpt-6.1-sol": {input: 2, cached_input: 0.1, output: 10}}},
-    glm: {launcher: "opencode", resume: false, reports: {end_reason: true, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
+    "opencode-go": {launcher: "opencode", resume: false, reports: {end_reason: true, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
           why_not: {resume: "r", hard_errors: "h", tests: "t", effort: "f"}},
     "lazer-reserve": {launcher: "claude-lazer", resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}},
@@ -134,26 +134,26 @@ fixture_map() {
 
 @test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why, a max_tier that is no tier and launcher siblings that disagree each fail" {
   fixture_map
-  jq '.harnesses.glm.why_not |= del(.tests, .effort)
-      | .harnesses.glm.reports.effort = true
+  jq '.harnesses["opencode-go"].why_not |= del(.tests, .effort)
+      | .harnesses["opencode-go"].reports.effort = true
       | .harnesses.codex.reports |= del(.effort)
       | .harnesses.codex.reports.vibes = true
       | .harnesses.codex.why_not = {tokens: "stale"}
       | .harnesses["lazer-reserve"].reports.cost = true | .harnesses["lazer-reserve"].why_not |= del(.cost)
-      | .harnesses.glm.max_tier = "1"
+      | .harnesses["opencode-go"].max_tier = "1"
       | .harnesses.cloud = {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: false, tests: false, effort: false},
                             why_not: {resume: "r", end_reason: "e", cost: "c", hard_errors: "h", tests: "t", effort: "f"}}' \
     "$SANDBOX/harnesses.json" > "$SANDBOX/bad.json"
   run problems "$SANDBOX/bad.json"
-  assert_line 'glm tests: false with no why_not'
-  assert_line 'glm effort: true, but the opencode reader gives no value on its fixture'
+  assert_line 'opencode-go tests: false with no why_not'
+  assert_line 'opencode-go effort: true, but the opencode reader gives no value on its fixture'
   assert_line 'codex effort: not stated (null)'
   assert_line 'codex reports.vibes: not a contract fact'
   assert_line 'codex why_not.tokens: the fact is not false'
   assert_line 'cloud tokens: true, but the cloud reader gives no value on its fixture'
   assert_line 'lazer-reserve cost: true, but the claude-lazer reader gives no value on its fixture'
   assert_line 'lazer-reserve: states other facts than claude-lazer on the same launcher'
-  assert_line 'glm max_tier: "1" is not 1, 2 or 3'
+  assert_line 'opencode-go max_tier: "1" is not 1, 2 or 3'
   assert_equal "${#lines[@]}" 9
 }
 
@@ -174,5 +174,5 @@ fixture_map() {
   FIX="$BATS_TEST_TMPDIR/fix"; mkdir -p "$FIX"; cp "$REPO_ROOT/tests/fixtures/harness-contract/"* "$FIX/"
   echo "DELETE FROM session_message WHERE type = 'assistant';" >> "$FIX/opencode.sql"
   run problems "$SANDBOX/harnesses.json"
-  assert_output 'glm end_reason: true, but the opencode reader gives no value on its fixture'
+  assert_output 'opencode-go end_reason: true, but the opencode reader gives no value on its fixture'
 }

@@ -58,7 +58,7 @@ setup() {
 
 @test "a sandboxed harness keeps its runs under <config_dir>/run, and only such a harness has a run DB" {
   jq -n '{harnesses: {ocfree: {sandbox: "ocfree", config_dir: "~/.local/state/agentctl/opencode-ocfree/"},
-    glm: {config_dir: "/x/glm"}, nodir: {sandbox: "ocfree"}}}' > "$MAP"
+    "opencode-go": {config_dir: "/x/go"}, nodir: {sandbox: "ocfree"}}}' > "$MAP"
   run harness_run_dir "$MAP" ocfree
   assert_output "$HOME/.local/state/agentctl/opencode-ocfree/run"
   run harness_run_dir "$MAP" nodir

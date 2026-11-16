@@ -112,14 +112,14 @@ test("with no direct rows the direct tile says unknown, never $0 or blank", () =
 });
 
 test("Burn points at Consumers for the keys inside a pool, and lists the pool only", () => {
-  const key = acct("glm", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
+  const key = acct("reserve", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
   const pool = acct("lazer", { kind: "litellm-team", unpaced: true, used: 90, used_text: "90% $226/$250", gone: null });
   const paced = acct("alt", { used: 80, gone: 64 });
-  const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest glm 96%", level } }) }));
+  const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest reserve 96%", level } }) }));
   const quiet = page("ok");
-  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest glm 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
+  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest reserve 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
   assert.ok(quiet.includes("<td>lazer</td>"), "the pool is a Burn row");
-  assert.doesNotMatch(quiet, /<td>glm<\/td>/, "the key is a Consumers row, not a Burn one");
+  assert.doesNotMatch(quiet, /<td>reserve<\/td>/, "the key is a Consumers row, not a Burn one");
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
   assert.match(page("warn"), /KEYS<\/span> <span class="warn">/, "a key refusing on its own is amber");
   assert.equal(ctx.route("#costs/consumers").arg, "limits", "the pointer opens the inner tab holding Consumers");
@@ -281,8 +281,8 @@ test("an account claude-acct could not read is named, and no data says so", () =
   const h = show(board({ burn: b }));
   assert.match(h, /<td>old<\/td><td colspan="16" class="bad">usage unreadable<\/td>/);
   assert.match(h, /<td>new<\/td><td colspan="16" class="muted">idle, token refreshes on launch<\/td>/);
-  const key = show(board({ burn: burn({ accounts: [acct("glm", { kind: "litellm-key", state: "idle" })] }) }));
-  assert.match(key, /<td>glm<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
+  const key = show(board({ burn: burn({ accounts: [acct("reserve", { kind: "litellm-key", state: "idle" })] }) }));
+  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });
 

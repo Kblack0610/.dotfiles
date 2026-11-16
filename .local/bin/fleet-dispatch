@@ -1708,7 +1708,7 @@ cloud_routed() {
 headless() { harness_flag "$1" headless; }
 
 # resumes <harness> -- a later run can take up an earlier run's thread: its `resume` in the map (codex,
-# through agent-codex resume). opencode and glm do not, so they stay refused plan items and --resume.
+# through agent-codex resume). A harness with no resume: true (every opencode-launcher one) stays refused plan items and --resume.
 resumes() { harness_flag "$1" resume; }
 
 # harness_flag <harness> <key> -- that key is true in the harness's map entry.

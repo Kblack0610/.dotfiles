@@ -2550,32 +2550,32 @@ J
   route_ready
   HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before route_ready set it
   local it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
-  ACCT_ROWS='{"accounts":[{"dir":"/home/u/.claude-personal","rank":1}],"sources":[{"name":"glm","rank":0.5,"room":{"ok":true,"why":"it has room"}}]}'
-  # A plain fallback fit: glm has room and ranks first, but no score put it there.
-  v='{"candidates":[{"harness":"claude","model":"opus","fit":0},{"harness":"glm","model":"glm","fit":1}]}'
-  ! route "$it" "$v" || fail "an unscored glm fallback took the item"
-  assert_equal "$ROUTE_WHY" 'claude: no account has room; glm: pay-per-use, so it takes only a class it was promoted for or its trial pick'
+  ACCT_ROWS='{"accounts":[{"dir":"/home/u/.claude-personal","rank":1}],"sources":[{"name":"paid","rank":0.5,"room":{"ok":true,"why":"it has room"}}]}'
+  # A plain fallback fit: paid has room and ranks first, but no score put it there.
+  v='{"candidates":[{"harness":"claude","model":"opus","fit":0},{"harness":"paid","model":"glm","fit":1}]}'
+  ! route "$it" "$v" || fail "an unscored paid fallback took the item"
+  assert_equal "$ROUTE_WHY" 'claude: no account has room; paid: pay-per-use, so it takes only a class it was promoted for or its trial pick'
   # Promoted for the class, with no account room: the overflow takes it.
-  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
-  route "$it" "$v" || fail "a promoted glm with room did not take the item ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'glm glm'
+  v='{"promoted":["paid:glm"],"candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  route "$it" "$v" || fail "a promoted paid with room did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'paid glm'
   # The trial pick counts the same.
-  v='{"trial":"glm:glm","candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":1}]}'
-  route "$it" "$v" || fail "the glm trial pick did not take the item ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS" glm
-  # Negative control: an account with room takes it, though glm ranks first at the same fit.
+  v='{"trial":"paid:glm","candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":1}]}'
+  route "$it" "$v" || fail "the paid trial pick did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" paid
+  # Negative control: an account with room takes it, though paid ranks first at the same fit.
   ACCT_RC=0
-  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  v='{"promoted":["paid:glm"],"candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
   route "$it" "$v" || fail "nothing set: claude with room did not take it ($ROUTE_WHY)"
   assert_equal "$ROUTE_HARNESS" claude
   # Past tier 1 it waits rather than spend.
   ACCT_RC=1 it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu","tags":"tier2"}'
-  ! route "$it" "$v" || fail "a tier-2 item went to glm"
-  assert_equal "$ROUTE_WHY" 'glm: pay-per-use takes tier-1 work only, and this is tier 2; claude: no account has room'
+  ! route "$it" "$v" || fail "a tier-2 item went to paid"
+  assert_equal "$ROUTE_WHY" 'paid: pay-per-use takes tier-1 work only, and this is tier 2; claude: no account has room'
   # A pinned item (a canary) is the human's pairing: none of this applies.
-  it='{"slug":"x","project":"game","mode":"oneshot","title":"canary","agent":"glm","model":"glm","tags":"tier2"}'
-  route "$it" '' || fail "a pinned glm item was refused ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS" glm
+  it='{"slug":"x","project":"game","mode":"oneshot","title":"canary","agent":"paid","model":"glm","tags":"tier2"}'
+  route "$it" '' || fail "a pinned paid item was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" paid
 }
 
 @test "routing never lifts another gate: load holds it" {
