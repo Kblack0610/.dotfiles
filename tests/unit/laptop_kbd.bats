@@ -15,12 +15,15 @@ setup() {
   export LAPTOP_KBD_SYSFS="$BATS_TEST_TMPDIR/sys root"
   export SUDO_LOG="$BATS_TEST_TMPDIR/sudo.log"
   local s=$LAPTOP_KBD_SYSFS
-  mkdir -p "$s/bus/hid/drivers/asus" "$s/class/input/input1" "$s/class/input/input2"
-  echo "keyd virtual keyboard" >"$s/class/input/input1/name"
+  mkdir -p "$s/bus/hid/drivers/asus" "$s/class/input"
   local i
   for i in 0001 0002 0003; do
     mkdir -p "$s/bus/hid/devices/0003:0B05:19B6.$i"
   done
+  # Inputs as the kernel lays them out: class/input/inputN links to the device's own dir. keyd's
+  # is virtual, and the laptop keyboard's own input is named like a keyboard (as on some ASUS).
+  add_input 1 "devices/virtual/input" "keyd virtual keyboard"
+  add_input 5 "bus/hid/devices/0003:0B05:19B6.0001/input" "Asus Keyboard"
   ln -s ../../drivers/asus "$s/bus/hid/devices/0003:0B05:19B6.0001/driver"
   ln -s ../../drivers/asus "$s/bus/hid/devices/0003:0B05:19B6.0003/driver"
   : >"$s/bus/hid/drivers/asus/unbind"
@@ -41,7 +44,14 @@ EOF
   chmod +x "$SANDBOX/bin/sudo"
 }
 
-plug_corne() { echo "ken corne Keyboard" >"$LAPTOP_KBD_SYSFS/class/input/input2/name"; }
+add_input() {
+  local s=$LAPTOP_KBD_SYSFS
+  mkdir -p "$s/$2/input$1"
+  echo "$3" >"$s/$2/input$1/name"
+  ln -s "$s/$2/input$1" "$s/class/input/input$1"
+}
+
+plug_corne() { add_input 2 "devices/virtual/misc/uhid/0005:0000:0000.0007/input" "ken corne Keyboard"; } # Bluetooth, via uhid
 
 @test "status reports on and each interface's driver, and is the default" {
   run "$KBD"
@@ -65,7 +75,7 @@ plug_corne() { echo "ken corne Keyboard" >"$LAPTOP_KBD_SYSFS/class/input/input2/
   assert_line --index 0 "laptop keyboard: off"
 }
 
-@test "off refuses with no other keyboard, keyd's virtual one does not count" {
+@test "off refuses with no other keyboard: keyd's virtual one and the laptop's own input do not count" {
   run "$KBD" off
   assert_failure
   assert_output --partial "no other keyboard found"
@@ -92,9 +102,36 @@ plug_corne() { echo "ken corne Keyboard" >"$LAPTOP_KBD_SYSFS/class/input/input2/
 @test "toggle flips the state each run" {
   plug_corne
   run "$KBD" toggle
+  assert_success
   assert_line "laptop keyboard: off"
   run "$KBD" toggle
+  assert_success
   assert_line "laptop keyboard: on"
+}
+
+@test "a failed sudo write dies naming the file and how to restore" {
+  printf '#!/usr/bin/env bash\necho "sudo: incorrect password" >&2; exit 1\n' >"$SANDBOX/bin/sudo"
+  run "$KBD" off --force
+  assert_failure
+  assert_output --partial "sudo: incorrect password"
+  assert_output --partial "drivers/asus/unbind failed"
+  assert_output --partial "'laptop-kbd on' restores"
+}
+
+@test "a mistyped flag or extra argument is a usage error, not a silent no-force" {
+  plug_corne
+  for args in "off --forse" "on --force" "status x" "off --force x"; do
+    # shellcheck disable=SC2086
+    run "$KBD" $args
+    assert_failure 2
+  done
+  [ ! -e "$SUDO_LOG" ]
+}
+
+@test "LAPTOP_KBD_ID matches in lowercase too" {
+  LAPTOP_KBD_ID=0b05:19b6 run "$KBD" status
+  assert_success
+  assert_line --index 0 "laptop keyboard: on"
 }
 
 @test "off when already off and on when already on write nothing" {

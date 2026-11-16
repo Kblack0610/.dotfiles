@@ -24,7 +24,16 @@ A reboot always brings the keyboard back, so you cannot lose it for good. The to
 | `laptop-kbd toggle` | `off` when on, `on` when off. Takes `--force` the same way. |
 | `laptop-kbd --help` | The usage text. |
 
-Running `off` when it is already off, or `on` when already on, says so and changes nothing.
+Running `off` when it is already off, or `on` when already on, says so and changes nothing. Any other argument, a mistyped `--force` included, prints the usage and exits 2 without touching anything.
+
+### How "another keyboard" is decided
+
+`off` looks through `/sys/class/input/input*` for a device whose name contains "keyboard" (any case), skipping two kinds:
+
+- keyd's virtual keyboard, a uinput device under `/sys/devices/virtual/input/`.
+- The laptop keyboard's own inputs, which sit under its HID interface (`.../0003:0B05:19B6.*/input/`). Some ASUS models name these "Asus Keyboard", so they would otherwise count.
+
+A Bluetooth keyboard such as the Corne lives under `/sys/devices/virtual/misc/uhid/`, which is not skipped, so it counts. To see what the check sees: `for i in /sys/class/input/input*; do echo "$(cat $i/name) -> $(readlink -f $i)"; done`.
 
 ## How it works
 
@@ -74,7 +83,7 @@ The default `0B05:19B6` fits this ASUS laptop only. To find another laptop's key
 grep -H . /sys/bus/hid/devices/*/uevent | grep HID_NAME
 ```
 
-Pick the internal keyboard's line; the vendor:product is in the directory name (`0003:VVVV:PPPP.NNNN`, where `0003` means USB). Then run with it:
+Pick the internal keyboard's line; the vendor:product is in the directory name (`0003:VVVV:PPPP.NNNN`, where `0003` means USB). Upper or lower case both work, so an ID copied from `lsusb` is fine. Then run with it:
 
 ```
 LAPTOP_KBD_ID=VVVV:PPPP laptop-kbd status
@@ -87,7 +96,9 @@ Many laptops connect the keyboard over the i8042 controller instead ("AT Transla
 | Problem | Cause and fix |
 |---|---|
 | `no HID device 0003:0B05:19B6.* under /sys/bus/hid/devices` | This laptop's keyboard has a different ID, or it is not a USB HID keyboard. See "Another laptop" above. |
-| `no other keyboard found` | No input device with "keyboard" in its name is plugged in, besides keyd's virtual one. Plug the Corne in (check with `cat /sys/class/input/input*/name`), or use `laptop-kbd off --force` if its name has no "keyboard" in it. |
+| `no other keyboard found` | No input with "keyboard" in its name was found apart from keyd's and the laptop's own; see "How another keyboard is decided". Connect the Corne (Bluetooth: `bluetoothctl info`), or use `laptop-kbd off --force` if its name has no "keyboard" in it. |
+| `writing ... failed` | sudo was refused (wrong password, Ctrl-C) or the kernel rejected the write; its own error is printed just above. Some interfaces may already have changed: `laptop-kbd status` shows which, `laptop-kbd on` puts them back. |
+| Usage text and exit 2 | An unknown argument or a mistyped flag. Only `--force` is accepted, and only after `off` or `toggle`. |
 | `still on after unbind` or `still off after probe` | The kernel did not take the change. Run `laptop-kbd status` to see which interface is stuck, and `sudo dmesg \| tail` for the kernel's reason. A reboot restores the keyboard. |
 | `on` says on but the keys still do nothing | keyd may not have picked the keyboard up again. `sudo systemctl restart keyd`. |
 | Locked out with no keyboard at all | Reboot (power button). The unbind does not survive a reboot. |
