@@ -78,7 +78,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
+  assert_called "ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o ControlMaster=auto -o ControlPath=fleet-ssh-%C -o ControlPersist=300 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
@@ -133,7 +133,7 @@ EOF
   run "$REPO_ROOT/.local/bin/agent-queue" set fix-menu pr=12
   assert_success
   assert_output 'set on state'
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o ControlMaster=auto -o ControlPath=fleet-ssh-%C -o ControlPersist=300 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
   # `add` and `retask` read a task from stdin, so those verbs keep it.

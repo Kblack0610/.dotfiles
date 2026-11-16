@@ -21,6 +21,10 @@ _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_HOST:=${HOSTNAME%%.*}}"   # this machine's short name, compared with the roster's fleet_state_host
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
 : "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
+# One shared ssh connection per host carries every forwarded call: a handshake per call from ~40
+# sessions overran the home's sshd MaxStartups (10), which reset connections and dropped queue writes.
+: "${FLEET_SSH_CONTROL:=${XDG_RUNTIME_DIR:-/tmp}/fleet-ssh-%C}"
+: "${FLEET_SSH_PERSIST:=300}"   # seconds the shared connection stays up after its last call
 : "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
 
 # fleet_inventory_repo -> home-config's checkout, from the project map.
@@ -186,7 +190,8 @@ _fh_ssh() {
   [ "${FLEET_SSH_STDIN:-0}" != 1 ] || n=''
   # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
-  ssh $n -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
+  ssh $n -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 \
+    -o ControlMaster=auto -o ControlPath="$FLEET_SSH_CONTROL" -o ControlPersist="$FLEET_SSH_PERSIST" "${opts[@]}" "$dest" \
     'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
 }
 

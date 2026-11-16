@@ -100,6 +100,8 @@ sandbox_init() {
   # (tmux_harness.bash), on a host that has no sessions to lose (tests/Dockerfile).
   unset TMUX TMUX_PANE
   export TMUX_TMPDIR="$SANDBOX/tmp"
+  # fleet-hosts.sh's ssh ControlPath, fixed so a stubbed ssh call's arguments are the same on every host.
+  export FLEET_SSH_CONTROL=fleet-ssh-%C
 
   # The real registry, when a shell exports it, would beat the sandbox's $HOME and make
   # the resolver answer from this host's projects; a test that needs a map writes its own.

@@ -2605,7 +2605,7 @@ J
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o ControlMaster=auto -o ControlPath=fleet-ssh-%C -o ControlPersist=300 -p 22 kb@192.0.2.26'
 }
 
 @test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
