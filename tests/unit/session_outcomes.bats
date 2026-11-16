@@ -1107,7 +1107,7 @@ EOF
 @test "a sandboxed harness's sessions are read from its own run DB beside the shared one; an unreadable one loses only its lines" {
   oc_db
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, glm: {launcher: "opencode"}}}' > "$SO_HARNESSES"
+  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, "opencode-go": {launcher: "opencode"}}}' > "$SO_HARNESSES"
   mkdir -p "$SANDBOX/oc-free/run/data/opencode"
   cp "$SO_OPENCODE_DB" "$SANDBOX/oc-free/run/data/opencode/opencode.db"
   sqlite3 "$SANDBOX/oc-free/run/data/opencode/opencode.db" "UPDATE session_v2 SET id = 'ses_free' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_free' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_free' WHERE session_id = 'ses_root';"
@@ -1232,14 +1232,14 @@ EOF
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
 }
 
-@test "a Claude session never reads codex or opencode: not from an agent: codex item, a glm item, or a codex stamp an earlier run left" {
+@test "a Claude session never reads codex or opencode: not from an agent: codex item, an opencode-go item, or a codex stamp an earlier run left" {
   oc_db
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n '{harnesses: {glm: {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
+  jq -n '{harnesses: {"opencode-go": {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
   {
     jq -cn '{slug: "cx", agent: "codex", sessions: "sess-a sess-c"}'
-    jq -cn '{slug: "gl", agent: "glm", sessions: "sess-b"}'
+    jq -cn '{slug: "gl", agent: "opencode-go", sessions: "sess-b"}'
     jq -cn '{slug: "lz", agent: "lazer-reserve", sessions: "sess-d"}'
   } > "$SANDBOX/items.jsonl"
   # c: an earlier run stamped codex on it (the 8473b997 shape); the re-observation must not keep it

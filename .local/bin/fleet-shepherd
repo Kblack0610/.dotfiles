@@ -285,13 +285,13 @@ cmd_due() {
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
       [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
     done
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" '
+    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" "$PANE_TAG_JQ"'
       ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
       | ($pre | split("\n")) as $pre
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
           and (.target as $t | $pre | index($t) | not)
           and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
-        | .target] | join(", ")' "$STATE_FILE" 2>/dev/null)"
+        | "\(.target)\(ptag)"] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
   fi
   local b
@@ -407,13 +407,13 @@ limit_due() {
     + (if any((.sources // [])[]; .kind == "litellm-team" and .room.capped) then ["gateway"] else [] end)' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
   room_name="$(jq -r '.pick // empty' <<<"${rows:-null}" 2>/dev/null)"
   if [ "${capped:-[]}" != '[]' ]; then
-    jq -r --argjson capped "$capped" --arg room "$room_name" '
+    jq -r --argjson capped "$capped" --arg room "$room_name" "$PANE_TAG_JQ"'
       (.sessions // []) | map((.account // "") as $a
         | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))
       | (.[] | select(.activity == "idle" and $room != "")
-             | "limit: \(.target) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
+             | "limit: \(.target)\(ptag) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
         (.[] | select(.activity == "waiting")
-             | "limit: \(.target) on \(.account), out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"),
+             | "limit: \(.target)\(ptag) on \(.account), out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"),
         (if $room == "" then group_by(.account)[] | select(any(.activity == "idle"))
            | "limit: \(.[0].account) is out of usage and no account has room; then: tell the human once (\(length) live on it), and fleet-shepherd skip it"
          else empty end)' "$STATE_FILE" 2>/dev/null
@@ -426,9 +426,9 @@ limit_due() {
     tmux ${server:+-L "$server"} capture-pane -p -t "$pane" 2>/dev/null \
       | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$re" || continue
     if [ "$account" = gateway ] && [ -n "$room_name" ]; then
-      echo "limit: $target stopped on its gateway budget; then: claude-acct move $target --to $room_name"
+      echo "limit: $target [$pane] stopped on its gateway budget; then: claude-acct move $target --to $room_name"
     else
-      echo "limit: $target stopped on the usage limit"
+      echo "limit: $target [$pane] stopped on the usage limit"
     fi
   done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" '(.sessions // [])[]
     | select((.labels // []) | index("manual") | not)
@@ -863,11 +863,13 @@ cmd_check() {
 }
 
 # due_key <line> -> the line's identity across passes: no `unhandled:` lead, no ledger call, the
-# target's window index replaced by its pane id (`hub/dotfiles:6 [%37]` -> `hub/%37`), minute
+# target's window index replaced by its pane id (`hub/dotfiles:6 [%37]` -> `hub/%37`; every
+# line that names a target carries the tag: nudge, escalate, overdue, limit, pace: parked), minute
 # counts as Nm, and an overdue line's basis dropped: its `(project-median(274) x1.06 (n=1019))`
 # moves whenever a phase closes, so a skip stored under it stopped matching.
 due_key() {
   sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
+          /^pace: parked /s#([^ /,]+/)[^ ,]+ \[(%[0-9]+)\]#\1\2#g
           s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
 }
 
@@ -1187,7 +1189,7 @@ lane_cols() {
   # each one's session alone, since a park file is named <session> or <session>:%<pane>, and a window
   # ledger by the window its target recorded
   clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
-    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
+    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *\[%[0-9]+\]//; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue

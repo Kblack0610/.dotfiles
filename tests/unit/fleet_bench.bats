@@ -4843,16 +4843,16 @@ qstats_fixture() {
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   for s in s1 s2 s3 s4; do echo "{\"session_id\":\"$s\",\"cost_usd\":4,\"class\":{\"size\":\"s\",\"kind\":\"fix\"}}"; done > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"glm","agent":"glm","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
-    echo '{"slug":"b","model":"glm","agent":"glm","status":"failed","sessions":"s2","lane_run":"r2"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","sessions":"s2","lane_run":"r2"}'
     echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent"}'
-    echo '{"slug":"d","model":"glm","agent":"glm","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
+    echo '{"slug":"d","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00) old_iso=$(date -u -d "@$((T0 - 30 * 86400))" +%FT%T+00:00)
   {
-    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"ok\"}"
-    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"redo\"}"
-    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"failed\"}"
+    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"failed\"}"
     # a run with no lane and a full model id is the unrouted claude sonnet pairing, not a row of its own
     echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"ran\":\"claude-sonnet-5-5\",\"outcome\":\"redo\"}"
   } > "$BENCH_LANE_LOG"
@@ -4860,19 +4860,19 @@ qstats_fixture() {
   assert_success
   # c's own lane=agent is the board lane, not model-lane's: with no lane_run it is unrouted
   assert_equal "$(jq -c '[.models[] | [.class, .lane, .harness, .done, .landed]]' <<<"$output")" \
-    '[["fix/s","opus","glm",2,1],["fix/s","sonnet","glm",1,1],["fix/s","unrouted","claude",1,1]]'
+    '[["fix/s","opus","opencode-go",2,1],["fix/s","sonnet","opencode-go",1,1],["fix/s","unrouted","claude",1,1]]'
   by_cl=$output
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane,class --json
   assert_equal "$output" "$by_cl"
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
   assert_success
   assert_line '| Class | Lane | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
-  assert_line '| fix/s | sonnet | glm | glm | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
+  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
   # lane alone keeps redo, counted on the runs of that lane in the window
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
   assert_success
   assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
-    '[["opus","glm",2,1,0,false],["sonnet","glm",1,1,1,false],["unrouted","claude",1,1,1,false]]'
+    '[["opus","opencode-go",2,1,0,false],["sonnet","opencode-go",1,1,1,false],["unrouted","claude",1,1,1,false]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
   assert_line '| Lane | Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
@@ -5737,8 +5737,8 @@ STUB
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
-  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
-  echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
+  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nopencode-go glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
+  echo '{"harnesses":{"codex":{"source":"codex"},"opencode-go":{"source":"go"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" retro
@@ -5747,12 +5747,12 @@ STUB
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol@high)"
   assert_line "fleet-bench: canary: codex/sol@higher not queued, its slug is codex/sol@high's"
-  assert_line "fleet-bench: canary: glm/glm not queued, glm: past its pace line"
+  assert_line "fleet-bench: canary: opencode-go/glm not queued, go: past its pace line"
   assert_line --partial "fleet-bench: canary: ghost/x not queued, ghost has no source"
   [ -f "$CQ/canary-greet-$week-codex-sol.json" ]
   assert_equal "$(jq -r .effort "$CQ/canary-greet-$week-codex-sol-hi.json")" high
-  [ ! -f "$CQ/canary-greet-$week-glm-glm.json" ]
-  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex glm '
+  [ ! -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
+  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex go '
   # no lanes file: retro queues the claude lane alone
   rm "$BENCH_CANARY_LANES" "$CQ"/*.json
   run "$SUBJECT" retro

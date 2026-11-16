@@ -462,7 +462,7 @@ impl Item {
         self.extra_str("agent").unwrap_or(HARNESS_DEFAULT)
     }
 
-    /// The harness and, when the item names one, its model alias: `codex sol`, `opencode glm`.
+    /// The harness and, when the item names one, its model alias: `codex sol`, `opencode-go glm`.
     pub fn harness_label(&self) -> String {
         match said(&self.model) {
             Some(m) => format!("{} {m}", self.harness()),
