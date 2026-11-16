@@ -81,11 +81,14 @@ setup() {
   assert_success
 }
 
-@test "an unwritable textfile is a FAILED pass; outside agentctl no outcome is written" {
-  chmod 0555 "$PROM_TEXTFILE_DIR"
+@test "no sheet read, or no textfile directory, is a FAILED pass; outside agentctl no outcome is written" {
+  rm "$DODGE"
   AGENTCTL_NAME=playtest-feedback AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$PF" publish
-  chmod 0755 "$PROM_TEXTFILE_DIR"
   assert_equal "$(cat "$SANDBOX/astate/playtest-feedback/last-outcome")" FAILED
+  run grep -F 'none of 2 playtest sheets could be read' "$SANDBOX/astate/playtest-feedback/activity.log"
+  assert_success
+  PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=playtest-feedback AGENTCTL_STATE_DIR="$SANDBOX/cstate" run "$PF" publish
+  assert_equal "$(cat "$SANDBOX/cstate/playtest-feedback/last-outcome")" FAILED
   AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$PF" publish
   assert_success
   [ ! -e "$SANDBOX/bstate" ]

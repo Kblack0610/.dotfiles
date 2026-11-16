@@ -139,21 +139,31 @@ steam_page() {
   assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" WORKED
   run grep -E 'outcome=WORKED [0-9]+ apps, 1 unread' "$SANDBOX/astate/store-reviews/activity.log"
   assert_success
-  chmod 0555 "$PROM_TEXTFILE_DIR"
-  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
-  chmod 0755 "$PROM_TEXTFILE_DIR"
+  PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
   assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -F "no textfile directory $SANDBOX/none" "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
   # negative control: outside agentctl nothing is declared
   AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$SR" publish
   [ ! -e "$SANDBOX/bstate" ]
 }
 
-@test "a pass that dies under agentctl is FAILED with its reason, never left to read STALLED" {
+@test "under agentctl a pass that read no app is FAILED, whether none were listed or none answered" {
+  echo '{"trackers": {}}' > "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
+  assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
+  run grep -F 'no store app could be read (0 apps)' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_success
+}
+
+@test "a pass that dies under agentctl is FAILED once with its reason, never left to read STALLED" {
   rm -f "$PROJECT_MAP_FILE"
   AGENTCTL_NAME=store-reviews AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SR" publish
   assert_failure
   assert_equal "$(cat "$SANDBOX/astate/store-reviews/last-outcome")" FAILED
-  run grep -F 'no registry at' "$SANDBOX/astate/store-reviews/activity.log"
+  run grep -c 'outcome=FAILED' "$SANDBOX/astate/store-reviews/activity.log"
+  assert_output 1
+  run grep -F 'could not read the store targets' "$SANDBOX/astate/store-reviews/activity.log"
   assert_success
 }
 

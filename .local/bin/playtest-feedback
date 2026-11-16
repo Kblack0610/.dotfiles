@@ -23,10 +23,7 @@ NOTES="${NOTES_BIN:-notes}"
 # and the author are free text, so either may hold a comma or a parenthesis.
 FEEDBACK_RE='\(playtest .+, .+\)$'
 
-# outcome VERDICT WORDS: under agentctl (the playtest-feedback runner) a pass that declares no
-# outcome is promoted to STALLED, which trips fleet-liveness.
-outcome() { [ -z "${AGENTCTL_NAME:-}" ] || proof_outcome "$AGENTCTL_NAME" "$1" "$2"; }
-die() { echo "playtest-feedback: $*" >&2; outcome FAILED "$*"; exit 2; }
+die() { echo "playtest-feedback: $*" >&2; proof_runner_outcome FAILED "$*"; exit 2; }
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -66,12 +63,18 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  # A sheet that could not be read is in the file (playtest_feedback_up 0); a pass that wrote
-  # nothing, or read no project list, is FAILED.
-  if ! prom_textfile playtest_feedback.prom prom_lines "$doc"; then
-    echo "playtest-feedback: could not write playtest_feedback.prom" >&2
-    outcome FAILED "could not write playtest_feedback.prom"
-  elif [ -n "$err" ]; then outcome FAILED "$err"
-  else outcome WORKED "$(jq -r '"\(.projects | length) projects, \([.projects[] | select(.error)] | length) unread"' <<<"$doc")"; fi
+  # The runner's outcome. A sheet that could not be read is in the file (playtest_feedback_up 0);
+  # a pass that published nothing, read no project list, or read none of its sheets is FAILED.
+  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc")
+  why=""
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile playtest_feedback.prom prom_lines "$doc"; then
+    why="could not write playtest_feedback.prom"
+    echo "playtest-feedback: $why" >&2
+  elif [ -n "$err" ]; then why="$err"
+  elif [ "$n" -gt 0 ] && [ "$unread" = "$n" ]; then why="none of $n playtest sheets could be read"
+  fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
+  else proof_runner_outcome WORKED "$n projects, $unread unread"; fi
 fi
 printf '%s\n' "$doc"

@@ -48,10 +48,12 @@ ASC_PAGE=200
 PLAY_PAGE=100
 PAGES=5
 
-# outcome VERDICT WORDS: under agentctl (the store-reviews runner) a pass that declares no
-# outcome is promoted to STALLED, which trips fleet-liveness.
-outcome() { [ -z "${AGENTCTL_NAME:-}" ] || proof_outcome "$AGENTCTL_NAME" "$1" "$2"; }
-die() { echo "store-reviews: $*" >&2; outcome FAILED "$*"; exit 2; }
+# A die in a $( ) subshell leaves the outcome to its caller's die, so a pass declares once.
+die() {
+  echo "store-reviews: $*" >&2
+  [ "$BASHPID" != "$$" ] || proof_runner_outcome FAILED "$*"
+  exit 2
+}
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 for t in jq curl openssl; do
@@ -211,13 +213,18 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  # An app that could not be read is in the file (store_reviews_up 0 for its store), so a locked
-  # vault on one store is not a failed pass; a pass that wrote nothing is.
-  if prom_textfile store_reviews.prom prom_lines "$doc"; then
-    outcome WORKED "$(jq -r '"\(.apps | length) apps, \([.apps[] | select(.error)] | length) unread"' <<<"$doc")"
-  else
-    echo "store-reviews: could not write store_reviews.prom" >&2
-    outcome FAILED "could not write store_reviews.prom"
+  # The runner's outcome. An app that could not be read is in the file (store_reviews_up 0 for its
+  # store), so a locked vault on one store is not a failed pass; a pass that published nothing or
+  # read no app at all is.
+  read -r n unread < <(jq -r '"\(.apps | length) \([.apps[] | select(.error)] | length)"' <<<"$doc")
+  why=""
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile store_reviews.prom prom_lines "$doc"; then
+    why="could not write store_reviews.prom"
+    echo "store-reviews: $why" >&2
+  elif [ "${unread:-0}" = "${n:-0}" ]; then why="no store app could be read (${n:-0} apps)"
   fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
+  else proof_runner_outcome WORKED "$n apps, $unread unread"; fi
 fi
 printf '%s\n' "$doc"
