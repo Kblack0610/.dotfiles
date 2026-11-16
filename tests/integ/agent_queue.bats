@@ -678,7 +678,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   mv "$SANDBOX/rbw.list.ok" "$SANDBOX/rbw.list"
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = deploy-key ]
-  # rbw ran while the queue lock was held, yet never got its fd: an rbw-agent it starts would hold the lock for good.
+  # A read asks rbw only after it lets the lock go (ar-2427). A writer still asks it under the lock
+  # (start_next reads the holds of the items after the one it closes), and rbw never gets its fd
+  # there either: an rbw-agent it starts would hold the lock for good.
+  [ ! -e "$SANDBOX/rbw.underlock" ]
+  "$AQ" add --project game --running --slug first "first" >/dev/null
+  "$AQ" add --project game --slug second --after first --tags "rbw:trading/manifold-key" "second" >/dev/null
+  "$AQ" move first done --status ok >/dev/null
   [ -s "$SANDBOX/rbw.underlock" ]
   [ ! -e "$SANDBOX/rbw.lockfd" ]
   # Only the read-only verbs ran: never get, unlock or sync.
