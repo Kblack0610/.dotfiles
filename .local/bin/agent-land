@@ -23,7 +23,8 @@
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
-# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior), board (the
+# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
+# a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
@@ -699,7 +700,9 @@ fi
 # merge commit before this one joins them. One recorded with none (its pr= set while it was open, or
 # merged outside agent-land) takes it from gh into prior_oid; one not merged refuses here, before
 # the merge, never after it. Why: private #762 merged and was left off its item, whose public #1794
-# had no merge recorded (2026-11-11).
+# had no merge recorded (2026-11-11). A --partial landing takes one still OPEN: pr: lists
+# both before either merges (move review, --pr-only), and refusing each landing for the other's merge
+# deadlocked them (ar-1267, seen on ar-314 2026-11-09).
 declare -A prior_oid=()
 settle_prior() {
   local refs oids i out
@@ -717,6 +720,7 @@ settle_prior() {
     MERGED) die "queue item $item records ${refs[i]}, which gh reads MERGED with no merge commit: record it (agent-queue set $item merged=<sha>), then re-run" ;;
     CLOSED) die "queue item $item records ${refs[i]}, closed unmerged: drop it from the item's pr: (agent-queue set $item pr=...), then re-run" ;;
     esac
+    [ "$partial" -eq 0 ] || [ "$out" != OPEN ] || continue
     [[ "$out" =~ ^[0-9a-f]{40}$ ]] ||
       die "queue item $item records ${refs[i]}, which is $out: land it first (agent-land ${refs[i]##*#} --repo ${refs[i]%#*} --item $item --partial), then #$pr"
     prior_oid[${refs[i]}]=$out
@@ -793,16 +797,21 @@ case "$done_as" in
       refs[i]=$pr_ref oids[i]=$merged found=1
     else
       [ -n "${oids[i]:-}" ] || oids[i]=${prior_oid[${refs[i]}]:-}
-      [ -n "${oids[i]}" ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
+      [ -n "${oids[i]}" ] || [ "$partial" -eq 1 ] || fail item "no merge recorded for ${refs[i]}; land it before finishing $item"
     fi
   done
   if [ "$found" -eq 0 ]; then refs+=("$pr_ref"); oids+=("$merged"); fi
+  # A ref still open (settle_prior lets a --partial landing pass one) has no merge to list,
+  # and the lists stay in step, so merged: waits empty: the final landing takes each from gh.
+  open=()
+  for i in "${!refs[@]}"; do [ -n "${oids[i]:-}" ] || open+=("${refs[i]}"); done
+  [ "${#open[@]}" -eq 0 ] || { oids=(); open_ref="; merged: waits for ${open[*]}, still open"; }
   marker=''
   [ "$partial" -eq 0 ] || marker=yes
   closing=()
   [ "$partial" -eq 1 ] || closing=("closing_pr=$pr_ref")
   out=$(agent-queue set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
-  credited=$(credit)
+  credited="$(credit)${open_ref:-}"
   if [ "$partial" -eq 0 ]; then
     out=$(agent-queue move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
   fi
