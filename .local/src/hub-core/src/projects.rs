@@ -42,7 +42,7 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
-    /// `only`, `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
     pub prio: String,
     pub version: Option<String>,
     pub goal: String,
@@ -64,9 +64,7 @@ pub struct EpicRollup {
     pub done_weight: u32,
 }
 
-/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low. `only`
-/// (the fleet works on nothing else) is never a step, so a key press cannot turn it on: it is set
-/// by `notes projects --prio <p> --set only`, and one press from it clears it.
+/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low, normal.
 pub fn next_prio(cur: &str) -> &'static str {
     match cur {
         "" => "focus",
@@ -103,7 +101,7 @@ pub fn set_prio(
 ) -> Result<String, String> {
     if !safe_name(profile)
         || !safe_name(name)
-        || !["only", "focus", "high", "low", "normal"].contains(&value)
+        || !["focus", "high", "low", "normal"].contains(&value)
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
@@ -291,7 +289,7 @@ impl crate::table::Row for Card {
     fn rank(&self, col: &str) -> Val {
         match col {
             // `next_prio`'s words, normal being blank, lowest first.
-            "prio" => ["low", "", "high", "focus", "only"]
+            "prio" => ["low", "", "high", "focus"]
                 .iter()
                 .position(|p| *p == self.prio)
                 .map_or(Val::None, |i| Val::Num(i as f64)),
@@ -704,7 +702,6 @@ mod tests {
         assert_eq!(next_prio("focus"), "high");
         assert_eq!(next_prio("high"), "low");
         assert_eq!(next_prio("low"), "normal");
-        assert_eq!(next_prio("only"), "normal");
         let r = Argv(Default::default());
         set_prio(&r, "bnb", "shape-city", "focus").unwrap();
         assert_eq!(

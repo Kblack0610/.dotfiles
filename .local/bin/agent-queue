@@ -400,24 +400,8 @@ cmd_admission() {
 
 # prios_read -> `name<TAB>prio` for every project whose front page declares a `#prio/<word>` (`notes
 # projects --prios`, the one reader of the tag the human sets with `notes projects --prio` or the hub's
-# P key). Nothing when notes cannot answer: no prio is the safe default, it ranks and holds nothing.
+# P key). Nothing when notes cannot answer: no prio is the safe default, it ranks every project the same.
 prios_read() { notes projects --prios 2>/dev/null || true; }
-
-# focus_hold <project> <priority> <tags> -> sets HOLD to `focus: only <projects>` while any project is
-# `#prio/only` and this item's project is not one of them. Exempt, so the fleet still mends itself
-# and still does what the human asked: a `red` item, an urgent one and a `requested` one (the human,
-# 2026-11-07). A listing asks notes and parses its answer once (memo), never once an item.
-focus_only() { prios_read | awk -F '\t' '$2 == "only" { printf "%s%s", (n++ ? " " : ""), $1 }'; }
-focus_hold() {
-  local only MEMO_V
-  memo focus focus_only
-  only=$MEMO_V
-  [ -n "$only" ] || return 0
-  [[ " $only " != *" $1 "* ]] || return 0
-  [ "$2" != urgent ] || return 0
-  [[ " $3 " != *" red "* ]] && ! requested_tag "$3" || return 0
-  HOLD="focus: only $only"
-}
 
 # requested_tag <tags> -> whether the item came from a row the human asked for (#requested; dispatch
 # copies it onto the item as `requested`).
@@ -428,7 +412,7 @@ human_work() { [ "$1" = human ] || requested_tag "$2"; }
 # hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
 hold_reason() {
   local HOLD=""
-  hold_for "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$(fm_get "$1" project)" "$(fm_get "$1" priority)" "$1"
+  hold_for "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$1"
   [ -z "$HOLD" ] || printf '%s\n' "$HOLD"
 }
 
@@ -459,7 +443,7 @@ after_status() {
   fi
 }
 
-# hold_for <after> <tags> [<project> <priority> <file>] -> sets HOLD to hold_reason's answer for these
+# hold_for <after> <tags> [<file>] -> sets HOLD to hold_reason's answer for these
 # header values.
 hold_for() {
   local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
@@ -477,13 +461,11 @@ hold_for() {
       # list and the hub show a dead hold apart from a live one.
       *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
-        [ -z "${5-}" ] || ! human_work "$(fm_get "$5" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
+        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
         return ;;
     esac
   done
   [ -z "$live" ] || { HOLD="after $live"; return; }
-  focus_hold "${3-}" "${4-}" "$tags"
-  [ -z "$HOLD" ] || return 0
   [ -n "$tags" ] || return 0
   # AGENT_QUEUE_NOW is HH:MM (today) or YYYY-MM-DDTHH:MM, local time. printf's clock, not date: a
   # listing asks this for every tagged queued item.
@@ -519,7 +501,7 @@ hold_for() {
       hold:?*)
         memo "$tag" hold_pending "${tag#hold:}"
         [ -z "$MEMO_V" ] || { HOLD="$tag ($MEMO_V)"; return; }
-        [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${5-}"
+        [ -n "${DESK_SCAN-}" ] || desk_wait "${tag#hold:}" "$tags" "${3-}"
         [ -z "$HOLD" ] || return 0 ;;
       rbw:*)
         # A tag edited past check_tags into the wrong shape holds rather than starting before its key.
@@ -567,7 +549,7 @@ desk_head() {
     [[ " $tags " == *" hold:$res "* ]] || continue
     cls="$(desk_class "$tags")"
     [ "$cls" = auth ] && [ -n "$away" ] && continue
-    HOLD=""; hold_for "$(fm_get "$f" after)" "$tags" "$(fm_get "$f" project)" "$(fm_get "$f" priority)"
+    HOLD=""; hold_for "$(fm_get "$f" after)" "$tags"
     [ -z "$HOLD" ] || continue
     rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
     case "$(fm_get "$f" priority)" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
@@ -727,9 +709,8 @@ queue_index() {
 
 # index_load -> fills the caller's index (items_json declares it) from queue_index: QI_LIVE, the
 # slugs with a live item; QI_ST and QI_FIN, each slug's latest done status and finish, the item
-# latest_done picks (finished, then mtime, then path); and by file QI_AFTER, QI_TAGS, QI_FOCUS (project
-# and priority, what a focus hold reads) and, for an item with no weight line, QI_WMETA (project, mode
-# and phases). done/ holds most of the queue, so
+# latest_done picks (finished, then mtime, then path); and by file QI_AFTER, QI_TAGS and, for an
+# item with no weight line, QI_WMETA (project, mode and phases). done/ holds most of the queue, so
 # a listing of active items reads there only the files of the slugs its items wait on.
 index_load() { # <listed file>...
   local f s
@@ -742,9 +723,9 @@ index_load() { # <listed file>...
   [ ${#want[@]} -eq 0 ] || index_rows "$(queue_index done "${!want[@]}")"
 }
 index_rows() { # <queue_index output>
-  local f m slug fin st after tags project mode phases w pr key
+  local f m slug fin st after tags project mode phases w key
   local -A latest=()
-  while IFS=$'\x1f' read -r f m slug fin st after tags project mode phases w pr; do
+  while IFS=$'\x1f' read -r f m slug fin st after tags project mode phases w _; do
     [ -n "$f" ] || continue
     if [ -n "$slug" ]; then
       case "$f" in
@@ -756,7 +737,6 @@ index_rows() { # <queue_index output>
     fi
     [ -z "$after" ] || QI_AFTER[$f]="$after"
     [ -z "$tags" ] || QI_TAGS[$f]="$tags"
-    QI_FOCUS[$f]="$project"$'\x1f'"$pr"
     [ -n "$w" ] || QI_WMETA[$f]="$project"$'\x1f'"$mode"$'\x1f'"$phases"
   done <<<"$1"
 }
@@ -804,15 +784,14 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
     else del(.row) end)'
 
-# item_side <file> <after> <tags> <weight> <project> <mode> <phases> <after's finish> <item's project>
-# <priority> -> the file's
+# item_side <file> <after> <tags> <weight> <project> <mode> <phases> <after's finish> -> the file's
 # entry in ITEM_JQ's side table, from its header values: the hold of a queued item, a weight for an
 # item with no weight line, and the finish of its `after:` item; nothing when all three are empty.
 item_side() {
   local d HOLD="" WEIGHT=""
   case "$1" in
     "$AQ_DIR"/done/*) ;;
-    *) d="${1%/*}"; [ "${d##*/}" != queued ] || hold_for "$2" "$3" "${9-}" "${10-}" "$1" ;;
+    *) d="${1%/*}"; [ "${d##*/}" != queued ] || hold_for "$2" "$3" "$1" ;;
   esac
   [ -n "$4" ] || weight_of "$5" "$6" "$7"
   [ -z "$HOLD$WEIGHT$8" ] || printf '%s\x1f%s\x1f%s\x1f%s\x1e' "$1" "$HOLD" "$WEIGHT" "$8"
@@ -825,18 +804,17 @@ items_json() {
   local filter="$1" f a w p mo ph s afin
   shift
   [ $# -gt 0 ] || { unlock_read; jq -nc "[] | $filter"; return; }
-  local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=() QI_FOCUS=()
-  local LIST_MEMO_ON=1 fp fpr recs
+  local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=()
+  local LIST_MEMO_ON=1 recs
   index_load "$@"
   recs="$(item_recs "$@")"
   unlock_read
   {
     for f in "$@"; do
-      a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" fp="" fpr="" afin=""
+      a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" afin=""
       for s in $a; do [[ "${QI_FIN[$s]-}" < "$afin" ]] || afin="${QI_FIN[$s]-}"; done
       [ -z "${QI_WMETA[$f]+x}" ] || { w=""; IFS=$'\x1f' read -r p mo ph <<<"${QI_WMETA[$f]}"; }
-      [ -z "${QI_FOCUS[$f]+x}" ] || IFS=$'\x1f' read -r fp fpr <<<"${QI_FOCUS[$f]}"
-      item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "$afin" "$fp" "$fpr"
+      item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "$afin"
     done
     printf '\x1d%s' "$recs"
   } | jq -Rsc "$ITEM_JQ | $filter"
@@ -845,35 +823,38 @@ items_json() {
 # item_json <file> -> that item as one JSON object. One item asks the store for its own `after:` items
 # instead of reading the whole queue's index.
 item_json() {
-  local f m slug fin st a tags project mode phases w pr d s fs afin="" recs
-  IFS=$'\x1f' read -r f m slug fin st a tags project mode phases w pr < <(printf '0\t%s\n' "$1" | header_rows)
+  local f m slug fin st a tags project mode phases w d s fs afin="" recs
+  IFS=$'\x1f' read -r f m slug fin st a tags project mode phases w _ < <(printf '0\t%s\n' "$1" | header_rows)
   for s in $a; do
     d="$(latest_done "$s")"; [ -n "$d" ] || continue
     fs="$(fm_get "$d" finished)"; [[ "$fs" < "$afin" ]] || afin="$fs"
   done
   recs="$(item_recs "$1")"
   unlock_read
-  { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin" "$project" "$pr"; printf '\x1d%s' "$recs"; } |
+  { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin"; printf '\x1d%s' "$recs"; } |
     jq -Rsc "$ITEM_JQ | .[]"
 }
 
-# Queue order: a `red` item first (something is broken), then priority, then the project's `#prio`
-# (order_filter), then a `cleanup` item within that, then queued time. The one queue order: every reader (next, list, fleet-dispatch
-# next_items) takes it as is. `after` and other tags hold, not reorder.
-# A red outranks urgent on purpose: the human's rule is that anything broken goes first. The rank
-# sits under priority, so an urgent fix still jumps it, and over cleanup, so a ranked project's work
-# is not queued behind the fleet's own housekeeping (the human: games go first).
+# Queue order: a `red` item first (something is broken), then an urgent one, then the project's `#prio`
+# (order_filter: focus, high, normal, low), then priority, then a `cleanup` item within that, then
+# queued time. The one queue order: every reader (next, list, fleet-dispatch next_items) takes it as
+# is, so a lower tier starts only when no item of a higher one can: a pass takes the first it can
+# place. Nothing is held for a focus (the human, 2026-11-13). `after` and other tags hold, not reorder.
+# A red outranks urgent on purpose: the human's rule is that anything broken goes first. Urgent sits
+# above the project rank, so a row-level #urgent jumps every tier; the rank sits above high, normal
+# and low, so a focus project's work is not queued behind another project's, and above cleanup, so a
+# ranked project's work is not queued behind the fleet's own housekeeping (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  sort_by(untagged("red"), ({"urgent":0,"high":1,"low":2}[.priority] // 1),
-    ($rank[.project // ""] // 2), untagged("cleanup"), .queued)'
+  sort_by(untagged("red"), (.priority != "urgent"), ($rank[.project // ""] // 2),
+    ({"urgent":0,"high":1,"low":2}[.priority] // 1), untagged("cleanup"), .queued)'
 # order_filter -> ORDER with each project's rank bound to $rank, from the `#prio` the human set on
-# its front page (prios_read): only and focus 0, high 1, normal 2, low 3. No prio, or a notes that
-# cannot answer, ranks every project the same.
+# its front page (prios_read): focus 0, high 1, normal 2, low 3. No prio, or a notes that cannot
+# answer, ranks every project the same.
 order_filter() {
   local rank
   rank="$(prios_read | jq -Rsc 'split("\n") | map(select(. != "") | split("\t")
-    | {(.[0]): ({"only": 0, "focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
+    | {(.[0]): ({"focus": 0, "high": 1, "low": 3}[.[1]] // 2)}) | add // {}' 2>/dev/null)" || rank='{}'
   printf '%s as $rank | %s' "$rank" "$ORDER"
 }
 
