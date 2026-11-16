@@ -94,7 +94,7 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_line 'Edit(//etc/fake-cred)'
 }
 
-@test "run from a worktree, the lane may write the git common dir, so git commit works, but nothing there that runs code on a later git" {
+@test "run from a worktree, the lane may write its own git dir and the common dir's objects, refs and logs, so git commit works, and no other git dir, not even one added later" {
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b lane
@@ -102,34 +102,38 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   cd "$SANDBOX/wt"
   SANDBOX_PROFILE=lane lane -p x
   assert_success
-  run jq -c '.sandbox.filesystem.allowWrite' <<<"$(settings)"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
-  assert_output "[\"~/.agent\",\"$common\"]"
-  # The common dir's code paths, the lane's own git dir's, the pointers to a git dir, and the other
-  # worktree's git dir whole; the lane's own git dir (index, HEAD, logs) is not on the list.
+  # Not the common dir whole: its worktrees/ stays read-only, so a worktree another lane adds after
+  # this one starts lands outside every writable path.
+  run jq -r '.sandbox.filesystem.allowWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' '~/.agent' "$common/worktrees/wt" "$common/objects" "$common/refs" "$common/logs")"
+  # Inside that set, what points git at another git dir or runs code; the lane's own index, HEAD and
+  # logs are not on the list.
   run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
-  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" \
-    "$common/worktrees/wt/config.worktree" "$common/worktrees/wt/hooks" "$common/worktrees/wt/commondir" \
-    "$common/modules" "$(pwd -P)/.git" "$common/worktrees/other")"
+  assert_output "$(printf '%s\n' "$common/worktrees/wt/config.worktree" "$common/worktrees/wt/hooks" \
+    "$common/worktrees/wt/commondir" "$(pwd -P)/.git")"
   run jq -r '.permissions.deny[]' <<<"$(settings)"
-  assert_line "Edit(/$common/hooks/**)"
-  assert_line "Edit(/$common/config)"
-  assert_line "Edit(/$common/info/**)"
   assert_line "Edit(/$common/worktrees/wt/config.worktree)"
-  assert_line "Edit(/$common/worktrees/other/**)"
+  assert_line "Edit(/$common/worktrees/wt/commondir)"
+  assert_line "Edit(/$(pwd -P)/.git)"
   refute_line "Edit(/$common/worktrees/wt/**)"
 }
 
-@test "run from a plain clone, the git dir is the common dir: its code paths and every worktree's git dir are denied, and nothing a worktree alone has" {
+@test "run from a plain clone, the git dir is the common dir: writable, minus its code paths and worktrees/ whole, which is made first when missing (control: a worktree's paths are absent)" {
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
-  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/other" -b other
   cd "$SANDBOX/repo"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  [ ! -e "$common/worktrees" ]
   SANDBOX_PROFILE=lane lane -p x
   assert_success
-  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  # A missing deny path is a placeholder file to srt, which would break a git worktree add outside.
+  [ -d "$common/worktrees" ]
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/other" -b other
+  run jq -r '.sandbox.filesystem.allowWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' '~/.agent' "$common")"
   run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
-  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees/other")"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees")"
 }
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
@@ -173,7 +177,7 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_success
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
   run jq -c '[.permissions.blockWritesOutsideWorkingDirectories, .permissions.additionalDirectories]' <<<"$(settings)"
-  assert_output "[true,[\"$HOME/.agent\",\"$common\"]]"
+  assert_output "[true,[\"$HOME/.agent\",\"$common/worktrees/wt\",\"$common/objects\",\"$common/refs\",\"$common/logs\"]]"
 }
 
 @test "outside a repo the writable set is just allowWrite, and a profile with no allowWrite adds no directories" {
