@@ -1615,15 +1615,18 @@ gw_ready() {
 # rework_repo [fix|move] - a clone of o/r whose origin cannot be reached (GIT_SSH_COMMAND=false), so the
 # fetch fails and the refs as they stand are read. "feat: a (#10)" lands at PR 10's merge time;
 # with "fix", a fix 11h later rewrites its line and names #10; with "move", a fix naming #10 only
-# renames the file; without either, a feat rewrites it.
+# renames the file; with "lock", a fix naming #10 only regenerates the pnpm-lock.yaml and Cargo.lock
+# the feat also wrote; without either, a feat rewrites it.
 rework_repo() {
   R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
   git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
   c() { GIT_AUTHOR_DATE="@$1 +0000" GIT_COMMITTER_DATE="@$1 +0000" git -C "$R" -c user.name=t -c user.email=t@t commit -qam "$2"; }
-  printf 'one\n' > "$R/a.sh"; git -C "$R" add a.sh; c 1792371600 "feat: a (#10)"
+  printf 'one\n' > "$R/a.sh"; printf 'one\n' > "$R/pnpm-lock.yaml"; printf 'one\n' > "$R/Cargo.lock"
+  git -C "$R" add a.sh pnpm-lock.yaml Cargo.lock; c 1792371600 "feat: a (#10)"
   FEAT=$(git -C "$R" rev-parse HEAD)
   case "${1:-}" in
     fix) printf 'two\n' > "$R/a.sh"; c 1792411200 "fix: a again, after #10 (#13)" ;;
+    lock) printf 'two\n' > "$R/pnpm-lock.yaml"; printf 'two\n' > "$R/Cargo.lock"; c 1792411200 "fix: bump deps, after #10 (#13)" ;;
     move) git -C "$R" mv a.sh b.sh; c 1792411200 "fix: move a.sh to b.sh, after #10 (#13)" ;;
     *) printf 'two\n' > "$R/a.sh"; c 1792411200 "feat: a grows (#13)" ;;
   esac
@@ -1692,6 +1695,12 @@ rework_repo() {
 
 @test "rework: a fix that only moves a file rewrites no line, so the change is no candidate" {
   rework_repo move
+  "$SUBJECT" run
+  assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
+}
+
+@test "rework: a fix that only regenerates a lockfile rewrites no code line, so the change is no candidate" {
+  rework_repo lock
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
 }

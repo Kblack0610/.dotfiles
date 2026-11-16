@@ -513,7 +513,7 @@ so_pr_index() {
 # --- rework: a fix that rewrote a change's lines soon after it landed (the 2026-11 landscape
 # review's method, after arXiv 2609.26847). A fix is a commit whose subject starts fix, revert or
 # hotfix. Blame at its parent names the commit that last wrote each code line it deleted or
-# changed (.md .json .jsonl .txt are not code). A change a fix rewrote within SO_REWORK_DAYS (7)
+# changed (.md .json .jsonl .txt are not code, nor is a lockfile: pnpm-lock.yaml, *.lock). A change a fix rewrote within SO_REWORK_DAYS (7)
 # is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
 # it, as its PR (#N) or its sha, is VERIFIED. A candidate is a lead, never a defect: a fix often
 # rewrites lines it did not find wrong. The human samples the verified label (`rework --sample`).
@@ -535,7 +535,7 @@ so_rework_fixes() {
            h && /^--- a\// { p = substr($0, 7); next }
            h && /^--- / { p = ""; next }
            /^@@ / { h = 0
-                    if (p == "" || p ~ /[.](md|json|jsonl|txt)$/) next
+                    if (p == "" || p ~ /[.](md|json|jsonl|txt|lock)$/ || p ~ /(^|\/)pnpm-lock[.]yaml$/) next
                     split($2, a, ","); s = substr(a[1], 2); n = (2 in a) ? a[2] : 1
                     if (n > 0) r[p] = r[p] " -L " s "," (s + n - 1) }
            END { for (p in r) print p "\t" r[p] }' |
