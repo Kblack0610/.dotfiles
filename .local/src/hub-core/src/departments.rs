@@ -775,7 +775,10 @@ fn ledger_needs(items: &[Item], now: i64) -> Vec<Need> {
             }),
             ("approved", _) if i.verdict == "hand" => out.push(Need {
                 level: Level::Warn,
-                says: format!("{what} is approved: post it by hand, then: mkt log {} <url>", i.id),
+                says: format!(
+                    "{what} is approved: post it by hand, then: mkt log {} <url>",
+                    i.id
+                ),
             }),
             _ => {}
         }
