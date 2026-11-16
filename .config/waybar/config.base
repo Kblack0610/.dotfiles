@@ -78,8 +78,8 @@
     },
     "custom/bluetooth": {
         "format": "",
-        "tooltip-format": "Bluetooth - Click to open bluetuith",
-        "on-click": "kitty --class floating-term -e bluetuith"
+        "tooltip-format": "Bluetooth - Click to open bluetui",
+        "on-click": "kitty --class floating-term -e bluetui"
     },
     "pulseaudio": {
         "format": "{volume}% {icon} {format_source}",
