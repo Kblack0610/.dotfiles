@@ -801,21 +801,24 @@ item_side() {
   [ -z "$HOLD$WEIGHT$8" ] || printf '%s\x1f%s\x1f%s\x1f%s\x1e' "$1" "$HOLD" "$WEIGHT" "$8"
 }
 
-# items_json <jq filter> <file>... -> these items as one JSON array (ITEM_JQ) through the filter.
+# items_json [--rows] <jq filter> <file>... -> these items as one JSON array (ITEM_JQ) through the filter.
+# --rows derives no hold, weight or ready (no index_load, no item_side): an item carries its header
+# keys, state, file and task alone, for a writer that reads only those (collect_rows).
 # A listing reads every header in the queue once (index_load) and the listed files once
 # (item_recs), and asks each hold once (memo), never a fork per file or per `after:` slug.
 items_json() {
-  local filter="$1" f a w p mo ph s afin
+  local rows="" filter f a w p mo ph s afin
+  [ "$1" != --rows ] || { rows=1; shift; }
+  filter="$1"
   shift
   [ $# -gt 0 ] || { unlock_read; jq -nc "[] | $filter"; return; }
   local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=()
   local LIST_MEMO_ON=1 recs
-  [ -n "${AQ_NO_SIDE-}" ] || index_load "$@"
+  [ -n "$rows" ] || index_load "$@"
   recs="$(item_recs "$@")"
   unlock_read
   {
-    for f in "$@"; do
-      [ -z "${AQ_NO_SIDE-}" ] || break
+    [ -n "$rows" ] || for f in "$@"; do
       a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" afin=""
       for s in $a; do [[ "${QI_FIN[$s]-}" < "$afin" ]] || afin="${QI_FIN[$s]-}"; done
       [ -z "${QI_WMETA[$f]+x}" ] || { w=""; IFS=$'\x1f' read -r p mo ph <<<"${QI_WMETA[$f]}"; }
@@ -890,11 +893,13 @@ list_files() {
 # lock held it takes the shared one for the listing and the read alone (items_json lets it go), so it
 # runs where it reads: a $(...) cannot let go of a lock its parent holds.
 snap_json() {
-  local filter="$1" FILES=()
+  local rows="" filter FILES=()
+  [ "$1" != --rows ] || { rows=--rows; shift; }
+  filter="$1"
   shift
   [ -n "${AQ_HELD-}" ] || lock_read
   list_files "$@"
-  items_json "$filter" "${FILES[@]}"
+  items_json $rows "$filter" "${FILES[@]}"
 }
 
 # collect <states...> [--date D] [--since D] -> a JSON array of items, in queue order.
@@ -903,7 +908,7 @@ collect() { snap_json "$(order_filter)" "$@"; }
 # collect_rows <states...> -> collect for a writer that reads only an item's slug, row and plan
 # under the exclusive lock (link_row, repoint_row, add_plan): no hold, weight, ready or order is
 # derived, which asked gh, rbw and asks for every queued item, about 2.5 s on 611 items (ar-2544).
-collect_rows() { AQ_NO_SIDE=1 snap_json . "$@"; }
+collect_rows() { snap_json --rows . "$@"; }
 
 # header_set <file> <key> <value> -> rewrite the header field in place, atomically.
 header_set() {
