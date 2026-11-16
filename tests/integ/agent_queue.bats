@@ -284,49 +284,40 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
 
-@test "#prio ranks focus and only first, then high, then normal, then low" {
+@test "#prio ranks focus first, then high, then normal, then low" {
   "$AQ" add --project elsewhere --slug a-else "a"
   "$AQ" add --project app --slug b-app "b"
   "$AQ" add --project game --slug c-game "c"
   "$AQ" add --project cockpit --slug d-cockpit "d"
-  printf 'game\thigh\nelsewhere\tlow\ncockpit\tonly\n' > "$NOTES_FIXTURE/prios"
+  printf 'game\thigh\nelsewhere\tlow\ncockpit\tfocus\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
   assert_output $'d-cockpit\nc-game\nb-app\na-else'
 }
 
-@test "while a project is #prio/only, other projects' items hold on focus, but red, urgent and requested ones do not" {
+@test "a focus project's items start before every other project's, under red and urgent, over item priority, and nothing is held" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-red --tags red "b"
   "$AQ" add --project app --slug c-app-urgent --priority urgent "c"
-  "$AQ" add --project app --slug d-app-req --tags requested "d"
-  "$AQ" add --project game --slug e-game "e"
-  # Negative control: no only, nothing holds.
-  run bash -c "'$AQ' list --json | jq -r 'select(.hold) | .slug'"
-  assert_output ''
-  printf 'game\tonly\napp\thigh\n' > "$NOTES_FIXTURE/prios"
-  run bash -c "'$AQ' list --json | jq -r '\"\\(.slug) \\(.hold // \"-\")\"'"
-  assert_output $'b-app-red -\nc-app-urgent -\ne-game -\na-app focus: only game\nd-app-req -'
-  # A lone check (show, start_next) gives the same answer as the listing.
-  run "$AQ" show a-app --json
-  [ "$(jq -r .hold <<<"$output")" = "focus: only game" ]
-  # focus ranks, it never holds.
+  "$AQ" add --project app --slug d-app-high --priority high "d"
+  "$AQ" add --project app --slug e-app-req --tags requested "e"
+  "$AQ" add --project game --slug f-game-low --priority low "f"
+  # Negative control: no focus, the low game item goes last.
+  run bash -c "'$AQ' list --json | jq -r .slug"
+  assert_output $'b-app-red\nc-app-urgent\na-app\nd-app-high\ne-app-req\nf-game-low'
   printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
-  run bash -c "'$AQ' list --json | jq -r 'select(.hold) | .slug'"
-  assert_output ''
+  run bash -c "'$AQ' list --json | jq -r '\"\\(.slug) \\(.hold // \"-\")\"'"
+  assert_output $'b-app-red -\nc-app-urgent -\nf-game-low -\na-app -\nd-app-high -\ne-app-req -'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = b-app-red ]
 }
 
-@test "an after: successor off focus stays queued when its item closes; on focus it starts" {
+@test "an after: successor in a project off focus starts when its item closes" {
   "$AQ" add --project app --slug first --running "a" >/dev/null
   "$AQ" add --project app --slug second --after first "b" >/dev/null
-  printf 'game\tonly\n' > "$NOTES_FIXTURE/prios"
+  printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
   run "$AQ" move first done --status ok
   assert_success
-  assert_not_called 'start --item second'
-  [ -n "$(item queued second)" ]
-  "$AQ" add --project game --slug g1 --running "c" >/dev/null
-  "$AQ" add --project game --slug g2 --after g1 "d" >/dev/null
-  run "$AQ" move g1 done --status ok
-  assert_called 'fleet-dispatch start --item g2'
+  assert_called 'fleet-dispatch start --item second'
 }
 
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {

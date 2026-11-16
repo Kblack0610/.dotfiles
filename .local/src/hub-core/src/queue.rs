@@ -331,7 +331,7 @@ impl Item {
     }
 
     /// What a held item waits on, its kind and object (`after <slug> <slug>`, `ask <id>`, `pr
-    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`, `focus`),
+    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`),
     /// from agent-queue's `hold` line (`hold_for`); None when it is not held.
     pub fn held_on(&self) -> Option<String> {
         let h = said(&self.hold)?;
@@ -357,7 +357,7 @@ impl Item {
                 let t = f.replacen('T', " ", 1);
                 format!("at {}", t.get(5..).filter(|_| t.len() > 10).unwrap_or(&t))
             }
-            ("focus", _) | (_, None) => word.to_string(),
+            (_, None) => word.to_string(),
             (w, Some(f)) => format!("{w} {f}"),
         })
     }
@@ -3091,8 +3091,6 @@ mod tests {
                 "\n",
                 r#"{"slug":"next-phase","state":"queued","priority":"high","hold":"after first-p1 closed cancelled, dead: cancel it","from":"item:x","task":"t"}"#,
                 "\n",
-                r#"{"slug":"focus","state":"queued","priority":"high","hold":"focus: only apociseum binks","from":"canary","task":"t"}"#,
-                "\n",
                 r#"{"slug":"pr","state":"queued","priority":"high","hold":"pr:o/r#7 not merged","task":"t"}"#,
                 "\n",
                 r#"{"slug":"night","state":"queued","priority":"low","hold":"night (01:00-06:00)","task":"t"}"#,
@@ -3150,7 +3148,6 @@ mod tests {
             "wait",
             "later",
             "next-phase",
-            "focus",
             "pr",
             "night",
             "two",
@@ -3167,7 +3164,6 @@ mod tests {
                 "ask pHqQtl",
                 "at 11-13 02:30",
                 "after first-p1",
-                "focus",
                 "pr o/r#7",
                 "night",
                 "after a-p1 b-p2",
@@ -3198,7 +3194,7 @@ mod tests {
         };
         assert_eq!(slugs("hold:after", ""), ["next-phase", "two"]);
         assert_eq!(slugs("from:board priority:urgent", ""), ["first"]);
-        assert_eq!(slugs("", "held").len(), 9);
+        assert_eq!(slugs("", "held").len(), 8);
         assert_eq!(
             slugs("b-p2", ""),
             ["two"],
@@ -3214,7 +3210,7 @@ mod tests {
         let hold: Vec<&str> = facets[3].values.iter().map(|v| v.value.as_str()).collect();
         assert_eq!(
             hold,
-            ["after", "ask", "at", "focus", "hold", "night", "nightly", "pr"],
+            ["after", "ask", "at", "hold", "night", "nightly", "pr"],
             "the kinds, not each object"
         );
     }
