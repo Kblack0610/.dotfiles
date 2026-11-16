@@ -772,9 +772,9 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued fix-menu)" ] || fail "fix-menu left the queue"
 }
 
-@test "focus: the project floor starts a focus project's item, never an off-focus one" {
+@test "focus: the project floor starts a focus project's item first, and the other project only with a floor left" {
   idle_held_machine
-  export DISPATCH_PROJECT_FLOOR=2
+  export DISPATCH_PROJECT_FLOOR=1
   agent-queue add --project app --slug a1 "app work" >/dev/null
   agent-queue add --project game --slug g1 "game work" >/dev/null
   focus_on game
