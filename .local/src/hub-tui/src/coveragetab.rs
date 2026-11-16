@@ -3,10 +3,12 @@
 //! (`Coverage::head`), why a store was not read, then one row per product with each department's
 //! cell toned by its level, and the legend; the shared table keys work, Enter opens the
 //! product's page, Esc clears the view and then goes back to the list. A department tab: what
-//! needs the human (worst first), Legal's checklist, the numbers and the pipelines feeding it.
+//! needs the human (worst first), Marketing's outbound items, Legal's checklist, the numbers and
+//! the pipelines feeding it.
 //! This file reads nothing.
 
 use hub_core::departments::{Cell as DCell, Coverage, Dept, Product};
+use hub_core::reading;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -145,8 +147,8 @@ pub fn page(
     (out, at)
 }
 
-/// One department tab of the product `key`: its head and question, NEEDS YOU, Legal's
-/// CHECKLIST, NUMBERS and PIPELINES. Before the read it says it is reading.
+/// One department tab of the product `key`: its head and question, NEEDS YOU, Marketing's
+/// OUTBOUND, Legal's CHECKLIST, NUMBERS and PIPELINES. Before the read it says it is reading.
 pub fn dept(c: Option<&Coverage>, key: &str, id: &str, p: Palette, w: usize) -> Vec<Line<'static>> {
     let Some(c) = c else {
         return vec![Line::styled("  reading the departments...", p.dim())];
@@ -180,6 +182,9 @@ pub fn dept(c: Option<&Coverage>, key: &str, id: &str, p: Palette, w: usize) -> 
     out.extend(wrapped("  ", d.question, p.dim(), p, w));
     out.push(Line::raw(""));
     needs(&mut out, d, p, w);
+    if d.id == "marketing" {
+        outbound(&mut out, d, p, w);
+    }
     if !d.checks.is_empty() {
         checklist(&mut out, d, p, w);
     }
@@ -199,6 +204,60 @@ fn needs(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
     worst.sort_by_key(|n| n.level);
     for n in worst {
         out.extend(wrapped("  ", &n.says, tone(n.level, p), p, w));
+    }
+    out.push(Line::raw(""));
+}
+
+/// Marketing's OUTBOUND: the ledger's open items and what went out in 30 days, newest first.
+fn outbound(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
+    let sent = d.outbound.iter().filter(|i| i.state == "sent").count();
+    let says = match (d.outbound.is_empty(), d.outbound_says.is_empty()) {
+        (true, false) => d.outbound_says.clone(),
+        (true, true) => "nothing in the ledger".into(),
+        _ => format!("{sent} sent in 30d"),
+    };
+    out.push(sec_head("OUTBOUND", &says, "", p, w));
+    if !d.outbound.is_empty() {
+        let rows = d
+            .outbound
+            .iter()
+            .map(|i| {
+                let style = match i.state {
+                    "sent" => Style::default(),
+                    "review" => p.warn(),
+                    _ => p.dim(),
+                };
+                let review = [i.verdict.as_str(), i.reviewed_by.as_str()]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" by ");
+                vec![
+                    i.sent
+                        .or(i.created)
+                        .map(reading::hm)
+                        .unwrap_or_default()
+                        .into(),
+                    i.channel.clone().into(),
+                    i.title.clone().into(),
+                    dash(&review).into(),
+                    cell(i.state, style),
+                    dash(&i.url).into(),
+                ]
+            })
+            .collect();
+        out.extend(
+            Table {
+                header: vec!["WHEN", "CHANNEL", "ITEM", "REVIEW", "STATE", "URL"],
+                rows,
+                keep: vec![2, 4, 1, 0, 3, 5],
+                flex: Some(2),
+                cap: vec![(2, 32)],
+                ..Default::default()
+            }
+            .fit(w, p.head()),
+        );
     }
     out.push(Line::raw(""));
 }
@@ -323,6 +382,7 @@ fn pipes(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
 pub(crate) mod tests {
     use super::*;
     use hub_core::departments::{Check, Need, Number, Pipe, DEPARTMENTS, GAP, NOT_YET};
+    use hub_core::outbound::Item;
     use hub_core::vocab::Level;
 
     fn row_of(id: &'static str, cell: DCell) -> Dept {
@@ -390,6 +450,28 @@ pub(crate) mod tests {
             value: 12.0,
             says: "12".into(),
         }];
+        let mut marketing = row_of("marketing", DCell::Amber);
+        marketing.outbound = vec![
+            Item {
+                id: "261115-aaaaaa".into(),
+                channel: "reddit".into(),
+                title: "devlog".into(),
+                state: "review",
+                created: Some(1_794_700_000),
+                ..Default::default()
+            },
+            Item {
+                id: "261114-bbbbbb".into(),
+                channel: "bluesky".into(),
+                title: "clip".into(),
+                verdict: "hand".into(),
+                reviewed_by: "human".into(),
+                url: "https://bsky.app/x".into(),
+                state: "sent",
+                sent: Some(1_794_650_000),
+                ..Default::default()
+            },
+        ];
         let garden = Product {
             profile: "personal".into(),
             name: "garden".into(),
@@ -398,7 +480,7 @@ pub(crate) mod tests {
             stage_rank: Some(3),
             depts: vec![
                 analytics,
-                row_of("marketing", DCell::Amber),
+                marketing,
                 legal,
                 row_of("support", DCell::Off),
                 row_of("money", DCell::Off),
@@ -569,6 +651,35 @@ pub(crate) mod tests {
                 "  personal/nope has no legal row in Coverage."
             ]
         );
+    }
+
+    #[test]
+    fn marketing_lists_its_outbound_items_under_needs_and_the_others_do_not() {
+        let p = Palette::default();
+        let c = coverage();
+        let l = dept(Some(&c), "personal/garden", "marketing", p, 80);
+        let t = text(&l);
+        assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
+        let at = at_of(&t, "OUTBOUND");
+        assert_eq!(t[at], "OUTBOUND  1 sent in 30d");
+        assert!(at_of(&t, "NEEDS YOU") < at && at < at_of(&t, "NUMBERS"));
+        let row = |want: &str| t.iter().find(|s| s.contains(want)).cloned().unwrap();
+        assert!(row("devlog").contains("review"), "{t:#?}");
+        assert!(
+            row("clip").contains("hand by human") && row("clip").contains("sent"),
+            "{t:#?}"
+        );
+        let review = t.iter().position(|s| s.contains("devlog")).unwrap();
+        assert!(
+            l[review].spans.iter().any(|s| s.style == p.warn()),
+            "a review waits: amber"
+        );
+
+        // An empty ledger says so, and only Marketing has the section.
+        let t = text(&dept(Some(&c), "bnb/demo", "marketing", p, 80));
+        assert_eq!(t[at_of(&t, "OUTBOUND")], "OUTBOUND  nothing in the ledger");
+        let t = text(&dept(Some(&c), "personal/garden", "legal", p, 80));
+        assert!(!t.iter().any(|s| s.starts_with("OUTBOUND")), "{t:#?}");
     }
 
     fn at_of(t: &[String], want: &str) -> usize {
