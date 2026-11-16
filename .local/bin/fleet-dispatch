@@ -4004,12 +4004,13 @@ cmd_headroom() {
   cores=$(nproc 2>/dev/null || echo 1)
   idle=$(real_idle)
   read -r starts pend < <(pending_load)
-  runnable=$(next_items | grep -c . || true)
-  local idle_projects; idle_projects=$(idle_project_items "$(next_items)" | jq -r .project | sort -u | grep -c . || true)
+  local items; items=$(next_items)
+  runnable=$(grep -c . <<<"$items" || true)
+  local idle_projects; idle_projects=$(idle_project_items "$items" | jq -r .project | sort -u | grep -c . || true)
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   local focus_runnable=0; load_focus
-  [ -z "$FOCUS_PROJECTS" ] || focus_runnable=$(next_items | jq -s --arg f " $FOCUS_PROJECTS " '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
+  [ -z "$FOCUS_PROJECTS" ] || focus_runnable=$(jq -s <<<"$items" --arg f " $FOCUS_PROJECTS " '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
     --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \

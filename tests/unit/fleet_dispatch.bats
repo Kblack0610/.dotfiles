@@ -2624,6 +2624,10 @@ J
   row game agent 'game row' "- [ ] game row $T"
   row app agent 'app row' "- [ ] app row $T"
   row app agent 'app asked' "- [ ] app asked #requested $T"
+  # Negative control: with no focus, every row is a candidate too.
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,game row'
   focus_on game
   run cmd_candidates
   assert_success

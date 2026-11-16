@@ -698,8 +698,8 @@ queue_index() {
 
 # index_load -> fills the caller's index (items_json declares it) from queue_index: QI_LIVE, the
 # slugs with a live item; QI_ST and QI_FIN, each slug's latest done status and finish, the item
-# latest_done picks (finished, then mtime, then path); and by file QI_AFTER, QI_TAGS and, for an item with no weight line, QI_WMETA (project, mode
-# and phases). done/ holds most of the queue, so
+# latest_done picks (finished, then mtime, then path); and by file QI_AFTER, QI_TAGS and, for an
+# item with no weight line, QI_WMETA (project, mode and phases). done/ holds most of the queue, so
 # a listing of active items reads there only the files of the slugs its items wait on.
 index_load() { # <listed file>...
   local f s
