@@ -153,12 +153,12 @@ stage_epic() {
 # file_gaps: the --file mode. It reads this script's own --json, the open epics from `notes
 # projects --stats --json` (the roadmap lists only epics with work in a version, so never a
 # fresh one) and the rows already on the sheets, and writes only through `notes ptask --agent
-# add`, whose twin check holds a concurrent run off an open row. With --json its report lines go to
-# stderr and fd 3 keeps stdout for the one JSON object.
+# add`, whose twin check holds a concurrent run off an open row. With --json it runs with stdout on
+# stderr and writes its one JSON object to $JSON_OUT, never to an fd a child (a detached notes
+# refresh) could hold open under the caller's `$(...)`.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
   local target area text full chk epic title row state declared lane id today seen=""
-  [ -z "$JSON" ] || exec 3>&1 1>&2
   [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
@@ -267,7 +267,7 @@ file_gaps() {
         [$seen | split("\n")[] | select(length > 0)] as $t
         | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
         | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
-        <<<"$check" >&3
+        <<<"$check" > "$JSON_OUT"
     fi
   fi
   local what="#$TARGET"; [ -z "$SYSTEMS" ] && [ -n "$TARGET" ] || what="systems${ONLY:+ $ONLY}"
@@ -329,6 +329,10 @@ sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
 [ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
+if [ -n "$FILE" ] && [ -n "$JSON" ]; then
+  JSON_OUT="$(mktemp)"; (file_gaps) >&2; rc=$?
+  cat "$JSON_OUT"; rm -f "$JSON_OUT"; exit "$rc"
+fi
 [ -z "$FILE" ] || file_gaps
 
 # applies <cell>: the Applies cell names one of TAGS.

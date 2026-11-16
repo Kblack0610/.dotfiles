@@ -1,6 +1,6 @@
 "use strict";
 // Projects' Ladder inner tab (stages.md at a glance): the Gate, Filer and Kinds lines, Projects by
-// stage (/api/stages, each staged project against its next stage, failing first) and the
+// stage (/api/stages, each staged project against its target stage (next), failing first) and the
 // Requirements of every stage (/api/stages/requirements, the doc's own table, read live). The rows
 // and words are hub_core::stages', the ones the hub TUI draws. Each table keeps its own view keys
 // (l and r prefixed) because the list keeps the plain ones. A project row opens its Stage page.
@@ -25,7 +25,7 @@ const ladst = tblTab({
   body: (t) => lBody(t.data),
 });
 
-// A project: its check could not run (red, why on hover), or its next stage's counts. A not-yet row
+// A project: its check could not run (red, why on hover), or its target stage's counts. A not-yet row
 // is a TODO, never a failure; a human row waits on a sign-off.
 function lRow(r) {
   const why = r.error ? `<td class="n bad" title="${esc(r.error)}">${NOT_READ}</td>` :

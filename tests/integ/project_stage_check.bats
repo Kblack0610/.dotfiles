@@ -471,10 +471,16 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_line --regexp '^met +sh-2 +A changelog$'
   assert_output --partial '0 failing, 0 filed, 0 already open, 0 closed or dropped, 1 met and closed'
   assert_called "notes ptask shooter --agent done sh-2 --proof check:project-stage-check shooter PASS $(date +%F)"
-  # --json reads the sheets again after a write (the stub's done ticks nothing, so it stays open).
-  run --separate-stderr "$CHECK" shooter --file --json
+  # --json reads the sheets again after a write: a done that ticks the row counts it closed.
+  mkdir -p "$HOME/bin"
+  printf '#!/usr/bin/env bash\n[ "$1 $3 $4" != "ptask --agent done" ] || sed -i "s/^- \\[ \\]/- [x]/" %q\nexec %q "$@"\n' \
+    "$LAB/agent/README.md" "$(command -v notes)" > "$HOME/bin/notes"; chmod +x "$HOME/bin/notes"
+  parses '- [x] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  PATH="$HOME/bin:$PATH" run --separate-stderr "$CHECK" shooter --file --json
   assert_success
-  jq -e '.fail == 0 and .filed_open == 1 and .filed_closed == 0' <<<"$output"
+  run jq -c '[.fail, .filed_open, .filed_closed]' <<<"$output"
+  assert_output '[0,0,1]'
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
   # NEGATIVE CONTROL: a human-sheet row and a closed row with the same title are never touched.
   : > "$NOTES_FIXTURE/calls.log"
   rm "$LAB/agent/README.md"

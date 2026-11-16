@@ -1,5 +1,5 @@
 //! The Ladder inner tab of Projects, both surfaces: the stage gate, the nightly stage filer and
-//! which row kinds dispatch runs, then where each staged project stands on its next stage, then
+//! which row kinds dispatch runs, then where each staged project stands on its target stage, then
 //! every Requirements row of stages.md. Three stores, each read once here (dashboards rule 8):
 //!
 //! | part         | store |
@@ -35,7 +35,7 @@ pub const TEST: &str = "test";
 pub const HUMAN: &str = "human";
 pub const NOT_YET: &str = "not yet";
 
-/// A project's state words: the check could not run, a row of its next stage fails, or none does.
+/// A project's state words: the check could not run, a row of its target stage fails, or none does.
 pub const NOT_READ: &str = reading::NOT_READ;
 pub const FAILING: &str = "failing";
 pub const MET: &str = "met";
@@ -67,7 +67,8 @@ impl Paths {
     }
 }
 
-/// One staged project on its next stage (prod checks itself), as the nightly pass counted it.
+/// One staged project on its target stage, as the nightly `--file` pass counted it: the stage after
+/// its own, or a later one an open epic raised (prod checks itself). `next` names that target.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -114,7 +115,7 @@ impl Project {
         };
         self.met_says = match self.error {
             Some(_) => NOT_READ.into(),
-            // Nothing checkable on the next stage (every row human or not yet): no count to show.
+            // Nothing checkable on the target stage (every row human or not yet): no count to show.
             None if self.total == 0 => String::new(),
             None => format!("{}/{}", self.met, self.total),
         };
@@ -156,9 +157,9 @@ impl Row for Project {
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             FAILING,
-            "a row of its next stage fails its check; the nightly pass files each as a story",
+            "a row of its target stage fails its check; the nightly pass files each as a story",
         ),
-        (MET, "every row of its next stage that has a check passes"),
+        (MET, "every row of its target stage that has a check passes"),
         (
             NOT_READ,
             "project-stage-check could not run; the opened row says why",
@@ -609,7 +610,7 @@ mod tests {
         assert_eq!(l.projects[0].val("filed"), Val::None);
         assert_eq!(l.projects[0].val("next"), Val::None);
         assert_eq!(l.projects[0].val("failing"), Val::None);
-        // Nothing checkable on the next stage is no count, never a met `0/0`.
+        // Nothing checkable on the target stage is no count, never a met `0/0`.
         let bare = Project {
             name: "bare".into(),
             ..Default::default()

@@ -1,6 +1,6 @@
 //! Projects' Ladder inner tab (stages.md at a glance), built by `hub_core::stages` with the same
 //! rows and words as agent-web's: the Gate, Filer and Kinds lines, Projects by stage (each staged
-//! project against its next stage, failing first) and the Requirements of every stage. `t` moves
+//! project against its target stage, failing first) and the Requirements of every stage. `t` moves
 //! the keys between the two tables, which take the shared table keys; Enter on a project opens
 //! its Stage page, Esc clears the view and then goes back to the list. This file reads nothing.
 
