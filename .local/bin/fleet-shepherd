@@ -1189,7 +1189,7 @@ lane_cols() {
   # each one's session alone, since a park file is named <session> or <session>:%<pane>, and a window
   # ledger by the window its target recorded
   clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
-    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
+    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *\[%[0-9]+\]//; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue

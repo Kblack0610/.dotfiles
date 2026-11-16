@@ -1955,12 +1955,13 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   "$SH" run >/dev/null
   local id; id="$(pass_id)"; live "$id" idle
   aged 1
-  # while it ran it parked lab/q (named on a clear machine) and p and hub:2 (named nowhere)
+  # while it ran it parked lab/q (named on a clear machine, once by session and once as <session>:%<pane> with its target) and p and hub:2 (named nowhere)
   touch "$CLAUDE_ACCT_PARKED_DIR/q" "$CLAUDE_ACCT_PARKED_DIR/p" "$CLAUDE_ACCT_PARKED_DIR/hub:2"
-  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
+  printf "target=lab/q:1\n" > "$CLAUDE_ACCT_PARKED_DIR/z:%9"
+  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1" | .pane = "%9"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
   run "$SH" run
-  assert_output --partial 'pace: parked lab/q:1 while the machine reads CLEAR'
-  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '1\t3')"
+  assert_output --partial 'pace: parked lab/q:1 [%9] while the machine reads CLEAR'
+  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '2\t4')"
 }
 
 # paned <target> <bucket> <pane>: a session row whose fact does not name its target, so only the
