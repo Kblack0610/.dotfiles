@@ -155,7 +155,7 @@ impl Paths {
             skills: home.join(".claude/skills"),
             bin: home.join(".local/bin"),
             ci: crate::schedules::state_path(&home.to_string_lossy()),
-            outbound: crate::outbound::dir(),
+            outbound: crate::boards::outbound_dir(),
             home,
         }
     }
@@ -721,7 +721,7 @@ fn dept(
         || checks.iter().any(|c| c.state == MET)
         || numbers.as_ref().is_some_and(|n| !n.is_empty())
         || !items.is_empty();
-    if required && !fed && !needs.iter().any(|n| n.level != Level::Ok) {
+    if required && !fed && needs.is_empty() {
         needs.push(Need {
             level,
             says: format!(
@@ -731,14 +731,13 @@ fn dept(
             ),
         });
     }
-    // An ok-level need (a fresh review) is listed but colors nothing.
+    // The worst need colors the cell: a Bad need is red, a Warn one (a stale review) amber.
     needs.sort_by_key(|n| n.level);
-    let worst = needs.first().map(|n| n.level);
-    let cell = match (worst, fed) {
+    let cell = match (needs.first().map(|n| n.level), fed) {
         (Some(Level::Bad), _) => Cell::Red,
-        (Some(Level::Warn), _) => Cell::Amber,
-        (_, true) => Cell::Ok,
-        (_, false) => Cell::Off,
+        (Some(_), _) => Cell::Amber,
+        (None, true) => Cell::Ok,
+        (None, false) => Cell::Off,
     };
     let numbers_says = match &numbers {
         None => reading::NOT_READ.to_string(),
@@ -763,8 +762,8 @@ fn dept(
     }
 }
 
-/// What the ledger asks of the human: each draft in review (amber once it has waited
-/// `STALE_DAYS`, listed but uncolored before), and each one approved for a hand post.
+/// What the ledger asks of the human: each draft that has waited `STALE_DAYS` on review (a
+/// fresh one is on Waiting and in Outbound), and each one approved for a hand post.
 fn ledger_needs(items: &[Item], now: i64) -> Vec<Need> {
     let mut out = vec![];
     for i in items {
@@ -773,10 +772,6 @@ fn ledger_needs(items: &[Item], now: i64) -> Vec<Need> {
             ("review", Some(w)) if w >= outbound::STALE_DAYS => out.push(Need {
                 level: Level::Warn,
                 says: format!("{what} has waited {w} days on your review (ask {})", i.ask),
-            }),
-            ("review", _) => out.push(Need {
-                level: Level::Ok,
-                says: format!("{what} waits on your review (ask {})", i.ask),
             }),
             ("approved", _) if i.verdict == "hand" => out.push(Need {
                 level: Level::Warn,
@@ -1289,9 +1284,12 @@ mod tests {
             );
         write(&fresh);
         let m = marketing();
-        assert_eq!(m.cell, Cell::Ok, "a fresh review is listed, not a gap");
-        assert_eq!(m.needs.len(), 1);
-        assert_eq!(m.needs[0].level, Level::Ok);
+        assert_eq!(
+            m.cell,
+            Cell::Ok,
+            "a fresh review feeds Marketing and is not a gap"
+        );
+        assert!(m.needs.is_empty());
         assert_eq!(m.outbound.len(), 1);
 
         let stale = draft("2026-11-05T10:00:00Z", "261105-bbbbbb", "clip")

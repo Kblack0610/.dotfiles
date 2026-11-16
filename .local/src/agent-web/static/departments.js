@@ -52,7 +52,7 @@ const D_PART = {
   "-outbound": (d, sec) => secHead(sec, "Outbound", d.outbound.length ? `${d.outbound.filter((i) => i.state === "sent").length} sent in 30d` : null) + (d.outbound.length
     ? `<div class="panel scroll"><table class="tbl"><tr><th>when</th><th>channel</th><th>kind</th><th data-role="lead">item</th><th>review</th><th data-role="glance">state</th></tr>` +
       d.outbound.map((i) => `<tr><td>${when(i.sent || i.created)}</td><td>${esc(i.channel)}</td><td>${esc(i.kind)}</td>` +
-        `<td class="wrap">${i.url ? tblLink(i.url, i.title) : esc(i.title)} <span class="muted">${esc(i.id)}</span></td>` +
+        `<td class="wrap">${tblLink(i.url, i.title)} <span class="muted">${esc(i.id)}</span></td>` +
         `<td>${pDash([i.verdict, i.reviewed_by].filter(Boolean).join(" by "))}</td>` +
         `<td class="${i.state === "sent" ? "" : i.state === "review" ? "warn" : "muted"}">${esc(i.state)}</td></tr>`).join("") + `</table></div>`
     : `<div class="card muted">${esc(d.outbound_says || "Nothing in the outbound ledger: mkt draft opens an item, mkt log records a hand post.")}</div>`),

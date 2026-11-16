@@ -16,6 +16,8 @@ set -uo pipefail
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 
 LEDGER="${MKT_LEDGER_DIR:-$HOME/.agent/outbound}"
 # The kinds the plan names; a new one is a new word here and in the Marketing tab's docs.
@@ -29,7 +31,6 @@ ID_RE='^[0-9]{6}-[0-9a-f]{6}$'
 
 usage() { sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit "${1:-2}"; }
 die() { echo "mkt: $*" >&2; exit 1; }
-now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # A channel's adapter is a function `post_<channel> <item-json>` that sends the item and prints its
 # public URL. None exists yet, so every channel is posted by hand and logged with `mkt log`.
@@ -45,7 +46,7 @@ append() {
 
 event() { # <event> <id> <jq object of fields> [jq args...]
   local ev="$1" id="$2" obj="$3"; shift 3
-  jq -nc --arg ts "$(now)" --arg ev "$ev" --arg id "$id" "$@" "{ts: \$ts, id: \$id, event: \$ev} + ($obj)"
+  jq -nc --arg ts "$(now_utc)" --arg ev "$ev" --arg id "$id" "$@" "{ts: \$ts, id: \$id, event: \$ev} + ($obj)"
 }
 
 new_id() { printf '%s-%s\n' "$(date -u +%y%m%d)" "$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"; }
@@ -65,10 +66,9 @@ def state: if .sent then "sent" elif .verdict == "skip" then "skipped"
   elif .verdict == "revise" then "revise" elif .verdict then "approved"
   elif .ask then "review" else "draft" end;
 group_by(.id) | map(
-  reduce .[] as $e ({events: []};
+  reduce .[] as $e ({};
     . + ($e | del(.event, .ts))
-    + ({draft: {created: $e.ts}, review: {asked: $e.ts}, verdict: {judged: $e.ts}, sent: {sent: $e.ts}}[$e.event] // {})
-    | .events += [$e.event])
+    + ({draft: {created: $e.ts}, review: {asked: $e.ts}, sent: {sent: $e.ts}}[$e.event] // {}))
   | .state = state)'
 
 items() { # [project]: every item of one project, or of all
@@ -148,7 +148,7 @@ cmd_draft() {
   local ev
   ev="$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, draft: $d, attachments: $at, utm: $u, by: $b}' \
     --arg p "$project" --arg c "$channel" --arg k "$kind" --arg t "$title" --arg d "$dir/$(basename "$file")" \
-    --argjson at "$(printf '%s\n' "${copies[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" \
+    --argjson at "$(jq -nc '$ARGS.positional' --args "${copies[@]}")" \
     --arg u "$(utm "$channel" "$kind" "$project" "$id")" --arg b "$by")"
   append "$project" "$ev"
   if [ "$ask" = 1 ]; then

@@ -1249,7 +1249,7 @@ async fn ask_preview(UrlPath((id, n)): UrlPath<(String, usize)>) -> ApiResult<Re
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
     let (mime, bytes) = tokio::task::spawn_blocking(move || {
-        let ledger = hub_core::outbound::dir();
+        let ledger = hub_core::boards::outbound_dir();
         let (path, mime) = hub_core::outbound::preview(&boards::asks_dir(), &ledger, &id, n)?;
         std::fs::read(&path)
             .map(|b| (mime, b))
@@ -1258,7 +1258,13 @@ async fn ask_preview(UrlPath((id, n)): UrlPath<(String, usize)>) -> ApiResult<Re
     .await
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
-    Ok(([(header::CONTENT_TYPE, mime)], bytes).into_response())
+    // A preview is the ledger's copy and never changes, so the browser keeps it across re-renders.
+    let keep = "private, max-age=86400, immutable";
+    Ok((
+        [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, keep)],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {

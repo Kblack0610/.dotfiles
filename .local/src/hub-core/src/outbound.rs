@@ -25,17 +25,6 @@ const IMAGES: [(&str, &str); 5] = [
     ("webp", "image/webp"),
 ];
 
-/// The ledger dir, where mkt resolves it.
-pub fn dir() -> PathBuf {
-    std::env::var("MKT_LEDGER_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".agent/outbound")
-        })
-}
-
 /// One item, its events folded in file order.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Item {
