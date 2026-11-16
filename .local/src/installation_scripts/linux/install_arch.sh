@@ -218,7 +218,6 @@ install_kubernetes() {
     install_pacman_package "kubectx"      # Context/namespace switcher
     install_pacman_package "k9s"          # Terminal UI
     install_pacman_package "helm"         # Package manager
-    install_pacman_package "sops"         # Decrypts home-config secrets (age key: ~/.config/sops/age/keys.txt)
 
     # k3d (k3s in Docker) - from AUR
     install_aur_package "k3d"
