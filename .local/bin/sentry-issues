@@ -101,7 +101,7 @@ count() {
     total=$((total + len))
     # The next page is the Link entry with rel="next" and results="true"; its cursor goes back as ?cursor=.
     cur="$(grep -i '^link:' "$f.h" 2>/dev/null | tr ',' '\n' | grep 'rel="next"' | grep 'results="true"' \
-      | sed -n 's/.*cursor="\([^"]*\)".*/\1/p' | head -n 1)"
+      | sed -n 's/.*cursor="\([^"]*\)".*/\1/p' | awk 'NR == 1')"
     [ -z "$cur" ] || continue
     # A full page that says nothing about a next one is a missing Link header, not the last page.
     more="$(grep -ci '^link:.*rel="next"; results="false"' "$f.h" 2>/dev/null)"
