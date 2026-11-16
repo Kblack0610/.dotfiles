@@ -181,6 +181,21 @@ EOF
   assert_not_called ssh
 }
 
+@test "a home named by a DHCP name, not the hostname, is home when the name resolves to one of its IPs" {
+  export FLEET_HOST=ws-hostname
+  printf '#!/bin/sh\n[ "$2" = state.lan ] && echo "192.0.2.2       STREAM state.lan"\n' > "$SANDBOX/bin/getent"
+  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.2/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  chmod +x "$SANDBOX/bin/getent" "$SANDBOX/bin/ip"
+  run fleet_is_home
+  assert_success
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.9/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  run fleet_is_home
+  assert_failure
+}
+
 @test "fleet-is-home passes on the home and fails elsewhere naming the home" {
   run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
