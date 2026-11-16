@@ -228,7 +228,6 @@ install_all() {
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private # attach the private overlay (~/.dotfiles-private) on top
     step dotfiles   setup_ai_memory
-
 }
 
 post_install_notes() {

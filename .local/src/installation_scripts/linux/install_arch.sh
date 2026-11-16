@@ -889,7 +889,7 @@ install_all() {
     step dev         install_npm_packages
     step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
-    step dotfiles   setup_ai_memory
+    step dotfiles    setup_ai_memory
 
     # Must come after apply_dotfiles
     step dotfiles    setup_profile

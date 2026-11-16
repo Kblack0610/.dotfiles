@@ -50,9 +50,11 @@ The master device additionally has `backup` → `git@github.com:Kblack0610/.note
 
 ## Desktop bootstrap (Linux + macOS)
 
+On a new machine, the private overlay's `restore-private-state` clones `~/.notes` and runs this for you (installer README, "Private state"). By hand:
+
 ```bash
 NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git \
-~/.dotfiles/.local/bin/notes-bootstrap
+~/.local/bin/notes-bootstrap
 ```
 
 `notes-bootstrap` auto-detects Linux vs macOS and does the right thing:

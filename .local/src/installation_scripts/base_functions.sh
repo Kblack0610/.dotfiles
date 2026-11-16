@@ -521,7 +521,7 @@ setup_ai_memory() {
     local PLANS_LINK="$HOME/.claude/plans"
 
     # Create target directory if it doesn't exist
-    mkdir -p "$PLANS_TARGET"
+    mkdir -p "$PLANS_TARGET" "$HOME/.claude"
 
     # Handle existing plans directory
     if [ -L "$PLANS_LINK" ]; then
