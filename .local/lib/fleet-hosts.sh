@@ -204,7 +204,8 @@ FLEET_FORWARD_ENV="AGENT_QUEUE_ITEM CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_A
 state_forward() {
   [ -z "${AGENT_STATE_LOCAL:-}" ] || return 0
   local to=${AGENT_STATE_HOST:-}
-  [ -n "$to" ] || fleet_is_home || to=$(fleet_state_addr)
+  # One roster read: the same test as fleet_is_home, on the address it already holds.
+  [ -n "$to" ] || { to=$(fleet_state_addr); [ "${to%%.*}" != "$FLEET_HOST" ] || to=; }
   [ -n "$to" ] || return 0
   local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST AGENT_STATE_LOCAL=1) v rc
   shift 2

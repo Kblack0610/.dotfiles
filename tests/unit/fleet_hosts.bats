@@ -181,17 +181,22 @@ EOF
   assert_not_called ssh
 }
 
-@test "fleet-is-home passes on the home, fails elsewhere naming the home, and never fetches" {
-  stub git 'echo "git $*" >> "$NOTES_FIXTURE/calls.log"'
+@test "fleet-is-home passes on the home and fails elsewhere naming the home" {
   run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
   assert_output ''
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 1
   assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state"
-  FLEET_HOST=old-main FLEET_INVENTORY=/nonexistent run "$REPO_ROOT/.local/bin/fleet-is-home"
+}
+
+@test "fleet-is-home reads the roster as last fetched and never fetches it" {
+  home_config_fixture
+  export -f project_repo_path
+  local before; before=$(git -C "$HC" rev-parse forgejo/master)
+  run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
-  assert_not_called 'git fetch'
+  assert_equal "$(git -C "$HC" rev-parse forgejo/master)" "$before"
 }
 
 @test "the singleton units carry the fleet-is-home condition, and so write the store here" {
