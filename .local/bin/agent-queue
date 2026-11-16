@@ -19,15 +19,17 @@
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
 #       only with --points, which adds `points` and the row's current `size`, so a caller that reads neither pays no board read
-#   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] | bump <slug> <priority>
+#   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
+#       work the human asked for (from: human, or a #requested row) cancels from a session or script only
+#       with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
-#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--if <state>]
-#       --why is cancel's: with --status cancelled it records cancelled_by: and cancel_why:, and is refused on any other close
+#   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
+#       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
@@ -413,9 +415,15 @@ focus_hold() {
   [ -n "$only" ] || return 0
   [[ " $only " != *" $1 "* ]] || return 0
   [ "$2" != urgent ] || return 0
-  [[ " $3 " != *" red "* && " $3 " != *" requested "* && " $3 " != *" #requested "* ]] || return 0
+  [[ " $3 " != *" red "* ]] && ! requested_tag "$3" || return 0
   HOLD="focus: only $only"
 }
+
+# requested_tag <tags> -> whether the item came from a row the human asked for (#requested; dispatch
+# copies it onto the item as `requested`).
+requested_tag() { [[ " $1 " == *" requested "* || " $1 " == *" #requested "* ]]; }
+# human_work <from> <tags> -> whether the human asked for this work: added --from human, or a #requested row.
+human_work() { [ "$1" = human ] || requested_tag "$2"; }
 
 # hold_reason <file> -> why a queued item cannot start yet, or nothing when it can.
 hold_reason() {
@@ -467,7 +475,10 @@ hold_for() {
       "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"; return ;;
+      *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"
+        # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
+        [ -z "${5-}" ] || ! human_work "$(fm_get "$5" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
+        return ;;
     esac
   done
   [ -z "$live" ] || { HOLD="after $live"; return; }
@@ -1496,18 +1507,21 @@ close_on() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>]}" f session server window host dest why="" by
+  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>] [--ask <id>]}" f session server window host dest why="" ask="" by
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
-      *) die "usage: agent-queue cancel <slug> [--why <text>]" ;;
+      --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
+      *) die "usage: agent-queue cancel <slug> [--why <text>] [--ask <id>]" ;;
     esac
   done
   cancel_check "$why"
   by="$(cancel_who)"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug" "$why" "$by"; return; }
+  cancel_guard "$f" "$ask"
+  why="$(cancel_why "$why" "$ask")"
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
@@ -1721,6 +1735,29 @@ cancel_check() {
   case "$1" in *$'\n'*) die "--why is one line" ;; esac
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
+# cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
+# without an ask the human answered that names the item: a judge's or shepherd's answer is not their
+# decision, and an answer about other work is not one about this. Any --ask is checked so, since the
+# item records it as the decision. The human at a terminal or the Queue tab's button is not held.
+# 2026-11-12: two cleanups cancelled 220 from: human items, one on an ask the judge answered in 20 s,
+# the other by looping a dead chain.
+cancel_guard() {
+  local slug pend
+  slug="$(fm_get "$1" slug)"
+  if [ -n "$2" ]; then
+    [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
+    pend="$(ask_pending "$2")"
+    [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an ask the human answered"
+    grep -qwF -- "$slug" "$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')" ||
+      die "$slug: ask $2 does not name $slug: --ask names the human's answer about this item"
+    return 0
+  fi
+  [ -n "$(cancel_who)" ] || return 0
+  human_work "$(fm_get "$1" from)" "$(fm_get "$1" tags)" || return 0
+  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an ask naming it that the human answered (agent-ask post), or the human cancels it from a terminal or the Queue tab"
+}
+# cancel_why <why> <ask> -> the reason with the ask that settled it, so the item names the decision.
+cancel_why() { printf '%s' "$1${2:+${1:+ }(ask $2)}"; }
 # cancel_stamp <file> <why> -> cancelled_by: and cancel_why: on the item, the one record of a cancel.
 cancel_stamp() {
   local who; who="$(cancel_who)"
@@ -1734,7 +1771,7 @@ cancel_stamp() {
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
   local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" end="" expect="" why="" f from dest deps run tags
+  local status="" end="" expect="" why="" ask="" f from dest deps run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1742,7 +1779,8 @@ cmd_move() {
       --end) end="${2:?--end needs a reason}"; check_end "$end"; shift 2 ;;
       --if) expect="${2:?--if needs a state}"; shift 2 ;;
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
-      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--why text] [--if state]" ;;
+      --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
+      *) die "usage: agent-queue move <slug> <state> [--status s] [--end reason] [--why text] [--ask id] [--if state]" ;;
     esac
   done
   case "$to" in queued | running | waiting | review | done) ;; *) die "state is queued, running, waiting, review or done, not $to" ;; esac
@@ -1750,12 +1788,13 @@ cmd_move() {
     case "$status" in ok | failed | cancelled) ;; *) die "move to done needs --status ok, failed or cancelled" ;; esac
   fi
   if [ "$to" = done ] && [ "$status" = cancelled ]; then cancel_check "$why"
-  elif [ -n "$why" ]; then die "--why records a cancel: use it with move <slug> done --status cancelled"; fi
+  elif [ -n "$why$ask" ]; then die "--why and --ask record a cancel: use them with move <slug> done --status cancelled"; fi
   [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
     die "$slug has a partial landing; finish with agent-land <N> without --partial before closing it ok"
   fi
