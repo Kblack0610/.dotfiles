@@ -94,21 +94,42 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_line 'Edit(//etc/fake-cred)'
 }
 
-@test "run from a worktree, the lane may write the git common dir, so git commit works, but not its hooks or config" {
+@test "run from a worktree, the lane may write the git common dir, so git commit works, but nothing there that runs code on a later git" {
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b lane
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/other" -b other
   cd "$SANDBOX/wt"
   SANDBOX_PROFILE=lane lane -p x
   assert_success
   run jq -c '.sandbox.filesystem.allowWrite' <<<"$(settings)"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
   assert_output "[\"~/.agent\",\"$common\"]"
-  run jq -c '.sandbox.filesystem.denyWrite' <<<"$(settings)"
-  assert_output "[\"$common/hooks\",\"$common/config\"]"
+  # The common dir's code paths, the lane's own git dir's, the pointers to a git dir, and the other
+  # worktree's git dir whole; the lane's own git dir (index, HEAD, logs) is not on the list.
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" \
+    "$common/worktrees/wt/config.worktree" "$common/worktrees/wt/hooks" "$common/worktrees/wt/commondir" \
+    "$common/modules" "$(pwd -P)/.git" "$common/worktrees/other")"
   run jq -r '.permissions.deny[]' <<<"$(settings)"
   assert_line "Edit(/$common/hooks/**)"
   assert_line "Edit(/$common/config)"
+  assert_line "Edit(/$common/info/**)"
+  assert_line "Edit(/$common/worktrees/wt/config.worktree)"
+  assert_line "Edit(/$common/worktrees/other/**)"
+  refute_line "Edit(/$common/worktrees/wt/**)"
+}
+
+@test "run from a plain clone, the git dir is the common dir: its code paths and every worktree's git dir are denied, and nothing a worktree alone has" {
+  git init -q "$SANDBOX/repo"
+  git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/other" -b other
+  cd "$SANDBOX/repo"
+  SANDBOX_PROFILE=lane lane -p x
+  assert_success
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees/other")"
 }
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
@@ -326,6 +347,11 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   run sandbox_srt_settings
   assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"$SANDBOX/r/.git\",\"/opt/vendor\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
   assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" '[[".","~/.agent"],[]]'
+  # From a linked worktree its .git file, in the writable cwd, is denied: it points git at a git dir.
+  git -C "$SANDBOX/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git -C "$SANDBOX/r" worktree add -q "$SANDBOX/rw" -b lane && cd "$SANDBOX/rw"
+  run sandbox_srt_settings
+  assert_equal "$(jq -c '.filesystem.denyWrite' <<<"$output")" "[\"$(pwd -P)/.git\"]"
   jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null
   jq '.sandbox.filesystem.allowRead = ["rel/path"]' "$SANDBOX_FILE" > "$SANDBOX/bad.json"
   run jq -e "$SANDBOX_SHAPE" "$SANDBOX/bad.json"
