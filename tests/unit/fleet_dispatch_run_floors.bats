@@ -66,6 +66,46 @@ load 'fleet_dispatch/common'
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
 
+# 2026-11-10: four urgent from:human items sat 2h with 11 run units free, the only account 4 points over
+# its weekly pace. The human's rule: limits never cut off their own work.
+@test "human floor: an urgent item from the human starts on an account past its pace alone; a plain, an agent's and a high one do not" {
+  project game beta "$SANDBOX/repos/game"
+  acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug lo --priority high "plain high" >/dev/null
+  agent-queue add --project game --slug ag --priority urgent --from shepherd "agent urgent" >/dev/null
+  # Negative control: nothing from the human is urgent, so the weekly pace holds every item.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+  agent-queue add --project game --slug hu --priority urgent "human urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item hu on the human floor, past the weekly pace'
+  refute_output --partial 'started queue item lo'
+  refute_output --partial 'started queue item ag'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
+@test "human floor lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
+  project game beta "$SANDBOX/repos/game"
+  cpu 5 5 0 90
+  export DISPATCH_RUN_FLOOR=0
+  agent-queue add --project game --slug hu --priority urgent "human urgent" >/dev/null
+  for r in pace,five_hour pace,committed reserve,pace; do
+    acct "alt:$r:/home/u/.claude-personal"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_output --partial 'no account has room; alt is the closest'
+    assert_not_called 'wt new'
+  done
+  acct alt:pace:/home/u/.claude-personal
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over the'
+  assert_not_called 'wt new'
+}
+
 @test "a floor start takes an account with room before a better-ranked one past its pace" {
   game_ready
   export DISPATCH_RUN_FLOOR=2
