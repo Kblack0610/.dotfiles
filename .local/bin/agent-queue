@@ -590,10 +590,12 @@ hold_pending() {
 # rbw-agent's own sync brings a new entry in. Locked, missing or slow rbw (AQ_RBW_TIMEOUT_S, so a hung
 # rbw-agent cannot stall a listing or a dispatch pass) holds, and the list says so. The item that deploys a key
 # is filed with the ask to add it: keys added to rbw for trader on 2026-11-12 sat undeployed until asked.
+# 8>&-: rbw starts rbw-agent when none runs, and a daemon that inherits the queue lock's fd holds the
+# lock for its whole life, so every writer timed out (2026-11-16, the first rbw call after a boot).
 rbw_pending() {
   local out
-  timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" unlocked </dev/null >/dev/null 2>&1 || { echo "rbw locked or missing"; return; }
-  out="$(timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" list --fields folder,name </dev/null 2>/dev/null)" || { echo "rbw list failed"; return; }
+  timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" unlocked </dev/null >/dev/null 2>&1 8>&- || { echo "rbw locked or missing"; return; }
+  out="$(timeout "$AQ_RBW_TIMEOUT_S" "$AQ_RBW" list --fields folder,name </dev/null 2>/dev/null 8>&-)" || { echo "rbw list failed"; return; }
   grep -qxF -- "${1%%/*}"$'\t'"${1#*/}" <<<"$out" || echo "not in rbw yet"
 }
 

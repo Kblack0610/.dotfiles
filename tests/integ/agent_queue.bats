@@ -647,8 +647,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 @test "an rbw: tag holds an item until rbw lists that folder and name, and locked rbw holds it" {
   # A fake rbw: unlocked unless rbw.locked exists, and list prints rbw.list. Never the real one.
-  printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\ncase "$1" in\n  unlocked) [ ! -e "%s/rbw.locked" ] ;;\n  list) cat "%s/rbw.list" ;;\n  *) exit 9 ;;\nesac\n' \
-    "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
+  printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\n[ ! -e /dev/fd/8 ] || echo "rbw $*" >> "%s/rbw.lockfd"\ncase "$1" in\n  unlocked) [ ! -e "%s/rbw.locked" ] ;;\n  list) cat "%s/rbw.list" ;;\n  *) exit 9 ;;\nesac\n' \
+    "$SANDBOX" "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
   chmod +x "$SANDBOX/rbw-fake"
   export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
   printf 'trading\tkalshi-key\nother\tmanifold-key\n' > "$SANDBOX/rbw.list"
@@ -678,6 +678,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   mv "$SANDBOX/rbw.list.ok" "$SANDBOX/rbw.list"
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = deploy-key ]
+  # rbw never gets the queue lock's fd: an rbw-agent it starts would hold the lock for good.
+  [ ! -e "$SANDBOX/rbw.lockfd" ]
   # Only the read-only verbs ran: never get, unlock or sync.
   run grep -cvE '^rbw (unlocked|list --fields folder,name)$' "$SANDBOX/rbw.calls"
   assert_output 0
