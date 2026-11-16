@@ -718,7 +718,8 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -c .filesystem.denyRead <<<"$s")" '["~/","/tmp"]'
   assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX/oc-public\"]"
   jq -e --arg c "$SANDBOX/eval-glm.json" --arg k "$SANDBOX/glm.key" --arg g "$SANDBOX/repos/game/.git" '.filesystem.allowRead | index($c) and index($k) and index($g)' <<<"$s" >/dev/null || fail "config, key or git dir not readable: $s"
-  assert_equal "$(jq -c .filesystem.denyWrite <<<"$s")" '[]'
+  # The checkout's .git sits in the writable cwd (here a plain clone's git dir), so it is denied.
+  assert_equal "$(jq -c .filesystem.denyWrite <<<"$s")" "[\"$SANDBOX/repos/game/.git\"]"
   # The pane line as a shell runs it: a start that fails runs neither the session nor the score, and
   # the score runs its oracle (the code the model wrote) back inside srt, under the cleared env.
   pane="$SANDBOX/pane" && mkdir -p "$pane"
