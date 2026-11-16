@@ -22,10 +22,10 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 1. Pick less: affected-only, and skip heavy jobs on a docs-only change. Why: the cheapest minute is one not run (platform `.github/filters/docs.yml`; dotfiles `fleet_dispatch.bats` picked in 16 of 19 main commits by a name it only stubs).
 2. Cut fixed per-job cost before adding shards. Why: each shard pays setup again; platform measured 4 shards at about 40 billed minutes a run against 26 for 2 (`PIPELINES.md`, 2026-09-24).
 3. Run cheap work first, with a draft tier. Why: most reds show in build, typecheck and unit, so the expensive tier starts only on a PR ready for review (platform `.github/actions/ci-tier`).
-4. Build once and fan out, with one build identity (version, target, flags) every consumer keys on. Why: a build per shard multiplies the slowest step (G2I digest, "Gate shape"; null-cookie-merry-cocke P10).
+4. Build once and fan out, with one build identity (version, target, flags) every consumer keys on. Why: a build per shard multiplies the slowest step (G2I digest, "Gate shape"; null-cookie-merry-cocke P10; dotfiles #2057 built the test image once per content hash and the lint job went from p50 130 s / p90 149 s to 104 s / 121 s, 24h each side, 2026-11-13).
 5. Shard by weights measured from the last main run, never a hand table. Why: a committed weights file drifted until one dotfiles shard ran 514s against 301s predicted (same plan, same run).
 6. Only then add runners or slots, with a measured before and after. Why: capacity costs money every month and hides the first five problems, so a capacity change needs a measured benefit (null-cookie-merry-cocke "Spot and capacity").
-- Every lever ranks deletion first: a change that removes a step, knob or duplicate beats one that adds. Why: global Subtract First; playground rule 13.
+- Every lever ranks deletion first: a change that removes a step, knob or duplicate beats one that adds. Why: global Subtract First; playground rule 13; dotfiles #2086 (clippy off PR runs, shfmt deleted) cut the rust job on PRs that run the crates from p50 272 s to 218 s, while deleting shfmt moved the lint job by about 2 s, inside noise.
 
 ## Gate correctness
 
