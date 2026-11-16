@@ -11,6 +11,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  export FLEET_HOST=state   # this machine is the fixture's fleet_state_host, state.lan; a case that is not sets its own
   cat > "$FLEET_INVENTORY" <<'EOF'
 all:
   vars:
@@ -120,7 +121,7 @@ EOF
   assert_failure
 }
 
-@test "state_forward does nothing without AGENT_STATE_HOST" {
+@test "state_forward does nothing on the fleet home without AGENT_STATE_HOST" {
   run state_forward agent-queue add list
   assert_success
   assert_not_called ssh
@@ -132,7 +133,7 @@ EOF
   run "$REPO_ROOT/.local/bin/agent-queue" set fix-menu pr=12
   assert_success
   assert_output 'set on state'
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
+  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
   # `add` and `retask` read a task from stdin, so those verbs keep it.
@@ -150,8 +151,56 @@ EOF
   run "$REPO_ROOT/.local/bin/agent-ask" list
   assert_failure 255
   assert_output --partial 'the state host state.lan did not answer over ssh; nothing was written'
-  assert_called 'exec env -u AGENT_STATE_HOST agent-ask list  <<none'
+  assert_called 'exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-ask list  <<none'
   [ -z "$(ls -A "$HOME/.agent/asks")" ] || fail "wrote local asks"
+}
+
+@test "a machine that is not the fleet home forwards to the home the roster names, with no AGENT_STATE_HOST" {
+  export FLEET_HOST=old-main
+  echo 'listed on state' > "$NOTES_FIXTURE/ssh.out"
+  run "$REPO_ROOT/.local/bin/agent-queue" list
+  assert_success
+  assert_output 'listed on state'
+  assert_called 'state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-queue list  <<none'
+  [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
+}
+
+@test "a forwarded run never forwards again, even where a stale roster names another home" {
+  export FLEET_HOST=old-main AGENT_STATE_LOCAL=1
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+}
+
+@test "with no roster every machine is home and nothing forwards" {
+  export FLEET_HOST=old-main FLEET_INVENTORY=/nonexistent
+  run fleet_is_home
+  assert_success
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+}
+
+@test "fleet-is-home passes on the home, fails elsewhere naming the home, and never fetches" {
+  stub git 'echo "git $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_success
+  assert_output ''
+  FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_failure 1
+  assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state"
+  FLEET_HOST=old-main FLEET_INVENTORY=/nonexistent run "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_success
+  assert_not_called 'git fetch'
+}
+
+@test "the singleton units carry the fleet-is-home condition, and so write the store here" {
+  for u in fleet-state agent-ask-deliver; do
+    grep -qx 'ExecCondition=%h/.local/bin/fleet-is-home' "$REPO_ROOT/.config/systemd/user/$u.service" ||
+      fail "$u.service has no fleet-is-home ExecCondition"
+    grep -qx 'Environment=AGENT_STATE_LOCAL=1' "$REPO_ROOT/.config/systemd/user/$u.service" ||
+      fail "$u.service does not set AGENT_STATE_LOCAL=1"
+  done
 }
 
 @test "wt new --host opens the session on the worker, detached, with the launch command, and prints its name" {

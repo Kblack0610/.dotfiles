@@ -79,7 +79,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
-  export DISPATCH_HOST=state   # the fixtures' fleet_state_host, state.lan
+  export FLEET_HOST=state   # the fixtures' fleet_state_host, state.lan
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone

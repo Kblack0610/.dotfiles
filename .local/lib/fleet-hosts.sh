@@ -9,12 +9,16 @@
 # sessions on it, wt opens them there, fleet-sessions reads them back. The workstation itself is
 # not in the group: it is where the store lives, and its own limits stay in fleet-dispatch.conf.
 #
-# A session on a worker has AGENT_STATE_HOST set on its launch line. agent-queue and agent-ask
-# call state_forward first, which runs the same command on that host over ssh, so the queue, the
-# asks and their one writer stay on the workstation (agentctl QUEUE.md).
+# The roster's fleet_state_host is the fleet home: the one machine that holds the store and runs
+# the singletons (dispatch, fleet-state, ask delivery, store sync, agent-web). Every other machine
+# forwards: agent-queue and agent-ask call state_forward first, which runs the same command there
+# over ssh, so the queue, the asks and their one writer stay on the home (agentctl QUEUE.md). A
+# session placed on a worker has AGENT_STATE_HOST on its launch line; any other machine that reads
+# the roster forwards to the home it names. fleet-is-home gates the singleton units on fleet_is_home.
 # Runbook: home-config docs/runbooks/fleet-worker.md.
 
 _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+: "${FLEET_HOST:=${HOSTNAME%%.*}}"   # this machine's short name, compared with the roster's fleet_state_host
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
 : "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
 : "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
@@ -146,10 +150,15 @@ PY
   [ -z "$FLEET_HOSTS_JSON" ] || printf '%s\n' "$FLEET_HOSTS_JSON"
 }
 
-# fleet_state_host -> the workstation's short name: the roster's fleet_state_host up to its first
-# dot, empty when no worker names one. It is the one record of which machine holds the store and runs
-# dispatch, so a machine back from an outage reads that it is no longer the workstation.
-fleet_state_host() { fleet_hosts | jq -r '.state_host // empty' 2>/dev/null | grep -m1 . | cut -d. -f1; }
+# fleet_state_addr -> the roster's fleet_state_host as written (the name ssh dials), empty when no
+# worker names one. fleet_state_host -> its short name, up to the first dot. It is the one record of
+# which machine is the fleet home, so a machine back from an outage reads that it no longer is.
+fleet_state_addr() { fleet_hosts | jq -r '.state_host // empty' 2>/dev/null | grep -m1 .; }
+fleet_state_host() { fleet_state_addr | cut -d. -f1; }
+
+# fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or no roster names one
+# (a machine without home-config's checkout, or a fleet of one, keeps everything local).
+fleet_is_home() { local s; s=$(fleet_state_host); [ -z "$s" ] || [ "$s" = "$FLEET_HOST" ]; }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
 fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
@@ -185,17 +194,23 @@ _fh_ssh() {
 # id or tmux socket means nothing on the state host, so TMUX and TMUX_PANE are never sent.
 FLEET_FORWARD_ENV="AGENT_QUEUE_ITEM CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED"
 
-# state_forward <tool> <verbs that read stdin> "$@" -- when AGENT_STATE_HOST is set, run <tool>
-# "$@" on that host and exit with its code; else return, and the tool runs here. The remote run
-# has AGENT_STATE_HOST unset, so it never forwards again. A verb in the list keeps stdin
-# (`agent-queue add` with no task reads it); every other verb runs with none.
+# state_forward <tool> <verbs that read stdin> "$@" -- run <tool> "$@" on the state host and exit
+# with its code: AGENT_STATE_HOST when set, else the roster's fleet home when this machine is not
+# it. Otherwise return, and the tool runs here. AGENT_STATE_LOCAL=1 means this process writes the
+# store here: the remote run has it, so it never forwards again even from a home whose roster is
+# stale, and so do the home's gated units and its dispatch pass, which skip the roster read on each
+# of their many calls. A verb in the list keeps stdin (`agent-queue add` with no task reads it);
+# every other verb runs with none.
 state_forward() {
-  [ -n "${AGENT_STATE_HOST:-}" ] || return 0
-  local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST) v rc
+  [ -z "${AGENT_STATE_LOCAL:-}" ] || return 0
+  local to=${AGENT_STATE_HOST:-}
+  [ -n "$to" ] || fleet_is_home || to=$(fleet_state_addr)
+  [ -n "$to" ] || return 0
+  local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST AGENT_STATE_LOCAL=1) v rc
   shift 2
   for v in $FLEET_FORWARD_ENV; do [ -z "${!v:-}" ] || env+=("$v=${!v}"); done
   local FLEET_SSH_STDIN=0; [[ "$stdin_verbs" != *" ${1:-} "* ]] || FLEET_SSH_STDIN=1
-  _fh_ssh "$AGENT_STATE_HOST" -- "${env[@]}" "$tool" "$@"; rc=$?
-  [ "$rc" -ne 255 ] || echo "$tool: the state host $AGENT_STATE_HOST did not answer over ssh; nothing was written" >&2
+  _fh_ssh "$to" -- "${env[@]}" "$tool" "$@"; rc=$?
+  [ "$rc" -ne 255 ] || echo "$tool: the state host $to did not answer over ssh; nothing was written" >&2
   exit "$rc"
 }

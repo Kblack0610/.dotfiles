@@ -970,14 +970,14 @@ trainee_ready() {
 @test "run: only the inventory's fleet_state_host runs a pass; the old workstation stands down" {
   game_ready
   worker '2.0 16 1'
-  DISPATCH_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial "this machine (old-main) is not the workstation: the inventory's fleet_state_host is state"
+  assert_output --partial "this machine (old-main) is not the fleet home: the inventory's fleet_state_host is state"
   assert_not_called 'wt new'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "a stood-down pass queued an item"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
-  refute_output --partial 'is not the workstation'
+  refute_output --partial 'is not the fleet home'
   assert_output --partial 'would queue: game'
 }
 
