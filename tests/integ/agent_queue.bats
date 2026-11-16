@@ -1817,8 +1817,18 @@ EOF
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask nope
   assert_failure; assert_output --partial "no such ask"
   [ -n "$(item queued mkt-17)" ]
-  # The human's answer lets it go, and the item names the ask.
+  run "$AQ" cancel mkt-17 --ask "h1=a"
+  assert_failure; assert_output --partial "--ask takes an ask id"
+  # The human's answer about other work is not about this item.
+  ask h0 answered a human
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h0
+  assert_failure; assert_output --partial "ask h0 does not name mkt-17"
+  # A conditional move that no longer applies is left alone (exit 3) before the guard reads it.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-17 done --status cancelled --why "x" --if running
+  [ "$status" -eq 3 ]
+  # The human's answer to an ask naming the items lets them go, and the item names the ask.
   ask h1 answered a human
+  echo "question: drop mkt-17, mkt-18? both wait on mkt-16, which you cancelled" >> "$AGENT_ASK_DIR/game/h1.md"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-17.md)"
@@ -1828,6 +1838,8 @@ EOF
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
   # Negative controls: other work cancels from a session with a reason, and --ask is cancel's alone.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel chore --why "dup" --ask nope
+  assert_failure; assert_output --partial "no such ask"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel chore --why "dup"
   assert_success
   run "$AQ" move mkt-19 done --status failed --ask h1

@@ -1736,16 +1736,25 @@ cancel_check() {
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
 # cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
-# without naming an ask the human answered: a judge's or shepherd's answer is not their decision. The
-# human at a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220
-# from: human items, one on an ask the judge answered in 20 s, the other by looping a dead chain.
+# without an ask the human answered that names the item: a judge's or shepherd's answer is not their
+# decision, and an answer about other work is not one about this. Any --ask is checked so, since the
+# item records it as the decision. The human at a terminal or the Queue tab's button is not held.
+# 2026-11-12: two cleanups cancelled 220 from: human items, one on an ask the judge answered in 20 s,
+# the other by looping a dead chain.
 cancel_guard() {
-  local pend
+  local slug pend
+  slug="$(fm_get "$1" slug)"
+  if [ -n "$2" ]; then
+    [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
+    pend="$(ask_pending "$2")"
+    [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an ask the human answered"
+    grep -qwF -- "$slug" "$(compgen -G "$AQ_ASKS/*/$2.md" | head -1)" ||
+      die "$slug: ask $2 does not name $slug: --ask names the human's answer about this item"
+    return 0
+  fi
   [ -n "$(cancel_who)" ] || return 0
   human_work "$(fm_get "$1" from)" "$(fm_get "$1" tags)" || return 0
-  [ -n "$2" ] || die "$(fm_get "$1" slug) is work the human asked for: a session or script cancels it only with --ask <id>, an ask the human answered to drop it (agent-ask post), or the human cancels it from a terminal or the Queue tab"
-  pend="$(ask_pending "$2")"
-  [ -z "$pend" ] || die "$(fm_get "$1" slug) is work the human asked for, and ask $2 is $pend: it cancels only on an ask the human answered"
+  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an ask naming it that the human answered (agent-ask post), or the human cancels it from a terminal or the Queue tab"
 }
 # cancel_why <why> <ask> -> the reason with the ask that settled it, so the item names the decision.
 cancel_why() { printf '%s' "$1${2:+${1:+ }(ask $2)}"; }
@@ -1782,10 +1791,10 @@ cmd_move() {
   elif [ -n "$why$ask" ]; then die "--why and --ask record a cancel: use them with move <slug> done --status cancelled"; fi
   [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
     die "$slug has a partial landing; finish with agent-land <N> without --partial before closing it ok"
   fi
