@@ -19,7 +19,7 @@ The level says how fast the fleet starts work. `mid` is the confs' own numbers. 
 |---|---|---|---|---|
 | `DISPATCH_PER_PASS` | fleet-dispatch | no cap | no cap | no cap |
 | `DISPATCH_NIGHT_MAX` | fleet-dispatch | 3 | 6 | 12 |
-| `DISPATCH_MAX_LOAD`, a core | fleet-dispatch | 0.9 | 1.5 | 2.1 |
+| `DISPATCH_MAX_LOAD`, a core | fleet-dispatch | 0.54 | 0.9 | 1.26 |
 | `CLAUDE_ACCT_PACE_SLACK_PCT`, points past pace | claude-acct room | 1 | 5 | 10 |
 | `CLAUDE_ACCT_RESERVE_PCT`, kept for you | claude-acct room | 13 | 10 | 7 |
 
