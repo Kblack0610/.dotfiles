@@ -1785,6 +1785,106 @@ EOF
   assert_success
 }
 
+# 2026-11-12 (ar-2299): a bulk return by `cancel` left every item after: it dead, and a cleanup then
+# cancelled those one by one, 40 chains lost.
+@test "return sends A back with B after: A: B is returned, not left dead, and both rows are un-started" {
+  "$AQ" add --project game --from shepherd --slug ra "a"
+  "$AQ" add --project game --from shepherd --slug rb --after ra "b"
+  "$AQ" add --project game --from shepherd --slug rc --after rb "c"
+  "$AQ" add --project game --from shepherd --slug rz "unrelated"
+  "$AQ" set ra row=game:gm-1
+  "$AQ" set rb row=game:gm-2
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ra
+  assert_failure; assert_output --partial "says why"
+  [ -n "$(item queued ra)" ]
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ra --why "out of focus"
+  assert_success
+  for s in ra rb rc; do
+    f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-$s.md)"
+    [ "$(field "$f" status)" = cancelled ]
+    [ "$(field "$f" end_reason)" = returned ]
+    [ "$(field "$f" cancel_why)" = "out of focus" ]
+  done
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ra.md)" cancel_cause)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-rb.md)" cancel_cause)" = "returned with ra" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-rc.md)" cancel_cause)" = "returned with ra" ]
+  # nothing is left queued behind a closed item, and the unrelated item is untouched
+  run bash -c "'$AQ' list --json | jq -r '.slug + \" \" + (.hold // \"\")'"
+  assert_output "rz "
+  assert_called "ptask game --agent unstart gm-1"
+  assert_called "ptask game --agent unstart gm-2"
+  assert_called "--action item-cancelled"
+  assert_called "--by sess-9 --why returned: out of focus"
+}
+
+@test "return exits 1 and names the row command when a board row could not be un-started, the return stands" {
+  "$AQ" add --project game --slug ua "a"
+  "$AQ" set ua row=game:gm-5
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\ncase "$*" in *unstart*) exit 1 ;; esac\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" return ua --why "back"
+  assert_failure
+  assert_output --partial "ua is returned, but its board row gm-5 on game was not un-started: notes ptask game --agent unstart gm-5"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ua.md)" end_reason)" = returned ]
+}
+
+@test "return of an item already behind a dead after: keeps that root cause" {
+  "$AQ" add --project game --from shepherd --slug va "a"
+  "$AQ" add --project game --from shepherd --slug vb --after va "b"
+  CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel va --why "set aside"
+  "$AQ" return vb --why "back"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-vb.md)" cancel_cause)" = "after va closed cancelled by sess-1: set aside" ]
+}
+
+@test "negative control: a plain cancel of A still leaves B dead, and cancelling B records A as the cause" {
+  "$AQ" add --project game --from shepherd --slug na "a"
+  "$AQ" add --project game --from shepherd --slug nb --after na "b"
+  "$AQ" add --project game --from shepherd --slug nc --after nb "c"
+  CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel na --why "set aside"
+  run bash -c "'$AQ' show nb --json | jq -r .hold"
+  assert_output --partial "after na closed cancelled, dead"
+  [ -n "$(item queued nb)" ]
+  # the cleanup loop that cancels the dead ones leaves the root cause on each, down the chain
+  CLAUDE_CODE_SESSION_ID=sess-2 "$AQ" cancel nb --why "dead chain"
+  CLAUDE_CODE_SESSION_ID=sess-2 "$AQ" cancel nc --why "dead chain"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nb.md)" cancel_cause)" = "after na closed cancelled by sess-1: set aside" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nc.md)" cancel_cause)" = "after na closed cancelled by sess-1: set aside" ]
+  # a cancel with nothing dead before it records no cause
+  "$AQ" add --project game --slug nd "d"
+  "$AQ" cancel nd
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nd.md)" cancel_cause)" ]
+}
+
+@test "a session returns the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  "$AQ" add --project game --from shepherd --slug ga "a"
+  "$AQ" add --project game --slug gb --after ga "b"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus"
+  assert_failure; assert_output --partial "gb is work the human asked for"
+  [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
+  ask h1 answered a human "ga only"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1
+  assert_failure; assert_output --partial "does not name gb"
+  [ -n "$(item queued ga)" ]
+  ask h2 answered a human "ga gb"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2
+  assert_success
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gb.md)" cancel_why)" = "out of focus (ask h2)" ]
+}
+
+@test "return follows only the items that wait on it, and an item that waits on two returns with either" {
+  "$AQ" add --project game --slug qa "a"
+  "$AQ" add --project game --slug qx "x"
+  "$AQ" add --project game --slug qb --after qa,qx "b"
+  "$AQ" return qa --why "back to the board"
+  [ -n "$(item queued qx)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-qb.md)" end_reason)" = returned ]
+  run "$AQ" return nope --why "x"
+  assert_failure; assert_output --partial "nothing active with slug nope"
+}
+
 # 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
 # the next by looping a dead chain (mkt-17 after mkt-16, then 18, 19, 20).
 @test "a session cancels the human's work only on an ask the human answered; the human and other work are not held" {
