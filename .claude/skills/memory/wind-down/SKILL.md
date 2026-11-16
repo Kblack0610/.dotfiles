@@ -187,9 +187,8 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    `git reset --hard` and `git stash` may both be unavailable (a permission deny-rule; the stash
    stack is shared across worktrees). A denied command is a signal to reach for a different
    mechanism, not to stop: `git checkout <branch>`, `git restore <path>`, and `git checkout -b`
-   are non-destructive and usually permitted. Discarding tool-regenerated churn (Serena's
-   `.serena/project.yml`, theme output) with `git restore` is fine and is often what unblocks a
-   branch switch.
+   are non-destructive and usually permitted. Discarding tool-regenerated churn (theme output) with
+   `git restore` is fine and is often what unblocks a branch switch.
 5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
    RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
    and `agentctl-tmp-gc` (hourly) reclaims the scratchpads of sessions that never wound down.
