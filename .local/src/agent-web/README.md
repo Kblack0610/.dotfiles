@@ -85,7 +85,7 @@ Each hit the key opens rewrites `~/.local/state/agent-web/widget.json` (`at` in 
 |---|---|
 | The widget shows `unauthorized` | The key in the URL is not the one in `widget.token`; copy it again, with no trailing newline in the URL. |
 | A card says NO DATA | That card's reader failed; the error is on the card, and the same card on Home shows it too. |
-| `agent-web-widget-fresh` tripped | No hit with the key in 2 hours: `jq . ~/.local/state/agent-web/widget.json` says when the last one was. Tap the widget; if that writes a new `at`, the app's timer stopped (battery optimization on the widget app is the usual cause), and if it does not, the app gets `unauthorized` or cannot reach the base URL. A healthy widget with a stale file means the write failed: `journalctl --user -u agent-web | grep 'widget hit not recorded'`. |
+| `agent-web-widget-fresh` tripped | No hit with the key in 2 hours: `jq . ~/.local/state/agent-web/widget.json` says when the last one was. Tap the widget; if that writes a new `at`, the app's timer stopped (battery optimization on the widget app is the usual cause), and if it does not, `journalctl --user -u agent-web | grep 'widget refused'` says why: `key does not match` (the app holds an old key, copy the URL again), `no key in the URL` (the URL lost its `?t=`), `no key set on the server` (`widget.token` is missing or empty), and no line at the tap means the app cannot reach the base URL. A healthy widget with a stale file means the write failed: `journalctl --user -u agent-web | grep 'widget hit not recorded'`. |
 
 The two Forgejo calls (token exchange, `GET /api/v1/user`) run through `curl` with the secret on stdin, so no HTTP client library is linked in.
 
