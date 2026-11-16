@@ -676,6 +676,13 @@ outcomes_cli() {
   run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/none.png" 'ship it?'
   assert_failure 2
   assert_output --partial 'no preview file'
+  # a tab in the path would shift every list column after it
+  : >"$SANDBOX/img/a"$'\t'"b.png"
+  run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a"$'\t'"b.png" 'ship it?'
+  assert_failure 2
+  run "$AGENT_ASK" post --project demo --preview
+  assert_failure 2
+  assert_output --partial 'no preview file'
 }
 
 @test "the last three fields are judge_rule, judge_reason and answer_note, for agent-web's Details fold" {

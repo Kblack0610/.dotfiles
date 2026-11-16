@@ -138,3 +138,38 @@ ask_of() { "$MKT" show "$1" | jq -r .ask; }
   run "$MKT" list --project dodge --state draft
   [ -n "$output" ]
 }
+
+@test "a URL inside a request is a revise, a second answer changes nothing, and skip closes the item" {
+  local a b
+  a="$(draft)"; b="$(draft)"
+  "$AGENT_ASK" answer "$(ask_of "$a")" 'cut the second line, see https://example.com/style-guide' >/dev/null
+  "$MKT" answer "$a" "$(ask_of "$a")"
+  [ "$("$MKT" show "$a" | jq -r .state)" = revise ]
+  ! ledger | grep -q '"event":"sent"'
+  "$AGENT_ASK" answer "$(ask_of "$b")" 'posted: https://reddit.com/r/dodge/3' >/dev/null
+  "$MKT" answer "$b" "$(ask_of "$b")"
+  local sent; sent="$("$MKT" show "$b" | jq -r .sent)"
+  # the resume run twice: refused, and the send keeps its first time
+  run "$MKT" answer "$b" "$(ask_of "$b")"
+  assert_failure
+  assert_output --partial 'not in review'
+  [ "$("$MKT" show "$b" | jq -r .sent)" = "$sent" ]
+  [ "$(ledger | grep -c '"event":"sent"')" = 1 ]
+  "$MKT" skip "$a" --by kenneth
+  [ "$("$MKT" show "$a" | jq -r '.state + " " + .reviewed_by')" = 'skipped kenneth' ]
+  run "$MKT" skip "$b"
+  assert_failure
+  assert_output --partial 'already sent'
+}
+
+@test "draft refuses two files with one name, and a long title still fits the ask's question" {
+  mkdir -p "$SANDBOX/work/b"; printf 'png' > "$SANDBOX/work/b/shot.png"
+  run draft --attach "$SANDBOX/work/shot.png" --attach "$SANDBOX/work/b/shot.png"
+  assert_failure
+  assert_output --partial 'two files are named shot.png'
+  [ ! -d "$MKT_LEDGER_DIR/dodge" ]
+  run --separate-stderr "$MKT" draft --project dodge --channel some-very-long-channel-name --kind screenshots \
+    --title "$(printf 't%.0s' {1..80})" "$SANDBOX/work/devlog.md"
+  assert_success
+  [ "$("$MKT" show "$output" | jq -r .state)" = review ]
+}

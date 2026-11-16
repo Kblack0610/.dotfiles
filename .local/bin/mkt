@@ -9,6 +9,7 @@
 #   mkt log --project P --channel C --kind K --title T [--by who] [--reviewed-by who] <url>
 #                                a new item sent outside `mkt draft` (store-console, a store push)
 #   mkt post <id> [--dry-run]    send an item its reviewer answered `post` on, through its adapter
+#   mkt skip <id> [--by who]     close an item that will not go out (a revise redrafted, a stale draft)
 #   mkt list [--project P] [--state S] [--json]   the items, newest first
 #   mkt show <id>                one item as JSON
 set -uo pipefail
@@ -28,6 +29,8 @@ TITLE_MAX=80
 # How much of the draft the ask's context carries; the rest is in the copied file.
 DRAFT_CTX_MAX=1500
 ID_RE='^[0-9]{6}-[0-9a-f]{6}$'
+# An answer with a URL and at most this many other words ("posted:", "done, here") is a hand send.
+HAND_WORDS_MAX=2
 
 usage() { sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit "${1:-2}"; }
 die() { echo "mkt: $*" >&2; exit 1; }
@@ -107,7 +110,10 @@ ask_review() {
   local text
   text="$(tr '\n' ' ' < "$draft" | tr -s ' ' | cut -c1-"$DRAFT_CTX_MAX")"
   local ctx="Outbound review: an agent drafted this $kind for $project to go out on $channel, and your answer is recorded in the outbound ledger (the record of everything we send) as item $id.${previews[*]:+ The images attached to it are shown above the answers.} Its title: $title. Draft file: $draft. The draft says: $text"
-  local q="Send the $kind \"$title\" on $channel for $project?"
+  # The title gives way so the question fits agent-ask's cap; the full title is in the context.
+  local q="Send the $kind \"\" on $channel for $project?"
+  local room=$(( ${AGENT_ASK_QUESTION_MAX:-150} - ${#q} ))
+  q="Send the $kind \"${title:0:$(( room > 0 ? room : 0 ))}\" on $channel for $project?"
   local ask
   # The ask belongs to the item, not to the session that drafted it: the answer goes to `mkt
   # answer` through its resume, so no session id or tmux session is recorded on it.
@@ -136,7 +142,13 @@ cmd_draft() {
   [ -n "$project" ] && [ -n "$channel" ] && [ -n "$kind" ] && [ -n "$file" ] || usage
   [ -f "$file" ] || die "no draft file $file"
   project="$(canon_project "$project")" || exit 1; check_kind "$kind"; check_channel "$channel"
-  local a; for a in "${attach[@]}"; do [ -f "$a" ] || die "no attachment $a"; done
+  # Every file is copied flat into the item's dir, so two with one name would overwrite each other.
+  local a names=" $(basename "$file") "
+  for a in "${attach[@]}"; do
+    [ -f "$a" ] || die "no attachment $a"
+    [[ "$names" != *" $(basename "$a") "* ]] || die "two files are named $(basename "$a"); rename one"
+    names+="$(basename "$a") "
+  done
   [ -n "$title" ] || title="$(grep -m1 -v '^[[:space:]]*$' "$file" | sed -E 's/^#+[[:space:]]*//')"
   title="$(tr -d '\t\n' <<<"$title" | cut -c1-"$TITLE_MAX")"
   [ -n "$title" ] || die "the draft is empty; give --title"
@@ -165,21 +177,26 @@ cmd_answer() {
   local id="${1:-}" ask="${2:-}"
   [ -n "$id" ] && [ -n "$ask" ] || usage
   local project; project="$(project_of "$id")" || exit 1
+  local state; state="$(item "$id" | jq -r .state)"
+  # A second run of the resume must not move the send or overwrite a hand log.
+  [ "$state" = review ] || die "$id is $state, not in review; its answer is already recorded"
   local file answer by names
   file="$(agent-ask show "$ask")" || die "no ask $ask"
   answer="$(sed -n '/^answer: /{s///p;q;}' <<<"$file")"
   by="$(sed -n '/^answered_by: /{s///p;q;}' <<<"$file")"
   [ -n "$answer" ] || die "ask $ask has no answer yet"
   names="$(agent-ask answer-names "$ask")"
-  local url verdict
+  local url verdict words
   url="$(url_in "$answer")"
+  # "posted: <url>" is a hand send; a URL inside a longer request ("see <url>") is a revise.
+  words="$(wc -w <<<"${answer//"$url"/}")"
   if grep -qx skip <<<"$names"; then verdict=skip
   elif grep -qx post <<<"$names"; then verdict=post
-  elif grep -qx hand <<<"$names" || [ -n "$url" ]; then verdict=hand
+  elif grep -qx hand <<<"$names" || { [ -n "$url" ] && [ "$words" -le "$HAND_WORDS_MAX" ]; }; then verdict=hand
   else verdict=revise
   fi
   append "$project" "$(event verdict "$id" '{verdict: $v, reviewed_by: $b, note: $n}' --arg v "$verdict" --arg b "${by:-human}" --arg n "$answer")"
-  if [ -n "$url" ] && [ "$verdict" != skip ]; then
+  if [ -n "$url" ] && [ "$verdict" = hand ]; then
     append "$project" "$(event sent "$id" '{url: $u, by: $b}' --arg u "$url" --arg b "${by:-human}")"
   elif [ "$verdict" = post ]; then
     cmd_post "$id"
@@ -254,6 +271,16 @@ cmd_list() {
   jq -r '.[] | [.id, .project, .channel, .kind, .state, (.url // .ask // ""), .title] | @tsv' <<<"$out"
 }
 
+cmd_skip() {
+  local id="${1:-}" by="human"
+  [ "${2:-}" = --by ] && by="${3:-human}"
+  [ -n "$id" ] || usage
+  local project; project="$(project_of "$id")" || exit 1
+  local state; state="$(item "$id" | jq -r .state)"
+  [ "$state" != sent ] || die "$id is already sent"
+  append "$project" "$(event verdict "$id" '{verdict: "skip", reviewed_by: $b}' --arg b "$by")"
+}
+
 cmd_show() { [ -n "${1:-}" ] || usage; item "$1" | jq .; }
 
 command -v jq >/dev/null || die "jq is required"
@@ -263,6 +290,7 @@ case "$cmd" in
   answer) cmd_answer "$@" ;;
   log) cmd_log "$@" ;;
   post) cmd_post "$@" ;;
+  skip) cmd_skip "$@" ;;
   list) cmd_list "$@" ;;
   show) cmd_show "$@" ;;
   -h|--help|help) usage 0 ;;
