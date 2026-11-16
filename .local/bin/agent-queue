@@ -428,10 +428,13 @@ hold_reason() {
 # (items_json) set LIST_MEMO_ON: a cache that lives for one listing, so a listing asks each hold
 # and each project's weight once. Without one it just runs the command, so a check after a
 # move never reads a stale answer. Sets a variable, not stdout, so the cache survives the call.
+# 8>&-: a check runs gh, rbw, agent-ask or agent-hold under the queue lock, and a daemon one of them
+# starts (rbw-agent) would inherit the lock's fd and hold the lock for its whole life, so every
+# writer timed out (2026-11-16, the first rbw call after a boot).
 memo() {
   local k="$1"; shift
-  if [ -z "${LIST_MEMO_ON-}" ]; then MEMO_V="$("$@")"; return; fi
-  [ -n "${LIST_MEMO[$k]+x}" ] || LIST_MEMO[$k]="$("$@")"
+  if [ -z "${LIST_MEMO_ON-}" ]; then MEMO_V="$("$@" 8>&-)"; return; fi
+  [ -n "${LIST_MEMO[$k]+x}" ] || LIST_MEMO[$k]="$("$@" 8>&-)"
   MEMO_V="${LIST_MEMO[$k]}"
 }
 

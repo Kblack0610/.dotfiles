@@ -1475,15 +1475,48 @@ real_notes_board() {
     'running|yes|o/p#1794 o/r#42|abcdef0123456789abcdef0123456789abcdef01 fedcba9876543210fedcba9876543210fedcba98'
 }
 
-@test "an earlier PR that is not merged refuses before the merge, leaving the PR and item untouched" {
+@test "an earlier PR that is not merged refuses a final landing before the merge, leaving the PR and item untouched" {
   agent-queue set ship pr=o/p#1794 >/dev/null
-  run "$LAND" 42 --item ship --partial
+  run "$LAND" 42 --item ship
   assert_failure 2
   assert_output --partial 'queue item ship records o/p#1794, which is OPEN: land it first (agent-land 1794 --repo o/p --item ship --partial), then #42'
   run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
   assert_failure
   run agent-queue show ship --json
   assert_equal "$(jq -r '[.state, .pr, (.merged // ""), (.partial // "")] | join("|")' <<<"$output")" 'running|o/p#1794||'
+}
+
+@test "an item whose pr: lists two open PRs lands one --partial, then the other closes it with both merges" {
+  # NEGATIVE CONTROL: before ar-1267 the --partial landing refused "o/p#43, which is OPEN: land it first
+  # (... --partial)", and so did the other, so neither could land (ar-314, 2026-11-09).
+  agent-queue set ship 'pr=o/r#42 o/p#43' >/dev/null
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line --partial 'item: ship partial with pr:o/r#42'
+  assert_line --partial '; merged: waits for o/p#43, still open, left open for the final landing'
+  # merged: cannot list #42 beside an open #43 and stay in step, so it waits empty for the final landing.
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
+  [ -z "$(board_calls)" ] || fail 'partial landing closed the row'
+  # A re-run of the partial landing (now MERGED) leaves the same record.
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
+  # The final landing reads #42's merge from gh and records both, in step.
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 43 --item ship
+  assert_success
+  assert_line 'landed #43'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, (.partial // ""), .pr, .merged, .closing_pr] | join("|")' <<<"$output")" \
+    'done||o/r#42 o/p#43|abcdef0123456789abcdef0123456789abcdef01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|o/p#43'
+  run board_calls
+  assert_output --partial 'done ship it --proof pr:o/p#43'
 }
 
 @test "an earlier PR closed unmerged, or lists out of step, refuse before the merge with the way out" {
