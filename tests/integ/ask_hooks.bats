@@ -85,6 +85,21 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: answered'
 }
 
+@test "/wind-down closing the window leaves the session's asks pending" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=set it up|b=retire it' "phone widget?")"
+  # 2026-11-16 fleet-shepherd typed this into a finished window and it cancelled the ask unseen.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/wind-down auto"}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/wind-down"}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":" /wind-down\nauto"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # Negative control: another slash command still takes the ask off the list.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/wind-downs"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: cancelled'
+}
+
 @test "a prompt a /loop or cron fired before is not the human answering, in either form" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "dispatch is starting nothing; lift the gate?")"
