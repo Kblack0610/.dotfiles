@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{bail, Context, Result};
 
@@ -141,20 +142,9 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         }
 
         let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        let (mut summary, mode, plan_slug) = if jsonl_path.exists() {
-            let info = jsonl::row_info(&jsonl_path);
-            (info.summary, info.mode, info.plan_slug)
-        } else {
-            (String::new(), jsonl::Mode::Other, String::new())
-        };
-        // Prefer Claude's pane title (the live session title) over the JSONL
-        // "say:" text; the row glyph already conveys status.
-        if !pane.title.is_empty() {
-            let cleaned = render::strip_title_glyph(&pane.title);
-            if !cleaned.is_empty() {
-                summary = cleaned;
-            }
-        }
+        // Claude's pane title (the live session title) wins over the JSONL "say:" text filled in
+        // below; the row glyph already conveys status.
+        let summary = render::strip_title_glyph(&pane.title);
 
         let project = render::project_from_path(&pane.current_path);
         let repo_full = render::basename(&pane.current_path).to_string();
@@ -175,8 +165,8 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
-            mode,
-            plan_slug,
+            mode: jsonl::Mode::Other,
+            plan_slug: String::new(),
             ask: asking.get(&sess.session_id).cloned(),
             started_at: sess.started_at.map(|ms| ms / 1000),
             server: pane.server.clone(),
@@ -190,6 +180,16 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             rollout: None,
             last_active: None,
         });
+    }
+    // Side by side, since each transcript is read whole (par_map).
+    let infos = par_map(&agents, |a| a.jsonl.as_deref().map(jsonl::row_info));
+    for (a, info) in agents.iter_mut().zip(infos) {
+        let Some(info) = info else { continue };
+        if a.summary.is_empty() {
+            a.summary = info.summary;
+        }
+        a.mode = info.mode;
+        a.plan_slug = info.plan_slug;
     }
     // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
     for (pane, target, xpid) in codex {
@@ -728,18 +728,24 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
     } else {
         collect_read()
     };
-    for a in agents.into_iter().filter(|a| codex || !a.codex) {
-        if !json {
+    let agents: Vec<Agent> = agents.into_iter().filter(|a| codex || !a.codex).collect();
+    if !json {
+        for a in &agents {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
-            continue;
         }
-        let (info, mtime) = match &a.jsonl {
-            Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
-            None => (
-                jsonl::fleet_info(Path::new("")),
-                mtime_secs(a.rollout.as_deref()),
-            ),
-        };
+        return exit_on_gaps(&gaps);
+    }
+    // Each transcript is read whole, so one after another the reads cost their sum (510 ms for
+    // 46 sessions and 137 MB against 155 ms for the plain list, 2026-11-16, ar-2326); side by
+    // side they cost about the largest one.
+    let facts = par_map(&agents, |a| match &a.jsonl {
+        Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
+        None => (
+            jsonl::fleet_info(Path::new("")),
+            mtime_secs(a.rollout.as_deref()),
+        ),
+    });
+    for (a, (info, mtime)) in agents.iter().zip(facts) {
         let idle_since = idle_since(info.last_entry, mtime, a.started_at);
         let row = serde_json::json!({
             "target": a.target,
@@ -777,14 +783,57 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
         });
         println!("{row}");
     }
+    exit_on_gaps(&gaps)
+}
+
+/// A read with gaps names each on stderr and exits 3, after the rows it could print.
+fn exit_on_gaps(gaps: &Gaps) -> Result<()> {
     if gaps.is_empty() {
         return Ok(());
     }
     let _ = std::io::Write::flush(&mut std::io::stdout()); // a reader gone (EPIPE) still gets the 3
-    for g in &gaps {
+    for g in gaps {
         eprintln!("agent-panel: incomplete read: {g}");
     }
     std::process::exit(3)
+}
+
+/// `f` over `items` on up to one thread per core, results in `items`' order. A panic in `f`
+/// panics the caller, as it would in a plain map.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut out: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+    std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(i) else {
+                            return done;
+                        };
+                        done.push((i, f(item)));
+                    }
+                })
+            })
+            .collect();
+        for w in workers {
+            let done = w.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+            for (i, r) in done {
+                out[i] = Some(r);
+            }
+        }
+    });
+    out.into_iter()
+        .map(|r| r.expect("every index was taken"))
+        .collect()
 }
 
 /// A file's mtime in epoch seconds; 0 for none or an unreadable one.
@@ -913,6 +962,17 @@ fn lookup(map_file: &Path, target: &str) -> render::Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn par_map_keeps_the_input_order_past_one_item_per_core() {
+        let n = std::thread::available_parallelism().map_or(1, |n| n.get()) * 3 + 1;
+        let items: Vec<usize> = (0..n).collect();
+        assert_eq!(
+            par_map(&items, |i| i * 2),
+            (0..n).map(|i| i * 2).collect::<Vec<_>>()
+        );
+        assert_eq!(par_map(&[] as &[usize], |i| *i), Vec::<usize>::new());
+    }
 
     #[test]
     fn a_rollout_name_gives_its_thread_id_and_nothing_else_does() {
