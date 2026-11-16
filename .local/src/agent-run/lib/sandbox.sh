@@ -91,38 +91,39 @@ sandbox_git_linked() {
 
 # sandbox_git_writes <common> <own> -> one path per line, nothing outside a repo: the git paths a lane
 # may write. From a linked worktree, its own git dir (index, HEAD, its reflog) and the common dir's
-# objects, refs and logs, which commit, fetch and push write; the rest of the common dir stays
-# read-only, worktrees/ with it, so a worktree another lane adds after this one starts is never
-# writable (a deny list could not name it: srt takes concrete paths only). From a plain clone, the git
-# dir is the common dir, whole.
+# objects, refs, logs and lfs, which commit, fetch, push and git-lfs write; the rest of the common
+# dir stays read-only, worktrees/ with it, so a worktree another lane adds after this one starts is
+# never writable (a deny list could not name it: srt takes concrete paths only). From a plain clone,
+# the git dir is the common dir, whole. srt skips a write path that does not exist yet.
 sandbox_git_writes() {
   local common="$1" own="$2"
   [ -n "$common" ] || return 0
   if sandbox_git_linked "$common" "$own"; then
-    printf '%s\n' "$own" "$common/objects" "$common/refs" "$common/logs"
+    printf '%s\n' "$own" "$common/objects" "$common/refs" "$common/logs" "$common/lfs"
   else
     printf '%s\n' "$common"
   fi
 }
 
-# sandbox_git_denies <common> <own> -> one path per line, nothing outside a repo: what inside
-# sandbox_git_writes would run code or point git elsewhere on a later git run there, sandboxed or
-# not. From a linked worktree, its own git dir's config.worktree, hooks and commondir, and the
-# checkout's .git file. From a plain clone, the common dir's hooks, config, config.worktree (read once
-# extensions.worktreeConfig is on) and info (info/attributes picks filter, diff and merge drivers),
-# and worktrees/ whole, made first when missing: srt denies a missing path with a placeholder file,
-# which would break a `git worktree add` run outside while the lane runs. Any other missing path is
-# denied too, so the lane cannot create it.
+# sandbox_git_denies <common> <own> -> one path per line, nothing outside a repo: what would run code
+# or point git elsewhere on a later git run, sandboxed or not. The common dir's hooks, config,
+# config.worktree (read once extensions.worktreeConfig is on) and info (info/attributes picks filter,
+# diff and merge drivers): outside sandbox_git_writes from a worktree, but denied anyway, in case the
+# profile's allowWrite reaches them. From a linked worktree, its own git dir's config.worktree, hooks
+# and commondir, and the checkout's .git file. From a plain clone, worktrees/ whole, made first when
+# missing (so this creates an empty .git/worktrees): srt denies a missing path with a placeholder
+# file, which would break a `git worktree add` run outside while the lane runs, so one mkdir cannot
+# make is left off. Any other missing path is denied too, so the lane cannot create it.
 sandbox_git_denies() {
   local common="$1" own="$2" top
   [ -n "$common" ] || return 0
+  printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info"
   if sandbox_git_linked "$common" "$own"; then
     printf '%s\n' "$own/config.worktree" "$own/hooks" "$own/commondir"
     top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     [ -n "$top" ] && [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
   else
-    mkdir -p "$common/worktrees" 2>/dev/null || true
-    printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees"
+    mkdir -p "$common/worktrees" 2>/dev/null && printf '%s\n' "$common/worktrees"
   fi
   return 0
 }

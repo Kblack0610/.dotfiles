@@ -168,6 +168,8 @@ check ok     "sandbox: git branch and reflog"       sb git branch lane-side
 check denied "sandbox: plant a hook in the common dir"  sb touch "$common/hooks/post-commit"
 check denied "sandbox: set git config in the common dir" sb git config core.fsmonitor /tmp/x
 check ok     "control: set git config unsandboxed"     git config core.fsmonitor false
+check denied "sandbox: pick a filter driver in info/attributes" lands_in "$common/info/attributes" redirect
+check denied "sandbox: write its own config.worktree"  lands_in "$common/worktrees/wt/config.worktree" redirect
 check denied "sandbox: redirect its own commondir"    lands_in "$common/worktrees/wt/commondir" redirect
 check denied "sandbox: redirect the other worktree's commondir (added after the settings)" lands_in "$late/commondir" redirect
 check denied "sandbox: plant a hook for the later worktree" sb sh -c 'mkdir -p "$1/hooks" && touch "$1/hooks/post-checkout"' _ "$late"
