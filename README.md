@@ -147,6 +147,8 @@ The Claude rules and the Codex `AGENTS.md` are deliberately kept in sync via the
 qmk setup kblack0610/qmk_firmware -H ~/src/qmk_firmware
 ```
 
+To type on an external keyboard set on top of the laptop, turn the laptop keyboard off with `laptop-kbd off` (`laptop-kbd on` brings it back): [docs/laptop-keyboard.md](docs/laptop-keyboard.md).
+
 ## Filesystem conventions
 
 - `~/.bin` — apps
