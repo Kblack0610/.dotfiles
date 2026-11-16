@@ -38,6 +38,7 @@ pub mod links;
 pub mod machine_page;
 pub mod machines;
 pub mod money;
+pub mod outbound;
 pub mod outbox;
 pub mod outcomes;
 pub mod page;

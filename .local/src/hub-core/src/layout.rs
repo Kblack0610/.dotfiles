@@ -472,6 +472,7 @@ pub const PROJECT_PAGE: [Inner; 10] = [
         title: "Marketing",
         sections: &[
             "p-marketing-needs",
+            "p-marketing-outbound",
             "p-marketing-numbers",
             "p-marketing-pipes",
         ],
@@ -998,6 +999,7 @@ mod tests {
         assert_eq!(at("build"), Some("deliverables"));
         assert_eq!(at("p-build"), Some("deliverables"));
         assert_eq!(at("p-legal-checks"), Some("legal"));
+        assert_eq!(at("p-marketing-outbound"), Some("marketing"));
         assert_eq!(at("nope"), None);
         let mut all: Vec<&str> = PROJECT_PAGE
             .iter()

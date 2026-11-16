@@ -184,9 +184,11 @@ _fh_ssh() {
   while [ $# -gt 0 ] && [ "$1" != -- ]; do opts+=("$1"); shift; done
   shift
   [ "${FLEET_SSH_STDIN:-0}" != 1 ] || n=''
-  # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
+  # -T: a forwarded call never wants a tty; a `RequestTTY yes` in ssh_config otherwise puts a
+  # "Pseudo-terminal will not be allocated" line into every call's output.
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
-  ssh $n -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
+  # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
+  ssh $n -T -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
     'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
 }
 

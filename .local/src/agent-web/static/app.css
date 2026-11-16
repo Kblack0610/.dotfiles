@@ -600,6 +600,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .need .opts { margin-bottom: 8px; }
 /* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
 .actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
+.aprev { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.aprev img { max-width: 100%; max-height: 240px; border: 1px solid var(--line); border-radius: 4px; }
 .aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--fill); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
 .aopt:hover { border-color: var(--accent); }

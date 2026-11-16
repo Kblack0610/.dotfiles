@@ -49,6 +49,13 @@ const D_PART = {
   "-needs": (d, sec) => secHead(sec, "Needs you", d.needs.length, d.needs[0]?.level) + (d.needs.length
     ? `<div class="card">${d.needs.map((n) => `<div class="${n.level === "ok" ? "" : esc(n.level)}">${esc(n.says)}</div>`).join("")}</div>`
     : `<div class="card muted">${d.due_at ? `Nothing; ${esc(d.title)} is due at ${esc(d.due_at)}.` : "Nothing."}</div>`),
+  "-outbound": (d, sec) => secHead(sec, "Outbound", d.outbound.length ? `${d.outbound.filter((i) => i.state === "sent").length} sent in 30d` : null) + (d.outbound.length
+    ? `<div class="panel scroll"><table class="tbl"><tr><th>when</th><th>channel</th><th>kind</th><th data-role="lead">item</th><th>review</th><th data-role="glance">state</th></tr>` +
+      d.outbound.map((i) => `<tr><td>${when(i.sent || i.created)}</td><td>${esc(i.channel)}</td><td>${esc(i.kind)}</td>` +
+        `<td class="wrap">${tblLink(i.url, i.title)} <span class="muted">${esc(i.id)}</span></td>` +
+        `<td>${pDash([i.verdict, i.reviewed_by].filter(Boolean).join(" by "))}</td>` +
+        `<td class="${i.state === "sent" ? "" : i.state === "review" ? "warn" : "muted"}">${esc(i.state)}</td></tr>`).join("") + `</table></div>`
+    : `<div class="card muted">${esc(d.outbound_says || "Nothing in the outbound ledger: mkt draft opens an item, mkt log records a hand post.")}</div>`),
   "-checks": (d, sec) => secHead(sec, "Checklist", d.checks.length ? `${d.checks.filter((c) => c.state === "ok").length} of ${d.checks.length}` : null) + (d.checks.length
     ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">item</th><th data-role="glance">state</th><th>says</th><th>evidence</th></tr>` +
       d.checks.map((c) => `<tr><td>${esc(c.item)}</td><td class="${levelClass(c.level) || (c.state === "ok" ? "" : "muted")}">${esc(c.state)}</td>` +
