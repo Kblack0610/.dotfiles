@@ -91,17 +91,28 @@ fleet_roster_fetch() {
 # reflog cannot say: a fetch that finds nothing new writes no entry.
 _fh_stamp() { git -C "$1" rev-parse --path-format=absolute --git-path fleet-roster-fetched 2>/dev/null; }
 
+# _fh_stale <stamp> -> rc 0 when the stamp is FLEET_ROSTER_MAX_SECS old or more, or missing.
+_fh_stale() {
+  local last; last=$(date -r "$1" +%s 2>/dev/null || echo 0)
+  [ $(($(date +%s) - last)) -ge "$FLEET_ROSTER_MAX_SECS" ]
+}
+
 # fleet_roster_fresh <checkout>: fetch the roster when its last fetch is FLEET_ROSTER_MAX_SECS old or
-# more. The attempt is claimed on the stamp first, set to come due again FLEET_ROSTER_RETRY_SECS on,
-# so a forge that is down costs one fetch a minute, not one a call; a reader that cannot write the
-# stamp (a sandboxed lane) never fetches and reads the ref as it is.
+# more. One reader fetches under a lock beside the stamp; the others wait for it and read what it
+# fetched, so units that start together at boot all see the new home. A failed fetch sets the stamp
+# to come due again FLEET_ROSTER_RETRY_SECS on, so a forge that is down costs one fetch a minute,
+# not one a call, and the roster reads as last fetched. A reader that cannot write the lock (a
+# sandboxed lane) never fetches and reads the ref as it is.
 fleet_roster_fresh() {
-  local stamp now last
-  stamp=$(_fh_stamp "$1") && [ -n "$stamp" ] || return 0
-  now=$(date +%s); last=$(date -r "$stamp" +%s 2>/dev/null || echo 0)
-  [ $((now - last)) -ge "$FLEET_ROSTER_MAX_SECS" ] || return 0
-  touch -d "@$((now - FLEET_ROSTER_MAX_SECS + FLEET_ROSTER_RETRY_SECS))" "$stamp" 2>/dev/null || return 0
-  fleet_roster_fetch || true
+  local stamp; stamp=$(_fh_stamp "$1") && [ -n "$stamp" ] || return 0
+  _fh_stale "$stamp" || return 0
+  { : >>"$stamp.lock"; } 2>/dev/null || return 0
+  {
+    flock -w "$((FLEET_FETCH_SECS + 5))" 9 && _fh_stale "$stamp" || return 0
+    fleet_roster_fetch && return 0
+    touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS + FLEET_ROSTER_RETRY_SECS))" "$stamp" 2>/dev/null
+    return 0
+  } 9>>"$stamp.lock"
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:

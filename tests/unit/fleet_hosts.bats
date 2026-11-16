@@ -222,9 +222,10 @@ EOF
   roster_names state.lan
   run fleet_roster_fetch
   assert_success
+  local stale; stale=$(git -C "$HC" rev-parse forgejo/master)
+  assert_equal "$(git -C "$HC" show "$stale:ansible/inventory.yml" | grep -c 'fleet_state_host: state.lan')" 1
   roster_names razer-laptop.lan   # merged on the forge while this machine was off
   touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
-  assert_equal "$(git -C "$HC" show forgejo/master:ansible/inventory.yml | grep -c 'fleet_state_host: state.lan')" 1
   run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 1
   assert_equal "$stderr" "fleet-is-home: state is not the fleet home; the inventory's fleet_state_host is razer-laptop"
@@ -233,12 +234,35 @@ EOF
   echo 'listed on razer' > "$NOTES_FIXTURE/ssh.out"
   jq -n --arg hc "$HC" '{paths: {($hc): "home-config"}}' > "$SANDBOX/map.json"   # agent-queue resolves home-config itself
   touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
-  git -C "$HC" update-ref refs/remotes/forgejo/master forgejo/master@{1}   # stale again, naming this machine
+  git -C "$HC" update-ref refs/remotes/forgejo/master "$stale"   # stale again, naming this machine
   PROJECT_MAP_FILE="$SANDBOX/map.json" run "$REPO_ROOT/.local/bin/agent-queue" list
   assert_success
   assert_output 'listed on razer'
   assert_called 'razer-laptop.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-queue list  <<none'
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
+}
+
+@test "a reader that comes while another fetches the stale roster waits for it and reads the home it fetched" {
+  home_config_fixture
+  stub getent 'exit 2'
+  roster_names state.lan
+  fleet_roster_fetch
+  roster_names razer-laptop.lan
+  local stamp; stamp=$(_fh_stamp "$HC")
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$stamp"
+  mkfifo "$SANDBOX/held" "$SANDBOX/go" "$SANDBOX/at-lock"
+  local real; real=$(command -v flock)
+  # The first reader holds the lock and fetches only once the second has reached the lock.
+  ( exec 9>>"$stamp.lock"; "$real" 9; echo held > "$SANDBOX/held"; read -r _ < "$SANDBOX/go"; fleet_roster_fetch ) &
+  read -r _ < "$SANDBOX/held"
+  stub flock "echo at-lock > '$SANDBOX/at-lock'; exec '$real' \"\$@\""
+  ( unset FLEET_HOSTS_JSON; fleet_state_host > "$SANDBOX/second" ) &
+  local second=$!
+  read -r _ < "$SANDBOX/at-lock"
+  echo go > "$SANDBOX/go"
+  wait "$second"
+  wait
+  assert_equal "$(cat "$SANDBOX/second")" razer-laptop
 }
 
 @test "a stale roster whose fetch fails is read as it is, and fetched again only after FLEET_ROSTER_RETRY_SECS" {
