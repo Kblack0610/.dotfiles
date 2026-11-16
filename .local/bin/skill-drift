@@ -473,6 +473,8 @@ check_paths() {
     orig="$p"
     case "$p" in
       *'...'*) continue ;;
+      # ~/Library is the macOS home tree: on any other host it names the agent machine's files.
+      '~/Library/'*|'$HOME/Library/'*) [ "$(uname -s)" = Darwin ] || continue ;;
       # A placeholder or brace list: only the concrete directory before it is
       # checkable (`~/.openclaw/{a,b}` names a dead ~/.openclaw).
       *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*)
@@ -487,9 +489,10 @@ check_paths() {
     p="${p%/}"
     [ -e "$p" ] || spaced_path_exists "$f" "$orig" || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
+    # A path right after a colon is another host's, scp style (`mini:~/.config/x`).
     grep -v 'skill-drift: ignore' "$f" \
-      | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?@-]*[A-Za-z0-9._>}*?@-]' \
-      | sort -u
+      | grep -oE '(^|[^:])(~|\$HOME)/[A-Za-z0-9._~/<>{}*?@-]*[A-Za-z0-9._>}*?@-]' \
+      | sed -E 's/^[^~$]//' | sort -u
   )
   return 0
 }

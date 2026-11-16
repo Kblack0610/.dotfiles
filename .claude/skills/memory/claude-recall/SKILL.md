@@ -1,7 +1,7 @@
 ---
 name: claude-recall
 description: >-
-  Verbatim search and counts over raw Claude Code transcripts via `claude-recall`. Use for "what did we decide about X", "find the session where we debugged Y", "what do I keep asking for", "which skills and agents get used", "where do our tokens go". Curated recall is mem0-ops.
+  Search, count and reopen past Claude Code sessions: `claude-recall` over transcripts, `sessions` to list, resume or compact one. Use for "what did we decide about X", "find the session where we debugged Y", "resume that session", "which skills get used", "where do our tokens go". Curated: mem0-ops.
 metadata:
   category: memory
   tags: [memory, recall, session]
@@ -110,6 +110,23 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 - `reads` counts file reads (Read, or sed, cat, head and tail of a path). `locate_then_read` is a read of lines within 40 of a numbered hit that a grep, rg or Grep in an earlier response of the last 8 calls printed: two round trips where one `rg -n -C 40` could locate and print, priced as the read's own response, the one it would save. A list-only or unnumbered grep, Glob, a hit in another file of the same name or one printed before a write to the file, a name only in the pattern or description, a same-response grep, a whole-file read and a range far from every hit are no pair. `reread_same_lines` is a read of lines this stretch already read with no write to the file between (a non-read-only run resets every non-code file; logs, data and /tmp never count). `hot_target` is files by the responses their reads caused, calls being the sessions that read each. The nightly snapshot keeps the shares as `locate_read_share` and `reread_share`.
 - Read triggers: `read_after_compaction` is the first read in a stretch of a file read before the compaction, `read_after_subagent` the first read in a stretch of a file an Agent report (its result or its task notification) named, `read_rule_doc` a read of a doc a rule tells sessions to read (lessons, ARCHITECTURE.md, plans, planning.md, shepherd orders; `RECALL_RULE_DOC_RE`).
 - Message ids dedupe across files here, so totals differ slightly from `tool-output`.
+
+## Find, resume or compact a session: the session registry
+
+Every session that did real work registers itself, so it can be found and reopened later; `sessions` is the read side.
+
+- **Registry:** `~/.agent/sessions/{project}/sessions.jsonl`, one JSON line per session: `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`, plus `agentctl` (the runner name) on a runner's row and the cost fields when telemetry answered. Upserted by `session_id`; dead-transcript lines self-prune. It is the agent axis, never `~/.notes/inbox`.
+- **Captured** by `~/.claude/hooks/stop-post.d/80-session-register.sh` when a session made at least one file edit or left a dirty git tree, and for every agentctl runner session (`AGENTCTL_NAME` set), read-only or not, because a runner still spends. A read-only session by hand is not captured, on purpose.
+
+```
+sessions list [project] [--all]     # registered sessions, newest first (default: current project)
+sessions resume <id|--pick>         # exec claude-acct run -r <id>, on the account cl would pick
+sessions compact <id|--pick>        # headless claude -p writes ~/.agent/sessions/{project}/<id>-digest.md
+```
+
+- `sessions resume` replaces the current process, so run it only when the user wants to switch into that session; for its content, read `.transcript` from the registry line (or `claude-recall show <id>`), selectively.
+- `sessions compact` spends tokens; run it when asked.
+- An empty `sessions list` means no session that did work was captured in that project yet, or its transcripts were pruned.
 
 ## Notes
 

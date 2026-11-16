@@ -1567,7 +1567,6 @@ VOLATILE = {"output", "data"}
 RULE_DOC = re.compile(os.environ.get("RECALL_RULE_DOC_RE",
                       r"/\.agent/lessons/|/agentctl/ARCHITECTURE\.md$|/\.(?:claude|agent)/plans/"
                       r"|/docs/planning\.md$|/shepherd/orders\.md$"))
-HOME = os.path.expanduser("~")
 
 
 def norm_path(p, cwd):
@@ -1923,7 +1922,7 @@ def tool_calls_file(path, since, until, seen_msgs, emit):
                      if nxt["calls"][0][1] == "Bash" else nxt["calls"][0][1], 1, 0, nxt["ctx"])
         edits += mutated
     for p, ctx in hot.items():  # one per session, so a target's calls are the sessions that read it
-        emit("group", "hot_target", p.replace(HOME, "~", 1), 1, 0, ctx)
+        emit("group", "hot_target", p.replace(str(HOME), "~", 1), 1, 0, ctx)
 
 
 def cmd_tool_calls(a):

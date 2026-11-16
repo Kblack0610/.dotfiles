@@ -77,7 +77,7 @@ keeps it.
 
 ## Projects cheatsheet
 
-This section is the one description of the lab. `~/.notes/lab/README.md`, the `lab-sync` skill and the `notes-system` skill link here instead of restating it.
+This section is the one description of the lab. `~/.notes/lab/README.md`, the `lab-status` skill and the `notes-system` skill link here instead of restating it.
 
 ### The lab tree
 

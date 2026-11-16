@@ -255,7 +255,7 @@ Every pane on it gets SIGHUP, so every conversation there stops. `fleet-dispatch
 | symptom | cause | fix |
 |---|---|---|
 | A whole server dies with SIGSEGV, `coredumpctl` shows `mode_tree_draw` | tmux 3.8 frees the pane under an in-pane prompt: `x y` in `Prefix+w` on the window it was opened from, or `t` then `X y` with that window tagged (tmux issue 5728) | run the patched package, `.local/src/tmux/patched/README.md`; a server is safe only once it has restarted on it |
-| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `session-registry` |
+| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `sessions list` |
 | A restored window sits on a mode other than the one it died in | the mode comes from the transcript's last `permissionMode`, so a change with no turn after it is not seen | shift-tab in the window |
 
 ## Projects and worktrees (`Prefix+f`)
