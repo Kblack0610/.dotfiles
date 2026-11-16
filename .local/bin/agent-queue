@@ -461,7 +461,7 @@ hold_for() {
       # list and the hub show a dead hold apart from a live one.
       *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
-        [ -z "${5-}" ] || ! human_work "$(fm_get "$5" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
+        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
         return ;;
     esac
   done
