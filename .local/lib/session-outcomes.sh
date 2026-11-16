@@ -513,13 +513,15 @@ so_pr_index() {
 # --- rework: a fix that rewrote a change's lines soon after it landed (the 2026-11 landscape
 # review's method, after arXiv 2609.26847). A fix is a commit whose subject starts fix, revert or
 # hotfix. Blame at its parent names the commit that last wrote each code line it deleted or
-# changed (.md .json .jsonl .txt are not code, nor is a lockfile: pnpm-lock.yaml, *.lock). A change a fix rewrote within SO_REWORK_DAYS (7)
-# is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
+# changed (SO_REWORK_NONCODE_RE: docs, data and lockfiles are not code). A change a fix rewrote
+# within SO_REWORK_DAYS (7) is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
 # it, as its PR (#N) or its sha, is VERIFIED. A candidate is a lead, never a defect: a fix often
 # rewrites lines it did not find wrong. The human samples the verified label (`rework --sample`).
 # A PR merged with a merge commit is read by that commit alone, so its branch's lines are not seen.
 : "${SO_REWORK_DAYS:=7}" "${SO_REWORK_VERIFY_DAYS:=30}"
 SO_REWORK_FIX_RE='^(fix|revert|hotfix)([^a-z0-9_]|$)'   # on the lowercased subject
+# A path blame skips: docs and data, and the lockfiles a dependency fix regenerates.
+SO_REWORK_NONCODE_RE='([.](md|json|jsonl|txt|lock|lockb)|(^|/)(pnpm-lock[.]yaml|go[.]sum))$'
 
 # so_rework_fixes DIR REF SINCE UNTIL - one JSON line per fix commit on REF committed in
 # (SINCE, UNTIL] that rewrote a code line: {fix, at, msg, intros: [the commits blame names]}.
@@ -531,11 +533,11 @@ so_rework_fixes() {
     # Header lines are read only between `diff --git` and the first hunk: a deleted line
     # reading "-- a/x" shows as "--- a/x" in a hunk. One blame per file, with every range.
     intros=$(git -C "$dir" -c core.quotePath=false show -U0 --format= -M --no-ext-diff "$sha" 2>/dev/null |
-      awk '/^diff --git / { h = 1; p = ""; next }
+      awk -v skip="$SO_REWORK_NONCODE_RE" '/^diff --git / { h = 1; p = ""; next }
            h && /^--- a\// { p = substr($0, 7); next }
            h && /^--- / { p = ""; next }
            /^@@ / { h = 0
-                    if (p == "" || p ~ /[.](md|json|jsonl|txt|lock)$/ || p ~ /(^|\/)pnpm-lock[.]yaml$/) next
+                    if (p == "" || p ~ skip) next
                     split($2, a, ","); s = substr(a[1], 2); n = (2 in a) ? a[2] : 1
                     if (n > 0) r[p] = r[p] " -L " s "," (s + n - 1) }
            END { for (p in r) print p "\t" r[p] }' |
