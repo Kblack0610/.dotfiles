@@ -158,7 +158,16 @@ fleet_state_host() { fleet_state_addr | cut -d. -f1; }
 
 # fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or no roster names one
 # (a machine without home-config's checkout, or a fleet of one, keeps everything local).
-fleet_is_home() { local s; s=$(fleet_state_host); [ -z "$s" ] || [ "$s" = "$FLEET_HOST" ]; }
+fleet_is_home() { local a; a=$(fleet_state_addr); [ -z "$a" ] || fleet_addr_is_me "$a"; }
+
+# fleet_addr_is_me <addr> -> rc 0 when the address names this machine: its short name is FLEET_HOST,
+# or it resolves to one of this machine's IPv4 addresses. The inventory may name a machine by its
+# DHCP name (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main).
+fleet_addr_is_me() {
+  [ "${1%%.*}" != "$FLEET_HOST" ] || return 0
+  local ip; ip=$(getent ahostsv4 "$1" 2>/dev/null | awk 'NR == 1 { print $1 }')
+  [ -n "$ip" ] && ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF "$ip"
+}
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
 fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
@@ -207,7 +216,7 @@ state_forward() {
   [ -z "${AGENT_STATE_LOCAL:-}" ] || return 0
   local to=${AGENT_STATE_HOST:-}
   # One roster read: the same test as fleet_is_home, on the address it already holds.
-  [ -n "$to" ] || { to=$(fleet_state_addr); [ "${to%%.*}" != "$FLEET_HOST" ] || to=; }
+  [ -n "$to" ] || { to=$(fleet_state_addr); if fleet_addr_is_me "$to"; then to=; fi; }
   [ -n "$to" ] || return 0
   local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST AGENT_STATE_LOCAL=1) v rc
   shift 2
