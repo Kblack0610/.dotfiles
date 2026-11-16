@@ -8,8 +8,8 @@
 # UNRATED_ENDS: the ends that say nothing about the model (a refusal, a usage limit, a provider
 # fault, a cut), so no outcome is filed for them, no score counts them and no row is held by them.
 # `timeout` and `stopped` rate as before.
-END_REASONS="refused limit provider cut timeout stopped"
-UNRATED_ENDS="refused limit provider cut"
+END_REASONS="refused limit provider cut timeout stopped returned"
+UNRATED_ENDS="refused limit provider cut returned"
 
 # unrated_end <end_reason> -- 0 when that end says nothing about the model.
 unrated_end() { case " $UNRATED_ENDS " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }

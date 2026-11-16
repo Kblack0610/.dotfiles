@@ -1786,6 +1786,68 @@ EOF
   assert_success
 }
 
+# 2026-11-12 (ar-2299): a bulk return by `cancel` left every item after: it dead, and a cleanup then
+# cancelled those one by one, 40 chains lost.
+@test "return sends A back with B after: A: B is returned, not left dead, and both rows are un-started" {
+  "$AQ" add --project game --slug ra "a"
+  "$AQ" add --project game --slug rb --after ra "b"
+  "$AQ" add --project game --slug rc --after rb "c"
+  "$AQ" add --project game --slug rz "unrelated"
+  "$AQ" set ra row=game:gm-1
+  "$AQ" set rb row=game:gm-2
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ra
+  assert_failure; assert_output --partial "says why"
+  [ -n "$(item queued ra)" ]
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ra --why "out of focus"
+  assert_success
+  for s in ra rb rc; do
+    f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-$s.md)"
+    [ "$(field "$f" status)" = cancelled ]
+    [ "$(field "$f" end_reason)" = returned ]
+    [ "$(field "$f" cancel_why)" = "out of focus" ]
+  done
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ra.md)" cancel_cause)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-rb.md)" cancel_cause)" = "returned with ra" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-rc.md)" cancel_cause)" = "returned with ra" ]
+  # nothing is left queued behind a closed item, and the unrelated item is untouched
+  run bash -c "'$AQ' list --json | jq -r '.slug + \" \" + (.hold // \"\")'"
+  assert_output "rz "
+  assert_called "ptask game --agent unstart gm-1"
+  assert_called "ptask game --agent unstart gm-2"
+  assert_called "--action item-cancelled"
+}
+
+@test "negative control: a plain cancel of A still leaves B dead, and cancelling B records A as the cause" {
+  "$AQ" add --project game --slug na "a"
+  "$AQ" add --project game --slug nb --after na "b"
+  "$AQ" add --project game --slug nc --after nb "c"
+  CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel na --why "set aside"
+  run bash -c "'$AQ' show nb --json | jq -r .hold"
+  assert_output --partial "after na closed cancelled, dead"
+  [ -n "$(item queued nb)" ]
+  # the cleanup loop that cancels the dead ones leaves the root cause on each, down the chain
+  CLAUDE_CODE_SESSION_ID=sess-2 "$AQ" cancel nb --why "dead chain"
+  CLAUDE_CODE_SESSION_ID=sess-2 "$AQ" cancel nc --why "dead chain"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nb.md)" cancel_cause)" = "after na closed cancelled by sess-1: set aside" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nc.md)" cancel_cause)" = "after na closed cancelled by sess-1: set aside" ]
+  # a cancel with nothing dead before it records no cause
+  "$AQ" add --project game --slug nd "d"
+  "$AQ" cancel nd
+  [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nd.md)" cancel_cause)" ]
+}
+
+@test "return follows only the items that wait on it, and an item that waits on two returns with either" {
+  "$AQ" add --project game --slug qa "a"
+  "$AQ" add --project game --slug qx "x"
+  "$AQ" add --project game --slug qb --after qa,qx "b"
+  "$AQ" return qa --why "back to the board"
+  [ -n "$(item queued qx)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-qb.md)" end_reason)" = returned ]
+  run "$AQ" return nope --why "x"
+  assert_failure; assert_output --partial "nothing active with slug nope"
+}
+
 @test "cancel keeps a backslash in --why as typed, refuses a multi-line one before touching the item, and carries why to a record-only cancel" {
   "$AQ" add --project game --slug b1 "b1"
   run "$AQ" cancel b1 --why $'two\nlines'

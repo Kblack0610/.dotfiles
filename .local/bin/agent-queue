@@ -22,7 +22,10 @@
 #   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
+#       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
+#   return <slug> --why <text>    send an item back to its board: closed cancelled with end_reason: returned, its row un-started,
+#       and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
@@ -1496,7 +1499,7 @@ close_on() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>]}" f session server window host dest why="" by
+  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>]}" f why="" by
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1508,6 +1511,15 @@ cmd_cancel() {
   by="$(cancel_who)"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || { cancel_record_only "$slug" "$why" "$by"; return; }
+  cancel_close "$f" "$why" "$by" "$(dead_cause "$f")" ""
+}
+
+# cancel_close <file> <why> <by> <cause> <end> -- close an active item as cancelled: its window or session
+# when it owns one, then status, cancelled_by:, cancel_why:, cancel_cause: and, for a return, end_reason:.
+# The caller holds the lock and has checked <why>.
+cancel_close() {
+  local f="$1" why="$2" by="$3" cause="$4" end="$5" slug session server window host dest
+  slug="$(fm_get "$f" slug)"
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
@@ -1530,9 +1542,82 @@ cmd_cancel() {
   header_set "$f" finished "$(now_utc)"
   header_del "$f" end_reason
   cancel_stamp "$f" "$why"
+  [ -z "$cause" ] || header_set "$f" cancel_cause "$cause"
+  [ -z "$end" ] || header_set "$f" end_reason "$end"
   dest="$(move_to "$f" "done")" || die "could not move $f"
   item_event item-cancelled "$dest" --to done ${by:+--by "$by"} ${why:+--why "$why"}
-  echo "cancelled $slug -> $dest"
+  echo "${end:-cancelled} $slug -> $dest"
+}
+
+# dead_cause <file> -> why an item about to be cancelled is already dead, from the file alone: the
+# first slug in its after: that closed other than ok, and what that item recorded: its own
+# cancel_cause: when it was itself a cascade, so the root cause is carried down a chain, else who closed
+# it and why. Empty when no after: slug closed dead.
+dead_cause() {
+  local s AST pf c by why
+  for s in $(fm_get "$1" after); do
+    after_status "$s"
+    case "$AST" in ok | "") continue ;; esac
+    pf="$(latest_done "$s")"
+    c="$(fm_get "$pf" cancel_cause)"
+    if [ -z "$c" ]; then
+      by="$(fm_get "$pf" cancelled_by)" why="$(fm_get "$pf" cancel_why)"
+      c="after $s closed $AST${by:+ by $by}${why:+: $why}"
+    fi
+    printf '%s' "$c"
+    return 0
+  done
+}
+
+# return <slug> --why <text> -- send an item back to its board: it closes as cancelled with end_reason:
+# returned, its board row is un-started, and every queued item after: it goes back too, transitively,
+# each with cancel_cause: naming the item returned. A plain cancel leaves those items dead (their
+# after: closed cancelled), and a cleanup that cancelled the dead ones one by one lost about 40 chains on
+# 2026-11-12 (ar-2299); a return takes the chain with it, so no item is left waiting on a closed one.
+# Only queued items wait on an item still open, so only they follow.
+cmd_return() {
+  local usage="usage: agent-queue return <slug> --why <text>"
+  local slug="${1:?$usage}" why="" by f g s i=0 cause
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --why) why="${2:?--why needs a reason}"; shift 2 ;;
+      *) die "$usage" ;;
+    esac
+  done
+  [ -n "$why" ] || die "a return says why: $usage"
+  cancel_check "$why"
+  by="$(cancel_who)"
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
+  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=()
+  while [ "$i" -lt "${#chain[@]}" ]; do
+    s="${chain[i]}"; i=$((i + 1))
+    while IFS= read -r g; do
+      [ -n "$g" ] && waits_on "$g" "$s" || continue
+      case " ${chain[*]} " in *" $(fm_get "$g" slug) "*) continue ;; esac
+      chain+=("$(fm_get "$g" slug)") files+=("$g")
+    done < <(items_in "$AQ_DIR/queued")
+  done
+  for i in "${!chain[@]}"; do
+    rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
+  done
+  for i in "${!chain[@]}"; do
+    cause=""
+    [ "$i" -eq 0 ] || cause="returned with $slug"
+    cancel_close "${files[i]}" "$why" "$by" "$cause" returned
+  done
+  # notes writes the rows and may call agent-queue: the lock goes first, as in close_row_on_item.
+  unlock
+  command -v notes >/dev/null || return 0
+  for i in "${!chain[@]}"; do
+    [ -n "${rows[i]}" ] || continue
+    local flag=()
+    case "${lanes[i]}" in '' | agent) flag=(--agent) ;; esac
+    notes ${profs[i]:+--profile "${profs[i]}"} ptask "${rows[i]%%:*}" "${flag[@]}" unstart "${rows[i]#*:}" >/dev/null 2>&1 ||
+      echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: notes ${profs[i]:+--profile ${profs[i]} }ptask ${rows[i]%%:*} ${flag[*]} unstart ${rows[i]#*:}" >&2
+  done
 }
 
 # cancel_record_only <slug>: an item whose file was deleted outside agent-queue still sits at its
@@ -2307,7 +2392,7 @@ if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
 fi
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   settle-ask) shift; cmd_settle_ask "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
