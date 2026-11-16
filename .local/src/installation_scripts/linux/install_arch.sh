@@ -101,6 +101,7 @@ install_gui() {
     log_section "Installing GUI applications"
     install_package_list install_pacman_package arch \
         $PACKAGES_GUI $PACKAGES_GUI_ARCH
+    sudo systemctl enable --now bluetooth || log_warning "bluetooth.service not enabled (no bluez or no systemd?)"
 }
 
 # Override: Install language runtimes
