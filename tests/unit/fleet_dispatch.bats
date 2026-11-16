@@ -1879,6 +1879,29 @@ J
   assert_output --partial 'dispatch is held'
 }
 
+# 2026-11-10: four human urgent items sat 2h behind an account over its weekly pace while run-floor
+# starts kept `starved` silent: a run start in the window cleared everything.
+@test "starved: an urgent item no pass started is named even when a run pass started another item in the window" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s started game-agent-3 on lab (run) for game: queue item other\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
+  # Negative control: a high item the same fresh run start covers is not starved.
+  queued_item moving high "$old"
+  run cmd_starved
+  assert_success
+  assert_output ''
+  queued_item stuck urgent "$old"
+  acct main:pace
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (urgent'
+  # A fresh urgent item is not yet starved.
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck.md
+  queued_item new-urgent urgent "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_starved
+  assert_success
+}
+
 @test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {
   local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   queued_item stuck high "$old"
