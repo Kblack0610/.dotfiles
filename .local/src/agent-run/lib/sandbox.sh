@@ -202,7 +202,7 @@ sandbox_srt_settings() {
       *) return 2 ;;
     esac
   done
-  pkg=$(realpath -e "$(command -v srt)" 2>/dev/null)
+  pkg=$(realpath -e "$(command -v srt)" 2>/dev/null || true)
   case "$pkg" in */dist/*) pkg=${pkg%/dist/*} ;; *) pkg="" ;; esac
   dotgit="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$dotgit" ] && [ -e "$dotgit/.git" ] && dotgit="$dotgit/.git" || dotgit=""
