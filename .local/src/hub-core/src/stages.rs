@@ -82,7 +82,8 @@ pub struct Project {
     pub fail: u32,
     pub todo: u32,
     pub human: u32,
-    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed.
+    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed; with an
+    /// error, unknown like the check's counts.
     pub filed_open: u32,
     pub filed_closed: u32,
     /// Why the check could not run; its counts are then unknown, never zero.
@@ -117,7 +118,10 @@ impl Project {
             None if self.total == 0 => String::new(),
             None => format!("{}/{}", self.met, self.total),
         };
-        self.filed_says = format!("{}/{}", self.filed_open, self.filed_closed);
+        self.filed_says = match self.error {
+            Some(_) => String::new(),
+            None => format!("{}/{}", self.filed_open, self.filed_closed),
+        };
         self
     }
 
@@ -176,6 +180,7 @@ impl Row for Project {
             "met" => Val::Num(f64::from(self.met) / f64::from(self.total)),
             "failing" if self.error.is_some() => Val::None,
             "failing" => Val::Num(f64::from(self.fail)),
+            "filed" if self.error.is_some() => Val::None,
             "filed" => Val::Num(f64::from(self.filed_open)),
             _ => Val::None,
         }
@@ -559,8 +564,7 @@ mod tests {
                  "met": 9, "total": 9, "fail": 0, "todo": 2, "human": 1, "filed_open": 0, "filed_closed": 3},
                 {"name": "busy", "profile": "bnb", "stage": "alpha", "next": "beta", "type": "game",
                  "met": 7, "total": 24, "fail": 4, "todo": 8, "human": 3, "filed_open": 4, "filed_closed": 0},
-                {"name": "lost", "profile": "bnb", "stage": "dev", "next": "alpha",
-                 "filed_open": 0, "filed_closed": 0, "error": "lost is not checked out here"}
+                {"name": "lost", "profile": "bnb", "stage": "dev", "error": "lost is not checked out here"}
             ]
         })
         .to_string()
@@ -595,9 +599,15 @@ mod tests {
         assert_eq!(busy.stage_rank, Some(2));
         // A check that could not run has no counts, never a zero.
         assert_eq!(
-            (l.projects[0].state, l.projects[0].met_says.as_str()),
-            (NOT_READ, NOT_READ)
+            (
+                l.projects[0].state,
+                l.projects[0].met_says.as_str(),
+                l.projects[0].filed_says.as_str()
+            ),
+            (NOT_READ, NOT_READ, "")
         );
+        assert_eq!(l.projects[0].val("filed"), Val::None);
+        assert_eq!(l.projects[0].val("next"), Val::None);
         assert_eq!(l.projects[0].val("failing"), Val::None);
         // Nothing checkable on the next stage is no count, never a met `0/0`.
         let bare = Project {

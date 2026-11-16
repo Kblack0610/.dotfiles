@@ -4,6 +4,7 @@
 # the real one, so each test pins one row kind against a real repo and lab dir.
 
 setup() {
+  bats_require_minimum_version 1.5.0
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
@@ -470,6 +471,10 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_line --regexp '^met +sh-2 +A changelog$'
   assert_output --partial '0 failing, 0 filed, 0 already open, 0 closed or dropped, 1 met and closed'
   assert_called "notes ptask shooter --agent done sh-2 --proof check:project-stage-check shooter PASS $(date +%F)"
+  # --json reads the sheets again after a write (the stub's done ticks nothing, so it stays open).
+  run --separate-stderr "$CHECK" shooter --file --json
+  assert_success
+  jq -e '.fail == 0 and .filed_open == 1 and .filed_closed == 0' <<<"$output"
   # NEGATIVE CONTROL: a human-sheet row and a closed row with the same title are never touched.
   : > "$NOTES_FIXTURE/calls.log"
   rm "$LAB/agent/README.md"
@@ -513,12 +518,36 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   refute_output --partial 'epic opened'
 }
 
-@test "file: --file with --json is refused, and an unknown project exits 2" {
-  run "$CHECK" shooter --file --json
-  assert_failure 2
-  assert_output --partial '--file and --json do not mix'
+@test "file: --json keeps the report on stderr and prints the check of its target with the rows it filed" {
+  # Declared dev, but an open beta epic raises the target past alpha: the JSON says beta.
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  mkdir -p "$LAB/agent/versions"
+  printf -- '- [x] chore(beta): A changelog #size/s <!-- id:sh-3 dropped: twin -->\n- [x] feat(ui): hand work <!-- id:sh-4 -->\n' > "$LAB/agent/versions/v0.0.9.md"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-3 dropped: twin -->'
+  # NEGATIVE CONTROL: a human-sheet twin and an agent row of another title count as neither.
+  printf -- '- [ ] chore(beta): A changelog <!-- id:sh-5 -->\n' >> "$LAB/README.md"
+  parses '- [ ] chore(beta): A changelog <!-- id:sh-5 -->'
+  run --separate-stderr "$CHECK" shooter --file --json
+  assert_success
+  [[ "$stderr" == *'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped'* ]]
+  run jq -c '[.stage, .met, .total, .fail, .blocks, .filed_open, .filed_closed]' <<<"$output"
+  assert_output '["beta",4,7,1,false,1,1]'
+  assert_not_called 'ptask'
+  # Systems mode prints its own check with the same counts.
+  write_systems_doc
+  run --separate-stderr "$CHECK" shooter --systems --file --json
+  assert_success
+  jq -e 'has("systems") and .filed_open == 0' <<<"$output"
+  [[ "$stderr" == *'file: shooter systems:'* ]]
+}
+
+@test "file: an unknown project exits 2, with --json too and nothing on stdout" {
   run "$CHECK" nobody --file
   assert_failure 2
+  run --separate-stderr "$CHECK" nobody --file --json
+  assert_failure 2
+  assert_output ''
 }
 
 # -- predicates in the real stages.md, run against fixtures --
