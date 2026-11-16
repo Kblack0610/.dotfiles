@@ -1417,14 +1417,17 @@ collect() {
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin manual
-    # read collapses an empty field and shifts every later one left, so a field a source left empty
-    # (a park ledger with no cwd) is - here, and a number is 0 (ar-1500).
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '
-      def t: if . == null or . == "" then "-" else . end;
-      [(.target | t), ((.pane // "") | sub(".*/"; "") | t), (.status | t),
-      (if .plan_mode then 1 else 0 end), (.session_id | t), (.cwd | t), (.idle_since // 0), (.context_tokens // 0),
-      (.plan_file | t), (.started_at | t), (.pid // 0), (.host | t),
-      (.context_window // 0), (if .manual_mode then 1 else 0 end)] | @tsv' <<<"$line")
+    # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
+    # shifts every later one left, so a park ledger with no cwd put plan_file's "-" in ctx and
+    # json_rows died on it (ar-1500). A number a source left empty or null is 0.
+    IFS=$'\x1f' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '
+      def s: (. // "") | tostring | gsub("[\n\u001f]"; " ");
+      def n: tonumber? // 0;
+      [(.target | s), ((.pane // "") | sub(".*/"; "") | s), (.status | s),
+      (if .plan_mode then 1 else 0 end), (.session_id | s), (.cwd | s), (.idle_since | n), (.context_tokens | n),
+      (.plan_file | s | if . == "" then "-" else . end), (.started_at | s | if . == "" then "-" else . end), (.pid | n),
+      (.host | s | if . == "" then "-" else . end),
+      (.context_window | n), (if .manual_mode then 1 else 0 end)] | join("\u001f")' <<<"$line")
     # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.

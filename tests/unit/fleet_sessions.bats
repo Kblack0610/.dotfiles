@@ -2098,6 +2098,16 @@ research_item() {
   [ "$(jq -r .session_id <<<"$output")" = sid-2 ]
   [ "$(jq -r .idle_min <<<"$output")" = 30 ]
   [ "$(jq -r .context_tokens <<<"$output")" = 0 ]
+  # a live panel row whose numbers are empty strings and whose cwd is empty reads the same way
+  rm "$HOME/.agent/parked/s2"
+  printf '#!/usr/bin/env bash\necho %q\n' \
+    '{"target":"lab/s3:1","pane":"lab/%4","status":"idle","plan_mode":false,"session_id":"sid-3","cwd":"","idle_since":"","context_tokens":"","plan_file":""}' \
+    > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .session_id <<<"$output")" = sid-3 ]
+  [ "$(jq -r .pane <<<"$output")" = %4 ]
+  [ "$(jq -r .context_tokens <<<"$output")" = 0 ]
+  [ "$(jq -r .plan_file <<<"$output")" = - ]
 }
 
 @test "end to end: a session:%pane ledger stays PARKED beside the shared session's other live claudes; the row carries its account" {
