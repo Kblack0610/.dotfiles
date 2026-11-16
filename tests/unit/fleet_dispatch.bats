@@ -1902,6 +1902,37 @@ J
   assert_success
 }
 
+# 2026-11-10: the same four sat 4h, 2h of it under a dispatch hold that read as "nothing is starved" (ar-1432).
+@test "starved: neither a dispatch hold nor load clears an urgent item from the human; an agent's urgent and a fresh one still read as held" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  stub agent-hold 'echo "held: dispatch since 2026-11-10T09:00:00-0800 by binks: load 72.9; no new sessions"; exit 1'
+  # Negative controls: an agent's urgent item and a fresh human one wait on the hold by design.
+  queued_item agents urgent "$old"
+  sed -i 's/^from: human/from: shepherd/' "$AGENT_QUEUE_DIR/queued/20261103-100000-agents.md"
+  queued_item fresh urgent "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'dispatch is held'
+  queued_item mine urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'dispatch is held (dispatch since 2026-11-10T09:00:00-0800 by binks: load 72.9; no new sessions; agent-hold release dispatch clears it)'
+  assert_output --partial 'mine (urgent from the human'
+  refute_output --partial 'agents'
+  refute_output --partial 'fresh'
+  # Load alone holds the agent's urgent item; the human's still trips.
+  stub agent-hold 'exit 0'
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
+  rm "$AGENT_QUEUE_DIR"/queued/*-mine.md
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load'
+  queued_item mine urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'mine (urgent'
+}
+
 @test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {
   local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   queued_item stuck high "$old"
