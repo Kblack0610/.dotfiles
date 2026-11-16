@@ -234,6 +234,12 @@ queue_match() {
   done
 }
 
+# proc_snapshot <prefix>: every process's "pid<TAB>ppid" in <prefix>.ppid and "pid<TAB>cwd" in <prefix>.cwd.
+proc_snapshot() {
+  ps -e -o pid=,ppid= 2>/dev/null | awk '{ print $1 "\t" $2 }' > "$1.ppid"
+  ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
 # descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
@@ -242,31 +248,42 @@ queue_match() {
 # but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
 # Tests run in progress, row STALLED), so agent-panel reads it as `jobs`; the process itself is the
-# fact. No event API names a gate's process, so this reads /proc, one `ls -l` of every cwd link and one `ps` per
-# session whose open job reads jobs or none. Not counted: a `-c` command line (a shell holding its
+# fact. No event API names a gate's process, so this reads /proc: `ls -l` of every cwd link and one `ps`, once per pass (PROC_SNAP,
+# proc_snapshot), so a gate that starts after a pass's first call is seen by the next tick, a minute on. Not counted: a `-c` command line (a shell holding its
 # script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text line pid cmd
+  local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text pid cmd
+  local snap="${PROC_SNAP:-}" own=""
   cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
-  local -A skip=() mine=()
-  pid=$$; while [ "${pid:-0}" -gt 1 ]; do skip[$pid]=1; pid="$(awk '/^PPid:/ {print $2}' "/proc/$pid/status" 2>/dev/null)"; done
-  if [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ]; then
-    while read -r pid; do mine[$pid]=1; done < <(ps -e -o pid=,ppid= | awk -v r="$root" '
-      { up[$1] = $2 }
-      END { for (p in up) { x = up[p]; n = 0; while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]; if (x == r) print p } }')
-  fi
+  [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ] || root=0
+  # A pass reads /proc once (collect sets PROC_SNAP) instead of once per session: 57 calls of
+  # `ls -l` over every process and a bash loop on each line were 8s of a 50s pass (2026-11-16).
+  [ -n "$snap" ] || { own="$(mktemp)" || return 0; snap="$own"; }
+  [ -f "$snap.cwd" ] || proc_snapshot "$snap"
+  local -A skip=()
+  local pick
+  # This pass's own ancestors (skip), then each process running in <cwd> or below it, or below the claude.
+  # The cwd goes in by ENVIRON, not -v, which would read a backslash in it as an escape. FILENAME, not NR == FNR,
+  # splits the two files: an empty ppid file (ps failed) must not swallow the cwd lines.
+  pick="$({ awk -F'\t' -v me="$$" '{ up[$1] = $2 } END { for (p = me; p > 1; p = up[p]) { print "S\t" p; if (!(p in up)) break } }' "$snap.ppid"
+    LW_CWD="$cwd" awk -F'\t' -v r="$root" '
+      BEGIN { c = ENVIRON["LW_CWD"] }
+      FILENAME == ARGV[1] { up[$1] = $2; next }
+      { p = $1
+        if (r > 1) { x = up[p]; n = 0; while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]; if (x == r) { print "P\t" p; next } }
+        if ($2 == c || index($2, c "/") == 1) print "P\t" p }' "$snap.ppid" "$snap.cwd"
+  } )"
+  [ -z "$own" ] || rm -f "$own" "$own".*
+  while IFS=$'\t' read -r kind pid; do [ "$kind" != S ] || skip[$pid]=1; done <<<"$pick"
   local -a cmds=()
-  while read -r line; do
-    [[ "$line" =~ \ /proc/([0-9]+)/cwd\ -\>\ (.*)$ ]] || continue
-    pid="${BASH_REMATCH[1]}"
-    [ -n "${mine[$pid]:-}" ] || [ "${BASH_REMATCH[2]}" = "$cwd" ] || [[ "${BASH_REMATCH[2]}" == "$cwd"/* ]] || continue
-    [ -z "${skip[$pid]:-}" ] || continue
+  while IFS=$'\t' read -r kind pid; do
+    [ "$kind" = P ] && [ -z "${skip[$pid]:-}" ] || continue
     cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
     case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
     cmds+=("$cmd")
-  done < <(ls -l /proc/[0-9]*/cwd 2>/dev/null)
+  done <<<"$pick"
   [ "${#cmds[@]}" -gt 0 ] || return 0
   local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
   for text in "${qg[@]}"; do
@@ -688,9 +705,13 @@ heavy_panes() {
 
 # repo_slug <dir> -> the origin URL as a file-name-safe key (cache files, NIGHTLY ledger ids).
 repo_slug() {
-  local url
+  local LC_ALL=C url f="${CACHE:+$CACHE/slug_${1//\//%}}"   # C: one _ per byte, as tr -c gave
+  # One answer per directory per pass: 736 calls of git and tr were a tenth of a pass's forks (2026-11-16).
+  if [ -n "$f" ] && [ -s "$f" ]; then IFS= read -r url < "$f"; printf '%s' "$url"; return; fi
   url="$(git -C "$1" remote get-url origin 2>/dev/null)" || return 1
-  printf '%s' "$url" | tr -c 'A-Za-z0-9' _
+  url="${url//[!A-Za-z0-9]/_}"
+  [ -z "$f" ] || { printf '%s\n' "$url" > "$f.$$" && mv -f "$f.$$" "$f"; }
+  printf '%s' "$url"
 }
 
 # unreadable <name>: this pass could not read <name>, so the state document names it.
@@ -1141,19 +1162,21 @@ in_checkout() {
 # and the older closed #1490 of the same name was named the blocker). Else the newest PR of the
 # local or upstream branch name, except a closed one that does not hold HEAD: that is an old PR.
 pr_of_head() {
-  local d="$1" branch="$2" head up row b s o
+  local d="$1" branch="$2" head up row s o hit prs
   head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || return 0
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; up="${up#*/}"
+  # The PR store lists every PR of the repo (thousands of rows): awk picks the few rows a bash
+  # read loop would have walked one by one (849K of a pass's 1M trace lines, 2026-11-16).
+  prs="$(prs_for "$d")"
+  [ -n "$prs" ] || return 0
+  hit="$(awk -F'\t' -v h="$head" '$5 == h { print; exit }' <<<"$prs")"
+  [ -z "$hit" ] || { printf '%s\n' "$hit"; return; }
+  # Names go in by ENVIRON, not -v, which would read a backslash in a branch name as an escape.
   while IFS= read -r row; do
-    IFS=$'\t' read -r _ _ _ _ o _ <<<"$row"
-    [ "$o" = "$head" ] && { printf '%s\n' "$row"; return; }
-  done < <(prs_for "$d")
-  while IFS= read -r row; do
-    IFS=$'\t' read -r b _ s _ o _ <<<"$row"
-    [ "$b" = "$branch" ] || { [ -n "$up" ] && [ "$b" = "$up" ]; } || continue
+    IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
     if [ "$s" = CLOSED ] && ! git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null; then continue; fi
     printf '%s\n' "$row"; return
-  done < <(prs_for "$d")
+  done < <(PR_BRANCH="$branch" PR_UP="$up" awk -F'\t' 'BEGIN { b = ENVIRON["PR_BRANCH"]; u = ENVIRON["PR_UP"] } $1 == b || (u != "" && $1 == u)' <<<"$prs")
 }
 
 # pr_holding_head <dir> -> prs_for's row for the oldest OPEN PR whose head holds this clone's HEAD
@@ -1161,12 +1184,12 @@ pr_of_head() {
 # branch built on it (ar-82: agent-51 feat/tourney-daily-cap inside #1674). git_facts asks only
 # when HEAD has files the base lacks, so a HEAD still on the base, held by every PR, never asks.
 pr_holding_head() {
-  local d="$1" head row s o hit=""
+  local d="$1" head row o hit=""
   head="$(git -C "$d" rev-parse HEAD 2>/dev/null)" || return 0
   while IFS= read -r row; do
-    IFS=$'\t' read -r _ _ s _ o _ <<<"$row"
-    [ "$s" = OPEN ] && git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null && hit="$row"
-  done < <(prs_for "$d")   # newest first, so the last hit is the oldest
+    IFS=$'\t' read -r _ _ _ _ o _ <<<"$row"
+    git -C "$d" merge-base --is-ancestor "$head" "$o" 2>/dev/null && hit="$row"
+  done < <(prs_for "$d" | awk -F'\t' '$3 == "OPEN"')   # newest first, so the last hit is the oldest
   [ -z "$hit" ] || printf '%s\n' "$hit"
 }
 
@@ -1296,19 +1319,15 @@ item_of() {
     }' <<<"$1"
 }
 
-# handoff_of <qall> <item_of's answer> -> "<ask id>\t<doc>" when the item is of a doc+ask kind
-# (kinds.json `exit`, by the item's `type`, which agent-queue sets from `notes row parse`) and has handed its work
+# handoff_of <items: collect's qhand, the jsonl of doc+ask items with a report and an ask> <item_of's answer> -> "<ask id>\t<doc>"
+# when the item is of a doc+ask kind (kinds.json `exit`, by the item's `type`) and has handed its work
 # over: its `report` doc exists and its `ask` is filed. That ask is the deliverable, so it is not the
 # session's open question, and the item has moved on. Else nothing.
 handoff_of() {
   local slug="${2#*:}" ask doc
   case "$2" in own:* | moved:*) ;; *) return 0 ;; esac
-  [ -r "$KINDS" ] || return 0
-  IFS=$'\t' read -r ask doc < <(jq -r --arg s "${slug%% *}" --slurpfile k "$KINDS" '
-    select(.slug == $s)
-    | (.type // "") as $t
-    | select($t != "" and $k[0][$t].exit == "doc+ask" and (.report // "") != "" and (.ask // "") != "")
-    | [.ask, .report] | @tsv' <<<"$1" 2>/dev/null)
+  [ -n "$1" ] || return 0
+  IFS=$'\t' read -r ask doc < <(jq -r --arg s "${slug%% *}" 'select(.slug == $s) | [.ask, .report] | @tsv' <<<"$1" 2>/dev/null)
   [ -n "${ask:-}" ] && [ -f "${doc/#\~/$HOME}" ] && compgen -G "$ASK_ROOT/*/$ask.md" >/dev/null && printf '%s\t%s\n' "$ask" "$doc"
   return 0
 }
@@ -1349,12 +1368,17 @@ collect() {
   . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh" || return 1
   now="$(date +%s)"
   heavy="$(heavy_panes)"
-  local panel items qjson qall qitems off qheld
+  local panel items qjson qall qitems off qheld qhand
+  PROC_SNAP="$CACHE/procs"   # live_wait reads /proc into it on its first call
   off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
   qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
+  # The few items of a doc+ask kind that filed their report and ask (handoff_of): read once, not per row.
+  qhand=""
+  [ ! -r "$KINDS" ] || qhand="$(jq -c --slurpfile k "$KINDS" '
+    select((.type // "") as $t | $t != "" and $k[0][$t].exit == "doc+ask" and (.report // "") != "" and (.ask // "") != "")' <<<"$qall" 2>/dev/null)"
   # The asks a live item holds through its ask:<id>[=<option>] tag. That item carries the ask on,
   # so it is no longer an open question of the session that posted it, whatever state the item
   # reaches before the answer (ar-764).
@@ -1447,7 +1471,7 @@ collect() {
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
     local hask hdoc
-    IFS=$'\t' read -r hask hdoc < <(handoff_of "$qall" "$item")
+    IFS=$'\t' read -r hask hdoc < <(handoff_of "$qhand" "$item")
     if [ -n "${hask:-}" ]; then
       askids="$(tr ',' '\n' <<<"$askids" | grep -vxF "$hask" | paste -sd, -)"
       asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"

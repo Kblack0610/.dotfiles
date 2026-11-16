@@ -179,12 +179,12 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   refute_output --partial "paused by:"
 }
 
-@test "a #prio/only focus reads in amber with how many items it holds; no focus, or an old feed, no line" {
-  feed summary_dispatch.focus_projects=2 summary_dispatch.held_focus=7
+@test "a #prio/focus project reads in amber with how many there are; no focus, or an old feed, no line" {
+  feed summary_dispatch.focus_projects=2
   run "$MODULE"
   run tip
-  assert_output --partial "focus: <span color='$Y'>only 2 project(s)</span>, 7 queued held off it (reds, urgent and #requested still run)"
-  assert_output --partial "on a time tag, 7 off focus)"
+  assert_output --partial "focus: <span color='$Y'>2 project(s)</span> first, ahead of the other projects (reds and urgent items still go first)"
+  refute_output --partial "off focus"
   feed summary_dispatch.focus_projects=0
   run "$MODULE"
   run tip
