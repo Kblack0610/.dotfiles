@@ -2618,26 +2618,21 @@ J
   [ -z "$(qitem running fix-crash)" ] || fail "held an item whose host left the roster"
 }
 
-@test "focus: candidates drop an off-focus project's rows but keep #requested and #urgent ones; suggest names the focus" {
+@test "focus: candidates keep every project's rows, and suggest names no focus hold" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row game agent 'game row' "- [ ] game row $T"
   row app agent 'app row' "- [ ] app row $T"
   row app agent 'app asked' "- [ ] app asked #requested $T"
-  row app agent 'app urgent' "- [ ] app urgent #urgent $T"
-  # Negative control: with no focus, every row is a candidate.
-  run cmd_candidates
-  assert_success
-  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,app urgent,game row'
   focus_on game
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app urgent,game row'
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,game row'
   SUGGEST=1 run cmd_candidates
-  assert_equal "$(jq -r 'select(.key == "app row") | .off' <<<"$output")" 'focus: only game'
+  assert_equal "$(jq -r 'select(.key == "app row") | .off // ""' <<<"$output")" ''
 }
 
-@test "focus: an only project ranks with focus, first, and why names it" {
+@test "focus: a focus project ranks first, and why names it" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   focus_on game
@@ -2646,11 +2641,11 @@ J
   run cmd_candidates
   assert_success
   run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.pprio) \(.why)"' <<<"$output"
-  assert_line --index 0 --partial 'game row: 0 only project'
+  assert_line --index 0 --partial 'game row: 0 focus project'
   assert_line --index 1 --partial 'app asked: 2'
 }
 
-@test "focus: promote tags a #requested row's item requested, so a focus elsewhere does not hold it" {
+@test "focus: promote tags a #requested row's item requested, which the requested floor counts" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'
@@ -2667,38 +2662,30 @@ J
   assert_equal "$(qfield "$(qitem queued gm-8)" tags)" ''
   assert_equal "$(qfield "$(qitem queued gm-9)" tags)" requested
   run agent-queue list --json --state queued
-  assert_equal "$(jq -r 'select(.slug == "gm-7") | .hold // "none"' <<<"$output")" none
-  assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold' <<<"$output")" 'focus: only game'
+  assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold // "none"' <<<"$output")" none
 }
 
-@test "focus: starved fires on a focus with no work, and not once it has some or with no focus" {
+@test "focus: a focus with no work does not trip starved" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   agent-queue add --project app --slug a1 --priority low "app work" >/dev/null
-  # Negative control: no focus, nothing starved.
-  run cmd_starved
-  assert_success
   focus_on game
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'focus: only game has no work'
-  row game agent 'game row' "- [ ] game row $T"
   run cmd_starved
   assert_success
   refute_output --partial 'focus:'
 }
 
-@test "focus: headroom names the focus and counts the items it holds; stats publishes both as numbers" {
+@test "focus: headroom names the focus and counts the runnable items it has; stats publishes the project count" {
   two_items
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[[],0,2]'
+  assert_equal "$(jq -c '[.focus, .focus_runnable, .runnable]' <<<"$output")" '[[],0,2]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   refute_output --partial 'focus:'
   focus_on game
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[["game"],1,1]'
+  assert_equal "$(jq -c '[.focus, .focus_runnable, .runnable]' <<<"$output")" '[["game"],1,2]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'focus:     only game; 1 queued item(s) held off focus (reds, urgent and #requested still run)'
+  assert_output --partial 'focus:     game first; 1 runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)'
   run cmd_stats
-  assert_equal "$(jq -c '[.focus_projects, .held_focus]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '[.focus_projects, has("held_focus")]' <<<"$output")" '[1,false]'
 }

@@ -877,15 +877,15 @@ remote_item() {
   sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running "$1")"
 }
 
-# --- focus: #prio/only ------------------------------------------------------------------
+# --- focus: #prio/focus ------------------------------------------------------------------
 
-# focus_on <project>... -- the human put each on `#prio/only`: the `notes projects --prios` line agent-queue
+# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
 # and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
 focus_on() {
   local p
   for p; do
-    printf '%s\tonly\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/only/' "$SANDBOX/sheets/$p/README.md"
+    printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
+    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 

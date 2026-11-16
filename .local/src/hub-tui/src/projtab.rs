@@ -496,7 +496,7 @@ fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
             } else {
                 format!(", prio {}", c.prio)
             },
-            if matches!(c.prio.as_str(), "focus" | "only") {
+            if c.prio == "focus" {
                 p.head()
             } else {
                 p.dim()
@@ -855,7 +855,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         dash(c.version.as_deref().unwrap_or_default()).into(),
         cell(
             dash(&c.prio),
-            if matches!(c.prio.as_str(), "focus" | "only") {
+            if c.prio == "focus" {
                 p.head()
             } else {
                 p.dim()

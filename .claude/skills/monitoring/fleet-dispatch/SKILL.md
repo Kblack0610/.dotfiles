@@ -80,11 +80,11 @@ A dispatched session is an ordinary session from then on: the `shepherd` buckets
 
 ## Steering the fleet onto projects: `#prio`
 
-One store sets project precedence: the `#prio/<word>` head tag on a project's lab front page, set by `notes projects --prio <p> --set <word>` or `P` on the hub Projects tab, which steps normal, focus, high, low and never sets `only` (`notes projects --prios` lists them).
+One store sets project precedence: the `#prio/<word>` head tag on a project's lab front page, set by `notes projects --prio <p> --set <word>` or `P` on the hub Projects tab, which steps normal, focus, high, low (`notes projects --prios` lists them).
 
-- `focus`, `high`, `low`: rank keys only. Board picks (RANK_JQ `pprio`) and queue order (agent-queue `ORDER` `$rank`) put focus first, then high, normal, low. Nothing is filtered.
-- `only`: while any project carries it, automated starts take only those projects' work. agent-queue holds every other queued item `focus: only <projects>` (so the run pass, the project floor, `after:` chains and plan phases all wait), and board and night intake skip their rows (`row_off`, so `candidates --suggest` names it). Exempt: a `red` item, an `urgent` one, a `requested` one (`promote` tags a `#requested` row's item), and a `#requested` or `#urgent` row. Running sessions finish; a hand `start --item` and `cl` are never refused.
-- An empty focus trips `starved` ("focus: only <p> has no work"). `headroom` names the focus and how many items it holds (`focus`, `focus_held`); stats publishes `focus_projects` and `held_focus` for the waybar hover. Clear it with `--set normal`.
+- One ladder, rank only: `focus`, then `high`, normal, `low`. Board picks (RANK_JQ `pprio`) and queue order (agent-queue `ORDER` `$rank`) put a focus project's work first, so a pass starts focus items first and starts a lower tier only when no focus item can (held by an `after:`, a tag window or a resource, or no place for it). Nothing is held or skipped for a focus, so a focus never blocks the fleet and an empty one costs nothing. There is no hold list.
+- Above the tier: a `red` item, then an `urgent` one (so a row-level `#urgent` jumps every tier). Below it: item priority, then `cleanup`, then age. A `#requested` row keeps its feed rank within its project and its floor (`DISPATCH_REQUESTED_FLOOR`).
+- `headroom` names the focus projects and how many runnable items they hold (`focus`, `focus_runnable`); stats publishes `focus_projects` for the waybar hover. A hand `start --item` and `cl` are never refused. Clear a focus with `--set normal`.
 
 ## A world server died: `fleet-dispatch restore`
 
@@ -104,7 +104,7 @@ One store sets project precedence: the `#prio/<word>` head tag on a project's la
 
 The fleet-wide list is in `fleet-lead`; this is this role's own.
 
-- Set or clear a project's `#prio` (above all `only`) without the human asking: it is their lever for where the fleet works.
+- Set or clear a project's `#prio` without the human asking: it is their lever for where the fleet works.
 - Widen dispatch beyond the profiles in `DISPATCH_PROFILES`, add a night project, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
 
 ## Related

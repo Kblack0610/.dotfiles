@@ -404,10 +404,9 @@ enum Cmd {
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: only, focus, high,
-        /// low, normal (clears it). fleet-dispatch and agent-queue rank the project's work by
-        /// it; while any project is `only`, automated starts take only those projects' work
-        /// (reds, urgent and requested work excepted)
+        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
+        /// normal (clears it). fleet-dispatch and agent-queue rank the project's work by it,
+        /// focus first; a lower tier starts only when no higher one can, and nothing is held back
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
         /// Every profile's projects that declare a priority, as `name<TAB>prio`
