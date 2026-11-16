@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# laptop-kbd - turn the laptop's built-in keyboard off and on, so an external keyboard (the Corne)
+# can sit on top of it without the laptop keys firing underneath.
+#
+#   laptop-kbd [status]        print on or off, and each HID interface with its driver
+#   laptop-kbd off [--force]   detach the built-in keyboard from its kernel driver (sudo)
+#   laptop-kbd on              attach it again (sudo)
+#   laptop-kbd toggle          off when on, on when off
+#
+# It unbinds the keyboard's USB HID interfaces below keyd, because keyd merges every keyboard into
+# one virtual device and a compositor-level disable would take the Corne with it. Not persistent:
+# a reboot brings the keyboard back. "off" refuses unless another keyboard is plugged in.
+# LAPTOP_KBD_ID (default 0B05:19B6) picks the device; LAPTOP_KBD_SYSFS (default /sys) is for tests.
+# How it works, other laptops, troubleshooting: docs/laptop-keyboard.md
+set -euo pipefail
+
+ID="${LAPTOP_KBD_ID:-0B05:19B6}"
+SYSFS="${LAPTOP_KBD_SYSFS:-/sys}"
+HID="$SYSFS/bus/hid"
+
+die() { echo "laptop-kbd: $*" >&2; exit 1; }
+
+usage() { sed -n '2,/^# How it works/{/^# How it works/d;s/^# \{0,1\}//;p}' "$0"; }
+case "${1:-status}" in
+  -h | --help | help) usage; exit 0 ;;
+  status | off | on | toggle) ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+# The HID interfaces of the built-in keyboard: bus 0003 (USB), vendor:product $ID.
+shopt -s nullglob
+DEVS=("$HID"/devices/0003:"$ID".*)
+shopt -u nullglob
+[ "${#DEVS[@]}" -gt 0 ] || die "no HID device 0003:$ID.* under $HID/devices (set LAPTOP_KBD_ID, see docs/laptop-keyboard.md)"
+
+driver_of() { [ -e "$1/driver" ] && basename "$(readlink -f "$1/driver")"; }
+
+# On when any interface has a driver. Some interfaces never get one (the N-KEY's .0002), so
+# "every interface bound" is not the test.
+is_on() {
+  local d
+  for d in "${DEVS[@]}"; do driver_of "$d" >/dev/null && return 0; done
+  return 1
+}
+
+# sysfs files are root-only; write directly when we can (root, or the test tree), else via sudo.
+sysfs_write() {
+  local file=$1 value=$2
+  if [ -w "$file" ]; then
+    printf '%s' "$value" >"$file"
+  else
+    printf '%s' "$value" | sudo tee "$file" >/dev/null
+  fi
+}
+
+other_keyboard() {
+  local n
+  for n in "$SYSFS"/class/input/input*/name; do
+    [ -e "$n" ] || continue
+    case "$(tr '[:upper:]' '[:lower:]' <"$n")" in
+      *"keyd virtual"*) ;;
+      *keyboard*) cat "$n"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+status() {
+  local d drv
+  if is_on; then echo "laptop keyboard: on"; else echo "laptop keyboard: off"; fi
+  for d in "${DEVS[@]}"; do
+    drv=$(driver_of "$d") || drv="(none)"
+    echo "  $(basename "$d")  driver: $drv"
+  done
+}
+
+off() {
+  local force=${1-} d drv kb
+  is_on || { echo "laptop keyboard: already off"; return 0; }
+  if [ "$force" != --force ]; then
+    kb=$(other_keyboard) || die "no other keyboard found; plug one in first, or use 'off --force' (a reboot or 'laptop-kbd on' brings it back)"
+    echo "other keyboard: $kb"
+  fi
+  for d in "${DEVS[@]}"; do
+    drv=$(driver_of "$d") || continue
+    sysfs_write "$HID/drivers/$drv/unbind" "$(basename "$d")"
+  done
+  is_on && die "still on after unbind; see 'laptop-kbd status'"
+  echo "laptop keyboard: off"
+}
+
+on() {
+  local d
+  is_on && { echo "laptop keyboard: already on"; return 0; }
+  for d in "${DEVS[@]}"; do
+    driver_of "$d" >/dev/null && continue
+    # An interface no driver claims (the N-KEY's .0002) stays unbound; is_on below is the check.
+    sysfs_write "$HID/drivers_probe" "$(basename "$d")" || true
+  done
+  is_on || die "still off after probe; see 'laptop-kbd status'"
+  echo "laptop keyboard: on"
+}
+
+case "${1:-status}" in
+  status) status ;;
+  off) off "${2-}" ;;
+  on) on ;;
+  toggle) if is_on; then off "${2-}"; else on; fi ;;
+esac
