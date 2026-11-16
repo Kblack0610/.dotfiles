@@ -626,6 +626,23 @@ fn carry_tags(old: &str, new: &str) -> String {
         })
 }
 
+/// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither: the sizing is the
+/// row's estimate, not words, so a retext keeps it. Every other tag is exactly what `--text`
+/// types, so leaving `#plan` out clears it. A `new` that types either sizing tag sets the
+/// sizing itself.
+fn carry_sizing(old: &str, new: &str) -> String {
+    let sizing = |t: &String| t.starts_with("size/") || t.starts_with("pts/");
+    if md::find_hashtags(new).iter().any(sizing) {
+        return new.trim().to_string();
+    }
+    md::find_hashtags(old)
+        .into_iter()
+        .filter(sizing)
+        .fold(new.trim().to_string(), |out, t| {
+            md::add_tag(&out, &format!("#{t}"))
+        })
+}
+
 /// The stamped rows for `texts` on `name`'s board, each followed by `details`: created tag,
 /// default priority, the `to` tag, `marker` tokens and an id per row when the registry gives
 /// the project a `code`. The ids run consecutively from [`next_id`], so rows written in one
@@ -1904,15 +1921,17 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
-/// checkbox state and its tags stay as they were ([`md::retext_task`]). A `--text` that types
-/// a tag of the same name (`#size/m` over `#size/s`) replaces that one; the old text's other
-/// tags (`#size/s`, `#pts/2`, `#requested`) carry over ([`carry_tags`]).
+/// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
+/// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
+/// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
-/// must be `type(area): title`, and the old words go first among `details` as `was: <words>`.
+/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
+/// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
+/// sets one of the same name ([`carry_tags`]).
 ///
 /// `systems` (`--link`, the triager's backlog link pass) names the systems command, and the new
 /// text then gets the standing-epic default link `add` gives a row ([`link_standing`]); a leaf
@@ -1931,6 +1950,7 @@ pub fn retext(
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
+    let rewrite;
     let mut with_was = Vec::new();
     let (text, details) = if was {
         let Some(t) = text.filter(|t| !t.is_empty()) else {
@@ -1967,9 +1987,10 @@ pub fn retext(
             eprintln!("unchanged: '{t}' has the row's own words, so nothing was edited");
             return Ok(0);
         }
+        rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
         with_was.extend(details.iter().cloned());
-        (Some(t), &with_was[..])
+        (Some(rewrite.as_str()), &with_was[..])
     } else {
         (text, details)
     };
@@ -2040,7 +2061,7 @@ pub fn retext(
     }
     Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
-            (Some(t), _) => carry_tags(&md::task_text(l), t),
+            (Some(t), _) => carry_sizing(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };

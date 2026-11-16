@@ -352,6 +352,17 @@ fn edit_text_keeps_the_rows_size_and_points_tags() {
         &h,
         &["add", "fix(ui): menu flickers #size/s #pts/2"],
     ));
+    // A tag other than the sizing is what --text types: leaving #plan out clears it.
+    ok(&agent(&h, &["add", "fix(ui): sound lags #plan #size/m"]));
+    ok(&agent(
+        &h,
+        &["edit", "dm-2", "--text", "fix(ui): sound is late"],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("sound is late") && row.contains("#size/m") && !row.contains("#plan"),
+        "{row}"
+    );
     ok(&agent(
         &h,
         &["edit", "dm-1", "--text", "fix(ui): menu blinks"],
@@ -372,7 +383,7 @@ fn edit_text_keeps_the_rows_size_and_points_tags() {
     ));
     let row = h.board();
     assert!(
-        row.contains("#size/m") && !row.contains("#size/s") && row.contains("#pts/2"),
+        row.contains("#size/m") && !row.contains("#size/s") && !row.contains("#pts/2"),
         "{row}"
     );
 }
