@@ -119,7 +119,8 @@ Every session that did real work registers itself, so it can be found and reopen
 - **Captured** by `~/.claude/hooks/stop-post.d/80-session-register.sh` when a session made at least one file edit or left a dirty git tree, and for every agentctl runner session (`AGENTCTL_NAME` set), read-only or not, because a runner still spends. A read-only session by hand is not captured, on purpose.
 
 ```
-sessions list [project] [--all]     # registered sessions, newest first (default: current project)
+sessions list [project] [--all] [-n N]  # registered sessions, newest first (default: current project, 25 rows)
+sessions live                       # only the sessions running right now (~/.claude/sessions/<pid>.json)
 sessions resume <id|--pick>         # exec claude-acct run -r <id>, on the account cl would pick
 sessions compact <id|--pick>        # headless claude -p writes ~/.agent/sessions/{project}/<id>-digest.md
 ```

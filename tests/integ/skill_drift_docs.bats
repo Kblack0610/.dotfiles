@@ -123,9 +123,9 @@ setup() {
 
 @test "another host's path is not a dead path: scp-style host:~/ and ~/Library off macOS" {
   [ "$(uname -s)" != Darwin ] || skip "~/Library is checked on macOS"
-  printf 'Token at `mac-mini:~/gone/token`.\nOpen ~/Library/Application Support/X.\nBut ~/gone/here is dead.\n' > "$HOME/doc.md"
+  printf 'Token at `mac-mini:~/gone/token`.\nOpen ~/Library/Application Support/X.\nBut ~/gone/here is dead.\nPATH=$HOME/gone/a:~/gone/b\nFiles:~/gone/c\n' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
   assert_failure 1
   run jq -r '.findings[] | "\(.type) \(.item)"' <<< "$output"
-  assert_output 'DEADPATH ~/gone/here'
+  assert_output "$(printf 'DEADPATH ~/gone/a\nDEADPATH ~/gone/b\nDEADPATH ~/gone/c\nDEADPATH ~/gone/here')"
 }
