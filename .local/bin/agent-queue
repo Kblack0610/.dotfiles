@@ -185,21 +185,33 @@ prio_rank() { case "$1" in urgent) echo 0 ;; high) echo 1 ;; low) echo 2 ;; *) r
 
 # Mutations take one lock, so the web page, the shepherd and the dispatcher never interleave.
 # The wait is a timeout guard, not a delay: a writer holds it for milliseconds.
+# AQ_HELD names the lock this process holds (excl or shared), so a read under it takes no second one.
 lock() {
   mkdir -p "$AQ_DIR" || die "cannot create $AQ_DIR"
   take_lock
+  AQ_HELD=excl
 }
 # Reads share the lock, so a list never sees an item a writer is moving between states.
 lock_read() {
   [ -d "$AQ_DIR" ] || return 0
   take_lock -s
+  AQ_HELD=shared
 }
+# unlock -- let the lock go. A shared one is let go once the item files are read (items_json,
+# item_json): what a listing derives from them (holds, order, sizes) asks gh, rbw, asks and notes for
+# seconds, and a writer gives up after 10 s (ar-2427).
+unlock() {
+  exec 8>&-
+  AQ_HELD=""
+}
+unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
 # take_lock [-s]: every taker passes through .gate and closes it once in, all within one 10s
 # deadline. A waiting writer holds the gate, so a new read queues behind it and the writer waits
 # only for the reads already in. Why: flock lets a shared taker in while an exclusive one waits, so
 # overlapping lists (agent-web, hub, panel, dispatch, about 16 at once under load) held .lock
 # shared without a gap and every write timed out (2026-11-12). As with any writer-first lock, a
-# holder must not wait on a child that takes the lock again.
+# holder must not wait on a child that takes the lock again. A reader holds .lock only while it lists
+# and reads the files (snap_json), since a writer's wait is the sum of the reads already in.
 take_lock() {
   local gate end=$((SECONDS + 10))
   exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
@@ -798,10 +810,12 @@ item_side() {
 items_json() {
   local filter="$1" f a w p mo ph s afin
   shift
-  [ $# -gt 0 ] || { jq -nc "[] | $filter"; return; }
+  [ $# -gt 0 ] || { unlock_read; jq -nc "[] | $filter"; return; }
   local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=() QI_FOCUS=()
-  local LIST_MEMO_ON=1 fp fpr
+  local LIST_MEMO_ON=1 fp fpr recs
   index_load "$@"
+  recs="$(item_recs "$@")"
+  unlock_read
   {
     for f in "$@"; do
       a="${QI_AFTER[$f]-}" w=1 p="" mo="" ph="" fp="" fpr="" afin=""
@@ -810,21 +824,22 @@ items_json() {
       [ -z "${QI_FOCUS[$f]+x}" ] || IFS=$'\x1f' read -r fp fpr <<<"${QI_FOCUS[$f]}"
       item_side "$f" "$a" "${QI_TAGS[$f]-}" "$w" "$p" "$mo" "$ph" "$afin" "$fp" "$fpr"
     done
-    printf '\x1d'
-    item_recs "$@"
+    printf '\x1d%s' "$recs"
   } | jq -Rsc "$ITEM_JQ | $filter"
 }
 
 # item_json <file> -> that item as one JSON object. One item asks the store for its own `after:` items
 # instead of reading the whole queue's index.
 item_json() {
-  local f m slug fin st a tags project mode phases w pr d s fs afin=""
+  local f m slug fin st a tags project mode phases w pr d s fs afin="" recs
   IFS=$'\x1f' read -r f m slug fin st a tags project mode phases w pr < <(printf '0\t%s\n' "$1" | header_rows)
   for s in $a; do
     d="$(latest_done "$s")"; [ -n "$d" ] || continue
     fs="$(fm_get "$d" finished)"; [[ "$fs" < "$afin" ]] || afin="$fs"
   done
-  { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin" "$project" "$pr"; printf '\x1d'; item_recs "$1"; } |
+  recs="$(item_recs "$1")"
+  unlock_read
+  { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin" "$project" "$pr"; printf '\x1d%s' "$recs"; } |
     jq -Rsc "$ITEM_JQ | .[]"
 }
 
@@ -871,12 +886,19 @@ list_files() {
   done
 }
 
-# collect <states...> [--date D] [--since D] -> a JSON array of items, in queue order.
-collect() {
-  local FILES=()
+# snap_json <jq filter> <states...> [--date D] [--since D] -> items_json of those states. With no
+# lock held it takes the shared one for the listing and the read alone (items_json lets it go), so it
+# runs where it reads: a $(...) cannot let go of a lock its parent holds.
+snap_json() {
+  local filter="$1" FILES=()
+  shift
+  [ -n "${AQ_HELD-}" ] || lock_read
   list_files "$@"
-  items_json "$(order_filter)" "${FILES[@]}"
+  items_json "$filter" "${FILES[@]}"
 }
+
+# collect <states...> [--date D] [--since D] -> a JSON array of items, in queue order.
+collect() { snap_json "$(order_filter)" "$@"; }
 
 # header_set <file> <key> <value> -> rewrite the header field in place, atomically.
 header_set() {
@@ -1213,7 +1235,7 @@ cmd_add() {
   ! waits_turn "$slug" "$priority" || return 0
   ! dispatch_held "$slug" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
-  exec 8>&-
+  unlock
   fleet-dispatch start --item "$slug" ||
     echo "agent-queue: $slug could not start now, so it stays queued for the next dispatch pass" >&2
 }
@@ -1373,7 +1395,6 @@ cmd_list() {
     queued | running | waiting | review | done) states="$state" ;;
     *) die "--state is queued, running, waiting, review, done, active or all" ;;
   esac
-  lock_read
   # shellcheck disable=SC2086
   # A queue that cannot be read is a failure, never an empty list: a reader that acts on what is
   # missing (plans_orphaned) would read every item as gone.
@@ -1395,7 +1416,6 @@ cmd_list() {
 
 cmd_next() {
   local items
-  lock_read
   items="$(collect queued | jq -c '[.[] | select(.hold == null)] | first // empty')" || die "could not read the queue"
   [ -n "$items" ] || return 1
   if [ "${1:-}" = --json ]; then printf '%s\n' "$items"; else jq -r .file <<<"$items"; fi
@@ -1425,7 +1445,6 @@ cmd_mine() {
     *) die "usage: agent-queue mine [--session s | --sid id]" ;;
   esac
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
-  lock_read
   if [ -z "$session" ] && [ -n "$sid" ]; then
     slugs="$(collect running waiting review | jq -r --arg s "$sid" '.[] | select((.sessions // "") | split(" ") | index($s)) | .slug')" ||
       die "could not read the queue"
@@ -1605,7 +1624,7 @@ repoint_row() {
   case "$5" in '' | agent) flag=(--agent) ;; esac
   other="$(collect $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
     { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
-  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  [ -n "${AQ_LOCKED-}" ] || unlock
   if [ -n "$other" ]; then :
   elif notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1; then
     echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
@@ -1810,7 +1829,7 @@ close_row_on_item() {
     jq -r '[.row // "", .profile // "", .lane // "", .pr // ""] | join("\u001f")')
   [ -n "$row" ] && [ -z "$pr" ] || return 0
   case "$lane" in '' | agent) flag=(--agent) ;; esac
-  [ -n "${AQ_LOCKED-}" ] || exec 8>&-
+  [ -n "${AQ_LOCKED-}" ] || unlock
   key="${row#*:}"
   if out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" done "$key" --proof "item:$slug" 2>&1)"; then
     echo "$slug: board row $key closed"
@@ -2049,7 +2068,7 @@ cmd_reopen() {
   row="$(item_row "$dest")" prof="$(fm_get "$dest" profile)"
   [ -n "$row" ] || return 0
   case "$(fm_get "$dest" lane)" in '' | agent) flag=(--agent) ;; esac
-  exec 8>&-
+  unlock
   # An ok close closed the row too: it opens again, its proof off, before it is started. A row
   # that is not closed (the close never reached it) has nothing to reopen, so start still runs.
   if [ -n "$unland" ]; then
@@ -2153,7 +2172,7 @@ start_next() {
   done < <(items_in "$AQ_DIR/queued")
   [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0
   # The starter writes these items back through this script: free the lock, and keep the fd out of tmux.
-  exec 8>&-
+  unlock
   for s in "${landed[@]}"; do
     "$self" set "$s" "note=its plan phases were ticked before $1 closed" >/dev/null
     echo "$s: its plan phases are already ticked, so it closes instead of starting"
@@ -2179,11 +2198,9 @@ cmd_stats() {
       *) die "unknown option: $1" ;;
     esac
   done
-  local stats FILES=()
-  lock_read
+  local stats
   # shellcheck disable=SC2086
-  list_files $ACTIVE done --since "$since"
-  stats="$(items_json . "${FILES[@]}" | jq -c --arg since "$since" --argjson flow "$flow" '
+  stats="$(snap_json . $ACTIVE done --since "$since" | jq -c --arg since "$since" --argjson flow "$flow" '
     def mins($a; $b): if $a and $b then ((($b | fromdateiso8601) - ($a | fromdateiso8601)) / 60 | floor) else empty end;
     def median: sort | if length == 0 then null else .[length / 2 | floor] end;
     def p90: sort | if length == 0 then null else .[(length * 0.9 | ceil) - 1] end;

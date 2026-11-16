@@ -2048,10 +2048,35 @@ EOF
   [ "$(field "$(item queued x-first)" priority)" = high ]
 }
 
-# A test that leaves a writer waiting on a held lock: a failed assert must not leave it behind.
+# A test that leaves a writer or reader waiting on a held lock: a failed assert must not leave it behind.
 teardown() {
   exec 7>&-
   [ -z "${WRITER:-}" ] || kill "$WRITER" 2>/dev/null || true
+  [ -z "${READER:-}" ] || kill "$READER" 2>/dev/null || true
+}
+
+@test "a slow read works from a snapshot, so a writer goes in while it still derives holds (ar-2427)" {
+  # The read stalls in its first rbw call, a hold it derives after reading the files: a fake rbw that
+  # says it is in on one fifo and waits for the go on another. Events, not timing.
+  mkfifo "$SANDBOX/rbw.in" "$SANDBOX/rbw.go"
+  printf '#!/usr/bin/env bash\nif [ "$1" = unlocked ] && [ ! -e "%s/rbw.stalled" ]; then\n  : > "%s/rbw.stalled"; echo in > "%s/rbw.in"; read -r _ < "%s/rbw.go"\nfi\nexit 0\n' \
+    "$SANDBOX" "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  "$AQ" add --project game --slug held --tags "rbw:trading/key" "deploy the key" >/dev/null
+  "$AQ" list --json > "$SANDBOX/read.out" 3>&- &
+  READER=$!
+  read -r _ < "$SANDBOX/rbw.in"
+  # The reader is mid-derive. A writer must not wait on it (timeout: the guard, under the 10s give-up).
+  run timeout 5 "$AQ" add --project game --slug later "added while the read runs"
+  assert_success
+  echo go > "$SANDBOX/rbw.go"
+  wait "$READER"
+  # The read answers from what it read before the write, hold included.
+  [ "$(jq -sr 'map(.slug) | join(",")' "$SANDBOX/read.out")" = held ]
+  [ "$(jq -r .hold "$SANDBOX/read.out")" = "rbw:trading/key (not in rbw yet)" ]
+  run "$AQ" list --json
+  [ "$(jq -sr 'map(.slug) | sort | join(",")' <<<"$output")" = held,later ]
 }
 
 @test "a waiting writer holds the gate, so overlapping reads cannot starve it" {
