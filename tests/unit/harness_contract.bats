@@ -53,8 +53,9 @@ read_facts() {
       local row end
       row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_opencode_rows "$2" "$3"' _ "$REPO_ROOT" "$w/oc.db" "$w")
       # end_reason: fleet-dispatch's item_oc_end on an item that claimed the session the row names, its
-      # DB the fixture's, in a sandboxed HOME so no lane's own opencode.db is read.
-      end=$(HOME="$w" LAB_STAGES=- DISPATCH_OPENCODE_DB="$w/oc.db" DISPATCH_HARNESSES="$2" \
+      # DB the fixture's, in a sandboxed HOME so no lane's own opencode.db is read. LAB_STAGES is the
+      # ladder sourcing fleet-dispatch would ask notes for, the one the fleet_dispatch tests give it.
+      end=$(HOME="$w" LAB_STAGES="draft dev alpha beta prod" DISPATCH_OPENCODE_DB="$w/oc.db" DISPATCH_HARNESSES="$2" \
         DISPATCH_OPENCODE_SESSION_JQ="$REPO_ROOT/.local/lib/opencode-session.jq" \
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_oc_end "$(jq -cn --arg s "$2" "{sessions: \$s}")" 0' \
         _ "$REPO_ROOT" "$(jq -r .session_id <<<"$row")")
@@ -171,7 +172,7 @@ fixture_map() {
 @test "negative control: an opencode fixture whose session has no assistant message proves no end_reason, and still its tokens and cost" {
   fixture_map
   FIX="$BATS_TEST_TMPDIR/fix"; mkdir -p "$FIX"; cp "$REPO_ROOT/tests/fixtures/harness-contract/"* "$FIX/"
-  grep -v "'assistant'" "$REPO_ROOT/tests/fixtures/harness-contract/opencode.sql" > "$FIX/opencode.sql"
+  echo "DELETE FROM session_message WHERE type = 'assistant';" >> "$FIX/opencode.sql"
   run problems "$SANDBOX/harnesses.json"
   assert_output 'glm end_reason: true, but the opencode reader gives no value on its fixture'
 }
