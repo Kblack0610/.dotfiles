@@ -713,6 +713,63 @@ ledger() {
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "live_wait reads /proc once a pass: a later call sees the snapshot, an empty ppid file does not blind the cwd match (ar-2304)" {
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf" PROC_SNAP="$SANDBOX/procs"
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  [ -s "$PROC_SNAP.cwd" ]
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  local pid=$!
+  # the process is the event: wait until /proc shows its exec, not for a delay
+  until grep -q ci-gate.sh "/proc/$pid/cmdline" 2>/dev/null; do :; done
+  # the pass's snapshot predates the gate: the next tick sees it
+  run live_wait "$SANDBOX/wt"
+  assert_output ''
+  rm -f "$PROC_SNAP".*
+  proc_snapshot "$PROC_SNAP"
+  : > "$PROC_SNAP.ppid"   # a failed ps
+  run live_wait "$SANDBOX/wt"
+  assert_output 'queue'
+  kill "$pid"; wait "$pid" 2>/dev/null || true
+}
+
+@test "repo_slug: one answer per directory a pass, a letter-or-digit key, and no two directories share a file (ar-2304)" {
+  git init -q "$SANDBOX/a_b"; git -C "$SANDBOX/a_b" remote add origin 'git@github.com:o/r-1.git'
+  git init -q "$SANDBOX/a"; git -C "$SANDBOX/a" remote add origin 'git@github.com:o/other.git'
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  run repo_slug "$SANDBOX/a_b"
+  assert_output 'git_github_com_o_r_1_git'
+  git -C "$SANDBOX/a_b" remote set-url origin 'git@github.com:o/changed.git'
+  run repo_slug "$SANDBOX/a_b"
+  assert_output 'git_github_com_o_r_1_git'   # cached for the pass
+  run repo_slug "$SANDBOX/a"
+  assert_output 'git_github_com_o_other_git'
+  run repo_slug "$SANDBOX/no-such-dir"
+  assert_failure
+}
+
+@test "pr_of_head: the PR holding HEAD wins, then the branch's or upstream's; no PRs or no match is nothing (ar-2304)" {
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:o/c.git'
+  git -C "$SANDBOX/c" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+  local head; head="$(git -C "$SANDBOX/c" rev-parse HEAD)"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'x\t5\tOPEN\tPASS\t%s\t-\nmain\t4\tMERGED\tPASS\t2222\t-\nother\t3\tOPEN\tPASS\t3333\t-\n' "$head" > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" other
+  assert_output "$(printf 'x\t5\tOPEN\tPASS\t%s\t-' "$head")"
+  CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
+  printf 'main\t4\tMERGED\tPASS\t2222\t-\nother\t3\tOPEN\tPASS\t3333\t-\n' > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" other
+  assert_output "$(printf 'other\t3\tOPEN\tPASS\t3333\t-')"
+  # a detached HEAD (no branch name) matches no row, and an empty store prints nothing at all
+  run pr_of_head "$SANDBOX/c" ''
+  assert_output ''
+  CACHE="$SANDBOX/pass3"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/prs_o_c.tsv"
+  run pr_of_head "$SANDBOX/c" ''
+  assert_output ''
+}
+
 @test "a silent agent-land waiting on its checks or the landing slot is a queue gate, whatever its output age (ar-2244)" {
   # 2026-11-13 agent-1 (#2421 queued behind #2514), agent-13 (#2500) and agent-3 (#2448) were gating
   # and read "background shell idle over 120m": agent-land waits on a queued run with no limit.
