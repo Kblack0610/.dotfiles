@@ -60,7 +60,7 @@ The `Check` cell is one of three things:
 | alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` |
 | alpha | store | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill. In the repo, the `store` system in `systems.md`: `store/<id>/<store>/listing.json` for a game, `mobile/metadata.yaml` for an app | `project-stage-check "$NAME" --system store` |
 | alpha | game, app | A go-to-market entry in the marketing lab project's `docs/channels.yaml`: shape, pitch, channels and posting mode per channel | not yet: needs a `channels.yaml` validator |
-| alpha | game, app | An event catalogue: each event the product sends and its properties, in one file the Analytics tab of its page reads | not yet: needs a catalogue generator; today the PostHog event names are one const in the platform repo (`packages/game-platform/analytics/src/shared/types.ts`, no properties) and the playground lists its session events in `docs/operations/online.md` |
+| alpha | game, app | An event catalogue: each event the product sends and its properties, in one file the Analytics tab of its page reads | `event-catalogue check "$NAME"` |
 | beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
 | beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
 | beta | base | A Sentinel health watch | not yet |

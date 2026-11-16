@@ -2275,8 +2275,8 @@ cmd_stats() {
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
-# A session on a fleet worker writes the store on the workstation (AGENT_STATE_HOST, fleet-hosts.sh).
-if [ -n "${AGENT_STATE_HOST:-}" ]; then
+# The queue lives on the fleet home; anywhere else this runs there (state_forward, fleet-hosts.sh).
+if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
   # shellcheck source=../lib/fleet-hosts.sh
   . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
   state_forward agent-queue "add retask attribute credit-of" "$@"

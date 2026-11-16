@@ -21,7 +21,7 @@ NOTE:
 - neovim
 - tmux
 - kitty
-- bluetuith
+- bluetui
 
 For debugging:
 - gnome-disks

@@ -89,7 +89,6 @@ end
 
 # Add other tool paths
 set -x PATH $PATH $HOME/.maestro/bin
-set -x PATH $PATH $HOME/src/go/bin/bluetuith
 set -x PATH $PATH $HOME/.npm-global/bin
 
 # --- Aliases ---
