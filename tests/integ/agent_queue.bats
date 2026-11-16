@@ -730,7 +730,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
-  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  # A pinned clock: at-tonight's at:23:59 is due on a wall clock at 23:59, and then it heads the auth class.
+  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_QUEUE_NOW=12:00
   presence() { printf '#!/usr/bin/env bash\necho "%s 5 tmux"\n' "$1" > "$SANDBOX/bin/fleet-presence"; chmod +x "$SANDBOX/bin/fleet-presence"; }
   presence here
   run "$AQ" add --project game --slug bad --tags "hold:mac-desktop desk:nope" "x"
@@ -745,10 +746,17 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   run "$AQ" next --json
   assert_failure
   "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
-  run env AGENT_QUEUE_NOW=12:00 "$AQ" next --json
+  run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = code ]
   run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (behind code, auth)"
+  # Control: its at: is what keeps the older at-tonight behind code, up to the minute it is due.
+  AGENT_QUEUE_NOW=23:58 run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind code, auth)"
+  AGENT_QUEUE_NOW=23:59 run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind at-tonight, auth)"
+  AGENT_QUEUE_NOW=23:59 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = at-tonight ]
   # Away, the 2FA item waits and the next class takes the desktop.
   presence away
   run "$AQ" next --json
