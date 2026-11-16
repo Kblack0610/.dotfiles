@@ -259,14 +259,16 @@ file_gaps() {
   done <<<"$gaps"
 
   # The rows this check filed, open and closed, read again once this pass wrote any.
-  if [ -n "$JSON" ] && [ $((filed + met)) -gt 0 ] && ! have="$(sheet_rows)"; then
-    failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be read again"
-  else
-    [ -z "$JSON" ] || jq -c --arg have "$have" --arg seen "$seen" '
-      [$seen | split("\n")[] | select(length > 0)] as $t
-      | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
-      | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
-      <<<"$check" >&3
+  if [ -n "$JSON" ]; then
+    if [ $((filed + met)) -gt 0 ] && ! have="$(sheet_rows)"; then
+      failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be read again"
+    else
+      jq -c --arg have "$have" --arg seen "$seen" '
+        [$seen | split("\n")[] | select(length > 0)] as $t
+        | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
+        | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
+        <<<"$check" >&3
+    fi
   fi
   local what="#$TARGET"; [ -z "$SYSTEMS" ] && [ -n "$TARGET" ] || what="systems${ONLY:+ $ONLY}"
   printf 'file: %s %s: %s failing, %s filed, %s already open, %s closed or dropped, %s met and closed' \
