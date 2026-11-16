@@ -755,6 +755,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "hold:mac-desktop (behind code, auth)"
   AGENT_QUEUE_NOW=23:59 run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (behind at-tonight, auth)"
+  AGENT_QUEUE_NOW=23:59 run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = at-tonight ]
   # Away, the 2FA item waits and the next class takes the desktop.
   presence away
   run "$AQ" next --json
