@@ -1816,6 +1816,26 @@ EOF
   assert_called "ptask game --agent unstart gm-1"
   assert_called "ptask game --agent unstart gm-2"
   assert_called "--action item-cancelled"
+  assert_called "--by sess-9 --why returned: out of focus"
+}
+
+@test "return exits 1 and names the row command when a board row could not be un-started, the return stands" {
+  "$AQ" add --project game --slug ua "a"
+  "$AQ" set ua row=game:gm-5
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\ncase "$*" in *unstart*) exit 1 ;; esac\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" return ua --why "back"
+  assert_failure
+  assert_output --partial "ua is returned, but its board row gm-5 on game was not un-started: notes ptask game --agent unstart gm-5"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ua.md)" end_reason)" = returned ]
+}
+
+@test "return of an item already behind a dead after: keeps that root cause" {
+  "$AQ" add --project game --slug va "a"
+  "$AQ" add --project game --slug vb --after va "b"
+  CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel va --why "set aside"
+  "$AQ" return vb --why "back"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-vb.md)" cancel_cause)" = "after va closed cancelled by sess-1: set aside" ]
 }
 
 @test "negative control: a plain cancel of A still leaves B dead, and cancelling B records A as the cause" {

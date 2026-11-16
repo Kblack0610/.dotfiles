@@ -24,9 +24,10 @@
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
-#   return <slug> --why <text>    send an item back to its board: closed cancelled with end_reason: returned, its row un-started,
-#       and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
+#   return <slug> --why <text>    send an item back to its board: closed cancelled with end_reason: returned, its row un-started,
+#       and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
+#       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--if <state>]
@@ -1545,6 +1546,8 @@ cancel_close() {
   [ -z "$cause" ] || header_set "$f" cancel_cause "$cause"
   [ -z "$end" ] || header_set "$f" end_reason "$end"
   dest="$(move_to "$f" "done")" || die "could not move $f"
+  # A return says so in the chain record too, where the item file is no longer at hand.
+  [ -z "$end" ] || why="$end: $why"
   item_event item-cancelled "$dest" --to done ${by:+--by "$by"} ${why:+--why "$why"}
   echo "${end:-cancelled} $slug -> $dest"
 }
@@ -1604,20 +1607,20 @@ cmd_return() {
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
   done
   for i in "${!chain[@]}"; do
-    cause=""
-    [ "$i" -eq 0 ] || cause="returned with $slug"
+    # The root keeps the cause it was already dead by, if any; each follower names the item returned.
+    if [ "$i" -eq 0 ]; then cause="$(dead_cause "${files[i]}")"; else cause="returned with $slug"; fi
     cancel_close "${files[i]}" "$why" "$by" "$cause" returned
   done
   # notes writes the rows and may call agent-queue: the lock goes first, as in close_row_on_item.
   unlock
-  command -v notes >/dev/null || return 0
+  # A row that stays started reads as an orphan with no item: say so and exit 1, as reopen does.
+  local rc=0
   for i in "${!chain[@]}"; do
     [ -n "${rows[i]}" ] || continue
-    local flag=()
-    case "${lanes[i]}" in '' | agent) flag=(--agent) ;; esac
-    notes ${profs[i]:+--profile "${profs[i]}"} ptask "${rows[i]%%:*}" "${flag[@]}" unstart "${rows[i]#*:}" >/dev/null 2>&1 ||
-      echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: notes ${profs[i]:+--profile ${profs[i]} }ptask ${rows[i]%%:*} ${flag[*]} unstart ${rows[i]#*:}" >&2
+    unstart_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" ||
+      { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: $UNSTART_HINT" >&2; rc=1; }
   done
+  return "$rc"
 }
 
 # cancel_record_only <slug>: an item whose file was deleted outside agent-queue still sits at its
@@ -1711,19 +1714,29 @@ cmd_set() {
 # pass, and the row it works now is marked as a move to its state would mark it (mark_row). A row
 # another active item names is that item's, and a done item's rows are its close's business.
 repoint_row() {
-  local slug=$1 f=$2 row=$3 prof=$4 flag=() other
+  local slug=$1 f=$2 row=$3 prof=$4 other
   [ "$(state_of "$f")" != done ] && command -v notes >/dev/null || return 0
-  case "$5" in '' | agent) flag=(--agent) ;; esac
   other="$(collect $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
     { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
   [ -n "${AQ_LOCKED-}" ] || unlock
   if [ -n "$other" ]; then :
-  elif notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1; then
+  elif unstart_row "$row" "$prof" "$5"; then
     echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
   else
-    echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}" >&2
+    echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: $UNSTART_HINT" >&2
   fi
   case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
+}
+
+# unstart_row <row> <profile> <lane> -- un-start that board row through notes, the rows' one writer
+# (the agent lane's flag and the profile as mark_row gives them). Fails when notes does, with the
+# command to run by hand in UNSTART_HINT. The caller has let the queue lock go.
+unstart_row() {
+  local row=$1 prof=$2 flag=()
+  case "$3" in '' | agent) flag=(--agent) ;; esac
+  UNSTART_HINT="notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}"
+  command -v notes >/dev/null &&
+    notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
