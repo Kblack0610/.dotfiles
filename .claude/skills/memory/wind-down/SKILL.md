@@ -110,11 +110,11 @@ lab project exists for this repo, refresh its deterministic `## <- Release & sta
 ```
 
 Skip if the repo has no lab project.
-See the `lab-sync` skill.
+See the `lab-status` skill, "Refresh the feed".
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
 "where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
-`lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
+the feed can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
 

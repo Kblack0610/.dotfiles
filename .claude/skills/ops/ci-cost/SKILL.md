@@ -1,7 +1,7 @@
 ---
 name: ci-cost
 description: >-
-  Cut CI time from measured data, one lever per PR, re-measured. Use for "why does CI take so long", "cut our CI time", "where do the runner hours go", "is the pool overloaded". Running tests: playground-headless-test.
+  Cut CI time from measured data, one lever per PR, re-measured. Use for "CI cost analysis", "why does CI take so long", "cut our CI time", "where do the runner hours go", "is the pool overloaded". Running tests: playground-headless-test.
 metadata:
   category: ops
   tags: [ci, cost, benchmark, testing, unity, playground]
