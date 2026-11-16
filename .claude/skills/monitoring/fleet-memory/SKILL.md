@@ -23,7 +23,7 @@ Three jobs turn the day's work into memory, and none of them is a skill of its o
 - A sweep wanted now, before tomorrow's sessions start.
 - A mem0 proposal from `dream` waiting for a decision.
 
-Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for user preferences (`mem0-ops`), or for the lab feed's release facts (`lab-sync`).
+Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for user preferences (`mem0-ops`), or for the lab feed's release facts (`lab-status`).
 
 ## Which job
 
@@ -31,7 +31,7 @@ Not for a correction to file (that goes in `~/.agent/lessons/{project}.md`), for
 |---|---|---|
 | `nightly-sync` | 23:00 | notes -> mem0 |
 | `dream` | 03:00 | agent corpus -> lessons, `memory/`, mem0 proposals |
-| `lab-sync` | weekly | git and `~/.agent` -> lab `summary.md` (`lab-sync`) |
+| `lab-sync` | weekly | git and `~/.agent` -> lab `summary.md` (`lab-status`) |
 
 ## Verbs
 

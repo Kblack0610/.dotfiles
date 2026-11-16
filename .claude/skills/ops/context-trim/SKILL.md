@@ -10,7 +10,7 @@ metadata:
 
 # Context trim
 
-One pass that makes the text sent on every request smaller without losing a rule. The method (finding shape, in flight, baseline, one lever per PR, re-measure, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; this file holds what is specific to fixed context.
+One pass that makes the text sent on every request smaller without losing a rule. The pass itself (finding shape, in flight, baseline, one lever per PR, re-measure, report, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; read it first. This file holds what is specific to fixed context.
 
 The size of each part comes from `agent-usage burn --json` (`first_request_parts` per start, `every_request_parts` `context_share` across the window); the bytes of each home from `wc -c`. What must survive comes from the rule register, `~/.config/agentctl/rules.jsonl`, read by `fleet-bench rules`. Restated text comes from `skill-drift --dups`. Budgets are the ones `~/.claude/hooks/context-budget-guard.sh` warns on.
 
@@ -43,7 +43,7 @@ A hard scenario is a situation where a session without the rule's text does some
 
 ## Steps
 
-1. **In flight first,** per the method. Another session's open PR on a home is theirs; leave that home for the next pass.
+1. **In flight first,** per the method: a home on another session's open branch waits for the next pass.
 2. **Baseline.** `agent-usage burn --days 7 --json` into `~/.cache/context-trim/p<N>/`, `wc -c` on every home above, `fleet-bench rules` (the `scenarios=` line) and `fleet-bench rules --check`.
 3. **Cut by cause,** largest part first, in this order:
    - duplicate: the rule already has a home (`skill-drift --dups` names the winner); delete the copy;
@@ -54,10 +54,9 @@ A hard scenario is a situation where a session without the rule's text does some
 4. **Prove nothing was lost.** Step 2's register commands again, and the scenario read in "Hard scenarios". A red is fixed by restoring the text, never by editing the row away.
 5. **Land,** one part per PR through `dotfiles-land`, `/code-review high` on any PR that touches a scenario rule.
 6. **Re-measure.** Bytes per home now; `agent-usage burn` over the same window length once a week of sessions has the change, queued as an `at:` item per the method.
-7. **Report** in `~/.notes/lab/projects/current/agent-runtime/docs/context-trim-p<N>.md`: one row per part with a column per measured point, what was cut and where each moved, the scenario count before and after, what was kept and why, and what is left. Queue the next pass per the method (slug `context-trim-p<N+1>`).
+7. **Report** in `~/.notes/lab/projects/current/agent-runtime/docs/context-trim-p<N>.md` per the method, with one table row per part, where each cut moved, and the scenario count before and after. Queue the next pass per the method.
 
 ## Do NOT
 
 - Do not cut a rule because it is long; cut what restates, misplaces or pads it.
 - Do not delete a memory, lesson or rule outright when it is only misplaced; move it to its narrower home.
-- Do not restate `analysis-streams.md`, `update-rules`, `docs-cleanup` or `usage-cleanup` here; name them.

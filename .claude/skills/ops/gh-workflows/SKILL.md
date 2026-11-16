@@ -20,7 +20,7 @@ Drive GitHub through the `gh` CLI via Bash. No MCP wrapper needed - `gh` is auth
 
 Covers GitHub operations through the `gh` CLI: pull requests, issues, CI checks, workflow runs, releases and repo management.
 
-Use whenever the user asks to interact with GitHub. Prefer this over any GitHub MCP. Bitbucket: `bitbucket-ops`. A pile of open PRs: `ingest-prs`.
+Use whenever the user asks to interact with GitHub. Prefer this over any GitHub MCP. A pile of open PRs: `ingest-prs`.
 
 ## Pull requests
 
