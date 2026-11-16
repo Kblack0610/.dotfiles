@@ -40,7 +40,12 @@ rotate_log() {
 
 # Setup
 mkdir -p "$SYNC_DIR"
-export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10"
+# The dedicated key is optional: without it git uses the remote's own auth
+# (an https origin on Forgejo needs none of this).
+if [ -f "$SSH_KEY" ]; then
+    export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10"
+fi
+export GIT_TERMINAL_PROMPT=0
 
 # Acquire lock (non-blocking)
 exec 200>"$LOCK_FILE"
@@ -51,9 +56,9 @@ fi
 
 cd "$AGENT_DIR" || { log "ERROR: Cannot cd to $AGENT_DIR"; exit 1; }
 
-# Check for network connectivity (quick test)
-if ! ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new git@github.com 2>&1 | grep -qi "successfully authenticated"; then
-    log "SKIP: No network or GitHub unavailable"
+# Reachability and auth of the remote we actually sync with, whatever host it is
+if ! timeout 15 git ls-remote --exit-code "$REMOTE" "$BRANCH" >/dev/null 2>&1; then
+    log "SKIP: $REMOTE ($(git remote get-url "$REMOTE" 2>/dev/null)) unreachable or not authorized"
     exit 0
 fi
 

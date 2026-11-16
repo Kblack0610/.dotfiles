@@ -208,30 +208,6 @@ apply_dotfiles() {
     log_info "Dotfiles applied"
 }
 
-# Notes CLI build (always) + personal Forgejo / MQTT-ntfy sync fan-out (only
-# when NOTES_PRIMARY_REMOTE_URL is set). The CLI build needs no URL.
-setup_notes_sync() {
-    local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
-    if [[ ! -x "$bootstrap" ]]; then
-        log_warning "notes-bootstrap not found at $bootstrap — skipping"
-        return 0
-    fi
-
-    log_section "Setting up notes CLI + sync"
-
-    # The notes CLI build needs no sync URL — always build it so daily-note
-    # tooling and profile resolution work even on machines without notes sync.
-    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
-        log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
-        "$bootstrap" --build-only
-        return 0
-    fi
-
-    "$bootstrap" --primary-url "$NOTES_PRIMARY_REMOTE_URL" \
-                 ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
-}
-
 install_all() {
     step base       create_directories
     step base       update_system
@@ -253,7 +229,6 @@ install_all() {
     step dotfiles   setup_dotfiles_private # attach the private overlay (~/.dotfiles-private) on top
     step dotfiles   setup_ai_memory
 
-    step notes      setup_notes_sync
 }
 
 post_install_notes() {
