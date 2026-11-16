@@ -354,7 +354,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 
 @test "after holds an item until that slug is done ok" {
   "$AQ" add --project game --slug first "a"
-  "$AQ" add --project game --slug second --priority urgent --after first "b"
+  "$AQ" add --project game --slug second --from shepherd --priority urgent --after first "b"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
   [ "$("$AQ" next --json | jq -r .slug)" = first ]
@@ -376,9 +376,9 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug second --after first "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why"
+  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why and --ask <an ask the human answered>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why"
+  assert_output "after first closed cancelled, dead: read who closed it and why in agent-queue show first, then set after=<slug> or cancel this with --why and --ask <an ask the human answered>"
 }
 
 # ar-39: after: is a list of slugs.
@@ -440,7 +440,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   # A dead slug in the list is named even while another is live: it never releases.
   "$AQ" add --project game --slug c "c" >/dev/null
   "$AQ" add --project game --slug x "x" >/dev/null
-  "$AQ" add --project game --slug two --after c,x "two" >/dev/null
+  "$AQ" add --project game --slug two --from shepherd --after c,x "two" >/dev/null
   "$AQ" move x done --status failed >/dev/null
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
   assert_output "after x closed failed, dead: read who closed it and why in agent-queue show x, then set after=<slug> or cancel this with --why"
@@ -1733,8 +1733,8 @@ EOF
 
 # 2026-11-12: two cleanup sessions cancelled 425 items and the items said only "cancelled".
 @test "cancel from a session needs --why, and records who and why on the item and in the event" {
-  "$AQ" add --project game --slug w1 "w1"
-  "$AQ" add --project game --slug w2 "w2"
+  "$AQ" add --project game --from shepherd --slug w1 "w1"
+  "$AQ" add --project game --from shepherd --slug w2 "w2"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel w1
   assert_failure; assert_output --partial "needs --why"
   [ -n "$(item queued w1)" ]
@@ -1770,8 +1770,8 @@ EOF
 }
 
 @test "move --status cancelled takes the same --why, and --why on any other close is refused" {
-  "$AQ" add --project game --slug m1 "m1"
-  "$AQ" add --project game --slug m2 "m2"
+  "$AQ" add --project game --from shepherd --slug m1 "m1"
+  "$AQ" add --project game --from shepherd --slug m2 "m2"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m1 done --status cancelled
   assert_failure; assert_output --partial "needs --why"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m1 done --status cancelled --why "gone"
@@ -1780,9 +1780,60 @@ EOF
   [ "$(field "$f" cancelled_by)" = sess-9 ]
   [ "$(field "$f" cancel_why)" = gone ]
   run "$AQ" move m2 done --status failed --why "x"
-  assert_failure; assert_output --partial "--why records a cancel"
+  assert_failure; assert_output --partial "--why and --ask record a cancel"
   # a failed close from a session still needs no reason
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move m2 done --status failed
+  assert_success
+}
+
+# 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
+# the next by looping a dead chain (mkt-17 after mkt-16, then 18, 19, 20).
+@test "a session cancels the human's work only on an ask the human answered; the human and other work are not held" {
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  "$AQ" add --project game --slug mkt-16 "mkt-16" >/dev/null
+  for n in 17 18 19 20; do "$AQ" add --project game --slug "mkt-$n" --after "mkt-$((n - 1))" "mkt-$n" >/dev/null; done
+  "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --slug chore "chore" >/dev/null
+  # The terminal cancel (no session env) is the human's: mkt-16 goes, and its chain is dead.
+  "$AQ" cancel mkt-16 >/dev/null
+  run bash -c "'$AQ' show mkt-17 --json | jq -r .hold"
+  assert_output --partial "cancel this with --why and --ask <an ask the human answered>"
+  # The replay: the dead-chain loop refuses every from: human item and the #requested one.
+  for s in mkt-17 mkt-18 mkt-19 mkt-20 asked; do
+    CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel "$s" --why "dead chain"
+    assert_failure; assert_output --partial "$s is work the human asked for"
+    [ -n "$(item queued "$s")" ]
+  done
+  AGENT_QUEUE_ITEM=sweeper run "$AQ" move mkt-17 done --status cancelled --why "dead chain"
+  assert_failure; assert_output --partial "work the human asked for"
+  # An ask the human has not answered, or the judge answered, is not their decision.
+  ask p1 pending
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask p1
+  assert_failure; assert_output --partial "ask p1 is pending"
+  ask j1 answered a judge
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask j1
+  assert_failure; assert_output --partial "ask j1 is answered by judge, not the human"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask nope
+  assert_failure; assert_output --partial "no such ask"
+  [ -n "$(item queued mkt-17)" ]
+  # The human's answer lets it go, and the item names the ask.
+  ask h1 answered a human
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1
+  assert_success
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-17.md)"
+  [ "$(field "$f" cancel_why)" = "dead chain (ask h1)" ]
+  [ "$(field "$f" cancelled_by)" = sess-9 ]
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-18 done --status cancelled --why "dead chain" --ask h1
+  assert_success
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
+  # Negative controls: other work cancels from a session with a reason, and --ask is cancel's alone.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel chore --why "dup"
+  assert_success
+  run "$AQ" move mkt-19 done --status failed --ask h1
+  assert_failure; assert_output --partial "--ask record a cancel"
+  # The human at a terminal is never held.
+  run "$AQ" cancel asked
   assert_success
 }
 
