@@ -3071,3 +3071,22 @@ started_item() {
   run "$AQ" show next --json
   assert_equal "$(jq -r '.hold // ""' <<<"$output")" ''
 }
+
+@test "--row, a row move and --plan check the queue for a row or plan without deriving a hold (ar-2544)" {
+  story_notes
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\necho OPEN\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  "$AQ" add --project game --slug held --tags "pr:Org/game#7" "a"
+  : > "$SANDBOX/gh.log"
+  run "$AQ" add --project game --row lv-2 --slug by-row "feat(menu): the row's work"
+  assert_success
+  run "$AQ" add --project game --row lv-2 --slug twice "y"
+  assert_failure; assert_output --partial "by-row already works that row"
+  printf '# p\n\n## Phases\n- [ ] one\n' > "$SANDBOX/p.md"
+  run "$AQ" add --project game --plan "$SANDBOX/p.md"
+  assert_success
+  run "$AQ" add --project game --plan "$SANDBOX/p.md"
+  assert_failure; assert_output --partial "already queued"
+  [ ! -s "$SANDBOX/gh.log" ] || fail "a writer asked gh: $(cat "$SANDBOX/gh.log")"
+}
