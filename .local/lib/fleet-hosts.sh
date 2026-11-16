@@ -22,6 +22,8 @@ _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_HOSTS_GROUP:=fleet_workers}"
 : "${FLEET_SSH_TIMEOUT:=5}"   # seconds an ssh to a worker or the state host may take to connect, and may go silent
 : "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
+: "${FLEET_ROSTER_MAX_SECS:=900}"   # a roster last fetched longer ago is fetched before it is read: fleet-dispatch's pass cadence
+: "${FLEET_ROSTER_RETRY_SECS:=60}"   # after a failed fetch, seconds before a read tries again
 
 # fleet_inventory_repo -> home-config's checkout, from the project map.
 fleet_inventory_repo() {
@@ -53,7 +55,8 @@ fleet_inventory() {
 # fleet_inventory_text -> the inventory's YAML. home-config's comes from its mainline's
 # remote-tracking ref, never its working tree: nothing pulls that checkout, so the tree lags what
 # merged on the forge. A checkout with no such ref or file reads as no roster, said on stderr, so
-# every session stays here.
+# every session stays here. A ref last fetched over FLEET_ROSTER_MAX_SECS ago is fetched first
+# (fleet_roster_fresh), so a machine back from being off never reads itself as the home it was.
 fleet_inventory_text() {
   if [ -n "${FLEET_INVENTORY:-}" ]; then cat "$FLEET_INVENTORY" 2>/dev/null; return; fi
   local hc ref
@@ -62,6 +65,7 @@ fleet_inventory_text() {
     echo "fleet-hosts: $hc has no main or master tracking a remote, so the fleet roster reads as empty" >&2
     return 1
   }
+  fleet_roster_fresh "$hc"
   git -C "$hc" show "$ref:ansible/inventory.yml" 2>/dev/null || {
     echo "fleet-hosts: $ref in $hc has no ansible/inventory.yml, so the fleet roster reads as empty" >&2
     return 1
@@ -70,7 +74,8 @@ fleet_inventory_text() {
 
 # fleet_roster_fetch: fetch that ref alone, so a roster change merged on the forge reaches the next
 # pass; the working tree never moves. It cannot prompt, and runs no gc in a checkout others share.
-# A failed fetch says so on stderr and returns 1; the roster stays as last fetched.
+# A failed fetch says so on stderr and returns 1; the roster stays as last fetched. A fetch that
+# lands stamps the checkout (_fh_stamp), which is what fleet_roster_fresh ages.
 fleet_roster_fetch() {
   [ -z "${FLEET_INVENTORY:-}" ] || return 0
   local hc ref; hc=$(fleet_inventory_repo) && ref=$(fleet_roster_ref "$hc") || return 0
@@ -79,6 +84,24 @@ fleet_roster_fetch() {
     echo "fleet-hosts: fetching $ref in $hc failed, so the roster is as last fetched" >&2
     return 1
   }
+  touch "$(_fh_stamp "$hc")" 2>/dev/null || true
+}
+
+# _fh_stamp <checkout> -> the file in its git dir whose mtime is the roster's last fetch. The ref's
+# reflog cannot say: a fetch that finds nothing new writes no entry.
+_fh_stamp() { git -C "$1" rev-parse --path-format=absolute --git-path fleet-roster-fetched 2>/dev/null; }
+
+# fleet_roster_fresh <checkout>: fetch the roster when its last fetch is FLEET_ROSTER_MAX_SECS old or
+# more. The attempt is claimed on the stamp first, set to come due again FLEET_ROSTER_RETRY_SECS on,
+# so a forge that is down costs one fetch a minute, not one a call; a reader that cannot write the
+# stamp (a sandboxed lane) never fetches and reads the ref as it is.
+fleet_roster_fresh() {
+  local stamp now last
+  stamp=$(_fh_stamp "$1") && [ -n "$stamp" ] || return 0
+  now=$(date +%s); last=$(date -r "$stamp" +%s 2>/dev/null || echo 0)
+  [ $((now - last)) -ge "$FLEET_ROSTER_MAX_SECS" ] || return 0
+  touch -d "@$((now - FLEET_ROSTER_MAX_SECS + FLEET_ROSTER_RETRY_SECS))" "$stamp" 2>/dev/null || return 0
+  fleet_roster_fetch || true
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:

@@ -205,13 +205,55 @@ EOF
   assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state"
 }
 
-@test "fleet-is-home reads the roster as last fetched and never fetches it" {
+@test "a roster fetched within FLEET_ROSTER_MAX_SECS is read as it is, with no fetch" {
   home_config_fixture
   export -f project_repo_path
+  touch "$(_fh_stamp "$HC")"
   local before; before=$(git -C "$HC" rev-parse forgejo/master)
   run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
   assert_equal "$(git -C "$HC" rev-parse forgejo/master)" "$before"
+}
+
+@test "a machine back from being off, whose stale roster names it, reads the other home the forge names and forwards" {
+  home_config_fixture
+  export -f project_repo_path
+  stub getent 'exit 2'   # no name resolves to this machine
+  roster_names state.lan
+  run fleet_roster_fetch
+  assert_success
+  roster_names razer-laptop.lan   # merged on the forge while this machine was off
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
+  assert_equal "$(git -C "$HC" show forgejo/master:ansible/inventory.yml | grep -c 'fleet_state_host: state.lan')" 1
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_failure 1
+  assert_equal "$stderr" "fleet-is-home: state is not the fleet home; the inventory's fleet_state_host is razer-laptop"
+  run fleet_is_home
+  assert_failure
+  echo 'listed on razer' > "$NOTES_FIXTURE/ssh.out"
+  jq -n --arg hc "$HC" '{paths: {($hc): "home-config"}}' > "$SANDBOX/map.json"   # agent-queue resolves home-config itself
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
+  git -C "$HC" update-ref refs/remotes/forgejo/master forgejo/master@{1}   # stale again, naming this machine
+  PROJECT_MAP_FILE="$SANDBOX/map.json" run "$REPO_ROOT/.local/bin/agent-queue" list
+  assert_success
+  assert_output 'listed on razer'
+  assert_called 'razer-laptop.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-queue list  <<none'
+  [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
+}
+
+@test "a stale roster whose fetch fails is read as it is, and fetched again only after FLEET_ROSTER_RETRY_SECS" {
+  home_config_fixture
+  git -C "$HC" remote set-url forgejo "$SANDBOX/gone.git"
+  run --separate-stderr fleet_hosts
+  assert_success
+  assert_output ''
+  assert_equal "$stderr" "fleet-hosts: fetching forgejo/master in $HC failed, so the roster is as last fetched"
+  run --separate-stderr fleet_hosts
+  assert_success
+  assert_equal "$stderr" ''
+  git -C "$HC" remote set-url forgejo "$SANDBOX/up.git"
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS))" "$(_fh_stamp "$HC")"   # the retry window has passed
+  assert_equal "$(fleet_host razer-laptop | jq -r .dest)" 192.0.2.26
 }
 
 @test "the singleton units carry the fleet-is-home condition, and so write the store here" {
@@ -257,9 +299,17 @@ home_config_fixture() {
   project_repo_path() { printf '%s' "$HC"; }
 }
 
+# roster_names <addr>: push a roster to the fixture's forge whose fleet_state_host is <addr>.
+roster_names() {
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          fleet_state_host: %s\n' "$1" > "$SANDBOX/pusher/ansible/inventory.yml"
+  git -C "$SANDBOX/pusher" -c user.name=t -c user.email=t@t commit -qam "home $1"
+  git -C "$SANDBOX/pusher" push -q forgejo master
+}
+
 @test "the roster is home-config's mainline as last fetched, never its working tree, whatever branch it is on" {
   home_config_fixture
   git -C "$HC" checkout -q -b feature
+  touch "$(_fh_stamp "$HC")"   # fetched just now, so the read does not fetch
   run fleet_hosts
   assert_success
   assert_output ''
