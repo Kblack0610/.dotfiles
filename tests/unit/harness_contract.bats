@@ -50,8 +50,16 @@ read_facts() {
          hard_errors: .metrics.hard_errors, tests: .metrics.activity.test_runs, effort}' <<<"$row" ;;
     opencode)
       sqlite3 "$w/oc.db" < "$FIX/opencode.sql"
-      bash -c '. "$1/.local/lib/session-outcomes.sh" && so_opencode_rows "$2" "$3"' _ "$REPO_ROOT" "$w/oc.db" "$w" |
-        jq -c '{tokens: .tokens.total, cost: .cost_usd}' ;;
+      local row end
+      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_opencode_rows "$2" "$3"' _ "$REPO_ROOT" "$w/oc.db" "$w")
+      # end_reason: fleet-dispatch's item_oc_end on an item that claimed the session the row names, its
+      # DB the fixture's, in a sandboxed HOME so no lane's own opencode.db is read. LAB_STAGES is the
+      # ladder sourcing fleet-dispatch would ask notes for, the one the fleet_dispatch tests give it.
+      end=$(HOME="$w" LAB_STAGES="draft dev alpha beta prod" DISPATCH_OPENCODE_DB="$w/oc.db" DISPATCH_HARNESSES="$2" \
+        DISPATCH_OPENCODE_SESSION_JQ="$REPO_ROOT/.local/lib/opencode-session.jq" \
+        bash -c '. "$1/.local/bin/fleet-dispatch" && item_oc_end "$(jq -cn --arg s "$2" "{sessions: \$s}")" 0' \
+        _ "$REPO_ROOT" "$(jq -r .session_id <<<"$row")")
+      jq -c --arg end "$end" '{end_reason: (if $end == "" then null else $end end), tokens: .tokens.total, cost: .cost_usd}' <<<"$row" ;;
     claude-lazer)
       bash -c '. "$1/.local/lib/session-outcomes.sh" && so_transcript_metrics "$2"' _ "$REPO_ROOT" "$FIX/claude-transcript.jsonl" |
         jq -c '{tokens: .activity.tokens, hard_errors, tests: .activity.test_runs}' ;;
@@ -92,8 +100,8 @@ fixture_map() {
   jq -n '{harnesses: {
     codex: {launcher: "codex", resume: true, reports: {end_reason: true, tokens: true, cost: true, hard_errors: true, tests: true, effort: true},
             prices: {"gpt-6.1-sol": {input: 2, cached_input: 0.1, output: 10}}},
-    glm: {launcher: "opencode", resume: false, reports: {end_reason: false, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
-          why_not: {resume: "r", end_reason: "e", hard_errors: "h", tests: "t", effort: "f"}},
+    glm: {launcher: "opencode", resume: false, reports: {end_reason: true, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
+          why_not: {resume: "r", hard_errors: "h", tests: "t", effort: "f"}},
     "lazer-reserve": {launcher: "claude-lazer", resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}},
     "claude-lazer": {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
@@ -116,11 +124,11 @@ fixture_map() {
   assert_output ''
 }
 
-@test "each reader gives its facts on its fixture: codex all six and resume, opencode tokens and cost, claude transcripts tokens, errors and tests" {
+@test "each reader gives its facts on its fixture: codex all six and resume, opencode end_reason, tokens and cost, claude transcripts tokens, errors and tests" {
   fixture_map
   assert_equal "$(reader codex "$SANDBOX/harnesses.json" | jq -c '[.resume, .end_reason, .tokens, .cost, .hard_errors.tool_errors, .tests, .effort]')" '["cx-contract","limit",240,0.00061,1,2,"medium"]'
   # cost in thousandths: jq 1.6 prints the stored 0.042 as 0.0420000000000000026.
-  assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.tokens, (.cost * 1000 | round)]')" '[480,42]'
+  assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, (.cost * 1000 | round)]')" '["stopped",480,42]'
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.tokens, .hard_errors.tool_errors, .tests]')" '[35,1,1]'
 }
 
@@ -159,4 +167,12 @@ fixture_map() {
   assert_line 'codex cost: true, but the codex reader gives no value on its fixture'
   assert_line 'codex hard_errors: true, but the codex reader gives no value on its fixture'
   assert_line 'codex tests: true, but the codex reader gives no value on its fixture'
+}
+
+@test "negative control: an opencode fixture whose session has no assistant message proves no end_reason, and still its tokens and cost" {
+  fixture_map
+  FIX="$BATS_TEST_TMPDIR/fix"; mkdir -p "$FIX"; cp "$REPO_ROOT/tests/fixtures/harness-contract/"* "$FIX/"
+  echo "DELETE FROM session_message WHERE type = 'assistant';" >> "$FIX/opencode.sql"
+  run problems "$SANDBOX/harnesses.json"
+  assert_output 'glm end_reason: true, but the opencode reader gives no value on its fixture'
 }
