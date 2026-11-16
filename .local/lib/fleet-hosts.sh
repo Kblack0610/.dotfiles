@@ -146,6 +146,11 @@ PY
   [ -z "$FLEET_HOSTS_JSON" ] || printf '%s\n' "$FLEET_HOSTS_JSON"
 }
 
+# fleet_state_host -> the workstation's short name: the roster's fleet_state_host up to its first
+# dot, empty when no worker names one. It is the one record of which machine holds the store and runs
+# dispatch, so a machine back from an outage reads that it is no longer the workstation.
+fleet_state_host() { fleet_hosts | jq -r '.state_host // empty' 2>/dev/null | grep -m1 . | cut -d. -f1; }
+
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
 fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
 

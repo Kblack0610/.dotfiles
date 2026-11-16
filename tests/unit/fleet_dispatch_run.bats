@@ -967,6 +967,20 @@ trainee_ready() {
   assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
 }
 
+@test "run: only the inventory's fleet_state_host runs a pass; the old workstation stands down" {
+  game_ready
+  worker '2.0 16 1'
+  DISPATCH_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial "this machine (old-main) is not the workstation: the inventory's fleet_state_host is state"
+  assert_not_called 'wt new'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "a stood-down pass queued an item"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  refute_output --partial 'is not the workstation'
+  assert_output --partial 'would queue: game'
+}
+
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
