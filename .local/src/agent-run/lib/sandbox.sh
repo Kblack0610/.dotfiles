@@ -77,28 +77,54 @@ sandbox_git_common() {
   git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
 }
 
-# sandbox_git_denies <common> -> one path per line, nothing outside a repo: what a lane could write in
-# the git dirs it can reach that would run code on a later git run there, sandboxed or not. The common
-# dir's hooks and config, config.worktree (read once extensions.worktreeConfig is on) and info
-# (info/attributes picks filter, diff and merge drivers); in a linked worktree, its own git dir's
-# config.worktree, hooks and commondir, the checkout's .git file (both point git at another git dir)
-# and the main checkout's submodule repos (modules); and every other worktree's git dir, whole, which
-# a lane never needs. A missing path is denied too, so the lane cannot create it. Concrete paths only:
-# srt drops a write glob on Linux, and a deny over worktrees/ would cover the lane's own git dir too.
-sandbox_git_denies() {
-  local common="$1" own top wt
+# sandbox_git_own -> the absolute git dir of the cwd (from a linked worktree, worktrees/<name> under
+# the common dir), or nothing outside a repo.
+sandbox_git_own() {
+  git rev-parse --path-format=absolute --git-dir 2>/dev/null || true
+}
+
+# sandbox_git_linked <common> <own> -> success when the cwd is a linked worktree: its git dir is not
+# the common dir.
+sandbox_git_linked() {
+  [ -n "$2" ] && ! [ "$2" -ef "$1" ]
+}
+
+# sandbox_git_writes <common> <own> -> one path per line, nothing outside a repo: the git paths a lane
+# may write. From a linked worktree, its own git dir (index, HEAD, its reflog) and the common dir's
+# objects, refs, logs and lfs, which commit, fetch, push and git-lfs write; the rest of the common
+# dir stays read-only, worktrees/ with it, so a worktree another lane adds after this one starts is
+# never writable (a deny list could not name it: srt takes concrete paths only). From a plain clone,
+# the git dir is the common dir, whole. srt skips a write path that does not exist yet.
+sandbox_git_writes() {
+  local common="$1" own="$2"
   [ -n "$common" ] || return 0
-  own="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+  if sandbox_git_linked "$common" "$own"; then
+    printf '%s\n' "$own" "$common/objects" "$common/refs" "$common/logs" "$common/lfs"
+  else
+    printf '%s\n' "$common"
+  fi
+}
+
+# sandbox_git_denies <common> <own> -> one path per line, nothing outside a repo: what would run code
+# or point git elsewhere on a later git run, sandboxed or not. The common dir's hooks, config,
+# config.worktree (read once extensions.worktreeConfig is on) and info (info/attributes picks filter,
+# diff and merge drivers): outside sandbox_git_writes from a worktree, but denied anyway, in case the
+# profile's allowWrite reaches them. From a linked worktree, its own git dir's config.worktree, hooks
+# and commondir, and the checkout's .git file. From a plain clone, worktrees/ whole, made first when
+# missing (so this creates an empty .git/worktrees): srt denies a missing path with a placeholder
+# file, which would break a `git worktree add` run outside while the lane runs, so one mkdir cannot
+# make is left off. Any other missing path is denied too, so the lane cannot create it.
+sandbox_git_denies() {
+  local common="$1" own="$2" top
+  [ -n "$common" ] || return 0
   printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info"
-  if [ -n "$own" ] && ! [ "$own" -ef "$common" ]; then
-    printf '%s\n' "$own/config.worktree" "$own/hooks" "$own/commondir" "$common/modules"
+  if sandbox_git_linked "$common" "$own"; then
+    printf '%s\n' "$own/config.worktree" "$own/hooks" "$own/commondir"
     top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     [ -n "$top" ] && [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
+  else
+    mkdir -p "$common/worktrees" 2>/dev/null && printf '%s\n' "$common/worktrees"
   fi
-  for wt in "$common"/worktrees/*/; do
-    wt="${wt%/}"
-    [ -d "$wt" ] && ! [ "$wt" -ef "$own" ] && printf '%s\n' "$wt"
-  done
   return 0
 }
 
@@ -119,23 +145,24 @@ sandbox_claude_version_ok() {
 }
 
 # sandbox_claude_settings -> the --settings JSON for claude: the profile, with the switches that
-# make it a hard gate forced on, and the git common dir writable except sandbox_git_denies. The sandbox
+# make it a hard gate forced on, and sandbox_git_writes writable except sandbox_git_denies. The sandbox
 # confines Bash only, so the in-process tools get the same bounds as permission settings: writes
-# outside allowWrite and the common dir are refused (blockWritesOutsideWorkingDirectories plus
+# outside allowWrite (git paths included) are refused (blockWritesOutsideWorkingDirectories plus
 # additionalDirectories), each denyWrite path is an Edit() deny, each denyRead path a Read() and
 # Edit() deny. docs/contract.md "Lane sandbox" has the reasoning. Rule paths: ~/ passes through;
 # an absolute path takes the // prefix rules need.
 sandbox_claude_settings() {
-  local common
-  common="$(sandbox_git_common)"
-  jq -c --arg common "$common" --arg home "${HOME%/}" \
-    --argjson gitdeny "$(sandbox_git_denies "$common" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+  local common own
+  common="$(sandbox_git_common)"; own="$(sandbox_git_own)"
+  jq -c --arg home "${HOME%/}" \
+    --argjson gitwrite "$(sandbox_git_writes "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
     def rulepath: if startswith("/") then "/" + . else . end;
     .sandbox.enabled = true
     | .sandbox.failIfUnavailable = true
     | .sandbox.allowUnsandboxedCommands = false
     | .sandbox.network.strictAllowlist = true
-    | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + (if $common == "" then [] else [$common] end))
+    | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + $gitwrite)
     | .sandbox.filesystem.denyWrite = ((.sandbox.filesystem.denyWrite // []) + $gitdeny)
     | .permissions.blockWritesOutsideWorkingDirectories = true
     | .permissions.additionalDirectories = [.sandbox.filesystem.allowWrite[] | sub("^~/"; $home + "/")]
