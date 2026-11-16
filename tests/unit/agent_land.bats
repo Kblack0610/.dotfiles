@@ -1498,6 +1498,11 @@ real_notes_board() {
   run agent-queue show ship --json
   assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
   [ -z "$(board_calls)" ] || fail 'partial landing closed the row'
+  # A re-run of the partial landing (now MERGED) leaves the same record.
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
   # The final landing reads #42's merge from gh and records both, in step.
   echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
   echo OPEN >"$NOTES_FIXTURE/state"

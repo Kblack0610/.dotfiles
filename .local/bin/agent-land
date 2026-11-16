@@ -23,8 +23,8 @@
 # merged:<sha>, this Claude session in its sessions, the project credited by the PR's changed
 # files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open; a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
-# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge unless this
-# landing is --partial, which keeps it on pr: with merged: left empty for the final landing to fill, settle_prior), board (the
+# no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
+# a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
 # item's row, whatever its origin: the story `agent-queue add` filed or the board row it was
 # promoted from, done with proof "pr:<owner>/<repo>#<pr> commit:<sha>" on the final landing), plan (--plan: the one "- [ ] <phase>"
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
@@ -702,7 +702,7 @@ fi
 # the merge, never after it. Why: private #762 merged and was left off its item, whose public #1794
 # had no merge recorded (2026-11-11). A --partial landing takes one still OPEN: pr: lists
 # both before either merges (move review, --pr-only), and refusing each landing for the other's merge
-# deadlocked them (ar-314, 2026-11-09).
+# deadlocked them (ar-1267, seen on ar-314 2026-11-09).
 declare -A prior_oid=()
 settle_prior() {
   local refs oids i out
@@ -803,7 +803,9 @@ case "$done_as" in
   if [ "$found" -eq 0 ]; then refs+=("$pr_ref"); oids+=("$merged"); fi
   # A ref still open (settle_prior lets a --partial landing pass one) has no merge to list,
   # and the lists stay in step, so merged: waits empty: the final landing takes each from gh.
-  for i in "${!refs[@]}"; do [ -n "${oids[i]:-}" ] || { oids=(); open_ref="; merged: waits for ${refs[i]}, still open"; break; }; done
+  open=()
+  for i in "${!refs[@]}"; do [ -n "${oids[i]:-}" ] || open+=("${refs[i]}"); done
+  [ "${#open[@]}" -eq 0 ] || { oids=(); open_ref="; merged: waits for ${open[*]}, still open"; }
   marker=''
   [ "$partial" -eq 0 ] || marker=yes
   closing=()
