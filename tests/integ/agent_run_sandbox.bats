@@ -327,8 +327,12 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
   SANDBOX_FILE="$HOME/.config/agentctl/sandbox/lane.json"
   cd "$SANDBOX"   # outside any repo, so no git common dir joins the lists
-  SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
+  # An empty PATH, so a host with srt installed still sees it missing; command -v is a builtin.
+  PATH="" SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
   assert_output 'srt is not on PATH'
+  # Outside a repo the git lookups fail, and a caller under set -e still gets its settings.
+  run bash -ec "source '$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh'; SANDBOX_FILE='$SANDBOX_FILE'; sandbox_srt_settings >/dev/null; echo survived"
+  assert_output 'survived'
   # An npm install: the bin is a link to <package>/dist/cli.js. Not under $SANDBOX/lib, a link into the repo.
   mkdir -p "$SANDBOX/npm/srt/dist"
   printf '#!/bin/sh\n' > "$SANDBOX/npm/srt/dist/cli.js"; chmod +x "$SANDBOX/npm/srt/dist/cli.js"
@@ -346,7 +350,8 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   git init -q "$SANDBOX/r" && cd "$SANDBOX/r"
   run sandbox_srt_settings
   assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"$SANDBOX/r/.git\",\"/opt/vendor\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
-  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" '[[".","~/.agent"],[]]'
+  # A plain clone's git dir sits in the writable cwd, so it is denied whole.
+  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" "[[\".\",\"~/.agent\"],[\"$(pwd -P)/.git\"]]"
   # From a linked worktree its .git file, in the writable cwd, is denied: it points git at a git dir.
   git -C "$SANDBOX/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   git -C "$SANDBOX/r" worktree add -q "$SANDBOX/rw" -b lane && cd "$SANDBOX/rw"

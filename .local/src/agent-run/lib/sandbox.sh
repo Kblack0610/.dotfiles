@@ -77,27 +77,27 @@ sandbox_git_common() {
   git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
 }
 
-# sandbox_git_denies -> one path per line, nothing outside a repo: what a lane could write in the git
-# dirs it can reach that would run code on a later git run there, sandboxed or not. The common dir's
-# hooks and config, config.worktree (read once extensions.worktreeConfig is on) and info
+# sandbox_git_denies <common> -> one path per line, nothing outside a repo: what a lane could write in
+# the git dirs it can reach that would run code on a later git run there, sandboxed or not. The common
+# dir's hooks and config, config.worktree (read once extensions.worktreeConfig is on) and info
 # (info/attributes picks filter, diff and merge drivers); in a linked worktree, its own git dir's
 # config.worktree, hooks and commondir, the checkout's .git file (both point git at another git dir)
 # and the main checkout's submodule repos (modules); and every other worktree's git dir, whole, which
-# a lane never needs. A missing path is denied too, so the lane cannot create it.
+# a lane never needs. A missing path is denied too, so the lane cannot create it. Concrete paths only:
+# srt drops a write glob on Linux, and a deny over worktrees/ would cover the lane's own git dir too.
 sandbox_git_denies() {
-  local common own top wt
-  common="$(sandbox_git_common)"
+  local common="$1" own top wt
   [ -n "$common" ] || return 0
-  own="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)"
+  own="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
   printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info"
-  if [ -n "$own" ] && [ "$own" != "$common" ]; then
+  if [ -n "$own" ] && ! [ "$own" -ef "$common" ]; then
     printf '%s\n' "$own/config.worktree" "$own/hooks" "$own/commondir" "$common/modules"
-    top="$(git rev-parse --show-toplevel 2>/dev/null)"
-    [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
+    top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$top" ] && [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
   fi
   for wt in "$common"/worktrees/*/; do
     wt="${wt%/}"
-    [ -d "$wt" ] && [ "$wt" != "$own" ] && printf '%s\n' "$wt"
+    [ -d "$wt" ] && ! [ "$wt" -ef "$own" ] && printf '%s\n' "$wt"
   done
   return 0
 }
@@ -126,8 +126,10 @@ sandbox_claude_version_ok() {
 # Edit() deny. docs/contract.md "Lane sandbox" has the reasoning. Rule paths: ~/ passes through;
 # an absolute path takes the // prefix rules need.
 sandbox_claude_settings() {
-  jq -c --arg common "$(sandbox_git_common)" --arg home "${HOME%/}" \
-    --argjson gitdeny "$(sandbox_git_denies | jq -R . | jq -sc .)" '
+  local common
+  common="$(sandbox_git_common)"
+  jq -c --arg common "$common" --arg home "${HOME%/}" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
     def rulepath: if startswith("/") then "/" + . else . end;
     .sandbox.enabled = true
     | .sandbox.failIfUnavailable = true
@@ -187,9 +189,9 @@ sandbox_srt_refusal() {
 # writable, and each --ro path, the profile's allowRead, the git common dir and srt's own package (its
 # seccomp helper runs inside) readable through denyRead, and strictAllowlist on. The common dir is
 # read-only: the run's commits are not needed (fleet-dispatch moves and scores its tree outside), and
-# a writable one would let it move the shared repo's refs. A linked worktree's .git file sits in the
-# writable cwd and points git at its git dir, so it is denied: fleet-dispatch runs git in that tree
-# outside the sandbox. Paths are passed as given; srt expands ~/ and follows links, so name a stowed
+# a writable one would let it move the shared repo's refs. The checkout's .git (a linked worktree's
+# file pointing at its git dir, or a plain clone's git dir) sits in the writable cwd, so it is denied:
+# fleet-dispatch runs git in that tree outside the sandbox. Paths are passed as given; srt expands ~/ and follows links, so name a stowed
 # file by its target.
 sandbox_srt_settings() {
   local ro=() rw=() pkg dotgit
@@ -202,8 +204,8 @@ sandbox_srt_settings() {
   done
   pkg=$(realpath -e "$(command -v srt)" 2>/dev/null)
   case "$pkg" in */dist/*) pkg=${pkg%/dist/*} ;; *) pkg="" ;; esac
-  dotgit="$(git rev-parse --show-toplevel 2>/dev/null)/.git"
-  [ -f "$dotgit" ] || dotgit=""
+  dotgit="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$dotgit" ] && [ -e "$dotgit/.git" ] && dotgit="$dotgit/.git" || dotgit=""
   jq -c --arg common "$(sandbox_git_common)" --arg pkg "$pkg" --arg dotgit "$dotgit" \
     --argjson ro "$(printf '%s\n' "${ro[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" \
     --argjson rw "$(printf '%s\n' "${rw[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" '
