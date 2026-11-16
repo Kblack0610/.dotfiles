@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{bail, Context, Result};
 
@@ -735,9 +734,8 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
         }
         return exit_on_gaps(&gaps);
     }
-    // Each transcript is read whole, so one after another the reads cost their sum (510 ms for
-    // 46 sessions and 137 MB against 155 ms for the plain list, 2026-11-16, ar-2326); side by
-    // side they cost about the largest one.
+    // Each transcript is read whole, so one after another the reads cost their sum; side by side
+    // they cost about the largest one.
     let facts = par_map(&agents, |a| match &a.jsonl {
         Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
         None => (
@@ -798,42 +796,17 @@ fn exit_on_gaps(gaps: &Gaps) -> Result<()> {
     std::process::exit(3)
 }
 
-/// `f` over `items` on up to one thread per core, results in `items`' order. A panic in `f`
-/// panics the caller, as it would in a plain map.
+/// `f` over `items`, one scoped thread per item (an item is a live session, so tens), results in
+/// `items`' order. A panic in `f` panics the caller, as it would in a plain map.
 fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(items.len());
-    if threads <= 1 {
-        return items.iter().map(f).collect();
-    }
-    let next = AtomicUsize::new(0);
-    let mut out: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
+    let f = &f;
     std::thread::scope(|s| {
-        let workers: Vec<_> = (0..threads)
-            .map(|_| {
-                s.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(item) = items.get(i) else {
-                            return done;
-                        };
-                        done.push((i, f(item)));
-                    }
-                })
-            })
-            .collect();
-        for w in workers {
-            let done = w.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
-            for (i, r) in done {
-                out[i] = Some(r);
-            }
-        }
-    });
-    out.into_iter()
-        .map(|r| r.expect("every index was taken"))
-        .collect()
+        let calls: Vec<_> = items.iter().map(|item| s.spawn(move || f(item))).collect();
+        calls
+            .into_iter()
+            .map(|c| c.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    })
 }
 
 /// A file's mtime in epoch seconds; 0 for none or an unreadable one.
@@ -964,14 +937,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn par_map_keeps_the_input_order_past_one_item_per_core() {
-        let n = std::thread::available_parallelism().map_or(1, |n| n.get()) * 3 + 1;
-        let items: Vec<usize> = (0..n).collect();
+    fn par_map_keeps_the_input_order_and_a_panic_reaches_the_caller() {
+        let items: Vec<usize> = (0..50).collect();
         assert_eq!(
             par_map(&items, |i| i * 2),
-            (0..n).map(|i| i * 2).collect::<Vec<_>>()
+            (0..50).map(|i| i * 2).collect::<Vec<_>>()
         );
         assert_eq!(par_map(&[] as &[usize], |i| *i), Vec::<usize>::new());
+        let panicked = std::panic::catch_unwind(|| par_map(&items, |&i| assert_ne!(i, 7)));
+        assert!(panicked.is_err());
     }
 
     #[test]
