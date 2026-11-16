@@ -1417,9 +1417,13 @@ collect() {
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
           work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin manual
-    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '[.target, (.pane | sub(".*/"; "")), .status,
-      (if .plan_mode then 1 else 0 end), .session_id, .cwd, .idle_since, .context_tokens,
-      (.plan_file | if . == "" then "-" else . end), (.started_at // "-"), (.pid // 0), (.host // "-"),
+    # read collapses an empty field and shifts every later one left, so a field a source left empty
+    # (a park ledger with no cwd) is - here, and a number is 0 (ar-1500).
+    IFS=$'\t' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '
+      def t: if . == null or . == "" then "-" else . end;
+      [(.target | t), ((.pane // "") | sub(".*/"; "") | t), (.status | t),
+      (if .plan_mode then 1 else 0 end), (.session_id | t), (.cwd | t), (.idle_since // 0), (.context_tokens // 0),
+      (.plan_file | t), (.started_at | t), (.pid // 0), (.host | t),
       (.context_window // 0), (if .manual_mode then 1 else 0 end)] | @tsv' <<<"$line")
     # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
     # nothing here reads them (a worktree of the same name here is another session's). Its row says

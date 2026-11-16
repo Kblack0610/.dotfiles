@@ -2082,6 +2082,24 @@ research_item() {
   [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
 }
 
+@test "end to end: a row with an empty field keeps every later field in its slot (ar-1500)" {
+  # 2026-11-10 fleet-bench: jq "string (\"-\") cannot be parsed as a number". read collapses an empty
+  # tab field, so a park ledger with no cwd shifted plan_file's "-" into context_tokens and
+  # json_rows died, taking every row of that pass with it.
+  landed_fixture
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=s2 server=lab target=lab/s2:3 pane=%9 direct=0 pid=1 session_id=sid-2 \
+    cwd= from= status=shell why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s2"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = PARKED ]
+  [ "$(jq -r .session_id <<<"$output")" = sid-2 ]
+  [ "$(jq -r .idle_min <<<"$output")" = 30 ]
+  [ "$(jq -r .context_tokens <<<"$output")" = 0 ]
+}
+
 @test "end to end: a session:%pane ledger stays PARKED beside the shared session's other live claudes; the row carries its account" {
   landed_fixture
   PANEL_ACCOUNT=alt panel "$SANDBOX/wt" "$SANDBOX/plan.md"
