@@ -40,7 +40,14 @@ rotate_log() {
 
 # Setup
 mkdir -p "$SYNC_DIR"
-export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10"
+# The dedicated key is optional: without it ssh uses the default identities, and
+# an https origin uses the git credential helper. accept-new lets a fresh machine
+# record the host key instead of failing every run under BatchMode.
+GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+if [ -f "$SSH_KEY" ]; then
+    GIT_SSH_COMMAND="$GIT_SSH_COMMAND -i $SSH_KEY -o IdentitiesOnly=yes"
+fi
+export GIT_SSH_COMMAND GIT_TERMINAL_PROMPT=0
 
 # Acquire lock (non-blocking)
 exec 200>"$LOCK_FILE"
@@ -51,9 +58,11 @@ fi
 
 cd "$AGENT_DIR" || { log "ERROR: Cannot cd to $AGENT_DIR"; exit 1; }
 
-# Check for network connectivity (quick test)
-if ! ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new git@github.com 2>&1 | grep -qi "successfully authenticated"; then
-    log "SKIP: No network or GitHub unavailable"
+# Reachability and auth of the remote we actually sync with, whatever host it is
+# (an empty remote passes, so the first push below can still run). The http
+# limits bound an https stall; ssh has ConnectTimeout above.
+if ! err=$(git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 ls-remote "$REMOTE" 2>&1 >/dev/null); then
+    log "SKIP: $REMOTE unreachable: $(printf '%s' "$err" | tail -n 1)"
     exit 0
 fi
 

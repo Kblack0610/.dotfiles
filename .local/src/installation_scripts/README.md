@@ -26,6 +26,17 @@ Windows VDI / Win11 — run from PowerShell:
 irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
 ```
 
+### Private state (your own machines)
+
+The installers are public-only: they never clone the private overlay or your agent and notes repos. On one of your own machines, after the install and `gh auth login`, run once:
+
+```bash
+gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private   # if not already there
+~/.dotfiles-private/.local/bin/restore-private-state
+```
+
+It stows the overlay (`setup_dotfiles_private`), clones `~/.agent` and `~/.notes` (Forgejo first, the GitHub backup if Forgejo has no credential yet), keeps any files a session already wrote there, builds the notes CLI, and starts the notes and agent sync timers. Credentials (rbw, SOPS key, kubeconfig, Forgejo) are separate.
+
 ### From a checked-out repo
 
 ```bash
@@ -193,7 +204,6 @@ What `install_all` runs, in order, and why each step exists. Most steps come fro
 | 11 | `install_npm_packages` | base | `npm install -g` each item in `NPM_PACKAGES` (currently `@google/gemini-cli`, `@marp-team/marp-cli`, `@mermaid-js/mermaid-cli`, `@anthropic-ai/sandbox-runtime` pinned, the srt lane sandbox). marp-cli/mermaid-cli are the cross-OS floor for the `deck` CLI (mmdc renders `.mmd` sources) + the marp-slide skill; on macOS the Brewfile provides them instead. |
 | 12 | `apply_dotfiles` | **WSL override** | Backs up any non-symlink `~/.bashrc`/`~/.zshrc` to `*.preinstall.bak`, writes a WSL-tailored `.stow-local-ignore` (drops Hyprland/waybar/wofi/kitty/keyd/karabiner/aerospace/launchd/firefox/Code/cups/etc.), then `stow .` from `~/.dotfiles`. Sets `git config core.hooksPath .githooks`. |
 | 13 | `setup_ai_memory` | base | Creates `~/.agent/plans/` and symlinks `~/.claude/plans/` to it. Backs up an existing `~/.claude/plans` dir to `.bak` if it's not already a symlink. |
-| 14 | `setup_notes_sync` | **WSL override** | If `NOTES_PRIMARY_REMOTE_URL` is set in the environment, runs `~/.dotfiles/.local/bin/notes-bootstrap` with primary (and optional backup) URLs. No-op otherwise. |
 
 ### Cross-cutting design choices
 
