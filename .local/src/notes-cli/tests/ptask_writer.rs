@@ -343,6 +343,40 @@ fn doctor_lists_each_untyped_row_with_the_edit_that_types_it() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("0 untyped row(s)"));
 }
 
+// nc-86: `edit --text` keeps the old text's own tags (size, points); a typed one of the same
+// name replaces it.
+#[test]
+fn edit_text_keeps_the_rows_size_and_points_tags() {
+    let h = Home::new("edit-tags");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): menu flickers #size/s #pts/2"],
+    ));
+    ok(&agent(
+        &h,
+        &["edit", "dm-1", "--text", "fix(ui): menu blinks"],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("menu blinks") && row.contains("#size/s") && row.contains("#pts/2"),
+        "{row}"
+    );
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--text",
+            "fix(ui): menu blinks on resume #size/m",
+        ],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("#size/m") && !row.contains("#size/s") && row.contains("#pts/2"),
+        "{row}"
+    );
+}
+
 #[test]
 fn ambiguous_words_write_nothing() {
     let h = Home::new("ambig");

@@ -1904,15 +1904,15 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
-/// checkbox state and its tags stay as they were ([`md::retext_task`]).
+/// checkbox state and its tags stay as they were ([`md::retext_task`]). A `--text` that types
+/// a tag of the same name (`#size/m` over `#size/s`) replaces that one; the old text's other
+/// tags (`#size/s`, `#pts/2`, `#requested`) carry over ([`carry_tags`]).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
-/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
-/// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
-/// sets one of the same name ([`carry_tags`]).
+/// must be `type(area): title`, and the old words go first among `details` as `was: <words>`.
 ///
 /// `systems` (`--link`, the triager's backlog link pass) names the systems command, and the new
 /// text then gets the standing-epic default link `add` gives a row ([`link_standing`]); a leaf
@@ -1931,7 +1931,6 @@ pub fn retext(
     lane: Lane,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
-    let rewrite;
     let mut with_was = Vec::new();
     let (text, details) = if was {
         let Some(t) = text.filter(|t| !t.is_empty()) else {
@@ -1968,10 +1967,9 @@ pub fn retext(
             eprintln!("unchanged: '{t}' has the row's own words, so nothing was edited");
             return Ok(0);
         }
-        rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
         with_was.extend(details.iter().cloned());
-        (Some(rewrite.as_str()), &with_was[..])
+        (Some(t), &with_was[..])
     } else {
         (text, details)
     };
@@ -2042,7 +2040,7 @@ pub fn retext(
     }
     Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
-            (Some(t), _) => t.to_string(),
+            (Some(t), _) => carry_tags(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };
