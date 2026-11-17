@@ -80,7 +80,7 @@ modules untestable). Windows has no shell env file; it uses `setx GATUS_BASE` /
 
 `push.sh` names a host by its short, lower-cased hostname (`_` becomes `-`), so two Linux
 hosts never push the same key. `FLEET_NAME` (a systemd drop-in, the launchd plist, `setx`)
-wins when set. One alias: the workstation's hostname `cachyos-x8664-main` maps to its
+wins when set. `FLEET_NAME_MAP` in the env file (`<hostname>=<key> ...`) renames a host whose key predates hostname naming: the workstation's `cachyos-x8664-main` maps to its
 older key `linux-cachyos`. A Linux host with no declared key gets a logged HTTP 404 every
 tick; a host gatus polls (`razer-laptop`, `hp-victus`, `asus-laptop`) is declared under
 `k3s` and needs no push, so that 404 is expected there. It used to push as

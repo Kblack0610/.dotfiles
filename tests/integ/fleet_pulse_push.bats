@@ -42,11 +42,25 @@ pushed_key() { sed -E 's#.*/endpoints/([^/]+)/external.*#\1#' "$HOME/pushed"; }
   assert_line --index 1 "homelab_hp-victus"
 }
 
-@test "the workstation hostname keeps its linux-cachyos key" {
+@test "FLEET_NAME_MAP in the env file keeps the workstation's linux-cachyos key" {
+  echo 'FLEET_NAME_MAP="cachyos-x8664-main=linux-cachyos"' > "$HOME/.config/fleet-pulse/env"
   FAKE_HOSTNAME=cachyos-x8664-main run "$PUSH"
   assert_success
   run pushed_key
   assert_output "homelab_linux-cachyos"
+}
+
+@test "...and the map leaves every other hostname alone" {
+  echo 'FLEET_NAME_MAP="cachyos-x8664-main=linux-cachyos"' > "$HOME/.config/fleet-pulse/env"
+  FAKE_HOSTNAME=razer-laptop run "$PUSH"
+  run pushed_key
+  assert_output "homelab_razer-laptop"
+}
+
+@test "characters a gatus URL path cannot hold are dropped from the hostname" {
+  FAKE_HOSTNAME="Kenneth's Mac.local" run "$PUSH"
+  run pushed_key
+  assert_output "homelab_kennethsmac"
 }
 
 @test "a domain suffix, capitals and underscores are normalised" {

@@ -25,11 +25,12 @@ GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 if [[ -z "${FLEET_NAME:-}" ]]; then
     FLEET_NAME="$(uname -n)"
     FLEET_NAME="${FLEET_NAME%%.*}"
-    FLEET_NAME="$(printf '%s' "$FLEET_NAME" | tr 'A-Z_' 'a-z-')"
-    # The workstation's gatus key predates hostname naming; its hostname is the
-    # inventory's cachyos-x8664-main. Renaming the key would orphan its history and
-    # the roster entries in home-config and the private env file.
-    [[ "$FLEET_NAME" == "cachyos-x8664-main" ]] && FLEET_NAME="linux-cachyos"
+    FLEET_NAME="$(printf '%s' "$FLEET_NAME" | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')"
+    # FLEET_NAME_MAP (the env file) is "<hostname>=<key> ..." for a host whose gatus key
+    # predates hostname naming: renaming one would orphan its history and the rosters.
+    for _pair in ${FLEET_NAME_MAP:-}; do
+        [[ "${_pair%%=*}" == "$FLEET_NAME" ]] && FLEET_NAME="${_pair#*=}"
+    done
 fi
 # Gatus keys are <group>_<name>, so this MUST match the group this host is declared
 # under in apps/gatus-fleet/config.yaml (homelab for personal computers,
