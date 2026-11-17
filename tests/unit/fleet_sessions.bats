@@ -12,7 +12,7 @@ setup() {
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
   # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
-  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title"), no PRs when there is neither,
+  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
@@ -36,7 +36,8 @@ case "$1" in
     f="$LEDGER_DIR/prs_${2//\//_}.tsv"; [ -f "$f" ] || f="$LEDGER_DIR/prs.tsv"
     [ -f "$f" ] || { echo '[]'; exit 0; }
     jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
-      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7]}]' "$f" ;;
+      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7],
+      labels: (.[8] // "" | split(",") | map(select(. != "")))}]' "$f" ;;
   *) exit 2 ;;
 esac
 SS
@@ -3410,7 +3411,7 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
-  jq -e '.blockers | index("PR #2415 open, riding train #2467")' <<<"$output" >/dev/null
+  jq -e '.blockers | index("PR #2415 open, waiting on train #2467")' <<<"$output" >/dev/null
   # a member whose own gate is green waits on the train too, not on a lander
   store OPEN train/20261113T101500Z-a1b2 "$title" PASS
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -3432,6 +3433,44 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
+}
+
+@test "end to end: a PR in the landing queue is WORKING waiting on the landing queue, not CI red or green-not-merged (ar-1285)" {
+  # 2026-11-10 agent-2 #2149, 4th of 9 in the unity-core-playground landing queue, read STALLED CI red: its red
+  # Checks was the landing slot refusing it, and gate-line.py had labelled it landing-queue.
+  landed_fixture
+  local oid
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # store <ci> <labels> [<other PR's labels>]: the session's PR, and #21490 of another branch and head
+  store() {
+    printf 'feat/y\t21490\tOPEN\tFAIL\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-}" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2149\tOPEN\t%s\t%s\t-\t\tmine\t%s\n' "$1" "$oid" "$2" >> "$LEDGER_DIR/prs.tsv"
+  }
+  store FAIL landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
+  # one label among others counts, and a green PR waits its landing turn too
+  store PASS 'rides-alone,landing-queue'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+
+  # negative controls: no label, another label, only another PR (#21490 is not #2149) queued, or the knob off
+  store FAIL ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
+  store FAIL landing-slot-x
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
+  store FAIL '' landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
+  store FAIL landing-queue
+  FLEET_QUEUE_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
 }
 
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
