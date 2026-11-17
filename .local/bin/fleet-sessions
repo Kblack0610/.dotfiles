@@ -1509,8 +1509,13 @@ handoff_of() {
 # rule 6). It is not $CACHE/unreadable: a laptop asleep is not this machine's sources blinking. It
 # runs beside collect's row loop, so a gap goes straight to $CACHE/blind as "+" (keep_blind), never
 # through blind_row, which names the row the loop is on.
+# The rows are also published (fleet_panel_publish) as worker-panel.json for FLEET_PANEL_TTL seconds:
+# the one read of the workers' sessions each minute, which agent-ask and agent-web read instead of
+# each asking every worker over ssh. The ttl covers a pass's own timeout (fleet-state.service, 120s)
+# and the next minute's start.
+: "${FLEET_PANEL_TTL:=180}"
 remote_panel_lines() {
-  local name out rc why
+  local name out rc why all=''
   fleet_hosts >/dev/null
   while IFS= read -r name; do
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
@@ -1523,8 +1528,9 @@ remote_panel_lines() {
       jq -cn --arg h "$name" --arg w "$why" '{host: $h, why: $w}' >> "$CACHE/silent"
       continue
     fi
-    [ -z "$out" ] || printf '%s\n' "$out"
+    [ -z "$out" ] || { printf '%s\n' "$out"; all+="$out"$'\n'; }
   done < <(fleet_hosts | jq -r .name)
+  printf '%s' "$all" | fleet_panel_publish "$FLEET_PANEL_TTL" || true
   return 0
 }
 

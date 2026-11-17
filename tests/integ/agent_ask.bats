@@ -1089,7 +1089,7 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
   local id
   sandbox_worlds
-  sandbox_fleet_worker hp
+  sandbox_fleet hp
   mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
   printf '{"type":"user","cwd":"%s","sessionId":"sid-9"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-9.jsonl"
   printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
@@ -1109,6 +1109,24 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id"
+}
+
+@test "a worker's session is read from the published snapshot, with no ssh to read it" {
+  local id
+  sandbox_worlds
+  sandbox_fleet hp
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p" "$XDG_STATE_HOME/fleet"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-9"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-9.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  printf '{"at":%s,"ttl":180,"rows":[{"session_id":"sid-9","target":"hp@lab/dotfiles:2","pane":"lab/%%4","host":"hp"}]}\n' \
+    "$(date +%s)" >"$XDG_STATE_HOME/fleet/worker-panel.json"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'ship it?')"
+  : >"$NOTES_FIXTURE/calls.log"
+  run --separate-stderr "$AGENT_ASK" target --reopen "$id"
+  assert_failure
+  assert_equal "$stderr" "session runs on hp at hp@lab/dotfiles:2; go to it there"
+  assert_not_called 'ssh'
 }
 
 # ── lifecycle: one home ──────────────────────────────────────────────────────

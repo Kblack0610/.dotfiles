@@ -490,6 +490,53 @@ case "$*" in *192.0.2.30*) [ -f "$NOTES_FIXTURE/hp.down" ] && exit 255; echo "{\
   assert_output ''
 }
 
+@test "a published snapshot answers fleet_panel_row with no ssh; this machine's rows are skipped" {
+  export FLEET_HOST=razer-laptop
+  printf '%s\n' '{"target":"razer-laptop@lab/r:1","pane":"lab/%1","session_id":"s1","host":"razer-laptop"}' \
+    '{"target":"hp-victus@lab/d:1","pane":"lab/%9","session_id":"s1","host":"hp-victus"}' \
+    '{"target":"hp-victus@lab/d:2","pane":"lab/%8","session_id":"s2","host":"hp-victus"}' | fleet_panel_publish 180
+  assert_equal "$(jq -c '[.ttl, (.rows | length)]' "$(fleet_panel_file)")" '[180,3]'
+  run fleet_panel_row s1
+  assert_success
+  assert_output '{"target":"hp-victus@lab/d:1","pane":"lab/%9","session_id":"s1","host":"hp-victus"}'
+  run fleet_panel_row nobody
+  assert_success
+  assert_output ''
+  assert_not_called 'ssh'
+}
+
+@test "an empty snapshot is a fresh answer: no worker has the session, and none is asked" {
+  : | fleet_panel_publish 180
+  run fleet_panel_row s1
+  assert_success
+  assert_output ''
+  assert_not_called 'ssh'
+}
+
+@test "with no snapshot, or one past its ttl, fleet_panel_row asks every peer, not only up to the first that has it" {
+  export FLEET_HOST=razer-laptop
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
+echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}"'
+  run fleet_panel_row s1
+  assert_success
+  assert_output '{"target":"hp-victus@lab/d:1","pane":"lab/%9","session_id":"s1","host":"hp-victus"}'
+  assert_called '192.0.2.30'
+  # The snapshot is old by its own ttl: the same walk, not its rows.
+  mkdir -p "$(dirname "$(fleet_panel_file)")"
+  printf '{"at":%s,"ttl":60,"rows":[]}\n' "$(($(date +%s) - 61))" > "$(fleet_panel_file)"
+  : > "$NOTES_FIXTURE/calls.log"
+  run fleet_panel_row s1
+  assert_output --partial '"host":"hp-victus"'
+  assert_called '192.0.2.30'
+  # Both peers answer at once, and the first in roster order wins.
+  export FLEET_HOST=state
+  : > "$NOTES_FIXTURE/calls.log"
+  run fleet_panel_row s1
+  assert_output --partial '"host":"razer-laptop"'
+  assert_called '192.0.2.26'
+  assert_called '192.0.2.30'
+}
+
 @test "fleet-host-run runs one command on a worker through the one ssh path and exits with its code" {
   run "$REPO_ROOT/.local/bin/fleet-host-run" hp-victus
   assert_failure 2

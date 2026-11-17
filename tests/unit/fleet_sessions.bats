@@ -1353,12 +1353,18 @@ SH
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
   grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
+  snap="$XDG_STATE_HOME/fleet/worker-panel.json"
+  assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
+  assert_equal "$(jq '(now - .at) < 60' "$snap")" true
   # An unreachable worker has no rows; state.json names it silent, not an unreadable source,
   # so the Sessions table says its rows are missing instead of showing fewer as all there is.
   printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
+  # A worker that did not answer has no row in the published snapshot, which is still fresh.
+  assert_equal "$(jq -c '.rows' "$snap")" '[]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
