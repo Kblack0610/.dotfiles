@@ -1604,8 +1604,8 @@ collect() {
       qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg sid "${sid:0:8}" --arg tgt "$target" \
               --argjson open "$(jq -c --argjson b "$pbase" '[.[] | select(.state == "open") | {n: (.n + $b - 1 | tostring), name: .name}]' <<<"$plj")" \
               "$PLAN_ITEMS_JQ"' def names_me: (.task // "") as $t
-                | any($sid, $tgt; . as $w | $w != "" and any($t | indices($w)[]; . as $i
-                    | ($t[$i + ($w | length):$i + ($w | length) + 1] | test("[0-9A-Za-z]") | not)));
+                | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
+                    | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
               [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it

@@ -4033,24 +4033,27 @@ JSONL
   landed_fixture
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
-  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null 2>&1 || true
   mkdir -p "$HOME/.agent/queue/queued"
   report() {
     printf 'slug: report\nproject: agent-runtime\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
       "$1" > "$HOME/.agent/queue/queued/20261103-100000-report.md"
   }
-  # by session id, or by its target: the phase is still the session's next one
-  for who in 'session sid-9' 'coordinator lab/s1:1,'; do
+  # by session id, or by its target, after a non-ASCII character too: the phase is still the session's next one
+  for who in 'session sid-9' 'coordinator lab/s1:1,' 'caf\xc3\xa9 \xe2\x80\x94 lab/s1:1'; do
+    who="$(printf '%b' "$who")"
     report "fix(fleet-sessions): $who reads finished while its plan $SANDBOX/plan.md has Phase 2 unchecked"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .bucket <<<"$output")" = LANDED ]
     [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
     [ "$(jq -r .finished <<<"$output")" = false ]
   done
-  # negative control: another session's target (lab/s1:12) is not this one, so the item still holds the plan
-  report "fix(fleet-sessions): lab/s1:12 misreads $SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # negative controls: another session's target (lab/s1:12, xlab/s1:1) or id (xsid-9) is not this
+  # one, so the item still holds the plan
+  for other in lab/s1:12 xlab/s1:1 xsid-9; do
+    report "fix(fleet-sessions): $other misreads $SANDBOX/plan.md"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  done
 }
 
 @test "sibling_pr: a check run superseded by a later run of the same check is not CI red (ar-2426)" {
