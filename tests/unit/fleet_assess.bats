@@ -108,7 +108,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch or mac-desktop hold does not" {
+@test "only a machine-resource hold counts as held; a dispatch, mac-desktop or host-RAM hold does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   HOLD_ROOT="$AGENT_HOLD_DIR"
@@ -120,6 +120,13 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   touch "$AGENT_HOLD_DIR/mac-desktop"
   run holds_set
   assert_failure
+  touch "$AGENT_HOLD_DIR/deskslim-1-ram"
+  run holds_set
+  assert_failure
+  touch "$AGENT_HOLD_DIR/deskslim-1-cpu"
+  run holds_set
+  assert_success
+  rm "$AGENT_HOLD_DIR/deskslim-1-cpu"
   touch "$AGENT_HOLD_DIR/unity"
   run holds_set
   assert_success
