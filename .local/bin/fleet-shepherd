@@ -115,6 +115,10 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
 : "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
+# A landing wait this long is its own line (landing_due): a slot turn is up to 45m (gate-line.py SLOT_MINUTES), so two
+# hours is a queue several turns deep or a holder that is stuck. Confidence low, from one incident (2026-11-15, 3.5h);
+# revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
+: "${FLEET_SHEPHERD_LANDING_WAIT_MIN:=120}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
@@ -306,6 +310,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(overdue_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(landing_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(improve_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
@@ -357,7 +363,10 @@ improve_due() {
 # FLEET_SHEPHERD_OVERDUE_MIN. No other line looks at a WORKING row: on 2026-11-03 agent-53 sat 22h
 # at 0/4 and agent-8 at 1/8 and no pass named either. The fact is the phase, so it is nudged once;
 # once the nudge is a phase-length old (at least the floor) and the phase has not moved, it goes to
-# the human, once.
+# the human, once. A row whose queue gate has a measured wait (wait_min, set only for open_job queue) is
+# moving, whatever its phase age: on 2026-11-15 unity-core-playground-agent-3 sat 3.5h in the landing-slot
+# queue with #2726 green and was nudged overdue (ar-2525); landing_due names that wait instead. A queue
+# row with no measured wait (a remote host, a gate gone since the snapshot) keeps this check.
 overdue_due() {
   local eta now sid key line esc at
   eta="$(fleet-bench eta --json 2>/dev/null)" || {
@@ -379,7 +388,7 @@ overdue_due() {
   done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
       --slurpfile s "$STATE_FILE" --arg eta "$eta" "$PANE_TAG_JQ"'
     ($s[0].sessions // [] | map(select((.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
-                                       and .activity != "busy"
+                                       and .activity != "busy" and .wait_min == null
                                        and ((.labels // []) | index("manual") | not)))
        | map({key: .session_id, value: .}) | from_entries) as $w
     | $eta | split("\n")[] | select(length > 0) | fromjson
@@ -391,6 +400,28 @@ overdue_due() {
     | [.session_id, "overdue \($ph)",
        "\([.phase_min, $floor] | max)\u001f\(.target)\($w[.session_id] | ptag) \($ph) '"'"'\($w[.session_id].next_phase // "-")'"'"' open \($age)m, expected \(.phase_min)m (\(.basis // "-"))"]
     | @tsv')
+}
+
+# landing_due -> a line per project whose longest landing wait (fleet-sessions' wait_min: how long a
+# session's oldest queue gate has run) is FLEET_SHEPHERD_LANDING_WAIT_MIN or more, with how many of its
+# sessions wait their turn and how many PRs carry the landing-queue label (landing_queue). overdue_due
+# leaves these rows out, so without this a multi-hour wait behind a stuck slot holder is named by no
+# line (ar-2525). A manual session is the human's, as in overdue_due. The line is keyed by its project
+# alone (due_key): a skip holds while the queue stays slow, not until the head waiter changes.
+landing_due() {
+  jq -r --argjson min "$FLEET_SHEPHERD_LANDING_WAIT_MIN" "$PANE_TAG_JQ"'
+    [(.sessions // [])[] | select(.bucket != "PARKED" and .wait_min != null
+                                  and ((.labels // []) | index("manual") | not))]
+    | group_by(.project // "-")[]
+    | max_by(.wait_min) as $l
+    | select($l.wait_min >= $min)
+    | ([.[].landing_queue | numbers] | max) as $d
+    | "landing: \($l.project // "-") longest wait \($l.target)\($l | ptag)"
+      + (if ($l.pr // "-") != "-" then " PR #\($l.pr)" else "" end) + " \($l.wait_min)m"
+      + ", \(length) waiting their landing turn"
+      + (if $d != null then ", \($d) PRs in the landing queue" else "" end)
+      + "; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it"' \
+    "$STATE_FILE" 2>/dev/null || true
 }
 
 # limit_due -> what a pass moves off an account that is out of usage. Each account whose published
@@ -892,6 +923,7 @@ cmd_check() {
 due_key() {
   sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
           /^pace: parked /s#([^ /,]+/)[^ ,]+ \[(%[0-9]+)\]#\1\2#g
+          s/^(landing: [^ ]+) .*/\1/
           s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
 }
 

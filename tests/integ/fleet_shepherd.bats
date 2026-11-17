@@ -1394,6 +1394,53 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   refute_output --partial 'overdue: t-s3'
 }
 
+@test "a session waiting its landing turn is not overdue, and a long wait is one landing line per project (ar-2525)" {
+  # 2026-11-15 unity-core-playground-agent-3: #2726 green, its gate-and-land.sh 3.5h in the landing-slot
+  # queue behind #2733, read as a WORKING shell and nudged overdue.
+  phase s1 shell 40 500                                   # queue gates (open_job queue) in one project
+  phase s2 shell 40 500
+  phase s3 shell 40 500                                   # control: a queue gate with no measured wait (a remote host) keeps the overdue check
+  phase s4 shell 40 500                                   # control: a plain shell is still overdue
+  phase s5 shell 40 30 1/4 WORKING shell                  # a short queue wait in another project
+  phase s6 'PR #7 waiting on the landing queue' 40 500    # control: a labelled PR with no gate driving it
+  phase s7 shell 40 500                                   # a manual session is the human's, however long its wait
+  phases_doc
+  jq '.sessions |= map(if .session_id == "s1" then . + {open_job:"queue", project:"ucp", pr:"2726", pane:"%12", wait_min:210, landing_queue:12}
+      elif .session_id == "s2" then . + {open_job:"queue", project:"ucp", wait_min:40, landing_queue:11}
+      elif .session_id == "s3" then . + {open_job:"queue", project:"ucp"}
+      elif .session_id == "s5" then . + {open_job:"queue", project:"dot", wait_min:30}
+      elif .session_id == "s6" then . + {project:"ucp", landing_queue:11}
+      elif .session_id == "s7" then . + {open_job:"queue", project:"ucp", wait_min:500, labels:["manual"]} else . end)' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  refute_output --partial 'overdue: t-s1'
+  refute_output --partial 'overdue: t-s2'
+  assert_line --partial 'overdue: t-s3 phase 2/4'
+  assert_line --partial 'overdue: t-s4 phase 2/4'
+  assert_line --partial 'overdue: t-s6 phase 2/4'
+  assert_line 'landing: ucp longest wait t-s1 [%12] PR #2726 210m, 2 waiting their landing turn, 12 PRs in the landing queue; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it'
+  refute_output --partial 'landing: dot'
+  # the line routes to the shepherd, and keeps its identity while the wait and the queue move
+  run "$SH" route "landing: ucp longest wait t-s1 [%12] PR #2726 210m, 3 waiting"
+  assert_output --partial shepherd
+  FLEET_SHEPHERD_LANDING_WAIT_MIN=20 run "$SH" due
+  assert_line --partial 'landing: dot longest wait t-s5 30m, 1 waiting their landing turn; then:'
+  "$SH" check >/dev/null
+  jq '.sessions |= map(if .session_id == "s1" then .wait_min = 270 else . end | if .landing_queue then .landing_queue = 9 else . end | select(.session_id != "s2"))' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run checked
+  assert_line 'unhandled: landing: ucp longest wait t-s1 [%12] PR #2726 270m, 1 waiting their landing turn, 9 PRs in the landing queue; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it'
+  # skipped, the line stays quiet when a new session becomes the longest waiter: the queue is the fact
+  "$SH" skip 'landing: ucp longest wait t-s1 [%12] PR #2726 270m, 1 waiting their landing turn' 'slot holder moving'
+  jq '.sessions |= map(select(.session_id != "s1") | if .session_id == "s7" then .labels = [] | .pr = "2731" else . end)' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_line --partial 'landing: ucp longest wait t-s7 PR #2731 500m'
+  run checked
+  refute_output --partial 'landing: ucp'
+}
+
 @test "an overdue phase is nudged once, escalated once a phase-length after, then left to the human" {
   phase s1 shell 40 200
   phases_doc
