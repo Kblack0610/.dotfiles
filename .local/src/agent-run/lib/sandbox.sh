@@ -110,10 +110,13 @@ sandbox_git_writes() {
 # config.worktree (read once extensions.worktreeConfig is on) and info (info/attributes picks filter,
 # diff and merge drivers): outside sandbox_git_writes from a worktree, but denied anyway, in case the
 # profile's allowWrite reaches them. From a linked worktree, its own git dir's config.worktree, hooks
-# and commondir, and the checkout's .git file. From a plain clone, worktrees/ whole, made first when
-# missing (so this creates an empty .git/worktrees): srt denies a missing path with a placeholder
-# file, which would break a `git worktree add` run outside while the lane runs, so one mkdir cannot
-# make is left off. Any other missing path is denied too, so the lane cannot create it.
+# and commondir, and the checkout's .git file. From a plain clone, worktrees/ whole and commondir,
+# each made first when missing, because srt denies a missing path with an empty placeholder: one at
+# worktrees/ would break a `git worktree add` run outside while the lane runs, and one at commondir
+# would break every git run there (git dies on an empty commondir). So worktrees/ is made empty, and
+# commondir holds `.`, which git resolves to the git dir itself (relative, so a moved clone still
+# points at itself); a worktrees/ the mkdir cannot make is left off. Any other missing path is
+# denied too, so the lane cannot create it.
 sandbox_git_denies() {
   local common="$1" own="$2" top
   [ -n "$common" ] || return 0
@@ -124,8 +127,21 @@ sandbox_git_denies() {
     [ -n "$top" ] && [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
   else
     mkdir -p "$common/worktrees" 2>/dev/null && printf '%s\n' "$common/worktrees"
+    sandbox_git_self_commondir "$common"
+    printf '%s\n' "$common/commondir"
   fi
   return 0
+}
+
+# sandbox_git_self_commondir <common> -> makes <common>/commondir holding `.` when it is missing.
+# noclobber opens it with O_EXCL, so one already there (another lane start's) is kept, and a symlink
+# an earlier lane planted there is never followed: this runs outside the sandbox, in a git dir a lane
+# could write, so it writes no other name in it. The caller lists it denied whether or not this made
+# it: codex denies a missing path as is, and where srt can still place its placeholder, git fails
+# closed rather than following a redirect.
+sandbox_git_self_commondir() {
+  [ -e "$1/commondir" ] && return 0
+  ( set -C; printf '.\n' > "$1/commondir" ) 2>/dev/null || true
 }
 
 # The oldest claude that honours permissions.blockWritesOutsideWorkingDirectories. An older one

@@ -121,20 +121,58 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   refute_line "Edit(/$common/worktrees/wt/**)"
 }
 
-@test "run from a plain clone, the git dir is the common dir: writable, minus its code paths and worktrees/ whole, which is made first when missing" {
+@test "run from a plain clone, the git dir is the common dir: writable, minus its code paths, worktrees/ whole and commondir, each made first when missing" {
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   cd "$SANDBOX/repo"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
   [ ! -e "$common/worktrees" ]
+  [ ! -e "$common/commondir" ]
   SANDBOX_PROFILE=lane lane -p x
   assert_success
-  # A missing deny path is a placeholder file to srt, which would break a git worktree add outside.
+  # A missing deny path is an empty placeholder to srt: at worktrees/ it would break a git worktree
+  # add outside, at commondir every git run (git dies on an empty one).
   [ -d "$common/worktrees" ]
+  run cat "$common/commondir"
+  assert_output .
   run jq -r '.sandbox.filesystem.allowWrite[]' <<<"$(settings)"
   assert_output "$(printf '%s\n' '~/.agent' "$common")"
   run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
-  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees")"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees" "$common/commondir")"
+  run jq -r '.permissions.deny[]' <<<"$(settings)"
+  assert_line "Edit(/$common/commondir)"
+  # git reads `.` as the git dir itself: the clone is still a plain clone, and a worktree added from it
+  # points back here.
+  run git rev-parse --path-format=absolute --git-dir --git-common-dir
+  assert_output "$(printf '%s\n' "$common" "$common")"
+  git worktree add -q "$SANDBOX/wt" -b wt
+  run git -C "$SANDBOX/wt" rev-parse --path-format=absolute --git-common-dir
+  assert_output "$common"
+}
+
+@test "a plain clone's commondir that is already there is kept, never rewritten, and still denied" {
+  git init -q "$SANDBOX/repo"
+  cd "$SANDBOX/repo"
+  common="$(cd .git && pwd -P)"
+  printf '%s\n' "$common" > "$common/commondir"
+  SANDBOX_PROFILE=lane lane -p x
+  assert_success
+  run cat "$common/commondir"
+  assert_output "$common"
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_line "$common/commondir"
+}
+
+@test "a symlink an earlier lane planted at a plain clone's commondir is never followed: the launcher, outside the sandbox, writes nothing through it" {
+  # Called directly: a dangling commondir already stops git (it dies reading it), so a lane start
+  # never gets this far, and the writer must still be safe on its own.
+  git init -q "$SANDBOX/repo"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  ln -s "$SANDBOX/clobbered" "$common/commondir"
+  source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
+  sandbox_git_self_commondir "$common"
+  [ ! -e "$SANDBOX/clobbered" ] || fail "the launcher wrote through a planted symlink"
+  [ -L "$common/commondir" ]
 }
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
@@ -266,7 +304,7 @@ codex_fs() { grep -m1 '^permissions=' "$SANDBOX/codex-argv.txt" | grep -oE '"[^"
   run codex_fs
   assert_line "\"$HOME/.agent\"=\"write\""
   assert_line "\"$git\"=\"write\""
-  for p in hooks config config.worktree info worktrees; do assert_line "\"$git/$p\"=\"read\""; done
+  for p in hooks config config.worktree info worktrees commondir; do assert_line "\"$git/$p\"=\"read\""; done
   lane --harness codex -p x
   run cat "$SANDBOX/codex-argv.txt"
   assert_line -- '--dangerously-bypass-approvals-and-sandbox'
