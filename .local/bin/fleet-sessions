@@ -302,8 +302,8 @@ live_wait() {
   done
 }
 
-# self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is its
-# own parent (or on itself, when bash exec-ed tail in its place), `wait` when one waits on any other
+# self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is one of its
+# own ancestors below the claude (or itself, when bash exec-ed tail in its place), `wait` when one waits on any other
 # pid but the claude's, else nothing. In the hung case the parent waits for tail to end and tail
 # waits for the parent to end, so nothing ever moves. Not checked: that the
 # parent is blocked on the tail, so a `tail --pid=$$ -f log &` beside real work also reads hung once
@@ -327,8 +327,10 @@ self_wait() {
           w = ""
           if (a[i] ~ /^--pid=[0-9]+$/) w = substr(a[i], 7)
           else if (a[i] == "--pid" && i < k) w = a[i + 1]
-          if (w != "" && w != r && (w == up[p] || w == p)) { print "hung"; exit }
-          if (w != "" && w != r) ev = 1
+          if (w == "" || w == r) continue
+          if (w == p) { print "hung"; exit }
+          for (x = up[p]; x > 1 && x != r && (x in up); x = up[x]) if (w == x) { print "hung"; exit }
+          ev = 1
         }
       }
       if (ev) print "wait"
@@ -511,17 +513,16 @@ plan_bucket() {
   esac
 }
 
-# plan_copy_of <plan file> -> the plan a queue item names (the pass's items, $CACHE/items.jsonl) that this
-# plan is a copy of under another file name, its phase names the same (plan_phase_key), or nothing. Plan
-# mode names a plan at random, and a planner chat that queues its phases often writes them to a named
-# plan first, so the items name that one: 2026-11-14 hub/dotfiles:9, :10 and :13 read LANDED with a next
-# phase while every phase was a queue item of the named plan, and were told to queue them again. The
-# named plan is then the one ticked, so it is read for progress and holders. A plan an item names
-# itself (by file name) is never read through a copy.
+# plan_copy_of <plan file> -> the one plan a queue item of this pass names ($qall) that this plan is a
+# copy of under another file name, its phase names the same (plan_phase_key), or nothing. Plan mode
+# names a plan at random, and a planner chat that queues its phases often writes them to a named plan
+# first, so the items name that one: 2026-11-14 hub/dotfiles:9, :10 and :13 read LANDED with a next
+# phase while every phase was a queue item of the named plan, and were told to queue them again. A plan
+# an item names itself (by file name), or one whose phases match two named plans, is its own.
 plan_copy_of() {
   local keys="$CACHE/plan_keys" own key f b="${1##*/}"
   if [ ! -f "$keys" ]; then
-    jq -r '.plan // empty' "$CACHE/items.jsonl" 2>/dev/null | sort -u | while IFS= read -r f; do
+    jq -r '.plan // empty' <<<"$qall" 2>/dev/null | sort -u | while IFS= read -r f; do
       key="$(plan_phase_key "$f" | tr '\n' '\037')"
       printf '%s\t%s\n' "$key" "$f"   # a keyless plan still names its file for the check below
     done > "$keys"
@@ -529,9 +530,7 @@ plan_copy_of() {
   awk -F'\t' -v b="$b" '{ n = split($2, p, "/"); if (p[n] == b) { found = 1; exit } } END { exit !found }' "$keys" && return 0
   own="$(plan_phase_key "$1" | tr '\n' '\037')"
   [ -n "$own" ] || return 0
-  while IFS=$'\t' read -r key f; do
-    [ "$key" = "$own" ] && { echo "$f"; return 0; }
-  done < "$keys"
+  K="$own" awk -F'\t' '$1 == ENVIRON["K"] { n++; f = $2 } END { if (n == 1) print f }' "$keys"   # ENVIRON: -v would read a backslash in a name
 }
 
 # plan_done <why> <first running item here|-> <DONE's reason after why> [held] -> DONE, or STALLED
@@ -1410,7 +1409,6 @@ collect() {
   # session has to see that, or it reads as never started (ar-343).
   qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
-  printf '%s\n' "$qall" > "$CACHE/items.jsonl"   # plan_copy_of's plans, read only when a row needs one
   # The few items of a doc+ask kind that filed their report and ask (handoff_of): read once, not per row.
   qhand=""
   [ ! -r "$KINDS" ] || qhand="$(jq -c --slurpfile k "$KINDS" '
@@ -1563,13 +1561,18 @@ collect() {
     elif [ ! -f "$planf" ]; then phases=missing
     elif [ "$ptotal" = - ]; then phases=none
     else phases="$pdone/$ptotal"; fi
-    # A copy of a queued plan under another file name is that plan: its progress and holders (plan_copy_of).
-    local plist="$planf" pcopy=""
+    # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
+    # tick it, and the session may tick its own, so a phase is done when either plan says so.
+    local plist="$planf" pcopy="" plj merged=""
+    plj="$(plan_phase_list "$planf")"
     if [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ]; then
       pcopy="$(plan_copy_of "$planf")"
-      if [ -n "$pcopy" ]; then
-        plist="$pcopy"
-        IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$pcopy")
+      [ -z "$pcopy" ] || merged="$(jq -c --argjson b "$(plan_phase_list "$pcopy")" 'select(length == ($b | length))
+        | [to_entries[] | .value + (if .value.state == "open" then {state: $b[.key].state} else {} end)]' <<<"$plj")"
+      if [ -n "$merged" ]; then
+        plist="$pcopy" plj="$merged"
+        IFS=$'\t' read -r pdone ptotal pnext < <(jq -r '[(map(select(.state != "open")) | length), length,
+          (map(select(.state == "open"))[0].name // "-")] | map(tostring) | join("\t")' <<<"$plj")
         phases="$pdone/$ptotal"
       fi
     fi
@@ -1595,7 +1598,7 @@ collect() {
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
       [ -z "${ptgt:-}" ] || { canon="$ptgt"; pbase="$pn"; }
       qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" \
-              --argjson open "$(plan_phase_list "$plist" | jq -c --argjson b "$pbase" '[to_entries[] | select(.value.state == "open") | {n: (.key + $b | tostring), name: .value.name}]')" \
+              --argjson open "$(jq -c --argjson b "$pbase" '[to_entries[] | select(.value.state == "open") | {n: (.key + $b | tostring), name: .value.name}]' <<<"$plj")" \
               "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
@@ -1672,7 +1675,7 @@ collect() {
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$(plan_phase_list "$plist")" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
