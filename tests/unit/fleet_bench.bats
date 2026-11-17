@@ -4766,13 +4766,17 @@ items_stub() {
 
 @test "a baseline frozen with no scheduled session is never scored and does not fail the sample" {
   rowp c lab/game-agent-3:1 0 5 pc > "$SNAP"; sample_at 0
-  printf '%s\n' '{"label":"empty","made_epoch":'"$T0"',"last_p50":null,"last_slow":null,"drain":{"in_per_h":1,"epoch":null},"schedule":[]}' > "$FLEET_BENCH_DIR/forecasts.jsonl"
-  run sample_at 60
+  BENCH_NOW=$T0 "$SUBJECT" forecast --baseline real 2>/dev/null >/dev/null
+  printf '%s\n' '{"label":"empty","made_epoch":'"$T0"',"last_p50":null,"last_slow":null,"drain":{"in_per_h":1,"epoch":null},"schedule":[]}' \
+    '{"label":"legacy","made_epoch":'"$T0"',"last_p50":null,"last_slow":null,"drain":{"in_per_h":1,"epoch":null}}' >> "$FLEET_BENCH_DIR/forecasts.jsonl"
+  BENCH_FORECAST_HORIZON_H=1 run sample_at 7200
   assert_success
   refute_output --partial 'cannot be subtracted'
   run outcome
   assert_output --partial WORKED
-  [ ! -s "$FLEET_BENCH_DIR/forecast-scores.jsonl" ]
+  # the baseline with a session is still scored; the two with none are not
+  run jq -sr 'map(.label) | join(",")' "$FLEET_BENCH_DIR/forecast-scores.jsonl"
+  assert_output real
 }
 
 @test "scorecard Forecast section carries the forecast and the newest baseline an hour or more old against since" {
