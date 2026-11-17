@@ -208,26 +208,33 @@ EOF
   assert_equal "$stderr" "fleet-hosts: python3 has no yaml module (python-yaml), so the fleet roster reads as empty"
 }
 
-@test "a machine whose roster fetch fails is home only while its last landed fetch is under FLEET_ROSTER_TRUST_SECS old" {
+@test "a machine whose roster fetch fails is home while its last landed fetch is under FLEET_ROSTER_TRUST_SECS old or from since it booted" {
   home_config_fixture
   export -f project_repo_path
   stub getent 'exit 2'
   roster_names state.lan   # names this machine
   fleet_roster_fetch
   git -C "$HC" remote set-url forgejo "$SANDBOX/gone.git"
-  local stamp; stamp=$(_fh_stamp "$HC")
+  local stamp now; stamp=$(_fh_stamp "$HC") now=$(date +%s)
+  export FLEET_BOOTED_AT=$((now - 2 * FLEET_ROSTER_TRUST_SECS))   # up since before every stamp below
   # A forge blip on the home: the fetch is due and fails, the last landed one is recent, so it stays home.
-  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$stamp"
+  touch -d "@$((now - FLEET_ROSTER_MAX_SECS - 1))" "$stamp"
   unset FLEET_HOSTS_JSON
   fleet_is_home 2>/dev/null || fail "a forge blip stood the home down"
   [ -e "$stamp.failed" ] || fail "the failed fetch left no mark"
-  # Back after a day off, the fetch fails: the old roster may still name it, so it stands down.
-  touch -d "@$(($(date +%s) - FLEET_ROSTER_TRUST_SECS - 1))" "$stamp"
+  # A forge outage past the trust window on a home that stayed up: the roster it fetched still holds.
+  touch -d "@$((now - FLEET_ROSTER_TRUST_SECS - 1))" "$stamp"
+  rm -f "$stamp.failed"
+  unset FLEET_HOSTS_JSON
+  fleet_is_home 2>/dev/null || fail "a forge outage stood a home that stayed up down"
+  # Back after a day off (booted since its last fetch), the fetch fails: the old roster may still
+  # name it, so it stands down.
+  export FLEET_BOOTED_AT=$((now - 60))
   rm -f "$stamp.failed"
   unset FLEET_HOSTS_JSON
   run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 2
-  assert_equal "$stderr" "$(printf '%s\n' "fleet-hosts: fetching forgejo/master in $HC failed, so the roster is as last fetched" "fleet-is-home: the fleet roster cannot be read (no fetch of it has landed in the last ${FLEET_ROSTER_TRUST_SECS}s), so state stands down")"
+  assert_equal "$stderr" "$(printf '%s\n' "fleet-hosts: fetching forgejo/master in $HC failed, so the roster is as last fetched" "fleet-is-home: the fleet roster cannot be read (no fetch of it has landed since this machine booted, and the last is over ${FLEET_ROSTER_TRUST_SECS}s old), so state stands down")"
   # A fetch that lands is trusted again and clears the mark.
   git -C "$HC" remote set-url forgejo "$SANDBOX/up.git"
   fleet_roster_fetch
@@ -237,13 +244,18 @@ EOF
 }
 
 @test "a home written as user@host or in another case is this machine; another name is not" {
-  stub getent 'exit 2'
+  stub getent '[ "$2" = other.lan ] && echo "192.0.2.50      STREAM other.lan"'
   sed -i 's/fleet_state_host: state.lan/fleet_state_host: kb@STATE.lan/' "$FLEET_INVENTORY"
   fleet_is_home || fail "kb@STATE.lan is not read as state"
   sed -i 's/fleet_state_host: .*/fleet_state_host: kb@other.lan/' "$FLEET_INVENTORY"
   unset FLEET_HOSTS_JSON
   run fleet_is_home
   assert_failure 1
+  # A name that resolves to nothing is no machine: rc 3, which the callers say out loud.
+  sed -i 's/fleet_state_host: .*/fleet_state_host: kb@typo.lan/' "$FLEET_INVENTORY"
+  unset FLEET_HOSTS_JSON
+  run fleet_is_home
+  assert_failure 3
 }
 
 @test "a home named by a DHCP name, not the hostname, is home when the name resolves to one of its IPs" {
@@ -270,13 +282,18 @@ EOF
   assert_success
 }
 
-@test "fleet-is-home passes on the home and fails elsewhere naming the home" {
+@test "fleet-is-home passes on the home and fails elsewhere naming the home, or naming a home no machine is" {
+  stub getent '[ "$2" = state.lan ] && echo "192.0.2.50      STREAM state.lan"'
   run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
   assert_output ''
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 1
   assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state.lan"
+  stub getent 'exit 2'
+  FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_failure 3
+  assert_equal "$stderr" "fleet-is-home: the inventory's fleet_state_host state.lan is not old-main and resolves to no address, so old-main stands down"
 }
 
 @test "a roster fetched within FLEET_ROSTER_MAX_SECS is read as it is, with no fetch" {
@@ -295,7 +312,7 @@ EOF
 @test "a machine back from being off, whose stale roster names it, reads the other home the forge names and forwards" {
   home_config_fixture
   export -f project_repo_path
-  stub getent 'exit 2'   # no name resolves to this machine
+  stub getent '[ "$2" = razer-laptop.lan ] && echo "192.0.2.26      STREAM razer-laptop.lan"'   # no name resolves to this machine
   roster_names state.lan
   run fleet_roster_fetch
   assert_success

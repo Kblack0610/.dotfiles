@@ -24,7 +24,7 @@ _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
 : "${FLEET_ROSTER_MAX_SECS:=900}"   # a roster last fetched longer ago is fetched before it is read: fleet-dispatch's pass cadence
 : "${FLEET_ROSTER_RETRY_SECS:=60}"   # after a failed fetch, seconds before a read tries again
-: "${FLEET_ROSTER_TRUST_SECS:=3600}"   # a roster last fetched longer ago cannot say which machine is home (fleet_is_home): four pass cadences, so a forge blip keeps the home home
+: "${FLEET_ROSTER_TRUST_SECS:=3600}"   # a roster last fetched longer ago, before this machine booted, cannot say which machine is home (_fh_untrusted): four pass cadences
 
 # fleet_inventory_repo -> home-config's checkout, from the project map.
 fleet_inventory_repo() {
@@ -123,13 +123,19 @@ fleet_roster_fresh() {
 }
 
 # _fh_untrusted -> why the roster as last fetched cannot name the home, or nothing: its last fetch
-# that landed is FLEET_ROSTER_TRUST_SECS old or more. A machine back from days off whose fetch fails
-# reads its old roster, which may still name it. FLEET_INVENTORY is a file, never fetched.
+# that landed is FLEET_ROSTER_TRUST_SECS old or more and from before this machine booted. A machine
+# back from days off whose fetch fails reads its old roster, which may still name it; the home, up
+# through a forge outage, keeps the roster it last fetched. FLEET_INVENTORY is a file, never fetched.
+# FLEET_BOOTED_AT (epoch seconds) stands in for /proc/stat's btime; with neither, every roster past
+# FLEET_ROSTER_TRUST_SECS is untrusted.
 _fh_untrusted() {
   [ -z "${FLEET_INVENTORY:-}" ] || return 0
-  local hc stamp; hc=$(fleet_inventory_repo) && stamp=$(_fh_stamp "$hc") && [ -n "$stamp" ] || return 0
+  local hc stamp last boot; hc=$(fleet_inventory_repo) && stamp=$(_fh_stamp "$hc") && [ -n "$stamp" ] || return 0
   _fh_older "$stamp" "$FLEET_ROSTER_TRUST_SECS" || return 0
-  printf 'no fetch of it has landed in the last %ss' "$FLEET_ROSTER_TRUST_SECS"
+  last=$(date -r "$stamp" +%s 2>/dev/null || echo 0)
+  boot=${FLEET_BOOTED_AT:-$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null)}
+  [ "$last" -lt "${boot:-$(date +%s)}" ] || return 0
+  printf 'no fetch of it has landed since this machine booted, and the last is over %ss old' "$FLEET_ROSTER_TRUST_SECS"
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
@@ -223,7 +229,8 @@ PY
 fleet_state_addr() { fleet_hosts | jq -r '.state_host // empty' 2>/dev/null | grep -m1 .; }
 
 # fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or a roster that reads
-# names no fleet_state_host (one machine). Rc 1 when it names another machine. Rc 2 when the roster
+# names no fleet_state_host (one machine). Rc 1 when it names another machine, 3 when the name it
+# gives is not this machine's and resolves to no address (fleet_addr_is_me). Rc 2 when the roster
 # cannot be read (FLEET_ROSTER_ERR says why): a machine without home-config's checkout, or back from
 # being off with a fetch that fails, cannot tell it is not the home, so it stands down as one that is not.
 fleet_is_home() {
@@ -237,9 +244,10 @@ fleet_is_home() {
 
 # fleet_addr_is_me <addr> -> rc 0 when the address names this machine: its short name is FLEET_HOST
 # in any case, or one of its A records is a non-loopback IPv4 address of this machine (an IP address
-# resolves to itself). A user@ in front is ssh's and dropped. The inventory may name a machine by its
-# DHCP name (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main). The lookup
-# needs the LAN's DNS: while that is down the home cannot tell it is home.
+# resolves to itself). Rc 1 when it resolves to other machines, 3 when it resolves to no address. A
+# user@ in front is ssh's and dropped. The inventory may name a machine by its DHCP name
+# (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main). The lookup needs the
+# LAN's DNS: while that is down the home cannot tell it is home, and says so (rc 3).
 : "${FLEET_RESOLVE_SECS:=2}"   # seconds the lookup may take, so a hung resolver never blocks a call
 fleet_addr_is_me() {
   local a=${1##*@} short ips
@@ -247,7 +255,8 @@ fleet_addr_is_me() {
   short=${a%%.*}
   [ "${short,,}" != "${FLEET_HOST,,}" ] || return 0
   ips=$(timeout "$FLEET_RESOLVE_SECS" getent ahostsv4 "$a" 2>/dev/null | awk '$1 !~ /^127\./ { print $1 }' | sort -u)
-  [ -n "$ips" ] && ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF -f <(printf '%s\n' "$ips")
+  [ -n "$ips" ] || return 3
+  ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF -f <(printf '%s\n' "$ips")
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.

@@ -3559,8 +3559,8 @@ demand_write() {
 
 # home_line -> which machine the roster's fleet home is, in words. Rc 0 when it is this machine, 1
 # when it is another, 2 when the roster cannot be read, or its fleet_state_host is not this machine
-# and resolves to no address: then no machine matches it and every one stands down, and only this
-# says so (fleet_addr_is_me).
+# and resolves to no address (fleet_is_home rc 3): then no machine matches it and every one stands
+# down, and only this says so.
 home_line() {
   local a rc
   fleet_is_home; rc=$?
@@ -3569,12 +3569,8 @@ home_line() {
     0) if [ -n "$a" ]; then echo "the fleet home is $a: this machine ($FLEET_HOST)"
        else echo "the roster names no fleet_state_host, so this machine ($FLEET_HOST) is the fleet home"; fi ;;
     2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 2 ;;
-    *) if timeout "$FLEET_RESOLVE_SECS" getent ahosts "${a##*@}" >/dev/null 2>&1; then
-         echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"
-         return 1
-       fi
-       echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"
-       return 2 ;;
+    3) echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"; return 2 ;;
+    *) echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"; return 1 ;;
   esac
 }
 
