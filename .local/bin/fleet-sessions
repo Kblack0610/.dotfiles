@@ -1186,11 +1186,17 @@ dirty_names() {
 # ahead_files <dir> <base>: files the branch changed since the merge base whose content in
 # HEAD still differs from the base tip. A squash-merged branch, or a local merge commit
 # whose content is already on origin, changed files that origin now has, so it counts 0.
+# A branch that merged main while main merged it has two merge bases (a criss-cross); a file
+# the branch only took in from the base differs from one of them, so it must differ from all.
 ahead_files() {
-  local d="$1" base="$2" mb
-  mb="$(git -C "$d" merge-base "$base" HEAD 2>/dev/null)" || { echo 0; return; }
-  comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) \
-           <(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort) | wc -l
+  local d="$1" base="$2" mbs mb changed
+  mbs="$(git -C "$d" merge-base --all "$base" HEAD 2>/dev/null)" && [ -n "$mbs" ] || { echo 0; return; }
+  changed="$(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort)"
+  while read -r mb; do
+    [ -n "$changed" ] || break
+    changed="$(comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) <(printf '%s\n' "$changed"))"
+  done <<<"$mbs"
+  grep -c . <<<"$changed" || true
 }
 
 # fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch origin once per repo per pass,

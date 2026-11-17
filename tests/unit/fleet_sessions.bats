@@ -1075,6 +1075,36 @@ MD
   assert_output 1
 }
 
+@test "ahead counts a file the branch only took in from the base as 0 when the branch has two merge bases (ar-1573)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  "${g[@]}" commit -q --allow-empty -m init
+  "${g[@]}" push -q origin HEAD:main 2>/dev/null
+  # criss-cross: the branch and main each merge the other's first commit
+  "${g[@]}" checkout -q -b feat/x
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'feat f'
+  "${g[@]}" checkout -q -b side origin/main 2>/dev/null
+  echo 1 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'main g'
+  "${g[@]}" checkout -q -b main2 side
+  "${g[@]}" merge -q --no-ff -m 'main takes feat' feat/x
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" merge -q --no-ff -m 'feat takes main' side
+  # main then moves g on; the work on f is already there
+  "${g[@]}" checkout -q main2
+  echo 2 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'main g again'
+  "${g[@]}" push -q origin main2:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" fetch -q origin
+  [ "$("${g[@]}" merge-base --all origin/main HEAD | wc -l)" -eq 2 ]
+  run ahead_files "$SANDBOX/wt" origin/main
+  assert_output 0
+  # negative control: real unlanded work on a two-base branch still counts
+  echo 3 > "$SANDBOX/wt/h"; "${g[@]}" add h; "${g[@]}" commit -q -m 'add h'
+  run ahead_files "$SANDBOX/wt" origin/main
+  assert_output 1
+}
+
 @test "the ledger nudges once per fact, and a new fact is nudgeable again" {
   run nudged sid-1 'STALLED PR #9 CI red @feat/x'
   assert_failure
