@@ -173,3 +173,60 @@ ask_of() { "$MKT" show "$1" | jq -r .ask; }
   assert_success
   [ "$("$MKT" show "$output" | jq -r .state)" = review ]
 }
+
+@test "scorecard counts sends per channel and kind, hand vs adapter, and the median review time" {
+  run "$MKT" scorecard
+  assert_success
+  assert_output --partial 'no items in'
+  local a b c d
+  a="$(draft)"; b="$(draft)"; c="$(draft)"; d="$(draft)"
+  local f; f="$(ls "$MKT_LEDGER_DIR"/dodge/*.jsonl)"
+  # fixed review times: a 2h, b 4h, c 9h; d stays in review
+  for x in "$a:2" "$b:4" "$c:9"; do
+    printf '{"ts":"2026-11-10T00:00:00Z","id":"%s","event":"review","ask":"k"}\n' "${x%:*}" >> "$f"
+    printf '{"ts":"2026-11-10T0%s:00:00Z","id":"%s","event":"verdict","verdict":"hand"}\n' "${x#*:}" "${x%:*}" >> "$f"
+  done
+  "$MKT" log "$a" https://reddit.com/r/dodge/a
+  "$MKT" log "$b" https://reddit.com/r/dodge/b
+  # c went out through an adapter; a skipped item is not counted at all
+  printf '{"ts":"2026-11-11T00:00:00Z","id":"%s","event":"sent","url":"https://reddit.com/c","by":"mkt"}\n' "$c" >> "$f"
+  "$MKT" skip "$("$MKT" draft --project dodge --channel steam --kind listing --no-ask "$SANDBOX/work/devlog.md")"
+  "$MKT" log --project dodge --channel steam --kind listing --title 'page' https://store.steampowered.com/app/1 >/dev/null
+  run "$MKT" scorecard --json
+  assert_success
+  local reddit; reddit="$(jq -c '.[] | select(.channel == "reddit")' <<<"$output")"
+  [ "$(jq -c '[.sent, .hand, .adapter, .open, .review_hours]' <<<"$reddit")" = '[3,2,1,1,4]' ]
+  [ "$(jq -r '.first_sent' <<<"$reddit")" = 2026-11-11T00:00:00Z ]
+  [ "$(jq -c '.[] | select(.channel == "steam") | [.kind, .sent, .open, .review_hours]' <<<"$output")" = '["listing",1,0,null]' ]
+  run "$MKT" scorecard --project dodge
+  assert_output --regexp 'dodge +reddit +post +3 +2 +1 +1 +4 '
+}
+
+@test "costs lists rows older than the max age or not verified, and exits 1 only when one is due" {
+  local f="$SANDBOX/work/costs.csv" today; today="$(date -u +%F)"
+  printf 'id,item,low_usd,high_usd,unit,market,source,last_checked,notes\n' > "$f"
+  printf 'fee,Steam fee,100,100,per game,global,https://x,%s,verified primary\n' "$today" >> "$f"
+  run "$MKT" costs "$f"
+  assert_success
+  assert_output --partial '0 of 1 rows'
+  # negative controls: an old row, an unverified row and a bad date each make it due
+  printf 'old,Old price,1,2,each,global,https://x,2020-01-01,verified primary\n' >> "$f"
+  printf 'snip,Snippet price,1,2,each,global,https://x,%s,unverified snippet\n' "$today" >> "$f"
+  printf 'nodate,No date,1,2,each,global,https://x,soon,verified primary\n' >> "$f"
+  run "$MKT" costs "$f"
+  assert_failure 1
+  assert_output --partial $'old\tOld price\tchecked 2020-01-01, over 183 days ago'
+  assert_output --partial $'snip\tSnippet price\tnotes: unverified snippet'
+  assert_output --partial $'nodate\tNo date\tlast_checked is not a date'
+  assert_output --partial '3 of 4 rows'
+  refute_output --partial $'fee\t'
+  run "$MKT" costs "$f" --max-age-days 100000
+  refute_output --partial $'old\t'
+  run "$MKT" costs "$SANDBOX/work/missing.csv"
+  assert_failure 2
+  assert_output --partial 'unreadable: costs file'
+  printf 'id,item,notes,last_checked\n' > "$f"
+  run "$MKT" costs "$f"
+  assert_failure 2
+  assert_output --partial 'unreadable:'
+}
