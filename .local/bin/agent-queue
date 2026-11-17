@@ -545,20 +545,22 @@ desk_starting() {
 # counts: one still held by another tag (night, at:, after) would keep the desktop from the rest, and a
 # desk:auth item counts only while the human is here.
 desk_head() {
-  local res="$1" f tags cls rank p ranks away="" HOLD DESK_SCAN=1
+  local res="$1" f slug after tags pri cls rank p ranks away="" HOLD DESK_SCAN=1
   ranks="$("$AQ_HOLD" classes 2>/dev/null)"
   human_away && away=1
-  while IFS= read -r f; do
-    tags="$(fm_get "$f" tags)"
+  # One awk reads every queued header (header_rows), not an fm_get per field per item: on 506
+  # queued items that was 1,012 forks, 1.6 s of a 2.7 s listing (ar-2359).
+  while IFS=$'\x1f' read -r f _ slug _ _ after tags _ _ _ _ pri; do
     [[ " $tags " == *" hold:$res "* ]] || continue
     cls="$(desk_class "$tags")"
     [ "$cls" = auth ] && [ -n "$away" ] && continue
-    HOLD=""; hold_for "$(fm_get "$f" after)" "$tags"
+    HOLD=""; hold_for "$after" "$tags"
     [ -z "$HOLD" ] || continue
     rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
-    case "$(fm_get "$f" priority)" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\n' "${rank:-9}" "$p" "$f" "$(fm_get "$f" slug)" "$cls"
-  done < <(items_in "$AQ_DIR/queued") | sort -t$'\t' -k1,1n -k2,2n -k3,3 | awk -F'\t' -v OFS='\t' 'NR == 1 { print $3, $4, $5 }'
+    case "$pri" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
+    printf '%s\t%s\t%s\t%s\t%s\n' "${rank:-9}" "$p" "$f" "$slug" "$cls"
+  done < <([ ! -d "$AQ_DIR/queued" ] || find "$AQ_DIR/queued" -maxdepth 1 -name '*.md' ! -name '.*' -printf '%T@\t%p\n' | header_rows) |
+    sort -t$'\t' -k1,1n -k2,2n -k3,3 | awk -F'\t' -v OFS='\t' 'NR == 1 { print $3, $4, $5 }'
 }
 
 # desk_wait <resource> <tags> <file> -> sets HOLD while that free resource goes to another waiter
