@@ -379,12 +379,9 @@ nightly() {
   # Each step that failed is named, so the runner's why says where to look.
   [ "${#failed[@]}" = 0 ] || { rc=1; say "nightly $day failed: ${failed[*]}"; }
   why="day-log nightly $day rc=$rc${failed[*]:+, failed: ${failed[*]}}"
-  # Under agentctl (the token-usage runner) a run that declares no outcome is promoted to
-  # STALLED, which trips fleet-liveness every night.
-  if [ -n "${AGENTCTL_NAME:-}" ]; then
-    local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
-    proof_outcome "$AGENTCTL_NAME" "$verdict" "$why"
-  fi
+  # The token-usage runner's outcome.
+  local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
+  proof_runner_outcome "$verdict" "$why"
   return "$rc"
 }
 

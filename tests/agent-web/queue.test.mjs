@@ -96,7 +96,7 @@ test("a stale or ageless snapshot is red, a failed read says why, and no data ye
 });
 
 // hub_core::queue's COLUMNS, title first; the web draws them all, in this order.
-const QCOLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "acct", "mode", "plan"];
+const QCOLS = ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"];
 const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort: next[0], next_dir: next[1] });
 // The shape hub_core::table::Summary serializes to for the Queue table: opened in its own order
 // (no sort key marked), chips from the states, every column sortable.
@@ -305,6 +305,20 @@ test("a state cell says what the item is, and how a done one ended", () => {
   assert.match(h, /<td class="bad">failed<\/td>/);
   assert.match(h, /<td class="muted">cancelled<\/td>/);
   assert.match(h, /<td>done<\/td>/);
+});
+
+test("a cancelled row's state cell and its opened detail say who cancelled it and why", () => {
+  const why = "cancelled by 9fd0d2fd: dead chain";
+  const c = item("c", { state: "done", status: "cancelled", state_word: "cancelled", state_why: why, cancelled_by: "9fd0d2fd", cancel_why: "dead chain" });
+  load({ ...data, items: [c] });
+  assert.match(draw(), /<td class="muted" title="cancelled by 9fd0d2fd: dead chain">cancelled<\/td>/);
+  load({ ...data, items: [c] }, { sel: "c" });
+  const h = draw();
+  assert.match(h, /cancelled by<\/[^>]+>[^]*9fd0d2fd/);
+  assert.match(h, /cancel reason<\/[^>]+>[^]*dead chain/);
+  // negative control: a finish that ran has no such line
+  load({ ...data, items: [item("d", { state: "done", status: "ok" })] }, { sel: "d" });
+  assert.doesNotMatch(draw(), /cancelled by/);
 });
 
 test("a stuck running or review row is amber with the server's word and its why on hover; a fine one is plain", () => {
@@ -575,7 +589,7 @@ test("a row opens its detail: every header, the stages with gaps, the task folde
   load({ ...data, items: [w] });
   fire("click", { type: "click", target: target({}, "w1") });
   const h = parts["q-list"].innerHTML;
-  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="17"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
+  assert.match(h, /<tr class="qr sel" data-slug="w1">.*?<\/tr><tr class="wdet"><td colspan="18"><div class="card qitem waiting">/, "the detail opens right under its row, across the table");
   assert.match(h, /queued [^>]*? -> started [^>]*? \(\+5m\) -> merged abcdef01/);
   assert.match(h, /<details class="cfold" data-k="task:w1"><summary>Full task and details<\/summary><dl>/);
   for (const k of ["state", "in state", "wait", "run", "project", "kind", "size", "acct"]) assert.match(h, new RegExp(`<dt>${k}</dt>`), k);

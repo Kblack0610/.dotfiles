@@ -2574,7 +2574,7 @@ mod tests {
         let mut all = vec![];
         for (n, kind, used) in [
             ("lazer", "litellm-team", 90.0),
-            ("glm", "litellm-key", 96.0),
+            ("reserve", "litellm-key", 96.0),
         ] {
             for (k, v) in [("week_used_percent", used), ("paced", 0.0)] {
                 let mut s = series(n, k, v);
@@ -2582,7 +2582,7 @@ mod tests {
                 all.push(s);
             }
         }
-        let mut parent = series("glm", "parent", 1.0);
+        let mut parent = series("reserve", "parent", 1.0);
         parent.labels.insert("kind".into(), "litellm-key".into());
         parent.labels.insert("parent".into(), "lazer".into());
         all.push(parent);
@@ -2600,12 +2600,12 @@ mod tests {
             "the pool is a row: {shut:?}"
         );
         assert!(
-            !shut.iter().any(|l| l.starts_with("glm")),
+            !shut.iter().any(|l| l.starts_with("reserve")),
             "the key is not: {shut:?}"
         );
         assert!(
             shut.iter().any(
-                |l| l.starts_with("KEYS  1 in lazer, 0 live, tightest glm 96%")
+                |l| l.starts_with("KEYS  1 in lazer, 0 live, tightest reserve 96%")
                     && l.ends_with("rows in Consumers (K)")
             ),
             "{shut:?}"

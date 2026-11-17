@@ -778,19 +778,23 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[null,[40]]'
 }
 
-@test "feed runs: a run the ledger holds open since before the feed's window is read by id and closes; a fresh open one is not" {
+@test "feed runs: a run the ledger holds open since before the feed's window, gone from its status's list, is read by id and closes; a fresh open one is not" {
   game_files
   feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z in_progress null)" \
     "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)"
   gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z completed success | serve 'repos/o/game/actions/runs/20'
+  runs "$(gh_run 21 .github/workflows/test.yml 2025-11-06T11:00:00Z in_progress null)" \
+    | serve 'repos/o/game/actions/runs?status=in_progress&per_page=100&page=1'
   run "$SUBJECT"
   assert_success
-  run grep -c 'actions/runs/2[01]$' "$GHD/calls"
+  run grep -c 'actions/runs' "$GHD/calls"
   assert_output 0   # served this pass by the feed: not asked
   feed 1 e1 1 false ''
   : > "$GHD/calls"
   SCHEDULES_NOW=1762431000 run "$SUBJECT"
   assert_success
+  run grep -c 'actions/runs?status=in_progress' "$GHD/calls"
+  assert_output 1
   run grep -c 'actions/runs/20$' "$GHD/calls"
   assert_output 1
   run grep -c 'actions/runs/21$' "$GHD/calls"
@@ -798,6 +802,63 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run "$SUBJECT" runs o/game
   run jq -c 'map([.id, .status])' <<<"$output"
   assert_output '[[20,"completed"],[21,"in_progress"]]'
+}
+
+@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is not read" {
+  game_files
+  # 20 and 22 stay queued, 23 is in progress; 24's attempt 1 was superseded by a finished attempt 2
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+    "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
+    "$(gh_run 23 .github/workflows/test.yml 2025-11-04T10:10:00Z in_progress null)" \
+    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z in_progress null)" \
+    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed success 2)"
+  echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/24/attempts/2/jobs?per_page=100"
+  runs "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+       "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
+    | serve 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  runs "$(gh_run 23 .github/workflows/test.yml 2025-11-04T10:10:00Z in_progress null)" \
+    | serve 'repos/o/game/actions/runs?status=in_progress&per_page=100&page=1'
+  run "$SUBJECT"
+  assert_success
+  feed 1 e1 1 false ''
+  rows=$(wc -l < "$LEDGER")
+  for pass in 1762431000 1762431600; do
+    : > "$GHD/calls"
+    SCHEDULES_NOW=$pass run "$SUBJECT"
+    assert_success
+    run grep -c 'actions/runs' "$GHD/calls"
+    assert_output 2   # one listing per open status, nothing by id
+  done
+  [ "$(wc -l < "$LEDGER")" = "$rows" ]   # an unchanged run writes no row
+  # negative control: a listing that fails errors the repo; nothing is read by id or closed
+  touch "$GHD/$(key 'repos/o/game/actions/runs?status=queued&per_page=100&page=1').fail"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762432200 run "$SUBJECT"
+  assert_failure 1
+  run jq -r '.repos["github:o/game"].error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output 'HTTP 502'
+  run grep -c 'actions/runs/' "$GHD/calls"
+  assert_output 0
+  [ "$(wc -l < "$LEDGER")" = "$rows" ]
+}
+
+@test "feed runs: a status listing stops paging once it has every stale run; a stale row with no status is read by id" {
+  game_files
+  feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
+    "$(gh_run 25 .github/workflows/test.yml 2025-11-04T10:20:00Z queued null | jq -c 'del(.status)')"
+  run "$SUBJECT"
+  assert_success
+  jq -nc "{workflow_runs: ([$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)] + [range(1000;1099) | {id: ., status: \"queued\"}])}" \
+    | serve 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  feed 1 e1 1 false ''
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  run cat "$GHD/calls"
+  assert_line 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
+  refute_line --partial 'page=2'
+  assert_line 'repos/o/game/actions/runs/25'
+  refute_line 'repos/o/game/actions/runs/20'
 }
 
 @test "feed runs: a repo's runs come from the feed alone, and its scheduled runs reach the state; actions/runs is never listed" {
@@ -1011,6 +1072,55 @@ nightly_runs() {
   assert_output '[2,"quarantine.py report: quarantine.txt:3: needs a date"]'
 }
 
+@test "quarantine: a report that imports a sibling, which reads a table by its repo-root path, runs from the cache" {
+  game_files; quarantine_files; nightly_artifacts; nightly_runs
+  # as the playground's: quarantine.py imports flake_patterns.py, which reads
+  # scripts/test/flake-causes.json from the repo root two levels above itself
+  serve 'repos/o/game/contents/scripts/test?ref=main' <<'EOF'
+[{"name":"quarantine.py","sha":"q4","type":"file"},{"name":"quarantine.txt","sha":"q2","type":"file"},
+ {"name":"flake_patterns.py","sha":"q5","type":"file"},{"name":"flake-causes.json","sha":"q6","type":"file"}]
+EOF
+  blob o/game q4 'import json, sys
+import flake_patterns
+a = sys.argv
+print(json.dumps({"today": a[a.index("--today") + 1], "entries": 2, "rows": [], "causes": flake_patterns.names()}))'
+  blob o/game q5 'import json, os
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+def names():
+    with open(os.path.join(ROOT, "scripts", "test", "flake-causes.json")) as f:
+        return [c["name"] for c in json.load(f)["causes"]]'
+  blob o/game q6 '{"causes":[{"name":"frame-timing"}]}'
+  TZ=UTC run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0] | [.error, .report.causes, (.files | keys)]' "$QUAR"
+  assert_output '[null,["frame-timing"],["flake-causes.json","flake_patterns.py","quarantine.py","quarantine.txt"]]'
+
+  # a day later the listing is a 304: the report runs again from the cached siblings, no blob read
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run jq -c '.repos[0] | [.error, .report.today, .report.causes]' "$QUAR"
+  assert_output '[null,"2025-11-07",["frame-timing"]]'
+  run grep -c 'blobs/q' "$GHD/calls"
+  assert_output 0
+
+  # the table moves: only its blob is read again
+  blob o/game q6b '{"causes":[{"name":"frame-timing"},{"name":"scene-load"}]}'
+  sed -i 's/"q6"/"q6b"/' "$GHD/$(key 'repos/o/game/contents/scripts/test?ref=main')"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run jq -c '.repos[0] | [.error, .report.causes]' "$QUAR"
+  assert_output '[null,["frame-timing","scene-load"]]'
+  run grep -o 'blobs/q[0-9a-z]*' "$GHD/calls"
+  assert_output 'blobs/q6b'
+
+  # a sibling the base drops leaves the cache, so it is never imported from there
+  quarantine_files
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run bash -c 'find "$1" -maxdepth 1 -type f -printf "%f\n" | sort' _ "$XDG_STATE_HOME/ci/quarantine/o/game/scripts/test"
+  assert_output 'quarantine.py
+quarantine.txt'
+}
+
 # night_file <sha> <json>: o/game's scripts/night.json on main, as the contents API answers it
 night_file() {
   printf '{"sha":"%s","content":"%s"}' "$1" "$(printf '%s' "$2" | base64 -w0)" | serve 'repos/o/game/contents/scripts/night.json?ref=main'
@@ -1079,11 +1189,12 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
 
 @test "PR store: a pass writes one row per PR with its merge, links and revert; an unchanged first page is a 304 that writes nothing" {
   prs_page o/game "$(gh_pr 8 closed 2025-11-06T11:00:00Z revert-x 'Revert "feat: x"' $'Reverts #7\n\nThis reverts commit abcdef1.')" \
-    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' 'https://claude.ai/code/session_abc')" "$(gh_pr 5 closed null dead-end)"
+    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' 'https://claude.ai/code/session_abc' | jq -c '.labels = [{name: "landing-queue"}]')" \
+    "$(gh_pr 5 closed null dead-end)"
   run "$SUBJECT"
   assert_success
-  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .revert])' "$PRS/o__game.jsonl"
-  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]}],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],null],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],null]]'
+  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .revert, .labels])' "$PRS/o__game.jsonl"
+  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]},[]],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],null,["landing-queue"]],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],null,[]]]'
   run jq -c '.repos["o/game"] | [.synced_at, .error, (.etag | length > 0)]' "$PRS/sync.json"
   assert_output '["2025-11-06T12:00:00Z",null,true]'
   : > "$GHD/calls"
@@ -1099,7 +1210,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   fj_list o/fj
   fj_page | fj_serve 1
   page() { jq -nc --arg r "$1" '[{number: 3, state: "closed", merged: true, merged_at: "2025-11-06T10:00:00Z", merge_commit_sha: "f3",
-    title: "fix", head: {ref: $r, sha: "h3"}, base: {ref: "develop"}, user: {login: "bob"}, updated_at: "2025-11-06T10:00:00Z"}]' \
+    title: "fix", labels: [{name: "landing-queue"}, {name: "bug"}, {name: "bug"}], head: {ref: $r, sha: "h3"}, base: {ref: "develop"}, user: {login: "bob"}, updated_at: "2025-11-06T10:00:00Z"}]' \
     > "$FJD/$(key "$(fj_pulls o/fj 1)")"; }
   page fix-y
   run "$SUBJECT"
@@ -1109,7 +1220,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_success
   run "$SUBJECT" prs fj.test/o/fj
   assert_success
-  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
+  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
 }
 
 @test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {

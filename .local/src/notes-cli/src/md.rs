@@ -1640,12 +1640,20 @@ where
 }
 
 /// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
-/// every non-blank line after it indented deeper than it is.
+/// every non-blank line after it indented deeper than it is. A child row sits two spaces in
+/// (the writers' step), so a task row indented only one space deeper is a sibling with a
+/// stray space, and ends the block (a tab is a child's indent, not a stray space).
 pub fn row_block_end(lines: &[&str], i: usize) -> usize {
     let depth = |l: &str| l.len() - l.trim_start().len();
     let own = depth(lines[i]);
     let mut end = i + 1;
-    while end < lines.len() && !lines[end].trim().is_empty() && depth(lines[end]) > own {
+    while end < lines.len()
+        && !lines[end].trim().is_empty()
+        && depth(lines[end]) > own
+        && !(is_task(lines[end])
+            && depth(lines[end]) == own + 1
+            && lines[end][own..].starts_with(' '))
+    {
         end += 1;
     }
     end
@@ -2865,5 +2873,27 @@ after
             append_details(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
             None
         );
+    }
+
+    #[test]
+    fn a_row_indented_one_space_is_a_sibling_not_a_child() {
+        let c = "## Tasks\n- [ ] Square\n  keep\n - [ ] all game\n   - [ ] child\n- [ ] z\n";
+        let lines: Vec<&str> = c.lines().collect();
+        assert_eq!(row_block_end(&lines, 1), 3);
+        let out = append_details(c, "Tasks", |l| l.contains("Square"), &["was: x".into()]).unwrap();
+        assert_eq!(
+            out,
+            "## Tasks\n- [ ] Square\n  keep\n  was: x\n - [ ] all game\n   - [ ] child\n- [ ] z\n"
+        );
+        // a tab-indented child row is still a child
+        let tabbed = ["- [ ] p", "\t- [ ] c", "- [ ] q"];
+        assert_eq!(row_block_end(&tabbed, 0), 2);
+        // the stray-space row still owns its own deeper lines
+        assert_eq!(row_block_end(&lines, 3), 5);
+        let (rest, row, block) =
+            cut_first_block_in_section(c, "Tasks", |l| l.contains("Square")).unwrap();
+        assert_eq!(row, "- [ ] Square");
+        assert_eq!(block, ["  keep"]);
+        assert_eq!(rest, "## Tasks\n - [ ] all game\n   - [ ] child\n- [ ] z\n");
     }
 }

@@ -64,7 +64,7 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
 
 # field <file> <key> -> first value (text after "key: ")
-field() { sed -n "s/^$2: //p" "$1" 2>/dev/null | head -1; }
+field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # A resource is one path segment. Anything else could escape HOLD_ROOT.
 valid_resource() {

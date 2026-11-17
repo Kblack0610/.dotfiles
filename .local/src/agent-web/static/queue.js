@@ -181,7 +181,7 @@ function qMin(m) {
 const Q_COLS = {
   "#": ["#", "n"], title: ["title"], project: ["project"], priority: ["priority"], state: ["state"], hold: ["hold"],
   from: ["from"], in: ["in", "n"], wait: ["wait", "n"], run: ["run", "n"], pr: ["pr"], row: ["row"],
-  kind: ["kind"], size: ["size"], acct: ["acct"], mode: ["mode"], plan: ["plan"],
+  kind: ["kind"], size: ["size"], pts: ["pts", "n"], acct: ["acct"], mode: ["mode"], plan: ["plan"],
 };
 
 // The state cell: what the item is. A finish says how it ended; a running or review row says
@@ -194,7 +194,8 @@ function qState(i) {
   }
   if (i.state === "done") {
     const s = i.status || "ok";
-    return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${s === "failed" ? "failed" : "cancelled"}</td>`;
+    if (s === "cancelled") return `<td class="muted"${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>cancelled</td>`;
+    return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${esc(s)}</td>`;
   }
   // Not started is ready or held (hub_core::vocab::QUEUE, the table's legend); a held cell names its hold.
   if (i.state === "queued") return i.hold ? `<td class="warn" title="held: ${esc(i.hold)}">held</td>` : `<td>ready</td>`;
@@ -237,7 +238,7 @@ function qRow(i, n) {
     `<td class="btitle">${qTitleCell(i)}</td>` +
     `<td>${tblLink(links.project, i.project)}</td><td${i.priority === "urgent" ? ` class="warn"` : ""}>${dash(i.priority)}</td>${qState(i)}${qHoldCell(i)}<td>${dash(i.source)}</td>` +
     `<td class="n">${qMin(t.in_state)}</td><td class="n">${qMin(t.wait)}</td><td class="n">${qMin(t.run)}</td>` +
-    `${qPrCell(i)}<td>${tblLink(links.row, i.row_id)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td>${dash(i.account)}</td>` +
+    `${qPrCell(i)}<td>${tblLink(links.row, i.row_id)}</td><td>${dash(i.type)}</td><td>${dash(i.size)}</td><td class="n">${i.points ?? "-"}</td><td>${dash(i.account)}</td>` +
     `<td class="muted">${dash(i.mode)}</td><td class="muted">${dash(i.plan_label)}</td></tr>` +
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
@@ -290,8 +291,8 @@ function qDetail(i) {
     (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
     cfold(`task:${i.slug}`, "Full task and details", facts([
       ["state", i.state === "done" ? `done, ${i.status || "ok"}` : i.state], ["in state", qMin(t.in_state)], ["wait", qMin(t.wait)], ["run", qMin(t.run)],
-      ["project", i.project], ["kind", i.type], ["size", i.size], ["acct", i.account], ["pr", i.pr_label || i.pr],
-      ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags], ["from", i.from],
+      ["project", i.project], ["kind", i.type], ["size", i.size], ["points", i.points], ["acct", i.account], ["pr", i.pr_label || i.pr],
+      ["cancelled by", i.cancelled_by], ["cancel reason", i.cancel_why], ["slug", i.slug], ["mode", [i.mode, i.weight].filter(Boolean).join(", ")], ["tags", i.tags], ["from", i.from],
       ["session", i.session], ["plan", i.plan], ["phases", i.phases],
     ]) + `<div class="q">${esc(i.task || "")}</div>`, qst.open) + qHist(i) + acts + `</div>`;
 }

@@ -272,8 +272,7 @@ else
     mkdir -p "$UNIT_DIR"
     # NEVER overwrite an existing unit. On a stow-managed machine these paths are
     # symlinks INTO the dotfiles repo, so `cat >` writes THROUGH the symlink and
-    # silently edits tracked files - it already ate After=network-online.target
-    # once, which would have let a boot-time push fire before the network was up.
+    # silently edits tracked files (it once stripped a line from the tracked unit).
     if [ -e "$UNIT_DIR/fleet-pulse.service" ]; then
         ok "fleet-pulse.service already exists - left untouched"
         say "identity comes from that unit (or push.sh's defaults), NOT from this run"
@@ -283,8 +282,6 @@ else
         cat > "$UNIT_DIR/fleet-pulse.service" <<UNIT_EOF
 [Unit]
 Description=Fleet Pulse - push this machine's liveness heartbeat to gatus
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot

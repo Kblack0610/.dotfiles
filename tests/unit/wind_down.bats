@@ -479,6 +479,29 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
   [ -e "$SPIN_DIR/dotfiles.request" ] || fail "removed the legacy sentinel"
 }
 
+@test "disarm after a fired teardown says nothing is armed and clears the marker" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/$SID_A.fired" "$SPIN_DIR/$SID_B.fired"
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_success
+  assert_output --partial 'wind-down is not armed'
+  assert_output --partial "spent at a Stop"
+  [ ! -e "$SPIN_DIR/$SID_A.fired" ] || fail "own fired marker survived"
+  [ -e "$SPIN_DIR/$SID_B.fired" ] || fail "removed another session's fired marker"
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_output ''
+}
+
+@test "disarm with a fresh arm over a fired one reports the disarm" {
+  mkdir -p "$SPIN_DIR"
+  touch "$SPIN_DIR/$SID_A.fired" "$SPIN_DIR/$SID_A.request"
+  disarm "{\"session_id\":\"$SID_A\"}"
+  assert_success
+  assert_output --partial 'wind-down disarmed'
+  refute_output --partial 'not armed'
+  [ ! -e "$SPIN_DIR/$SID_A.fired" ] && [ ! -e "$SPIN_DIR/$SID_A.request" ] || fail "a marker survived"
+}
+
 @test "disarm with nothing armed is silent and succeeds" {
   disarm "{\"session_id\":\"$SID_A\"}"
   assert_success

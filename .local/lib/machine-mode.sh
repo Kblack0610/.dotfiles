@@ -24,7 +24,7 @@ unset _mm_conf
 mode_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MACHINE_MODE_MODES"; }
 mode_names() { mode_rows | cut -d'|' -f1; }
 mode_row() { mode_rows | awk -F'|' -v m="$1" '$1 == m { print; found = 1 } END { exit !found }'; }
-state_value() { sed -n "s/^$1=//p" "$MACHINE_MODE_STATE" 2>/dev/null | head -1; }
+state_value() { sed -n "/^$1=/{s///p;q;}" "$MACHINE_MODE_STATE" 2>/dev/null; }
 
 hour_rows() { grep -Ev '^[[:space:]]*(#|$)' "$MACHINE_MODE_HOURS" 2>/dev/null; }
 

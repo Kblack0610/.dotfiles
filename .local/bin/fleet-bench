@@ -131,8 +131,11 @@
 #                                --by lane by the model-lane lane its run logged under, or both
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
 #                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
-#   fleet-bench sizes [--json]  work minutes per row size over BENCH_SIZES_DAYS against the weight
-#                                the rollups use, and cycle and lead time per row kind
+#   fleet-bench sizes [--json|--check]
+#                                work minutes per row size over BENCH_SIZES_DAYS against the weight
+#                                the rollups use, and cycle and lead time per row kind; --check is the
+#                                pts-bands watch's probe: exit 1 when, over BENCH_BANDS_DAYS of closes,
+#                                the median l is not slower than m or m not slower than s
 #   fleet-bench requests [--json] [--since T]
 #                                the human's urgent requests, one row each (a plan chain is one row),
 #                                then those finished since T: the head of every shepherd summary
@@ -188,6 +191,7 @@ set -uo pipefail
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
 : "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
 : "${BENCH_SIZES_MIN:=10}"           # items with work_min a size needs before it is calibrated
+: "${BENCH_BANDS_DAYS:=7}"           # the closes sizes --check orders the #pts bands over
 : "${LEDGER_CONF_DIR:=$HOME/.config/agentctl/agents}"
 : "${LEDGER_SRC:=$HOME/.dotfiles/.local:$HOME/.dotfiles/.config:$HOME/.dotfiles/.claude/skills:$HOME/.dotfiles-private/.local:$HOME/.dotfiles-private/.config:$HOME/.dotfiles-private/.claude/skills}"   # colon-separated
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
@@ -1598,7 +1602,7 @@ headless_launches() {
 scheduled_runner() {
   local name
   grep -qE '^SCHEDULE=["'"'"']?[^"'"'"' ]' "$1" || grep -qE '^AUTOSTART=["'"'"']?yes' "$1" || return 1
-  name=$(sed -n 's/^NAME=//p' "$1" | head -1)
+  name=$(sed -n '/^NAME=/{s///p;q;}' "$1")
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
@@ -2794,34 +2798,45 @@ cmd_sources() {
 # which gives the size, the weight and the kind (the item's own `type:` when no row is found).
 # A size is calibrated at BENCH_SIZES_MIN or more items with work_min; its measured weight is its
 # median work over the median of the calibrated weight-1 size with the most items. Percentiles
-# are nearest rank.
+# are nearest rank. .bands is the median work of each #pts band (s, m, l: notes-cli
+# epics::POINTS) over the items closed ok in the last BENCH_BANDS_DAYS whose row carries #pts (a
+# bare #size/ tag is not scored by size_rule, and most closes have only that), whether they
+# climb: inverted when l is not slower than m or m not slower than s (a tie counts), each pair
+# read only when both its bands have BENCH_SIZES_MIN items; thin when no pair is out of order
+# but a band is under that.
+# size_rule's minutes in agentctl-inbox-triage are provisional on that order.
 sizes_json() {
-  local since rows projects p items
-  since=$(( $1 - BENCH_SIZES_DAYS * 86400 ))
-  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null | jq -cs .) || return 1
+  local since bands_since rows projects p items
+  since=$(( $1 - BENCH_SIZES_DAYS * 86400 )) bands_since=$(( $1 - BENCH_BANDS_DAYS * 86400 ))
+  items=$($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$(( since < bands_since ? since : bands_since ))" +%F)" 2>/dev/null | jq -cs .) || return 1
   projects=$(jq -r '.[].row // empty | select(test(":")) | split(":")[0]' <<<"$items" | sort -u)
   # the roadmaps go in as a file: a big project's is past the length of one argument
   rows=$(for p in $projects; do
-      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: {size, weight, kind}}'
+      $BENCH_ROADMAP_CMD "$p" --json 2>/dev/null | jq -c --arg p "$p" 'arrays | .[].rows[]? | {key: "\($p):\(.id)", value: ({size, weight, kind} + if has("pts") then {pts} else {} end)}'
     done | jq -cs 'from_entries')
-  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson min "$BENCH_SIZES_MIN" --argjson since "$since" \
+  jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
+     --argjson since "$since" --argjson bsince "$bands_since" \
      --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
     def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
     def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
     def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
     $rows[0] as $R
-    | [$items[0][] | select(.status != "cancelled" and ((.finished | epoch) // 0) >= $since)
+    | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
-       | {size: ($r.size // ""), weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
+       | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
           landed: (.status == "ok" and (.pr // "") != ""),
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
-          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $all
+          lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read
+    | ($read | map(select(.fin >= $since))) as $all
     | ($all | map(select(.work != null))) as $timed
     | ($timed | map(select(.size != "")) | group_by(.size)
        | map({size: .[0].size, weight: .[0].weight, n: length, calibrated: (length >= $min),
               work_p50: (map(.work) | pct(0.5)), work_p75: (map(.work) | pct(0.75))})) as $sz
     | ($sz | map(select(.calibrated and .weight == 1)) | sort_by(-.n) | first) as $base
+    | ($read | map(select(.fin >= $bsince and .ok and .work != null and .pts != null)) as $bt
+       | ["s", "m", "l"] | map(. as $k | $bt | map(select(.size == $k) | .work) | {key: $k, value: {n: length, p50: pct(0.5)}})
+       | from_entries) as $b
     | {days: $days, min_n: $min, base: ($base.size // null),
        sizes: ($sz | sort_by(.weight, .size) | map(. + {
          per_point: (if .calibrated then (.work_p50 / .weight * 10 | round / 10) else null end),
@@ -2830,10 +2845,24 @@ sizes_json() {
        kinds: ($all | group_by(.kind) | map({kind: .[0].kind, done: length, landed: (map(select(.landed)) | length),
          work_p50: (map(.work // empty) | pct(0.5)),
          cycle_p50_h: (map(.cycle // empty) | pct(0.5) | hours), cycle_p90_h: (map(.cycle // empty) | pct(0.9) | hours),
-         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind))}'
+         lead_p50_h: (map(.lead // empty) | pct(0.5) | hours)}) | sort_by(-.done, .kind)),
+       bands: ($b + {days: $bdays,
+         thin: ["s", "m", "l"] | map(select($b[.].n < $min)),
+         out_of_order: [["s", "m"], ["m", "l"]] | map(. as [$lo, $hi]
+           | select($b[$lo].n >= $min and $b[$hi].n >= $min and $b[$hi].p50 <= $b[$lo].p50) | "\($hi) not slower than \($lo)")}
+         | .status = (if ($R | length) > 0 and ($R | [.[] | has("pts")] | any | not) then "unreadable" elif (.out_of_order | length) > 0 then "inverted" elif (.thin | length) > 0 then "thin" else "ok" end))}'
 }
 
-# sizes_section <now>: the size calibration and the per-kind cycle time, in the scorecard
+# bands_line <sizes json>: its .bands as the one scorecard and probe row
+bands_line() {
+  jq -r '.min_n as $min | .bands | def b($k): "\($k) \(.[$k].p50 // "-") min (\(.[$k].n))";
+    "- work p50 by #pts band, last \(.days)d of closes: \(b("s")), \(b("m")), \(b("l")): "
+    + if .status == "inverted" then "inverted, " + (.out_of_order | join(", ")) else "" end
+    + if (.thin | length) > 0 then (if .status == "inverted" then "; " else "" end) + "too few to order \(.thin | join(", ")) (under \($min))" else "" end
+    + if .status == "ok" then "climbs" elif .status == "unreadable" then "unreadable, no roadmap row carries pts (the notes binary predates it)" else "" end' <<<"$1"
+}
+
+# sizes_section <now>: the size calibration, the band row and the per-kind cycle time, in the scorecard
 sizes_section() {
   local j
   echo "## Sizes and kinds"
@@ -2841,6 +2870,11 @@ sizes_section() {
   echo "Queue items finished in the last ${BENCH_SIZES_DAYS} days, joined through their \`row:\` to the row's size and kind on its roadmap. Work is the items' work_min (minutes a session was working). A size is calibrated at ${BENCH_SIZES_MIN} or more items; its measured weight is its median work over the base size's, to set beside the weight the rollups use. Cycle is started to finished, lead is queued to finished."
   echo
   j=$(sizes_json "$1") || { echo "- sizes: ? (the done queue items are unreadable)"; return 0; }
+  sizes_tables "$j"
+}
+
+# sizes_tables <sizes json>: the size table, the band row and the kind table
+sizes_tables() {
   jq -r 'def d: if . == null then "-" else tostring end;
     "| Size | Weight | Items | Work p50 min | Work p75 min | Min per point | Measured weight |",
     "|---|---|---|---|---|---|---|",
@@ -2848,18 +2882,29 @@ sizes_section() {
        then "\(.work_p50) | \(.work_p75) | \(.per_point) | \(.measured_weight | d) |"
        else "- | - | - | too few (\(.n) of \($m)) |" end)),
     "",
-    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)",
-    "",
+    "- base size: \(.base // "none calibrated"); items with work_min and no sized row: \(.unsized)"' <<<"$1"
+  bands_line "$1"
+  echo
+  jq -r 'def d: if . == null then "-" else tostring end;
     "| Kind | Done | Landed | Work p50 min | Cycle p50 h | Cycle p90 h | Lead p50 h |",
     "|---|---|---|---|---|---|---|",
-    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$j"
+    (.kinds[] | "| \(.kind) | \(.done) | \(.landed) | \(.work_p50 | d) | \(.cycle_p50_h | d) | \(.cycle_p90_h | d) | \(.lead_p50_h | d) |")' <<<"$1"
 }
 
+# sizes [--json|--check]: --check prints the band row and exits 1 when it is inverted, 2 when the
+# closes are unreadable. A thin window (a band under BENCH_SIZES_MIN items) exits 0, unlike
+# startup --check's blind recorder: a quiet week leaves the rubric unmeasured, not wrong.
 cmd_sizes() {
   local j
-  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench sizes [--json]"; return 2 ;; esac
-  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; return 1; }
-  if [ "${1:-}" = --json ]; then printf '%s\n' "$j"; else sizes_section "$(now)" | sed '1,4d'; fi
+  case "${1:-}" in ""|--json|--check) ;; *) say "usage: fleet-bench sizes [--json|--check]"; return 2 ;; esac
+  j=$(sizes_json "$(now)") || { say "sizes: the done queue items are unreadable"; [ "${1:-}" = --check ] && return 2; return 1; }
+  case "${1:-}" in
+    '') sizes_tables "$j" ;;
+    --json) printf '%s\n' "$j" ;;
+    --check)
+      bands_line "$j" || return 2
+      case "$(jq -r .bands.status <<<"$j")" in ok|thin) return 0 ;; inverted) return 1 ;; *) return 2 ;; esac ;;
+  esac
 }
 
 wakes_lines() {
@@ -3109,7 +3154,7 @@ improve_add() {
   local out rc=0
   out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2") || rc=$?
   [ "$rc" = 0 ] || return "$rc"
-  grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | head -1 | sed 's/^<!-- id://' | grep . ||
+  grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | awk 'NR==1' | sed 's/^<!-- id://' | grep . ||
     { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
 }
 
@@ -3315,7 +3360,7 @@ upsert_report() {
 
 # watch_sev <name> -> the severity in its manifest. watch_after <severity> -> seconds it must stay
 # at TRIP before it is a red.
-watch_sev() { sed -n 's/^severity:[[:space:]]*//p' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null | head -1; }
+watch_sev() { sed -n '/^severity:[[:space:]]*/{s///p;q;}' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
 # watch_tripped_since <name> <now> -> when the watch tripped, once it is past triage's patience
@@ -3385,25 +3430,20 @@ log_norm() {
           s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
 }
 
-# triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
-# runs of the last TRIAGE_LOG_HOURS, one of them among the runner's newest BENCH_GUARD_RECUR readable
-# runs: a cause fixed earlier in the window is not red now, and cause_tries would count its merged
-# fix as one that did not hold. That many runs outlast a dispatch pass for the fastest runner, so an
-# intermittent error is still seen. Each run's bytes come from its runs.jsonl err range; a range past
-# the end of the log was rotated away and is skipped. #high at twice the recurrence.
-triage_log_rows() {
-  local sd t ledger name a b f sig
+# log_lines -> each readable run of the last TRIAGE_LOG_HOURS, oldest first, as "<name> TAB <err
+# start>", then one "<name> TAB <err start> TAB <normalized> TAB <line>" per error line it logged.
+# Each run's bytes come from its runs.jsonl err range; a range past the end of the log was rotated
+# away and is no run. rc 1 when runs.jsonl cannot be read.
+log_lines() {
+  local sd name a b f
   proof_lib && sd=$(proof_state_dir)
-  [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 0
-  t=$(now)
-  ledger=$(jq -rs --argjson s $((t - TRIAGE_LOG_HOURS * 3600)) \
+  [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 1
+  jq -rs --argjson s $(($(now) - TRIAGE_LOG_HOURS * 3600)) \
     'map(select((.finished // 0) >= $s and (.err[0] | type) == "number" and (.err[1] | type) == "number"
-      and .err[1] >= .err[0])) | sort_by(.finished)[] | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null)
+      and .err[1] >= .err[0])) | sort_by(.finished)[] | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null |
   while IFS=$'\t' read -r name a b; do
-    [ -n "$name" ] || continue
     f="$sd/$name.stderr.log"
-    [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
-    # a readable run, quiet or not, oldest first
+    [ -n "$name" ] && [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
     printf '%s\t%s\n' "$name" "$a"
     [ "$b" -gt "$a" ] || continue
     # one dd reads the range: `tail | head -c` cut the pipe early, and under systemd (SIGPIPE
@@ -3411,14 +3451,46 @@ triage_log_rows() {
     dd if="$f" iflag=skip_bytes,count_bytes skip="$a" count=$((b - a)) status=none |
       grep -aiE -- "$TRIAGE_ERR_RE" | tr -d '\t\r' |
       while IFS= read -r line; do printf '%s\t%s\t%s\t%s\n' "$name" "$a" "$(log_norm <<<"$line")" "$line"; done
-  done <<<"$ledger" |
+  done
+  # a run with no error line ends the loop on grep's 1, which is no failure to read
+  return 0
+}
+
+# log_sig <runner> <normalized line> -> the 8-hex signature a fix(logs) row key carries
+log_sig() { printf '%s\t%s' "$1" "$2" | sha1sum | cut -c1-8; }
+
+# log_recent -> "runner <name>" for each runner with BENCH_GUARD_RECUR or more readable runs in the
+# window, and the row key of each signature any of a runner's newest BENCH_GUARD_RECUR readable runs
+# logged, lowercased as board keys are. A log row is recovered when its runner is listed and its key
+# is not: the error is gone from as many newest runs as filing needs to see it. rc 1 when unread.
+log_recent() {
+  local kind name norm
+  log_lines | awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
+    NF == 2 { run[$1, ++runs[$1]] = $2; next }
+    { k = $1 FS $3; r[k] = $1; seen[k, $2] = 1 }
+    END { for (n in runs) if (runs[n] >= min) print "runner" FS n
+          for (k in r) for (j = runs[r[k]]; j > 0 && j > runs[r[k]] - min; j--)
+            if ((k, run[r[k], j]) in seen) { print "sig" FS k; break } }' |
+  while IFS=$'\t' read -r kind name norm; do
+    if [ "$kind" = runner ]; then echo "runner $name"; else echo "fix(logs): $name error $(log_sig "$name" "$norm"):"; fi
+  done | tr '[:upper:]' '[:lower:]'
+}
+
+# triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
+# runs of the last TRIAGE_LOG_HOURS, one of them among the runner's newest BENCH_GUARD_RECUR readable
+# runs: a cause fixed earlier in the window is not red now, and cause_tries would count its merged
+# fix as one that did not hold. That many runs outlast a dispatch pass for the fastest runner, so an
+# intermittent error is still seen. #high at twice the recurrence.
+triage_log_rows() {
+  local name norm n sample sig
+  log_lines |
   awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
     NF == 2 { run[$1, ++runs[$1]] = $2; next }
     { k = $1 FS $3; r[k] = $1; if (!((k, $2) in seen)) { seen[k, $2] = 1; n[k]++ } if (!(k in s)) s[k] = $4 }
     END { for (k in n) if (n[k] >= min) for (j = runs[r[k]]; j > 0 && j > runs[r[k]] - min; j--)
             if ((k, run[r[k], j]) in seen) { print k FS n[k] FS s[k]; break } }' |
   while IFS=$'\t' read -r name norm n sample; do
-    sig=$(printf '%s\t%s' "$name" "$norm" | sha1sum | cut -c1-8)
+    sig=$(log_sig "$name" "$norm")
     # a # would read as a tag on the board
     sample=$(sed -E 's/^\[[^]]*\][[:space:]]*//; s/#/no./g' <<<"$sample" | cut -c1-80)
     printf 'fix(logs): %s error %s:\tfix(logs): %s error %s: %s\t%s\n' "$name" "$sig" "$name" "$sig" "$sample" \
@@ -3533,13 +3605,44 @@ triage_filed() {
   done <<<"$1"
 }
 
+# row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
+row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
+
+# triage_twins <rows> <filed keys> <kept>: a row lives in exactly one lane, the one its route names, so
+# once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
+# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin, unless
+# <kept> names it (a spent cause's human row stands beside its agent row). Read from every pass, so a
+# twin left by an earlier route or a drop that failed is retried. Closing a twin is the only write.
+triage_twins() {
+  local key route sheet have agent kpi
+  agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
+  while IFS=$'\t' read -r key _ _ route _; do
+    [ -n "$key" ] || continue
+    case "$route" in human:?*) ;; *) continue ;; esac
+    sheet=${route#human:}
+    have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null </dev/null) || continue
+    row_open "$have" "$key" && row_open "$agent" "$key" || continue
+    $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent drop "$key" --why "moved to the $sheet sheet" >/dev/null 2>&1 </dev/null \
+      || say "twin: could not drop the agent row for $key"
+  done <<<"$1"
+  [ -n "$2" ] || return 0
+  kpi=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) || return 0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    grep -qxF -- "$key" <<<"$3" && continue
+    row_open "$kpi" "$key" || continue
+    $BENCH_NOTES_CMD ptask "$KPI_BOARD" drop "$key" --why "moved to the agent board" >/dev/null 2>&1 </dev/null \
+      || say "twin: could not drop the sheet row for $key"
+  done <<<"$2"
+}
+
 # triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
 triage_human() {
   local key text pri route sheet have n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
-    awk -F'\t' -v p="${key,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$have" && continue
+    row_open "$have" "$key" && continue
     $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
@@ -3551,14 +3654,17 @@ triage_human() {
 # waiting, or closed with a PR that is not merged (it waits on a merge, and a second session would
 # only repeat it), or, given the epoch an alert or owned watch tripped at, closed ok since then (its
 # job was the ask or the owner, not the red, so a PR it merged fixed something beside the red; the
-# TRIAGE_FIX_DAYS window bounds it, and the watch re-pages on its own). Else how many items the window
-# queued for it.
+# TRIAGE_FIX_DAYS window bounds it, and the watch re-pages on its own), or merged under TRIAGE_WATCH_AFTER
+# ago: the patience a low red gets before it is filed, given to a merge to deploy and age out of the
+# probe's window. Else how many items the window queued for it.
 # Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
 # red still here on an agent route or before the trip, did not hold.
 cause_tries() {
-  jq --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
+  jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson settle "$(($(now) - TRIAGE_WATCH_AFTER))" \
+    "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
+                or (.state == "done" and (.merged // "") != "" and ((.finished | ep) // 0) >= $settle)
                 or ($trip != "" and .state == "done" and .status == "ok"
                     and ((.queued | ep) // 0) >= ($trip | tonumber)))
       then -1 else length end' <<<"$1"
@@ -3781,9 +3887,9 @@ liveness_reach() {
   while IFS= read -r n; do
     for c in "$LEDGER_CONF_DIR"/*.conf; do
       [ -e "$c" ] || continue
-      [ "$(sed -n 's/^NAME=//p' "$c" | head -1 | tr -d "\"'")" = "$n" ] || [ "$(basename "$c" .conf)" = "$n" ] || continue
+      [ "$(sed -n '/^NAME=/{s///p;q;}' "$c" | tr -d "\"'")" = "$n" ] || [ "$(basename "$c" .conf)" = "$n" ] || continue
       repo_path "$c" || true
-      cmd=$(sed -n 's/^COMMAND=//p' "$c" | head -1 | tr -d "\"'")
+      cmd=$(sed -n '/^COMMAND=/{s///p;q;}' "$c" | tr -d "\"'")
       read -ra words <<<"$cmd"
       for w in "${words[@]}"; do
         w=${w//'${HOME}'/$HOME}; w=${w//'$HOME'/$HOME}; [[ "$w" == '~/'* ]] && w=$HOME/${w#'~/'}
@@ -3988,29 +4094,34 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
-# triage_retire <dry> -> closes each check(watch) or fix(hold) row nobody started whose key left
-# reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it again.
-# Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
-# board cannot be read, a watch whose probe could not run (ERROR), every hold row when a repo's runs
+# triage_retire <dry> -> closes each check(watch), fix(hold) or fix(logs) row nobody started whose
+# key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
+# again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
+# board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
+# as recovered (its error in a newest run, too few runs, no ledger), every hold row when a repo's runs
 # could not be read, and a ci- hold whose merge has left the REDS_DAYS window hold_reds reads. A row
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds holds_read=1 live board slugs title raw key
-  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red)'
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner
+  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
   t=$(now)
   items=$(reds_items "$t") || return 0
   holds=$(hold_reds "$t" "$items") || holds_read=0
+  recent=$(log_recent) || logs_read=0
   live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
   slugs=$(jq -r '.[].slug' <<<"$items")
   while IFS=$'\t' read -r _ _ title raw; do
     [[ $title =~ $shape ]] || continue
-    key=${BASH_REMATCH[1]}
+    key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    if [[ $key == 'fix(logs): '* ]]; then
+      [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
+    fi
     if [[ $key == 'fix(hold): '* ]]; then
       [ "$holds_read" = 1 ] || continue
       if [[ $key == 'fix(hold): ci-'* ]]; then
@@ -4027,7 +4138,7 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key extra
+  local rows filed dry=0 q h text re route skill fix tags key extra spent
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -4069,7 +4180,9 @@ cmd_triage() {
   fi
   filed=$(triage_filed "$rows")
   if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
-  h=$(triage_human "$rows"$'\n'"$(triage_spent "$rows")")
+  spent=$(triage_spent "$rows")
+  h=$(triage_human "$rows"$'\n'"$spent")
+  triage_twins "$rows" "$(cut -f1 <<<"$filed")" "$(cut -f1 <<<"$spent")"
   q=$(triage_promote "$rows")
   extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
   upsert_report "$rows" "$extra"
@@ -4421,7 +4534,7 @@ queue_slots() {
   local n="${BENCH_QUEUE_SLOTS:-}" fd
   [ -n "$n" ] || n=$(sed -n 's/^DISPATCH_TARGET_PRESENT=\([0-9][0-9]*\).*/\1/p' "$BENCH_DISPATCH_CONF" 2>/dev/null | tail -1)
   if [ -z "$n" ] && fd=$(command -v fleet-dispatch); then
-    n=$(sed -n 's/^: "\${DISPATCH_TARGET_PRESENT:=\([0-9][0-9]*\)}".*/\1/p' "$fd" | head -1)
+    n=$(sed -n '/^: "\${DISPATCH_TARGET_PRESENT:=\([0-9][0-9]*\)}".*/{s//\1/p;q;}' "$fd")
   fi
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] && printf '%s' "$n"
 }
@@ -4437,12 +4550,12 @@ forecast_json() {
   [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
   slots=$(queue_slots) || slots=''
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
-      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
+      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_session_phases "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
   # an item with `phases:` (agent-queue add --plan) counts those; one that only names its plan, its plan's open phases
   iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "" and (.phases // "") == "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
     | while IFS=$'\t' read -r slug pf; do
-        printf '{"%s":%s}\n' "$slug" "$(plan_phase_list "$pf" | jq 'map(select(.state == "open")) | length')"
+        printf '{"%s":%s}\n' "$slug" "$(plan_session_phases "$pf" | jq 'map(select(.state == "open")) | length')"
       done | jq -cs 'add // {}')
   jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
      --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" \

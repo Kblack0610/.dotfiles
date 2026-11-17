@@ -372,7 +372,8 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
-/// registry gives the project a `code`. Each of `details` becomes an indented line under it.
+/// registry gives the project a `code`. Each of `details` becomes an indented line under it,
+/// after any later lines of a multi-line `text`, whose first line alone is the row.
 ///
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
@@ -418,9 +419,17 @@ pub(crate) fn add_via(
     lane: Lane,
     systems: Option<&str>,
 ) -> Result<i32> {
-    let text = text.trim();
+    let typed = text.trim();
+    // A stamped row's text is its first line and any later lines go before its details, so
+    // the tags and id marker land on the row line, the only line a pick or the board reads.
+    let (text, more) = typed.split_once('\n').unwrap_or((typed, ""));
+    let text = text.trim_end();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
+    }
+    let mut row_details = details.to_vec();
+    if !more.trim().is_empty() {
+        row_details.insert(0, more.to_string());
     }
     let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
@@ -430,18 +439,13 @@ pub(crate) fn add_via(
         refuse_behind(v, cur)?;
     }
     refuse_epic_on_board(lane, &[text])?;
-    if lane == Lane::Agent {
-        if !projects::is_typed(text) {
-            bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
-        }
-        if projects::size_of(&format!("- [ ] {text}")).is_none() {
-            bail!("an agent board row needs its #pts/<n> or #size/s, #size/m or #size/l, so nothing was added");
-        }
+    if lane == Lane::Agent && !projects::is_typed(text) {
+        bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !projects::is_typed(text) {
-        let mut line = format!("- [ ] {text}");
+        let mut line = format!("- [ ] {typed}");
         if let Some(v) = to {
             line = md::add_tag(&line, &projects::fmt_version(v));
         }
@@ -467,7 +471,15 @@ pub(crate) fn add_via(
         );
         return Ok(3);
     }
-    let mut block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    let mut block = new_rows(
+        name,
+        &proj_dir,
+        &[text.to_string()],
+        to,
+        cur,
+        &[],
+        &row_details,
+    )?;
     if want.is_some() && lane == Lane::Agent {
         block[0] = md::add_tag(&block[0], WANT_TAG);
     }
@@ -477,7 +489,15 @@ pub(crate) fn add_via(
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
             return add_via(
-                p, log, name, &linked[0], details, to_arg, want_arg, lane, None,
+                p,
+                log,
+                name,
+                &linked[0],
+                &row_details,
+                to_arg,
+                want_arg,
+                lane,
+                None,
             );
         }
     }
@@ -601,6 +621,23 @@ fn carry_tags(old: &str, new: &str) -> String {
     md::find_hashtags(old)
         .into_iter()
         .filter(|t| t.starts_with(|c: char| c.is_ascii_lowercase()) && !set.contains(&name(t)))
+        .fold(new.trim().to_string(), |out, t| {
+            md::add_tag(&out, &format!("#{t}"))
+        })
+}
+
+/// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither: the sizing is the
+/// row's estimate, not words, so a retext keeps it. Every other tag is exactly what `--text`
+/// types, so leaving `#plan` out clears it. A `new` that types either sizing tag sets the
+/// sizing itself.
+fn carry_sizing(old: &str, new: &str) -> String {
+    let sizing = |t: &String| t.starts_with("size/") || t.starts_with("pts/");
+    if md::find_hashtags(new).iter().any(sizing) {
+        return new.trim().to_string();
+    }
+    md::find_hashtags(old)
+        .into_iter()
+        .filter(sizing)
         .fold(new.trim().to_string(), |out, t| {
             md::add_tag(&out, &format!("#{t}"))
         })
@@ -1882,15 +1919,39 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
     }
 }
 
+/// A rewrite's `type(area): title #tags` with the title cut to [`projects::TITLE_MAX`] at a word,
+/// and the whole title when it was cut, for a `full:` detail line. A title that fits comes back as
+/// it is, so the words are never refused and never lost.
+fn fit_title(text: &str) -> (String, Option<String>) {
+    let bare = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some((ty, area, title)) = projects::row_prefix(&bare) else {
+        return (text.to_string(), None);
+    };
+    if title.chars().count() <= projects::TITLE_MAX {
+        return (text.to_string(), None);
+    }
+    let tags = text.split_whitespace().filter(|w| w.starts_with('#'));
+    let head = format!("{ty}({area}): {}", crate::propose::cut(title));
+    let fitted: Vec<&str> = std::iter::once(head.as_str()).chain(tags).collect();
+    (fitted.join(" "), Some(title.to_string()))
+}
+
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
-/// checkbox state and its tags stay as they were ([`md::retext_task`]).
+/// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
+/// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
+/// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
-/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
+/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, a title
+/// over 80 chars is cut at a word with the whole title on a `full:` line after it ([`fit_title`]), and
 /// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
 ///
@@ -1922,12 +1983,8 @@ pub fn retext(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );
         }
-        if projects::row_title(&format!("- [ ] {t}")).chars().count() > projects::TITLE_MAX {
-            bail!(
-                "'{t}': the title is over {} chars, so nothing was edited; the rest goes on a detail line",
-                projects::TITLE_MAX
-            );
-        }
+        let (t, full) = fit_title(t);
+        let t = t.as_str();
         let Some((_, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
         };
@@ -1950,6 +2007,7 @@ pub fn retext(
         }
         rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
+        with_was.extend(full.map(|f| format!("full: {f}")));
         with_was.extend(details.iter().cloned());
         (Some(rewrite.as_str()), &with_was[..])
     } else {
@@ -2022,7 +2080,7 @@ pub fn retext(
     }
     Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
-            (Some(t), _) => t.to_string(),
+            (Some(t), _) => carry_sizing(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };
@@ -4415,8 +4473,7 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_long_or_unchanged_text(
-    ) {
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_or_unchanged_text() {
         let v = vault(
             "was",
             "",
@@ -4440,14 +4497,6 @@ mod inbox_tests {
         };
         assert!(edit("make the menu stop flickering").is_err());
         assert_eq!(v.read(), before, "an untyped rewrite wrote nothing");
-        let long = format!("fix(ui): {} #size/s", "x".repeat(81));
-        assert!(edit(&long).is_err());
-        assert_eq!(
-            v.read(),
-            before,
-            "a rewrite with a title over 80 chars wrote nothing"
-        );
-
         assert_eq!(
             edit("fix(ui): the menu flickers on resize #size/s").unwrap(),
             0
@@ -4477,6 +4526,73 @@ mod inbox_tests {
             s,
             "a rewrite to the row's own words wrote nothing"
         );
+    }
+
+    #[test]
+    fn a_was_rewrite_over_80_chars_is_cut_at_a_word_with_the_whole_title_on_a_full_line() {
+        let v = vault(
+            "wasfull",
+            "",
+            "- [ ] the menu flickers #requested #size/m #c1026 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::new("sc-5", false).unwrap();
+        let title = format!(
+            "{} {}",
+            "word ".repeat(17).trim_end(),
+            "tail ".repeat(5).trim_end()
+        );
+        assert!(title.chars().count() > projects::TITLE_MAX);
+        let long = format!("fix(ui): {title} #size/s");
+        let rc = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some(&long),
+            None,
+            &[],
+            true,
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        let row = s.lines().find(|l| l.contains("id:sc-5")).unwrap();
+        assert!(
+            projects::row_title(row).chars().count() <= projects::TITLE_MAX,
+            "{row}"
+        );
+        assert!(row.starts_with("- [ ] fix(ui): word word"), "{row}");
+        assert!(
+            row.contains("#size/s") && row.contains("#requested"),
+            "{row}"
+        );
+        assert!(row.contains("#c1026") && !row.contains("tail"), "{row}");
+        let was = s.find("  was: the menu flickers").expect("was line");
+        let full = s.find(&format!("  full: {title}\n")).expect("full line");
+        assert!(was < full, "{s}");
+    }
+
+    #[test]
+    fn a_was_rewrite_title_with_no_space_in_80_chars_is_cut_hard() {
+        let (t, full) = fit_title(&format!("fix(ui): {} #size/s", "x".repeat(100)));
+        assert_eq!(t, format!("fix(ui): {} #size/s", "x".repeat(80)));
+        assert_eq!(full.as_deref(), Some("x".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn a_was_rewrite_title_whose_80th_char_ends_a_word_keeps_that_word() {
+        let title = format!("{} more", "x".repeat(80));
+        let (t, _) = fit_title(&format!("fix(ui): {title}"));
+        assert_eq!(t, format!("fix(ui): {}", "x".repeat(80)));
+    }
+
+    #[test]
+    fn a_was_rewrite_title_that_fits_is_left_alone() {
+        let (t, full) = fit_title("fix(ui): short title #size/s");
+        assert_eq!(t, "fix(ui): short title #size/s");
+        assert!(full.is_none());
     }
 
     #[test]

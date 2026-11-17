@@ -50,7 +50,7 @@ CI_RESULT_FILE="${CI_RESULT_FILE:-}"
 [ -z "$SID" ] || [ "${CI_RESULT_FILE##*/}" = "ci-result-$SID.txt" ] || CI_RESULT_FILE=""
 CI_STATUS_VAL=""
 if [ -n "$CI_RESULT_FILE" ] && [ -f "$CI_RESULT_FILE" ]; then
-  CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  CI_STATUS_VAL=$(grep -m1 '^status=' "$CI_RESULT_FILE" 2>/dev/null | cut -d= -f2- || true)
 fi
 if [ "$CI_STATUS_VAL" = "FAIL" ]; then
   echo "wind-down deferred: stop-hook checks failing — will spin down on the next clean Stop." >&2

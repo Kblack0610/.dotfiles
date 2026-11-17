@@ -3,7 +3,7 @@
 #
 #   project-stage-check <name> [--stage <stage>] [--json]
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
-#   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file
+#   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file [--json]
 #   project-stage-check <name> --list [--json]
 #   project-stage-check --requirements [--json]
 #
@@ -23,7 +23,9 @@
 # it, `epic(stage): <stage> to standard` is filed on the human sheet first. A system's row goes
 # under `epic(<system>): ...`, which `notes ptask add` files when it is missing (standing.rs). A
 # row already on either sheet under the same title, open or closed or dropped, is never filed
-# again. Exit 0, 1 when a write failed, 2 as above.
+# again. Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout
+# gets the check's own --json (`stage` is the target) plus filed_open and filed_closed: the agent
+# rows titled as one of its PASS or FAIL rows, as the sheets read after the pass.
 # --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),
 # one `id<TAB>doc|own<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an array of
 # {id, source, aliases, is}). A malformed `systems` entry exits 2.
@@ -34,7 +36,7 @@
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
 
 NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
@@ -55,7 +57,6 @@ done
 [ -n "$NAME$REQS" ] || usage
 [ -z "$REQS" ] || [ -z "$NAME$TARGET$SYSTEMS$FILE$LIST" ] || { echo "project-stage-check: --requirements takes no project, only --json" >&2; usage; }
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
-[ -z "$FILE" ] || [ -z "$JSON" ] || { echo "project-stage-check: --file and --json do not mix" >&2; usage; }
 [ -z "$LIST" ] || [ -z "$FILE$TARGET$ONLY" ] || { echo "project-stage-check: --list takes only --json" >&2; usage; }
 
 # rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
@@ -143,7 +144,7 @@ title_of() {
 stage_epic() {
   local out id
   out="$(notes ptask "$NAME" add "epic(stage): $1 to standard")" || return 1
-  id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | head -1)"
+  id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR==1')"
   [ -n "$id" ] || return 1
   printf 'epic    %-10s  %s to standard (%s)\n' "$1" "$1" "${id#id:}" >&2
   printf '%s\n' "${id#id:}"
@@ -152,10 +153,12 @@ stage_epic() {
 # file_gaps: the --file mode. It reads this script's own --json, the open epics from `notes
 # projects --stats --json` (the roadmap lists only epics with work in a version, so never a
 # fresh one) and the rows already on the sheets, and writes only through `notes ptask --agent
-# add`, whose twin check holds a concurrent run off an open row.
+# add`, whose twin check holds a concurrent run off an open row. With --json it runs with stdout on
+# stderr and writes its one JSON object to $JSON_OUT, never to an fd a child (a detached notes
+# refresh) could hold open under the caller's `$(...)`.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
-  local target area text full chk epic title row state declared lane id today
+  local target area text full chk epic title row state declared lane id today seen=""
   [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
@@ -199,7 +202,7 @@ file_gaps() {
   # a PASS row's, closed by its id with the check as proof. A regression files it again.
   while IFS= read -r full; do
     [ -n "$full" ] || continue
-    title="$(title_of "$full")"
+    title="$(title_of "$full")"; seen+="$title"$'\n'
     while IFS=$'\t' read -r state _ lane id; do
       [ "$state" = open ] && [ "$lane" = agent ] && [ -n "$id" ] || continue
       if notes ptask "$NAME" --agent done "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
@@ -217,7 +220,7 @@ file_gaps() {
   while IFS=$'\t' read -r target area full chk; do
     [ -n "$target" ] || continue
     n=$((n + 1))
-    title="$(title_of "$full")"
+    title="$(title_of "$full")"; seen+="$title"$'\n'
     # A closed twin wins over an open one: a gap the human dropped stays dropped.
     state="$(awk -F'\t' -v t="$title" '$2 == t { s = (s == "closed" || $1 == "closed") ? "closed" : "open" } END { print s }' <<<"$have")"
     if [ -n "$SYSTEMS" ]; then
@@ -255,6 +258,18 @@ file_gaps() {
     esac
   done <<<"$gaps"
 
+  # The rows this check filed, open and closed, read again once this pass wrote any.
+  if [ -n "$JSON" ]; then
+    if [ $((filed + met)) -gt 0 ] && ! have="$(sheet_rows)"; then
+      failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be read again"
+    else
+      jq -c --arg have "$have" --arg seen "$seen" '
+        [$seen | split("\n")[] | select(length > 0)] as $t
+        | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
+        | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
+        <<<"$check" > "$JSON_OUT"
+    fi
+  fi
   local what="#$TARGET"; [ -z "$SYSTEMS" ] && [ -n "$TARGET" ] || what="systems${ONLY:+ $ONLY}"
   printf 'file: %s %s: %s failing, %s filed, %s already open, %s closed or dropped, %s met and closed' \
     "$NAME" "$what" "$n" "$filed" "$had" "$closed" "$met"
@@ -314,6 +329,10 @@ sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
 [ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
+if [ -n "$FILE" ] && [ -n "$JSON" ]; then
+  JSON_OUT="$(mktemp)"; (file_gaps) >&2; rc=$?
+  cat "$JSON_OUT"; rm -f "$JSON_OUT"; exit "$rc"
+fi
 [ -z "$FILE" ] || file_gaps
 
 # applies <cell>: the Applies cell names one of TAGS.
@@ -449,7 +468,7 @@ if [ -z "$TARGET" ]; then
 fi
 lab_stage_at_least "$TARGET" "${LAB_STAGES%% *}" || { echo "project-stage-check: unknown stage \"$TARGET\" (want: $LAB_STAGES)" >&2; exit 2; }
 
-enforced_from="$(sed -n 's/^Enforced from: *\([0-9-]*\).*/\1/p' "$STAGES_DOC" | head -1)"
+enforced_from="$(sed -n '/^Enforced from: *\([0-9-]*\).*/{s//\1/p;q;}' "$STAGES_DOC")"
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
 fails=0 res=""

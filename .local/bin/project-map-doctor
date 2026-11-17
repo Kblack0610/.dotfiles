@@ -648,7 +648,7 @@ if [ -n "$profiles" ] && declare -F project_release_version >/dev/null 2>&1 && p
     shipped="$(project_release_version "$name" 2>/dev/null || true)"
     [ -n "$shipped" ] || continue
     n=$((n + 1))
-    sheet="$(sed -n 's/^Version:[[:space:]]*\(v[0-9][0-9.]*\).*/\1/p' "$root/$name/README.md" | head -1)"
+    sheet="$(sed -n '/^Version:[[:space:]]*\(v[0-9][0-9.]*\).*/{s//\1/p;q;}' "$root/$name/README.md")"
     if [ -z "$sheet" ]; then
       fail "lab project \"$name\" ships $shipped but its sheet declares no Version: line"
       bad=$((bad + 1))

@@ -404,7 +404,7 @@ pub(crate) mod tests {
         i.instant.insert("gates", vec![]);
         i.instant.insert(
             "red",
-            series(vec![(json!({"item": "watch mac_studio_mlx"}), "1")]),
+            series(vec![(json!({"item": "watch gateway-errors"}), "1")]),
         );
         i
     }
@@ -675,10 +675,10 @@ pub(crate) mod tests {
         // Governor and power are machine columns now; the cloud host is a machine row.
         let m = tab(&i, "machines", 200);
         assert!(
-            has(&m, "MACHINES all 3 busy 2 no reading 1 cloud 1 governed 3"),
+            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 3"),
             "{m}"
         );
-        assert!(has(&m, "aws-burst-1 cloud no reading 1/2"), "{m}");
+        assert!(has(&m, "aws-burst-1 cloud no data 1/2"), "{m}");
         assert!(
             has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
             "{m}"
@@ -766,10 +766,7 @@ pub(crate) mod tests {
             "{out}"
         );
         assert!(
-            has(
-                &out,
-                "aws-burst-1 cloud no reading 1/2 - - - - - - unity 1/2"
-            ),
+            has(&out, "aws-burst-1 cloud no data 1/2 - - - - - - unity 1/2"),
             "{out}"
         );
         // A host with one reading is up; its other columns read -, never 0.
@@ -1014,7 +1011,7 @@ pub(crate) mod tests {
         );
         // Without published local slots the machine counts its gates and invents no capacity.
         assert!(
-            has(&out, "workstation local no reading - - - - - - - 2 gates"),
+            has(&out, "workstation local no data - - - - - - - 2 gates"),
             "{out}"
         );
         assert!(!tab(&built(&i), "pools", 160).contains("unity-local"));
@@ -1029,7 +1026,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation local no reading 2/4 - - - - - - unity-local 2/4+6"
+                "workstation local no data 2/4 - - - - - - unity-local 2/4+6"
             ),
             "{out}"
         );

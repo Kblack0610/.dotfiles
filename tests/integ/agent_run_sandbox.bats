@@ -36,7 +36,7 @@ JSON
     cat > "$SANDBOX/bin/$h" <<EOF
 #!/usr/bin/env bash
 if [ "\$1 \$2" = "mcp list" ]; then echo '[]'; exit 0; fi
-if [ "\$1" = "--version" ]; then echo "\${FAKE_CLAUDE_VERSION:-2.1.319} (Claude Code)"; exit 0; fi
+if [ "\$1" = "--version" ]; then case $h in codex) echo "codex-cli \${FAKE_CODEX_VERSION:-0.168.0}" ;; *) echo "\${FAKE_CLAUDE_VERSION:-2.1.319} (Claude Code)" ;; esac; exit 0; fi
 printf '%s\n' "\$@" > "$SANDBOX/$h-argv.txt"
 printf '%s\n' "\${GH_TOKEN:-<unset>}" "\${GITHUB_TOKEN:-<unset>}" "\${GH_TOKEN_FILE:-<unset>}" > "$SANDBOX/$h-token.txt"
 cat >/dev/null
@@ -94,21 +94,85 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_line 'Edit(//etc/fake-cred)'
 }
 
-@test "run from a worktree, the lane may write the git common dir, so git commit works, but not its hooks or config" {
+@test "run from a worktree, the lane may write its own git dir and the common dir's objects, refs, logs and lfs, so git commit works, and no other git dir, not even one added later" {
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b lane
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/other" -b other
   cd "$SANDBOX/wt"
   SANDBOX_PROFILE=lane lane -p x
   assert_success
-  run jq -c '.sandbox.filesystem.allowWrite' <<<"$(settings)"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
-  assert_output "[\"~/.agent\",\"$common\"]"
-  run jq -c '.sandbox.filesystem.denyWrite' <<<"$(settings)"
-  assert_output "[\"$common/hooks\",\"$common/config\"]"
+  # Not the common dir whole: its worktrees/ stays read-only, so a worktree another lane adds after
+  # this one starts lands outside every writable path.
+  run jq -r '.sandbox.filesystem.allowWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' '~/.agent' "$common/worktrees/wt" "$common/objects" "$common/refs" "$common/logs" "$common/lfs")"
+  # What points git at another git dir or runs code: the common dir's (outside that set, denied in case
+  # a profile reaches them) and, inside it, the lane's own; its index, HEAD and logs are not on the list.
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" \
+    "$common/worktrees/wt/config.worktree" "$common/worktrees/wt/hooks" \
+    "$common/worktrees/wt/commondir" "$(pwd -P)/.git")"
   run jq -r '.permissions.deny[]' <<<"$(settings)"
   assert_line "Edit(/$common/hooks/**)"
-  assert_line "Edit(/$common/config)"
+  assert_line "Edit(/$common/worktrees/wt/config.worktree)"
+  assert_line "Edit(/$common/worktrees/wt/commondir)"
+  assert_line "Edit(/$(pwd -P)/.git)"
+  refute_line "Edit(/$common/worktrees/wt/**)"
+}
+
+@test "run from a plain clone, the git dir is the common dir: writable, minus its code paths, worktrees/ whole and commondir, each made first when missing" {
+  git init -q "$SANDBOX/repo"
+  git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  cd "$SANDBOX/repo"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  [ ! -e "$common/worktrees" ]
+  [ ! -e "$common/commondir" ]
+  SANDBOX_PROFILE=lane lane -p x
+  assert_success
+  # A missing deny path is an empty placeholder to srt: at worktrees/ it would break a git worktree
+  # add outside, at commondir every git run (git dies on an empty one).
+  [ -d "$common/worktrees" ]
+  run cat "$common/commondir"
+  assert_output .
+  run jq -r '.sandbox.filesystem.allowWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' '~/.agent' "$common")"
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_output "$(printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$common/worktrees" "$common/commondir")"
+  run jq -r '.permissions.deny[]' <<<"$(settings)"
+  assert_line "Edit(/$common/commondir)"
+  # git reads `.` as the git dir itself: the clone is still a plain clone, and a worktree added from it
+  # points back here.
+  run git rev-parse --path-format=absolute --git-dir --git-common-dir
+  assert_output "$(printf '%s\n' "$common" "$common")"
+  git worktree add -q "$SANDBOX/wt" -b wt
+  run git -C "$SANDBOX/wt" rev-parse --path-format=absolute --git-common-dir
+  assert_output "$common"
+}
+
+@test "a plain clone's commondir that is already there is kept, never rewritten, and still denied" {
+  git init -q "$SANDBOX/repo"
+  cd "$SANDBOX/repo"
+  common="$(cd .git && pwd -P)"
+  printf '%s\n' "$common" > "$common/commondir"
+  SANDBOX_PROFILE=lane lane -p x
+  assert_success
+  run cat "$common/commondir"
+  assert_output "$common"
+  run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
+  assert_line "$common/commondir"
+}
+
+@test "a symlink an earlier lane planted at a plain clone's commondir is never followed: the launcher, outside the sandbox, writes nothing through it" {
+  # Called directly: a dangling commondir already stops git (it dies reading it), so a lane start
+  # never gets this far, and the writer must still be safe on its own.
+  git init -q "$SANDBOX/repo"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  ln -s "$SANDBOX/clobbered" "$common/commondir"
+  source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
+  sandbox_git_self_commondir "$common"
+  [ ! -e "$SANDBOX/clobbered" ] || fail "the launcher wrote through a planted symlink"
+  [ -L "$common/commondir" ]
 }
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
@@ -152,7 +216,7 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_success
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
   run jq -c '[.permissions.blockWritesOutsideWorkingDirectories, .permissions.additionalDirectories]' <<<"$(settings)"
-  assert_output "[true,[\"$HOME/.agent\",\"$common\"]]"
+  assert_output "[true,[\"$HOME/.agent\",\"$common/worktrees/wt\",\"$common/objects\",\"$common/refs\",\"$common/logs\",\"$common/lfs\"]]"
 }
 
 @test "outside a repo the writable set is just allowWrite, and a profile with no allowWrite adds no directories" {
@@ -221,19 +285,71 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output --partial 'GH_TOKEN_FILE'
 }
 
-@test "a sandboxed codex lane writes through workspace-write and its roots, never the bypass; unsandboxed keeps the bypass (control)" {
+# codex_fs -> the filesystem entries of the permission profile codex got, one "<path>"="<mode>" per line
+codex_fs() { grep -m1 '^permissions=' "$SANDBOX/codex-argv.txt" | grep -oE '"[^"]+"="(read|write)"'; }
+
+@test "a sandboxed codex lane writes through a permission profile, never the bypass or --sandbox; unsandboxed keeps the bypass (control)" {
   git init -q "$SANDBOX/repo"
   cd "$SANDBOX/repo"
+  git="$(pwd -P)/.git"
   SANDBOX_PROFILE=writes lane --harness codex -p x
   assert_success
   run cat "$SANDBOX/codex-argv.txt"
-  assert_line 'workspace-write'
-  assert_line "sandbox_workspace_write.writable_roots=[\"$HOME/.agent\",\"$(cd "$SANDBOX/repo/.git" && pwd -P)\"]"
-  assert_line 'sandbox_workspace_write.network_access=false'
+  assert_line 'default_permissions="agentctl-lane"'
+  assert_line --partial 'permissions={"agentctl-lane"={extends=":workspace", network={enabled=false}, filesystem={'
+  refute_line -- '--sandbox'
+  refute_line --partial 'writable_roots'
   refute_line -- '--dangerously-bypass-approvals-and-sandbox'
+  # A plain clone: its git dir writable, minus what runs code or points git elsewhere.
+  run codex_fs
+  assert_line "\"$HOME/.agent\"=\"write\""
+  assert_line "\"$git\"=\"write\""
+  for p in hooks config config.worktree info worktrees commondir; do assert_line "\"$git/$p\"=\"read\""; done
   lane --harness codex -p x
   run cat "$SANDBOX/codex-argv.txt"
   assert_line -- '--dangerously-bypass-approvals-and-sandbox'
+}
+
+@test "a sandboxed codex lane in a worktree cannot write the common dir's hooks or config, its own git dir's pointers, or a denyWrite path" {
+  git init -q "$SANDBOX/repo"
+  git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b wt
+  printf '{"sandbox": {"filesystem": {"allowWrite": ["~/.agent"], "denyWrite": ["~/.agent/locked"]}}}\n' > "$HOME/.config/agentctl/sandbox/deny.json"
+  cd "$SANDBOX/wt"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"; own="$common/worktrees/wt"
+  SANDBOX_PROFILE=deny lane --harness codex -p x
+  assert_success
+  run codex_fs
+  for p in "$own" "$common/objects" "$common/refs" "$common/logs" "$common/lfs" "$HOME/.agent"; do assert_line "\"$p\"=\"write\""; done
+  for p in "$common/hooks" "$common/config" "$common/config.worktree" "$common/info" "$own/hooks" "$own/config.worktree" "$own/commondir" "$(pwd -P)/.git" "$HOME/.agent/locked"; do
+    assert_line "\"$p\"=\"read\""
+  done
+  refute_line "\"$common\"=\"write\""
+}
+
+@test "a codex lane whose profile's allowWrite names a git path that runs code still gets it read-only, trailing slash or not: the deny wins" {
+  git init -q "$SANDBOX/repo"
+  cd "$SANDBOX/repo"
+  git="$(pwd -P)/.git"
+  printf '{"sandbox": {"filesystem": {"allowWrite": ["%s"]}}}\n' "$git/hooks/" > "$HOME/.config/agentctl/sandbox/reach.json"
+  SANDBOX_PROFILE=reach lane --harness codex -p x
+  assert_success
+  run codex_fs
+  assert_line "\"$git/hooks\"=\"read\""
+  refute_line "\"$git/hooks\"=\"write\""
+  refute_line "\"$git/hooks/\"=\"write\""
+}
+
+@test "a codex older than SANDBOX_CODEX_MIN refuses a sandboxed writing lane, which it would run on its config's sandbox; a read-only role still runs (control)" {
+  FAKE_CODEX_VERSION=0.167.9 SANDBOX_PROFILE=writes lane --harness codex -p x
+  assert_failure 78
+  assert_output --partial 'codex is older than 0.168.0'
+  [ ! -e "$SANDBOX/codex-argv.txt" ] || fail "an old codex ran a sandboxed lane"
+  sed 's/^ROLE_WRITE=yes/ROLE_WRITE=no/' "$HOME/.config/agentctl/roles/build.role" > "$HOME/.config/agentctl/roles/read.role"
+  FAKE_CODEX_VERSION=0.167.9 SANDBOX_PROFILE=writes run "$RUN" --role read --data-class public --harness codex -p x
+  assert_success
+  run cat "$SANDBOX/codex-argv.txt"
+  assert_line 'read-only'
 }
 
 @test "codex refuses a profile that hides paths or lists hosts, which it cannot enforce" {
@@ -306,8 +422,12 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
   SANDBOX_FILE="$HOME/.config/agentctl/sandbox/lane.json"
   cd "$SANDBOX"   # outside any repo, so no git common dir joins the lists
-  SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
+  # An empty PATH, so a host with srt installed still sees it missing; command -v is a builtin.
+  PATH="" SANDBOX_SRT_NEEDS="srt" run sandbox_srt_refusal
   assert_output 'srt is not on PATH'
+  # Outside a repo the git lookups fail, and a caller under set -e still gets its settings.
+  run bash -ec "source '$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh'; SANDBOX_FILE='$SANDBOX_FILE'; sandbox_srt_settings >/dev/null; echo survived"
+  assert_output 'survived'
   # An npm install: the bin is a link to <package>/dist/cli.js. Not under $SANDBOX/lib, a link into the repo.
   mkdir -p "$SANDBOX/npm/srt/dist"
   printf '#!/bin/sh\n' > "$SANDBOX/npm/srt/dist/cli.js"; chmod +x "$SANDBOX/npm/srt/dist/cli.js"
@@ -325,7 +445,13 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   git init -q "$SANDBOX/r" && cd "$SANDBOX/r"
   run sandbox_srt_settings
   assert_equal "$(jq -c '.filesystem.allowRead' <<<"$output")" "[\".\",\"$SANDBOX/r/.git\",\"/opt/vendor\",\"~/.agent\",\"$SANDBOX/npm/srt\"]"
-  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" '[[".","~/.agent"],[]]'
+  # A plain clone's git dir sits in the writable cwd, so it is denied whole.
+  assert_equal "$(jq -c '[.filesystem.allowWrite, .filesystem.denyWrite]' <<<"$output")" "[[\".\",\"~/.agent\"],[\"$(pwd -P)/.git\"]]"
+  # From a linked worktree its .git file, in the writable cwd, is denied: it points git at a git dir.
+  git -C "$SANDBOX/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git -C "$SANDBOX/r" worktree add -q "$SANDBOX/rw" -b lane && cd "$SANDBOX/rw"
+  run sandbox_srt_settings
+  assert_equal "$(jq -c '.filesystem.denyWrite' <<<"$output")" "[\"$(pwd -P)/.git\"]"
   jq -e "$SANDBOX_SHAPE" "$SANDBOX_FILE" >/dev/null
   jq '.sandbox.filesystem.allowRead = ["rel/path"]' "$SANDBOX_FILE" > "$SANDBOX/bad.json"
   run jq -e "$SANDBOX_SHAPE" "$SANDBOX/bad.json"

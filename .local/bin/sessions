@@ -459,7 +459,7 @@ cmd_show() {
     [ -n "$lastask" ] && printf 'LAST ASK\n  %s\n\n' "$lastask"
 
     local prs
-    prs="$(grep -o '"prUrl":"[^"]*"' "$t" 2>/dev/null | sed 's/.*:"//;s/"$//' | sort -u | head -6)"
+    prs="$(grep -o '"prUrl":"[^"]*"' "$t" 2>/dev/null | sed 's/.*:"//;s/"$//' | sort -u | awk 'NR<=6')"
     if [ -n "$prs" ]; then
       printf 'PRs OPENED\n'; printf '%s\n' "$prs" | sed 's/^/  /'; printf '\n'
     fi
@@ -478,7 +478,7 @@ cmd_show() {
   printf 'EDITS %s\n' "${edits:-0}"
   local digest="$SESS_ROOT/${proj:-x}/${id}-digest.md"
   if [ -f "$digest" ]; then
-    printf '\nDIGEST\n'; sed 's/^/  /' "$digest" | head -30
+    printf '\nDIGEST\n'; sed 's/^/  /;30q' "$digest"
   else
     printf 'For a written summary: sessions compact %s\n' "${id:0:8}"
   fi

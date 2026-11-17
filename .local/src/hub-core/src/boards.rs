@@ -55,6 +55,11 @@ pub fn proposals_dir() -> PathBuf {
     env("AGENT_PROPOSE_DIR").unwrap_or_else(|| home().join(".agent/proposals"))
 }
 
+/// mkt's outbound ledger, one `<project>/<YYYY-MM>.jsonl` per product and month, where mkt resolves it.
+pub fn outbound_dir() -> PathBuf {
+    env("MKT_LEDGER_DIR").unwrap_or_else(|| home().join(".agent/outbound"))
+}
+
 /// Whether a changed path is a proposal record in `dir`, not its lock or a half-written temp.
 pub fn is_proposal_file(dir: &Path, p: &Path) -> bool {
     p.parent() == Some(dir) && p.extension().is_some_and(|e| e == "json")

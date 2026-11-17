@@ -15,10 +15,15 @@ harness_supports() {
 }
 
 # harness_sandbox - codex confines writes only, so a profile that also hides paths or lists hosts
-# is refused rather than run with less isolation than it names.
+# is refused rather than run with less isolation than it names. A writing role's permission profile
+# is built here, once: an older codex, or flags that did not build, refuse, since codex with no
+# sandbox flag would run on whatever ~/.codex/config.toml sets.
 harness_sandbox() {
   local why; why="$(sandbox_codex_refusal)" || return 1
   [ -z "$why" ] || { echo "codex cannot hold lane sandbox '$SANDBOX_PROFILE': $why." >&2; return 1; }
+  [ "$ROLE_WRITE" = no ] && return 0
+  sandbox_version_at_least "$SANDBOX_CODEX_MIN" "$CODEX_BIN" || { SANDBOX_WHY="codex is older than $SANDBOX_CODEX_MIN (or has no readable version), which has no permission profiles"; return 1; }
+  CODEX_SANDBOX_FLAGS="$(sandbox_codex_flags)" && [ -n "$CODEX_SANDBOX_FLAGS" ] || { SANDBOX_WHY="its permission profile did not build"; return 1; }
 }
 
 # _codex_mcp_flags -> one -c override per line pinning the run to ROLE_MCP's set
@@ -58,9 +63,9 @@ harness_exec() {
   [ -n "$model" ] && flags+=(-m "$model")
   if [ "$ROLE_WRITE" = no ]; then flags+=(--sandbox read-only)
   elif [ -n "${SANDBOX_FILE:-}" ]; then
-    # A sandboxed lane writes only its workspace and the profile's roots (lib/sandbox.sh).
-    flags+=(--sandbox workspace-write)
-    while IFS= read -r o; do flags+=(-c "$o"); done < <(sandbox_codex_flags)
+    # A sandboxed lane writes only its workspace, the profile's roots and the git paths a commit
+    # writes, through the permission profile harness_sandbox built, which codex refuses beside --sandbox.
+    while IFS= read -r o; do flags+=(-c "$o"); done <<< "$CODEX_SANDBOX_FLAGS"
   else flags+=(--dangerously-bypass-approvals-and-sandbox); fi
   [ "$ROLE_TASK" = no ] && flags+=(--disable multi_agent)
   while IFS= read -r o; do [ -n "$o" ] && flags+=(-c "$o"); done < <(_codex_mcp_flags)

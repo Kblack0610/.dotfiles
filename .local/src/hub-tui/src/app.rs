@@ -64,6 +64,9 @@ pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
 /// The Costs sources are written nightly or per call and none is watched, so the tick re-reads
 /// them this often while the tab is shown; entering it and `r` read at once.
 pub const COSTS_REFRESH: Duration = Duration::from_secs(300);
+/// A Coverage read probes every product's URLs and VictoriaMetrics, and a department's row moves
+/// in days, so showing it again re-reads it only this often; `r` still reads it at once.
+pub const COVERAGE_REFRESH: Duration = Duration::from_secs(300);
 /// Under this many body lines the Projects rows keep the whole window and get no preview pane.
 const PREVIEW_MIN_HEIGHT: u16 = 18;
 
@@ -401,6 +404,8 @@ pub enum Msg {
     WatchFiles,
     /// The Projects tab's Ladder (hub_core::stages::read).
     Ladder(Box<hub_core::stages::Ladder>),
+    /// Projects > Coverage and the department tabs (hub_core::departments::read).
+    Coverage(Box<hub_core::departments::Coverage>),
     /// The nightly stage pass wrote a new stages.json.
     StagesFile,
     /// `fleet-bench epics --json` for the Projects tab's Deliverables section, or why it failed.
@@ -519,6 +524,8 @@ pub struct App {
     alerts_read: Read,
     /// The Projects tab's Ladder; None until the first read.
     pub ladder: Option<hub_core::stages::Ladder>,
+    /// Coverage and every product's department tabs; None until the first read.
+    pub coverage: Option<hub_core::departments::Coverage>,
     /// The Projects tab's Deliverables section; None until the first read.
     pub deliverables: Option<Result<hub_core::deliverables::Deliverables, String>>,
     /// The Costs tab's read; None until the first.
@@ -641,6 +648,9 @@ pub struct App {
     ladder_read: Read,
     /// The Ladder showed at the last check, so coming into view again reads it afresh.
     ladder_seen: bool,
+    coverage_read: Read,
+    /// When the last Coverage read finished, for `COVERAGE_REFRESH`.
+    coverage_at: Option<std::time::Instant>,
     schedules_read: Read,
     releases_read: Read,
     builds_read: Read,
@@ -712,6 +722,7 @@ impl App {
             alerts_read: Read::default(),
             deliverables: None,
             ladder: None,
+            coverage: None,
             costs: None,
             cv: crate::coststab::CostsView::default(),
             fleet: None,
@@ -777,6 +788,8 @@ impl App {
             deliverables_read: Read::default(),
             ladder_read: Read::default(),
             ladder_seen: false,
+            coverage_read: Read::default(),
+            coverage_at: None,
             schedules_read: Read::default(),
             releases_read: Read::default(),
             builds_read: Read::default(),
@@ -985,6 +998,38 @@ impl App {
                     chrono::Local::now(),
                 );
                 let _ = tx.send(Msg::Ladder(Box::new(l)));
+            });
+        }
+    }
+
+    /// Coverage reads when it or a department tab shows, unless a read is out or the last is
+    /// newer than `COVERAGE_REFRESH`, and on `r`: its stores (notes, stages.md, VictoriaMetrics,
+    /// URL probes) have no one file to watch.
+    fn read_coverage_due(&mut self) {
+        if self.coverage_shown()
+            && !self.coverage_read.busy
+            && self
+                .coverage_at
+                .is_none_or(|t| t.elapsed() >= COVERAGE_REFRESH)
+        {
+            self.read_coverage();
+        }
+    }
+
+    pub fn coverage_shown(&self) -> bool {
+        self.tab == Tab::Projects && self.pv.coverage_shown(&self.tv)
+    }
+
+    /// One `hub_core::departments::read` in a worker, unless one is already out.
+    pub fn read_coverage(&mut self) {
+        if self.coverage_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let c = hub_core::departments::read(
+                    runner.as_ref(),
+                    &hub_core::departments::Paths::from_env(),
+                );
+                let _ = tx.send(Msg::Coverage(Box::new(c)));
             });
         }
     }
@@ -1870,6 +1915,7 @@ impl App {
             self.scroll = 0;
             self.read_deliverables_due();
             self.read_ladder_due();
+            self.read_coverage_due();
         }
     }
 
@@ -2086,6 +2132,13 @@ impl App {
                 self.ladder = Some(*l);
                 if self.ladder_read.done() && self.ladder_shown() {
                     self.read_ladder();
+                }
+            }
+            Msg::Coverage(c) => {
+                self.coverage = Some(*c);
+                self.coverage_at = Some(std::time::Instant::now());
+                if self.coverage_read.done() && self.coverage_shown() {
+                    self.read_coverage();
                 }
             }
             Msg::StagesFile => {
@@ -2445,6 +2498,7 @@ impl App {
             self.want_proj_page();
             self.read_deliverables_due();
             self.read_ladder_due();
+            self.read_coverage_due();
             return;
         }
         if self.tab == Tab::Schedules && self.schedules_key(k) {
@@ -2508,6 +2562,9 @@ impl App {
                 }
                 if self.ladder_shown() {
                     self.read_ladder();
+                }
+                if self.coverage_shown() {
+                    self.read_coverage();
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
@@ -2895,6 +2952,7 @@ impl App {
             self.read_deliverables_due();
         }
         self.read_ladder_due();
+        self.read_coverage_due();
         if t == Tab::Home {
             self.read_home();
             self.read_home_cards();
@@ -2909,6 +2967,7 @@ impl App {
             || self.pv.table.typing.is_some()
             || self.pv.dv.typing.is_some()
             || self.pv.lv.typing.is_some()
+            || self.pv.cv.typing.is_some()
             || self.pv.rv.typing.is_some();
         if let (KeyCode::Left | KeyCode::Right, false) = (k.code, typing) {
             if self.pv.step_top(&mut self.tv, k.code == KeyCode::Left) {
@@ -2921,6 +2980,7 @@ impl App {
             if k.code == KeyCode::Char('P')
                 && self.pv.table.typing.is_none()
                 && !self.pv.dfocus
+                && !self.pv.cfocus
                 && !self.pv.lfocus
             {
                 if let Some(c) = self.pv.selected(&cards) {
@@ -2939,6 +2999,17 @@ impl App {
                 }
                 if k.code == KeyCode::Esc {
                     self.pv.lfocus = false;
+                    return true;
+                }
+                return false;
+            }
+            // Coverage before its read says it is reading; Esc goes back.
+            if self.pv.cfocus {
+                if let Some(c) = &self.coverage {
+                    return self.pv.ckey(&mut self.tv, k, &cards, c, self.page);
+                }
+                if k.code == KeyCode::Esc {
+                    self.pv.cfocus = false;
                     return true;
                 }
                 return false;
@@ -4455,12 +4526,16 @@ impl App {
                     || self.pv.dv.typing.is_some()
                     || self.pv.bv.typing.is_some()
                     || self.pv.lv.typing.is_some()
+                    || self.pv.cv.typing.is_some()
                     || self.pv.rv.typing.is_some() =>
             {
                 "type, Enter submits, Esc cancels".into()
             }
             Tab::Projects if self.pv.lfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter the project's Stage  t other table  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Projects if self.pv.cfocus && !self.pv.open => format!(
+                "<- -> inner tabs  j/k pick  Enter open the product's page  / search  f chip  s sort  S flip  x clear  Esc back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects if self.pv.dfocus && !self.pv.open => format!(
                 "<- -> inner tabs  j/k pick  Enter open the epic's project  / search  f chip  s sort  S flip  x clear  d/Esc back to projects  r refresh  {tabs} tabs  q quit"
@@ -4469,7 +4544,7 @@ impl App {
                 "<- -> inner tabs  {}r refresh  {tabs} tabs  q quit",
                 match self.pv.inner {
                     "overview" => "j/k pick a system  Enter its epics  F lists Needs you  Esc back  ",
-                    "build" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
+                    "deliverables" => "j/k pick  Enter the epic's rows  / search  f chip  s sort  S flip  x clear  Esc clear, back  ",
                     _ => "j/k scroll  Esc back  ",
                 }
             ),
@@ -4612,6 +4687,7 @@ impl App {
                         &self.cards(),
                         feed,
                         self.deliverables.as_ref(),
+                        self.coverage.as_ref(),
                         self.ladder.as_ref(),
                         &self.pv,
                         self.p,
@@ -4633,6 +4709,7 @@ impl App {
                     l.push(projtab::top_strip(
                         feed,
                         dl,
+                        self.coverage.as_ref(),
                         self.ladder.as_ref(),
                         "all",
                         self.p,
@@ -4647,7 +4724,8 @@ impl App {
                         .find(|c| c.profile == *profile && c.name == *name)
                     {
                         let pg = self.proj_page.as_ref().filter(|pg| pg.project == c.name);
-                        let (page, at) = projtab::open_lines(c, pg, &self.pv, self.p, w);
+                        let (page, at) =
+                            projtab::open_lines(c, pg, self.coverage.as_ref(), &self.pv, self.p, w);
                         if !self.pv.rows_shown(&self.tv) {
                             return (page, at.map(|a| ("", a)).into_iter().collect());
                         }
@@ -6385,7 +6463,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  all 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5"
             ),
             "{s}"
         );
@@ -6650,7 +6728,7 @@ mod tests {
         assert_eq!(a.pv.inner, "rows");
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "DEMO  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
+            at_line(&s, "Projects > demo  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");
@@ -7075,7 +7153,7 @@ mod tests {
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         // cc:red_now is a need; the Infra card counts the machines from the same read.
-        assert!(at("NEEDS YOU (1)") < at("watch mac_studio_mlx"));
+        assert!(at("NEEDS YOU (1)") < at("watch gateway-errors"));
         assert!(at("INFRA") < at("NEEDS YOU (1)"), "the cards lead: {s}");
         assert!(
             !s.contains("HEALTH") && !s.contains("ci NODATA"),
@@ -8348,7 +8426,7 @@ mod tests {
         let s = screen(&mut a, 160, 80);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(
-            at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch mac_studio_mlx"),
+            at("HEALTH") < at("FIRING  3") && at("FIRING  3") < at("watch gateway-errors"),
             "{s}"
         );
         assert!(!s.contains("FIXES"), "Fixes is its own inner tab: {s}");
@@ -8628,7 +8706,8 @@ mod tests {
     }
 
     #[test]
-    fn left_right_walk_the_list_all_rows_deliverables_and_ladder_and_board_opens_all_rows() {
+    fn left_right_walk_the_list_all_rows_deliverables_coverage_and_ladder_and_board_opens_all_rows()
+    {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut a = with_tx(Tab::Projects, tx);
         a.projects_read.busy = true;
@@ -8643,8 +8722,33 @@ mod tests {
         assert!(s.contains(" Projects [All rows 5] Deliverables "), "{s}");
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
+        assert!(!a.coverage_read.busy, "Coverage reads only once it shows");
+        a.handle(arrow(KeyCode::Right));
+        assert_eq!(on(&a), Some("coverage"));
+        assert!(a.coverage_read.busy, "showing Coverage did not read it");
+        assert!(screen(&mut a, 140, 30).contains("Coverage  reading the department stores"));
+        a.handle(arrow(KeyCode::Left));
+        a.handle(arrow(KeyCode::Right));
+        a.handle(Msg::Coverage(Box::default()));
+        assert!(
+            !a.coverage_read.busy,
+            "showing Coverage again during its read queued a second one"
+        );
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("ladder"));
+        a.handle(arrow(KeyCode::Left));
+        assert!(
+            !a.coverage_read.busy,
+            "Coverage shown again read a fresh answer"
+        );
+        a.coverage_at = std::time::Instant::now().checked_sub(COVERAGE_REFRESH);
+        a.handle(arrow(KeyCode::Right));
+        a.handle(arrow(KeyCode::Left));
+        assert!(
+            a.coverage_read.busy,
+            "a stale Coverage shown again was not read"
+        );
+        a.handle(arrow(KeyCode::Right));
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("list"));
         a.handle(arrow(KeyCode::Left));

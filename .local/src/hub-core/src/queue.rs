@@ -109,6 +109,14 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Who cancelled it: a session id, or the slug of the item the caller works; agent-queue's
+    /// `cancel_stamp` writes it. None for a cancel from before it did, or one a human made at
+    /// a terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_by: Option<String>,
+    /// The reason that cancel gave (`--why`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_why: Option<String>,
     /// `yes` while an item that landed one PR still has its final landing to make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial: Option<String>,
@@ -140,6 +148,9 @@ pub struct Item {
     /// None for an item added by hand or started before it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+    /// The effort points of the board row the item works (`#pts/<n>`), which `agent-queue list` joins in; None when the row is unscored or the item has no row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub points: Option<u32>,
     /// `heavy` or `light`: the run units it holds; agent-queue derives one when the item has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<String>,
@@ -320,7 +331,7 @@ impl Item {
     }
 
     /// What a held item waits on, its kind and object (`after <slug> <slug>`, `ask <id>`, `pr
-    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`, `focus`),
+    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`),
     /// from agent-queue's `hold` line (`hold_for`); None when it is not held.
     pub fn held_on(&self) -> Option<String> {
         let h = said(&self.hold)?;
@@ -346,7 +357,7 @@ impl Item {
                 let t = f.replacen('T', " ", 1);
                 format!("at {}", t.get(5..).filter(|_| t.len() > 10).unwrap_or(&t))
             }
-            ("focus", _) | (_, None) => word.to_string(),
+            (_, None) => word.to_string(),
             (w, Some(f)) => format!("{w} {f}"),
         })
     }
@@ -451,7 +462,7 @@ impl Item {
         self.extra_str("agent").unwrap_or(HARNESS_DEFAULT)
     }
 
-    /// The harness and, when the item names one, its model alias: `codex sol`, `opencode glm`.
+    /// The harness and, when the item names one, its model alias: `codex sol`, `opencode-go glm`.
     pub fn harness_label(&self) -> String {
         match said(&self.model) {
             Some(m) => format!("{} {m}", self.harness()),
@@ -542,6 +553,35 @@ impl Item {
     /// beside `pr`, so a PR without it is one nobody proved landed.
     pub fn merged(&self) -> bool {
         said(&self.merged).is_some()
+    }
+
+    /// True for a finished item that was cancelled, not run to an end.
+    pub fn cancelled(&self) -> bool {
+        self.state == State::Done && self.status.as_deref() == Some("cancelled")
+    }
+
+    /// Who cancelled it; a cancel from before agent-queue recorded that says so, never a blank.
+    pub fn canceller(&self) -> &str {
+        said(&self.cancelled_by).unwrap_or("an unrecorded canceller")
+    }
+
+    /// The reason it was cancelled with, when one was recorded.
+    pub fn recorded_reason(&self) -> Option<&str> {
+        said(&self.cancel_why)
+    }
+
+    /// Its reason, or that none was recorded.
+    pub fn cancel_reason(&self) -> &str {
+        self.recorded_reason().unwrap_or("no reason recorded")
+    }
+
+    /// Who cancelled it and why, in words.
+    pub fn cancel_words(&self) -> String {
+        format!(
+            "cancelled by {}: {}",
+            self.canceller(),
+            self.cancel_reason()
+        )
     }
 
     /// Why an item in review or waiting sits there, in the words of what its headers record:
@@ -929,7 +969,7 @@ pub fn pr_link_of(pr: &str) -> Option<(String, Option<String>)> {
     }
 }
 
-/// `agent-queue list --json` prints one object per line; a line that does not parse is skipped.
+/// `agent-queue list --json --points` prints one object per line (`points` and the board row's `size` joined in); a line that does not parse is skipped.
 /// Each item's `title` becomes the one every view shows: a plan item's phase words, with its
 /// plan and phase in `plan_label` (`plan_title`), else `title()`.
 pub fn parse(jsonl: &str) -> Vec<Item> {
@@ -957,7 +997,7 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--state", state]))
+        .run(&argv(&["list", "--json", "--points", "--state", state]))
         .map(|out| parse(&out))
 }
 
@@ -968,7 +1008,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--state", state, "--since", since,
+            "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1225,6 +1265,9 @@ impl QueueRow<'_> {
         if let Some(st) = self.stuck {
             return st.word();
         }
+        if self.item.cancelled() {
+            return "cancelled";
+        }
         match self.item.state {
             State::Waiting => "needs",
             State::Running => "running",
@@ -1251,6 +1294,7 @@ impl QueueRow<'_> {
                 self.item.session.as_deref().unwrap_or("none recorded")
             )),
             (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
+            _ if self.item.cancelled() => Some(self.item.cancel_words()),
             _ => None,
         }
     }
@@ -1299,7 +1343,7 @@ impl crate::table::Row for QueueRow<'_> {
     /// The title leads; `#` is the start order, so a sort on it reads what starts next.
     const COLUMNS: &'static [&'static str] = &[
         "#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr",
-        "row", "kind", "size", "acct", "mode", "plan",
+        "row", "kind", "size", "pts", "acct", "mode", "plan",
     ];
     /// `active` first, the view the table opens on: every item not done. Then the states in the
     /// table's own order, done, and `all`.
@@ -1311,6 +1355,7 @@ impl crate::table::Row for QueueRow<'_> {
         "ready",
         "held",
         "done",
+        "cancelled",
         "all",
     ];
     const FACETS: &'static [&'static str] = &[
@@ -1338,6 +1383,7 @@ impl crate::table::Row for QueueRow<'_> {
             "row" => text(i.board_row().map(|(_, id)| id)),
             "kind" => text(said(&i.kind)),
             "size" => text(said(&i.size)),
+            "pts" => i.points.map_or(Val::None, |n| Val::Num(f64::from(n))),
             "acct" => text(said(&i.account)),
             "mode" => text(Some(i.mode.trim()).filter(|m| !m.is_empty())),
             "pr" => text(said(&i.pr)),
@@ -1401,6 +1447,7 @@ impl crate::table::Row for QueueRow<'_> {
             "ready" => i.state == State::Queued && !i.is_held(),
             "held" => i.state == State::Queued && i.is_held(),
             "done" => i.state == State::Done,
+            "cancelled" => i.cancelled(),
             "all" => true,
             _ => false,
         }
@@ -1890,7 +1937,7 @@ mod tests {
         let items = list(&fake, "all").unwrap();
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all"
+            "agent-queue list --json --points --state all"
         );
         let slugs: Vec<&str> = items.iter().map(|i| i.slug.as_str()).collect();
         assert_eq!(slugs, ["w", "q", "d"], "no state is not an item");
@@ -2067,7 +2114,7 @@ mod tests {
         assert_eq!(list_since(&fake, "all", "2026-10-30").unwrap().len(), 3);
         assert_eq!(
             fake.calls.borrow()[0],
-            "agent-queue list --json --state all --since 2026-10-30"
+            "agent-queue list --json --points --state all --since 2026-10-30"
         );
         assert!(list_since(&fake, "all", "--state").is_err());
         assert_eq!(days_ago(0).len(), 10);
@@ -2683,6 +2730,31 @@ mod tests {
     }
 
     #[test]
+    fn points_come_from_the_joined_board_row_and_a_missing_one_is_a_dash_column() {
+        let items = parse(
+            r#"{"slug":"a","state":"queued","size":"m","points":5,"task":"t"}
+{"slug":"b","state":"queued","size":"s","points":null,"task":"t"}
+{"slug":"c","state":"queued","task":"t"}"#,
+        );
+        let q = Queue {
+            items,
+            ..Queue::default()
+        };
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let pts = |slug: &str| {
+            use crate::table::Row;
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .map(|r| r.val("pts").shown())
+                .unwrap()
+        };
+        assert_eq!(pts("a").as_deref(), Some("5"));
+        assert_eq!(pts("b"), None);
+        assert_eq!(pts("c"), None);
+        assert_eq!(serde_json::to_value(&q.items[0]).unwrap()["points"], 5);
+    }
+
+    #[test]
     fn stats_reads_recent_and_an_older_agent_queue_without_it() {
         let s: Stats = serde_json::from_str(
             r#"{"since":"2026-10-30","recent":{"added_6h":80,"done_6h":84,"failed_24h":5,"done_today":280}}"#,
@@ -2950,6 +3022,7 @@ mod tests {
                 ("ready", 0),
                 ("held", 0),
                 ("done", 1),
+                ("cancelled", 0),
                 ("all", 3)
             ]
         );
@@ -3018,8 +3091,6 @@ mod tests {
                 "\n",
                 r#"{"slug":"next-phase","state":"queued","priority":"high","hold":"after first-p1 closed cancelled, dead: cancel it","from":"item:x","task":"t"}"#,
                 "\n",
-                r#"{"slug":"focus","state":"queued","priority":"high","hold":"focus: only apociseum binks","from":"canary","task":"t"}"#,
-                "\n",
                 r#"{"slug":"pr","state":"queued","priority":"high","hold":"pr:o/r#7 not merged","task":"t"}"#,
                 "\n",
                 r#"{"slug":"night","state":"queued","priority":"low","hold":"night (01:00-06:00)","task":"t"}"#,
@@ -3077,7 +3148,6 @@ mod tests {
             "wait",
             "later",
             "next-phase",
-            "focus",
             "pr",
             "night",
             "two",
@@ -3094,7 +3164,6 @@ mod tests {
                 "ask pHqQtl",
                 "at 11-13 02:30",
                 "after first-p1",
-                "focus",
                 "pr o/r#7",
                 "night",
                 "after a-p1 b-p2",
@@ -3125,7 +3194,7 @@ mod tests {
         };
         assert_eq!(slugs("hold:after", ""), ["next-phase", "two"]);
         assert_eq!(slugs("from:board priority:urgent", ""), ["first"]);
-        assert_eq!(slugs("", "held").len(), 9);
+        assert_eq!(slugs("", "held").len(), 8);
         assert_eq!(
             slugs("b-p2", ""),
             ["two"],
@@ -3141,7 +3210,7 @@ mod tests {
         let hold: Vec<&str> = facets[3].values.iter().map(|v| v.value.as_str()).collect();
         assert_eq!(
             hold,
-            ["after", "ask", "at", "focus", "hold", "night", "nightly", "pr"],
+            ["after", "ask", "at", "hold", "night", "nightly", "pr"],
             "the kinds, not each object"
         );
     }
@@ -3176,5 +3245,58 @@ mod tests {
         );
         assert_eq!(t[4].sha.as_deref(), Some("abc123"));
         assert!(items[1].timeline().is_empty(), "no stamp, no step");
+    }
+
+    #[test]
+    fn a_cancelled_chip_lists_cancels_and_the_state_hover_says_who_and_why() {
+        use crate::table::{Row, View};
+        let q = Queue {
+            items: parse(concat!(
+                r#"{"slug":"a","state":"done","status":"cancelled","cancelled_by":"9fd0d2fd","cancel_why":"dead chain","finished":"2026-11-12T10:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"b","state":"done","status":"cancelled","finished":"2026-11-12T11:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"c","state":"done","status":"ok","finished":"2026-11-12T12:00:00Z","task":"t"}"#,
+                "\n",
+                r#"{"slug":"d","state":"queued","task":"t"}"#,
+            )),
+            ..Default::default()
+        };
+        let rows = q.rows(chrono::Utc::now());
+        let slugs = |v: View| -> Vec<String> {
+            v.summary(&rows)
+                .0
+                .iter()
+                .map(|r| r.item.slug.clone())
+                .collect()
+        };
+        assert_eq!(
+            slugs(View::new::<QueueRow>("", "cancelled", "", "")),
+            ["b", "a"],
+            "newest first, and only the cancelled"
+        );
+        assert_eq!(slugs(View::new::<QueueRow>("", "done", "", "")).len(), 3);
+        let why = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .and_then(|r| r.state_why())
+        };
+        assert_eq!(
+            why("a").as_deref(),
+            Some("cancelled by 9fd0d2fd: dead chain")
+        );
+        assert_eq!(
+            why("b").as_deref(),
+            Some("cancelled by an unrecorded canceller: no reason recorded"),
+            "an old cancel says it is unrecorded, never a blank"
+        );
+        assert_eq!(why("c"), None, "a finish that ran says nothing");
+        assert!(!rows
+            .iter()
+            .find(|r| r.item.slug == "c")
+            .unwrap()
+            .item
+            .cancelled());
+        assert!(<QueueRow as Row>::STATES.contains(&"cancelled"));
     }
 }

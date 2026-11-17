@@ -8,6 +8,7 @@ mod board;
 mod builds;
 mod controls;
 mod coststab;
+mod coveragetab;
 mod datatable;
 mod day;
 mod fit;
@@ -641,6 +642,13 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 &sys,
                 &hub_core::stages::Paths::from_env(),
                 chrono::Local::now(),
+            ));
+        }
+        // `--tab 'projects coverage'` and a product's department tab read Coverage here too.
+        if a.coverage_shown() {
+            a.coverage = Some(hub_core::departments::read(
+                &sys,
+                &hub_core::departments::Paths::from_env(),
             ));
         }
         for l in a.page_lines(w) {

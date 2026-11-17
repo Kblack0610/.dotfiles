@@ -31,6 +31,23 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 | `store_sales_play` | The service-account JSON, minified, plus `"bucket": "pubsite_prod_<id>"` | Play Console account permissions, all read-only: "View financial data" and "View app information and download bulk reports (read-only)", which brings "View app quality information" with it. The bucket is the Cloud Storage URI on Download reports, Financial: `pubsite_prod_<id>` on newer accounts, `pubsite_prod_rev_<id>` on older ones, so copy it, never build it |
 | `store_sales_steam` | The bare Web API key, one line | The key of a Steamworks Financial API Group (Users and Permissions, Manage Groups). Such a group has no users and no apps: the key reads sales and nothing else. It is not release-state's publisher key `release_state_steam` |
 
+## Per-product revenue (Money tab)
+
+Each product's store revenue is stored in the home metrics database and shown on the Grafana project board and the agent web dashboard's Money tab, which sit on the LAN or behind Forgejo sign-in. Each source in the document also carries `apps`, the same amounts per app, keyed by the store's own id: the Apple identifier (an in-app purchase goes to its parent app, matched by SKU), the Play package, the Steam app id (a DLC or package sale goes to its primary app).
+
+`store-sales publish [YYYY-MM-DD]` prints the same document and writes `store_sales.prom` through `.local/lib/prom-textfile.sh`. It maps the apps to products through `trackers.<p>.targets[].live` (`steam.app`, `play.package`, `testflight.app`) in `project-map.json`, the list `store-reviews` reads (`.local/lib/store-apps.sh`). The runner `store-sales` runs it every 6 hours, for yesterday: Apple publishes its daily report by 5am Pacific, and a run before then reads App Store as not read, never as 0. The runner is model-free.
+
+| Series | Labels | Meaning |
+|---|---|---|
+| `store_sales_amount` | `project, store, currency` | what the product's apps made that day on the store, in the store's basis (table above); `currency` is lower case. A product with no sale on the store writes nothing, never 0 |
+| `store_sales_units` | `project, store` | paid units |
+| `store_sales_unattributed` | `store, currency` | amounts from apps no product lists in its targets: a new product that is not wired in project-map shows here instead of vanishing |
+| `store_sales_up` | `store` | 1 when the store read on the last run. The source `store-sales` is up while any store read |
+| `store_sales_day_seconds` | none | local midnight opening the day the amounts are for |
+| `store_sales_generated_seconds` | none | the last run |
+
+A store that could not be read, or read empty (Steam and Apple answer a day they have not reported the same way as a quiet one), writes no amount for any product, so its cells read "off", never 0. An in-app purchase whose parent app has no row of its own in that day's Apple report cannot be matched to the app: it lands in `store_sales_unattributed`. `publish` exits 1 when the pass is FAILED (no textfile directory, no store read). home-config's `prometheus-rules-kb-project.yaml` records `kb_project_number{dept="money", metric="revenue_<store>_<currency>_1d"}` (`revenue_steam_usd_1d`, `revenue_play_usd_1d`, `revenue_app_store_eur_1d`) and `kb_project_source_up{source="store-sales"}`. Different currencies are never added together. Play and Steam amounts are before the store's cut (`basis` above), so they are not what the studio receives.
+
 ## Trader
 
 The Money section's trader lines come from Prometheus (`CC_PROM_URL`). Each says what one of the trader's paper accounts made yesterday: its equity at today's local midnight less its equity at yesterday's. The trader repo's exporter publishes the series from its own tables. It exports only paper accounts, so every trader line says paper. A live account needs its own reader once the trader's live guard lifts.
@@ -57,9 +74,11 @@ A day is not read when either midnight has no reading, or its reading is older t
 | Google Play `HTTP 403` after two days | The service account's grants are short. Check Play Console, Users and permissions, Account permissions: it holds the read-only permissions in Store credentials, and nothing else. The Play Console grant is what opens the bucket: no GCP IAM role on it is needed |
 | Steam `no rbw entry store_sales_steam` | The Financial API key is not made yet: see Store credentials |
 | Steam `report did not parse` | A row lacks `net_sales_usd`, `gross_sales_usd` or `net_units_sold`, or is dated another day than the one asked. Steam changed its answer: fix the parser in `store-sales`, never default the field |
+| `store_sales_amount` missing for one product | The store did not read (`store_sales_up{store}` 0: see the rows above), or the product has no `trackers.<p>.targets[].live` entry for that store. A sale on an app no product lists is in `store_sales_unattributed` |
+| `kb_project_source_up{source="store-sales"}` 0 | The last run is over a day old (runner not armed: `agentctl reload`), or no store read at all. One store down does not turn it: Play answers "no sales report" for an account with no paid sale, for good, so its products read "off" and `store_sales_up{store="play"}` is 0 |
 | Any store `HTTP 429` or `HTTP 5xx` | The store still refused after two retries (`STORE_RETRIES` in `.local/lib/store-auth.sh`, each after its Retry-After). The next run reads it again |
 | Steam `HTTP 403` | The key is not a Financial API Group key, or the group's IP allow list does not hold this machine's address. Check the group's page in Steamworks |
 | Steam `more than 20 pages of sales` | The day's sales cursor did not stop. `STEAM_PAGES` in `store-sales` is the cap; raise it only when a real day is that long |
-| Trader `no reading at <time>` | Prometheus had no series then: the trader's exporter or its scrape was down, or the series is newer than the day (they began 2026-11-12). Check `trader_db_up` and the trader-web pod |
+| Trader `no data at <time>` | Prometheus had no series then: the trader's exporter or its scrape was down, or the series is newer than the day (they began 2026-11-12). Check `trader_db_up` and the trader-web pod |
 | Trader `the reading at <time> was Nh old` | The writer stopped: `trader-broker-read` for Alpaca, the markets recorder and paper league for Kalshi. Check those CronJobs in the trader's namespace |
-| Trader `CC_PROM_URL is not set` or `cannot read <url>` | The Prometheus endpoint is unset in `~/.config/command-center/env` or does not answer |
+| Trader `CC_PROM_URL is not set` or `<url> did not answer (curl exit status: N)` | The Prometheus endpoint is unset in `~/.config/command-center/env` or does not answer |

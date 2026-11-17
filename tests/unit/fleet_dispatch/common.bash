@@ -79,6 +79,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
+  export FLEET_HOST=state   # the fixtures' fleet_state_host, state.lan
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
@@ -680,7 +681,7 @@ record_setup() {
   stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
   stub agent-panel 'cat "$NOTES_FIXTURE/panel.json"'
   echo '{"pane":"hub/%1","session_id":"conv-1","cwd":"/work/tree"}' > "$NOTES_FIXTURE/panel.json"
-  PANE1=$'%1\037dotfiles\037crash\037/shell/dir' PANE2=$'%2\037dotfiles\037zsh\037/plain/dir'
+  PANE1=$'%1\tdotfiles\tcrash\t/shell/dir' PANE2=$'%2\tdotfiles\tzsh\t/plain/dir'
   RECORD="$FLEET_DISPATCH_DIR/panes/hub.json" LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"
 }
 
@@ -719,13 +720,13 @@ harness_set() { jq "$@" "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX
 harness_ready() {
   game_ready
   printf 'sk-test\n' > "$SANDBOX/eval.key"
-  printf 'sk-glm\n' > "$SANDBOX/glm.key"
-  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/glm.key" --arg gc "$SANDBOX/eval-glm.json" '{
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"
+  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/paid.key" --arg gc "$SANDBOX/eval-paid.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
       "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      glm: {launcher: "opencode", source: "glm", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      paid: {launcher: "opencode", source: "paid", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
       codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
@@ -822,12 +823,16 @@ route_ready() {
   srcs
   sonnet_lane
 }
+# sonnet_lane -- model-lane stubbed: classify places LANE (sonnet) with lanes.yaml's fits; with LANE_PROMOTED=<harness:model>
+# the verdict promoted that pair for the class, as model-lane score does a trainee's: it leads the first fit, in `direct`.
 sonnet_lane() { stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; l=${LANE:-sonnet}
-case "$1" in log) echo run-9 ;; classify)
+case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; classify)
   if [ "$l" = opus ]; then c="[{\"harness\":\"claude\",\"model\":\"opus\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]"
   elif [ "$l" = sonnet ]; then c="[{\"harness\":\"claude\",\"model\":\"sonnet\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":0},{\"harness\":\"lazer-reserve\",\"model\":\"sonnet\",\"fit\":1}]"
   else c="[{\"harness\":\"claude\",\"model\":\"$l\",\"fit\":0}]"; fi
-  echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c}" ;; esac'; }
+  p="[]"; if [ -n "${LANE_PROMOTED:-}" ]; then p="[\"$LANE_PROMOTED\"]"
+    c="[{\"harness\":\"${LANE_PROMOTED%%:*}\",\"model\":\"${LANE_PROMOTED#*:}\",\"fit\":0},${c#[}"; fi
+  echo "{\"lane\":\"$l\",\"by\":\"rule\",\"model\":\"$l\",\"dispatch_model\":\"$l\",\"candidates\":$c,\"promoted\":[],\"direct\":$p}" ;; esac'; }
 
 # --- fleet workers -----------------------------------------------------------------------
 
@@ -872,15 +877,15 @@ remote_item() {
   sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running "$1")"
 }
 
-# --- focus: #prio/only ------------------------------------------------------------------
+# --- focus: #prio/focus ------------------------------------------------------------------
 
-# focus_on <project>... -- the human put each on `#prio/only`: the `notes projects --prios` line agent-queue
+# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
 # and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
 focus_on() {
   local p
   for p; do
-    printf '%s\tonly\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/only/' "$SANDBOX/sheets/$p/README.md"
+    printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
+    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 

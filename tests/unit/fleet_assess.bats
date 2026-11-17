@@ -9,6 +9,7 @@ setup() {
   sandbox_init basic
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-assess"
+  FLEET_GH_PROBE_TTL_S=0 # every test reads the stubbed bucket fresh; the cache tests set their own
 }
 
 # v <load> <tctl> <mem%> <held> on a 24-core box -> the verdict word
@@ -107,7 +108,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch or mac-desktop hold does not" {
+@test "only a machine-resource hold counts as held; a dispatch, mac-desktop or host-RAM hold does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   HOLD_ROOT="$AGENT_HOLD_DIR"
@@ -119,6 +120,13 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   touch "$AGENT_HOLD_DIR/mac-desktop"
   run holds_set
   assert_failure
+  touch "$AGENT_HOLD_DIR/deskslim-1-ram"
+  run holds_set
+  assert_failure
+  touch "$AGENT_HOLD_DIR/deskslim-1-cpu"
+  run holds_set
+  assert_success
+  rm "$AGENT_HOLD_DIR/deskslim-1-cpu"
   touch "$AGENT_HOLD_DIR/unity"
   run holds_set
   assert_success
@@ -518,6 +526,37 @@ gh_stub() {
   gh_stub 2964 "$(( now + 3000 ))"
   run gh_budget
   assert_output "github: 2964/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
+}
+
+@test "wf_bucket: the actions/workflows reading is reused for the TTL, so each ask is not a call" {
+  local now; now="$(date +%s)"
+  FLEET_GH_PROBE_TTL_S=300
+  printf '#!/usr/bin/env bash\ncase "$2" in\n  rate_limit) echo "4200 5000 %s" ;;\n  -i) echo x >> "%s/probes"; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: 3000\\r\\nX-Ratelimit-Reset: %s\\r\\n\\r\\n{}\\n" ;;\nesac\n' \
+    "$(( now + 3000 ))" "$SANDBOX" "$(( now + 2000 ))" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 1
+  # a reading older than the TTL is read again
+  local f="${XDG_STATE_HOME}/gh-calls/actions-budget"
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$(( now - 301 ))" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 2
+  # a young reading whose reset has passed is read again
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$now" "$(( now - 1 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 3
+  # another repo's reading, and a corrupt line, are misses that the next read overwrites
+  printf '%s %s 3000 %s\n' other/repo "$now" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 4
+  printf '%s abc 3000 %s\n' "$FLEET_GH_PROBE_REPO" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_output --partial '3000/5000'
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
 }
 
 # fake_proc <pid> <ppid> <comm> [cgroup] -- one process in a fake /proc under $FLEET_PROC.

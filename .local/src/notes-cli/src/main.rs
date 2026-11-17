@@ -404,10 +404,9 @@ enum Cmd {
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: only, focus, high,
-        /// low, normal (clears it). fleet-dispatch and agent-queue rank the project's work by
-        /// it; while any project is `only`, automated starts take only those projects' work
-        /// (reds, urgent and requested work excepted)
+        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
+        /// normal (clears it). fleet-dispatch and agent-queue rank the project's work by it,
+        /// focus first; a lower tier starts only when no higher one can, and nothing is held back
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
         /// Every profile's projects that declare a priority, as `name<TAB>prio`
@@ -740,7 +739,8 @@ enum PtaskCmd {
         game: Option<String>,
     },
     /// Change the first matching open task's text in place: its place on the sheet,
-    /// its checkbox state and its tags stay as they were
+    /// its checkbox state and its dates, priority and sizing (#size, #pts) stay as they were;
+    /// any other tag is what --text types
     Edit {
         /// The task's new text
         #[arg(
@@ -756,7 +756,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
-        /// `was:` detail line, and the old row's own tags (#requested, #tier/N, #size/x) carry over
+        /// `was:` detail line (a title over 80 chars is cut at a word, whole on a `full:` line), and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
         was: bool,
         /// Link the new text as `add` would: a leaf with no `#of/` whose area is one of the
