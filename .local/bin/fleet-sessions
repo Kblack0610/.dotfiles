@@ -128,7 +128,8 @@ KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
 # Such a session has no claude, so agent-panel cannot list it; the pass lists it from here.
 PARKED_DIR="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # Labels say what git, gh and the transcript cannot: a human's `manual` (the shepherd
-# leaves that session alone), a session's own `quality:<step>` while a cleanup pass runs, or
+# leaves that session alone; a session sets it on itself only on the human's order to stay
+# open, wind-down step 0), a session's own `quality:<step>` while a cleanup pass runs, or
 # `shepherd` on the fleet-shepherd pass itself, which is listed but left out of every count.
 # One file per session id, one label per line. Stages are derived every pass, never stored.
 LABELS="$LEDGER/labels"

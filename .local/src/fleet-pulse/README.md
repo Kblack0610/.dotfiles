@@ -52,7 +52,7 @@ it as a degraded mode, not a default.
 
 | Piece | Path | Repo |
 |-------|------|------|
-| Cluster: fleet external-endpoints | `apps/gatus-fleet/configmap.yaml` (`external-endpoints`) | home-config |
+| Cluster: fleet external-endpoints | `apps/gatus-fleet/config.yaml` (`external-endpoints`) | home-config |
 | Cluster: shared token secret | `apps/gatus-fleet/fleet-token-secret.sops.yaml` -> deployment env `FLEET_TOKEN` | home-config |
 | Per-machine config (endpoint + roster) | `~/.config/fleet-pulse/env` (`GATUS_BASE`, `FLEET_ROSTER`) | dotfiles-private |
 | Shared pusher (Linux + Mac) | `~/.local/src/fleet-pulse/push.sh` | dotfiles |
@@ -76,6 +76,17 @@ caller's environment still wins (plain assignment clobbered it and made the
 modules untestable). Windows has no shell env file; it uses `setx GATUS_BASE` /
 `setx FLEET_NAME` / `setx FLEET_GROUP` instead.
 
+### FLEET_NAME: the hostname, unless told otherwise
+
+`push.sh` names a host by its short, lower-cased hostname (`_` becomes `-`), so two Linux
+hosts never push the same key. `FLEET_NAME` (a systemd drop-in, the launchd plist, `setx`)
+wins when set. `FLEET_NAME_MAP` in the env file (`<hostname>=<key> ...`) renames a host whose key predates hostname naming: the workstation's `cachyos-x8664-main` maps to its
+older key `linux-cachyos`. A Linux host with no declared key gets a logged HTTP 404 every
+tick; a host gatus polls (`razer-laptop`, `hp-victus`, `asus-laptop`) is declared under
+`k3s` and needs no push, so that 404 is expected there. It used to push as
+`linux-cachyos`, which kept the workstation's dot green while it was down.
+Test: `tests/integ/fleet_pulse_push.bats`.
+
 ### FLEET_GROUP: gatus keys are `<group>_<name>`
 
 A host's key is its group AND its name, so `FLEET_GROUP` must match the group the
@@ -90,7 +101,7 @@ reason - `push failed for linux-cachyos` hid the half of the key that was wrong.
 
 ### 1. Cluster (home-config) - REQUIRED FIRST; nothing pushes 200 until this lands
 
-LANDED. `apps/gatus-fleet/configmap.yaml` carries the `external-endpoints` block and
+LANDED. `apps/gatus-fleet/config.yaml` carries the `external-endpoints` block and
 the SOPS `FLEET_TOKEN` secret is deployed; `homelab_linux-cachyos` reports today.
 (`apps/gatus` is the separate APPS dashboard - machines live on the `gatus-fleet`
 instance at your fleet endpoint. They are two different gatus instances; don't edit
