@@ -3241,6 +3241,9 @@ explain_state() {
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  # hub Home joins an ask to its session by this id, never by the tmux name above
+  [ "$(jq -r '.asks[0].claude_session' "$doc")" = sid-9 ]
+  [ "$(jq -r '.asks[0].claude_session' "$doc")" = "$(jq -r '.sessions[0].session_id' "$doc")" ]
   # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
   [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
   [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]

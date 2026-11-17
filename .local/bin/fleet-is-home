@@ -2,7 +2,7 @@
 # fleet-is-home - exit 0 when this machine is the fleet home (the roster's fleet_state_host), or the
 # roster reads and names none (one machine); exit 1 with the reason on stderr when it names another,
 # 2 when the roster cannot be read, so this machine cannot tell it is not the home, and 3 when the
-# home it names is not this machine and resolves to no address (the LAN's DNS is down, or a typo).
+# home it names is no machine in the inventory (a typo, or a machine taken out of it).
 #
 # The singleton units (fleet-state, agent-ask-deliver, the store sync, agent-web, the agentctl
 # lanes) run it as ExecCondition, so on any other machine they skip instead of writing a second
@@ -18,6 +18,6 @@ fleet_is_home
 case $? in
   0) exit 0 ;;
   2) echo "fleet-is-home: the fleet roster cannot be read ($FLEET_ROSTER_ERR), so $FLEET_HOST stands down" >&2; exit 2 ;;
-  3) echo "fleet-is-home: the inventory's fleet_state_host $(fleet_state_addr) is not $FLEET_HOST and resolves to no address, so $FLEET_HOST stands down" >&2; exit 3 ;;
+  3) echo "fleet-is-home: the inventory's fleet_state_host $(fleet_state_addr) names no machine in the inventory, so $FLEET_HOST stands down" >&2; exit 3 ;;
   *) echo "fleet-is-home: $FLEET_HOST is not the fleet home; the inventory's fleet_state_host is $(fleet_state_addr)" >&2; exit 1 ;;
 esac

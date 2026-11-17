@@ -83,6 +83,10 @@ unset _k _v
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
+# The first message restore types into a reopened conversation whose queue item is running (each %s: the
+# item), so it carries on without a nudge: on 2026-11-16 restored sessions sat idle until the human
+# nudged each one.
+: "${RESTORE_PROMPT:=fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item %s from where you stopped; first check what changed while you were down (git status, your PR, agent-queue show %s).}"
 : "${DISPATCH_FLAP_MOVES:=3}"   # reap moves of one item in an hour that make it flapping (stats), when reap made one of them twice in a row
 : "${DISPATCH_FINDING_FRESH_MIN:=20}"   # two fleet-bench samples: a finding stays open 60 min after it stops firing
 : "${DISPATCH_JUDGE_MAX:=40}"   # rows judged per pass; the rest wait for the next pass
@@ -2363,12 +2367,14 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session
-# (`agent-queue mine --sid`), so the item records where it runs again. The manifest brings back the
-# declared sessions and windows first; a plain shell is listed, not reopened. Consumed only when
-# every reopen worked, so a rerun finishes, and only as read at the start, under record's lock: a
-# death world_lost adds to it meanwhile stays owed.
+# (`agent-queue mine --sid`), so the item records where it runs again. A claude conversation whose
+# item is running gets RESTORE_PROMPT as its first message and carries on; any other comes back at
+# an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
+# back the declared sessions and windows first; a plain shell is listed, not reopened. Consumed only
+# when every reopen worked, so a rerun finishes, and only as read at the start, under record's lock:
+# a death world_lost adds to it meanwhile stays owed.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item failed=0 opened=0 walked
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 walked
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
@@ -2378,12 +2384,17 @@ restore_world() {
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
     item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
-    mode=$(resume_mode "$id" "$([ -z "$item" ] || agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')")
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}"; continue; fi
+    it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
+    mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
+    prompt=''; said=''
+    if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
+      prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
+    fi
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said"; continue; fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
-        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} </dev/null >/dev/null; then
-      echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}"; opened=$((opened + 1))
+        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
+      echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
     else
       failed=$((failed + 1))
     fi
@@ -3558,9 +3569,9 @@ demand_write() {
 }
 
 # home_line -> which machine the roster's fleet home is, in words. Rc 0 when it is this machine, 1
-# when it is another, 2 when the roster cannot be read, or its fleet_state_host is not this machine
-# and resolves to no address (fleet_is_home rc 3): then no machine matches it and every one stands
-# down, and only this says so.
+# when it is another, 2 when the roster cannot be read, or its fleet_state_host names no machine in
+# the inventory (fleet_is_home rc 3): then no machine matches it and every one stands down, and only
+# this says so.
 home_line() {
   local a rc
   fleet_is_home; rc=$?
@@ -3569,7 +3580,7 @@ home_line() {
     0) if [ -n "$a" ]; then echo "the fleet home is $a: this machine ($FLEET_HOST)"
        else echo "the roster names no fleet_state_host, so this machine ($FLEET_HOST) is the fleet home"; fi ;;
     2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 2 ;;
-    3) echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"; return 2 ;;
+    3) echo "the inventory's fleet_state_host $a names no machine in the inventory, so no machine is the fleet home and every one stands down"; return 2 ;;
     *) echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"; return 1 ;;
   esac
 }

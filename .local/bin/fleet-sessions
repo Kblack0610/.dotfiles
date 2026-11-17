@@ -2317,6 +2317,7 @@ write_state() {
                 | {id: .[0], project: .[1], kind: .[4], question: (.[5] // "" | .[0:160]),
                    task: (if (.[7] // "") == "" then null else .[7] end), created: .[11],
                    session: (if (.[12] // "") == "" then null else .[12] end),
+                   claude_session: (if (.[15] // "") == "" then null else .[15] end),
                    recommend: (if (.[10] // "") == "" then null else .[10] end),
                    judge: (if (.[16] // "") == "" then null else .[16] end)}],
          stopped: [$stopped | split("\n")[] | fromjson? | objects]}

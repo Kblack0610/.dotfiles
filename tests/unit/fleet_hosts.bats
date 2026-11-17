@@ -18,6 +18,9 @@ all:
     ansible_user: kb
     fleet_state_host: state.lan
   children:
+    desktops:
+      hosts:
+        state: {}
     laptops:
       hosts:
         razer-laptop:
@@ -52,7 +55,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\", \"power\": \"\"}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\", \"state_match\": \"me\", \"power\": \"\"}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
@@ -211,7 +214,6 @@ EOF
 @test "a machine whose roster fetch fails is home while its last landed fetch is under FLEET_ROSTER_TRUST_SECS old or from since it booted" {
   home_config_fixture
   export -f project_repo_path
-  stub getent 'exit 2'
   roster_names state.lan   # names this machine
   fleet_roster_fetch
   git -C "$HC" remote set-url forgejo "$SANDBOX/gone.git"
@@ -243,57 +245,60 @@ EOF
   fleet_is_home || fail "a fresh roster naming this machine did not read as home"
 }
 
-@test "a home written as user@host or in another case is this machine; another name is not" {
-  stub getent '[ "$2" = other.lan ] && echo "192.0.2.50      STREAM other.lan"'
+@test "a home written as user@host or in another case is this machine; another inventory machine is not, and no machine is rc 3" {
   sed -i 's/fleet_state_host: state.lan/fleet_state_host: kb@STATE.lan/' "$FLEET_INVENTORY"
   fleet_is_home || fail "kb@STATE.lan is not read as state"
-  sed -i 's/fleet_state_host: .*/fleet_state_host: kb@other.lan/' "$FLEET_INVENTORY"
-  unset FLEET_HOSTS_JSON
-  run fleet_is_home
-  assert_failure 1
-  # A name that resolves to nothing is no machine: rc 3, which the callers say out loud.
+  local other
+  for other in kb@razer-laptop.lan 192.0.2.30; do   # a host's name, or another host's ansible_host
+    sed -i "s/fleet_state_host: .*/fleet_state_host: $other/" "$FLEET_INVENTORY"
+    unset FLEET_HOSTS_JSON
+    run fleet_is_home
+    assert_failure 1
+  done
+  # A name no inventory machine has is no machine: rc 3, which the callers say out loud.
   sed -i 's/fleet_state_host: .*/fleet_state_host: kb@typo.lan/' "$FLEET_INVENTORY"
   unset FLEET_HOSTS_JSON
   run fleet_is_home
   assert_failure 3
 }
 
-@test "a home named by a DHCP name, not the hostname, is home when the name resolves to one of its IPs" {
+@test "a home named by a DHCP name, not the hostname, is home by its own inventory entry, with no DNS lookup" {
   export FLEET_HOST=ws-hostname
-  printf '#!/bin/sh\n[ "$2" = state.lan ] && echo "192.0.2.2       STREAM state.lan"\n' > "$SANDBOX/bin/getent"
-  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.2/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
-  chmod +x "$SANDBOX/bin/getent" "$SANDBOX/bin/ip"
+  # A DNS lookup would be logged; the LAN DNS being down must not change the answer.
+  stub getent 'echo "getent $*" >> "$NOTES_FIXTURE/calls.log"; exit 2'
+  sed -i 's/^    laptops:$/    workstation:\n      hosts:\n        ws-hostname:\n          ansible_connection: local\n          fleet_ssh_host: state.lan\n&/' "$FLEET_INVENTORY"
+  sed -i 's/^        state: {}$/        other-box: {}/' "$FLEET_INVENTORY"
   run fleet_is_home
   assert_success
   run state_forward agent-queue add list
   assert_success
   assert_not_called ssh
-  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.9/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
-  run fleet_is_home
-  assert_failure
-  # An IP address resolves to itself (getent), so a home written as one is the machine that holds it.
-  sed -i 's/fleet_state_host: state.lan/fleet_state_host: 192.0.2.2/' "$FLEET_INVENTORY"
-  printf '#!/bin/sh\n[ "$2" = 192.0.2.2 ] && echo "192.0.2.2       STREAM 192.0.2.2"\n' > "$SANDBOX/bin/getent"
-  unset FLEET_HOSTS_JSON
-  run fleet_is_home
-  assert_failure
-  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.2/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  # Its ansible_host names it too: a roster that gives the home's IP.
+  sed -i 's/fleet_ssh_host: state.lan/ansible_host: 192.0.2.2/; s/fleet_state_host: state.lan/fleet_state_host: 192.0.2.2/' "$FLEET_INVENTORY"
   run fleet_is_home
   assert_success
+  # Another machine, whose entry names neither, is not home and forwards.
+  export FLEET_HOST=razer-laptop
+  run fleet_is_home
+  assert_failure 1
+  # A name set for every host (all.vars) is no host's own, so it makes no member the home.
+  sed -i 's/^    ansible_user: kb$/&\n    fleet_ssh_host: 192.0.2.2/' "$FLEET_INVENTORY"
+  run fleet_is_home
+  assert_failure 1
+  assert_not_called getent
 }
 
 @test "fleet-is-home passes on the home and fails elsewhere naming the home, or naming a home no machine is" {
-  stub getent '[ "$2" = state.lan ] && echo "192.0.2.50      STREAM state.lan"'
   run "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_success
   assert_output ''
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 1
   assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state.lan"
-  stub getent 'exit 2'
+  sed -i 's/fleet_state_host: .*/fleet_state_host: typo.lan/' "$FLEET_INVENTORY"
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
   assert_failure 3
-  assert_equal "$stderr" "fleet-is-home: the inventory's fleet_state_host state.lan is not old-main and resolves to no address, so old-main stands down"
+  assert_equal "$stderr" "fleet-is-home: the inventory's fleet_state_host typo.lan names no machine in the inventory, so old-main stands down"
 }
 
 @test "a roster fetched within FLEET_ROSTER_MAX_SECS is read as it is, with no fetch" {
@@ -312,7 +317,6 @@ EOF
 @test "a machine back from being off, whose stale roster names it, reads the other home the forge names and forwards" {
   home_config_fixture
   export -f project_repo_path
-  stub getent '[ "$2" = razer-laptop.lan ] && echo "192.0.2.26      STREAM razer-laptop.lan"'   # no name resolves to this machine
   roster_names state.lan
   run fleet_roster_fetch
   assert_success
@@ -338,7 +342,6 @@ EOF
 
 @test "a reader that comes while another fetches the stale roster waits for it and reads the home it fetched" {
   home_config_fixture
-  stub getent 'exit 2'
   roster_names state.lan
   fleet_roster_fetch
   roster_names razer-laptop.lan
