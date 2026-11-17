@@ -379,6 +379,7 @@
     "/tmp"
   ],
   "skillOverrides": {
+    "blind-review": "name-only",
     "changelog-draft": "name-only",
     "clickup-ops": "name-only",
     "compact-prep": "name-only",
@@ -402,6 +403,7 @@
     "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
+    "quick-demo": "name-only",
     "reaper-ops": "name-only",
     "run": "name-only",
     "runn-log-time": "name-only",
