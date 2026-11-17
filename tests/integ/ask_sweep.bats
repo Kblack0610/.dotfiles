@@ -380,3 +380,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'would file [board] chore(plan): finish stale'
   assert_not_called ' add '
 }
+
+@test "a pointer stub files no row: the plan it names is swept as itself (ar-2513)" {
+  plan canon '1 day ago 1 hour ago' "$OPEN"
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/canon.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  run grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+  [ "$status" -ne 0 ]
+  # negative control: the same stub pointing nowhere is a plan of its own and files its row
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/nowhere.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  grep -q 'finish canon' "$NOTES_FIXTURE/rows.board"
+  grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+}

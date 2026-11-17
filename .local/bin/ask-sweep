@@ -76,6 +76,8 @@ sweep_plans() {
   while IFS= read -r -d '' f; do
     [ "$f" -ot "$first" ] && continue
     PLANS_READ=$((PLANS_READ + 1))
+    # A pointer stub owns no phases: the plan it names is swept as itself, so its checklist is no row.
+    [ -z "$(plan_pointer "$f")" ] || continue
     IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
     if [ "$total" = - ]; then
