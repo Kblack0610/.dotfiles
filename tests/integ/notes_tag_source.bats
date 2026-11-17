@@ -16,7 +16,7 @@ setup() {
 case "$1 $2 $3" in
   "tags --kind task")  printf 'high\t40\nsize/s\t9\nsize/m\t7\nv0.5.0\t2\n' ;;
   "tags --kind topic") printf 'software\t77\nai\t5\n' ;;
-  "projects --stats ") printf 'bnb\tDodginBalls\talpha\tv0.1.0\t12\t0\t1\t2\t0\t3\t/s.md\npersonal\ttrader\tbeta\tv0.1.3\t4\t0\t0\t0\t0\t1\t/t.md\n' ;;
+  "projects --stats ") printf 'personal\ttrader\tbeta\tv0.1.3\t4\t0\t0\t0\t0\t1\t/t.md\nbnb\tDodginBalls\talpha\tv0.1.0\t12\t0\t1\t2\t0\t3\t/s.md\n' ;;
   *) exit 2 ;;
 esac
 STUB
@@ -68,6 +68,14 @@ local s = require("notes.tag_source")
 local out = s.items(s.context("- [ ] x #dod", false), { { tag = "p:dodginballs", count = 2 } }, 0, 12)
 io.stdout:write(out[1].filterText, " ", out[1].textEdit.newText)'
   assert_output 'dodginballs #p:dodginballs'
+}
+
+@test "past a slash or dot on a row the projects are not fetched" {
+  run lua_run '
+local s = require("notes.tag_source")
+io.stdout:write(table.concat(s.context("- [ ] x #size/", false).kinds, ","), " ",
+  table.concat(s.context("- [ ] x #v0.", false).kinds, ","))'
+  assert_output 'task,topic task,topic'
 }
 
 @test "prose offers no projects, and a colon in any other tag offers nothing" {

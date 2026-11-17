@@ -48,6 +48,8 @@ function M.context(before, in_frontmatter)
   local kinds = { "topic" }
   if project then
     kinds = { "project" }
+  elseif row and token:find("[/%.]") then
+    kinds = { "task", "topic" } -- no project name has a `/` or `.`, so skip the stats call
   elseif row then
     kinds = { "task", "project", "topic" }
   end
@@ -143,6 +145,11 @@ local function fetch(kinds, on_done)
         if tag then
           list[#list + 1] = { tag = tag, count = tonumber(count) }
         end
+      end
+      if kind == "project" then -- stats come in index order; best first like the tag kinds
+        table.sort(list, function(a, b)
+          return a.count > b.count
+        end)
       end
       finish(i, list)
     end)
