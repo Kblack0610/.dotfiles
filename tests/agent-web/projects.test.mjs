@@ -567,7 +567,7 @@ const ladTable = (cols, total, states) => ({
 const ladder = (o = {}) => ({
   rows: [
     { name: "busy", profile: "bnb", type: "game", stage: "dev", next: "alpha", met: 3, total: 5, fail: 2, todo: 4, human: 1, filed_open: 2, filed_closed: 1, error: null, state: "failing", met_says: "3/5", filed_says: "2/1" },
-    { name: "odd", profile: "personal", type: null, stage: "beta", next: "prod", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "0/0" },
+    { name: "odd", profile: "personal", type: null, stage: "beta", next: "", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "" },
   ],
   says: "", gate_says: "report only until 2026-11-19 (in 6 days)", gate_level: "warn",
   filer_says: "nightly, last 04:30 today: 2 filed", filer_level: "bad", kinds_says: "on fix feat; off legal", kinds_level: "",

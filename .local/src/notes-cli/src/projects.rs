@@ -171,11 +171,11 @@ pub fn stages() {
 }
 
 /// A project's priority, the human's call on which projects agents should work first.
-/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, and
-/// while any project is `only` they start automated work for those projects alone (reds,
-/// urgent and requested work excepted). The `prio/` prefix keeps it apart from a row's
+/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, focus
+/// first, then high, normal, low, and start a lower tier only when no higher one can; nothing
+/// is held back. The `prio/` prefix keeps it apart from a row's
 /// `#high` / `#low` priority words.
-pub(crate) const PRIOS: [&str; 4] = ["prio/only", "prio/focus", "prio/high", "prio/low"];
+pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
 //
@@ -415,7 +415,7 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set only|focus|high|low|normal]`: read or set a project's
+/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
 /// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
 pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     let dir = project_dir(p, name)?;
@@ -427,9 +427,9 @@ pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resul
         return Ok(());
     };
     let tag = match v {
-        "only" | "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "focus" | "high" | "low" => Some(format!("prio/{v}")),
         "normal" => None,
-        _ => bail!("unknown priority '{v}' (want: only, focus, high, low, normal)"),
+        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
     };
     let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
     if updated != content {
@@ -461,7 +461,7 @@ pub fn prios() -> Result<()> {
     Ok(())
 }
 
-/// The priority word a head declares (`only`, `focus`, `high`, `low`), empty for normal.
+/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
 fn prio_of_str(content: &str) -> String {
     head_tag(content, &PRIOS)
         .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
@@ -4315,12 +4315,6 @@ mod stage_tag_tests {
         let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         assert_eq!(prio_of_str(&two), "low");
-        let only = replace_head_tag(&two, &PRIOS, Some("prio/only")).unwrap();
-        assert_eq!(prio_of_str(&only), "only");
-        assert!(
-            !only.contains("#prio/low"),
-            "only replaces the old word: {only}"
-        );
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");

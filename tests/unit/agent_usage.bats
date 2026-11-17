@@ -63,7 +63,7 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
 }
 
 @test "a gateway transcript with no requestId is counted once per message.id" {
-  # claude-lazer and glm sessions write no requestId; before this they read as zero tokens.
+  # claude-lazer and opencode sessions write no requestId; before this they read as zero tokens.
   GW="$HOME/.claude/projects/-x/gateway.jsonl"
   {
     for _ in 1 2; do

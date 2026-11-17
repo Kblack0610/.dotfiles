@@ -1870,6 +1870,37 @@ log_triage_setup() {
   assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
 }
 
+@test "triage: a log row whose error the runner's newest runs no longer log closes; a live one or a thinly read runner keeps it" {
+  log_triage_setup
+  local live
+  live=$("$SUBJECT" triage --dry-run | grep -oE '^fix\(logs\): alpha error [0-9a-f]{8}:')
+  [ -n "$live" ]
+  local once; once=$(printf 'alpha\t%s' 'error: seen once' | sha1sum | cut -c1-8)
+  errlog alpha -30 'error: seen once'   # in the newest run: too few runs to file, but not gone
+  errlog beta -60 'all good'   # one readable run is not enough to call its error gone
+  # board keys are lowercase; the newest run of all logs no error line, so the read ends on a clean run
+  errlog Delta -60 'all good'; errlog Delta 5 'all good'
+  board_row ' ' "$live error: lock P held by pid N"
+  board_row ' ' 'fix(logs): alpha error 8b645240: alpha: queue item x may not spill to lazer: tier'
+  board_row ' ' "fix(logs): alpha error $once: error: seen once"
+  board_row ' ' 'fix(logs): beta error 1234abcd: error: beta broke'
+  board_row ' ' 'fix(logs): gamma error 5678cdef: error: gamma never ran'
+  board_row ' ' 'fix(logs): delta error 9abc0123: error: delta broke'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: fix(logs): alpha error 8b645240:'
+  assert_line 'retire: fix(logs): delta error 9abc0123:'
+  refute_line "retire: $live"
+  refute_line "retire: fix(logs): alpha error $once:"
+  refute_line --partial 'retire: fix(logs): beta'
+  refute_line --partial 'retire: fix(logs): gamma'
+  # with no run ledger nothing was read, so no log row is a recovery
+  rm "$AGENTCTL_STATE_DIR/runs.jsonl"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: fix(logs)'
+}
+
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
   log_triage_setup
   # a later run big enough that a reader stopping at the range end would cut a pipe mid-write
@@ -1981,6 +2012,26 @@ fix_item() {
     run cat "$PLOG"
     assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
   done
+}
+
+# 2026-11-17 (ar-2616): home-config #1105 merged, HA dropped the paused host a minute later and its
+# red aged out of a 20 minute window, but triage queued a retry 6 minutes after the merge.
+@test "triage: a fix merged under TRIAGE_WATCH_AFTER ago stands for its cause; one merged longer ago did not hold" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done ok o/r#5 abc
+  local f; f=$(tail -1 "$ITEMS"); : > "$ITEMS"
+  jq -c --arg f "$(date -u -d "@$((T0 - 600))" +%FT%TZ)" '.finished = $f' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # NEGATIVE CONTROL: the same merge past the patience, with the red still here, is queued once more
+  : > "$ITEMS"
+  jq -c --arg f "$(date -u -d "@$((T0 - 1900))" +%FT%TZ)" '.finished = $f' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
 }
 
 @test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
@@ -4843,16 +4894,16 @@ qstats_fixture() {
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   for s in s1 s2 s3 s4; do echo "{\"session_id\":\"$s\",\"cost_usd\":4,\"class\":{\"size\":\"s\",\"kind\":\"fix\"}}"; done > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"glm","agent":"glm","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
-    echo '{"slug":"b","model":"glm","agent":"glm","status":"failed","sessions":"s2","lane_run":"r2"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","sessions":"s2","lane_run":"r2"}'
     echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent"}'
-    echo '{"slug":"d","model":"glm","agent":"glm","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
+    echo '{"slug":"d","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00) old_iso=$(date -u -d "@$((T0 - 30 * 86400))" +%FT%T+00:00)
   {
-    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"ok\"}"
-    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"redo\"}"
-    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"failed\"}"
+    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"failed\"}"
     # a run with no lane and a full model id is the unrouted claude sonnet pairing, not a row of its own
     echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"ran\":\"claude-sonnet-5-5\",\"outcome\":\"redo\"}"
   } > "$BENCH_LANE_LOG"
@@ -4860,19 +4911,19 @@ qstats_fixture() {
   assert_success
   # c's own lane=agent is the board lane, not model-lane's: with no lane_run it is unrouted
   assert_equal "$(jq -c '[.models[] | [.class, .lane, .harness, .done, .landed]]' <<<"$output")" \
-    '[["fix/s","opus","glm",2,1],["fix/s","sonnet","glm",1,1],["fix/s","unrouted","claude",1,1]]'
+    '[["fix/s","opus","opencode-go",2,1],["fix/s","sonnet","opencode-go",1,1],["fix/s","unrouted","claude",1,1]]'
   by_cl=$output
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane,class --json
   assert_equal "$output" "$by_cl"
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
   assert_success
   assert_line '| Class | Lane | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
-  assert_line '| fix/s | sonnet | glm | glm | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
+  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
   # lane alone keeps redo, counted on the runs of that lane in the window
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
   assert_success
   assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
-    '[["opus","glm",2,1,0,false],["sonnet","glm",1,1,1,false],["unrouted","claude",1,1,1,false]]'
+    '[["opus","opencode-go",2,1,0,false],["sonnet","opencode-go",1,1,1,false],["unrouted","claude",1,1,1,false]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
   assert_line '| Lane | Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
@@ -5737,8 +5788,8 @@ STUB
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
-  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
-  echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
+  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nopencode-go glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
+  echo '{"harnesses":{"codex":{"source":"codex"},"opencode-go":{"source":"go"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" retro
@@ -5747,12 +5798,12 @@ STUB
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol@high)"
   assert_line "fleet-bench: canary: codex/sol@higher not queued, its slug is codex/sol@high's"
-  assert_line "fleet-bench: canary: glm/glm not queued, glm: past its pace line"
+  assert_line "fleet-bench: canary: opencode-go/glm not queued, go: past its pace line"
   assert_line --partial "fleet-bench: canary: ghost/x not queued, ghost has no source"
   [ -f "$CQ/canary-greet-$week-codex-sol.json" ]
   assert_equal "$(jq -r .effort "$CQ/canary-greet-$week-codex-sol-hi.json")" high
-  [ ! -f "$CQ/canary-greet-$week-glm-glm.json" ]
-  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex glm '
+  [ ! -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
+  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex go '
   # no lanes file: retro queues the claude lane alone
   rm "$BENCH_CANARY_LANES" "$CQ"/*.json
   run "$SUBJECT" retro
@@ -6157,4 +6208,14 @@ start_rows() {
   rm "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SUBJECT" canary shepherd
   assert_failure 1
+}
+
+@test "forecast reads a pointer stub's session through to the canonical plan's phase N (ar-2513)" {
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/canon.md"
+  printf 'Phase 3 of %s\n' "$SANDBOX/canon.md" > "$SANDBOX/stub.md"
+  { rowp a lab/game-agent-1:1 0 1 "$SANDBOX/stub.md"; } > "$SNAP"; sample_at 0
+  run env BENCH_NOW=$((T0 + 600)) "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '[.schedule[] | [.target, [.phases[].name]]]' <<<"$output"
+  assert_output '[["lab/game-agent-1:1",["three"]]]'
 }

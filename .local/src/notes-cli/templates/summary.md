@@ -16,5 +16,5 @@ _(no status yet)_
 
 <!-- AUTO:START — maintained by /lab-sync (regen-lab-feed.sh); edits below are overwritten -->
 ## ← Release & status feed
-_(run /lab-sync to populate)_
+_(run lab-refresh to populate)_
 <!-- AUTO:END -->

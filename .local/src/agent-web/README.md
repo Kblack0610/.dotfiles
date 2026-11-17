@@ -57,12 +57,15 @@ Only a target that is a live agent right now accepts input, so the API cannot be
 
 ## Auth
 
-The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows one button, Sign in with Forgejo. It starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
+The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows the button Sign in with Forgejo, plus a key form when `login.key` exists (below). The button starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
 
 On return agent-web exchanges the code for the user's Forgejo login and checks it against an allowlist (`AGENT_WEB_ALLOWED_USERS`, default `kblack0610`). A match gets an opaque session id in an HttpOnly cookie, valid 90 days. Sessions are stored in `~/.config/agent-web/sessions.json` (0600), so a restart signs nobody out. `POST /logout` revokes the session. `/healthz` and the assets under `/static/` need no session, and `/widget` also opens with the widget key; every other route needs one.
 
+The OAuth button needs Forgejo up, so the sign-in key is the way in when it is down. `POST /login/key` compares the typed key with `~/.config/agent-web/login.key` in constant time and, on a match, starts the same 90-day session for the first name in `AGENT_WEB_ALLOWED_USERS`: whoever holds the key is that user, so keep the list order. There is no lockout on wrong keys, because a key of 32 or more characters cannot be guessed and a lock any visitor could trip would shut the owner out during the outage the key exists for. The audit log records `signin.started` and `signin.refused` with `method: key` (a refusal has the actor `login-key`).
+
 | Setting | Where | Default |
 |---|---|---|
+| Sign-in key | `~/.config/agent-web/login.key` (0600), also kept in the Bitwarden vault. Read on each request: rewrite it to rotate, delete it to turn the form off, no restart. Mint: `(umask 077; openssl rand -hex 24 > ~/.config/agent-web/login.key)`. A key under 32 characters counts as none | none, the page shows only the Forgejo button |
 | OAuth client id and secret | `~/.config/agent-web/oauth.json` (0600), also kept in the Bitwarden vault | none, agent-web will not start without it |
 | `AGENT_WEB_FORGEJO_URL` | env, Forgejo base URL | required |
 | `AGENT_WEB_BASE_URL` | env, the URL agent-web is served at; the OAuth callback is `<base>/oauth/callback`. The unit reads it from `~/.config/agent-web/env`, which agent-notify also reads to link a page's `tmux:` and `ask:` refs here | required |
@@ -85,7 +88,7 @@ Each hit the key opens rewrites `~/.local/state/agent-web/widget.json` (`at` in 
 |---|---|
 | The widget shows `unauthorized` | The key in the URL is not the one in `widget.token`; copy it again, with no trailing newline in the URL. |
 | A card says NO DATA | That card's reader failed; the error is on the card, and the same card on Home shows it too. |
-| `agent-web-widget-fresh` tripped | No hit with the key in 2 hours: `jq . ~/.local/state/agent-web/widget.json` says when the last one was. Tap the widget; if that writes a new `at`, the app's timer stopped (battery optimization on the widget app is the usual cause), and if it does not, the app gets `unauthorized` or cannot reach the base URL. A healthy widget with a stale file means the write failed: `journalctl --user -u agent-web | grep 'widget hit not recorded'`. |
+| `agent-web-widget-fresh` tripped | No hit with the key in 2 hours: `jq . ~/.local/state/agent-web/widget.json` says when the last one was. Tap the widget; if that writes a new `at`, the app's timer stopped (battery optimization on the widget app is the usual cause), and if it does not, `journalctl --user -u agent-web | grep 'widget refused'` says why: `key does not match` (the app holds an old key, copy the URL again), `no key in the URL` (the URL lost its `?t=`), `no key set on the server` (`widget.token` is missing or empty), and no line at the tap means the app cannot reach the base URL. A healthy widget with a stale file means the write failed: `journalctl --user -u agent-web | grep 'widget hit not recorded'`. |
 
 The two Forgejo calls (token exchange, `GET /api/v1/user`) run through `curl` with the secret on stdin, so no HTTP client library is linked in.
 
@@ -129,6 +132,7 @@ To see it, `agent-web-shot --base http://127.0.0.1:8799 --out <dir> releases rel
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| The sign-in page has no key form | `login.key` is missing, empty or under 32 characters | Mint it as in the Auth table; no restart |
 | A tab says `agent-web did not answer /api/...` | No answer came back: agent-web was restarting or down, or the connection broke | `journalctl --user -u agent-web -n 200 \| grep 'agent-web: '`: a `dropped before it answered` line with the browser's `ua` says the request was cut, a `failed` line carries the handler's error, a `slow` line the time; no line at all means the request never reached agent-web (check the ingress logs in home-config `apps/agents`) |
 | Header says "offline since HH:MM" with Retry | The browser's event stream to `/api/events` dropped at that time: agent-web restarted or stopped, or the network or proxy cut it. The page shows what it last read. EventSource reconnects by itself after a drop but not after an error answer such as a proxy's 502 | `systemctl --user status agent-web`; once it is up, press Retry. The pill says "catching up" until the sessions read lands, then clears |
 | Header says "live updates off"; the log has `cannot watch ...: OS file watch limit reached` | The user's inotify watches (`fs.inotify.max_user_watches`) are used up by another program. On 2026-11-03 it was Unity's ILPP runner watching a Unity project checkout whose `.git` held 1.5M empty LFS dirs. Raising the limit does not help: a recursive watcher takes the new room too | Find the holder: for each pid, count the `inotify` lines in `/proc/<pid>/fdinfo/<fd>` of its `anon_inode:inotify` fds. Free watches at the source; agent-web picks them up on its next retry, no restart |

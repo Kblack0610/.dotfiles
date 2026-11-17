@@ -119,13 +119,26 @@ targets_json() {
 # repo_dir <repo-key> -> the checkout path for a registry repo key, or "".
 repo_dir() { project_repo_path "$1"; }
 
-# Fetch each repo's branch once per refresh. A failed fetch is remembered so every target on
-# that repo reports unknown instead of reading a remote-tracking ref of unknown age.
+# branch_ref <dir> <branch> -> <remote>/<branch>, the remote being the one the branch tracks
+# (branch.<b>.remote), else origin. Every read of a repo's branch goes through it: home-config's
+# master tracks forgejo, which Flux syncs, while its origin is a GitHub mirror that lags hours
+# behind, and reading the mirror's pin showed a finished deploy as drift (ar-2575).
+branch_ref() {
+  local r
+  r="$(git -C "$1" config --get "branch.$2.remote" 2>/dev/null)" || r=""
+  [ -n "$r" ] && [ "$r" != . ] || r=origin
+  printf '%s/%s' "$r" "$2"
+}
+
+# Fetch each repo's branch from the remote branch_ref names, once per refresh. A failed fetch is
+# remembered so every target on that repo reports unknown instead of reading a remote-tracking
+# ref of unknown age.
 declare -A FETCHED=()
 fetch_branch() {
-  local dir="$1" branch="$2" k="$1@$2"
+  local dir="$1" branch="$2" k="$1@$2" ref
   if [ -z "${FETCHED[$k]:-}" ]; then
-    if timeout "$PROBE_TIMEOUT" git -C "$dir" fetch -q origin "$branch" </dev/null >/dev/null 2>&1; then
+    ref="$(branch_ref "$dir" "$branch")"
+    if timeout "$PROBE_TIMEOUT" git -C "$dir" fetch -q "${ref%/"$branch"}" "$branch" </dev/null >/dev/null 2>&1; then
       FETCHED[$k]=ok
     else
       FETCHED[$k]=fail
@@ -135,7 +148,7 @@ fetch_branch() {
 }
 
 # The branch name only: a clone whose origin/HEAD points at another remote's ref
-# (home-config's reads forgejo/master) still names the branch origin fetches.
+# (home-config's reads forgejo/master) names the branch; branch_ref picks the remote.
 default_branch() {
   local dir="$1" b
   b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
@@ -181,9 +194,11 @@ pinned() {
   [ -n "$branch" ] || branch="$(project_field "$repo" branch)"
   [ -n "$branch" ] || branch="$(default_branch "$dir")"
   [ -n "$branch" ] || branch=main
-  local src="$repo:origin/$branch:$path"
+  local ref src
+  ref="$(branch_ref "$dir" "$branch")"
+  src="$repo:$ref:$path"
   fetch_branch "$dir" "$branch" || { jq -nc --arg s "$src" '{value: null, source: $s, error: "fetch failed"}'; return; }
-  blob="$(git -C "$dir" show "origin/$branch:$path" 2>/dev/null)" \
+  blob="$(git -C "$dir" show "$ref:$path" 2>/dev/null)" \
     || { jq -nc --arg s "$src" '{value: null, source: $s, error: "file not on branch"}'; return; }
   v="$(pin_value "$blob" "$image" "${key:-tag}")"
   if [ -z "$v" ]; then
@@ -202,7 +217,7 @@ pinned() {
     [ "$was" = "$v" ] && continue
     at="${hit#* }"
     break
-  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "origin/$branch" -- "$path" 2>/dev/null)
+  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "$ref" -- "$path" 2>/dev/null)
   [ -n "$at" ] || was=""
   jq -nc --arg v "$v" --arg s "$src" --arg at "$at" --arg was "$was" \
     '{value: $v, source: $s, at: ($at | tonumber? // null), prev: (if $was == "" then null else $was end)}'
@@ -576,10 +591,10 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
-# workflow_code <dir> <branch> <file>: the file on origin's branch without its comment lines.
+# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comment lines.
 # Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
 # matcher that exits on the first hit leaves this grep a write error on stderr.
-workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the
@@ -590,7 +605,7 @@ workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:spa
 # has no roll (agentctl-wave-roll skips it), so it carries none and no version check runs on it.
 # `since` is RELEASE_NOTES_SINCE, the day the links are enforced from.
 link_facts() {
-  local labs="$1" repos key slug dir branch f deploy envs out tmp proj lab root roadmap rolled manual
+  local labs="$1" repos key slug dir branch ref f deploy envs out tmp proj lab root roadmap rolled manual
   local -A labroot=()
   project_machine_profile >/dev/null
   repos="$(jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
@@ -619,15 +634,16 @@ link_facts() {
       jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "cannot fetch the default branch"}}' >>"$tmp/wf"
       continue
     fi
+    ref="$(branch_ref "$dir" "$branch")"
     : >"$tmp/files"
     while IFS= read -r f; do
       case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
       deploy=false
-      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || grep -Eiq -- "$DEPLOY_MARKERS" <<<"$(workflow_code "$dir" "$branch" "$f")"; then
+      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || grep -Eiq -- "$DEPLOY_MARKERS" <<<"$(workflow_code "$dir" "$ref" "$f")"; then
         deploy=true
       fi
       jq -nc --arg p "$f" --argjson d "$deploy" '{path: $p, deploy: $d}' >>"$tmp/files"
-    done < <(git -C "$dir" ls-tree -r --name-only "origin/$branch" -- .github/workflows .forgejo/workflows 2>/dev/null)
+    done < <(git -C "$dir" ls-tree -r --name-only "$ref" -- .github/workflows .forgejo/workflows 2>/dev/null)
     jq -sc --arg k "$key" --arg b "$branch" '{key: $k, value: {branch: $b, files: .}}' "$tmp/files" >>"$tmp/wf"
   done <<<"$repos"
   manual="$(jq -r '.[]? | select(.automation == false) | .name' "$labs" 2>/dev/null || true)"
@@ -870,7 +886,7 @@ cmd_changelog() {
   root_changelog=""
   { [ -z "$path" ] || [ "$_PTS_SCOPED" = 0 ]; } && root_changelog=1
   # The tag's own file first; a project that writes its entry after tagging has it on the branch.
-  for ref in "$tag" ${branch:+"origin/$branch"}; do
+  for ref in "$tag" ${branch:+"$(branch_ref "$repo" "$branch")"}; do
     for file in ${path:+"$path/CHANGELOG.md"} ${root_changelog:+CHANGELOG.md}; do
       text="$(changelog_section "$repo" "$ref" "$file" "$ver")"
       [ -n "$text" ] && { source="CHANGELOG.md"; break 2; }

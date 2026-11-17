@@ -30,6 +30,16 @@ plan_phases() {
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
+# plan_phase_key <plan file> -> its checklist's phase names, one line each, without the PR numbers a
+# landed tick appends (` (#2651)`, ` (o/r#5, #6)`), so a copy and the plan it was copied from have one
+# key however far each is ticked; nothing for a plan with fewer than two phases, too little to tell
+# two plans apart.
+plan_phase_key() {
+  [ -f "$1" ] || return 0
+  awk -v mode=list "$_PLAN_PHASES_AWK" "$1" | cut -f2- \
+    | sed -E 's/([[:space:]]*\([^()]*#[0-9]+[^()]*\))+[[:space:]]*$//' | awk '{ k[NR] = $0 } END { if (NR >= 2) for (i = 1; i <= NR; i++) print k[i] }'
+}
+
 # A jq def: does this queue item (agent-queue list --json) carry phases of plan $p? By file name,
 # since a plan is read from ~/.claude*/plans/ and its cache in ~/.agent/plans/<project>/: its
 # `plan:` field (agent-queue add --plan), or a task that names the plan's file (queued by hand).
@@ -54,6 +64,15 @@ plan_pointer() {
   printf '%s\t%s\n' "$(realpath -q -- "$path" || printf '%s' "$path")" "$((10#$n))"
 }
 
+# plan_session_phases <plan file> -> plan_phase_list of the phases the session on this plan works: the
+# file's own, or for a pointer stub only the canonical plan's phase N (the stub owns no checklist).
+plan_session_phases() {
+  local tgt n
+  IFS=$'\t' read -r tgt n < <(plan_pointer "$1") || true
+  if [ -z "${tgt:-}" ]; then plan_phase_list "$1"; return; fi
+  plan_phase_list "$tgt" | jq -c --argjson n "$n" 'if $n < 1 then [] else [first(.[] | select(.n == $n)) // empty] end'
+}
+
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
 plan_epic() { _epic_line epic "$1"; }
 
@@ -73,11 +92,23 @@ _epic_line() {
   [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
 }
 
-# plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when
-# the file or its checklist is missing.
+# plan_phase_list <plan file> -> one compact JSON array [{state, name, n}] in file order, [] when
+# the file or its checklist is missing. `n` is the phase's number, the one numbering every reader
+# of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
+# `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
+# checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
+# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark) is numbered by that
+# label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list "$_PLAN_PHASES_AWK" "$1"; } \
-    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]'
+    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
+      | reduce .[] as $p ({pos: 0, out: []};
+          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // null) as $sub
+          | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // null) as $lab
+          | if $sub != null then .out += [$p + {n: $sub}]
+            else .pos += 1 | .out += [$p + {n: ($lab // .pos)}] end)
+      | .out'
 }
 
 # The approved-plan ledger: one JSON line per approval, written only by the ExitPlanMode hook

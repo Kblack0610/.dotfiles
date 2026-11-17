@@ -4,8 +4,9 @@
 #
 # Two modes, one per way lib/sandbox.sh applies a profile; the check labels below say what each
 # proves, and every denial has an unsandboxed control that must succeed.
-#   default: a claude lane (sandbox_claude_settings): srt with the profile and the git common dir
-#            writable but its hooks and config.
+#   default: a claude lane: srt with the real sandbox_claude_settings from this checkout, run from
+#            a worktree, with a second worktree added after the settings are taken, then from a
+#            plain clone.
 #   --srt:   a harness that names `sandbox:` in harnesses.json (fleet-dispatch's opencode launch):
 #            the real sandbox_srt_settings and sandbox_env_clear from this checkout, with the
 #            launch's --ro config and key and --rw config_dir; its negative control turns the
@@ -130,15 +131,28 @@ if [ "$MODE" = srt ]; then
   exit "$fail"
 fi
 
-# srt settings: the profile's sandbox keys, plus the cwd (Claude Code makes it writable itself,
-# srt does not) and the git common dir with its hooks and config denied, as lib/sandbox.sh adds.
-jq --arg c "$common" --arg cwd "$HOME/wt" '.sandbox | {network: {allowedDomains: (.network.allowedDomains // []), deniedDomains: []},
-  filesystem: {denyRead: (.filesystem.denyRead // []), allowWrite: ((.filesystem.allowWrite // []) + [$cwd, $c]), denyWrite: ((.filesystem.denyWrite // []) + [$c + "/hooks", $c + "/config"])}}' \
-  "/profiles/$NAME.json" > ~/with-common.json
-jq '.filesystem.allowWrite -= [$c]' --arg c "$common" ~/with-common.json > ~/no-common.json
+# srt settings: the .sandbox keys of the real sandbox_claude_settings, plus the cwd (Claude Code
+# makes it writable itself, srt does not). Taken now, as a lane takes them when it starts; the
+# worktree added below comes after.
+role_die() { echo "refused: $*"; exit 78; }
+# shellcheck source=/dev/null
+. /sandbox.sh
+SANDBOX_DIR=/profiles SANDBOX_PROFILE=$NAME GH_TOKEN_FILE=''
+sandbox_load
+sandbox_claude_settings | jq --arg cwd "$HOME/wt" '.sandbox | {network: {allowedDomains: (.network.allowedDomains // []), deniedDomains: []},
+  filesystem: {denyRead: (.filesystem.denyRead // []), allowWrite: ((.filesystem.allowWrite // []) + [$cwd]), denyWrite: (.filesystem.denyWrite // [])}}' > ~/with-common.json
+jq '.filesystem.allowWrite |= map(select(startswith($c) | not))' --arg c "$common" ~/with-common.json > ~/no-common.json
+git -C ~/repo worktree add -q ~/late -b late
+late="$common/worktrees/late"
 # argv after --, never one string: srt takes a lone quoted string as a command NAME, and reads
 # a command's own short flags (curl -sS) as its own without the --.
 sb() { srt --settings ~/with-common.json -- "$@"; }
+# A write counts when it lands on disk: srt denies a missing path with a placeholder of its own.
+lands_in() { local f="$1"; shift; local before; before=$(cat "$f" 2>/dev/null); "$@" "$f"; [ "$(cat "$f" 2>/dev/null)" != "$before" ]; }
+redirect() { sb sh -c 'echo /tmp/evil > "$1"' _ "$1"; }
+redirect_open() { sh -c 'echo /tmp/evil > "$1"' _ "$1"; }
+sbp_redirect() { srt --settings ~/plain.json -- sh -c 'echo /tmp/evil > "$1"' _ "$1"; }
+sbp_redirect_open() { srt --settings ~/plain-open.json -- sh -c 'echo /tmp/evil > "$1"' _ "$1"; }
 
 # A sandbox that cannot start denies everything, which would pass every denial below: this one
 # must run first, and nothing after it counts when it fails.
@@ -153,9 +167,32 @@ check ok     "sandbox: reach a listed host"         sb curl -sf --max-time 15 -o
 check denied "sandbox: write outside cwd and roots" sb touch ~/outside
 check ok     "sandbox: write in the cwd"            sb touch ~/wt/inside
 check ok     "sandbox: git commit from a worktree"  sb git commit -q --allow-empty -m lane
+check ok     "sandbox: git branch and reflog"       sb git branch lane-side
 check denied "sandbox: plant a hook in the common dir"  sb touch "$common/hooks/post-commit"
 check denied "sandbox: set git config in the common dir" sb git config core.fsmonitor /tmp/x
 check ok     "control: set git config unsandboxed"     git config core.fsmonitor false
-check denied "sandbox without the common dir: git commit" srt --settings ~/no-common.json -- git commit -q --allow-empty -m lane2
+check denied "sandbox: pick a filter driver in info/attributes" lands_in "$common/info/attributes" redirect
+check denied "sandbox: write its own config.worktree"  lands_in "$common/worktrees/wt/config.worktree" redirect
+check denied "sandbox: redirect its own commondir"    lands_in "$common/worktrees/wt/commondir" redirect
+check denied "sandbox: redirect the other worktree's commondir (added after the settings)" lands_in "$late/commondir" redirect
+check denied "sandbox: plant a hook for the later worktree" sb sh -c 'mkdir -p "$1/hooks" && touch "$1/hooks/post-checkout"' _ "$late"
+check denied "sandbox: add a worktree"                sb git worktree add -q ~/wt/nested -b nested
+check ok     "control: redirect the later worktree's commondir unsandboxed" lands_in "$late/commondir" redirect_open
+check denied "sandbox without the git paths: git commit" srt --settings ~/no-common.json -- git commit -q --allow-empty -m lane2
+
+# A plain clone: its git dir is the common dir, writable whole, so a commondir the lane wrote would
+# point every later git run there at another dir's config and hooks.
+git init -q ~/plain && git -C ~/plain commit -q --allow-empty -m init
+cd ~/plain
+pgit="$(git rev-parse --path-format=absolute --git-dir)"
+sandbox_claude_settings | jq --arg cwd "$HOME/plain" '.sandbox | {network: {allowedDomains: (.network.allowedDomains // []), deniedDomains: []},
+  filesystem: {denyRead: (.filesystem.denyRead // []), allowWrite: ((.filesystem.allowWrite // []) + [$cwd]), denyWrite: (.filesystem.denyWrite // [])}}' > ~/plain.json
+jq '.filesystem.denyWrite |= map(select(endswith("/commondir") | not))' ~/plain.json > ~/plain-open.json
+sbp() { srt --settings ~/plain.json -- "$@"; }
+check ok     "plain clone: git commit"                     sbp git commit -q --allow-empty -m lane
+check denied "plain clone: redirect its commondir"         lands_in "$pgit/commondir" sbp_redirect
+check ok     "plain clone: git status outside while denied" git status --short
+check ok     "plain clone: git worktree add outside"       git worktree add -q ~/plain-wt -b plain-wt
+check ok     "plain clone without the commondir deny: redirect lands" lands_in "$pgit/commondir" sbp_redirect_open
 exit "$fail"
 INNER

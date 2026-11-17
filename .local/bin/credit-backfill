@@ -216,9 +216,8 @@ propose_plans() {
       title="$(sed -nE '0,/^# /s/^# +//p' "$pf")"; title="$(words "${title:-$base}")"
       sys="$(guess_system "${type:-infra}" "$title")"
       fresh=0; [ -n "$(find "$pf" -mtime -"$FRESH_DAYS" 2>/dev/null)" ] && fresh=1
-      i=0 left=0 stories=""
-      while IFS=$'\t' read -r st name; do
-        i=$((i + 1))
+      left=0 stories=""
+      while IFS=$'\t' read -r st i name; do
         it="$(jq -r --arg n "$i" '[.[] | select((.phases // "" | split(" ")) | index($n))]
           | (map(select(.state == "done" and .status == "ok")) + map(select(.state != "done"))) | first
           | select(.) | [.slug, .state, (.pr // "" | tostring | split(" ")[0]), (.merged // "" | tostring | split(" ")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$its")"
@@ -241,7 +240,7 @@ propose_plans() {
         esac
         text="$(words "$name")"; [ "$st" = open ] && text="$text (plan $base, phase $i)"
         stories+="$(row story "$base" "$prj" - "$size" "$st" "$proof" "${i_slug:--}" "$text")"$'\n'
-      done < <(jq -r '.[] | [.state, .name] | @tsv' <<<"$phases")
+      done < <(jq -r '.[] | [.state, .n, .name] | @tsv' <<<"$phases")
       st=done; [ "$left" -eq 0 ] || st=open
       row epic "$base" "$prj" "$sys" - "$st" "plan:$base" - "$title"
       printf '%s' "$stories"

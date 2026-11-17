@@ -3,7 +3,8 @@
 //! makes one request with no cookie. It opens for a signed-in browser or for `?t=` matching the
 //! widget key (`auth::widget_token`), and that key opens this page only: never `/api/*`, a write
 //! or a keystroke route. Each hit the key opens is kept in `last_hit_file`, since reqlog says
-//! nothing of a request that answered in time.
+//! nothing of a request that answered in time, and each refusal is logged with its reason, since
+//! reqlog says nothing of a 401 either.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,6 +30,24 @@ fn key_opens(t: Option<&str>, key: Option<&str>) -> bool {
     t.zip(key).is_some_and(|(t, key)| auth::matches(t, key))
 }
 
+/// Why a request with no session was refused, for the log line the README's troubleshooting
+/// row greps.
+fn refusal(t: Option<&str>, key: Option<&str>) -> &'static str {
+    match (t, key) {
+        (None, _) => "no key in the URL",
+        (Some(_), None) => "no key set on the server",
+        (Some(_), Some(_)) => "key does not match",
+    }
+}
+
+/// The request's user agent, capped at `UA_MAX` characters.
+fn user_agent(headers: &HeaderMap) -> String {
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok());
+    ua.unwrap_or("-").chars().take(UA_MAX).collect()
+}
+
 /// The card ids a `cards=` list names, or the default set.
 fn names(list: Option<&str>) -> Vec<&str> {
     match list.map(|l| {
@@ -48,8 +67,16 @@ pub async fn page(
     Query(q): Query<WidgetQuery>,
 ) -> Response {
     // A signed-in browser, or a request carrying the current widget key.
-    let by_key = key_opens(q.t.as_deref(), auth::widget_token().as_deref());
+    let key = auth::widget_token();
+    let by_key = key_opens(q.t.as_deref(), key.as_deref());
     if !by_key && crate::signed_in(&s, &headers).is_none() {
+        // reqlog says nothing of a 401, so a widget app holding an old key would look the same
+        // as one that never reaches the server.
+        let why = refusal(q.t.as_deref(), key.as_deref());
+        eprintln!(
+            "agent-web: widget refused: {why}: ua={:?}",
+            user_agent(&headers)
+        );
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
     let (mut all, home) = tokio::join!(crate::cards::read(&s), crate::home_read(&s));
@@ -67,11 +94,7 @@ pub async fn page(
     // Only the key's hits: the widget app holds the key, and a signed-in browser opening the page
     // without it would hide a widget that stopped refreshing.
     if by_key {
-        let ua = headers
-            .get(header::USER_AGENT)
-            .and_then(|v| v.to_str().ok());
-        let ua: String = ua.unwrap_or("-").chars().take(UA_MAX).collect();
-        let hit = serde_json::json!({ "at": now, "cards": names, "ua": ua });
+        let hit = serde_json::json!({ "at": now, "cards": names, "ua": user_agent(&headers) });
         // Two hits a few seconds apart may land in either order: a skew of seconds against a 2h
         // watch.
         tokio::task::spawn_blocking(move || {
@@ -135,6 +158,15 @@ mod tests {
         assert!(!key_opens(None, Some("k3y")));
         assert!(!key_opens(Some("k3"), Some("k3y")));
         assert!(!key_opens(Some("nope"), Some("k3y")));
+    }
+
+    #[test]
+    fn a_refusal_names_which_side_lacks_the_key() {
+        // The README's troubleshooting row greps these words.
+        assert_eq!(refusal(None, Some("k3y")), "no key in the URL");
+        assert_eq!(refusal(None, None), "no key in the URL");
+        assert_eq!(refusal(Some("k3y"), None), "no key set on the server");
+        assert_eq!(refusal(Some("old"), Some("k3y")), "key does not match");
     }
 
     #[test]

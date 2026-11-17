@@ -13,6 +13,9 @@ main { width: 100%; max-width: 360px; background: var(--panel); border: 1px soli
 h1 { font-size: 18px; margin: 0 0 4px; }
 p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
 .btn { display: block; text-align: center; text-decoration: none; color: #fff; background: var(--accent); border-radius: 6px; padding: 10px; }
+form { margin: 14px 0 0; }
+input { display: block; width: 100%; margin: 0 0 8px; padding: 10px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+button.btn { width: 100%; border: 0; font: inherit; cursor: pointer; }
 .err { color: var(--err); font-size: 13px; margin: 0 0 12px; }
 </style>
 </head>
@@ -22,6 +25,7 @@ p { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
   <p>Sign in with the same Forgejo account you use for git.</p>
   {{error}}
   <a class="btn" href="/login">Sign in with Forgejo</a>
+  {{key_form}}
 </main>
 </body>
 </html>

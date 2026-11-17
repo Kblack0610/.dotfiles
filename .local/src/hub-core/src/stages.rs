@@ -1,5 +1,5 @@
 //! The Ladder inner tab of Projects, both surfaces: the stage gate, the nightly stage filer and
-//! which row kinds dispatch runs, then where each staged project stands on its next stage, then
+//! which row kinds dispatch runs, then where each staged project stands on its target stage, then
 //! every Requirements row of stages.md. Three stores, each read once here (dashboards rule 8):
 //!
 //! | part         | store |
@@ -35,7 +35,7 @@ pub const TEST: &str = "test";
 pub const HUMAN: &str = "human";
 pub const NOT_YET: &str = "not yet";
 
-/// A project's state words: the check could not run, a row of its next stage fails, or none does.
+/// A project's state words: the check could not run, a row of its target stage fails, or none does.
 pub const NOT_READ: &str = reading::NOT_READ;
 pub const FAILING: &str = "failing";
 pub const MET: &str = "met";
@@ -67,7 +67,8 @@ impl Paths {
     }
 }
 
-/// One staged project on its next stage (prod checks itself), as the nightly pass counted it.
+/// One staged project on its target stage, as the nightly `--file` pass counted it: the stage after
+/// its own, or a later one an open epic raised (prod checks itself). `next` names that target.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -82,7 +83,8 @@ pub struct Project {
     pub fail: u32,
     pub todo: u32,
     pub human: u32,
-    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed.
+    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed; with an
+    /// error, unknown like the check's counts.
     pub filed_open: u32,
     pub filed_closed: u32,
     /// Why the check could not run; its counts are then unknown, never zero.
@@ -113,11 +115,14 @@ impl Project {
         };
         self.met_says = match self.error {
             Some(_) => NOT_READ.into(),
-            // Nothing checkable on the next stage (every row human or not yet): no count to show.
+            // Nothing checkable on the target stage (every row human or not yet): no count to show.
             None if self.total == 0 => String::new(),
             None => format!("{}/{}", self.met, self.total),
         };
-        self.filed_says = format!("{}/{}", self.filed_open, self.filed_closed);
+        self.filed_says = match self.error {
+            Some(_) => String::new(),
+            None => format!("{}/{}", self.filed_open, self.filed_closed),
+        };
         self
     }
 
@@ -152,9 +157,9 @@ impl Row for Project {
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             FAILING,
-            "a row of its next stage fails its check; the nightly pass files each as a story",
+            "a row of its target stage fails its check; the nightly pass files each as a story",
         ),
-        (MET, "every row of its next stage that has a check passes"),
+        (MET, "every row of its target stage that has a check passes"),
         (
             NOT_READ,
             "project-stage-check could not run; the opened row says why",
@@ -176,6 +181,7 @@ impl Row for Project {
             "met" => Val::Num(f64::from(self.met) / f64::from(self.total)),
             "failing" if self.error.is_some() => Val::None,
             "failing" => Val::Num(f64::from(self.fail)),
+            "filed" if self.error.is_some() => Val::None,
             "filed" => Val::Num(f64::from(self.filed_open)),
             _ => Val::None,
         }
@@ -559,8 +565,7 @@ mod tests {
                  "met": 9, "total": 9, "fail": 0, "todo": 2, "human": 1, "filed_open": 0, "filed_closed": 3},
                 {"name": "busy", "profile": "bnb", "stage": "alpha", "next": "beta", "type": "game",
                  "met": 7, "total": 24, "fail": 4, "todo": 8, "human": 3, "filed_open": 4, "filed_closed": 0},
-                {"name": "lost", "profile": "bnb", "stage": "dev", "next": "alpha",
-                 "filed_open": 0, "filed_closed": 0, "error": "lost is not checked out here"}
+                {"name": "lost", "profile": "bnb", "stage": "dev", "error": "lost is not checked out here"}
             ]
         })
         .to_string()
@@ -595,11 +600,17 @@ mod tests {
         assert_eq!(busy.stage_rank, Some(2));
         // A check that could not run has no counts, never a zero.
         assert_eq!(
-            (l.projects[0].state, l.projects[0].met_says.as_str()),
-            (NOT_READ, NOT_READ)
+            (
+                l.projects[0].state,
+                l.projects[0].met_says.as_str(),
+                l.projects[0].filed_says.as_str()
+            ),
+            (NOT_READ, NOT_READ, "")
         );
+        assert_eq!(l.projects[0].val("filed"), Val::None);
+        assert_eq!(l.projects[0].val("next"), Val::None);
         assert_eq!(l.projects[0].val("failing"), Val::None);
-        // Nothing checkable on the next stage is no count, never a met `0/0`.
+        // Nothing checkable on the target stage is no count, never a met `0/0`.
         let bare = Project {
             name: "bare".into(),
             ..Default::default()

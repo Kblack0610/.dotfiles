@@ -614,42 +614,42 @@ load 'fleet_dispatch/common'
   grep -qF "$(qfield "$f" sessions | tr -d '[] ' | cut -d, -f1)" "$NOTES_FIXTURE/calls.log" || fail "claimed id is not the launched one"
 }
 
-@test "--harness glm runs opencode on its own overlay and asks for room on the glm source, not the eval one" {
+@test "--harness paid runs opencode on its own overlay and asks for room on the paid source, not the eval one" {
   harness_ready
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_success
-  assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-glm.json")"
+  assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json")"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
-  assert_called 'claude-acct room --source glm'
+  assert_called 'claude-acct room --source paid'
   assert_not_called 'room --source eval'
   # dispatch reads no budget itself: claude-acct is the one reader of a key
   assert_not_called 'curl'
   f=$(qitem running fix-menu)
-  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'glm glm glm'
+  assert_equal "$(qfield "$f" agent) $(qfield "$f" model) $(qfield "$f" account)" 'paid glm paid'
 }
 
-@test "--harness glm refuses once its source has no room, and starts nothing" {
+@test "--harness paid refuses once its source has no room, and starts nothing" {
   harness_ready
-  src_shut glm 'glm: its key is spent'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  src_shut paid 'paid: its key is spent'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure
-  assert_output --partial 'glm has no room: glm: its key is spent'
+  assert_output --partial 'paid has no room: paid: its key is spent'
   assert_not_called 'opencode run'
 }
 
 @test "a hand --harness start of a private-project item on an allowlisted harness is refused before any room or launch" {
   harness_ready
-  harness_set '.harnesses.glm.projects = ["dotfiles"]'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  harness_set '.harnesses.paid.projects = ["dotfiles"]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
-  assert_output --partial "glm refuses fix-menu: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
+  assert_output --partial "paid refuses fix-menu: it takes only dotfiles work (projects in $DISPATCH_HARNESSES), and this is game"
   assert_not_called 'claude-acct room'
   assert_not_called 'opencode run'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
   # An unreadable list refuses too, never reads as "no list".
-  harness_set '.harnesses.glm.projects = "dotfiles"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  harness_set '.harnesses.paid.projects = "dotfiles"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
   assert_output --partial 'not a list of project names'
 }
@@ -658,33 +658,33 @@ load 'fleet_dispatch/common'
   harness_ready
   # A projects list with no config_dir would load ~/.config/opencode (the private global rules,
   # agents and plugins): refused before any worktree is made.
-  harness_set '.harnesses.glm.projects = ["dotfiles", "game"]'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  harness_set '.harnesses.paid.projects = ["dotfiles", "game"]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
-  assert_output --partial 'glm has a projects allowlist, so it must be an opencode harness with a config_dir'
+  assert_output --partial 'paid has a projects allowlist, so it must be an opencode harness with a config_dir'
   # Nor may a codex harness carry one, config_dir or not: its run would load ~/.codex.
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.codex.projects = ["game"] | .harnesses.codex.config_dir = $d'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_failure 2
   assert_output --partial 'codex has a projects allowlist, so it must be an opencode harness'
   # A hand --cwd cannot point an allowlisted harness at another repo than the item's own.
-  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.config_dir = $d'
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
   mkdir -p "$SANDBOX/client-repo"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm --cwd "$SANDBOX/client-repo"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm --cwd "$SANDBOX/client-repo"
   assert_failure 2
-  assert_output --partial "glm runs only in game's own repo, not $SANDBOX/client-repo"
+  assert_output --partial "paid runs only in game's own repo, not $SANDBOX/client-repo"
   assert_not_called 'opencode run'
   assert_not_called 'agent-codex'
   assert_not_called 'wt new'
   # In its own repo, with no lane sandbox, its shell could still read every private path: refused.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
-  assert_output --partial 'glm has a projects allowlist, so it must name a lane sandbox (sandbox:)'
+  assert_output --partial 'paid has a projects allowlist, so it must name a lane sandbox (sandbox:)'
   assert_not_called 'opencode run'
   # Positive control: in its own repo, sandboxed, it starts, and no Claude Code or above-worktree rules load.
-  harness_sandboxed glm
+  harness_sandboxed paid
   canary_item fix-menu c-1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_success
   assert_called "OPENCODE_CONFIG_DIR=$(printf '%q' "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
   [ -d "$SANDBOX/oc-public" ] || fail "the config_dir was not made"
@@ -692,14 +692,14 @@ load 'fleet_dispatch/common'
 
 @test "a sandboxed harness runs its opencode launch inside srt, under a cleared env, with the canary steps outside" {
   harness_ready
-  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
-  harness_sandboxed glm
-  ln -s "$SANDBOX/eval-glm.json" "$SANDBOX/glm-link.json"
-  harness_set --arg c "$SANDBOX/glm-link.json" '.harnesses.glm.config = $c'
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.projects = ["game"] | .harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  ln -s "$SANDBOX/eval-paid.json" "$SANDBOX/paid-link.json"
+  harness_set --arg c "$SANDBOX/paid-link.json" '.harnesses.paid.config = $c'
   canary_item fix-menu c-7
   git init -q "$SANDBOX/repos/game"
   export LITELLM_MASTER_KEY=sk-master
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_success
   run="$SANDBOX/oc-public/run" qr=$(printf %q "$SANDBOX/oc-public/run")
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
@@ -709,7 +709,7 @@ load 'fleet_dispatch/common'
   [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; }; rm -f $qr/srt-ses_eval"*".json" ]] || fail "no canary score after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
-  [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-glm.json") "* ]] || fail "config not by its target: $line"
+  [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
   [[ "$line" != *LITELLM_MASTER_KEY* ]] || fail "the master key reached the line"
   # The settings: the profile's masks and hosts, strict; the worktree and config_dir writable; the
   # config, key and git common dir readable, the common dir not writable (the shared repo's refs).
@@ -717,7 +717,7 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -c .network <<<"$s")" '{"allowedDomains":["gw.test"],"deniedDomains":[],"strictAllowlist":true}'
   assert_equal "$(jq -c .filesystem.denyRead <<<"$s")" '["~/","/tmp"]'
   assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX/oc-public\"]"
-  jq -e --arg c "$SANDBOX/eval-glm.json" --arg k "$SANDBOX/glm.key" --arg g "$SANDBOX/repos/game/.git" '.filesystem.allowRead | index($c) and index($k) and index($g)' <<<"$s" >/dev/null || fail "config, key or git dir not readable: $s"
+  jq -e --arg c "$SANDBOX/eval-paid.json" --arg k "$SANDBOX/paid.key" --arg g "$SANDBOX/repos/game/.git" '.filesystem.allowRead | index($c) and index($k) and index($g)' <<<"$s" >/dev/null || fail "config, key or git dir not readable: $s"
   # The checkout's .git sits in the writable cwd (here a plain clone's git dir), so it is denied.
   assert_equal "$(jq -c .filesystem.denyWrite <<<"$s")" "[\"$SANDBOX/repos/game/.git\"]"
   # The pane line as a shell runs it: a start that fails runs neither the session nor the score, and
@@ -740,14 +740,14 @@ load 'fleet_dispatch/common'
 
 @test "a sandboxed harness refuses an item that is not a canary, a non-opencode harness holds no sandbox, and a missing srt starts nothing" {
   harness_ready
-  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
-  harness_sandboxed glm
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.projects = ["game"] | .harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
-  assert_output --partial 'glm runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), a class promoted for it or a trainee row, and it carries no #pts/N (fix-menu)'
+  assert_output --partial 'paid runs in a sandbox that sees its worktree alone, so it takes only a canary item with its task id (canary:), a class promoted for it or a trainee row, and it carries no #pts/N (fix-menu)'
   # A canary tag without its task id is refused too: the score step would have nothing to score.
   agent-queue set fix-menu tags=canary >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure 2
   assert_output --partial 'takes only a canary item with its task id'
   canary_item fix-menu c-1
@@ -756,31 +756,31 @@ load 'fleet_dispatch/common'
   assert_failure 2
   assert_output --partial "codex names lane sandbox 'pub', which only an opencode harness holds"
   export SANDBOX_SRT_NEEDS="srt no-such-tool-here"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure
-  assert_output --partial "lane sandbox 'pub' cannot hold glm: no-such-tool-here is not on PATH"
+  assert_output --partial "lane sandbox 'pub' cannot hold paid: no-such-tool-here is not on PATH"
   assert_not_called 'opencode run'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "the refused item left the queue"
 }
 
-# trainee_start_ready -- glm sandboxed and allowlisted to game, a trainee lane naming it (model-lane
+# trainee_start_ready -- paid sandboxed and allowlisted to game, a trainee lane naming it (model-lane
 # trainee), and t-one, a one-point tier-1 row.
 trainee_start_ready() {
   harness_ready
-  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.glm.projects = ["game"] | .harnesses.glm.config_dir = $d'
-  harness_sandboxed glm
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.projects = ["game"] | .harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
   git init -q "$SANDBOX/repos/game"
   sonnet_lane
-  export TRAINEE_LANE='{"candidates":[{"harness":"glm","model":"glm"}],"points":1,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
+  export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
   agent-queue add --project game --slug t-one --priority high --tags tier1 "Fix the menu title #pts/1" >/dev/null
 }
 
 @test "a trainee run is the sandboxed opencode run, then its review hand-off outside the sandbox however the run ends, with no canary steps" {
   trainee_start_ready
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness glm --model glm
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness paid --model glm
   assert_success
-  assert_equal "$(qfield "$(qitem running t-one)" trainee)" glm:glm
+  assert_equal "$(qfield "$(qitem running t-one)" trainee)" paid:glm
   qr=$(printf %q "$SANDBOX/oc-public/run")
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
   [[ "$line" == *":: { timeout 180m env -i "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "the run is not inside srt: $line"
@@ -800,7 +800,7 @@ trainee_start_ready() {
 @test "trainee-review: the diff is a patch and a review item pinned to the reviewer model, the worktree is put back; no diff, and trainee-reject, send the row back on claude" {
   trainee_start_ready
   agent-queue add --project game --slug t-empty --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
-  for s in t-one t-empty; do agent-queue set "$s" agent=glm model=glm trainee=glm:glm >/dev/null; agent-queue move "$s" running >/dev/null; done
+  for s in t-one t-empty; do agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; done
   # The run's worktree is a linked one: in the main checkout the review refuses, since its reset would discard work there.
   m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
   git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
@@ -814,14 +814,14 @@ trainee_start_ready() {
   # No diff: a reject, the row back in the queue on claude, its trainee kept so no trainee takes it again.
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-empty"
   assert_success
-  assert_output --partial 'trainee-reject: t-empty is back in the queue, on claude: glm:glm left no diff'
+  assert_output --partial 'trainee-reject: t-empty is back in the queue, on claude: paid:glm left no diff'
   f=$(qitem queued t-empty)
   [ -n "$f" ] || fail "the row with no diff did not go back to the queue"
   assert_equal "$(qfield "$f" agent)" claude
-  assert_equal "$(qfield "$f" trainee)" glm:glm
+  assert_equal "$(qfield "$f" trainee)" paid:glm
   [ -z "$(agent-queue show review-t-empty --json 2>/dev/null)" ] || fail "a review item for no diff"
   run trainee_why "$(agent-queue show t-empty --json)"
-  assert_failure; assert_output 'a ladder run took it once already (glm:glm)'
+  assert_failure; assert_output 'a ladder run took it once already (paid:glm)'
   # A review that cannot be queued leaves the row running and the diff in the worktree as well as the patch.
   printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
   mkdir -p "$SANDBOX/aqfail"
@@ -855,7 +855,7 @@ trainee_start_ready() {
   assert_failure; assert_output 'it is a canary, verify or review item'
   it=$(agent-queue show t-one --json)
   assert_equal "$(jq -r .state <<<"$it")" review
-  assert_equal "$(jq -r .note <<<"$it")" 'trainee glm:glm left a diff; review-t-one lands it or sends the row back'
+  assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm left a diff; review-t-one lands it or sends the row back'
   # The review rejects it: the row goes back on claude and the patch goes.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one
   assert_failure 2
@@ -863,7 +863,7 @@ trainee_start_ready() {
   assert_success
   it=$(agent-queue show t-one --json)
   assert_equal "$(jq -r .state <<<"$it")" queued
-  assert_equal "$(jq -r .note <<<"$it")" 'trainee glm:glm rejected: edits the wrong menu'
+  assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm rejected: edits the wrong menu'
   assert_equal "$(jq -r .agent <<<"$it")" claude
   [ ! -e "$patch" ] || fail "the rejected patch is still there"
   # A row no trainee ran is refused by both verbs.
@@ -877,28 +877,28 @@ trainee_start_ready() {
 @test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
   trainee_start_ready
   # Negative control: the verdict lists no direct pair, so the same start is a trainee run.
-  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":[]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness glm --model glm
+  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":[]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness paid --model glm
   assert_success
-  assert_equal "$(qfield "$(qitem running t-one)" trainee)" glm:glm
+  assert_equal "$(qfield "$(qitem running t-one)" trainee)" paid:glm
   assert_called 'fleet-dispatch trainee-review t-one'
   agent-queue add --project game --slug d-one --priority high --tags tier1 "Fix the menu border #pts/3" >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
-  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":["glm:glm"]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item d-one --harness glm --model glm
+  START_VERDICT='{"lane":"sonnet","class":"fix/s","direct":["paid:glm"]}' run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item d-one --harness paid --model glm
   assert_success
   f=$(qitem running d-one)
-  assert_equal "$(qfield "$f" direct)" glm:glm
+  assert_equal "$(qfield "$f" direct)" paid:glm
   assert_equal "$(qfield "$f" trainee)" ''
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
   [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; }; rm -f "* ]] || fail "no direct landing after the sandboxed run: $line"
   [[ "$line" != *"trainee-review"* ]] || fail "a direct run hands off to review: $line"
-  assert_called 'model-lane log --item d-one --task Fix the menu border #pts/3 --lane trainee --by rule --picked glm --ran glm --harness glm --class fix/s'
+  assert_called 'model-lane log --item d-one --task Fix the menu border #pts/3 --lane trainee --by rule --picked glm --ran glm --harness paid --class fix/s'
 }
 
 @test "direct-land: the diff is committed, pushed, opened as a PR and landed by agent-land; a failed run, no diff, a hook or CI path, or a failed landing sends the row back on claude, and a merged one stays" {
   trainee_start_ready
   for s in d-one d-empty d-rc d-hook d-fail d-merged; do
     agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the menu for $s #pts/3" >/dev/null
-    agent-queue set "$s" agent=glm model=glm direct=glm:glm row=game:ar-9 >/dev/null; agent-queue move "$s" running >/dev/null
+    agent-queue set "$s" agent=paid model=glm direct=paid:glm row=game:ar-9 >/dev/null; agent-queue move "$s" running >/dev/null
   done
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q --bare "$SANDBOX/origin.git"
@@ -913,7 +913,7 @@ trainee_start_ready() {
   land d-empty
   assert_success; assert_output --partial 'direct-land: d-empty is back in the queue, on claude: it left no diff'
   it=$(agent-queue show d-empty --json)
-  assert_equal "$(jq -r '"\(.state) \(.agent) \(.direct)"' <<<"$it")" 'queued claude glm:glm'
+  assert_equal "$(jq -r '"\(.state) \(.agent) \(.direct)"' <<<"$it")" 'queued claude paid:glm'
   assert_not_called 'gh pr create'
   # A run that exited non-zero lands nothing, its diff dropped; nor does a diff on the repo's hooks or CI.
   printf 'half\n' > "$w/menu.txt"
@@ -928,11 +928,11 @@ trainee_start_ready() {
   # A diff: committed on the worktree's branch, pushed, a PR with the item's lines, landed by agent-land.
   printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
   land d-one
-  assert_success; assert_output --partial 'direct-land: d-one landed as #77, by glm:glm with no review'
+  assert_success; assert_output --partial 'direct-land: d-one landed as #77, by paid:glm with no review'
   assert_equal "$(git -C "$SANDBOX/origin.git" log -1 --format=%s game-d)" 'Fix the menu for d-one'
   assert_equal "$(git -C "$SANDBOX/origin.git" show game-d:title.txt)" new
   assert_called 'gh pr create --head game-d --title Fix the menu for d-one --body'
-  assert_called 'Direct run: glm:glm'
+  assert_called 'Direct run: paid:glm'
   assert_called 'Task: ar-9'
   assert_called 'agent-land 77 --item d-one --ran-checks'
   # A landing that fails: the PR is closed, the row goes back on claude, and the worktree is put back.
@@ -1183,7 +1183,7 @@ trainee_start_ready() {
   assert_success
   assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
   assert_not_called 'plan first'
-  # Negative control: the same map without resume refuses it, as glm and opencode are.
+  # Negative control: the same map without resume refuses it, as paid and opencode are.
   harness_set '.harnesses.codex |= del(.resume)'
   agent-queue add --project game --slug planned2 --mode plan --priority high "Think again" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item planned2 --harness codex --model sol

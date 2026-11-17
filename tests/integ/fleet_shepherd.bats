@@ -238,6 +238,76 @@ esac'
   assert_output 1
 }
 
+# shared_round <active-json>: a fresh shared red episode checked against that queue, with no owner on record
+shared_round() {
+  : > "$FLEET_SHEPHERD_DIR/.shared"; : > "$HOME/aq.calls"
+  STUB_ACTIVE="$1" run checked
+}
+
+@test "a nightly-fix item naming the class and method apart owns a shared red, so check files nothing new (ar-2523)" {
+  # 2026-11-15: nightly-fix-skylinemoves-ucp-1467 named SkylineMovesPlayTests and TheDashFiresOnARoofAndInTheAir apart, and a duplicate was filed
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  shared_doc '["sid-1"]'
+  shared_round '{"slug":"nightly-fix-foo-ucp-8","priority":"urgent","task":"fix(test): FooTests, 3 cases red; Bar red solo too"}'
+  assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-8; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative controls: a nightly-fix item naming the method under another class, and an item not nightly-fix naming both, own nothing
+  shared_round '{"slug":"nightly-fix-baz-ucp-7","priority":"urgent","task":"fix(test): BazTests, Bar red solo"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  shared_round '{"slug":"other","priority":"high","task":"FooTests, Bar red solo"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+}
+
+@test "a test quarantined on main is owned by the fix item filed for its row, else by the row, so check files nothing new (ar-2523)" {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  export FLEET_SHEPHERD_QUARANTINE="$HOME/quarantine.json"
+  # quarantine <test> <ends> [<lane error>]: main's quarantine as schedules-sync writes it, one entry under row ucp-9
+  quarantine() { jq -n --arg t "$1" --arg e "$2" --arg err "${3:-}" '{repos: [{error: (if $err == "" then null else $err end),
+    report: {tests: [{test: $t, ends: $e, row: "ucp-9"}]}}]}' > "$FLEET_SHEPHERD_QUARANTINE"; }
+  shared_doc '["sid-1"]'
+  quarantine 'P.Tests.FooTests.Bar("x")' 2999-01-01
+  shared_round '{"slug":"fix-foo","type":"fix","priority":"high","task":"fix the foo yard","row":"unity-core-playground:ucp-9"}'
+  assert_line --partial 'is owned by queue item fix-foo; tell sid-1'
+  # an item for the row that is no fix item is no owner, so the row is, and sessions merge main at once
+  shared_round '{"slug":"foo-epic","type":"feat","priority":"high","task":"the foo yard","row":"unity-core-playground:ucp-9"}'
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is quarantined on main under board row ucp-9; tell sid-1: do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  grep -q 'owned by board row ucp-9 (quarantined on main)' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # an entry with no parameters covers every case
+  quarantine 'P.Tests.FooTests.Bar' 2999-01-01
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is quarantined on main under board row ucp-9'
+  # once its quarantine ends, the row is dropped and an owner is filed
+  quarantine 'P.Tests.FooTests.Bar' 2000-01-01
+  STUB_ACTIVE='{"slug":"other","task":"x"}' run checked
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  grep -q 'no longer owned by board row ucp-9' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative controls: another case quarantined, a lane whose read failed, and no quarantine file own nothing
+  quarantine 'P.Tests.FooTests.Bar("y")' 2999-01-01
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  quarantine 'P.Tests.FooTests.Bar("x")' 2999-01-01 'quarantine.py report: ModuleNotFoundError'
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  rm "$FLEET_SHEPHERD_QUARANTINE"
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
@@ -1358,7 +1428,7 @@ idle_row() {
   doc "[$(idle_row lab/agent-1:1 %5 9)]"
   STUB_PANE='some output\n\nYou have hit your weekly limit\n\n' run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+  assert_output 'limit: lab/agent-1:1 [%5] stopped on the usage limit'
   grep -q -- '-L lab capture-pane -p -t %5' "$HOME/tmux.calls"
 }
 
@@ -1395,8 +1465,8 @@ accts() {
         $(acct_row hub/dotfiles:7 %45 idle main '["manual"]'), $(acct_row lab/agent-1:1 %5 idle alt)]"
   STUB_ACCTS="$(accts true 100 40)" STUB_PANE='You have hit your weekly limit\n' run "$SH" due
   assert_success
-  assert_output "limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
-limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
+  assert_output "limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
+limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
   # the account read covers them: no pane on main is read for the limit text
   run grep -sc capture-pane "$HOME/tmux.calls"
   refute_output --regexp '^[1-9]'
@@ -1406,12 +1476,12 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(idle_row lab/agent-1:1 %5 9)]"
   STUB_ACCTS="$(accts true 50 100)" run "$SH" due
   assert_success
-  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  assert_output 'limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
   # Negative control: main under both caps is not out of usage
   STUB_ACCTS="$(accts false 99 99)" run "$SH" due
   assert_failure
   STUB_ACCTS="$(accts false 99 99)" STUB_PANE='hit your weekly limit\n' run "$SH" due
-  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+  assert_output 'limit: lab/agent-1:1 [%5] stopped on the usage limit'
 }
 
 # gw_accts <team capped>: accts with the sources rows, the team one capped or not
@@ -1425,7 +1495,7 @@ gw_accts() {
   doc "[$(acct_row lab/agent-55:1 %5 idle gateway), $(acct_row hub/dotfiles:2 %27 idle main)]"
   STUB_ACCTS="$(gw_accts true)" run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-55:1 idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
+  assert_output 'limit: lab/agent-55:1 [%5] idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
   # Negative control: the team has budget, and a key's own row is not the team's
   STUB_ACCTS="$(gw_accts false)" run "$SH" due
   assert_failure
@@ -1435,7 +1505,7 @@ gw_accts() {
   doc "[$(acct_row lab/agent-55:1 %5 idle gateway | jq -c '.idle_min = 9'), $(idle_row lab/agent-1:1 %6 9)]"
   STUB_ACCTS="$(gw_accts false)" STUB_PANE='API Error: 429 Budget has been exceeded! Team=t1 Current cost: 380, Max budget: 250\n' run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-55:1 stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
+  assert_output 'limit: lab/agent-55:1 [%5] stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
 }
 
 @test "an account out of usage with no room anywhere is one line for the human" {
@@ -1453,7 +1523,7 @@ gw_accts() {
   # the verdict says capped under numbers that do not: it moves, to the best account with room
   STUB_ACCTS="$(accts true 40 40)" run "$SH" due
   assert_success
-  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  assert_output 'limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
   run grep -nE 'week_used // 0\) >= 100|five_hour // 0\) >= 100' "$REPO_ROOT/.local/bin/fleet-shepherd"
   assert_failure
 }
@@ -1955,12 +2025,13 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   "$SH" run >/dev/null
   local id; id="$(pass_id)"; live "$id" idle
   aged 1
-  # while it ran it parked lab/q (named on a clear machine) and p and hub:2 (named nowhere)
+  # while it ran it parked lab/q (named on a clear machine, once by session and once as <session>:%<pane> with its target) and p and hub:2 (named nowhere)
   touch "$CLAUDE_ACCT_PARKED_DIR/q" "$CLAUDE_ACCT_PARKED_DIR/p" "$CLAUDE_ACCT_PARKED_DIR/hub:2"
-  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
+  printf "target=lab/q:1\n" > "$CLAUDE_ACCT_PARKED_DIR/z:%9"
+  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1" | .pane = "%9"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
   run "$SH" run
-  assert_output --partial 'pace: parked lab/q:1 while the machine reads CLEAR'
-  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '1\t3')"
+  assert_output --partial 'pace: parked lab/q:1 [%9] while the machine reads CLEAR'
+  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '2\t4')"
 }
 
 # paned <target> <bucket> <pane>: a session row whose fact does not name its target, so only the
@@ -1984,6 +2055,59 @@ paned() { row "$1" "$2" false false | jq -c --arg p "$3" '.pane = $p | .fact = "
   doc "[$(paned hub/demo:3 LANDED %8)]"
   run checked
   assert_output 'nudge LANDED: hub/demo:3 [%8] stalled'
+}
+
+@test "a skip written after the windows renumber still lands: the line check printed names an index that has moved" {
+  doc "[$(paned hub/dotfiles:6 STALLED %37), $(paned hub/dotfiles:15 STALLED %41)]"
+  run checked
+  assert_output 'nudge STALLED: hub/dotfiles:6 [%37] stalled
+nudge STALLED: hub/dotfiles:15 [%41] stalled'
+  # 2026-11-13: earlier windows closed between check and skip (:6 -> :4, :15 -> :13), and :13 is
+  # where another session was. The pass copies the lines check printed, and they still match.
+  doc "[$(paned hub/dotfiles:4 STALLED %37), $(paned hub/dotfiles:13 STALLED %41)]"
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:6 [%37] stalled' 'waits on purpose'
+  assert_success
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:15 [%41] stalled' 'waits on purpose'
+  assert_success
+  run checked
+  assert_failure 1
+  # Negative control: a pane that was never due is refused, whatever index it names
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:13 [%99] stalled' 'nope'
+  assert_failure 2
+}
+
+@test "a limit line is keyed by its pane: a skip survives the renumbering, another pane at the index is a new line" {
+  doc "[$(acct_row hub/dotfiles:3 %19 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_output 'limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it'
+  "$SH" skip 'limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it' 'listed'
+  doc "[$(acct_row hub/dotfiles:2 %19 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_failure 1
+  # Negative control: another pane at the index is another session, and a new line
+  doc "[$(acct_row hub/dotfiles:2 %20 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_output --partial 'limit: hub/dotfiles:2 [%20] on main'
+}
+
+@test "a pane stopped on the usage limit is keyed by its pane id too" {
+  doc "[$(idle_row lab/agent-1:3 %5 9)]"
+  STUB_PANE='You have hit your weekly limit\n' run checked
+  assert_output 'limit: lab/agent-1:3 [%5] stopped on the usage limit'
+  "$SH" skip 'limit: lab/agent-1:3 [%5] stopped on the usage limit' 'listed'
+  doc "[$(idle_row lab/agent-1:2 %5 9)]"
+  STUB_PANE='You have hit your weekly limit\n' run checked
+  assert_failure 1
+}
+
+@test "a pace line keys each parked target by its pane id, so a renumbered window is the same line" {
+  doc "[$(prow lab/p:3 | jq -c '.pane = "%8"'), $(prow lab/q:4 | jq -c '.pane = "%9"')]"
+  run checked
+  assert_output 'pace: parked lab/p:3 [%8], lab/q:4 [%9] while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  "$SH" skip 'pace: parked lab/p:3 [%8], lab/q:4 [%9] while the machine reads CLEAR with no hold; then: claude-acct unpark each' 'held on purpose'
+  doc "[$(prow lab/p:2 | jq -c '.pane = "%8"'), $(prow lab/q:3 | jq -c '.pane = "%9"')]"
+  run checked
+  assert_failure 1
 }
 
 @test "an overdue line keeps its identity while its basis count grows: a skip still matches" {

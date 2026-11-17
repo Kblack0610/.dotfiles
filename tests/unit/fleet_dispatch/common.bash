@@ -720,13 +720,13 @@ harness_set() { jq "$@" "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX
 harness_ready() {
   game_ready
   printf 'sk-test\n' > "$SANDBOX/eval.key"
-  printf 'sk-glm\n' > "$SANDBOX/glm.key"
-  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/glm.key" --arg gc "$SANDBOX/eval-glm.json" '{
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"
+  jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/paid.key" --arg gc "$SANDBOX/eval-paid.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
       "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      glm: {launcher: "opencode", source: "glm", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      paid: {launcher: "opencode", source: "paid", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
       codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
@@ -877,15 +877,15 @@ remote_item() {
   sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running "$1")"
 }
 
-# --- focus: #prio/only ------------------------------------------------------------------
+# --- focus: #prio/focus ------------------------------------------------------------------
 
-# focus_on <project>... -- the human put each on `#prio/only`: the `notes projects --prios` line agent-queue
+# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
 # and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
 focus_on() {
   local p
   for p; do
-    printf '%s\tonly\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/only/' "$SANDBOX/sheets/$p/README.md"
+    printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
+    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 

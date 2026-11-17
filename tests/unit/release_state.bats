@@ -142,6 +142,32 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(field web-preview .pinned.error)" = null ]
 }
 
+@test "pinned reads the remote the branch tracks, not a lagging origin mirror" {
+  # home-config's master tracks forgejo, which Flux syncs; origin is a GitHub mirror that lagged
+  # two pins behind and read as drift (ar-2575).
+  local forge="$SANDBOX/forge.git" tmp="$SANDBOX/forge-pusher"
+  git clone -q --bare "$ORIGIN" "$forge"
+  git clone -q "$forge" "$tmp" 2>/dev/null
+  git -C "$tmp" config user.email t@t; git -C "$tmp" config user.name t
+  printf 'spec:\n  values:\n    image:\n      tag: v1.2.0\n' > "$tmp/apps/web/helmrelease.yaml"
+  git -C "$tmp" add -A; git -C "$tmp" commit -qm bump; git -C "$tmp" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote add forge "$forge"
+  git -C "$CLONE" config branch.main.remote forge
+  export KUBE_IMAGE=reg/web:v1.2.0
+  run "$RS" refresh
+  assert_success
+  # Negative control: origin still pins v1.0.0, so reading it would be drift.
+  run git -C "$ORIGIN" show main:apps/web/helmrelease.yaml
+  assert_output --partial 'tag: v1.0.0'
+  [ "$(field web-prod .pinned.source)" = "infra:forge/main:apps/web/helmrelease.yaml" ]
+  [ "$(field web-prod .pinned.value)" = v1.2.0 ]
+  [ "$(field web-prod .status)" = ok ]
+  # The fetch goes to the tracked remote too: it gone, the pin is unknown though origin answers.
+  git -C "$CLONE" remote set-url forge "$SANDBOX/gone.git"
+  "$RS" refresh >/dev/null
+  [ "$(field web-prod .pinned.error)" = 'fetch failed' ]
+}
+
 @test "live differing from pinned is drift, and check names it once past grace" {
   export KUBE_IMAGE=reg/web:v0.9.0
   "$RS" refresh >/dev/null
