@@ -140,6 +140,7 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug | row:<board row>>: what owns each shared red episode
+CLOSED="$LEDGER/.closed"        # <session id>: sessions sent their one close nudge (fleet-sessions mark writes it)
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
 # playground's gates, local (UNITY_TEST_FAILURES) and on the runner pool (UNITY_POOL_FAILURES,
 # from pool-test-failures), so that repo owns the quarantine and the fix.
@@ -231,10 +232,12 @@ tag_pane() {
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
-# (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
+# (its close verdict now, not yet nudged, not in $closed, the session ids already sent one for good, not
+# manual; CLOSE when it holds an open ask it filed), null
 # otherwise. cmd_due turns it into a due line for a pass, close_sample types it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
-  if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now") then null
+  if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now")
+     or ((.session_id // "") as $s | $closed | index($s)) then null
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif (.bucket | IN("DONE","CHAT")) then .bucket
   else null end;'
@@ -248,7 +251,7 @@ PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" --argjson closed "$(closed_sids)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ"'
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -670,7 +673,7 @@ close_sample() {
     else
       cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
     fi
-  done < <(jq -r "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
+  done < <(jq -r --argjson closed "$(closed_sids)" "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
     | close_nudge as $close | select($close)
     | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
@@ -717,6 +720,12 @@ remind_decision() {
     *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
     *) echo "act on: $2" ;;
   esac
+}
+
+# closed_sids -> the session ids in $CLOSED, as a JSON array for CLOSE_NUDGE_JQ.
+closed_sids() {
+  local f
+  for f in "$CLOSED"/*; do [ -e "$f" ] && printf '%s\n' "${f##*/}"; done | jq -Rn '[inputs]'
 }
 
 # shared_items -> {fact: owner} from $SHARED_ITEMS, as JSON for cmd_due.

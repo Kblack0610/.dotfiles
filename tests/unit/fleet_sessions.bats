@@ -1091,7 +1091,7 @@ MD
   escalate sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
   run mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p4 p5'
   assert_failure 1
-  assert_output --partial 'already nudged'
+  assert_output --partial 'already sent its close nudge'
   run mark sid-3 'DONE clean, nothing on the branch, its PRs #658,#1479 merged, no plan file, its PR landed'
   assert_failure 1
   run nudged sid-3 'DONE clean, no plan file'
@@ -1107,16 +1107,25 @@ MD
   assert_failure 1
 }
 
-@test "a session that left DONE is nudged again when it is next DONE; one still DONE keeps its nudge" {
+@test "a session that left DONE loses its ledger entry but is never sent a second close nudge (ar-1863)" {
   mark sid-4 'DONE clean, no plan file'
   mark sid-5 'DONE clean, no plan file'
   mark sid-6 'STALLED PR #9 CI red @feat/x'
   release_left "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
   run nudged sid-4 'DONE clean, no plan file'
   assert_success
+  # sid-5 left DONE and its ledger entry went, but the close claim stays: its next DONE or CHAT is refused
   run nudged sid-5 'DONE clean, no plan file'
   assert_failure
+  run mark sid-5 'DONE clean, nothing on the branch, its PRs #9 merged'
+  assert_failure 1
+  assert_output --partial 'already sent its close nudge'
+  run mark sid-5 'CHAT idle, no plan file'
+  assert_failure 1
+  # a STALLED fact is not a close nudge and is marked as before
   run nudged sid-6 'STALLED PR #9 CI red @feat/x'
+  assert_success
+  run mark sid-6 'STALLED PR #9 green, not merged @feat/x'
   assert_success
 }
 

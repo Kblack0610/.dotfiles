@@ -605,14 +605,22 @@ ledger_write() {
 }
 # mark <sid> <fact>: the claim on a nudge, taken before the message goes out. Exit 1 when the fact
 # is already nudged, whichever pass nudged it, and the ledger is left as it is (a second mark would
-# clear the escalation the first one earned).
+# clear the escalation the first one earned). A DONE or CHAT fact is a close nudge, and a session is
+# sent one for good: $CLOSED/<sid> outlives release_left, which drops the ledger entry of a session
+# that left DONE. A coordinator that works again after /wind-down and goes DONE again was typed the
+# same close every half hour (2026-11-17: hub/dotfiles:1, four times in 90 minutes).
+CLOSED="$LEDGER/.closed"
 mark() {
   case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
   (
     flock 8
+    local closing=""
+    case "$2" in DONE\ *|CHAT\ *) closing=1 ;; esac
+    [ -z "$closing" ] || [ ! -e "$CLOSED/$1" ] || { echo "fleet-sessions: $1 already sent its close nudge" >&2; exit 1; }
     nudged "$1" "$2" && { echo "fleet-sessions: $1 already nudged for this fact" >&2; exit 1; }
-    ledger_write "$1" fact "$2"
+    ledger_write "$1" fact "$2" || exit 1
+    [ -z "$closing" ] || { mkdir -p "$CLOSED" && : > "$CLOSED/$1"; }
   ) 8>"$LEDGER/mark.lock"
 }
 
