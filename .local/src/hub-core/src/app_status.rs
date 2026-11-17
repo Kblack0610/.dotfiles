@@ -117,8 +117,8 @@ pub struct AppStatus {
 }
 
 /// An app's Gatus groups: its key, and `<key>-<channel>` for each non-prod channel its project-map
-/// targets declare. The match is exact, never a prefix: `binks-chat` is its own tracker, not a
-/// channel of `binks`.
+/// targets declare. The match is exact, never a prefix: `shop-admin` would be its own tracker, not a
+/// channel of `shop`.
 pub fn groups(app: &str, channels: &[Release]) -> Vec<String> {
     let mut out = vec![app.to_string()];
     for r in channels {
@@ -889,14 +889,13 @@ mod tests {
             ..Release::default()
         };
         let rows = [
-            ch("binks", "prod"),
-            ch("binks-chat", "prod"),
+            ch("shop", "prod"),
+            ch("shop-admin", "beta"),
             ch("shop", "preview"),
         ];
-        assert_eq!(groups("binks", &rows), ["binks"]);
-        assert_eq!(groups("binks-chat", &rows), ["binks-chat"]);
+        assert_eq!(groups("shop-admin", &rows), ["shop-admin", "shop-admin-beta"]);
         assert_eq!(groups("shop", &rows), ["shop", "shop-preview"]);
-        assert_eq!(selector(&groups("binks", &rows)), r#"{group=~"^(binks)$"}"#);
+        assert_eq!(selector(&groups("shop", &rows)), r#"{group=~"^(shop|shop-preview)$"}"#);
     }
 
     #[test]
