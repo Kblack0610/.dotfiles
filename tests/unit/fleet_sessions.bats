@@ -1099,6 +1099,10 @@ MD
   [ "$("${g[@]}" merge-base --all origin/main HEAD | wc -l)" -eq 2 ]
   run ahead_files "$SANDBOX/wt" origin/main
   assert_output 0
+  # negative control: real unlanded work on a two-base branch still counts
+  echo 3 > "$SANDBOX/wt/h"; "${g[@]}" add h; "${g[@]}" commit -q -m 'add h'
+  run ahead_files "$SANDBOX/wt" origin/main
+  assert_output 1
 }
 
 @test "the ledger nudges once per fact, and a new fact is nudgeable again" {

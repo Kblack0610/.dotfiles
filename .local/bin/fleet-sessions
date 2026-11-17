@@ -1193,6 +1193,7 @@ ahead_files() {
   mbs="$(git -C "$d" merge-base --all "$base" HEAD 2>/dev/null)" && [ -n "$mbs" ] || { echo 0; return; }
   changed="$(git -C "$d" diff --name-only "$base" HEAD 2>/dev/null | sort)"
   while read -r mb; do
+    [ -n "$changed" ] || break
     changed="$(comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) <(printf '%s\n' "$changed"))"
   done <<<"$mbs"
   grep -c . <<<"$changed" || true
