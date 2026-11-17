@@ -130,6 +130,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'no checklist 1'
 }
 
+@test "an open plan with no cache copy files no row and is counted, not dropped unseen" {
+  plan orphan '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/orphan.md"
+  plan homed '1 day ago 1 hour ago' "$OPEN"
+  run "$SWEEP" run
+  assert_success
+  assert_called 'ptask board --agent add --want ask chore(plan): finish homed'
+  assert_not_called 'finish orphan'
+  assert_output --partial 'open plans 2'
+  assert_output --partial 'no cache copy 1'
+}
+
 @test "the summary says what it read, so a clean read never looks like no read" {
   plan bare '1 day ago 1 hour ago' 'just text'
   message 'add a slide'
