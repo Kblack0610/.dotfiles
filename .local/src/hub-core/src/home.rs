@@ -27,8 +27,9 @@ use crate::reading::State as Reading;
 use crate::tasks::{Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
-pub const DOMAINS: [&str; 11] = [
-    "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
+pub const DOMAINS: [&str; 12] = [
+    "k3s", "machines", "ci", "projects", "prod", "llm", "agents", "spend", "platform", "queue",
+    "home", "other",
 ];
 /// The row types only the human can do (notes-cli README, "The task row": `run decide check`).
 /// A human-sheet row of another type is work an agent can take, so it never needs the human.
