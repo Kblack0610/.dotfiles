@@ -893,9 +893,15 @@ mod tests {
             ch("shop-admin", "beta"),
             ch("shop", "preview"),
         ];
-        assert_eq!(groups("shop-admin", &rows), ["shop-admin", "shop-admin-beta"]);
+        assert_eq!(
+            groups("shop-admin", &rows),
+            ["shop-admin", "shop-admin-beta"]
+        );
         assert_eq!(groups("shop", &rows), ["shop", "shop-preview"]);
-        assert_eq!(selector(&groups("shop", &rows)), r#"{group=~"^(shop|shop-preview)$"}"#);
+        assert_eq!(
+            selector(&groups("shop", &rows)),
+            r#"{group=~"^(shop|shop-preview)$"}"#
+        );
     }
 
     #[test]
