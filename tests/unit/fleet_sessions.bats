@@ -3986,28 +3986,11 @@ JSONL
   [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'moved:x-1 moved on (done)')" ]
 }
 
-@test "plan_resolve: a plan recorded under one ~/.claude*/plans dir is read from another; elsewhere it stays as it is" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  mkdir -p "$HOME/.claude/plans" "$HOME/.claude-personal/plans"
-  printf '# p\n' > "$HOME/.claude/plans/p.md"
-  [ "$(plan_resolve "$HOME/.claude-personal/plans/p.md")" = "$HOME/.claude/plans/p.md" ]
-  [ "$(plan_resolve "$HOME/.claude/plans/p.md")" = "$HOME/.claude/plans/p.md" ]
-  [ "$(plan_resolve -)" = - ]
-  # a name in no plans dir, and a path outside them, come back unchanged for the caller's -f test
-  [ "$(plan_resolve "$HOME/.claude-personal/plans/q.md")" = "$HOME/.claude-personal/plans/q.md" ]
-  [ "$(plan_resolve "$SANDBOX/elsewhere/p.md")" = "$SANDBOX/elsewhere/p.md" ]
-}
-
-@test "end to end: a plan recorded under another account's plans dir reads its phases there; one that is nowhere keeps the session open (ar-2368)" {
+@test "end to end: a recorded plan file that does not exist keeps the session open, its merged PR notwithstanding (ar-2368)" {
   landed_fixture
-  mkdir -p "$HOME/.claude/plans" "$HOME/.claude-personal/plans"
-  mv "$SANDBOX/plan.md" "$HOME/.claude/plans/plan.md"
-  panel "$SANDBOX/wt" "$HOME/.claude-personal/plans/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
-  [ "$(jq -r .plan_file <<<"$output")" = "$HOME/.claude/plans/plan.md" ]
-  rm "$HOME/.claude/plans/plan.md"
+  rm "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its plan file is missing' ]

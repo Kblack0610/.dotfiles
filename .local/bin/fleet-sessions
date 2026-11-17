@@ -1440,7 +1440,6 @@ collect() {
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
     [ "$host" = - ] || planf=-
-    planf="$(plan_resolve "$planf")"
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
@@ -1527,7 +1526,7 @@ collect() {
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
-    # A plan the pane recorded that is nowhere (plan_resolve looked in every plans dir) is not a
+    # A plan the pane recorded that does not exist (every account shares ~/.claude/plans, claude-acct) is not a
     # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
     if [ "$planf" = - ]; then phases=-
     elif [ ! -f "$planf" ]; then phases=missing
