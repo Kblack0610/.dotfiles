@@ -30,7 +30,7 @@ set -uo pipefail
 # roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
 : "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
-: "${FLEET_NOT_LOAD_HOLDS:=dispatch mac-desktop}"  # holds that pause work or a mac-mini desktop, not this machine: no effect on the verdict
+: "${FLEET_NOT_LOAD_HOLDS:=dispatch mac-desktop deskslim-*-ram}"  # glob names of holds that pause work, the mac-mini desktop or another host's hardware, not this machine's load: no effect on the verdict
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
@@ -97,15 +97,21 @@ read_swap_used_gb() {
 }
 
 # A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
-# that only pauses a workflow (dispatch) or is the mac-mini desktop mutex (mac-desktop) says
-# nothing about this machine's load, so it does not count: on 2026-10-27 the dispatch hold
-# dropped the trip line from 1.75x to 1x and fleet-thermal paged high 36 times in 8 hours.
+# that only pauses a workflow (dispatch), is the mac-mini desktop mutex (mac-desktop) or marks
+# another host's bad hardware (deskslim-1-ram) says nothing about this machine's load, so it
+# does not count: on 2026-10-27 the dispatch hold dropped the trip line from 1.75x to 1x and
+# fleet-thermal paged high 36 times in 8 hours, and on 2026-11-17 deskslim-1-ram read as a hold
+# on a CLEAR machine, a `pace:` line the shepherd could not answer without lifting it.
 holds_set() {
-  local f
+  local f pat pats
   [ -d "$HOLD_ROOT" ] || return 1
+  read -ra pats <<<"$FLEET_NOT_LOAD_HOLDS"   # split, never expanded against the cwd
   for f in "$HOLD_ROOT"/*; do
     [ -e "$f" ] || continue
-    case " $FLEET_NOT_LOAD_HOLDS " in *" ${f##*/} "*) continue ;; esac
+    for pat in "${pats[@]}"; do
+      # shellcheck disable=SC2254
+      case "${f##*/}" in $pat) continue 2 ;; esac
+    done
     return 0
   done
   return 1
