@@ -133,16 +133,15 @@ sandbox_git_denies() {
   return 0
 }
 
-# sandbox_git_self_commondir <common> -> makes <common>/commondir holding `.` when it is missing, in
-# one step: a git run beside it never reads a half-written file, and one another lane start made
-# first is kept (ln never replaces a file). The caller lists it denied whether or not this made it:
-# codex denies a missing path as is, and where srt can still place its placeholder, git fails
+# sandbox_git_self_commondir <common> -> makes <common>/commondir holding `.` when it is missing.
+# noclobber opens it with O_EXCL, so one already there (another lane start's) is kept, and a symlink
+# an earlier lane planted there is never followed: this runs outside the sandbox, in a git dir a lane
+# could write, so it writes no other name in it. The caller lists it denied whether or not this made
+# it: codex denies a missing path as is, and where srt can still place its placeholder, git fails
 # closed rather than following a redirect.
 sandbox_git_self_commondir() {
-  local tmp="$1/commondir.agentctl.$$"
   [ -e "$1/commondir" ] && return 0
-  { printf '.\n' > "$tmp" && ln "$tmp" "$1/commondir"; } 2>/dev/null
-  rm -f "$tmp"
+  ( set -C; printf '.\n' > "$1/commondir" ) 2>/dev/null || true
 }
 
 # The oldest claude that honours permissions.blockWritesOutsideWorkingDirectories. An older one

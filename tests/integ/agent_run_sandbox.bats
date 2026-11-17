@@ -126,7 +126,8 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   cd "$SANDBOX/repo"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
-  [ ! -e "$common/worktrees" ] && [ ! -e "$common/commondir" ]
+  [ ! -e "$common/worktrees" ]
+  [ ! -e "$common/commondir" ]
   SANDBOX_PROFILE=lane lane -p x
   assert_success
   # A missing deny path is an empty placeholder to srt: at worktrees/ it would break a git worktree
@@ -147,8 +148,6 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   git worktree add -q "$SANDBOX/wt" -b wt
   run git -C "$SANDBOX/wt" rev-parse --path-format=absolute --git-common-dir
   assert_output "$common"
-  run ls -A "$common"
-  refute_output --partial commondir.agentctl
 }
 
 @test "a plain clone's commondir that is already there is kept, never rewritten, and still denied" {
@@ -162,6 +161,18 @@ settings() { awk 'f { print; exit } $0 == "--settings" { f = 1 }' "$SANDBOX/clau
   assert_output "$common"
   run jq -r '.sandbox.filesystem.denyWrite[]' <<<"$(settings)"
   assert_line "$common/commondir"
+}
+
+@test "a symlink an earlier lane planted at a plain clone's commondir is never followed: the launcher, outside the sandbox, writes nothing through it" {
+  # Called directly: a dangling commondir already stops git (it dies reading it), so a lane start
+  # never gets this far, and the writer must still be safe on its own.
+  git init -q "$SANDBOX/repo"
+  common="$(cd "$SANDBOX/repo/.git" && pwd -P)"
+  ln -s "$SANDBOX/clobbered" "$common/commondir"
+  source "$REPO_ROOT/.local/src/agent-run/lib/sandbox.sh"
+  sandbox_git_self_commondir "$common"
+  [ ! -e "$SANDBOX/clobbered" ] || fail "the launcher wrote through a planted symlink"
+  [ -L "$common/commondir" ]
 }
 
 @test "a profile's own denyWrite paths are Edit() denies too, so Edit and Write cannot reach what Bash cannot" {
