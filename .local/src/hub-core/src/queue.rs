@@ -1208,9 +1208,20 @@ pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck
             }
             _ => None,
         },
-        State::Review if item.extra_str("fix_human").is_some() => {
-            match item.extra_str("pr_owner") {
-                Some("land") => Some(Stuck::PrGreen),
+        // `fix_human: <head> <owner>...` names the owners whose tries went to the human; one that
+        // names others (fix-ci's row, then a green head's lander) is still dispatch's to work.
+        State::Review => {
+            let mut stamp = item
+                .extra_str("fix_human")?
+                .split_whitespace()
+                .skip(1)
+                .peekable();
+            let owner = item.extra_str("pr_owner").unwrap_or("fix");
+            if stamp.peek().is_some() && !stamp.any(|o| o == owner) {
+                return None;
+            }
+            match owner {
+                "land" => Some(Stuck::PrGreen),
                 _ => Some(Stuck::PrRed),
             }
         }
@@ -2802,6 +2813,16 @@ mod tests {
                 r#","fix_human":"abc","fix_tries":"2 abc","note":"PR #7 red after 2 fix-ci tries""#,
             ),
             item("green", "review", r#","fix_human":"abc","pr_owner":"land""#),
+            item(
+                "landing",
+                "review",
+                r#","fix_human":"abc fix","pr_owner":"land""#,
+            ),
+            item(
+                "handed",
+                "review",
+                r#","fix_human":"abc fix land","pr_owner":"land""#,
+            ),
             item("plain", "review", ""),
         ]
         .join("\n");
@@ -2834,6 +2855,9 @@ mod tests {
         assert_eq!(word("gone"), "no session");
         assert_eq!(word("red"), "PR red, yours");
         assert_eq!(word("green"), "PR green, yours");
+        assert_eq!(word("handed"), "PR green, yours");
+        // a green head after fix-ci went to the human: its lander is dispatch's, not the human's
+        assert_eq!(word("landing"), "on a PR");
         // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
         assert_eq!(word("ok"), "running");
         assert_eq!(word("fresh"), "running", "started 5m ago, inside the grace");
@@ -2841,7 +2865,7 @@ mod tests {
         let order: Vec<&str> = rows.iter().map(|r| r.item.slug.as_str()).collect();
         assert_eq!(
             order,
-            ["stuck", "gone", "ok", "fresh", "red", "green", "plain"],
+            ["stuck", "gone", "ok", "fresh", "red", "green", "handed", "landing", "plain"],
             "stuck rows first within running and within review"
         );
         let stuck = rows.iter().find(|r| r.item.slug == "stuck").unwrap();

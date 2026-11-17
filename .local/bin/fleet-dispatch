@@ -3015,10 +3015,9 @@ settle_item() {
 # review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
 # triage_human does once TRIAGE_FIX_TRIES are spent, stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it
-# names: a head whose fix-ci row went to the human and that later reads green still gets a lander, and
-# the reverse (ar-2589: #2182 sat in review green and ownerless, its fix-ci tries spent on a superseded
-# red). A lander that asks the human is held on
-# its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
+# names, so a head whose fix-ci row went to the human and that later reads green still gets a lander,
+# and the reverse (#2182 sat in review green with nobody on it). A lander that asks the human is held
+# on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project prof note held row sheet where clear=()
@@ -3027,10 +3026,13 @@ own_parked_pr() {
   IFS=$'\x1f' read -r tries human pr project prof note < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .profile // "", .note // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
+  # A stamp from before it named its owners (the head alone) was a fix-ci row: every live one was, 2026-11-17.
   read -r hhead howners <<<"$human"
+  [ -z "$hhead" ] || howners=${howners:-fix}
   if [ "$hhead" = "$head" ]; then
-    # A stamp from before it named its owners (one head alone) stands for whichever owner spent its tries.
-    if [ "$tries" -ge "$DISPATCH_FIX_TRIES" ]; then case " ${howners:-$owner} " in *" $owner "*) return 0 ;; esac; fi
+    if [ "$tries" -ge "$DISPATCH_FIX_TRIES" ]; then case " $howners " in *" $owner "*) return 0 ;; esac; fi
+    # written out in full, so the hub reads a head-only stamp's owner as this pass did (queue.rs stuck_on)
+    clear=("fix_human=$head $howners")
   elif [ -n "$human" ]; then tries=0 howners='' clear=(fix_human= fix_tries= land_tries=)
   fi
   if [ "$tries" -lt "$DISPATCH_FIX_TRIES" ]; then

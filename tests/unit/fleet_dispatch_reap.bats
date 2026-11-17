@@ -854,6 +854,12 @@ OUT
   refute_output --partial 'fix-crash'
   fix_ended "$h2" PASS; run cmd_reap
   assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h2:0:12}, try 1 of 2)"
+  # its lander carries the stamp written out, so the hub reads it as dispatch's, not the human's
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix"
+  fix_ended "$h2" PASS; run cmd_reap
+  fix_ended "$h2" PASS; run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix land"
 }
 
 # 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
