@@ -1101,18 +1101,15 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
         Live::Here(agent) => *agent,
         // A worker's session: that worker's agent-panel types the text, its tmux sends the key.
         Live::There(r) => {
-            if !b.text.is_empty()
-                && !r
-                    .message(&b.text, b.submit.unwrap_or(true))
-                    .await
-                    .map_err(|e| worker_err(&r.host, e))?
-            {
-                return Err(not_taken());
-            }
-            if let Some(k) = b.key.as_deref() {
-                r.key(k).await.map_err(|e| worker_err(&r.host, e))?;
-            }
-            return Ok(StatusCode::NO_CONTENT);
+            let taken = r
+                .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
+                .await
+                .map_err(|e| worker_err(&r.host, e))?;
+            return if taken {
+                Ok(StatusCode::NO_CONTENT)
+            } else {
+                Err(not_taken())
+            };
         }
     };
     let (server, pane) = tmux::split(&agent.pane);

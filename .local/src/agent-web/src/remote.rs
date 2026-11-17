@@ -6,6 +6,8 @@
 
 use std::process::Stdio;
 
+use agent_panel::tmux;
+
 /// The live agent at a worker's target: the worker, and its pane there (`<server>/%<id>`).
 pub struct Remote {
     pub host: String,
@@ -45,16 +47,11 @@ pub async fn run(host: &str, args: &[&str], ok: &[i32]) -> Result<String, Failed
         .output()
         .await
         .map_err(|e| Failed::Unreachable(format!("fleet-host-run: {e}")))?;
-    let code = out.status.code().unwrap_or(-1);
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    match code {
-        0 => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
-        c if ok.contains(&c) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
-        255 => Err(Failed::Unreachable(if err.is_empty() {
-            format!("{host} did not answer")
-        } else {
-            err
-        })),
+    match out.status.code().unwrap_or(-1) {
+        c if c == 0 || ok.contains(&c) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        255 if err.is_empty() => Err(Failed::Unreachable(format!("{host} did not answer"))),
+        255 => Err(Failed::Unreachable(err)),
         c => Err(Failed::Exit(c, err)),
     }
 }
@@ -70,61 +67,40 @@ pub async fn find(host: &str, local: &str) -> Result<Option<Remote>, Failed> {
 }
 
 impl Remote {
-    fn server_pane(&self) -> (&str, &str) {
-        match self.pane.split_once('/') {
-            Some((srv, p)) => (srv, p),
-            None => ("default", self.pane.as_str()),
-        }
+    /// `tmux -L <server> <args...>` on the worker, aimed at its pane with `-t`.
+    async fn tmux(&self, verb: &str, args: &[&str]) -> Result<String, Failed> {
+        let (srv, pane) = tmux::split(&self.pane);
+        let mut argv = vec!["tmux", "-L", srv.unwrap_or("default"), verb, "-t", pane];
+        argv.extend_from_slice(args);
+        run(&self.host, &argv, &[]).await
     }
 
     /// Its screen, as `tmux capture-pane -p -J -S <start>` prints it there.
     pub async fn capture(&self, start: i32) -> Result<String, Failed> {
-        let (srv, pane) = self.server_pane();
-        let start = start.to_string();
-        run(
-            &self.host,
-            &[
-                "tmux",
-                "-L",
-                srv,
-                "capture-pane",
-                "-p",
-                "-J",
-                "-t",
-                pane,
-                "-S",
-                &start,
-            ],
-            &[],
-        )
-        .await
+        self.tmux("capture-pane", &["-p", "-J", "-S", &start.to_string()])
+            .await
     }
 
-    /// Type `text` into it through that worker's `agent-panel send`; Ok(false) when the pane did
-    /// not take the Enter (its exit 3), so the text sits in the input box.
-    pub async fn message(&self, text: &str, submit: bool) -> Result<bool, Failed> {
-        let mut args = vec!["agent-panel", "send", "--pane", self.pane.as_str()];
-        if !submit {
-            args.push("--no-submit");
+    /// Type `text` (when there is any) through that worker's `agent-panel send`, then send `key`
+    /// with its tmux. Ok(false) when the pane did not take the Enter (its exit 3): the text sits in
+    /// the input box and no key is sent.
+    pub async fn send(&self, text: &str, submit: bool, key: Option<&str>) -> Result<bool, Failed> {
+        if !text.is_empty() {
+            let mut args = vec!["agent-panel", "send", "--pane", self.pane.as_str()];
+            if !submit {
+                args.push("--no-submit");
+            }
+            args.extend(["--", text]);
+            match run(&self.host, &args, &[]).await {
+                Ok(_) => {}
+                Err(Failed::Exit(3, _)) => return Ok(false),
+                Err(e) => return Err(e),
+            }
         }
-        args.extend(["--", text]);
-        match run(&self.host, &args, &[]).await {
-            Ok(_) => Ok(true),
-            Err(Failed::Exit(3, _)) => Ok(false),
-            Err(e) => Err(e),
+        if let Some(k) = key {
+            self.tmux("send-keys", &[k]).await?;
         }
-    }
-
-    /// Send one tmux key to its pane there.
-    pub async fn key(&self, key: &str) -> Result<(), Failed> {
-        let (srv, pane) = self.server_pane();
-        run(
-            &self.host,
-            &["tmux", "-L", srv, "send-keys", "-t", pane, key],
-            &[],
-        )
-        .await
-        .map(|_| ())
+        Ok(true)
     }
 }
 
