@@ -3,8 +3,9 @@
 set -euo pipefail
 
 NOTES_DIR="${NOTES_DIR:-$HOME/.notes}"
-PRIMARY_REMOTE="${NOTES_SYNC_PRIMARY_REMOTE:-origin}"
-BACKUP_REMOTE="${NOTES_SYNC_BACKUP_REMOTE:-backup}"
+# The names store-sync pushes to.
+PRIMARY_REMOTE=origin
+BACKUP_REMOTE=backup
 
 usage() {
     cat <<'EOF'
@@ -55,6 +56,19 @@ if [ -n "$BACKUP_REMOTE_URL" ]; then
         git remote add "$BACKUP_REMOTE" "$BACKUP_REMOTE_URL"
     fi
 fi
+
+# An https origin authenticates from ~/.git-credentials. The shared ~/.gitconfig names a helper
+# only on macOS (the keychain), so elsewhere this clone gets the file-based store helper of its
+# own, or every unattended sync fails auth. Repo-local, so the shared config is untouched.
+case "$NAS_REMOTE_URL" in
+    https://*)
+        if [ "$(uname)" != Darwin ] && ! git config --local --get-all credential.helper | grep -qx store; then
+            git config --local credential.helper ""
+            git config --local --add credential.helper store
+            echo "Enabled the file-based 'store' credential helper for this clone"
+        fi
+        ;;
+esac
 
 echo "Configured notes remotes:"
 git remote -v

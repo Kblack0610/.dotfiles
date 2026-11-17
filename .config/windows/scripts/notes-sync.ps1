@@ -1,6 +1,6 @@
-# notes-sync.ps1 — PowerShell port of git-sync-notes.sh.
-# Mirrors the bash semantics: lock file, fetch, auto-commit, ff-only/rebase,
-# push primary, push backup, optional mirror. Logs to %LOCALAPPDATA%\notes-sync\sync.log.
+# notes-sync.ps1 - the Windows notes sync, its own engine: Linux, macOS and Termux run store-sync --store notes.
+# Lock file, fetch, auto-commit, ff-only or rebase (store-sync merges instead), push primary,
+# push backup, optional mirror. Logs to %LOCALAPPDATA%\notes-sync\sync.log.
 
 [CmdletBinding()]
 param(
