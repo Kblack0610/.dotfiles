@@ -139,7 +139,7 @@ _fh_untrusted() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, power}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, state_match, power}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass).
@@ -173,14 +173,14 @@ fleet_hosts() {
 # _fh_parse <inventory yaml> -> fleet_hosts' lines for FLEET_HOSTS_GROUP; rc 1, said on stderr, when
 # python has no yaml module or the YAML does not load.
 _fh_parse() {
-  python3 -I - <(printf '%s\n' "$1") "$FLEET_HOSTS_GROUP" <<'PY'
+  python3 -I - <(printf '%s\n' "$1") "$FLEET_HOSTS_GROUP" "$FLEET_HOST" <<'PY'
 import json, os, sys
 try:
     import yaml
 except ImportError:
     sys.exit("fleet-hosts: python3 has no yaml module (python-yaml), so the fleet roster reads as empty")
 
-inv, group = sys.argv[1], sys.argv[2]
+inv, group, me = sys.argv[1], sys.argv[2], sys.argv[3].lower()
 doc = yaml.safe_load(open(inv)) or {}
 root = doc.get("all") or {}
 base = dict(root.get("vars") or {})
@@ -203,6 +203,27 @@ def walk(name, node, chain):
         walk(c, cn, path)
 
 walk("all", root, [])
+
+# Which machine fleet_state_host names, from the inventory alone, so a LAN DNS outage never makes
+# the home stand down: a host's name, or an ansible_host or fleet_ssh_host from its own entry (a
+# group or all.vars value is shared, so it would name every member). "me" is this machine
+# (FLEET_HOST), "other" another inventory machine, "none" no machine the inventory knows.
+def dialed(h):
+    hv = hmerged.get(h, {})
+    return {h.lower()} | {str(hv[k]).lower() for k in ("ansible_host", "fleet_ssh_host") if hv.get(k)}
+
+names = {h.lower(): dialed(h) for h in hmerged}
+def match(state):
+    a = state.rsplit("@", 1)[-1].lower()
+    if not a:
+        return ""
+    short = a.split(".")[0]
+    if short == me or a in names.get(me, set()):
+        return "me"
+    if any(a in n or short == h for h, n in names.items()):
+        return "other"
+    return "none"
+
 for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
@@ -218,45 +239,42 @@ for h in members.get(group, []):
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
         "state_host": v.get("fleet_state_host", ""),
+        "state_match": match(str(v.get("fleet_state_host") or "")),
         "power": str(v.get("fleet_power", "")),
     }))
 PY
 }
 
-# fleet_state_addr -> the roster's fleet_state_host as written (the name ssh dials), empty when no
-# worker names one. It is the one reader of which machine is the fleet home, so a machine back from
-# an outage reads that it no longer is.
-fleet_state_addr() { fleet_hosts | jq -r '.state_host // empty' 2>/dev/null | grep -m1 .; }
+# _fh_home -> "<addr><TAB><me|other|none>": the roster's fleet_state_host as written (the name ssh
+# dials) and which machine it names (_fh_parse's state_match); empty when no worker names one. It is
+# the one reader of which machine is the fleet home, so a machine back from an outage reads that it
+# no longer is. The workstation's entry gives its DHCP name (pc-home-cachy-main.lan), which is not
+# its hostname (cachyos-x8664-main), so the inventory, not DNS, says the two are one machine.
+_fh_home() {
+  fleet_hosts | jq -nr 'first(inputs | select(.state_host != "")) | [.state_host, .state_match] | @tsv' 2>/dev/null
+}
+
+# fleet_state_addr -> that address.
+fleet_state_addr() { _fh_home | cut -f1; }
 
 # fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or a roster that reads
-# names no fleet_state_host (one machine). Rc 1 when it names another machine, 3 when the name it
-# gives is not this machine's and resolves to no address (fleet_addr_is_me). Rc 2 when the roster
-# cannot be read (FLEET_ROSTER_ERR says why): a machine without home-config's checkout, or back from
-# being off with a fetch that fails, cannot tell it is not the home, so it stands down as one that is not.
+# names no fleet_state_host (one machine). Rc 1 when it names another machine, 3 when it names no
+# machine in the inventory. Rc 2 when the roster cannot be read (FLEET_ROSTER_ERR says why): a
+# machine without home-config's checkout, or back from being off with a fetch that fails, cannot
+# tell it is not the home, so it stands down as one that is not.
 fleet_is_home() {
   fleet_hosts >/dev/null
   [ -n "$FLEET_HOSTS_JSON" ] && [ -z "${FLEET_ROSTER_ERR:-}" ] || {
     FLEET_ROSTER_ERR=${FLEET_ROSTER_ERR:-the roster lists no host}
     return 2
   }
-  local a; a=$(fleet_state_addr); [ -z "$a" ] || fleet_addr_is_me "$a"
-}
-
-# fleet_addr_is_me <addr> -> rc 0 when the address names this machine: its short name is FLEET_HOST
-# in any case, or one of its A records is a non-loopback IPv4 address of this machine (an IP address
-# resolves to itself). Rc 1 when it resolves to other machines, 3 when it resolves to no address. A
-# user@ in front is ssh's and dropped. The inventory may name a machine by its DHCP name
-# (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main). The lookup needs the
-# LAN's DNS: while that is down the home cannot tell it is home, and says so (rc 3).
-: "${FLEET_RESOLVE_SECS:=2}"   # seconds the lookup may take, so a hung resolver never blocks a call
-fleet_addr_is_me() {
-  local a=${1##*@} short ips
-  [ -n "$a" ] || return 1
-  short=${a%%.*}
-  [ "${short,,}" != "${FLEET_HOST,,}" ] || return 0
-  ips=$(timeout "$FLEET_RESOLVE_SECS" getent ahostsv4 "$a" 2>/dev/null | awk '$1 !~ /^127\./ { print $1 }' | sort -u)
-  [ -n "$ips" ] || return 3
-  ip -o -4 addr show 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }' | grep -qxF -f <(printf '%s\n' "$ips")
+  local a m
+  IFS=$'\t' read -r a m < <(_fh_home)
+  case "$a:$m" in
+    :*|*:me) return 0 ;;
+    *:other) return 1 ;;
+    *) return 3 ;;
+  esac
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
@@ -305,8 +323,8 @@ FLEET_FORWARD_ENV="AGENT_QUEUE_ITEM CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_A
 state_forward() {
   [ -z "${AGENT_STATE_LOCAL:-}" ] || return 0
   local to=${AGENT_STATE_HOST:-}
-  # One roster read: the same test as fleet_is_home, on the address it already holds.
-  [ -n "$to" ] || { to=$(fleet_state_addr); if fleet_addr_is_me "$to"; then to=; fi; }
+  # One roster read: the same test as fleet_is_home.
+  [ -n "$to" ] || { local m; IFS=$'\t' read -r to m < <(_fh_home); [ "$m" != me ] || to=; }
   [ -n "$to" ] || return 0
   local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST AGENT_STATE_LOCAL=1) v rc
   shift 2

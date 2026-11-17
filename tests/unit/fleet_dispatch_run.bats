@@ -971,7 +971,6 @@ trainee_ready() {
 @test "run: only the inventory's fleet_state_host runs a pass; the old workstation stands down and writes nothing" {
   game_ready
   worker '2.0 16 1'
-  stub getent '[ "$2" = state.lan ] && echo "192.0.2.50      STREAM state.lan"'   # the home resolves, and is not here
   FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial "run: the fleet home is state.lan, not this machine (old-main), which stands down"
@@ -998,7 +997,6 @@ trainee_ready() {
 @test "reap, start, fill and promote do nothing off the fleet home" {
   game_ready
   worker '2.0 16 1'
-  stub getent '[ "$2" = state.lan ] && echo "192.0.2.50      STREAM state.lan"'
   agent-queue add --project game --slug x "x" >/dev/null
   local verb
   for verb in reap start fill promote; do
@@ -1022,16 +1020,17 @@ trainee_ready() {
   assert_output --partial 'run: the fleet roster cannot be read (/nonexistent could not be read), so this machine (state) stands down'
   [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a stood-down pass wrote the headroom"
   assert_not_called 'wt new'
-  # A home that resolves to nothing and is no machine's hostname: no machine is the home.
+  # A home that names no machine in the inventory: no machine is the home.
+  sed -i 's/fleet_state_host: state.lan/fleet_state_host: typo.lan/' "$FLEET_INVENTORY"
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   assert_failure 1
-  assert_equal "$stderr" "fleet-dispatch: hosts: the inventory's fleet_state_host state.lan is not this machine (old-main) and resolves to no address, so no machine is the fleet home and every one stands down"
+  assert_equal "$stderr" "fleet-dispatch: hosts: the inventory's fleet_state_host typo.lan names no machine in the inventory, so no machine is the fleet home and every one stands down"
   assert_output --partial 'razer-laptop'
   FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure 1
-  assert_output --partial 'run: the inventory'"'"'s fleet_state_host state.lan is not this machine (old-main) and resolves to no address'
-  # The negative controls: the home resolves, so hosts names it and passes; on the home it names this machine.
-  stub getent '[ "$2" = state.lan ] && echo "192.0.2.50      STREAM state.lan"'
+  assert_output --partial 'run: the inventory'"'"'s fleet_state_host typo.lan names no machine in the inventory'
+  # The negative controls: the home is an inventory machine, so hosts names it and passes; on the home it names this machine.
+  sed -i 's/fleet_state_host: typo.lan/fleet_state_host: state.lan/' "$FLEET_INVENTORY"
   FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   assert_success
   assert_equal "$stderr" ''
