@@ -118,6 +118,23 @@ buf() { mapfile -t BUF <<<"$output"; }
   assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n')"
 }
 
+# Same input and expected text as sweep.rs golden_rules_group_rows_inside_a_lane.
+@test "a save keeps the rules that group a lane" {
+  printf '%s' $'## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n')"
+}
+
+@test "an indented --- is a row's note, no rule" {
+  printf '%s' $'## Focus\n### Low\n- [ ] a #low\n    ---\n    more\n- [ ] b #low\n### Done\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n\n### Low\n- [ ] a #low\n    ---\n    more\n- [ ] b #low\n\n---\n### Done\n\n## Notes\n')"
+}
+
 @test "a note with an empty Focus opens on the bare lanes" {
   printf '## Focus\n- [ ] \n\n## Notes\n' > "$NOTE"
   run save_run 1 0 'vim.cmd "silent write"'
