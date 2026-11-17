@@ -129,8 +129,11 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
         if l.starts_with("## ") {
             in_head = false;
         }
+        // An `Agents:` line anywhere is a stray from before the head was code-owned; a
+        // `Docs:` word below the head is the human's.
         let t = l.trim_start();
-        if in_head && HEAD_KEYS.iter().any(|k| t.starts_with(k)) {
+        let owned = t.starts_with(HEAD_KEYS[0]) || (in_head && t.starts_with(HEAD_KEYS[1]));
+        if owned {
             continue;
         }
         out.push(l.to_string());
@@ -150,6 +153,9 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
 /// `<id>` is the lowercased basename of the tracker's `path`, the rule `stages.md` checks
 /// use. Empty for a project that is not a game or has no checkout or forge slug here.
 pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, String)> {
+    let Some(project) = reg.lookup(project) else {
+        return Vec::new();
+    };
     if reg.kind(project).as_deref() != Some("game") {
         return Vec::new();
     }
@@ -161,8 +167,15 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, Str
         .file_name()
         .map(|f| f.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let checkout = reg.checkout(field("repo"));
-    let slug = reg.repos(project).into_iter().next();
+    let repo = field("repo");
+    let checkout = reg.checkout(repo);
+    // The GitHub slug of the same repo the checkout is: a Forgejo-only repo gets no links
+    // rather than a github.com URL that does not exist.
+    let slug = reg
+        .tracker(repo)
+        .and_then(|r| r.get("github")?.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let (Some(checkout), Some(slug), false) = (checkout, slug, id.is_empty()) else {
         return Vec::new();
     };
@@ -207,6 +220,7 @@ pub fn docs_line(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String 
                 return readme.is_file().then_some((name, readme));
             }
             let stem = name.strip_suffix(".md")?;
+            let stem = if stem == "README" { "docs" } else { stem };
             (stem != "idea" && !is_report(stem)).then(|| (stem.to_string(), path.clone()))
         })
         .collect();
@@ -293,7 +307,8 @@ pub fn ensure_for(p: &crate::config::Profile, dir: &Path, project: &str) -> Resu
 ///
 /// Runs from `notes board` (so also from every `notes today`) rather than a one-off
 /// migration, because "static" has to mean a project created tomorrow has one too. Both
-/// halves are no-ops once satisfied, so the steady-state cost is a stat per project.
+/// halves are no-ops once satisfied, so the steady-state cost per project is a read of its
+/// sheet and `docs/`, and a few stats.
 ///
 /// A profile that fails to resolve is skipped rather than fatal - the rule `write` already
 /// follows, because one broken org must not stop the daily note being written.
@@ -512,9 +527,11 @@ mod tests {
     #[test]
     fn a_docs_word_below_the_head_is_not_the_head_line() {
         // Only the head is code-owned; a row or note further down is the human's.
-        let sheet = "# demo\nVersion: v0.0.2\n\n## Notes\nDocs: keep me\n";
+        // A stray `Agents:` line below it is still cleaned, as with_link did.
+        let sheet = "# demo\nVersion: v0.0.2\n\n## Notes\nDocs: keep me\nAgents: stray\n";
         let out = with_head(sheet, &["Docs: new".to_string()]).unwrap();
         assert!(out.contains("## Notes\nDocs: keep me\n"), "{out}");
+        assert!(!out.contains("Agents: stray"), "{out}");
     }
 
     #[test]
@@ -524,10 +541,12 @@ mod tests {
             &["docs/games/shapecity.md", "docs/games/shapecity-look.md"],
         );
         let map = format!(
-            r#"{{"paths": {{"{}": "ucp"}},
+            r#"{{"paths": {{"{0}": "ucp", "{0}/": "fj"}},
                 "trackers": {{
                   "ucp": {{"github": "Org/ucp"}},
+                  "fj": {{"forgejo": "me/fj"}},
                   "shape-city": {{"type": "game", "repo": "ucp", "path": "Assets/Games/ShapeCity"}},
+                  "fj-game": {{"type": "game", "repo": "fj", "path": "Assets/Games/ShapeCity"}},
                   "an-app": {{"type": "app", "repo": "ucp", "path": "Assets/Games/ShapeCity"}}
                 }}}}"#,
             checkout.display()
@@ -543,6 +562,15 @@ mod tests {
         assert!(
             repo_docs(&reg, "an-app").is_empty(),
             "only a game has repo docs"
+        );
+        assert!(
+            repo_docs(&reg, "fj-game").is_empty(),
+            "a repo with no GitHub slug gets no github.com links"
+        );
+        assert_eq!(
+            repo_docs(&reg, "Shape-City"),
+            docs,
+            "any spelling of the name"
         );
         let _ = fs::remove_dir_all(&checkout);
     }
