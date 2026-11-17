@@ -1,3 +1,7 @@
+# Bash only. .zshrc sources ~/.bash_profile for secrets, and on a fresh Arch/CachyOS home
+# that file sources this one; under zsh the shopt and `zoxide init bash` below break `cd`.
+[ -n "${BASH_VERSION:-}" ] || return 0
+
 # Source the common settings file if it exists.
 [ -f "$HOME/.commonrc" ] && source "$HOME/.commonrc"
 
@@ -48,6 +52,5 @@ ulimit -n 4000
 # --- Third-Party and Application Sourcing ---
 # Initialize zoxide (smarter cd command)
 eval "$(zoxide init bash)"
-. "$HOME/.cargo/env"
-
-. "$HOME/.local/share/../bin/env"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+[ -f "$HOME/.local/bin/env" ] && . "$HOME/.local/bin/env"
