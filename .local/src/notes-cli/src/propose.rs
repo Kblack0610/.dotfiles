@@ -211,7 +211,7 @@ fn kebab(word: &str) -> Option<String> {
 
 /// `title` within the grammar's limit, cut at a word. The filer keeps the whole line: `edit --was`
 /// as the row's `was:` detail, `agent-queue` as `--detail`.
-fn cut(title: &str) -> String {
+pub(crate) fn cut(title: &str) -> String {
     if title.chars().count() <= projects::TITLE_MAX {
         return title.to_string();
     }

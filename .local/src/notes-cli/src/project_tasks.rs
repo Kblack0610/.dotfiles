@@ -1919,6 +1919,27 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
     }
 }
 
+/// A rewrite's `type(area): title #tags` with the title cut to [`projects::TITLE_MAX`] at a word,
+/// and the whole title when it was cut, for a `full:` detail line. A title that fits comes back as
+/// it is, so the words are never refused and never lost.
+fn fit_title(text: &str) -> (String, Option<String>) {
+    let bare = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some((ty, area, title)) = projects::row_prefix(&bare) else {
+        return (text.to_string(), None);
+    };
+    if title.chars().count() <= projects::TITLE_MAX {
+        return (text.to_string(), None);
+    }
+    let tags = text.split_whitespace().filter(|w| w.starts_with('#'));
+    let head = format!("{ty}({area}): {}", crate::propose::cut(title));
+    let fitted: Vec<&str> = std::iter::once(head.as_str()).chain(tags).collect();
+    (fitted.join(" "), Some(title.to_string()))
+}
+
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
 /// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
@@ -1929,7 +1950,8 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
-/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
+/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, a title
+/// over 80 chars is cut at a word with the whole title on a `full:` line after it ([`fit_title`]), and
 /// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
 ///
@@ -1961,12 +1983,8 @@ pub fn retext(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );
         }
-        if projects::row_title(&format!("- [ ] {t}")).chars().count() > projects::TITLE_MAX {
-            bail!(
-                "'{t}': the title is over {} chars, so nothing was edited; the rest goes on a detail line",
-                projects::TITLE_MAX
-            );
-        }
+        let (t, full) = fit_title(t);
+        let t = t.as_str();
         let Some((_, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
         };
@@ -1989,6 +2007,7 @@ pub fn retext(
         }
         rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
+        with_was.extend(full.map(|f| format!("full: {f}")));
         with_was.extend(details.iter().cloned());
         (Some(rewrite.as_str()), &with_was[..])
     } else {
@@ -4454,8 +4473,7 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_long_or_unchanged_text(
-    ) {
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_or_unchanged_text() {
         let v = vault(
             "was",
             "",
@@ -4479,14 +4497,6 @@ mod inbox_tests {
         };
         assert!(edit("make the menu stop flickering").is_err());
         assert_eq!(v.read(), before, "an untyped rewrite wrote nothing");
-        let long = format!("fix(ui): {} #size/s", "x".repeat(81));
-        assert!(edit(&long).is_err());
-        assert_eq!(
-            v.read(),
-            before,
-            "a rewrite with a title over 80 chars wrote nothing"
-        );
-
         assert_eq!(
             edit("fix(ui): the menu flickers on resize #size/s").unwrap(),
             0
@@ -4516,6 +4526,66 @@ mod inbox_tests {
             s,
             "a rewrite to the row's own words wrote nothing"
         );
+    }
+
+    #[test]
+    fn a_was_rewrite_over_80_chars_is_cut_at_a_word_with_the_whole_title_on_a_full_line() {
+        let v = vault(
+            "wasfull",
+            "",
+            "- [ ] the menu flickers #requested #size/m #c1026 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::new("sc-5", false).unwrap();
+        let title = format!(
+            "{} {}",
+            "word ".repeat(17).trim_end(),
+            "tail ".repeat(5).trim_end()
+        );
+        assert!(title.chars().count() > projects::TITLE_MAX);
+        let long = format!("fix(ui): {title} #size/s");
+        let rc = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some(&long),
+            None,
+            &[],
+            true,
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        let row = s.lines().find(|l| l.contains("id:sc-5")).unwrap();
+        assert!(
+            projects::row_title(row).chars().count() <= projects::TITLE_MAX,
+            "{row}"
+        );
+        assert!(row.starts_with("- [ ] fix(ui): word word"), "{row}");
+        assert!(
+            row.contains("#size/s") && row.contains("#requested"),
+            "{row}"
+        );
+        assert!(row.contains("#c1026") && !row.contains("tail"), "{row}");
+        let was = s.find("  was: the menu flickers").expect("was line");
+        let full = s.find(&format!("  full: {title}\n")).expect("full line");
+        assert!(was < full, "{s}");
+    }
+
+    #[test]
+    fn a_was_rewrite_title_with_no_space_in_80_chars_is_cut_hard() {
+        let (t, full) = fit_title(&format!("fix(ui): {} #size/s", "x".repeat(100)));
+        assert_eq!(t, format!("fix(ui): {} #size/s", "x".repeat(80)));
+        assert_eq!(full.as_deref(), Some("x".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn a_was_rewrite_title_that_fits_is_left_alone() {
+        let (t, full) = fit_title("fix(ui): short title #size/s");
+        assert_eq!(t, "fix(ui): short title #size/s");
+        assert!(full.is_none());
     }
 
     #[test]
