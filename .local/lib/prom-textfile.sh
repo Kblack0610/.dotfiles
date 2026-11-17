@@ -28,7 +28,8 @@ prom_textfile_default_dir() {
 # collector (the caller skips, as the unit's old ConditionPathIsDirectory did).
 prom_textfile_target() {
   if [ -n "${1:-}" ]; then printf '%s\n' "$1"; return 0; fi
-  [ -d "$PROM_TEXTFILE_DIR" ] && printf '%s\n' "$PROM_TEXTFILE_DIR"
+  [ -d "$PROM_TEXTFILE_DIR" ] || return 1
+  printf '%s\n' "$PROM_TEXTFILE_DIR"
 }
 
 # jq defs the writers build their lines with:
@@ -50,9 +51,9 @@ def gauge($name; $help; series):
 # file, and a command that fails leaves the last good file in place. The temp name does not
 # end in .prom, so the collector never reads it.
 prom_textfile() {
-  local name="$1" dir="$PROM_TEXTFILE_DIR" tmp
+  local name="$1" dir tmp
   shift
-  [ -d "$dir" ] || return 0
+  dir="$(prom_textfile_target)" || return 0
   tmp="$(mktemp "$dir/.$name.XXXXXX")" || return 1
   if "$@" >"$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$dir/$name"; then return 0; fi
   rm -f "$tmp"

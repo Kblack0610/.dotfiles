@@ -38,6 +38,8 @@ set -uo pipefail
 : "${GH_CALLERS_WINDOW_S:=600}"  # gh_callers counts the call log over this many seconds
 : "${FLEET_GH_PROBE_TTL_S:=300}" # the actions/workflows reading is reused this long: fleet-dispatch asks every pass and each ask spent one of that bucket's calls (172 REST an hour, 2026-11-13)
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
@@ -508,8 +510,6 @@ write_textfile() {
 
 main() {
   if [ "${1:-}" = --textfile ]; then
-    # shellcheck source=../lib/prom-textfile.sh
-    . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
     local dir
     dir="$(prom_textfile_target "${2:-}")" || return 0
     write_textfile "$dir"

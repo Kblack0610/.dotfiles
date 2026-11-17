@@ -80,3 +80,25 @@ EOF
   assert_success
   assert_output "$PROM_TEXTFILE_DIR"
 }
+
+@test "the units' ConditionPathIsDirectory lines are PROM_TEXTFILE_DIRS, so a unit skips exactly where the tool would" {
+  local unit want have
+  unset PROM_TEXTFILE_DIRS
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/prom-textfile.sh"
+  want="$(tr ':' '\n' <<< "$PROM_TEXTFILE_DIRS")"
+  for unit in fleet-local-gates claude-acct-usage; do
+    have="$(sed -n 's/^ConditionPathIsDirectory=|//p' "$REPO_ROOT/.config/systemd/user/$unit.service")"
+    assert_equal "$have" "$want"
+  done
+}
+
+@test "a set PROM_TEXTFILE_DIR wins over the list, and a given dir over both" {
+  local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
+  mkdir -p "$ws" "$k3s"
+  export PROM_TEXTFILE_DIRS="$ws:$k3s" PROM_TEXTFILE_DIR="$k3s"
+  run prom_textfile_target
+  assert_output "$k3s"
+  run prom_textfile_target "$ws"
+  assert_output "$ws"
+}
