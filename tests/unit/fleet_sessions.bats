@@ -2096,6 +2096,32 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
 }
 
+@test "end to end: phase_runner names the session running the item that holds the open phase, and nothing else (ar-1497)" {
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued" "$HOME/.agent/queue/running"
+  # phase_item <dir> <phases> <session line>: an item holding those phases of the plan
+  phase_item() {
+    printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n%splan: %s\nphases: %s\n---\nphase of the plan\n' \
+      "$3" "$SANDBOX/plan.md" "$2" > "$HOME/.agent/queue/$1/20261103-100000-rollout.md"
+  }
+  # queued, so no session runs it
+  phase_item queued 2 ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_runner <<<"$output")" = null ]
+  # running in another session: that session is the runner
+  rm "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  phase_item running 2 $'session: lab:other-agent\n'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_runner <<<"$output")" = lab/other-agent ]
+  # an item running a later phase does not run the open one
+  phase_item running 3 $'session: lab:other-agent\n'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_runner <<<"$output")" = null ]
+}
+
 @test "end to end: a session plan symlinked to the plan its phases were queued under reads them as queued" {
   # 2026-11-13 binks-front-doors: plan mode wrote id-liek-...md, a symlink to binks-front-doors.md,
   # whose phases 2 to 5 were queue items; the row read keep, next phase, because names differed.
