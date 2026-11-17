@@ -4750,13 +4750,14 @@ cmd_vs() {
     (.sessions | map(select(.state == "ahead")) | sort_by(-.min) | if length > 0 then "  ahead:", (.[] | "    \(.target | sub("^[^/]*/"; "")): \(.ticked) of \(.expected) expected, \(.min)m early") else empty end)' <<<"$v"
 }
 
-# new_forecast_scores <now> -> a score for each frozen forecast that resolved and has none yet
+# new_forecast_scores <now> -> a score for each frozen forecast that resolved and has none yet.
+# A forecast frozen with no scheduled session has no end to measure, so it is never scored.
 new_forecast_scores() {
   local t="$1" b k min
   [ -s "$FORECASTS" ] || return 0
   local todo
   todo=$(jq -cs --slurpfile d <(cat "$FORECAST_SCORES" 2>/dev/null) '
-    ($d | map("\(.label) \(.made_epoch)")) as $done | .[] | select(("\(.label) \(.made_epoch)") as $k | $done | index($k) | not)' "$FORECASTS")
+    ($d | map("\(.label) \(.made_epoch)")) as $done | .[] | select((.schedule // [] | length) > 0) | select(("\(.label) \(.made_epoch)") as $k | $done | index($k) | not)' "$FORECASTS")
   [ -n "$todo" ] || return 0
   min=$(jq -s 'map(.made_epoch) | min' <<<"$todo")
   progress_since "$min" | jq -cs --slurpfile todo <(printf '%s\n' "$todo") --argjson t "$t" --argjson hz "$BENCH_FORECAST_HORIZON_H" "$JQ_LIB"'
