@@ -191,17 +191,19 @@ curl -u "kblack0610:$TOKEN" -X PATCH \
 
 ## The sync engine
 
-Every trigger above (notes-watch, notes-mqtt, notes-ntfy, the fallback timer, the Termux cron and boot hook) runs `notes-sync`, which is `store-sync --store notes`: the same engine that syncs `~/.agent` (`~/.local/bin/store-sync`). One run commits every change in `~/.notes`, fetches origin and merges it (merge, never rebase, so the note open in the editor is not rewritten), pushes origin, then pushes backup when the clone has one. Windows is the exception: `notes-sync.ps1` is its own port.
+Every trigger above (notes-watch, notes-mqtt, notes-ntfy, the fallback timer, the Termux cron and boot hook) runs `notes-sync`, which is `store-sync --store notes`: the same engine that syncs `~/.agent` (`~/.local/bin/store-sync`). One run commits every change in `~/.notes`, fetches origin and merges it (merge, never rebase, so the note open in the editor is not rewritten), pushes origin, then pushes backup when the clone has one. Windows is the exception: `notes-sync.ps1` is its own port, still on `git pull --rebase`, and it still reads the `NOTES_SYNC_PRIMARY_REMOTE`, `NOTES_SYNC_BACKUP_REMOTE`, `NOTES_SYNC_MIRROR_REMOTE` and `NOTES_SYNC_BRANCH` environment overrides that the other platforms dropped (board row ar-2741 moves it onto the same rules).
 
-- Log, lock and state: `~/.local/state/notes-sync/` (`sync.log`, which `notes doctor` reads; `conflict`; `backup-failures`).
+- Log, lock and state: `~/.local/state/notes-sync/` (`sync.log`, which `notes doctor` reads; `conflict`, `conflict-backup`; `backup-failures`).
 - `COMPLETE: origin at <sha>, backup at <sha>` means origin holds HEAD. `BACKUP:` means origin was unreachable and the commit went to backup. `SKIP:` means no remote answered and the commits wait for the next sync.
 - A merge conflict aborts the merge, keeps every local commit, logs `ERROR: merging origin conflicts in <files>`, and pages once. The same pair is not retried until one side moves.
-- A backup that fails 12 syncs in a row while origin answers pages once, and pages again when it recovers.
+- A backup that has taken no write for an hour while origin answers pages once, and pages again when it recovers. A conflict with backup pages once and skips backup only; origin keeps syncing.
+- The engine needs bash 4 or later; on macOS it runs Homebrew bash (`brew install bash`), since /bin/bash is 3.2.
+- A clone checked out on a branch other than `master` syncs nothing and logs `ERROR: ... is on <branch>, not master`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ERROR: merging origin conflicts in <file>` and a page | Two devices changed the same lines before either synced | In `~/.notes`: `git merge origin/master`, resolve, commit; the next sync pushes it |
-| Page: the notes store's backup has failed 12 syncs in a row | GitHub refuses the push (auth or a non-fast-forward) | `tail ~/.local/state/notes-sync/sync.log`; `backup failed: <why>` names it |
+| Page: the notes store's backup has not taken a write for an hour | GitHub refuses the push (auth or a non-fast-forward) | `tail ~/.local/state/notes-sync/sync.log`; `backup failed: <why>` names it |
 | A phone stops syncing after its dotfiles clone was updated | Its `notes-sync` wrapper still names the deleted `git-sync-notes.sh` | Re-run `notes-phone-setup` |
 
 ## Runtime overrides

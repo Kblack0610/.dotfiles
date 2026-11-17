@@ -16,6 +16,13 @@
 # peer"; the notes side: ~/.local/src/git/NOTES_SYNC_SETUP.md.
 set -uo pipefail
 
+# mapfile and declare -A need bash 4. macOS ships 3.2 at /bin/bash, first on launchd's PATH even
+# under `bash -l`, so take brew's when it is there.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && exec "$b" "$0" "$@"; done
+  echo "store-sync: needs bash 4 or later (brew install bash)" >&2; exit 2
+fi
+
 die() { echo "store-sync: $*" >&2; exit 2; }
 
 STORE_NAME=agent
@@ -57,9 +64,9 @@ TRIES=3
 # committed or on disk, and the next sync pushes it.
 LOCK_WAIT_S=300
 CONNECT_TIMEOUT_S=10
-# Consecutive syncs where origin answered but backup did not take HEAD, before the page: at the
-# notes timer's 5 minutes, about an hour of a dead backup rather than one bad Wi-Fi moment.
-BACKUP_ALERT_AFTER=12
+# How long backup may go without taking HEAD while origin answers, before the page: an hour of a
+# dead backup rather than one bad Wi-Fi moment. Time, not a run count: write hooks run many syncs.
+BACKUP_ALERT_AFTER_S=3600
 HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
@@ -89,21 +96,22 @@ notify() {
   "$n" -t "store-sync $STORE_NAME" -p "$1" "$2" >/dev/null 2>&1 || true
 }
 
-# track_backup <ok 0|1>: count the syncs in a row where origin answered and backup did not take
-# HEAD; page once on the way down and once on recovery. A silently stale backup once went a
-# month unseen (notes, from 2026-06-17).
+# track_backup <ok 0|1>: BACKUP_FAILS holds "<epoch of the first failed sync> [paged]" while
+# origin answers and backup does not take HEAD; page once past BACKUP_ALERT_AFTER_S and once on
+# recovery. A silently stale backup once went a month unseen (notes, from 2026-06-17).
 track_backup() {
-  local prev
-  prev=$(cat "$BACKUP_FAILS" 2>/dev/null || echo 0)
-  case "$prev" in '' | *[!0-9]*) prev=0 ;; esac
+  local first="" paged="" now
+  read -r first paged 2>/dev/null < "$BACKUP_FAILS"
   if [ "$1" = 0 ]; then
-    [ "$prev" -lt "$BACKUP_ALERT_AFTER" ] || notify normal "The $STORE_NAME store's backup took HEAD again on $HOST_TAG after $prev failed syncs."
-    [ "$prev" = 0 ] || echo 0 > "$BACKUP_FAILS"
+    [ -z "$paged" ] || notify normal "The $STORE_NAME store's backup took HEAD again on $HOST_TAG."
+    rm -f "$BACKUP_FAILS"
     return 0
   fi
-  echo $((prev + 1)) > "$BACKUP_FAILS"
-  [ $((prev + 1)) -ne "$BACKUP_ALERT_AFTER" ] \
-    || notify high "The $STORE_NAME store's backup has failed $BACKUP_ALERT_AFTER syncs in a row on $HOST_TAG, so the off-site copy is going stale. See $LOG"
+  now=$(date +%s)
+  case "$first" in '' | *[!0-9]*) echo "$now" > "$BACKUP_FAILS"; return 0 ;; esac
+  [ -z "$paged" ] && [ $((now - first)) -ge "$BACKUP_ALERT_AFTER_S" ] || return 0
+  notify high "The $STORE_NAME store's backup has not taken a write on $HOST_TAG for $(( (now - first) / 60 )) minutes, so the off-site copy is going stale. See $LOG"
+  echo "$first paged" > "$BACKUP_FAILS"
 }
 
 usage() { awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"; }
@@ -168,6 +176,8 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # failed (rejected because another machine pushed first, or a transient error).
 sync_one() {
   local r="$1" ref files=()
+  # One conflict file per remote: a clean origin merge must not clear a backup conflict.
+  local cf="$CONFLICT"; [ "$r" = origin ] || cf="$CONFLICT-$r"
   if ! FETCH_ERR=$(net "$r" -C "$STORE" fetch -q "$r" 2>&1); then
     FETCH_ERR=$(printf '%s' "$FETCH_ERR" | tail -n 1 | cut -c1-200)
     return 1
@@ -184,19 +194,19 @@ sync_one() {
     fi
     if g merge-base --is-ancestor HEAD "$ref"; then
       g merge -q --ff-only "$ref" >/dev/null 2>&1 || return 3
-    elif [ "$(cat "$CONFLICT" 2>/dev/null)" = "$(g rev-parse HEAD) $ref" ]; then
+    elif [ "$(cat "$cf" 2>/dev/null)" = "$(g rev-parse HEAD) $ref" ]; then
       CONFLICT_FILES=""
       return 2
     elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
       CONFLICT_FILES=$(g diff --name-only --diff-filter=U | head -n 5 | tr '\n' ' ')
       g merge --abort >/dev/null 2>&1
       # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
-      [ -f "$CONFLICT" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing; local commits are kept. Resolve it in $STORE; see $LOG"
-      printf '%s %s\n' "$(g rev-parse HEAD)" "$ref" > "$CONFLICT"
+      [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
+      printf '%s %s\n' "$(g rev-parse HEAD)" "$ref" > "$cf"
       return 2
     fi
   fi
-  rm -f "$CONFLICT"
+  rm -f "$cf"
   [ "$(ref_of "$r")" = "$(g rev-parse HEAD)" ] && return 0
   if PUSH_ERR=$(net "$r" -C "$STORE" push -q "$r" "HEAD:refs/heads/$BRANCH" 2>&1); then
     g update-ref "refs/remotes/$r/$BRANCH" HEAD
@@ -235,6 +245,9 @@ cmd_sync() {
     [ "${STORE_SYNC_FG:-0}" = 1 ] || { setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null 2>&1; exit 0; }
   fi
 
+  # Every push is HEAD:$BRANCH, so a clone left on another branch would push it over $BRANCH.
+  [ "$(g symbolic-ref -q --short HEAD)" = "$BRANCH" ] \
+    || { log "ERROR: $STORE is on $(g symbolic-ref -q --short HEAD || echo a detached HEAD), not $BRANCH; nothing synced"; exit 1; }
   mkdir -p "$SYNC_DIR"
   exec 9>"$SYNC_DIR/lock"
   flock -w "$LOCK_WAIT_S" 9 || { log "SKIP: another sync held the lock past ${LOCK_WAIT_S}s; the next sync pushes this write"; exit 0; }
