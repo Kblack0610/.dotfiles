@@ -59,5 +59,8 @@ fi
 # 4. Push whatever changed on detach/exit.
 sync
 
-# 5. Refresh the home-screen widget mirror (Termux only; self-skips elsewhere).
-command -v notes-mirror-shared >/dev/null 2>&1 && notes-mirror-shared >/dev/null 2>&1 || true
+# 5. Refresh the home-screen widget mirror (Termux only; self-skips elsewhere). Termux's
+#    PATH has no ~/.local/bin, where notes-phone-setup installs it, so look there first.
+MIRROR_CMD="$HOME/.local/bin/notes-mirror-shared"
+[ -x "$MIRROR_CMD" ] || MIRROR_CMD="$(command -v notes-mirror-shared 2>/dev/null || true)"
+[ -n "$MIRROR_CMD" ] && "$MIRROR_CMD" >/dev/null 2>&1 || true
