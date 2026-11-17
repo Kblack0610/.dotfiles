@@ -812,7 +812,7 @@ OUT
   fix_ended "$h2" FAIL
   run cmd_reap
   assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game sheet)'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2 fix"
   assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
   run cmd_reap
   refute_output --partial 'fix-crash'
@@ -823,6 +823,37 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+# ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
+@test "reap: a head whose fix-ci tries went to the human sheet and then reads green gets a lander, once its land tries are its own" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries'
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr_owner, .fix_human] | join("|")')" "queued|land|$h1 fix"
+  run item_brief "$(agent-queue show fix-crash --json)"
+  refute_output --partial '/fix-ci'
+  # its lands spent at that head too: one more row, then quiet on either color
+  fix_ended "$h1" PASS; run cmd_reap
+  fix_ended "$h1" PASS; run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix land"
+  for ci in PASS FAIL; do
+    fix_ended "$h1" "$ci"; run cmd_reap
+    refute_output --partial 'fix-crash'
+  done
+  # a stamp from before it named owners (the head alone, as #2182's was) still quiets only the spent owner
+  local h2=2222222222222222222222222222222222222222
+  agent-queue set fix-crash "fix_human=$h2" "fix_tries=2 $h2" land_tries= >/dev/null
+  fix_ended "$h2" FAIL; run cmd_reap
+  refute_output --partial 'fix-crash'
+  fix_ended "$h2" PASS; run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h2:0:12}, try 1 of 2)"
 }
 
 # 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
