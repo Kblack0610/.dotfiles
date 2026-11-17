@@ -340,12 +340,12 @@ cmd_chains() {
   done
 }
 
-# compact --dump: each lesson over max, from its first line to its end, to out/<key>.orig.
+# compact --dump: each lesson over max, from its first line to its end, to $LESSONS_OUT/<key>.orig.
 # shellcheck disable=SC2016
 DUMP='
 END {
   for (r = 1; r <= n; r++) if (bytes[r] > max) {
-    f = out "/" key[r] ".orig"; printf "" > f
+    f = ENVIRON["LESSONS_OUT"] "/" key[r] ".orig"; printf "" > f
     for (l = start[r]; l <= end[r]; l++) print raw[l] > f
     close(f); c++
   }
@@ -353,7 +353,7 @@ END {
 }
 '
 
-# compact: each lesson whose key is in kfile becomes rdir/<key>.md and a line "  <ptr><key>.", its
+# compact: each lesson whose key is in kfile becomes $LESSONS_RDIR/<key>.md and a line "  <ptr><key>.", its
 # first line to its end; the old lines go to archto under a "<!-- <key> compacted -->" mark
 # and the result to keepto. Prints "refused <key>: <why>" per text it cannot use, then the
 # count it replaced. The text keeps the lesson's marker ("- " or "## ") and the first 160
@@ -365,26 +365,31 @@ END {
   for (r = 1; r <= n; r++) { cnt[key[r]]++; at[key[r]] = r }
   for (k in want) {
     if (!(k in at)) { printf "refused %s: no lesson with that key\n", k; continue }
-    r = at[k]; f = rdir "/" k ".md"; t = ""; first = 1
+    r = at[k]; f = ENVIRON["LESSONS_RDIR"] "/" k ".md"; t = ""; first = 1
     while ((getline l < f) > 0) { t = first ? l : t "\n" l; first = 0 }
     close(f)
-    sub(/[[:space:]]+$/, "", t); t = t "\n  " ptr k "."
-    p = raw[start[r]] ~ /^## / ? "## " : "- "
-    split(t, tl, "\n"); h = substr(tl[1], length(p) + 1)
+    # A text taken from a lesson compacted before keeps one pointer, not two.
+    sub(/[[:space:]]+$/, "", t); sub(/\n  Evidence: `_archive\/[^`]*` [0-9a-f]+\.$/, "", t)
+    t = t "\n  " ptr k "."
+    old = raw[start[r]]; for (l = start[r] + 1; l <= end[r]; l++) old = old "\n" raw[l]
+    if (t == old) continue
+    p = old ~ /^## / ? "## " : "- "
+    nl = split(t, tl, "\n"); h = substr(tl[1], length(p) + 1)
     gsub(/[[:space:]]+/, " ", h); sub(/^ /, "", h); sub(/ $/, "", h)
     why = ""
+    for (i = 2; i <= nl && why == ""; i++) if (tl[i] ~ /^(#|- |20[0-9][0-9]-)/) why = "line " i " would open a lesson or section; indent it"
     # A marker (sig, seen, canonical) is what other tools key on: the text keeps each verbatim.
-    for (l = start[r]; l <= end[r] && why == ""; l++) {
-      s = raw[l]
-      while ((i = index(s, "<!--")) && (j = index(substr(s, i), "-->"))) {
-        m = substr(s, i, j + 2); s = substr(s, i + j + 2)
-        if (!index(t, m)) { why = "it drops the marker " m; break }
-      }
+    s = old
+    while (why == "" && (i = index(s, "<!--")) && (j = index(substr(s, i), "-->"))) {
+      m = substr(s, i, j + 2); s = substr(s, i + j + 2)
+      if (!index(t, m)) why = "it drops the marker " m
     }
     if (why != "") ;
     else if (cnt[k] > 1) why = "two lessons share that key"
     else if (substr(tl[1], 1, length(p)) != p) why = "the first line does not start with \"" p "\""
     else if (hash(substr(h, 1, 160)) != k) why = "the first 160 chars of the first line changed (the key)"
+    else if (match(title[r], /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) && !index(tl[1], substr(title[r], RSTART, RLENGTH))) why = "the first line drops its date " substr(title[r], RSTART, RLENGTH)
+    else if (length(t) >= length(old)) why = "not shorter than the lesson (" length(t) " >= " length(old) " bytes)"
     else if (length(t) + 1 > max) why = (length(t) + 1) " bytes with the pointer, over " max
     if (why != "") { printf "refused %s: %s\n", k, why; continue }
     new[r] = t
@@ -457,6 +462,14 @@ cmd_log() {
   mkdir -p "$d" && printf '%s\n' "$line" >> "$d/$(date +%Y-%m).tsv"
 }
 
+# Replace FILE with KEEP only if FILE still matches SNAP, the copy KEEP was made from: sessions
+# append lessons at any hour, and a lost lesson is worse than one moved a night late.
+swap_in() { # SNAP KEEP FILE
+  cmp -s "$1" "$3" || return 1
+  cp "$2" "$2.final" && chmod --reference="$3" "$2.final" && mv "$2.final" "$3" ||
+    { echo "lessons: cannot replace $3" >&2; exit 1; }
+}
+
 cmd_archive() {
   local days=90 dry=0 dir
   while [ $# -gt 0 ]; do
@@ -500,8 +513,6 @@ cmd_archive() {
   for f in "$dir"/*.md; do
     [ -f "$f" ] || continue
     proj=$(basename "$f" .md)
-    # Work on a snapshot and replace the file only if nothing wrote to it meanwhile: sessions
-    # append lessons at any hour, and a lost lesson is worse than one archived a night late.
     cp -p "$f" "$tmp/snap"
     moved=$(LC_ALL=C awk -v cutoff="$cutoff" -v dry="$dry" -v keepto="$tmp/keep" -v archto="$tmp/arch" \
       -v dfile="$tmp/delivered" -v hfile="$tmp/hits" "$PARSE$ARCHIVE" "$tmp/snap")
@@ -510,12 +521,10 @@ cmd_archive() {
       continue
     fi
     if [ "${moved:-0}" -gt 0 ]; then
-      if cmp -s "$tmp/snap" "$f"; then
+      if swap_in "$tmp/snap" "$tmp/keep" "$f"; then
         mkdir -p "$dir/_archive"
         { printf '\n## Archived %s: no preflight pick and no sig hit in %s days\n\n' "$(date +%F)" "$days"
           cat "$tmp/arch"; } >> "$dir/_archive/$proj-stale.md"
-        cp "$tmp/keep" "$tmp/keep.final" && chmod --reference="$f" "$tmp/keep.final" &&
-          mv "$tmp/keep.final" "$f"
         echo "lessons archive: $proj: moved $moved to _archive/$proj-stale.md"
         total=$((total + moved))
       else
@@ -550,25 +559,24 @@ cmd_compact() {
   proj=$(basename "$f" .md)
   if [ "$dump" = 1 ]; then
     mkdir -p "$dir"
-    echo "lessons compact: $proj: dumped $(LC_ALL=C awk -v max="$max" -v out="$dir" "$PARSE$DUMP" "$f") lesson(s) over $max bytes to $dir"
+    echo "lessons compact: $proj: dumped $(LESSONS_OUT="$dir" LC_ALL=C awk -v max="$max" "$PARSE$DUMP" "$f") lesson(s) over $max bytes to $dir"
     return 0
   fi
   [ -d "$dir" ] || { echo "lessons compact: no dir $dir" >&2; return 2; }
   local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/lessons-compact.XXXXXX")
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" RETURN
-  # Same snapshot rule as archive: a session may append a lesson while this runs.
   cp -p "$f" "$tmp/snap"
   find "$dir" -maxdepth 1 -name '*.md' -printf '%f\n' | sed -n 's/^\([0-9a-f]\{8\}\)\.md$/\1/p' > "$tmp/keys"
   local out count refused before after
-  out=$(LC_ALL=C awk -v max="$max" -v kfile="$tmp/keys" -v rdir="$dir" -v keepto="$tmp/keep" \
+  out=$(LESSONS_RDIR="$dir" LC_ALL=C awk -v max="$max" -v kfile="$tmp/keys" -v keepto="$tmp/keep" \
     -v archto="$tmp/arch" -v today="$(date +%F)" -v ptr="Evidence: \`_archive/$proj-evidence.md\` " \
     "$PARSE$COMPACT" "$tmp/snap")
   count=$(printf '%s\n' "$out" | tail -n 1)
   refused=$(printf '%s\n' "$out" | sed '$d' | sort)
   [ -z "$refused" ] || printf '%s\n' "$refused"
   if [ "$count" -gt 0 ]; then
-    # A text with its own dated or top-level bullet would open a second lesson.
+    # The per-text line check catches a split; this catches any parse it missed.
     before=$(LC_ALL=C awk "$PARSE"'END { print n + 0 }' "$tmp/snap")
     after=$(LC_ALL=C awk "$PARSE"'END { print n + 0 }' "$tmp/keep")
     if [ "$before" != "$after" ]; then
@@ -579,10 +587,9 @@ cmd_compact() {
   if [ "$dry" = 1 ]; then
     echo "lessons compact: $proj: would compact $count"
   elif [ "$count" -gt 0 ]; then
-    cmp -s "$tmp/snap" "$f" || { echo "lessons compact: $proj: changed while reading, nothing written; run it again"; return 1; }
+    swap_in "$tmp/snap" "$tmp/keep" "$f" || { echo "lessons compact: $proj: changed while reading, nothing written; run it again"; return 1; }
     mkdir -p "$(dirname "$f")/_archive"
     cat "$tmp/arch" >> "$(dirname "$f")/_archive/$proj-evidence.md"
-    cp "$tmp/keep" "$tmp/keep.final" && chmod --reference="$f" "$tmp/keep.final" && mv "$tmp/keep.final" "$f"
     echo "lessons compact: $proj: compacted $count, old text in _archive/$proj-evidence.md"
   else
     echo "lessons compact: $proj: compacted 0"
