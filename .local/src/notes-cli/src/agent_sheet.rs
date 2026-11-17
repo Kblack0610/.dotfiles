@@ -148,10 +148,12 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
 }
 
 /// A game's docs in its repo, by the playground convention `docs/games/<id>.md` plus the
-/// optional `<id>-story.md` and `<id>-look.md`, as `(label, url)` for those in the checkout.
+/// optional `<id>-story.md` and `<id>-look.md`, as `(label, url)` for those on `origin/main`.
 ///
 /// `<id>` is the lowercased basename of the tracker's `path`, the rule `stages.md` checks
 /// use. Empty for a project that is not a game or has no checkout or forge slug here.
+/// The files are read from the checkout's `origin/main` tree, not its working tree: the
+/// links point at `blob/main`, and the human's clone can sit hundreds of commits behind.
 pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, String)> {
     let Some(project) = reg.lookup(project) else {
         return Vec::new();
@@ -179,18 +181,38 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, Str
     let (Some(checkout), Some(slug), false) = (checkout, slug, id.is_empty()) else {
         return Vec::new();
     };
+    let on_main = main_files(&checkout, "docs/games/");
     [
         ("design", format!("{id}.md")),
         ("story", format!("{id}-story.md")),
         ("look", format!("{id}-look.md")),
     ]
     .into_iter()
-    .filter(|(_, f)| checkout.join("docs/games").join(f).is_file())
+    .filter(|(_, f)| on_main.contains(&format!("docs/games/{f}")))
     .map(|(label, f)| {
         let url = format!("https://github.com/{slug}/blob/main/docs/games/{f}");
         (label.to_string(), url)
     })
     .collect()
+}
+
+/// The paths under `dir` (with its trailing slash) in the checkout's `origin/main` tree;
+/// empty when git fails or the ref is missing, so no link is written for a file not seen.
+fn main_files(checkout: &Path, dir: &str) -> Vec<String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["ls-tree", "--name-only", "origin/main", dir])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The `Docs:` line a human sheet carries: every doc of the project that exists, in a fixed
@@ -540,6 +562,33 @@ mod tests {
             "repo",
             &["docs/games/shapecity.md", "docs/games/shapecity-look.md"],
         );
+        // Those two files are on origin/main. The working tree then disagrees both ways, as
+        // a clone behind main does: look is gone locally, and a story exists only locally.
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "docs"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fs::remove_file(checkout.join("docs/games/shapecity-look.md")).unwrap();
+        fs::write(checkout.join("docs/games/shapecity-story.md"), "").unwrap();
         let map = format!(
             r#"{{"paths": {{"{0}": "ucp", "{0}/": "fj"}},
                 "trackers": {{
@@ -554,7 +603,11 @@ mod tests {
         let reg = project_map::Registry::parse(&map).unwrap();
         let docs = repo_docs(&reg, "shape-city");
         let labels: Vec<&str> = docs.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(labels, ["design", "look"], "no story file, no story link");
+        assert_eq!(
+            labels,
+            ["design", "look"],
+            "origin/main decides: a local-only story is not linked, a look missing locally is"
+        );
         assert_eq!(
             docs[0].1,
             "https://github.com/Org/ucp/blob/main/docs/games/shapecity.md"
