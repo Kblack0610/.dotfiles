@@ -3557,9 +3557,10 @@ demand_write() {
   if [ "$ok" = 1 ]; then say "demand $2"; else say "demand $2 unwritten: $(tail -n 1 <<<"$out")"; fi
 }
 
-# home_line -> which machine the roster's fleet home is, in words. Rc 1 when the roster cannot be
-# read, or its fleet_state_host is not this machine and resolves to no address: then no machine
-# matches it and every one stands down, and only this says so (fleet_addr_is_me).
+# home_line -> which machine the roster's fleet home is, in words. Rc 0 when it is this machine, 1
+# when it is another, 2 when the roster cannot be read, or its fleet_state_host is not this machine
+# and resolves to no address: then no machine matches it and every one stands down, and only this
+# says so (fleet_addr_is_me).
 home_line() {
   local a rc
   fleet_is_home; rc=$?
@@ -3567,34 +3568,34 @@ home_line() {
   case "$rc" in
     0) if [ -n "$a" ]; then echo "the fleet home is $a: this machine ($FLEET_HOST)"
        else echo "the roster names no fleet_state_host, so this machine ($FLEET_HOST) is the fleet home"; fi ;;
-    2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 1 ;;
+    2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 2 ;;
     *) if timeout "$FLEET_RESOLVE_SECS" getent ahosts "${a##*@}" >/dev/null 2>&1; then
          echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"
-       else
-         echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"
          return 1
-       fi ;;
+       fi
+       echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"
+       return 2 ;;
   esac
 }
 
 # home_guard <verb> -- rc 0 on the fleet home. Elsewhere <verb> does nothing, not even publish a
-# pass outcome, and says why: rc 1 on a machine the roster says is not the home, rc 2 when home_line
-# fails (an unreadable roster, or a home no machine matches), a fault to see.
+# pass outcome, and says why, with home_line's rc: 1 off the home, 2 a fault to see.
 home_guard() {
-  fleet_is_home && return 0
-  local line rc=1
-  line=$(home_line) || rc=2
+  local line rc
+  fleet_hosts >/dev/null   # once, so home_line's subshell reads it parsed
+  line=$(home_line) && return 0
+  rc=$?
   say "$1: $line"
   return "$rc"
 }
 
 # cmd_hosts [--json] -- the fleet home (home_line), then each worker in the roster, as a pass would
-# read it now. Rc 1, said on stderr, when home_line fails.
+# read it now. Rc 1, said on stderr, when no machine is the home (home_line rc 2).
 cmd_hosts() {
   local h name rows=() home hrc=0
   fleet_roster_fetch
   fleet_hosts >/dev/null
-  home=$(home_line) || hrc=1
+  home=$(home_line) || [ $? != 2 ] || hrc=1
   if [ "$hrc" = 1 ]; then say "hosts: $home"; elif [ "${1:-}" != --json ]; then echo "$home"; fi
   probe_hosts "$(live_runs)"
   while IFS= read -r h; do
