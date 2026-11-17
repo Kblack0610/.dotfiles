@@ -294,6 +294,35 @@ fleet_host_run() {
   _fh_ssh "$dest" -p "$port" -- "$@"
 }
 
+# fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
+# `host` and its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
+# nothing aimed at the row lands on a local session that shares its name. The one reader of a
+# worker's sessions: fleet-sessions, agent-ask's delivery and reopen, and agent-web go through it.
+# Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
+# other the worker's agent-panel failed and prints no row.
+fleet_host_panel() {
+  local out rc=0
+  out=$(fleet_host_run "$1" agent-panel list --json 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
+  jq -c --arg h "$1" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
+  return "$rc"
+}
+
+# fleet_panel_row <claude session id> -> the first worker row (fleet_host_panel) of that session,
+# asking each worker in roster order and stopping at the one that has it; nothing when none does or
+# none answers. For a caller that already missed it in this machine's own agent-panel.
+fleet_panel_row() {
+  [ -n "${1:-}" ] || return 0
+  local name row
+  fleet_hosts >/dev/null
+  while IFS= read -r name; do
+    [ -n "$name" ] && [ "$name" != "$FLEET_HOST" ] || continue
+    row=$(fleet_host_panel "$name" | jq -c --arg s "$1" 'select(.session_id == $s)' 2>/dev/null | head -1)
+    [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
+  done < <(fleet_hosts | jq -r .name)
+  return 0
+}
+
 # _fh_ssh <dest> [ssh options...] -- <command> [args...] -- the one ssh call both paths share.
 _fh_ssh() {
   local dest="$1" opts=() n=-n

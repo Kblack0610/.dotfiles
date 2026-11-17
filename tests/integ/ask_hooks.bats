@@ -175,6 +175,40 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box"
 }
 
+@test "an answer to a session live on a fleet worker is typed in there, through that worker's agent-panel send" {
+  local a
+  sandbox_fleet_worker hp
+  printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" 'yes; ship' 2>/dev/null
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  assert_success
+  grep -qF "agent-panel send --pane lab/%1 Answer to ask $a: yes; ship" "$SANDBOX/hp/calls.log" || fail "not typed on hp: $(cat "$SANDBOX/hp/calls.log")"
+  ! grep -q '^agent-panel send' "$NOTES_FIXTURE/calls.log" || fail 'typed into a pane here'
+  assert_not_called 'ptask demo'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: done'; assert_line 'delivery_note: typed into dotfiles on hp'
+}
+
+@test "a worker that does not answer the send fails the delivery saying so; one down for the read files the board row" {
+  local a b
+  sandbox_fleet_worker hp
+  printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  echo send > "$SANDBOX/hp/down"
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'; assert_line 'delivery: failed'
+  assert_line 'delivery_note: hp did not answer, so the answer was not typed into dotfiles'
+  # Down for the read too: no session is seen live, so the answer becomes the typed board row.
+  : > "$SANDBOX/hp/down"
+  b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'two?')"
+  "$AGENT_ASK" answer "$b" now 2>/dev/null
+  AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver "$b" 2>/dev/null
+  assert_called "ptask demo --agent add chore(ask): two? -> answered: now (ask $b)"
+}
+
 # -- delivery: the answer is recorded at once and delivered in the background --
 
 delivery() { sed -n 's/^delivery: //p' "$HOME/.agent/asks/demo/$1.md"; }

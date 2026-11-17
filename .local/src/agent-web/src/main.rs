@@ -37,6 +37,7 @@ mod projects;
 mod proposals;
 mod queue;
 mod releases;
+mod remote;
 mod reqlog;
 mod schedules;
 mod sessions;
@@ -872,14 +873,41 @@ async fn collect() -> Vec<chooser::Agent> {
         .unwrap_or_default()
 }
 
-/// The live agent behind a target. Only targets that are agents right now are
-/// accepted, so the API cannot be pointed at an arbitrary tmux pane.
-async fn find(target: &str) -> ApiResult<chooser::Agent> {
+/// A live agent: on a pane here, or on a fleet worker (`remote`).
+enum Live {
+    Here(Box<chooser::Agent>),
+    There(remote::Remote),
+}
+
+/// A failed call to a worker, as the error the page shows.
+fn worker_err(host: &str, e: remote::Failed) -> (StatusCode, String) {
+    match e {
+        remote::Failed::Unreachable(why) => bad(StatusCode::BAD_GATEWAY, why),
+        remote::Failed::Exit(c, why) => bad(
+            StatusCode::BAD_GATEWAY,
+            format!("on {host}, exit {c}: {why}"),
+        ),
+    }
+}
+
+/// The live agent behind a target, here or on the fleet worker a `<host>@...` target names (that
+/// worker's own agent-panel says). Only targets that are agents right now are accepted, so the API
+/// cannot be pointed at an arbitrary tmux pane.
+async fn find(target: &str) -> ApiResult<Live> {
+    let gone = || bad(StatusCode::NOT_FOUND, format!("no live agent at {target}"));
+    if let Some((host, local)) = remote::split(target) {
+        return remote::find(host, local)
+            .await
+            .map_err(|e| worker_err(host, e))?
+            .map(Live::There)
+            .ok_or_else(gone);
+    }
     collect()
         .await
         .into_iter()
         .find(|a| a.target == target)
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no live agent at {target}")))
+        .map(|a| Live::Here(Box::new(a)))
+        .ok_or_else(gone)
 }
 
 /// A live or parked session behind a target, for reading its transcript.
@@ -983,8 +1011,13 @@ struct TargetQuery {
 }
 
 async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
-    let agent = find(&q.t).await?;
-    capture(agent.pane).await
+    match find(&q.t).await? {
+        Live::Here(agent) => capture(agent.pane).await,
+        Live::There(r) => r
+            .capture(SCREEN_LINES)
+            .await
+            .map_err(|e| worker_err(&r.host, e)),
+    }
 }
 
 async fn capture(pane: String) -> ApiResult<String> {
@@ -1058,7 +1091,30 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
     if b.text.is_empty() && b.key.is_none() {
         return Err(bad(StatusCode::BAD_REQUEST, "nothing to send"));
     }
-    let agent = find(&b.t).await?;
+    let not_taken = || {
+        bad(
+            StatusCode::CONFLICT,
+            "the session did not take the Enter; the text is in its input box",
+        )
+    };
+    let agent = match find(&b.t).await? {
+        Live::Here(agent) => *agent,
+        // A worker's session: that worker's agent-panel types the text, its tmux sends the key.
+        Live::There(r) => {
+            if !b.text.is_empty()
+                && !r
+                    .message(&b.text, b.submit.unwrap_or(true))
+                    .await
+                    .map_err(|e| worker_err(&r.host, e))?
+            {
+                return Err(not_taken());
+            }
+            if let Some(k) = b.key.as_deref() {
+                r.key(k).await.map_err(|e| worker_err(&r.host, e))?;
+            }
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    };
     let (server, pane) = tmux::split(&agent.pane);
     let server =
         server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
@@ -1073,10 +1129,7 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
                 .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
                 .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if sent == agent_panel::send::Sent::NotSubmitted {
-            return Err(bad(
-                StatusCode::CONFLICT,
-                "the session did not take the Enter; the text is in its input box",
-            ));
+            return Err(not_taken());
         }
     }
     if let Some(k) = b.key.as_deref() {

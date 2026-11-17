@@ -61,11 +61,35 @@ sandbox_worlds() {
 
 # sandbox_fleet_home -- a roster that names this machine (FLEET_HOST=state) the fleet home, state.lan,
 # with one worker it never places or probes, so a fleet-dispatch verb that writes the store runs
-# (home_guard). With no roster it stands down; a test that wants workers writes its own.
+# (home_guard). With no roster it stands down; a test that wants workers writes its own. ssh is a stub
+# that logs the call and does not answer (255), so a verb that asks every worker (record, restore,
+# an ask's live session) never leaves the sandbox.
 sandbox_fleet_home() {
   export FLEET_HOST=state FLEET_INVENTORY="$SANDBOX/inventory.yml"
   printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n          fleet_state_host: state.lan\n' > "$FLEET_INVENTORY"
+  printf '#!/usr/bin/env bash\necho "ssh $*" >> "$NOTES_FIXTURE/calls.log"\nexit 255\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
   unset FLEET_HOSTS_JSON
+}
+
+# sandbox_fleet_worker <name> -- sandbox_fleet_home plus a worker <name> at 192.0.2.40, and an ssh
+# stub that logs each call to calls.log and runs it as that worker would: the stubs there read and
+# log to $SANDBOX/<name>/, its own fixture. Every other worker in the roster does not answer (255),
+# and neither does this one while $SANDBOX/<name>/down exists: empty for every call, or holding a
+# word for only the calls that carry it.
+sandbox_fleet_worker() {
+  sandbox_fleet_home
+  printf '        %s:\n          ansible_host: 192.0.2.40\n          fleet_state_host: state.lan\n' "$1" >> "$FLEET_INVENTORY"
+  mkdir -p "$SANDBOX/$1"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"'
+    echo '[[ " $* " == *" 192.0.2.40 "* ]] || exit 255'
+    printf 'down=%q/down; fix=%q\n' "$SANDBOX/$1" "$SANDBOX/$1"
+    echo '[ ! -f "$down" ] || { w=$(cat "$down"); [ -n "$w" ] && [[ "$*" != *"$w"* ]]; } || exit 255'
+    echo 'NOTES_FIXTURE=$fix eval "${@: -1}"'
+  } > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
 }
 
 sandbox_init() {
