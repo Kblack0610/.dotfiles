@@ -45,6 +45,48 @@ setup() {
   [ "${#lines[@]}" -eq 2 ]
 }
 
+@test "a hold is load unless --kind says resource (dispatch defaults to resource), and list --kind filters (ar-2605)" {
+  "$HOLD" set unity --by c "96 C"
+  "$HOLD" set deskslim-1-ram --by d --kind resource "bad RAM; release after memtest"
+  "$HOLD" set dispatch --by g "maintenance"
+  "$HOLD" claim mac-desktop --by e "store form"
+  # holds written before kinds existed read as the kind set would give them
+  printf 'resource: old\nsince: x\nby: f\nroster: \ngranted: \nreason: legacy\n' > "$AGENT_HOLD_DIR/old"
+  printf 'resource: dispatch\nsince: x\nby: f\nroster: \ngranted: \nreason: legacy\n' > "$AGENT_HOLD_DIR/dispatch"
+  run "$HOLD" show unity
+  assert_line 'kind: load'
+  run "$HOLD" list --kind load
+  assert_success
+  assert_line --partial $'old\t'
+  assert_line --partial $'unity\t'
+  [ "${#lines[@]}" -eq 2 ]
+  run "$HOLD" list --kind resource
+  assert_line --partial $'deskslim-1-ram\t'
+  assert_line --partial $'dispatch\t'
+  [ "${#lines[@]}" -eq 2 ]
+  run "$HOLD" list --kind claim
+  assert_output --partial $'mac-desktop\t'
+  [ "${#lines[@]}" -eq 1 ]
+  run "$HOLD" list
+  [ "${#lines[@]}" -eq 5 ]
+  # a re-set writes the kind it is given, so a load hold on a resource once held for RAM is load
+  "$HOLD" set deskslim-1-ram --by d "hot"
+  run "$HOLD" show deskslim-1-ram
+  assert_line 'kind: load'
+  run "$HOLD" set x --kind heat "why"
+  assert_failure 2
+  run "$HOLD" list --kind heat
+  assert_failure 2
+  run "$HOLD" list --kind load extra
+  assert_failure 2
+}
+
+@test "set refuses a flag with no value instead of looping on it" {
+  run timeout 5 "$HOLD" set x --roster
+  assert_failure 2
+  assert_output --partial '--roster needs a value'
+}
+
 @test "release frees the resource and prints the roster for GO" {
   "$HOLD" set unity-tests --by c --roster agent-19,agent-21 "hot"
   run "$HOLD" release unity-tests
