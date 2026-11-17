@@ -36,7 +36,7 @@ JSON
     cat > "$SANDBOX/bin/$h" <<EOF
 #!/usr/bin/env bash
 if [ "\$1 \$2" = "mcp list" ]; then echo '[]'; exit 0; fi
-if [ "\$1" = "--version" ]; then echo "\${FAKE_CLAUDE_VERSION:-2.1.319} (Claude Code)"; exit 0; fi
+if [ "\$1" = "--version" ]; then case $h in codex) echo "codex-cli \${FAKE_CODEX_VERSION:-0.168.0}" ;; *) echo "\${FAKE_CLAUDE_VERSION:-2.1.319} (Claude Code)" ;; esac; exit 0; fi
 printf '%s\n' "\$@" > "$SANDBOX/$h-argv.txt"
 printf '%s\n' "\${GH_TOKEN:-<unset>}" "\${GITHUB_TOKEN:-<unset>}" "\${GH_TOKEN_FILE:-<unset>}" > "$SANDBOX/$h-token.txt"
 cat >/dev/null
@@ -276,7 +276,7 @@ codex_fs() { grep -m1 '^permissions=' "$SANDBOX/codex-argv.txt" | grep -oE '"[^"
   git init -q "$SANDBOX/repo"
   git -C "$SANDBOX/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
   git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt" -b wt
-  printf '{"sandbox": {"filesystem": {"allowWrite": ["~/.agent", "~/.hooks"], "denyWrite": ["~/.agent/locked"]}}}\n' > "$HOME/.config/agentctl/sandbox/deny.json"
+  printf '{"sandbox": {"filesystem": {"allowWrite": ["~/.agent"], "denyWrite": ["~/.agent/locked"]}}}\n' > "$HOME/.config/agentctl/sandbox/deny.json"
   cd "$SANDBOX/wt"
   common="$(cd "$SANDBOX/repo/.git" && pwd -P)"; own="$common/worktrees/wt"
   SANDBOX_PROFILE=deny lane --harness codex -p x
@@ -289,16 +289,29 @@ codex_fs() { grep -m1 '^permissions=' "$SANDBOX/codex-argv.txt" | grep -oE '"[^"
   refute_line "\"$common\"=\"write\""
 }
 
-@test "a codex lane whose profile's allowWrite names a git path that runs code still gets it read-only: the deny wins" {
+@test "a codex lane whose profile's allowWrite names a git path that runs code still gets it read-only, trailing slash or not: the deny wins" {
   git init -q "$SANDBOX/repo"
   cd "$SANDBOX/repo"
   git="$(pwd -P)/.git"
-  printf '{"sandbox": {"filesystem": {"allowWrite": ["%s"]}}}\n' "$git/hooks" > "$HOME/.config/agentctl/sandbox/reach.json"
+  printf '{"sandbox": {"filesystem": {"allowWrite": ["%s"]}}}\n' "$git/hooks/" > "$HOME/.config/agentctl/sandbox/reach.json"
   SANDBOX_PROFILE=reach lane --harness codex -p x
   assert_success
   run codex_fs
   assert_line "\"$git/hooks\"=\"read\""
   refute_line "\"$git/hooks\"=\"write\""
+  refute_line "\"$git/hooks/\"=\"write\""
+}
+
+@test "a codex older than SANDBOX_CODEX_MIN refuses a sandboxed writing lane, which it would run on its config's sandbox; a read-only role still runs (control)" {
+  FAKE_CODEX_VERSION=0.167.9 SANDBOX_PROFILE=writes lane --harness codex -p x
+  assert_failure 78
+  assert_output --partial 'codex is older than 0.168.0'
+  [ ! -e "$SANDBOX/codex-argv.txt" ] || fail "an old codex ran a sandboxed lane"
+  sed 's/^ROLE_WRITE=yes/ROLE_WRITE=no/' "$HOME/.config/agentctl/roles/build.role" > "$HOME/.config/agentctl/roles/read.role"
+  FAKE_CODEX_VERSION=0.167.9 SANDBOX_PROFILE=writes run "$RUN" --role read --data-class public --harness codex -p x
+  assert_success
+  run cat "$SANDBOX/codex-argv.txt"
+  assert_line 'read-only'
 }
 
 @test "codex refuses a profile that hides paths or lists hosts, which it cannot enforce" {
