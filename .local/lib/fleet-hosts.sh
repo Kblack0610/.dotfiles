@@ -323,7 +323,7 @@ fleet_panel_row() {
   local name row
   fleet_hosts >/dev/null
   while IFS= read -r name; do
-    row=$(fleet_host_panel "$name" | jq -c --arg s "$1" 'select(.session_id == $s)' 2>/dev/null | head -1)
+    row=$(fleet_host_panel "$name" | jq -cn --arg s "$1" 'first(inputs | select(.session_id == $s))' 2>/dev/null)
     [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
   done < <(fleet_peers)
   return 0
