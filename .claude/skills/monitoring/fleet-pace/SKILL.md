@@ -58,7 +58,7 @@ The class column tells you how each consumer can be stopped:
 
 | Verdict | Meaning |
 |---|---|
-| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or memory stall (PSI some avg10) at 20% or more, which is swapping while MemAvailable still reads fine, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, default `dispatch mac-desktop deskslim-*-ram`, glob names, which pause work, the mac-mini desktop or another host's hardware and say nothing about load) |
+| HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or memory stall (PSI some avg10) at 20% or more, which is swapping while MemAvailable still reads fine, or Tctl at 95 with load at 1.5x), or between the marks while a machine hold is set (any hold but those in `FLEET_NOT_LOAD_HOLDS`, glob names, default in `fleet-assess`, which pause work, the mac-mini desktop or another host's hardware and say nothing about load) |
 | CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more, stall under 5%). Safe to send GO |
 | OK | Nothing held, nothing over the line |
 

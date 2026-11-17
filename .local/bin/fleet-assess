@@ -99,9 +99,9 @@ read_swap_used_gb() {
 # A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
 # that only pauses a workflow (dispatch), is the mac-mini desktop mutex (mac-desktop) or marks
 # another host's bad hardware (deskslim-1-ram) says nothing about this machine's load, so it
-# does not count: on 2026-10-27 the dispatch hold dropped the trip line from 1.75x to 1x and
-# fleet-thermal paged high 36 times in 8 hours, and on 2026-11-17 deskslim-1-ram read as a hold
-# on a CLEAR machine, a `pace:` line the shepherd could not answer without lifting it.
+# does not count: it would drop the trip line from 1.75x to 1x (fleet-thermal paged high 36
+# times in 8 hours on one dispatch hold), or read as a hold on a CLEAR machine, a `pace:` line
+# the shepherd could answer only by lifting it.
 holds_set() {
   local f pat pats
   [ -d "$HOLD_ROOT" ] || return 1

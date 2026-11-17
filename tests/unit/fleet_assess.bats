@@ -123,6 +123,10 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   touch "$AGENT_HOLD_DIR/deskslim-1-ram"
   run holds_set
   assert_failure
+  touch "$AGENT_HOLD_DIR/deskslim-1-cpu"
+  run holds_set
+  assert_success
+  rm "$AGENT_HOLD_DIR/deskslim-1-cpu"
   touch "$AGENT_HOLD_DIR/unity"
   run holds_set
   assert_success
