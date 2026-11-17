@@ -70,7 +70,7 @@ plan_session_phases() {
   local tgt n
   IFS=$'\t' read -r tgt n < <(plan_pointer "$1") || true
   if [ -z "${tgt:-}" ]; then plan_phase_list "$1"; return; fi
-  plan_phase_list "$tgt" | jq -c --argjson n "$n" '[.[$n - 1] // empty]'
+  plan_phase_list "$tgt" | jq -c --argjson n "$n" 'if $n < 1 then [] else [.[$n - 1] // empty] end'
 }
 
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.

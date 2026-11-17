@@ -386,6 +386,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/canon.md\n\n## Phases\n\n- [ ] three\n"
   run "$SWEEP" run
   assert_success
+  [ "$(grep -c 'finish canon' "$NOTES_FIXTURE/rows.board")" = 1 ]
   run grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
   [ "$status" -ne 0 ]
   # negative control: the same stub pointing nowhere is a plan of its own and files its row

@@ -1979,6 +1979,7 @@ EOS
   printf '%s\n' "Phase 2 of $SANDBOX/canon.md" '' '## Phases' '' '- [ ] 2. gate-then-land' >"$SANDBOX/stub.md"
   run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "2. gate-then-land"
   assert_success
+  assert_line "plan: $SANDBOX/stub.md is a pointer stub; its phases are in $SANDBOX/canon.md"
   run cat "$SANDBOX/canon.md"
   assert_output - <<'EOF2'
 ## Phases

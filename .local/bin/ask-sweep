@@ -64,7 +64,7 @@ file_row() {
 board_of() { project_board "$1"; }
 
 sweep_plans() {
-  local first live f slug done_n total next project board rows
+  local first live f slug canon stub done_n total next project board rows
   first="$ASK_SWEEP_DIR/first-run"
   [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   # The first real run only starts the clock, and a dry run before it has nothing to report.
@@ -76,8 +76,9 @@ sweep_plans() {
   while IFS= read -r -d '' f; do
     [ "$f" -ot "$first" ] && continue
     PLANS_READ=$((PLANS_READ + 1))
-    # A pointer stub owns no phases: the plan it names is swept as itself, so its checklist is no row.
-    [ -z "$(plan_pointer "$f")" ] || continue
+    # A pointer stub owns no phases: it is swept as the plan it names, whose one row it shares.
+    IFS=$'\t' read -r canon _ < <(plan_pointer "$f") || true
+    stub="$f"; [ -z "${canon:-}" ] || f="$canon"
     IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
     if [ "$total" = - ]; then
@@ -86,7 +87,7 @@ sweep_plans() {
     fi
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
-    grep -qxF "$f" <<<"$live" && continue
+    grep -qxF -e "$f" -e "$stub" <<<"$live" && continue
     project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
     [ -n "$project" ] || continue
     board="$(board_of "$(basename "$project")")"
