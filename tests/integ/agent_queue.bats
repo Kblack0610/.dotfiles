@@ -3133,3 +3133,17 @@ started_item() {
   assert_failure; assert_output --partial "already queued"
   [ ! -s "$SANDBOX/gh.log" ] || fail "a writer asked gh: $(cat "$SANDBOX/gh.log")"
 }
+
+@test "a lock that stays busy past the wait exits 75, not 1, and writes nothing" {
+  "$AQ" add --project game "one item" >/dev/null
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item"
+  assert_failure 75
+  assert_output --partial "the queue is locked by another writer"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json
+  assert_failure 75
+  flock -u 9
+  run "$AQ" list --json
+  [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}

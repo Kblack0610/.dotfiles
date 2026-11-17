@@ -205,23 +205,29 @@ lock_read() {
 }
 # unlock -- let the lock go. A shared one is let go once the item files are read (items_json,
 # item_json): what a listing derives from them (holds, order, sizes) asks gh, rbw, asks and notes for
-# seconds, and a writer gives up after 10 s (ar-2427).
+# seconds, and a writer gives up after LOCK_WAIT (ar-2427).
 unlock() {
   exec 8>&-
   AQ_HELD=""
 }
 unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
-# take_lock [-s]: every taker passes through .gate and closes it once in, all within one 10s
-# deadline. A waiting writer holds the gate, so a new read queues behind it and the writer waits
+# take_lock [-s]: every taker passes through .gate and closes it once in, all within one
+# LOCK_WAIT (10s by default) deadline. A waiting writer holds the gate, so a new read queues behind it and the writer waits
 # only for the reads already in. Why: flock lets a shared taker in while an exclusive one waits, so
 # overlapping lists (agent-web, hub, panel, dispatch, about 16 at once under load) held .lock
 # shared without a gap and every write timed out (2026-11-12). As with any writer-first lock, a
 # holder must not wait on a child that takes the lock again. A reader holds .lock only while it lists
 # and reads the files (snap_json), since a writer's wait is the sum of the reads already in.
+# A timeout exits LOCK_BUSY, not 1: nothing was written, so a caller that must record (agent-land)
+# can tell it from a refusal and take the lock again.
+LOCK_BUSY=75
+LOCK_WAIT="${AGENT_QUEUE_LOCK_WAIT:-10}"
 take_lock() {
-  local gate end=$((SECONDS + 10))
+  [[ "$LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_LOCK_WAIT is whole seconds, not '$LOCK_WAIT'"
+  local gate end=$((SECONDS + LOCK_WAIT))
   exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
-  flock -w 10 "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 || die "the queue is locked by another writer"
+  flock -w "$LOCK_WAIT" "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 ||
+    { echo "agent-queue: the queue is locked by another writer" >&2; exit "$LOCK_BUSY"; }
   exec {gate}>&-
 }
 
