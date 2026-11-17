@@ -96,49 +96,46 @@ setup_k3d_local() {
 # ============================================================================
 # Home k3s Cluster Connection
 # ============================================================================
+# The admin kubeconfig lives in rbw (base64, one line), so a machine other than
+# the workstation can run the cluster. Recovery paths when rbw has no copy:
+# home-config docs/host-access.md, "Cluster admin from another machine".
+HOME_K3S_RBW_FOLDER="infra"
+HOME_K3S_RBW_ENTRY="home-k3s-kubeconfig"
+
 setup_home_k3s() {
-    log_info "Setting up home k3s cluster connection..."
+    log_info "Setting up home k3s cluster connection from rbw ${HOME_K3S_RBW_FOLDER}/${HOME_K3S_RBW_ENTRY}..."
 
-    echo ""
-    echo "To connect your home k3s cluster, you need to:"
-    echo ""
-    echo "1. SSH into your k3s server and get the kubeconfig:"
-    echo "   ${YELLOW}sudo cat /etc/rancher/k3s/k3s.yaml${NC}"
-    echo ""
-    echo "2. Copy the contents and save locally (replace SERVER_IP with your server's IP):"
-    echo "   ${YELLOW}mkdir -p ~/.kube/clusters${NC}"
-    echo "   ${YELLOW}vim ~/.kube/clusters/home-k3s.yaml${NC}"
-    echo ""
-    echo "3. In the config, replace 'server: https://127.0.0.1:6443' with:"
-    echo "   ${YELLOW}server: https://YOUR_SERVER_IP:6443${NC}"
-    echo ""
-    echo "4. Change the context/cluster/user names from 'default' to 'home-k3s'"
-    echo ""
-    read -p "Do you have the kubeconfig file ready at ~/.kube/clusters/home-k3s.yaml? (y/N): " -n 1 -r
-    echo
+    if ! rbw unlocked &> /dev/null; then
+        log_error "rbw is locked or not logged in. Run 'rbw login' / 'rbw unlock', then rerun option 3."
+        return 1
+    fi
 
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if [[ -f ~/.kube/clusters/home-k3s.yaml ]]; then
-            # Merge the kubeconfig
-            KUBECONFIG=~/.kube/config:~/.kube/clusters/home-k3s.yaml kubectl config view --flatten > ~/.kube/config.new
-            mv ~/.kube/config.new ~/.kube/config
-            chmod 600 ~/.kube/config
+    local target="$HOME/.kube/clusters/home-k3s.yaml"
+    mkdir -p "$HOME/.kube/clusters"
+    local tmp
+    tmp=$(mktemp "$target.XXXXXX")
+    if ! rbw get --folder "$HOME_K3S_RBW_FOLDER" "$HOME_K3S_RBW_ENTRY" | base64 -d > "$tmp" || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        log_error "Could not read ${HOME_K3S_RBW_FOLDER}/${HOME_K3S_RBW_ENTRY} from rbw."
+        return 1
+    fi
+    chmod 600 "$tmp"
+    mv "$tmp" "$target"
 
-            log_success "Home k3s cluster added to kubeconfig!"
-            log_info "Context name: home-k3s"
+    # The rbw copy comes first so it replaces a stale home-k3s entry; the
+    # current context is kept.
+    local current
+    current=$(kubectl config current-context 2> /dev/null || true)
+    KUBECONFIG="$target:$HOME/.kube/config" kubectl config view --flatten > "$HOME/.kube/config.new"
+    chmod 600 "$HOME/.kube/config.new"
+    mv "$HOME/.kube/config.new" "$HOME/.kube/config"
+    [[ -n "$current" ]] && kubectl config use-context "$current" > /dev/null
+    log_success "Context home-k3s written to ~/.kube/config"
 
-            # Test connection
-            if kubectl cluster-info --context home-k3s &> /dev/null; then
-                log_success "Successfully connected to home k3s cluster!"
-            else
-                log_warn "Could not connect to home cluster. Check your network/firewall settings."
-            fi
-        else
-            log_error "File not found: ~/.kube/clusters/home-k3s.yaml"
-            log_info "Please create the file first with your k3s kubeconfig"
-        fi
+    if kubectl cluster-info --context home-k3s &> /dev/null; then
+        log_success "Connected to home k3s."
     else
-        log_info "Skipping home k3s setup. Run this script again when ready."
+        log_warn "Could not reach home k3s. Check the LAN or tailnet."
     fi
 }
 
