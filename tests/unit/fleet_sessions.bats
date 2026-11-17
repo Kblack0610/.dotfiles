@@ -3435,6 +3435,42 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
 }
 
+@test "end to end: a member PR a landing train closed reads landed through its done item's merged PR (ar-1324)" {
+  # 2026-11-10 ucp-342: train #2178 merged #2166's commits and closed it; agent-land recorded #2178 on the
+  # item, but the transcript named only #2166, so the session read STALLED closed without merging.
+  landed_fixture
+  panel "$SANDBOX/wt"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  local oid d="$HOME/.agent/queue/done/$(date +%F)"
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  printf 'feat/x\t2166\tCLOSED\tFAIL\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
+  # done_item <status> <merged>: the item this session (sid-9) worked, done with the train PR recorded
+  done_item() {
+    mkdir -p "$d"
+    printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\nmerged: %s\nstatus: %s\nfinished: %s\n---\nskater\n' \
+      "$2" "$1" "$(date -u +%FT%TZ)" > "$d/20261108-025157-ucp-342.md"
+  }
+  done_item ok 4594309f2ba9124d2548aa0dd142217711275404
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [[ "$(jq -r .reason <<<"$output")" == 'PR #2166 closed, its PRs #2178 merged'* ]]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+
+  # negative controls: an item that did not land (cancelled, nothing merged), or one still running here
+  done_item cancelled ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
+    > "$HOME/.agent/queue/running/20261108-025157-ucp-342.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
+}
+
 @test "end to end: a PR in the landing queue is WORKING waiting on the landing queue, not CI red or green-not-merged (ar-1285)" {
   # 2026-11-10 agent-2 #2149, 4th of 9 in the unity-core-playground landing queue, read STALLED CI red: its red
   # Checks was the landing slot refusing it, and gate-line.py had labelled it landing-queue.

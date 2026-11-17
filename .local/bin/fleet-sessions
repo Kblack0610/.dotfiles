@@ -148,7 +148,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <open job: gate|queue|test|build|agent|human|jobs|none|hung|wait|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
-#                 none open and every state known (a closed one was replaced or dropped), or -;
+#                 none open and every state known (a closed one was replaced or dropped), else
+#                 the merged PR its done queue item recorded (a landing train's), or -;
 #                 a session in the main checkout lands from worktrees, so its branch never has
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
@@ -1568,16 +1569,27 @@ collect() {
       item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
     fi
     # The row's queue item (item_of's one join), with the board row it came from and its origin;
-    # islugs keeps every item running here (own:a,b), the JSON's item.also.
-    local islug=- islugs=- irel=- irow=- iorigin=-
+    # islugs keeps every item running here (own:a,b), the JSON's item.also. ilanded is the PR a done
+    # item recorded as merged: a landing train merges a member's commits through its own train/* PR and
+    # closes the member, so the transcript names only the closed member while agent-land records the
+    # train PR on the item (ar-1324: ucp-342 #2166 closed, train #2178 merged, 2026-11-10, read STALLED).
+    local islug=- islugs=- irel=- irow=- iorigin=- ilanded=-
     case "$item" in
       own:* | moved:* | here:* | review:*)
         irel="${item%%:*}"; islugs="${item#*:}"; islugs="${islugs%% *}"; islug="${islugs%%,*}"
-        IFS=$'\t' read -r irow iorigin < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
+        IFS=$'\t' read -r irow iorigin ilanded < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
-              | if . == "" then "-" else . end), (.origin // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iorigin="${iorigin:--}" ;;
+              | if . == "" then "-" else . end), (.origin // "-"),
+             (if .state == "done" and (.status // "") == "ok" and (.merged // "") != "" and (.pr // "") != ""
+              then "#" + (.pr | tostring | sub(".*#"; "")) else "-" end)] | @tsv)' <<<"$qall" 2>/dev/null)
+        irow="${irow:--}"; iorigin="${iorigin:--}"; ilanded="${ilanded:--}" ;;
     esac
+    # The done item's merged PR is the session's landed one when its transcript names no merged PR,
+    # none open and every state known: the same bar as the transcript's own landed.
+    if [ "$landed" = - ] && [ "$ilanded" != - ] && [ "$irel" = moved ] \
+       && jq -e 'all(.state != null and .state != "OPEN")' <<<"$prs" >/dev/null 2>&1; then
+      landed="$ilanded"
+    fi
     local sjob=-; [ "$status" = shell ] && sjob="$ojob"
     if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited" "$sjob")
     else read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names <<<"0 0 0 - - - 1 - - - - - -"; fi
