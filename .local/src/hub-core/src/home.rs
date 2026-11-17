@@ -729,6 +729,8 @@ pub fn needs(
     };
     let mut out = Vec::new();
     let mut shown: HashSet<String> = HashSet::new();
+    // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
+    let mut asked: HashSet<String> = HashSet::new();
     // The board rows (`<project>:<id>`) an ask, session or queue row above already stands for.
     let mut worked: HashSet<String> = HashSet::new();
     fn work(worked: &mut HashSet<String>, i: Option<&Item>) {
@@ -755,11 +757,11 @@ pub fn needs(
         // claude_session. The tmux name is no fallback, since a name outlives its session (a
         // reboot) and a later session reuses it; an ask with no live owner blocks no session.
         let owner = str_of(a, "claude_session");
-        let row = (!owner.is_empty())
-            .then(|| sessions.iter().find(|s| str_of(s, "session_id") == owner))
-            .flatten();
+        let row = sessions
+            .iter()
+            .find(|s| !owner.is_empty() && str_of(s, "session_id") == owner);
         let target = row.map(|s| str_of(s, "target").to_string());
-        let session = target.as_deref().map_or("", tmux_name);
+        let session = row.map_or("", |s| tmux_name(str_of(s, "target")));
         if !session.is_empty() {
             shown.insert(session.to_string());
         }
@@ -771,14 +773,16 @@ pub fn needs(
         if !task.is_empty() {
             worked.insert(format!("{}:{task}", str_of(a, "project")));
         }
-        work(
-            &mut worked,
-            items
-                .iter()
-                .copied()
-                .find(|i| !task.is_empty() && i.slug == task),
-        );
-        work(&mut worked, item_of(session));
+        // Its queue item: the live owner's, else the one its `task` names, so an ask whose owner
+        // died still stands for the item waiting on it.
+        let by_task = items
+            .iter()
+            .copied()
+            .find(|i| !task.is_empty() && i.slug == task);
+        work(&mut worked, by_task);
+        let item = item_of(session).or(by_task);
+        work(&mut worked, item);
+        asked.extend(item.map(|i| i.slug.clone()));
         out.push(Need {
             kind: Kind::Ask,
             need: NeedKind::Ask,
@@ -790,7 +794,7 @@ pub fn needs(
                 !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
                 target.is_some(),
                 left(target.as_ref()),
-                dependents(item_of(session).map(|i| i.slug.as_str())),
+                dependents(item.map(|i| i.slug.as_str())),
                 age_min(since),
             )),
             recommend: (!recommend.is_empty()).then(|| recommend.into()),
@@ -828,9 +832,10 @@ pub fn needs(
         });
     }
     for i in items.iter().filter(|i| i.state == State::Waiting) {
-        if i.session
-            .as_deref()
-            .is_some_and(|s| shown.contains(tmux_name(s)))
+        if asked.contains(&i.slug)
+            || i.session
+                .as_deref()
+                .is_some_and(|s| shown.contains(tmux_name(s)))
         {
             continue;
         }
@@ -1281,6 +1286,14 @@ mod tests {
         assert!(!ask.score.as_ref().unwrap().session);
         // The reused name's own session still needs the human, as its own row.
         assert!(h.needs.iter().any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+        // The queue item waiting on the dead asker is still the ask's own, so it is no second row.
+        st["asks"][0]["task"] = json!("asked");
+        let q = Queue {
+            items: vec![item("asked", State::Waiting, Some("lab:repo-agent-1"))],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue && n.id == "asked"));
         // An ask with no owner (headless) blocks no session either.
         st["asks"][0]["claude_session"] = Value::Null;
         let h = build(Some(&st), None, None, None, NOW);
