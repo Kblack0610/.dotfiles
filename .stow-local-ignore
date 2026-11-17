@@ -17,6 +17,9 @@
 ^/tests$
 ^/docs$
 target
+# Python writes bytecode beside a stowed hook's source, inside this tree, and the copy
+# already in $HOME aborts the whole restow.
+__pycache__
 # ~/.agent is the agent RUNTIME axis and must stay a real directory in $HOME. Stowed, it
 # becomes a link farm pointing back here, so every hook write lands inside this working
 # tree - where `git clean -xdf` erases the whole memory layer. Measured on the Mac before
