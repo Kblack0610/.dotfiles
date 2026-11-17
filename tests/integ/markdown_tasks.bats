@@ -66,7 +66,9 @@ tt() { echo "vim.api.nvim_win_set_cursor(0, {$1, 0}); vim.fn.maparg(' tt', 'n', 
 @test "o is stock vim o, on a task line too" {
   run run_keys "vim.api.nvim_win_set_cursor(0, {1, 0}); vim.api.nvim_feedkeys('ofoo\27', 'xt', false)" '- [ ] a' 'b'
   assert_output '- [ ] a / foo / b | 2,2 n'
-  assert_equal "$(nvim --headless -u NONE -i NONE --cmd "set rtp^=$PLUGIN" \
-    -c "lua package.loaded['render-markdown'] = { setup = function() end }; dofile('$SPEC')[1].config()" \
-    -c "edit $NOTE" -c 'set ft=markdown' -c "lua io.stdout:write(vim.fn.maparg('o', 'n'))" -c 'qa!' 2>/dev/null)" ''
+}
+
+@test "the config maps none of o, O or Enter in a markdown buffer" {
+  run run_keys "for _, k in ipairs { 'o', 'O', '<CR>' } do vim.fn.setline(1, vim.fn.getline(1) .. '[' .. k .. '=' .. vim.fn.maparg(k, 'n') .. ']') end" ''
+  assert_output '[o=][O=][<CR>=] | 1,0 n'
 }

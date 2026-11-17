@@ -875,7 +875,6 @@ return {
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
           --   tt  convert line to task, or add an indented subtask if already one;
           --       the cursor lands in insert where the text goes. Visual: convert the lines.
-          -- Core vim keys (o, O, Enter) stay stock: nothing here remaps them.
           --   tP  raise priority  low -> high -> urgent, stops at urgent
           --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
