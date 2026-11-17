@@ -76,7 +76,7 @@ If `rbw login` still returns silently, the account has 2FA and the device needs 
 
 ## Discord webhooks (`discord-post`)
 
-`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
+`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. It prints the message id, or with `--link` the message's `discord.com/channels/...` URL (which `mkt post` records); `--dry-run` prints the payload and sends nothing. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
 
 Add a channel (a person with Manage Webhooks on the server):
 
