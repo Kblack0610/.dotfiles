@@ -374,7 +374,7 @@ live_cron() {
       ({}; if ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {ts: $e.ts, durable: ($e.c | test("Session-only") | not)}
            elif ($e.c | test("^Cancelled job [0-9a-f]+")) then del(.[$e.c | capture("^Cancelled job (?<i>[0-9a-f]+)").i])
            else . end)
-    | if any(.[]; (.durable or .ts >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null | head -n 1
+    | if any(.[]; (.durable or .ts >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
