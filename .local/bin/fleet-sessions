@@ -1598,7 +1598,7 @@ collect() {
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
       [ -z "${ptgt:-}" ] || { canon="$ptgt"; pbase="$pn"; }
       qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" \
-              --argjson open "$(jq -c --argjson b "$pbase" '[to_entries[] | select(.value.state == "open") | {n: (.key + $b | tostring), name: .value.name}]' <<<"$plj")" \
+              --argjson open "$(jq -c --argjson b "$pbase" '[.[] | select(.state == "open") | {n: (.n + $b - 1 | tostring), name: .name}]' <<<"$plj")" \
               "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
