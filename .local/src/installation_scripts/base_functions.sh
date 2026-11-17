@@ -446,8 +446,8 @@ apply_dotfiles() {
 # linking, which is the whole reason it owns this tree alone.
 #
 # Called from BOTH apply_dotfiles and setup_dotfiles_private on purpose. Only
-# install_wsl and the generic install_all call setup_dotfiles_private; arch, mac,
-# debian and android call apply_dotfiles only, so hooking just the private path
+# install_wsl, install_arch and the generic install_all call setup_dotfiles_private;
+# mac, debian and android call apply_dotfiles only, so hooking just the private path
 # would leave those machines with no skills at all. The script is idempotent by
 # construction, so running it twice is a no-op, and it links whichever repos
 # exist - a public-only machine gets the public half and nothing dangles.

@@ -679,24 +679,40 @@ setup_theme() {
     "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,hyprland
 }
 
-# Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden at
-# vault.example.internal. The `rbw` package itself is installed via PACKAGES_DEV_ARCH;
-# this just points it at the right server + account so secrets (e.g. Cloudflare
-# API tokens) can be sourced with `rbw get` instead of stale literals in
-# ~/.bash_profile. Idempotent: `rbw config set` is safe to re-run.
+# Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The
+# `rbw` package itself is installed via PACKAGES_DEV_ARCH; this just points it at
+# the right server + account so secrets (e.g. Cloudflare API tokens) can be
+# sourced with `rbw get` instead of stale literals in ~/.bash_profile.
+# Idempotent: `rbw config set` is safe to re-run.
 #
-# Login is NOT automated — `rbw login` needs the Vaultwarden master password
+# The server URL is VAULTWARDEN_URL, exported by the private overlay's
+# ~/.config/shell/private.sh (the host is a sensitive token, so it cannot live in
+# this repo). It is read from the environment first, else from that file's
+# `export VAULTWARDEN_URL=` line, without running the file: it is shell init, and
+# anything else in it has no business running inside the installer. With neither,
+# rbw is left unpointed rather than aimed at a guess.
+#
+# Login is NOT automated: `rbw login` needs the Vaultwarden master password
 # interactively, and the resulting session/device state is exactly the kind of
 # ephemeral auth-state we never script. We surface the command instead.
 setup_rbw() {
-    log_section "Setting up rbw (Bitwarden CLI → vault.example.internal)"
+    log_section "Setting up rbw (Bitwarden CLI -> self-hosted Vaultwarden)"
 
     if ! command -v rbw &>/dev/null; then
-        log_warning "rbw not installed — skipping (expected in PACKAGES_DEV_ARCH)"
+        log_warning "rbw not installed, skipping (expected in PACKAGES_DEV_ARCH)"
         return 0
     fi
 
-    local vault_url="https://vault.example.internal"
+    local private_env="$HOME/.config/shell/private.sh"
+    local vault_url="${VAULTWARDEN_URL:-}"
+    if [[ -z "$vault_url" && -r "$private_env" ]]; then
+        vault_url="$(sed -n "s/^export VAULTWARDEN_URL=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}\$/\1/p" "$private_env" | tail -n 1)"
+    fi
+    if [[ -z "$vault_url" ]]; then
+        log_warning "VAULTWARDEN_URL is unset and $private_env does not export it; rbw left unconfigured"
+        log_warning "Attach the private overlay (setup_dotfiles_private) and re-run: ./install.sh --only secrets"
+        return 0
+    fi
     local vault_email="${RBW_EMAIL:-kblack0610@gmail.com}"
 
     rbw config set base_url "$vault_url"
@@ -889,6 +905,8 @@ install_all() {
     step dev         install_npm_packages
     step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
+    # The private overlay on top; setup_rbw and setup_aerc below read files it links
+    step dotfiles    setup_dotfiles_private
     step dotfiles    setup_ai_memory
 
     # Must come after apply_dotfiles
