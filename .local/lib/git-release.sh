@@ -320,11 +320,11 @@ git_shipping_next() {
 # _gr_subjects <repo> <range> <pathfilter> <limit> - the PR-numbered subjects in a range.
 # One filter for "what changed", shared by what is waiting to ship and what a tag shipped.
 _gr_subjects() {
-  local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}"
+  local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}" since="${5:-}"
   # One filter that reads to the end and prints the first <limit>: a reader that quits early leaves
   # its writer a broken pipe, printed when SIGPIPE is ignored, as it is under systemd.
   # shellcheck disable=SC2086  # $pf is a deliberate multi-path filter, not one word
-  git -C "$repo" log "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
+  git -C "$repo" log ${since:+--since="$since"} "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
     | awk -v n="$limit" '/\(#[0-9]+\)/ && !/^Merge |release\/|deploy\// { if (c++ < n) print }' || true
 }
 

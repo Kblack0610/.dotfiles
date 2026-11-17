@@ -8,7 +8,8 @@
 |---|---|
 | `release-state refresh [project...]` | Probe every target (or only these projects, merged into the snapshot) and write `~/.agent/releases/state.json` |
 | `release-state show [--json] [project]` | The snapshot, drift and unknown first |
-| `release-state changelog [--json\|--list] <project> [tag]` | One tag's changelog (the newest release when no tag): that version's `CHANGELOG.md` section, else the merged PRs between it and the previous tag of the line. `--list` prints the project's tags, newest first |
+| `release-state changelog [--json\|--list] <project> [tag]` | One tag's changelog (the newest release when no tag): that version's `CHANGELOG.md` section, else the merged PRs between it and the previous tag of the line. `--list` prints the project's tags, newest first; `--json` carries `at`, the tag date as epoch seconds |
+| `release-state merged [--days N] <project>` | The user-facing PRs merged on the project's branch in the last N days (7), one `#N subject` a line; `mkt-drafts` reads it for the weekly post |
 | `release-state released <project> <sha>...` | One JSON line per commit: `{sha, tag, at}`, the oldest tag of the project's line that holds it and that tag's creatordate epoch (a lightweight tag records none, so it is the tagged commit's date, a lower bound), `null` when no tag does yet, and an `error` when the checkout lacks the commit. `fleet-bench`'s `request_to_live_h` reads it |
 | `release-state check [--grace 30] [--max-age 60]` | Exit 1 naming each drift older than grace minutes, each floating prod target, and a snapshot older than max-age minutes. The `release-drift` Sentinel watch runs it; the links between stores are `hub releases check` (Relationships) |
 
