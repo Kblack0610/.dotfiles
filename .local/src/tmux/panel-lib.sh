@@ -258,10 +258,12 @@ _panel_layout_spec() {
 
 # panel_preview_extra <panel> -- preview flags one panel adds to the shared layout. agent-panel's
 # preview is the session's own pane: word-wrapped, opened at the bottom like the pane, its status
-# line pinned while scrolling up.
+# line pinned while scrolling up. notes-find's preview is a whole note: word-wrapped prose,
+# opened with the hit's line (field 2) a third of the way down.
 panel_preview_extra() {
   case "$1" in
   agent-panel) printf ',wrap-word,follow,~1' ;;
+  notes-find) printf ',wrap-word,+{2}/3' ;;
   esac
 }
 

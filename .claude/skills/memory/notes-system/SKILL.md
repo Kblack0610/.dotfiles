@@ -95,7 +95,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes seed-backlogs [--from N] [--force]` | One-time migration of inline `## Fun`/`## Carry Over` sections into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
-| `notes find <words>` | Ranked knowledge lookup across knowledge/, zettels, refs, employment/ and lab/: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
+| `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
 | `notes knowledge init\|due\|apply` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log). Hand edits to articles are fine; an engine update loses to an edit made during its run. |
 | `notes doctor` | Diagnose: profile/dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. Alias: `ndoctor`. **Run this first when "notes are broken".** |
 | `notes log [--id ID] [--project P] [--days N]` | What happened to a row or sheet: every CLI write, with who and when. Hand edits are in vault git history instead. |

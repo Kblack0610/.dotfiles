@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# notes-find.sh - a live finder over what the notes vault knows (tmux Prefix+k).
+# notes-find.sh - a live finder over the whole notes vault (tmux Prefix+k).
 #
 # Usage: notes-find.sh [verb]
 #
 # Verbs:
 #   --rows <query>          the hits for a query, TSV `path<TAB>line<TAB>label`, best first
-#   --preview <path> <line> the note from a few lines above its best line
+#   --preview <path> <line> the whole note, its best line highlighted
 #   --help, -h              this text
 #   (no verb)               open the picker
 #
-# Every keystroke re-runs `notes find`, which ranks notes across knowledge/, zettels, refs,
-# employment/ and lab/: words in any order, typos and half-typed words still match, `#tag`
-# filters (a folder name counts, so `#interview` hits interviews/), `"a phrase"` boosts,
-# `-word` excludes. fzf only displays (--disabled), so the CLI's ranking stands. Enter opens
-# the note at its best line in the hub notes editor (`tmx open hub`), or nvim outside tmux.
+# Every keystroke re-runs `notes find`, which ranks every note in the vault: words in any
+# order, typos and half-typed words still match, `#tag` filters (a folder name counts, so
+# `#interview` hits interviews/), `"a phrase"` boosts, `-word` excludes. fzf only displays
+# (--disabled), so the CLI's ranking stands. A hit is one row, its title and folder; the
+# preview opens on the hit's line (panel_preview_extra scrolls it there). Enter opens the
+# note at that line in the hub notes editor (`tmx open hub`), or nvim outside tmux.
 # The same lookup is <leader>nk in nvim (notes.nvim `notes.find`).
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
@@ -24,29 +25,30 @@ NOTES_FIND_LIMIT="${NOTES_FIND_LIMIT:-50}"
 NOTES_FIND_VAULT="${NOTES_FIND_VAULT:-$HOME/.notes/}"
 
 # --- Rows ---------------------------------------------------------------------
-# Path and line first (hidden by --with-nth), then the label: title, where, snippet.
+# Path and line first (hidden by --with-nth), then the label: the title, and dim, the folder
+# it sits in under the vault. The CLI's snippet is left out: the preview shows that line.
 cmd_rows() {
   local q="${1:-}"
   [[ -z "${q// /}" ]] && return 0
   "$NOTES_BIN" find -n "$NOTES_FIND_LIMIT" -- "$q" 2>/dev/null |
     awk -F'\t' -v vault="$NOTES_FIND_VAULT" -v b="$C_BOLD" -v d="$C_DIM" -v o="$C_OFF" '
       NF >= 5 {
-        rel = $1
-        if (index(rel, vault) == 1) rel = substr(rel, length(vault) + 1)
-        printf "%s\t%s\t%s%s%s  %s%s:%s%s  %s\n", $1, $2, b, $4, o, d, rel, $2, o, $5
+        dir = $1
+        if (index(dir, vault) == 1) dir = substr(dir, length(vault) + 1)
+        if (!sub(/\/[^\/]*$/, "", dir)) dir = "."
+        printf "%s\t%s\t%s%s%s  %s%s%s\n", $1, $2, b, $4, o, d, dir, o
       }'
   return 0
 }
 
 # --- Preview ------------------------------------------------------------------
+# The whole note, so scrolling up reaches its title; fzf opens it on the hit's line.
 cmd_preview() {
-  local path="$1" line="${2:-1}" start
-  start=$((line > 5 ? line - 5 : 1))
+  local path="$1" line="${2:-1}"
   if panel_have bat; then
-    bat --color=always --style=numbers --highlight-line "$line" \
-      --line-range "${start}:" "$path" 2>/dev/null && return 0
+    bat --color=always --style=plain --highlight-line "$line" "$path" 2>/dev/null && return 0
   fi
-  nl -ba -w4 -s' | ' "$path" | sed -n "${start},\$p"
+  cat "$path"
 }
 
 # --- Picker -------------------------------------------------------------------
@@ -60,10 +62,11 @@ cmd_pick() {
 
   local self sel path line
   self="$(printf '%q' "$SELF")"
-  sel="$(: | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" \
+  # --no-wrap: a hit is one row, and a long title clips instead of adding rows.
+  sel="$(: | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --no-wrap \
     --disabled --with-nth=3 \
     --prompt='find > ' \
-    --header='words in any order, #tag, "phrase", -word | Enter opens | Esc closes' \
+    --header='enter open  ctrl-/ layout  esc close    #tag  "phrase"  -word' \
     --bind="change:reload($self --rows {q})" \
     "${PANEL_FZF_LAYOUT[@]}" \
     --preview="$self --preview {1} {2}")"

@@ -3,8 +3,8 @@
 --
 --   :lua require("notes.find").pick()   (bound to <leader>nk by notes.setup())
 --
--- A live picker: every keystroke re-runs `notes find -- <query>`, which ranks notes across
--- knowledge/, zettels, refs, employment/ and lab/ (words in any order, typos and half-typed
+-- A live picker: every keystroke re-runs `notes find -- <query>`, which ranks every note in
+-- the vault (words in any order, typos and half-typed
 -- words still match, `#tag` filters, `"a phrase"` boosts, `-word` excludes). The CLI owns
 -- the ranking, so items keep its order; Enter opens the note at its best matching line.
 --
