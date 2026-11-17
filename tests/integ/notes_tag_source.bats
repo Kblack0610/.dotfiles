@@ -13,9 +13,10 @@ setup() {
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   cat > "$BATS_TEST_TMPDIR/bin/notes" <<'STUB'
 #!/bin/sh
-case "$3" in
-  task)  printf 'high\t40\nsize/s\t9\nsize/m\t7\nv0.5.0\t2\n' ;;
-  topic) printf 'software\t77\nai\t5\n' ;;
+case "$1 $2 $3" in
+  "tags --kind task")  printf 'high\t40\nsize/s\t9\nsize/m\t7\nv0.5.0\t2\n' ;;
+  "tags --kind topic") printf 'software\t77\nai\t5\n' ;;
+  "projects --stats ") printf 'bnb\tDodginBalls\talpha\tv0.1.0\t12\t0\t1\t2\t0\t3\t/s.md\npersonal\ttrader\tbeta\tv0.1.3\t4\t0\t0\t0\t0\t1\t/t.md\n' ;;
   *) exit 2 ;;
 esac
 STUB
@@ -45,9 +46,33 @@ local function labels(lines)
 end
 '
 
-@test "a task row offers task tags first, in the CLI's order, then topics" {
+@test "a task row offers task tags first, in the CLI's order, then projects, then topics" {
   run lua_run "$LABELS"'io.stdout:write(labels({ "- [ ] ship it #" }))'
-  assert_output '#high #size/s #size/m #v0.5.0 #software #ai'
+  assert_output '#high #size/s #size/m #v0.5.0 #p:dodginballs #p:trader #software #ai'
+}
+
+@test "#p: offers projects only, filtered on the name, replacing from the hash" {
+  run lua_run "$LABELS"'
+local s = require("notes.tag_source")
+io.stdout:write(labels({ "- [ ] x #p:" }), "|", labels({ "- [ ] x #p:d" }), "|")
+local ctx = s.context("- [ ] x #p:d", false)
+local out = s.items(ctx, { { tag = "high", count = 1 }, { tag = "p:dodginballs", count = 2 } }, 0, 12)
+io.stdout:write(#out, " ", out[1].filterText, " ", out[1].textEdit.newText, " ",
+  out[1].textEdit.range.start.character, "-", out[1].textEdit.range["end"].character)'
+  assert_output '#p:dodginballs #p:trader|#p:dodginballs #p:trader|1 dodginballs #p:dodginballs 8-12'
+}
+
+@test "a project at a bare hash filters on its name, so #dod finds it without the p" {
+  run lua_run '
+local s = require("notes.tag_source")
+local out = s.items(s.context("- [ ] x #dod", false), { { tag = "p:dodginballs", count = 2 } }, 0, 12)
+io.stdout:write(out[1].filterText, " ", out[1].textEdit.newText)'
+  assert_output 'dodginballs #p:dodginballs'
+}
+
+@test "prose offers no projects, and a colon in any other tag offers nothing" {
+  run lua_run "$LABELS"'io.stdout:write(labels({ "a thought #" }), "|[", labels({ "- [ ] x #foo:" }), "][", labels({ "- [ ] x #p:a:b" }), "]")'
+  assert_output '#software #ai|[][]'
 }
 
 @test "prose offers topics only" {
