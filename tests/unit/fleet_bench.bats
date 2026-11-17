@@ -2014,6 +2014,26 @@ fix_item() {
   done
 }
 
+# 2026-11-17 (ar-2616): home-config #1105 merged, HA dropped the paused host a minute later and its
+# red aged out of a 20 minute window, but triage queued a retry 6 minutes after the merge.
+@test "triage: a fix merged under TRIAGE_WATCH_AFTER ago stands for its cause; one merged longer ago did not hold" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done ok o/r#5 abc
+  local f; f=$(tail -1 "$ITEMS"); : > "$ITEMS"
+  jq -c --arg f "$(date -u -d "@$((T0 - 600))" +%FT%TZ)" '.finished = $f' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # NEGATIVE CONTROL: the same merge past the patience, with the red still here, is queued once more
+  : > "$ITEMS"
+  jq -c --arg f "$(date -u -d "@$((T0 - 1900))" +%FT%TZ)" '.finished = $f' <<<"$f" >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+}
+
 @test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
   log_triage_setup
   lock_route
