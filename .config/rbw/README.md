@@ -1,7 +1,7 @@
 # rbw — Bitwarden CLI → self-hosted Vaultwarden
 
 [`rbw`](https://github.com/doy/rbw) is a lightweight Rust Bitwarden client. We
-point it at the self-hosted Vaultwarden at **`vault.example.internal`** so secrets
+point it at the self-hosted Vaultwarden, whose URL is `VAULTWARDEN_URL` in the private overlay's `~/.config/shell/private.sh`, so secrets
 (Cloudflare API tokens, etc.) can be sourced at shell-init with `rbw get`
 instead of living as stale literals in `~/.bash_profile`.
 
@@ -11,7 +11,7 @@ instead of living as stale literals in `~/.bash_profile`.
   (`installation_scripts/packages.conf`). Arch pulls it from the `extra` repo;
   macOS from Homebrew.
 - **Config:** `setup_rbw()` in `installation_scripts/linux/install_arch.sh` runs
-  `rbw config set` for `base_url`, `email`, and `lock_timeout` (idempotent).
+  `rbw config set` for `base_url` (from `VAULTWARDEN_URL`), `email`, and `lock_timeout` (idempotent). It runs after `setup_dotfiles_private`; with no `VAULTWARDEN_URL` it warns and leaves rbw unconfigured, and `./install.sh --only secrets` re-runs it once the overlay is attached.
 - **Login is manual** — `rbw login` needs the Vaultwarden master password
   interactively, and the session/device state it writes is ephemeral auth-state
   we never script (per the Auth-State Safety rule). The installer surfaces the
@@ -25,7 +25,7 @@ instead of living as stale literals in `~/.bash_profile`.
 
 ```bash
 # 1. installed + configured by the installer; or by hand:
-rbw config set base_url https://vault.example.internal
+rbw config set base_url "$VAULTWARDEN_URL"   # exported by ~/.config/shell/private.sh
 rbw config set email    kblack0610@gmail.com
 
 # 2. log in (prompts for the Vaultwarden master password)
