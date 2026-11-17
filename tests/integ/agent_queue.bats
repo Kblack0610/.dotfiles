@@ -1689,6 +1689,14 @@ EOF2
   run "$AQ" add --plan "$SANDBOX/dup.md" --project game --slug dup --dry-run
   assert_failure
   assert_output --partial "two phases carry the same number"
+  # A P0 phase is a phase like any other (it once read as an `(with 0)` on every later line), a
+  # label's punctuation leaves the title, and a repeated number among landed phases is harmless.
+  printf '## Phases\n\n- [x] P2 Done once (#1)\n- [x] P2 Done twice (#2)\n- [ ] P0. Preflight\n- [ ] P3 Three\n' > "$SANDBOX/zero.md"
+  run "$AQ" add --plan "$SANDBOX/zero.md" --project game --slug zero --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue zero-p0	phases 0	after -$'
+  assert_line --index 1 --partial ': Preflight. Read the plan whole'
+  assert_line --index 2 --regexp '^would queue zero-p3	phases 3	after zero-p0$'
 }
 
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {

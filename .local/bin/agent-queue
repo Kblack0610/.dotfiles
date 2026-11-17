@@ -1315,12 +1315,12 @@ add_plan() {
       with: ((.value.name | capture("\\(with (?<w>[0-9]+)([;,][^)]*)?\\)") | .w | tonumber) // null),
       indep: (.value.name | test("\\(independent([;,][^)]*)?\\)")),
       after: ((.value.name | capture("\\(after (?<a>[0-9]+)([;,][^)]*)?\\)") | .a | tonumber) // null)}) as $all
-    | def byn($k): ($all | map(select(.n == $k)) | first);
-      (if ($all | map(.n) | length) != ($all | map(.n) | unique | length)
+    | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
+      (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
        then error("two phases carry the same number; label each phase once") else . end)
     | reduce ($all[] | select(.state == "open")) as $p ({of: {}, items: []};
-        byn($p.with // 0) as $w
-        | byn($p.after // 0) as $t
+        byn($p.with) as $w
+        | byn($p.after) as $t
         | (if $p.indep and $p.after != null then error("phase \($p.n): (independent) and (after \($p.after)) contradict")
            elif $p.after != null and ($t == null or $t.idx >= $p.idx) then
              error("phase \($p.n): (after \($p.after)) names no earlier phase")
@@ -1341,7 +1341,7 @@ add_plan() {
              else .items[.of[$p.after | tostring]][0].n end) as $dep
             | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
     | .items | map({dep: .[0].dep, phases: map(.n),
-        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+:?) +"; ""))}
+        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
       | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
       | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
     die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
