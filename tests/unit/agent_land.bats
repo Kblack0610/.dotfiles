@@ -1915,3 +1915,61 @@ follow() { git merge -q --no-edit main && . "$REPO_ROOT/.local/lib/submodule-fol
   assert_success
   assert_output --partial 'submodule: no pins compared, deadbeef is not a commit'
 }
+
+# lock_busy <verb> <n>: the sandbox agent-queue answers its next <n> <verb> calls with exit 75, what
+# the real one exits when its lock wait runs out, then runs for real.
+lock_busy() {
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  cat >"$SANDBOX/bin/agent-queue" <<EOS
+#!/usr/bin/env bash
+if [ "\$1" = "$1" ]; then
+  n=\$(cat "$SANDBOX/busy.n" 2>/dev/null || echo $2)
+  if [ "\$n" -gt 0 ]; then
+    echo \$((n - 1)) >"$SANDBOX/busy.n"
+    echo "agent-queue: the queue is locked by another writer" >&2
+    exit 75
+  fi
+fi
+exec "$SANDBOX/bin/agent-queue.real" "\$@"
+EOS
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+@test "a lock timeout on the item step is retried: the item still gets the PR and moves to done" {
+  item tidy-loader
+  lock_busy set 2
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_output --partial 'item: tidy-loader done with pr:o/r#42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
+}
+
+@test "a lock that stays busy past every try fails the item step, naming the lock" {
+  item tidy-loader
+  lock_busy set 9
+  AGENT_LAND_QUEUE_TRIES=3 run "$LAND" 42 --item tidy-loader
+  assert_failure 1
+  assert_output --partial 'item failed: agent-queue: the queue is locked by another writer'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r .state <<<"$output")" running
+}
+
+@test "a lock timeout on the pre-merge item read is retried" {
+  item tidy-loader
+  lock_busy show 2
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_output --partial 'item: tidy-loader done with pr:o/r#42'
+}
+
+@test "a pre-merge item read whose lock never clears says so, and nothing merges" {
+  item second
+  lock_busy show 9
+  run "$LAND" 42 --item second
+  assert_failure 2
+  assert_output --partial 'the queue is locked by another writer: nothing merged'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
