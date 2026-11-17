@@ -137,12 +137,16 @@ SANDBOX_CLAUDE_MIN="${SANDBOX_CLAUDE_MIN:-2.1.314}"
 # failed call whose reason only claude's stderr carries.
 SANDBOX_CLAUDE_NEEDS="${SANDBOX_CLAUDE_NEEDS:-bwrap socat}"
 
-# sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
-sandbox_claude_version_ok() {
-  local v
-  v="$(claude --version 2>/dev/null | grep -oE '^[0-9]+(\.[0-9]+)+' | awk 'NR==1')"
-  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$SANDBOX_CLAUDE_MIN" "$v" | sort -V | awk 'NR==1')" = "$SANDBOX_CLAUDE_MIN" ]
+# sandbox_version_at_least <min> <cmd...> -> success when the first version number `<cmd> --version`
+# prints is at least <min>.
+sandbox_version_at_least() {
+  local min="$1" v; shift
+  v="$("$@" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | awk 'NR==1')"
+  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$min" "$v" | sort -V | awk 'NR==1')" = "$min" ]
 }
+
+# sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
+sandbox_claude_version_ok() { sandbox_version_at_least "$SANDBOX_CLAUDE_MIN" claude; }
 
 # sandbox_claude_settings -> the --settings JSON for claude: the profile, with the switches that
 # make it a hard gate forced on, and sandbox_git_writes writable except sandbox_git_denies. The sandbox
@@ -180,13 +184,35 @@ sandbox_codex_refusal() {
     else empty end' "$SANDBOX_FILE"
 }
 
-# sandbox_codex_flags -> one -c override per line for codex's workspace-write sandbox: the
-# profile's allowWrite (~/ expanded) plus the git common dir as writable roots, network off.
+# The codex permission profile a sandboxed lane runs under, defined on the command line only.
+SANDBOX_CODEX_PERMS="agentctl-lane"
+
+# The oldest codex this profile was proven on (codex sandbox, 2026-11-16). One that predates
+# permission profiles would ignore default_permissions and run on ~/.codex/config.toml's sandbox.
+SANDBOX_CODEX_MIN="${SANDBOX_CODEX_MIN:-0.168.0}"
+
+# sandbox_codex_flags -> one -c override per line: a codex permission profile (default_permissions
+# and its [permissions] table, in place of --sandbox, which codex refuses beside them) that extends
+# :workspace (cwd and the tmp dirs writable, the rest readable) with the profile's allowWrite (~/
+# expanded) and sandbox_git_writes writable, and sandbox_git_denies and the profile's denyWrite
+# read-only, network off. A narrower entry wins; on the same path codex lets write beat read, so
+# paths lose a trailing / and jq keeps the last of a repeated key, putting the deny last. Keys and
+# values are JSON strings, whose escapes TOML basic strings share. Bubblewrap enforces it on Linux;
+# the legacy writable_roots could not deny a path under a root, so the common dir's hooks and config
+# were writable.
 sandbox_codex_flags() {
-  jq -r --arg common "$(sandbox_git_common)" --arg home "$HOME" '
-    "sandbox_workspace_write.writable_roots=\(((.sandbox.filesystem.allowWrite // []) | map(sub("^~/"; $home + "/")))
-        + (if $common == "" then [] else [$common] end) | tojson)",
-    "sandbox_workspace_write.network_access=false"' \
+  local common own
+  common="$(sandbox_git_common)"; own="$(sandbox_git_own)"
+  jq -r --arg home "${HOME%/}" --arg name "$SANDBOX_CODEX_PERMS" \
+    --argjson gitwrite "$(sandbox_git_writes "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+    def abs: sub("^~/"; $home + "/") | sub("(?<p>.)/+$"; .p);
+    ([(.sandbox.filesystem.allowWrite // []) + $gitwrite | map(abs) | .[] | {key: ., value: "write"}]
+      + [$gitdeny + (.sandbox.filesystem.denyWrite // []) | map(abs) | .[] | {key: ., value: "read"}]
+      | from_entries) as $fs
+    | "default_permissions=\($name | tojson)",
+      "permissions={\($name | tojson)={extends=\":workspace\", network={enabled=false}, filesystem={\(
+        $fs | to_entries | map("\(.key | tojson)=\(.value | tojson)") | join(", "))}}}"' \
     "$SANDBOX_FILE"
 }
 
