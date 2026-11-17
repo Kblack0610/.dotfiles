@@ -1583,7 +1583,7 @@ case \"\$*\" in *192.0.2.40*) echo 'did its own'; exit $1 ;; esac
 exit 255"
 }
 
-@test "record runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
+@test "record on the fleet home runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
   record_setup
   world '10 1000' "$PANE1"
   roster_workers 0
@@ -1597,6 +1597,11 @@ exit 255"
   # --here, the call a worker gets, asks no one.
   : > "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  assert_success
+  assert_not_called 'ssh'
+  # A machine that is not the fleet home keeps its own record and asks no one: the home fans out.
+  : > "$NOTES_FIXTURE/calls.log"
+  FLEET_HOST=hp run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_not_called 'ssh'
   roster_workers 4

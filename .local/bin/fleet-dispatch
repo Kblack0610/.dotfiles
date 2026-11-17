@@ -27,8 +27,8 @@
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    the fleet home, rc 1 when no machine matches it; each fleet worker: placed or not, run units, load, and why it takes no session
 #   (run, reap, start, fill and promote do nothing off the fleet home: home_guard)
-#   fleet-dispatch record [--here]   keep each world's pane record, then each fleet worker's; page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and on each fleet worker
+#   fleet-dispatch record [--here]   keep each world's pane record, then (on the home) each fleet worker's; page when a world's server died
+#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the home) on each fleet worker
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -2344,32 +2344,41 @@ record_world() {
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
 }
 
-# on_workers <verb> [args...] -- run `fleet-dispatch <verb> --here [args...]` on each fleet worker
-# but this machine, in roster order, each output line prefixed with the worker's name. A worker's
-# tmux servers die on their own and only it can read them, so each one keeps its own pane record
-# and reopens its own sessions; --here keeps it from fanning out again. Rc 1, said, when a worker's
-# own verb failed. One that does not answer (ssh 255) is no failure: its record stays there for its
-# own next run, and a laptop asleep is not a failed reopen. Restore says it; the minute record
-# (ON_WORKERS_QUIET) does not, or it would every minute.
+# on_workers [--quiet] <verb> [args...] -- run `fleet-dispatch <verb> --here [args...]` on each fleet
+# worker but this machine (fleet_peers), all at once, then print each one's output in roster order,
+# each line prefixed with the worker's name. A worker's tmux servers die on their own and only it can
+# read them, so each one keeps its own pane record and reopens its own sessions; --here keeps it from
+# fanning out again. Rc 1, said, when a worker's own verb failed. One that does not answer (ssh 255)
+# is no failure: its record stays there for its own next run, and a laptop asleep is not a failed
+# reopen. Restore says it; the minute record (--quiet) does not, or it would every minute.
 on_workers() {
-  local name rc=0 r
+  local quiet='' name rc=0 r dir names=() pids=()
+  [ "$1" != --quiet ] || { quiet=1; shift; }
   fleet_hosts >/dev/null
-  while IFS= read -r name; do
-    [ -n "$name" ] && [ "$name" != "$FLEET_HOST" ] || continue
-    fleet_host_run "$name" fleet-dispatch "$1" --here "${@:2}" 2>&1 | sed "s/^/$name: /"
-    r=${PIPESTATUS[0]}
+  mapfile -t names < <(fleet_peers)
+  [ "${#names[@]}" -gt 0 ] || return 0
+  dir=$(mktemp -d) || return 1
+  for name in "${names[@]}"; do
+    { fleet_host_run "$name" fleet-dispatch "$1" --here "${@:2}" >"$dir/$name" 2>&1; echo $? >"$dir/$name.rc"; } &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+  for name in "${names[@]}"; do
+    sed "s/^/$name: /" "$dir/$name"
+    r=$(cat "$dir/$name.rc")
     case "$r" in
       0) ;;
-      255) [ -n "${ON_WORKERS_QUIET:-}" ] || say "$1: $name did not answer; its own record stays there" ;;
+      255) [ -n "$quiet" ] || say "$1: $name did not answer; its own record stays there" ;;
       *) say "$1: $name exited $r"; rc=1 ;;
     esac
-  done < <(fleet_hosts | jq -r .name)
+  done
+  rm -rf "$dir"
   return "$rc"
 }
 
-# cmd_record [--here] -- every world a manifest declares, then each fleet worker's (on_workers),
-# unless --here. fleet-state.service runs it each minute, so a record is at most that old; a
-# world's sockets give no event to await for a pane's cwd or id.
+# cmd_record [--here] -- every world a manifest declares, then, on the fleet home, each fleet
+# worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
+# most that old; a world's sockets give no event to await for a pane's cwd or id.
 cmd_record() {
   local f srv panel="$PANES/.panel" here=''
   [ "${1:-}" != --here ] || here=1
@@ -2383,7 +2392,7 @@ cmd_record() {
     record_world "${srv%.conf}" "$panel"
   done
   exec 8>&-
-  [ -n "$here" ] || ON_WORKERS_QUIET=1 on_workers record
+  [ -n "$here" ] || ! fleet_is_home || on_workers --quiet record
 }
 
 
@@ -2436,8 +2445,9 @@ restore_world() {
 }
 
 # cmd_restore [--here] -- the one verb after a lost server or a reboot: this machine's lost servers,
-# then each fleet worker's on that worker (on_workers), unless --here. A record first, so a death
-# the minute timer has not seen yet counts, and a server already restarted by hand is not missed.
+# then, on the fleet home, each fleet worker's on that worker (on_workers), unless --here. A record
+# first, so a death the minute timer has not seen yet counts, and a server already restarted by
+# hand is not missed.
 cmd_restore() {
   local server='' dry=0 here='' f rc=0 found=0
   while [ $# -gt 0 ]; do
@@ -2456,7 +2466,7 @@ cmd_restore() {
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
   local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
-  [ -n "$here" ] || on_workers restore "${wargs[@]}" || rc=1
+  if [ -z "$here" ] && fleet_is_home; then on_workers restore "${wargs[@]}" || rc=1; fi
   return "$rc"
 }
 

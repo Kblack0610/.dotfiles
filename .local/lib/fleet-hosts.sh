@@ -297,7 +297,8 @@ fleet_host_run() {
 # fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
 # `host` and its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
 # nothing aimed at the row lands on a local session that shares its name. The one reader of a
-# worker's sessions: fleet-sessions, agent-ask's delivery and reopen, and agent-web go through it.
+# worker's sessions: fleet-sessions and agent-ask's delivery and reopen go through it, and agent-web
+# (not bash) reads the same list through fleet-host-run.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
 # other the worker's agent-panel failed and prints no row.
 fleet_host_panel() {
@@ -308,18 +309,23 @@ fleet_host_panel() {
   return "$rc"
 }
 
+# fleet_peers -> the name of each fleet worker but this machine ($FLEET_HOST), in roster order: the
+# machines a read or verb meant for every machine asks over ssh, beside what this one does itself.
+# A caller reading it through <(...) runs `fleet_hosts >/dev/null` first, so the roster it caches
+# is read once.
+fleet_peers() { fleet_hosts | jq -r --arg me "$FLEET_HOST" 'select(.name != $me) | .name'; }
+
 # fleet_panel_row <claude session id> -> the first worker row (fleet_host_panel) of that session,
-# asking each worker in roster order and stopping at the one that has it; nothing when none does or
+# asking each peer in roster order and stopping at the one that has it; nothing when none does or
 # none answers. For a caller that already missed it in this machine's own agent-panel.
 fleet_panel_row() {
   [ -n "${1:-}" ] || return 0
   local name row
   fleet_hosts >/dev/null
   while IFS= read -r name; do
-    [ -n "$name" ] && [ "$name" != "$FLEET_HOST" ] || continue
     row=$(fleet_host_panel "$name" | jq -c --arg s "$1" 'select(.session_id == $s)' 2>/dev/null | head -1)
     [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
-  done < <(fleet_hosts | jq -r .name)
+  done < <(fleet_peers)
   return 0
 }
 
