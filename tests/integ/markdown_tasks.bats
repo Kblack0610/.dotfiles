@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # The markdown task keys: <leader>tt converts a line (or a visual range) to a task and
-# lands the cursor where its text goes; `o` on a task line opens the next task.
+# lands the cursor where its text goes. `o` stays stock vim: no markdown map may take it.
 # Runs the real plugin config in a headless nvim with render-markdown stubbed.
 #
 # Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
@@ -63,12 +63,12 @@ tt() { echo "vim.api.nvim_win_set_cursor(0, {$1, 0}); vim.fn.maparg(' tt', 'n', 
   assert_output '## Focus / - [ ] one /  / - [/] two / - [ ] three / --- | 1,0 n'
 }
 
-@test "o on a task line continues the list at its indent" {
-  run run_keys "vim.api.nvim_win_set_cursor(0, {1, 0}); vim.api.nvim_feedkeys('ofoo\27', 'xt', false)" '  - [/] a' 'b'
-  assert_output '  - [/] a /   - [ ] foo / b | 2,10 n'
+@test "o is stock vim o, on a task line too" {
+  run run_keys "vim.api.nvim_win_set_cursor(0, {1, 0}); vim.api.nvim_feedkeys('ofoo\27', 'xt', false)" '- [ ] a' 'b'
+  assert_output '- [ ] a / foo / b | 2,2 n'
 }
 
-@test "o elsewhere is plain o" {
-  run run_keys "vim.api.nvim_win_set_cursor(0, {1, 0}); vim.api.nvim_feedkeys('ofoo\27', 'xt', false)" 'prose'
-  assert_output 'prose / foo | 2,2 n'
+@test "the config maps none of o, O or Enter in a markdown buffer" {
+  run run_keys "for _, k in ipairs { 'o', 'O', '<CR>' } do vim.fn.setline(1, vim.fn.getline(1) .. '[' .. k .. '=' .. vim.fn.maparg(k, 'n') .. ']') end" ''
+  assert_output '[o=][O=][<CR>=] | 1,0 n'
 }
