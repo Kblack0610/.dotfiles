@@ -116,7 +116,7 @@ fleet_roster_fresh() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, power}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, state_is_me, power}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass).
@@ -167,9 +167,10 @@ def merged(h):
     return v
 
 walk("all", root, [])
-# The names other machines dial this one by, from its own inventory entry, so telling whether
-# fleet_state_host names this machine needs no DNS lookup.
-mine = merged(me)
+# The names other machines dial this one by, from its own host entry only (a group or all.vars value
+# is shared, so it would make every member home), so telling whether fleet_state_host names this
+# machine needs no DNS lookup.
+mine = hmerged.get(me, {})
 my_addrs = {me} | {str(mine[k]) for k in ("ansible_host", "fleet_ssh_host") if mine.get(k)}
 for h in members.get(group, []):
     v = merged(h)

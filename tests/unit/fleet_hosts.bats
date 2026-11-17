@@ -199,6 +199,10 @@ EOF
   export FLEET_HOST=razer-laptop
   run fleet_is_home
   assert_failure
+  # A name set for every host (all.vars) is no host's own, so it makes no member the home.
+  sed -i 's/^    ansible_user: kb$/&\n    fleet_ssh_host: 192.0.2.2/' "$FLEET_INVENTORY"
+  run fleet_is_home
+  assert_failure
   assert_not_called getent
 }
 
