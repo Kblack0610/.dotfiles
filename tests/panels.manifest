@@ -29,7 +29,7 @@
 # table key   kind         geometry path                                  argv
 root    f     script       WIDE     .local/src/tmux/sessionizer.sh        -
 root    R     script       WIDE     .local/bin/sessions                   search --window
-root    H     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick
+root    P     bin-symlink  WIDE     .local/src/tmux/servers.sh            pick
 root    A     script       FULL     .local/src/tmux/scratch.sh            open #{q:pane_current_path}
 root    g     rust-bin     FULL     .local/src/agent-panel                -
 root    C-g   script       FULL     .local/src/tmux/fleet.sh              -

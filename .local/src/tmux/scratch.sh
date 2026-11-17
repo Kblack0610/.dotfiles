@@ -64,7 +64,7 @@ cmd_open() {
   read -r world sess < "$SCRATCH_HANDOFF"
   rm -f "$SCRATCH_HANDOFF"
   # Still inside the popup, so $TMUX names the client that opened it: goto hops THAT client,
-  # the way Prefix+H hops from its popup.
+  # the way Prefix+P hops from its popup.
   panel_need tmx
   exec tmx goto "$world" "$sess"
 }
