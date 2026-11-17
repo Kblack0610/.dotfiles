@@ -905,6 +905,41 @@ MD
   kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 
+@test "queue_wait_min: the minutes the session's oldest queue gate has run, and nothing without one (ar-2525)" {
+  # 2026-11-15 unity-core-playground-agent-3's gate-and-land.sh sat 3.5h in the landing-slot queue, and no line named the wait.
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
+  printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
+  printf 'gate gh-run-wait\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate other
+  # ps answers the age of the pids it is asked about: the gate 3.5h, anything else 5h
+  ps() {
+    if [ "${1:-}" = -o ] && [ "${2:-}" = etimes= ]; then
+      local p; for p in ${4//,/ }; do [ "$p" = "$gate" ] && echo ' 12600' || echo ' 18000'; done
+    else command ps "$@"; fi
+  }
+  # a gate that is not queue-shaped has no landing wait, however old
+  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh gh-run-wait) >/dev/null 2>&1 3>&- &
+  other=$!
+  until grep -q gh-run-wait "/proc/$other/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$other"
+  run queue_wait_min "$SANDBOX/wt"
+  assert_output ''
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
+  gate=$!
+  until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  LIVE_PIDS="$other $gate"
+  run queue_wait_min "$SANDBOX/wt"
+  assert_output '210'
+  # negative controls: another worktree, and the knob naming no gate
+  mkdir -p "$SANDBOX/other"
+  run queue_wait_min "$SANDBOX/other"
+  assert_output ''
+  FLEET_QUEUE_GATES='nothing-like-it' run queue_wait_min "$SANDBOX/wt"
+  assert_output ''
+}
+
 @test "queue_match takes a gate-and-land.sh, ci-gate.sh, agent-land or gate-line.py --recheck argument, and not a reader of its log (ar-2346)" {
   queue_match 'bash scripts/test/gate-and-land.sh 2102 ' gate-and-land.sh
   queue_match 'bash ci-gate.sh ' ci-gate.sh
@@ -3581,10 +3616,13 @@ GH
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
   jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
+  # the row carries its repo's landing-queue depth, and no wait minutes with no live gate (ar-2525)
+  [ "$(jq -c '[.landing_queue, .wait_min]' <<<"$output")" = '[1,null]' ]
   # one label among others counts, and a green PR waits its landing turn too
-  store PASS 'rides-alone,landing-queue'
+  store PASS 'rides-alone,landing-queue' landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  [ "$(jq -r .landing_queue <<<"$output")" = 2 ]
 
   # negative controls: a red of its own past the refusal, no label, another label, only another PR (#21490 is
   # not #2149) queued, or the knob off
@@ -3592,6 +3630,7 @@ GH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
+  [ "$(jq -r .landing_queue <<<"$output")" = null ]
   store FAIL ''
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
