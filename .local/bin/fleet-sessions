@@ -241,6 +241,14 @@ queue_match() {
   done
 }
 
+# queue_gate <cmdline>: true when <cmdline> is one of FLEET_QUEUE_GATES (queue_match).
+queue_gate() {
+  local text
+  local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
+  for text in "${qg[@]}"; do queue_match "$1" "$text" && return 0; done
+  return 1
+}
+
 # proc_snapshot <prefix>: every process's "pid<TAB>ppid" in <prefix>.ppid and "pid<TAB>cwd" in <prefix>.cwd.
 proc_snapshot() {
   ps -e -o pid=,ppid= 2>/dev/null | awk '{ print $1 "\t" $2 }' > "$1.ppid"
@@ -261,7 +269,41 @@ proc_snapshot() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local cwd="$1" root="${2:-0}" conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text pid cmd
+  local conf="${FLEET_TIME_USE_CONF:-$HOME/.config/agent-panel/time-use.conf}" want kind text pid cmd
+  local -a cmds=()
+  while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
+  [ "${#cmds[@]}" -gt 0 ] || return 0
+  for cmd in "${cmds[@]}"; do queue_gate "$cmd" && { echo queue; return 0; }; done
+  [ -r "$conf" ] || return 0
+  for want in gate test build; do
+    while read -r kind text; do
+      [ "$kind" = "$want" ] && [ -n "$text" ] || continue
+      for cmd in "${cmds[@]}"; do
+        case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
+      done
+    done < "$conf"
+  done
+}
+
+# queue_wait_min <cwd> [<claude pid>] -> the minutes the oldest FLEET_QUEUE_GATES process live_wait would
+# find has run, or nothing: how long the session has waited its landing turn (ar-2525: 2026-11-15
+# unity-core-playground-agent-3's gate-and-land.sh sat 3.5h behind #2733 with #2726 green). One `ps` of
+# the matched pids; a pid gone since the snapshot reads nothing.
+queue_wait_min() {
+  local pid cmd pids="" s
+  while IFS=$'\t' read -r pid cmd; do
+    [ -n "$pid" ] && queue_gate "$cmd" && pids+="${pids:+,}$pid"
+  done < <(wait_procs "$@")
+  [ -n "$pids" ] || return 0
+  s="$(ps -o etimes= -p "$pids" 2>/dev/null | sort -n | tail -n 1)"
+  s="${s//[[:space:]]/}"
+  [[ "$s" =~ ^[0-9]+$ ]] && echo $(( s / 60 ))
+}
+
+# wait_procs <cwd> [<claude pid>] -> "pid<TAB>command line" of each process live_wait reads: running in <cwd>
+# or below it, or below the claude, less this pass's ancestors, `-c` shells and the session's own claude.
+wait_procs() {
+  local cwd="$1" root="${2:-0}" kind pid cmd
   local snap="${PROC_SNAP:-}" own=""
   cwd="$(realpath "$cwd" 2>/dev/null)" || return 0
   [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ] || root=0
@@ -284,29 +326,12 @@ live_wait() {
   } )"
   [ -z "$own" ] || rm -f "$own" "$own".*
   while IFS=$'\t' read -r kind pid; do [ "$kind" != S ] || skip[$pid]=1; done <<<"$pick"
-  local -a cmds=()
   while IFS=$'\t' read -r kind pid; do
     [ "$kind" = P ] && [ -z "${skip[$pid]:-}" ] || continue
     cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
     case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
-    cmds+=("$cmd")
+    printf '%s\t%s\n' "$pid" "$cmd"
   done <<<"$pick"
-  [ "${#cmds[@]}" -gt 0 ] || return 0
-  local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
-  for text in "${qg[@]}"; do
-    for cmd in "${cmds[@]}"; do
-      queue_match "$cmd" "$text" && { echo queue; return 0; }
-    done
-  done
-  [ -r "$conf" ] || return 0
-  for want in gate test build; do
-    while read -r kind text; do
-      [ "$kind" = "$want" ] && [ -n "$text" ] || continue
-      for cmd in "${cmds[@]}"; do
-        case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
-      done
-    done < "$conf"
-  done
 }
 
 # self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is one of its
@@ -847,6 +872,15 @@ queued_in() {
   key="$CACHE/$(repo_slug "$1")" || return 1
   prs_for "$1" > /dev/null
   [ -f "$key.queued" ] && grep -qxF "$2" "$key.queued"
+}
+
+# queue_depth <dir> -> how many open PRs of <dir>'s repo carry FLEET_QUEUE_LABEL in the PR store, or nothing
+# when the store could not say.
+queue_depth() {
+  local key
+  key="$CACHE/$(repo_slug "$1")" || return 0
+  prs_for "$1" > /dev/null
+  [ ! -f "$key.queued" ] || grep -c . "$key.queued"
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
@@ -1723,6 +1757,13 @@ collect() {
       if [ -n "$tn" ]; then wait_on="train #$tn"
       elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$cwd" "$pr"; then wait_on="the landing queue"; fi
     fi
+    # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
+    # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
+    local qwait=- qdepth=-
+    if [ "$host" = - ] && [ "$ojob" = queue ]; then qwait="$(queue_wait_min "$cwd" "$cpid")"; qwait="${qwait:--}"; fi
+    if [ "$g" = 1 ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
+      qdepth="$(queue_depth "$cwd")"; qdepth="${qdepth:--}"
+    fi
     # An idle session whose plan has a phase no item holds may be running it in place, by a live cron
     # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
     local cron=-
@@ -1769,12 +1810,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     case "$bucket" in DONE\ *|CHAT\ *) [ ! -e "$CLOSED/$sid" ] || n=1 ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}" "$qwait" "$qdepth"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2214,7 +2255,9 @@ json_rows() {
       own_asks: ((.[53] // "0") | tonumber), in_plan_mode: ((.[54] // "0") == "1"),
       context_window: ((.[55] // "0") | tonumber | if . > 0 then . else null end),
       open_job: (if (.[56] // "-") == "-" then null else .[56] end),
-      manual_mode: ((.[57] // "0") == "1")} | '"$CLOSE_JQ"
+      manual_mode: ((.[57] // "0") == "1"),
+      wait_min: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
+      landing_queue: (if (.[59] // "-") == "-" then null else .[59] | tonumber end)} | '"$CLOSE_JQ"
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
