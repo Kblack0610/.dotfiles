@@ -1,10 +1,13 @@
 [Unit]
 Description=Publish this machine's local Unity gates and agent sessions for node_exporter
-# The directory comes from home-config's node-exporter-linux role (workstation play).
-# Until that has run there is nowhere to write, so the unit skips instead of failing.
-ConditionPathIsDirectory=/var/lib/node_exporter/textfile
+# The collector dir is the workstation's (home-config's node-exporter-linux role) or a k3s node's
+# (its node-disk-metrics role); fleet-assess picks the one that exists (prom-textfile.sh,
+# PROM_TEXTFILE_DIRS, which tests/unit/prom_textfile.bats pins these two lines to). A `|`
+# condition is an OR, so with neither there is nowhere to write and the unit skips, not fails.
+ConditionPathIsDirectory=|/var/lib/node_exporter/textfile
+ConditionPathIsDirectory=|/var/lib/node-exporter-textfile
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/bin/fleet-assess --textfile /var/lib/node_exporter/textfile
+ExecStart=%h/.local/bin/fleet-assess --textfile
 TimeoutStartSec=30

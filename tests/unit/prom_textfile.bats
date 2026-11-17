@@ -54,3 +54,51 @@ m 2.5
 EOF
 )"
 }
+
+@test "the collector dir is the first of PROM_TEXTFILE_DIRS that exists: the workstation's, else a k3s node's" {
+  local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
+  export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  run prom_textfile_default_dir
+  assert_output "$ws"
+  mkdir -p "$k3s"
+  run prom_textfile_default_dir
+  assert_output "$k3s"
+  mkdir -p "$ws"
+  run prom_textfile_default_dir
+  assert_output "$ws"
+}
+
+@test "target: a given dir is used as is; none given reads PROM_TEXTFILE_DIR, and no collector is status 1 with no output" {
+  run prom_textfile_target "$SANDBOX/given"
+  assert_success
+  assert_output "$SANDBOX/given"
+  run prom_textfile_target
+  assert_failure
+  assert_output ''
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run prom_textfile_target
+  assert_success
+  assert_output "$PROM_TEXTFILE_DIR"
+}
+
+@test "the units' ConditionPathIsDirectory lines are PROM_TEXTFILE_DIRS, so a unit skips exactly where the tool would" {
+  local unit want have
+  unset PROM_TEXTFILE_DIRS
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/prom-textfile.sh"
+  want="$(tr ':' '\n' <<< "$PROM_TEXTFILE_DIRS")"
+  for unit in fleet-local-gates claude-acct-usage; do
+    have="$(sed -n 's/^ConditionPathIsDirectory=|//p' "$REPO_ROOT/.config/systemd/user/$unit.service")"
+    assert_equal "$have" "$want"
+  done
+}
+
+@test "a set PROM_TEXTFILE_DIR wins over the list, and a given dir over both" {
+  local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
+  mkdir -p "$ws" "$k3s"
+  export PROM_TEXTFILE_DIRS="$ws:$k3s" PROM_TEXTFILE_DIR="$k3s"
+  run prom_textfile_target
+  assert_output "$k3s"
+  run prom_textfile_target "$ws"
+  assert_output "$ws"
+}

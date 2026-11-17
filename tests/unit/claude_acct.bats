@@ -2207,3 +2207,22 @@ EOS
   run jq -c '[.aliases, .fallbacks, .keys[0].alias]' "$SRC/gw.json"
   assert_output '[null,null,"comms-triage"]'
 }
+
+@test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
+  unset PROM_TEXTFILE_DIR
+  export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  # no collector on this machine: skipped, nothing written, status 0
+  run "$ACCT" textfile
+  assert_success
+  [ ! -e "$ws" ] && [ ! -e "$k3s" ]
+  mkdir -p "$k3s"
+  run "$ACCT" textfile
+  assert_success
+  run cat "$k3s/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
+  [ ! -e "$ws" ]
+}
