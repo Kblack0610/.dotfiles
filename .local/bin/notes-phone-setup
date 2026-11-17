@@ -39,8 +39,8 @@ command -v pkg >/dev/null 2>&1 || die "not Termux (no pkg). Run this inside the 
 # 1. Runtime packages.
 say "Installing packages (git, openssh, neovim, tmux, cron)..."
 pkg update -y >/dev/null 2>&1 || true
-pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null 2>&1 \
-    || die "pkg install failed. Run 'termux-change-repo', pick a mirror, and re-run."
+pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null \
+    || die "pkg install failed (error above). For a mirror error run 'termux-change-repo', pick a mirror, and re-run."
 
 # 2. Put the launcher, the real sync engine and the widget mirror in ~/.local/bin as
 #    wrappers that name Termux's bash. Not symlinks: the scripts' #!/usr/bin/env and
@@ -65,11 +65,16 @@ if [ ! -d "$HOME/storage/shared" ]; then
     termux-setup-storage 2>/dev/null || warn "termux-setup-storage unavailable: widget mirror will be skipped"
     wait_enter "Turn it on"
 fi
-[ -d "$HOME/storage/shared" ] && mkdir -p "$HOME/storage/shared/notes"
+if [ -d "$HOME/storage/shared" ]; then
+    mkdir -p "$HOME/storage/shared/notes"
+else
+    warn "no storage access: the /sdcard/notes mirror is skipped. Turn on All files access for Termux and re-run."
+fi
 
 # 2c. Termux needs "Display over other apps" to open a terminal from the home-screen
-#     shortcut; without it a tap only flashes a toast and nothing opens.
-if command -v am >/dev/null 2>&1; then
+#     shortcut; without it a tap only flashes a toast and nothing opens. Termux cannot
+#     read that grant, so the page opens once, on an interactive first setup (no shortcut yet).
+if [ -t 0 ] && [ ! -e "$HOME/.shortcuts/notes" ] && command -v am >/dev/null 2>&1; then
     say "Shortcut permission: Android opens 'Display over other apps' (Samsung: 'Appear on top'). Turn on Termux."
     am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION -d package:com.termux >/dev/null 2>&1 \
         && wait_enter "Turn it on"
@@ -138,7 +143,7 @@ cat > "$HOME/.termux/boot/notes-sync.sh" <<EOF
 # Start termux-services (crond runs the hourly sync), then sync once. The network may
 # not be up yet at boot, so retry with a backoff; the hourly run catches up after that.
 . "$PREFIX/etc/profile.d/start-services.sh"
-for wait in 30 60 120; do
+for wait in 30 60 0; do
     "$BIN/notes-sync" >/dev/null 2>&1 && break
     sleep "\$wait"
 done

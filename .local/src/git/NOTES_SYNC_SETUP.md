@@ -120,10 +120,9 @@ What the setup installs: `git openssh neovim tmux cronie termux-services`; wrapp
 | No Termux:Widget in the widget list | It is its own F-Droid app; Termux does not include it | Install Termux:Widget from F-Droid |
 | "Unsafe app blocked" by Play Protect, with only "Got it" | Play Protect flags F-Droid's Termux:Boot build (old target SDK) | Install it from the F-Droid app, or turn off Play Protect's app scan for that one install, then back on |
 | Tapping the `notes` icon flashes a toast and nothing opens | Termux lacks "Display over other apps" | Settings -> Apps -> Termux -> Display over other apps (Samsung: Appear on top) -> on |
-| Widget tap shows `notes-mobile: cannot execute: required file not found` | Shortcut pointed at a `#!/usr/bin/env bash` script, which only works where termux-exec is preloaded, and widget launches have none | Re-run `notes-phone-setup`; it now installs wrappers that call Termux's bash |
+| Widget tap shows `notes-mobile: cannot execute: required file not found` | Shortcut pointed at a `#!/usr/bin/env bash` script, which only works where termux-exec is preloaded, and widget launches have none | Re-run `notes-phone-setup`, which installs wrappers that call Termux's bash |
 | Storage step finishes but `/sdcard/notes` never appears | "All files access" was not turned on in time | Turn it on (Settings -> Apps -> Termux -> Files and media / All files access), then re-run the setup |
 | No hourly sync; `sv status crond` says down | `sv-enable crond` failed because termux-services was not running in the setup shell | Re-run the setup; it removes `$PREFIX/var/service/crond/down` and starts runsvdir |
-| Commits from the phone show `notes@` as the author email | The email fallback used a hostname Android does not set | Fixed: it falls back to `notes@phone`; set `NOTES_GIT_EMAIL` to choose |
 | Clone fails away from home | The URL is a LAN-only hostname; Tailscale does not route it | Use the public hostname for the notes remote |
 | `pkg install failed` | No working Termux mirror | Run `termux-change-repo`, pick a mirror, re-run |
 
@@ -142,7 +141,7 @@ https://ntfy.example.internal/notes-sync
 
 (A LAN-only `ntfy` host is reachable on the home Wi-Fi only; Tailscale does not route it, so away from home subscribe through a public hostname.)
 
-The ntfy notifications use the OS push channel: near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
+The ntfy notifications use the OS push channel: near-zero battery cost. The Termux side keeps the hourly cron and the `~/.termux/boot/notes-sync.sh` hook as fallback.
 
 ### One-tap into today's note
 
