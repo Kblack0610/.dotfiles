@@ -198,7 +198,7 @@ Three named sizes. The target is a `%hidden` constant per size; today every bind
 
 | name | `-w` / `-h` | for |
 |---|---|---|
-| `FULL` | 100% / 100% | owns the screen; dense multi-column TUI |
+| `FULL` | 100% / 100% | owns the screen; dense multi-column TUI, or a picker whose preview is the thing you read (`k`) |
 | `WIDE` | 90% / 85% | multi-column table, or anything with a preview |
 | `SMALL` | 80% / 60% | one-column pick-one list, or read-and-dismiss |
 
