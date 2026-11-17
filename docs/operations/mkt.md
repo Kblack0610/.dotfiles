@@ -26,6 +26,27 @@ An item's id is `YYMMDD-xxxxxx`. Its `utm` is `utm_source=<channel>&utm_medium=<
 
 Kinds: `post listing email pitch press-kit screenshots mockup` (`KINDS` in `mkt`). A channel is any lowercase word (`reddit`, `steam`, `bluesky`).
 
+## Channels and calendar
+
+What gets drafted, for which product and where, is content that lives in the marketing lab project: `channels.yaml` and `calendar.yaml` in the notes tree at `lab/bnb/projects/current/marketing/docs/` (project-map `marketing`, lab `bnb`). Neither file holds UTM tags, because `mkt` builds them per item as described above.
+
+`channels.yaml`:
+
+| Key | Holds |
+|---|---|
+| `accounts.<channel>` | `handle` (null when there is no account yet) and `owner`. The last post date is not kept here: `mkt list --project P --json` reads it from the ledger. |
+| `products.<key>` | One entry per product. The key is the project-map tracker name, so it is also `--project` and `utm_campaign`. |
+| `.shape` | `saas`, `mobile-app`, `pc-game` or `mobile-game`. It picks the pipeline in the bnb-studios marketing docs. |
+| `.pitch` | The line a post opens with. It must be true on prod the day the post goes out. |
+| `.links` | Public URLs a draft may link, by name (`home`, `steam`, `appstore`, `play`, `site`). |
+| `.tag_prefix` | The release tag a new version is read from (`release-state`), when the product has one. |
+| `.channels.<channel>` | The posting mode, quoted. `"draft"`: the human posts, then answers with the URL or runs `mkt log`. `"approve"`: `mkt post` sends it once the review is answered `post`, and only when the channel has a `post_<channel>`. `"off"`: nothing is drafted. A channel that is not listed is off. |
+| `.notes` | What a drafter must know before writing for the product. |
+
+Every channel that a product or an event names is a key of `accounts`. Reddit, HN, Product Hunt, Steam events and X stay `"draft"`: their rules ban automated posts, and X charges per post.
+
+`calendar.yaml` holds `events` (`id`, `title`, `start`, `end` as inclusive `YYYY-MM-DD`, `products`, `channels`, `source`, `checked`, `notes`) and `recurring` (`id`, `title`, `rule` as `weekly: <day>` or `per-release`, `products`, `channels`, `notes`). The drafter writes for an event within 14 days of its start, on each product's channels that are not off.
+
 ## Verbs
 
 - `mkt draft --project P --channel C --kind K [--title T] [--attach F]... <file>` opens an item and posts its review as an approval ask (`agent-ask post --kind approval --agent mkt`). The title defaults to the draft's first line. Image attachments (png, jpg, gif, webp) become the ask's `--preview` images, shown on the Waiting page above the answers and served by agent-web from `/api/asks/<id>/preview/<n>`, only for files inside the ledger. The ask's resume is `run: mkt answer <id>`, so `ask-resume` records the answer with no session waiting on it. The ask carries no session id, so no session gets the answer pasted back to it.
@@ -47,6 +68,7 @@ Sentinel runs it monthly as the watch `mkt-costs-stale` on `~/.notes/lab/bnb/pro
 
 | Symptom | Cause and fix |
 |---|---|
+| A channel mode reads as `false` instead of `off` | YAML 1.1 parses a bare `off` as a boolean. Quote every mode (`"off"`). |
 | `the review ask for <id> was not posted; the item stays a draft` | agent-ask refused the ask (its error is printed above, often a question over the cap). Fix the cause and draft again, then `mkt skip <id>` the draft left behind. |
 | Marketing says `outbound ledger ... quiet` | `~/.agent/outbound/<project>` is not a readable directory. |
 | An answered review stays in review | The ask's resume has not run: `ask-resume --dry-run` lists what it would run; `mkt answer <id> <ask>` by hand does the same. |
