@@ -81,7 +81,8 @@ fn s<'a>(f: &'a Map<String, Value>, k: &str) -> &'a str {
     f.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
-/// Sign-in is recorded where it happens, in the OAuth callback (`signin.started`, `signin.refused`).
+/// Sign-in is recorded where it happens, in the OAuth callback and `login_key` (`signin.started`,
+/// `signin.refused`); the `/login/key` entry only names the route for a request that has a session.
 pub const ROUTES: &[Route] = &[
     own("POST", "/api/send", sent),
     route(
@@ -178,6 +179,7 @@ pub const ROUTES: &[Route] = &[
         &["slug"],
         &["priority"],
     ),
+    route("POST", "/login/key", |_| "signin.started".into(), &[], &[]),
     route("POST", "/logout", |_| "signin.ended".into(), &[], &[]),
 ];
 

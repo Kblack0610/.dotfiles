@@ -55,7 +55,7 @@ use std::time::Duration;
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use assets::LOGIN;
-use axum::extract::{Path as UrlPath, Query, Request, State};
+use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -88,6 +88,7 @@ const KEYS: &[&str] = &[
 struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
+    key_guard: auth::KeyGuard,
     events: broadcast::Sender<String>,
     /// True once the server is stopping: each live-update stream ends, so the drain finishes.
     stopping: watch::Receiver<bool>,
@@ -131,6 +132,7 @@ async fn main() -> Result<()> {
         stopping,
         oauth,
         sessions,
+        key_guard: auth::KeyGuard::default(),
         actions: feed::Cache::new(events.subscribe()),
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
@@ -227,6 +229,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login))
+        .route("/login/key", post(login_key))
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
@@ -656,14 +659,28 @@ async fn require_auth(
 async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
     match signed_in(&s, &headers) {
         Some(_) => Html(assets::index()).into_response(),
-        None => Html(LOGIN.replace("{{error}}", "")).into_response(),
+        None => Html(login_page("")).into_response(),
     }
 }
 
 fn denied(code: StatusCode, msg: &str) -> Response {
     let err = format!(r#"<div class="err">{msg}</div>"#);
-    (code, Html(LOGIN.replace("{{error}}", &err))).into_response()
+    (code, Html(login_page(&err))).into_response()
 }
+
+/// The sign-in page: the Forgejo button always, the key form while `login.key` holds a key.
+fn login_page(error: &str) -> String {
+    let form = if auth::login_key().is_some() {
+        KEY_FORM
+    } else {
+        ""
+    };
+    LOGIN
+        .replace("{{error}}", error)
+        .replace("{{key_form}}", form)
+}
+
+const KEY_FORM: &str = r#"<form method="post" action="/login/key"><input type="password" name="key" autocomplete="current-password" placeholder="Sign-in key" required><button class="btn" type="submit">Sign in with key</button></form>"#;
 
 /// Start the OAuth flow: remember a random state in a short-lived cookie and hand the
 /// browser to Forgejo. Forgejo shows its own sign-in form if there is no session there.
@@ -754,6 +771,56 @@ async fn callback(
             .append(header::SET_COOKIE, c.parse().unwrap());
     }
     resp
+}
+
+#[derive(Deserialize)]
+struct KeyForm {
+    key: String,
+}
+
+/// Sign in with the local key, for when Forgejo is down. Same session as the OAuth callback
+/// makes, for the first allowed user. A wrong key counts toward `auth::KeyGuard`'s lock.
+async fn login_key(State(s): State<Shared>, Form(f): Form<KeyForm>) -> Response {
+    let record = |actor: String, action: &str| {
+        let e = hub_core::audit::Entry::new(&actor, action, "agent-web", "web")
+            .to(serde_json::json!({"method": "key"}));
+        tokio::task::spawn_blocking(move || hub_core::audit::record(&e));
+    };
+    let at = auth::KeyGuard::now();
+    if s.key_guard.locked(at) {
+        eprintln!("agent-web: key sign-in refused: locked after repeated failures");
+        return denied(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many wrong keys. Wait a few minutes.",
+        );
+    }
+    let (Some(key), Some(user)) = (auth::login_key(), s.oauth.key_user()) else {
+        return denied(StatusCode::NOT_FOUND, "Key sign-in is not set up.");
+    };
+    if !auth::matches(f.key.trim(), &key) {
+        s.key_guard.failed(at);
+        record("login-key".into(), "signin.refused");
+        return denied(StatusCode::FORBIDDEN, "That key is not right.");
+    }
+    let id = match s.sessions.create(user) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("agent-web: could not store session: {e:#}");
+            return denied(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not start a session.",
+            );
+        }
+    };
+    record(user.to_string(), "signin.started");
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, auth::session_cookie(&id)),
+            (header::LOCATION, "/".to_string()),
+        ],
+    )
+        .into_response()
 }
 
 async fn logout(State(s): State<Shared>, headers: HeaderMap) -> Response {

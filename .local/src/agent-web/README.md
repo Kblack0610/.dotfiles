@@ -57,12 +57,15 @@ Only a target that is a live agent right now accepts input, so the API cannot be
 
 ## Auth
 
-The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows one button, Sign in with Forgejo. It starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
+The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows the button Sign in with Forgejo, plus a key form when `login.key` exists (below). The button starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
 
 On return agent-web exchanges the code for the user's Forgejo login and checks it against an allowlist (`AGENT_WEB_ALLOWED_USERS`, default `kblack0610`). A match gets an opaque session id in an HttpOnly cookie, valid 90 days. Sessions are stored in `~/.config/agent-web/sessions.json` (0600), so a restart signs nobody out. `POST /logout` revokes the session. `/healthz` and the assets under `/static/` need no session, and `/widget` also opens with the widget key; every other route needs one.
 
+The OAuth button needs Forgejo up, so the sign-in key is the way in when it is down. `POST /login/key` compares the typed key with `~/.config/agent-web/login.key` in constant time and, on a match, starts the same 90-day session for the first name in `AGENT_WEB_ALLOWED_USERS`. Five wrong keys inside 5 minutes lock the form for the rest of the window, and while it is locked even the right key is refused. The count is global (behind the tunnel every client shares an address), so a guesser can hold the form shut but Forgejo sign-in still works. The audit log records `signin.started` and `signin.refused` with `method: key`.
+
 | Setting | Where | Default |
 |---|---|---|
+| Sign-in key | `~/.config/agent-web/login.key` (0600), also kept in the Bitwarden vault. Read on each request: rewrite it to rotate, delete it to turn the form off, no restart. Mint: `(umask 077; openssl rand -hex 24 > ~/.config/agent-web/login.key)`. A key under 24 characters counts as none | none, the page shows only the Forgejo button |
 | OAuth client id and secret | `~/.config/agent-web/oauth.json` (0600), also kept in the Bitwarden vault | none, agent-web will not start without it |
 | `AGENT_WEB_FORGEJO_URL` | env, Forgejo base URL | required |
 | `AGENT_WEB_BASE_URL` | env, the URL agent-web is served at; the OAuth callback is `<base>/oauth/callback`. The unit reads it from `~/.config/agent-web/env`, which agent-notify also reads to link a page's `tmux:` and `ask:` refs here | required |
@@ -129,6 +132,8 @@ To see it, `agent-web-shot --base http://127.0.0.1:8799 --out <dir> releases rel
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| The sign-in page has no key form | `login.key` is missing, empty or under 24 characters | Mint it as in the Auth table; no restart |
+| Key sign-in answers `Too many wrong keys` | Five wrong keys inside 5 minutes locked it | Wait 5 minutes, or sign in with Forgejo meanwhile; `journalctl --user -u agent-web \| grep 'key sign-in refused'` shows the lock |
 | A tab says `agent-web did not answer /api/...` | No answer came back: agent-web was restarting or down, or the connection broke | `journalctl --user -u agent-web -n 200 \| grep 'agent-web: '`: a `dropped before it answered` line with the browser's `ua` says the request was cut, a `failed` line carries the handler's error, a `slow` line the time; no line at all means the request never reached agent-web (check the ingress logs in home-config `apps/agents`) |
 | Header says "offline since HH:MM" with Retry | The browser's event stream to `/api/events` dropped at that time: agent-web restarted or stopped, or the network or proxy cut it. The page shows what it last read. EventSource reconnects by itself after a drop but not after an error answer such as a proxy's 502 | `systemctl --user status agent-web`; once it is up, press Retry. The pill says "catching up" until the sessions read lands, then clears |
 | Header says "live updates off"; the log has `cannot watch ...: OS file watch limit reached` | The user's inotify watches (`fs.inotify.max_user_watches`) are used up by another program. On 2026-11-03 it was Unity's ILPP runner watching a Unity project checkout whose `.git` held 1.5M empty LFS dirs. Raising the limit does not help: a recursive watcher takes the new room too | Find the holder: for each pid, count the `inotify` lines in `/proc/<pid>/fdinfo/<fd>` of its `anon_inode:inotify` fds. Free watches at the source; agent-web picks them up on its next retry, no restart |
