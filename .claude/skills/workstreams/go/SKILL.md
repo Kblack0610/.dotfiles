@@ -8,12 +8,12 @@ allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuesti
 metadata:
   category: workstreams
   tags: [autonomy, decisions, session]
-  reviewed: "2026-11-12"
+  reviewed: "2026-11-15"
 ---
 
 # go
 
-You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode. The human grants it by typing `/go`; the model never loads it on its own initiative, and `one-shot` reads this file by path.
+You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles-private/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode. The human grants it by typing `/go`; the model never loads it on its own initiative, and `one-shot` reads this file by path.
 
 ## Scope and triggers
 

@@ -16,20 +16,25 @@
 #       Move dated lessons older than N days (90) that no pick matched to a session and no session
 #       repeated (sig hit) to DIR/_archive/<project>-stale.md; DIR defaults to ~/.agent/lessons.
 #       Moves nothing until the delivery log covers the window.
+#   lessons fat [--max N] [--json] [FILE|DIR...]
+#       "<file>:<line>\t<bytes>\t<first line>" per lesson over N bytes (LESSON_MAX_BYTES, 1500):
+#       the ones to rewrite as rule, why and one pointer. --json: one count line per file.
 #
-# A lesson is a `## ` section, or a `- ` bullet that starts with a date or stands before any
-# section; its key hashes its first line. Delivery log, sig hits and the nightly caller:
+# A lesson is a `## ` section, or a `- ` bullet that starts with a date, stands before any
+# section, or sits under a day group (a `## ` heading that is only a date; see PARSE); its
+# key hashes its first line. Delivery log, sig hits and the nightly caller:
 # ~/.config/agentctl/DREAMING.md "Lesson delivery and archive".
 set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
-# text before the first lesson). Per lesson r: key, date, title (first line), text
-# (lowercased, one line), sig (each `<!-- sig:DATE REGEX -->` regex, after a newline).
+# text before the first lesson). Per lesson r: key, date, title (first line), start (its
+# line number), bytes, text (lowercased, one line), sig (each `<!-- sig:DATE REGEX -->`
+# regex, after a newline).
 # shellcheck disable=SC2016
 PARSE='
 BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
@@ -39,17 +44,32 @@ function cut(s,   c) {
 }
 function hash(s,   i, h) { h = 5381; for (i = 1; i <= length(s); i++) h = (h * 33 + ord[substr(s, i, 1)]) % 4294967296; return sprintf("%08x", h) }
 function open_lesson(t,   k) {
-  n++; cur = n; title[n] = t
+  n++; cur = n; title[n] = t; start[n] = NR
   k = t; gsub(/[[:space:]]+/, " ", k); sub(/^ /, "", k); sub(/ $/, "", k)
   key[n] = hash(substr(k, 1, 160))
-  date[n] = match(t, /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) ? substr(t, RSTART, RLENGTH) : ""
+  date[n] = match(t, /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) ? substr(t, RSTART, RLENGTH) : grp
 }
-/^# / { cur = 0; insec = 0 }
-/^## / { open_lesson(substr($0, 4)); insec = 1 }
+# A day group: a `## ` heading that is only a date (optional bold and parenthetical, "## 2026-04-21
+# (dream sweep)") over a `- ` bullet as its first text. The heading is no lesson (head[] marks
+# its line); each top-level bullet under it is one, dated by the heading when it has none.
+# Under any other heading a bullet is body unless it starts with a date.
+/^# / { cur = 0; insec = 0; grp = ""; day = 0 }
+/^## / {
+  grp = ""; open_lesson(substr($0, 4)); insec = 1
+  day = $0 ~ /^## (\*\*)?20[0-9][0-9]-[01][0-9]-[0-3][0-9](\*\*)?[[:space:]]*(\([^)]*\))?[[:space:]]*$/
+}
+# Before the rule that opens a bullet lesson, so the bullet opens under the group.
+/^- / && day {
+  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]
+  for (l = start[n]; l < NR; l++) own[l] = 0
+  n--; cur = 0; insec = 0; day = 0
+}
 /^- / && (!insec || /^- (\*\*)?20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) { open_lesson(substr($0, 3)) }
 {
+  if (day && NR > start[n] && /[^[:space:]]/) day = 0
   own[NR] = cur; raw[NR] = $0
   if (cur) {
+    bytes[cur] += length($0) + 1
     text[cur] = text[cur] " " tolower($0)
     # The grammar of so_lesson_sigs (session-outcomes.sh), whose sigs key lesson_hits: the
     # last marker on the line, a YYYY-MM-DD date, the regex up to the first " -->".
@@ -242,6 +262,21 @@ END {
 }
 '
 
+# fat: the lessons over max bytes, "<file>:<line>\t<bytes>\t<first line>", or with sum one
+# "<lessons>\t<over>\t<over bytes>\t<bytes>" line for the file.
+# shellcheck disable=SC2016
+FAT='
+END {
+  for (r = 1; r <= n; r++) {
+    total += bytes[r]
+    if (bytes[r] <= max) continue
+    over++; ob += bytes[r]
+    if (!sum) printf "%s:%d\t%d\t%s\n", ENVIRON["LESSONS_FILE"], start[r], bytes[r], substr(title[r], 1, 100)
+  }
+  if (sum) printf "%d\t%d\t%d\t%d\n", n, over, ob, total
+}
+'
+
 # archive: one lessons file in, the kept lines to keepto and the moved lessons to archto.
 # A lesson is stale when it is dated before cutoff, its key is not in the delivered set and
 # its sig (if any) is not in the hit set. --dry-run prints "<key> <date> <title>" instead.
@@ -260,6 +295,14 @@ END {
   moved = 0
   for (l = 1; l <= NR; l++) {
     r = own[l]
+    # A day-group heading goes with its moved bullets, and stays while any bullet stays.
+    if (head[l]) {
+      am = ak = 0
+      for (q = l + 1; q <= NR && raw[q] !~ /^##? /; q++) if (own[q]) { if (stale[own[q]]) am = 1; else ak = 1 }
+      if (am) print raw[l] "\n" > archto
+      if (ak || !am) print raw[l] > keepto
+      continue
+    }
     if (r && stale[r]) { print raw[l] > archto; if (!(r in done)) { done[r] = 1; moved++ } }
     else print raw[l] > keepto
   }
@@ -287,6 +330,32 @@ cmd_chains() {
     [ -f "$f" ] || continue
     LESSONS_FILE="$(basename "$f")" LC_ALL=C awk -v min="${CHAIN_MIN:-0.25}" -v today="$today" \
       "$TOK$PARSE$BLOCKS$CHAINS" "$f"
+  done
+}
+
+cmd_fat() {
+  local max="${LESSON_MAX_BYTES:-1500}" json=0 arg f files=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max) max="${2:-}"; shift $(($# > 1 ? 2 : 1)) ;;
+      --json) json=1; shift ;;
+      -h|--help) usage ;;
+      *) break ;;
+    esac
+  done
+  case "$max" in ''|*[!0-9]*) echo "lessons fat: --max takes a byte count" >&2; usage 2 ;; esac
+  [ $# -gt 0 ] || set -- "$LESSONS_DIR_DEFAULT"
+  for arg; do
+    if [ -d "$arg" ]; then files+=("$arg"/*.md); else files+=("$arg"); fi
+  done
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    if [ "$json" = 1 ]; then
+      LC_ALL=C awk -v max="$max" -v sum=1 "$PARSE$FAT" "$f" | jq -Rc --arg f "$f" --argjson max "$max" \
+        'split("\t") | map(tonumber) | {file: $f, max: $max, lessons: .[0], over: .[1], over_bytes: .[2], bytes: .[3]}'
+    else
+      LESSONS_FILE="$f" LC_ALL=C awk -v max="$max" "$PARSE$FAT" "$f"
+    fi
   done
 }
 
@@ -401,6 +470,7 @@ case "${1:-}" in
   chains) shift; cmd_chains "$@" ;;
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
+  fat) shift; cmd_fat "$@" ;;
   -h|--help|'') usage ;;
   *) echo "lessons: unknown command '$1'" >&2; usage 2 ;;
 esac

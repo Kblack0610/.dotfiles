@@ -6,8 +6,10 @@
 #   CLAUDE_ACCT_PACE_SLACK_PCT, CLAUDE_ACCT_RESERVE_PCT         claude-acct room, automatic starts only:
 #     column keys for pace.conf's PACE_SLACK_PCT and RESERVE_PCT; no env var of that name is read
 # Reserve falls as the level rises: high keeps less of each account back.
+# high scales DISPATCH_MAX_LOAD by only 1.1: at the conf's 0.9 that is 0.99 a core, under home-config's
+# NodeLoadHigh line (load15 over 1.0x cores), and full, the 01:00-06:00 mode, runs at high (ask mUmPN3, a).
 
 level|DISPATCH_PER_PASS|DISPATCH_NIGHT_MAX|DISPATCH_MAX_LOAD|CLAUDE_ACCT_PACE_SLACK_PCT|CLAUDE_ACCT_RESERVE_PCT
 low|0.34|0.5|0.6|0.2|1.33
 mid|1|1|1|1|1
-high|2|2|1.4|2|0.67
+high|2|2|1.1|2|0.67

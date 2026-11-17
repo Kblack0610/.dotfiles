@@ -104,6 +104,8 @@ WT_LOG="${WT_LOG:-$HOME/.agent/wt/done.log}"
 # Where `new` takes its per-repo lock. Prefix+F runs in the background now, so nothing
 # serializes two presses any more; without the lock both pick the same slot.
 WT_LOCK_DIR="${WT_LOCK_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wt}"
+# agent-queue's store (its AQ_DIR): an active item there that names a tree's session owns it.
+WT_QUEUE_DIR="${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"
 # Git prints this beside its own hint to unlock, so it is what the reader of a refusal acts on.
 WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live session; do not unlock it or use -f -f'
 
@@ -608,8 +610,40 @@ wt_occupied_reason() {
     printf 'git-locked: %s\n' "${reason:-no reason given}"
     return 1
   fi
+  # The queue is the owner of record, and it outlives a crash: tmux died with the machine, so
+  # the 2026-11-17 boot catch-up gc reaped 12 trees of running items as landed before
+  # fleet-dispatch restore could bring their sessions back (ar-2657).
+  if reason=$(wt_queue_claim "$1"); then
+    printf '%s\n' "$reason"
+    return 1
+  fi
 
   return 0
+}
+
+# wt_queue_claim <path> -- print why the queue owns <path>: the first running, waiting or review
+# item whose `session:` (`<server>:<name>`, or a bare name) is <path>'s session; rc 1 when none.
+# Frontmatter only: the body is the task text, which may quote any session line. A queue it
+# cannot read claims the tree too: a reaper that fails open is the bug this check exists for.
+wt_queue_claim() {
+  local name f out rc
+  local -a files=()
+  name=$(panel_session_name "$1")
+  for f in "$WT_QUEUE_DIR"/{running,waiting,review}/*.md; do
+    [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -gt 0 ] || return 1
+  out=$(awk -v n="$name" '
+    FNR == 1 { slug = ""; s = ""; k = split(FILENAME, p, "/"); st = p[k - 1] }
+    /^---$/ { if (s == n) { found = 1; exit } nextfile }
+    /^slug: / { slug = substr($0, 7) }
+    /^session: / { s = substr($0, 10); sub(/^[^:]*:/, "", s); sub(/[ \t\r]+$/, "", s) }
+    END { if (found) printf "queue item %s (%s) names its session\n", slug, st; exit !found }
+  ' "${files[@]}" 2>&1)
+  rc=$?
+  [ "$rc" -ne 1 ] || return 1
+  [ "$rc" -eq 0 ] || out="the agent queue could not be read (awk rc $rc)"
+  printf '%s\n' "$out"
 }
 
 # wt_foreign_lock <path> -- print the reason of a git lock on linked worktree <path> that is not

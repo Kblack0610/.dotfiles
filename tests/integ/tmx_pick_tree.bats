@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# `tmx pick` (Prefix+H): the collapsible tree over `tmx rows`.
+# `tmx pick` (Prefix+P): the collapsible tree over `tmx rows`.
 #
 # integ tier: tree-rows, tree-enter and tree-fold read a rows file and an open list, so a fixture rows
 # file drives them with no tmux server. The rows themselves are pinned by the ui tier

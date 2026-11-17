@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from marionette import scratch_firefox  # noqa: E402
 
 # The demo sandbox and CSP, as binks-api apps/binks/api/src/demos/page.ts (DEMO_SANDBOX, DEMO_CSP)
-# and binks-chat src/lib/preview.ts serve them; their tests keep those two equal, and this copy
+# and apps/binks/web/src/lib/preview.ts serve them; their tests keep those two equal, and this copy
 # follows them by hand.
 SANDBOX = "allow-scripts allow-pointer-lock"
 CSP = "; ".join([
