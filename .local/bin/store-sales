@@ -122,7 +122,7 @@ elif kind == "steam":
             title = (names.get(("app", r.get("appid"))) or names.get(("app", r.get("primary_appid")))
                      or names.get(("package", r.get("packageid"))) or "?")
             app = r.get("primary_appid") or r.get("appid")
-            add(str(app) if app else "package:" + str(r.get("packageid")), title, "USD", net, int(req(r, "net_units_sold")), r.get("appid") == app)
+            add(str(app) if app else "package:" + str(r.get("packageid")), title, "USD", net, int(req(r, "net_units_sold")), str(r.get("appid")) == str(app))
 else:
     for r in csv.DictReader(io.StringIO(text)):
         if r.get("Order Charged Date") != day or r.get("Financial Status") != "Charged":
@@ -210,6 +210,8 @@ steam() {
   parsed "$name" "$basis" steam "$TMP/steam.pages"
 }
 
+[ "$MODE" != publish ] || APPS="$(store_apps)" || die "could not read the store targets from $(project_map_file)"
+
 if store_tokens play "$RBW_PLAY" "$GCS_SCOPE" asc "$RBW_ASC"; then
   # The stores run side by side, each into its own file, so the wait is the slowest one.
   app_store > "$TMP/asc.json" & google_play > "$TMP/play.json" & steam > "$TMP/steam.json" & wait
@@ -220,9 +222,9 @@ fi
 doc="$(jq -sc --arg d "$DAY" --argjson now "$(now_epoch)" '{date: $d, generated_epoch: $now, sources: .}' <<<"$sources")"
 
 # prom_lines <doc> <apps>: per product and store what its apps made on the day, in each currency
-# (a store that read, with nothing sold for the product, writes usd 0), its paid units, and per
-# store whether it read. A store that could not be read writes no amount, so its cells read "off",
-# never 0. Amounts from an app no product lists are summed as store_sales_unattributed, so a
+# its paid units, and per store whether it read. A product with no sale on a store writes nothing
+# there, whether the store could not be read or read empty: a run before the day's report is out
+# reads empty too, and a 0 written then would pass for a quiet day. Amounts from an app no product lists are summed as store_sales_unattributed, so a
 # product that is not wired in project-map shows up instead of vanishing.
 prom_lines() {
   jq -r --argjson apps "$(jq -sc . <<<"$2")" --argjson day "$(date -d "$DAY" +%s)" "$PROM_JQ"'
@@ -233,9 +235,9 @@ prom_lines() {
         | {project: $a.project, store: $a.store, rows: [.apps[] | select(.app == $a.app)]}]
        | group_by([.project, .store])
        | map({project: .[0].project, store: .[0].store, rows: (map(.rows) | add)}
+             | select(.rows | length > 0)
              | . + {money: ([.rows[].made[]] | group_by(.currency) | map({currency: .[0].currency, amount: (map(.amount) | add)})),
-                    units: ([.rows[].sales] | add // 0)}
-             | if (.money | length) == 0 then .money = [{currency: "USD", amount: 0}] else . end)) as $per
+                    units: ([.rows[].sales] | add // 0)})) as $per
     | gauge("store_sales_amount"; "What a product'"'"'s apps made on the store on the day (day_seconds), per currency: App Store proceeds, Play charged, Steam net.";
         $per[] as $g | $g.money[] | [{project: $g.project, store: $g.store, currency: (.currency | lc)}, (.amount | cents)]),
       gauge("store_sales_units"; "Paid units a product'"'"'s apps sold on the store on the day.";
@@ -256,15 +258,14 @@ if [ "$MODE" = publish ]; then
   # locked vault or a day Apple has not published is not a failed pass; a pass that published
   # nothing, found no store app to map, or read no store at all is.
   why=""
-  APPS="$(store_apps)" || die "could not read the store targets from $(project_map_file)"
-  read -r read_n < <(jq -r '[.sources[] | select(.error == null)] | length' <<<"$doc")
+  read -r read_n total_n < <(jq -r '[([.sources[] | select(.error == null)] | length), (.sources | length)] | @tsv' <<<"$doc")
   if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
   elif ! prom_textfile store_sales.prom prom_lines "$doc" "$APPS"; then
     why="could not write store_sales.prom"
     echo "store-sales: $why" >&2
   elif [ "${read_n:-0}" = 0 ]; then why="no store could be read"
   fi
-  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
-  else proof_runner_outcome WORKED "${read_n:-0} of 3 stores read"; fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"; jq . <<<"$doc"; exit 1; fi
+  proof_runner_outcome WORKED "${read_n:-0} of ${total_n:-0} stores read"
 fi
 jq . <<<"$doc"

@@ -33,20 +33,20 @@ Each store has its own read-only rbw entry, read only while the vault is unlocke
 
 ## Per-product revenue (Money tab)
 
-Ask xU5sxt (answered a): each product's store revenue is stored in the home metrics database and shown on the Grafana project board and the agent web dashboard's Money tab, which sit on the LAN or behind Forgejo sign-in. Each source in the document also carries `apps`, the same amounts per app, keyed by the store's own id: the Apple identifier (an in-app purchase goes to its parent app, matched by SKU), the Play package, the Steam app id (a DLC or package sale goes to its primary app).
+Each product's store revenue is stored in the home metrics database and shown on the Grafana project board and the agent web dashboard's Money tab, which sit on the LAN or behind Forgejo sign-in. Each source in the document also carries `apps`, the same amounts per app, keyed by the store's own id: the Apple identifier (an in-app purchase goes to its parent app, matched by SKU), the Play package, the Steam app id (a DLC or package sale goes to its primary app).
 
 `store-sales publish [YYYY-MM-DD]` prints the same document and writes `store_sales.prom` through `.local/lib/prom-textfile.sh`. It maps the apps to products through `trackers.<p>.targets[].live` (`steam.app`, `play.package`, `testflight.app`) in `project-map.json`, the list `store-reviews` reads (`.local/lib/store-apps.sh`). The runner `store-sales` runs it every 6 hours, for yesterday: Apple publishes its daily report by 5am Pacific, and a run before then reads App Store as not read, never as 0. The runner is model-free.
 
 | Series | Labels | Meaning |
 |---|---|---|
-| `store_sales_amount` | `project, store, currency` | what the product's apps made that day on the store, in the store's basis (table above); `currency` is lower case. A store that read with nothing sold for the product writes `usd` 0 |
+| `store_sales_amount` | `project, store, currency` | what the product's apps made that day on the store, in the store's basis (table above); `currency` is lower case. A product with no sale on the store writes nothing, never 0 |
 | `store_sales_units` | `project, store` | paid units |
 | `store_sales_unattributed` | `store, currency` | amounts from apps no product lists in its targets: a new product that is not wired in project-map shows here instead of vanishing |
 | `store_sales_up` | `store` | 1 when the store read on the last run. The source `store-sales` is up while any store read |
 | `store_sales_day_seconds` | none | local midnight opening the day the amounts are for |
 | `store_sales_generated_seconds` | none | the last run |
 
-A store that could not be read writes no amount for any product, so its cells read "off", never 0. home-config's `prometheus-rules-kb-project.yaml` records `kb_project_number{dept="money", metric="revenue_<store>_<currency>_1d"}` (`revenue_steam_usd_1d`, `revenue_play_usd_1d`, `revenue_app_store_eur_1d`) and `kb_project_source_up{source="store-sales"}`. Different currencies are never added together. Play and Steam amounts are before the store's cut (`basis` above), so they are not what the studio receives.
+A store that could not be read, or read empty (Steam and Apple answer a day they have not reported the same way as a quiet one), writes no amount for any product, so its cells read "off", never 0. An in-app purchase whose parent app has no row of its own in that day's Apple report cannot be matched to the app: it lands in `store_sales_unattributed`. `publish` exits 1 when the pass is FAILED (no textfile directory, no store read). home-config's `prometheus-rules-kb-project.yaml` records `kb_project_number{dept="money", metric="revenue_<store>_<currency>_1d"}` (`revenue_steam_usd_1d`, `revenue_play_usd_1d`, `revenue_app_store_eur_1d`) and `kb_project_source_up{source="store-sales"}`. Different currencies are never added together. Play and Steam amounts are before the store's cut (`basis` above), so they are not what the studio receives.
 
 ## Trader
 

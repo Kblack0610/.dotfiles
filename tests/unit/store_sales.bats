@@ -301,7 +301,7 @@ publish_setup() {
 MAP
 }
 
-@test "publish: amounts per product and store through the project map, a read store with no sales writes usd 0, the rest is unattributed" {
+@test "publish: amounts per product and store through the project map, a product with no sale writes nothing, the rest is unattributed" {
   publish_setup; asc_key; play_key; steam_key; asc_report; play_report; steam_report
   run "$SS" publish 2026-11-09
   assert_success
@@ -315,8 +315,9 @@ MAP
   assert_success
   run grep -F 'store_sales_units{project="shape-city",store="app_store"} 5' "$p"
   assert_success
-  run grep -F 'store_sales_amount{project="quiet",store="steam",currency="usd"} 0' "$p"
-  assert_success
+  # the quiet product read empty: no 0, which a run before the day's report is out would write too
+  run grep -F 'project="quiet"' "$p"
+  assert_failure
   # the apps no product lists: the EUR app on the App Store and the unlisted Play package
   run grep -F 'store_sales_unattributed{store="app_store",currency="eur"} 2' "$p"
   assert_success
@@ -359,12 +360,14 @@ MAP
   run grep -E 'outcome=WORKED 3 of 3 stores read' "$SANDBOX/astate/store-sales/activity.log"
   assert_success
   PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SS" publish 2026-11-09
+  assert_failure
   assert_equal "$(cat "$SANDBOX/astate/store-sales/last-outcome")" FAILED
   run grep -F "no textfile directory $SANDBOX/none" "$SANDBOX/astate/store-sales/activity.log"
   assert_success
   # every store down: the file is written (store_sales_up 0 for each), the pass is not
   rm "$SANDBOX/rbw/store_sales_asc" "$SANDBOX/rbw/store_sales_play" "$SANDBOX/rbw/store_sales_steam"
   AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/bstate" run "$SS" publish 2026-11-09
+  assert_failure
   assert_equal "$(cat "$SANDBOX/bstate/store-sales/last-outcome")" FAILED
   run grep -F 'no store could be read' "$SANDBOX/bstate/store-sales/activity.log"
   assert_success
