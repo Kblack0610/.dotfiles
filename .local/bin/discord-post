@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # discord-post: post a message to a Discord channel through its webhook.
 #
-#   discord-post --channel <slug> [--username <name>] "<message>"   (no message: read stdin)
+#   discord-post --channel <slug> [--username <name>] [--link] [--dry-run] "<message>"   (no message: read stdin)
 #   discord-post --list                                             the channel slugs there are
+#
+# It prints the message id, or with --link the message's https://discord.com/channels/... URL.
+# --dry-run prints the payload it would send and touches neither rbw nor the network.
 #
 # Channels are data: rbw entries `webhook_<slug>` in folder `discord`. Setup, the Discord limits
 # this follows (one lock per machine, 429 retried after retry_after, never a 5xx, timeout or 404)
@@ -15,18 +18,20 @@ MAX_ATTEMPTS=3    # 429s only
 MAX_WAIT=60       # a longer retry_after fails instead of blocking the caller
 
 die() { echo "discord-post: $*" >&2; exit "${2:-1}"; }
-usage() { sed -n '3,4p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 channels() {
   rbw list --fields folder,name | awk -F'\t' -v f="$FOLDER" '$1 == f && $2 ~ /^webhook_/ { sub(/^webhook_/, "", $2); print $2 }' | sort -u
 }
 
-channel='' username=''
+channel='' username='' link=0 dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --list) channels; exit 0 ;;
     --channel) channel=${2-}; shift 2 || usage ;;
     --username) username=${2-}; shift 2 || usage ;;
+    --link) link=1; shift ;;
+    --dry-run) dry=1; shift ;;
     -h|--help) usage ;;
     --) shift; break ;;
     -*) die "unknown flag $1" 2 ;;
@@ -38,14 +43,17 @@ if [ $# -gt 0 ]; then msg="$*"; else msg="$(cat)"; fi
 [ -n "${msg//[[:space:]]/}" ] || die "empty message" 2
 [ "${#msg}" -le 2000 ] || die "message is ${#msg} characters; Discord allows 2000" 2
 
+payload="$(jq -cn --arg c "$msg" --arg u "$username" \
+  '{content: $c, allowed_mentions: {parse: ["roles", "users"]}} + (if $u == "" then {} else {username: $u} end)')"
+if [ "$dry" = 1 ]; then jq . <<<"$payload"; exit 0; fi
+
 url="$(rbw get --folder "$FOLDER" "webhook_$channel" 2>/dev/null)" ||
   die "no channel '$channel' (rbw $FOLDER/webhook_$channel); known: $(channels | paste -sd' ')"
 case "$url" in https://*/api/webhooks/*) ;; *) die "rbw $FOLDER/webhook_$channel is not a webhook URL" ;; esac
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-jq -cn --arg c "$msg" --arg u "$username" \
-  '{content: $c, allowed_mentions: {parse: ["roles", "users"]}} + (if $u == "" then {} else {username: $u} end)' >"$work/payload"
+printf '%s' "$payload" >"$work/payload"
 # The URL carries the webhook token, so it goes to curl on stdin, never in argv where ps shows it.
 printf 'url = "%s?wait=true"\n' "$url" >"$work/curlrc"
 
@@ -68,7 +76,15 @@ while :; do
       remaining="$(header X-RateLimit-Remaining)" reset="$(header X-RateLimit-Reset-After)"
       # Hold the lock through a drained bucket, so the next post on this machine does not 429.
       if [ "$remaining" = 0 ] && [ -n "$reset" ] && ! too_long "$reset"; then sleep "$reset"; fi
-      jq -r '.id // empty' "$work/body" 2>/dev/null || true
+      id="$(jq -r '.id // empty' "$work/body" 2>/dev/null || true)"
+      [ "$link" = 1 ] || { [ -z "$id" ] || printf '%s\n' "$id"; exit 0; }
+      # The message has the channel; the guild comes from the webhook itself (a GET, token in the URL).
+      chan="$(jq -r '.channel_id // empty' "$work/body" 2>/dev/null || true)"
+      printf 'url = "%s"\n' "$url" >"$work/getrc"
+      guild="$(curl -sS --max-time "$TIMEOUT" -K "$work/getrc" 2>/dev/null | jq -r '.guild_id // empty' 2>/dev/null || true)"
+      [ -n "$id" ] && [ -n "$chan" ] && [ -n "$guild" ] ||
+        die "posted, but no link could be built (message ${id:-?}, channel ${chan:-?}, guild ${guild:-?}); find it in #$channel"
+      printf 'https://discord.com/channels/%s/%s/%s\n' "$guild" "$chan" "$id"
       exit 0
       ;;
     429)
