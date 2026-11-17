@@ -112,28 +112,145 @@ pub fn link_line(agent_home: &str) -> String {
     format!("Agents: [[{agent_home}|agent board]] - [[lab/projects/agent-board|all projects]]")
 }
 
-/// Put `line` directly under the sheet's `Version:` line, replacing any existing one.
+/// The head lines code owns on a human sheet, in the order they sit under `Version:`.
+const HEAD_KEYS: [&str; 2] = ["Agents: ", "Docs: "];
+
+/// Put `lines` directly under the sheet's `Version:` line, replacing any [`HEAD_KEYS`] line
+/// already in the head (above the first `## `). Empty lines are skipped.
 ///
-/// Idempotent by construction: it removes the old `Agents:` line before inserting, so
-/// running it on every board write cannot stack duplicates the way an append would. Returns
-/// the new content, or `None` when nothing changed (the overwhelmingly common case, and the
-/// one that must not cause a write).
-pub fn with_link(content: &str, line: &str) -> Option<String> {
-    let mut lines: Vec<String> = content
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("Agents: "))
-        .map(str::to_string)
-        .collect();
-    let at = lines
+/// Idempotent by construction: it removes the old lines before inserting, so running it on
+/// every board write cannot stack duplicates the way an append would. Returns the new
+/// content, or `None` when nothing changed (the overwhelmingly common case, and the one that
+/// must not cause a write).
+pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
+    let mut in_head = true;
+    let mut out: Vec<String> = Vec::new();
+    for l in content.lines() {
+        if l.starts_with("## ") {
+            in_head = false;
+        }
+        // An `Agents:` line anywhere is a stray from before the head was code-owned; a
+        // `Docs:` word below the head is the human's.
+        let t = l.trim_start();
+        let owned = t.starts_with(HEAD_KEYS[0]) || (in_head && t.starts_with(HEAD_KEYS[1]));
+        if owned {
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    let at = out
         .iter()
         .position(|l| l.trim_start().starts_with("Version:"))?;
-    lines.insert(at + 1, line.to_string());
-    let out = format!("{}\n", lines.join("\n"));
+    let add = lines.iter().filter(|l| !l.is_empty()).cloned();
+    out.splice(at + 1..at + 1, add);
+    let out = format!("{}\n", out.join("\n"));
     (out != content).then_some(out)
 }
 
+/// A game's docs in its repo, by the playground convention `docs/games/<id>.md` plus the
+/// optional `<id>-story.md` and `<id>-look.md`, as `(label, url)` for those in the checkout.
+///
+/// `<id>` is the lowercased basename of the tracker's `path`, the rule `stages.md` checks
+/// use. Empty for a project that is not a game or has no checkout or forge slug here.
+pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, String)> {
+    let Some(project) = reg.lookup(project) else {
+        return Vec::new();
+    };
+    if reg.kind(project).as_deref() != Some("game") {
+        return Vec::new();
+    }
+    let Some(t) = reg.tracker(project) else {
+        return Vec::new();
+    };
+    let field = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    let id = Path::new(field("path"))
+        .file_name()
+        .map(|f| f.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let repo = field("repo");
+    let checkout = reg.checkout(repo);
+    // The GitHub slug of the same repo the checkout is: a Forgejo-only repo gets no links
+    // rather than a github.com URL that does not exist.
+    let slug = reg
+        .tracker(repo)
+        .and_then(|r| r.get("github")?.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let (Some(checkout), Some(slug), false) = (checkout, slug, id.is_empty()) else {
+        return Vec::new();
+    };
+    [
+        ("design", format!("{id}.md")),
+        ("story", format!("{id}-story.md")),
+        ("look", format!("{id}-look.md")),
+    ]
+    .into_iter()
+    .filter(|(_, f)| checkout.join("docs/games").join(f).is_file())
+    .map(|(label, f)| {
+        let url = format!("https://github.com/{slug}/blob/main/docs/games/{f}");
+        (label.to_string(), url)
+    })
+    .collect()
+}
+
+/// The `Docs:` line a human sheet carries: every doc of the project that exists, in a fixed
+/// order. The pitch (`docs/idea.md`), the `repo` docs ([`repo_docs`]), `playtest.md`,
+/// `ideas.md`, `summary.md` as status, then every other `docs/*.md` and `docs/*/README.md`
+/// by name, less [`is_report`] ones. A file that does not exist is not linked.
+pub fn docs_line(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String {
+    let wiki = |f: &Path, label: &str| {
+        let t = vault_rel(vault, f);
+        (!t.is_empty() && f.is_file()).then(|| format!("[[{t}|{label}]]"))
+    };
+    let mut parts: Vec<String> = Vec::new();
+    parts.extend(wiki(&dir.join("docs/idea.md"), "idea"));
+    parts.extend(repo.iter().map(|(label, url)| format!("[{label}]({url})")));
+    parts.extend(wiki(&dir.join("playtest.md"), "playtest"));
+    parts.extend(wiki(&dir.join("ideas.md"), "ideas"));
+    parts.extend(wiki(&dir.join("summary.md"), "status"));
+    let mut extra: Vec<(String, PathBuf)> = fs::read_dir(dir.join("docs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let name = e.file_name().to_string_lossy().to_string();
+            if path.is_dir() {
+                let readme = path.join("README.md");
+                return readme.is_file().then_some((name, readme));
+            }
+            let stem = name.strip_suffix(".md")?;
+            let stem = if stem == "README" { "docs" } else { stem };
+            (stem != "idea" && !is_report(stem)).then(|| (stem.to_string(), path.clone()))
+        })
+        .collect();
+    extra.sort();
+    parts.extend(extra.iter().filter_map(|(label, f)| wiki(f, label)));
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("Docs: {}", parts.join(" - "))
+}
+
+/// A doc named for one moment, not the project: its stem ends in a date (`-2026-11`,
+/// `-2026-11-05`) or a pass number (`-p3`). The Docs line keeps to the standing docs, so a
+/// project with a run of pass reports still has one short line.
+fn is_report(stem: &str) -> bool {
+    let parts: Vec<&str> = stem.split('-').collect();
+    let num = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    let pass = parts.last().is_some_and(|l| {
+        l.len() > 1 && l.starts_with('p') && l[1..].bytes().all(|b| b.is_ascii_digit())
+    });
+    let dated = |k: usize| {
+        parts.len() > k
+            && num(parts[parts.len() - k], 4)
+            && parts[parts.len() - k + 1..].iter().all(|s| num(s, 2))
+    };
+    pass || dated(2) || dated(3)
+}
+
 /// Ensure both halves of the link for one project: the agent sheet exists, and the human's
-/// sheet points at it.
+/// sheet points at it and at its docs (`docs`, from [`docs_line`]).
 ///
 /// Best-effort per project. A project whose sheet cannot be read is skipped rather than
 /// fatal - this runs from `notes today`, and one unreadable sheet must not stop the note.
@@ -143,6 +260,7 @@ pub fn ensure_pair(
     project: &str,
     human_home: &str,
     agent_home: &str,
+    docs: &str,
 ) -> Result<()> {
     if ensure(dir, project, human_home)? {
         log.info("agent", &format!("created {}", sheet_path(dir).display()));
@@ -153,7 +271,7 @@ pub fn ensure_pair(
     let Ok(content) = fs::read_to_string(&sheet) else {
         return Ok(());
     };
-    if let Some(out) = with_link(&content, &link_line(agent_home)) {
+    if let Some(out) = with_head(&content, &[link_line(agent_home), docs.to_string()]) {
         md::write_atomic(&sheet, &out)?;
         log.info("agent", &format!("linked {}", sheet.display()));
     }
@@ -189,12 +307,14 @@ pub fn ensure_for(p: &crate::config::Profile, dir: &Path, project: &str) -> Resu
 ///
 /// Runs from `notes board` (so also from every `notes today`) rather than a one-off
 /// migration, because "static" has to mean a project created tomorrow has one too. Both
-/// halves are no-ops once satisfied, so the steady-state cost is a stat per project.
+/// halves are no-ops once satisfied, so the steady-state cost per project is a read of its
+/// sheet and `docs/`, and a few stats.
 ///
 /// A profile that fails to resolve is skipped rather than fatal - the rule `write` already
 /// follows, because one broken org must not stop the daily note being written.
 pub fn ensure_all(log: &Logger) -> Result<usize> {
     let mut n = 0usize;
+    let reg = project_map::cached();
     for name in crate::config::all_profile_names()? {
         let Ok(p) = crate::config::resolve(Some(&name)) else {
             continue;
@@ -211,7 +331,12 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             };
             let human_home = vault_rel(&p.vault, &human);
             let agent_home = vault_rel(&p.vault, &sheet_path(dir));
-            if ensure_pair(log, dir, &proj, &human_home, &agent_home).is_ok() {
+            let repo = reg
+                .as_deref()
+                .map(|r| repo_docs(r, &proj))
+                .unwrap_or_default();
+            let docs = docs_line(&p.vault, dir, &repo);
+            if ensure_pair(log, dir, &proj, &human_home, &agent_home, &docs).is_ok() {
                 n += 1;
             }
         }
@@ -261,7 +386,7 @@ mod tests {
     #[test]
     fn the_link_lands_directly_under_the_version_line() {
         let sheet = "# demo\nVersion: v0.0.2\n\n## Tasks\n- [ ] a\n";
-        let out = with_link(sheet, &link_line("lab/p/demo/agent/README")).unwrap();
+        let out = with_head(sheet, &[link_line("lab/p/demo/agent/README")]).unwrap();
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "# demo");
         assert_eq!(lines[1], "Version: v0.0.2");
@@ -281,9 +406,9 @@ mod tests {
     fn re_linking_replaces_rather_than_stacks() {
         // This runs on every `notes today`. An append would grow the head without bound.
         let sheet = "# demo\nVersion: v0.0.2\n\n## Tasks\n";
-        let once = with_link(sheet, &link_line("lab/p/demo/agent/README")).unwrap();
+        let once = with_head(sheet, &[link_line("lab/p/demo/agent/README")]).unwrap();
         assert!(
-            with_link(&once, &link_line("lab/p/demo/agent/README")).is_none(),
+            with_head(&once, &[link_line("lab/p/demo/agent/README")]).is_none(),
             "no rewrite"
         );
         assert_eq!(once.matches("Agents: ").count(), 1, "{once}");
@@ -293,10 +418,10 @@ mod tests {
     fn a_moved_board_moves_the_link_with_it() {
         // The old line is replaced, never left pointing at a board that is gone.
         let rolled = "# demo\nVersion: v0.0.3\nAgents: [[lab/p/demo/agent/README|agent board]] - [[lab/projects/agent-board|all projects]]\n\n## Tasks\n";
-        let out = with_link(rolled, &link_line("lab/p/demo/agent/README"));
+        let out = with_head(rolled, &[link_line("lab/p/demo/agent/README")]);
         assert!(out.is_none(), "same target, so no write: {out:?}");
 
-        let moved = with_link(rolled, &link_line("lab/other/demo/agent/README")).unwrap();
+        let moved = with_head(rolled, &[link_line("lab/other/demo/agent/README")]).unwrap();
         assert_eq!(moved.matches("Agents: ").count(), 1, "{moved}");
         assert!(moved.contains("lab/other/demo/agent/README"), "{moved}");
         assert!(!moved.contains("lab/p/demo/agent/README"), "{moved}");
@@ -308,7 +433,146 @@ mod tests {
     #[test]
     fn a_sheet_with_no_version_line_is_never_stamped() {
         let prose = "# gsuite-comms\n\nMake GSuite manageable across 6+ accounts.\n";
-        assert!(with_link(prose, &link_line("lab/p/x/agent/README")).is_none());
+        assert!(with_head(prose, &[link_line("lab/p/x/agent/README")]).is_none());
+    }
+
+    /// A fresh dir under the temp dir, unique per test thread, with `files` written empty.
+    fn tree(tag: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-sheet-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        for f in files {
+            let path = dir.join(f);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn docs_line_links_only_what_exists_in_a_fixed_order() {
+        let vault = tree(
+            "docs",
+            &[
+                "lab/p/demo/README.md",
+                "lab/p/demo/ideas.md",
+                "lab/p/demo/summary.md",
+                "lab/p/demo/playtest.md",
+                "lab/p/demo/docs/idea.md",
+                "lab/p/demo/docs/zeta.md",
+                "lab/p/demo/docs/marketing/README.md",
+                "lab/p/demo/docs/briefs/a-brief.md",
+            ],
+        );
+        let dir = vault.join("lab/p/demo");
+        let repo = vec![("design".to_string(), "https://x/demo.md".to_string())];
+        let line = docs_line(&vault, &dir, &repo);
+        assert_eq!(
+            line,
+            "Docs: [[lab/p/demo/docs/idea|idea]] - [design](https://x/demo.md) - \
+             [[lab/p/demo/playtest|playtest]] - [[lab/p/demo/ideas|ideas]] - \
+             [[lab/p/demo/summary|status]] - [[lab/p/demo/docs/marketing/README|marketing]] - \
+             [[lab/p/demo/docs/zeta|zeta]]"
+        );
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn dated_and_pass_reports_stay_off_the_docs_line() {
+        for stem in [
+            "capacity-budget-2026-11-05",
+            "landscape-review-2026-11",
+            "usage-cleanup-p6",
+        ] {
+            assert!(is_report(stem), "{stem}");
+        }
+        // a standing doc, a word that starts with p, and a bare year are not reports
+        for stem in [
+            "release-recommendations",
+            "tool-call-usage",
+            "pipeline",
+            "plan-2026",
+            "p",
+        ] {
+            assert!(!is_report(stem), "{stem}");
+        }
+    }
+
+    // THE NEGATIVE CONTROL for the docs line: nothing on disk, nothing linked, no line.
+    #[test]
+    fn docs_line_is_empty_for_a_project_with_no_docs() {
+        let vault = tree("nodocs", &["lab/p/bare/README.md"]);
+        assert_eq!(docs_line(&vault, &vault.join("lab/p/bare"), &[]), "");
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn the_docs_line_sits_under_agents_and_rewrites_in_place() {
+        let sheet = "# demo\nVersion: v0.0.2\nDocs: old\n\n## Tasks\n- [ ] a\n";
+        let head = [
+            link_line("lab/p/demo/agent/README"),
+            "Docs: new".to_string(),
+        ];
+        let out = with_head(sheet, &head).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[2].starts_with("Agents: "), "{out}");
+        assert_eq!(lines[3], "Docs: new", "{out}");
+        assert_eq!(out.matches("Docs: ").count(), 1, "{out}");
+        assert!(with_head(&out, &head).is_none(), "idempotent");
+    }
+
+    #[test]
+    fn a_docs_word_below_the_head_is_not_the_head_line() {
+        // Only the head is code-owned; a row or note further down is the human's.
+        // A stray `Agents:` line below it is still cleaned, as with_link did.
+        let sheet = "# demo\nVersion: v0.0.2\n\n## Notes\nDocs: keep me\nAgents: stray\n";
+        let out = with_head(sheet, &["Docs: new".to_string()]).unwrap();
+        assert!(out.contains("## Notes\nDocs: keep me\n"), "{out}");
+        assert!(!out.contains("Agents: stray"), "{out}");
+    }
+
+    #[test]
+    fn repo_docs_follow_the_game_convention_and_skip_what_is_missing() {
+        let checkout = tree(
+            "repo",
+            &["docs/games/shapecity.md", "docs/games/shapecity-look.md"],
+        );
+        let map = format!(
+            r#"{{"paths": {{"{0}": "ucp", "{0}/": "fj"}},
+                "trackers": {{
+                  "ucp": {{"github": "Org/ucp"}},
+                  "fj": {{"forgejo": "me/fj"}},
+                  "shape-city": {{"type": "game", "repo": "ucp", "path": "Assets/Games/ShapeCity"}},
+                  "fj-game": {{"type": "game", "repo": "fj", "path": "Assets/Games/ShapeCity"}},
+                  "an-app": {{"type": "app", "repo": "ucp", "path": "Assets/Games/ShapeCity"}}
+                }}}}"#,
+            checkout.display()
+        );
+        let reg = project_map::Registry::parse(&map).unwrap();
+        let docs = repo_docs(&reg, "shape-city");
+        let labels: Vec<&str> = docs.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["design", "look"], "no story file, no story link");
+        assert_eq!(
+            docs[0].1,
+            "https://github.com/Org/ucp/blob/main/docs/games/shapecity.md"
+        );
+        assert!(
+            repo_docs(&reg, "an-app").is_empty(),
+            "only a game has repo docs"
+        );
+        assert!(
+            repo_docs(&reg, "fj-game").is_empty(),
+            "a repo with no GitHub slug gets no github.com links"
+        );
+        assert_eq!(
+            repo_docs(&reg, "Shape-City"),
+            docs,
+            "any spelling of the name"
+        );
+        let _ = fs::remove_dir_all(&checkout);
     }
 
     #[test]
