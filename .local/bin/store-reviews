@@ -13,9 +13,8 @@
 # Credentials, series and statuses: docs/operations/store-reviews.md.
 set -uo pipefail
 
-PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
-# shellcheck source=../../.config/shared-hooks/project-name.sh
-. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/store-apps.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-apps.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 # shellcheck source=../lib/prom-textfile.sh
@@ -72,22 +71,6 @@ TMP="$(mktemp -d)" || die "cannot make a scratch dir"
 trap 'rm -rf "$TMP"' EXIT
 NOW="$(now_epoch)"
 SINCE=$((NOW - WINDOW_DAYS * 86400))
-
-# apps -> one {project, store, app} per line: every product's store targets, each app once.
-apps() {
-  local map
-  map="$(project_map_file)"
-  [ -f "$map" ] || die "no registry at $map"
-  project_machine_profile >/dev/null
-  jq -c --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map" "$PROJECT_VISIBLE_JQ"'
-    [(.trackers // {}) | to_entries[]
-     | select(.value | type == "object") | .key as $p | select($p | visible($m))
-     | (.value.targets // [])[] | objects | .live // {}
-     | ({project: $p, store: "steam", app: .steam.app},
-        {project: $p, store: "play", app: .play.package},
-        {project: $p, store: "app_store", app: .testflight.app})
-     | select(.app != null) | .app |= tostring] | unique[]' "$map"
-}
 
 # row <app-json> <error> | row <app-json> "" <counts-json>: an app's record. A row with an error
 # has no counts, and counts that could not be computed are an error.
@@ -173,7 +156,7 @@ app_store() {
     | {listed: true, total: $t, recent: ($r | length), recent_positive: ($r | map(select(.rating >= 4)) | length)}' "$TMP"/asc."$2".* 2>/dev/null)"
 }
 
-APPS="$(apps)" || die "could not read the store targets from $(project_map_file)"
+APPS="$(store_apps)" || die "could not read the store targets from $(project_map_file)"
 # One token per store that has apps, made once; a locked vault or a missing entry is that store's
 # error for each of its apps.
 has() { grep -q "\"store\":\"$1\"" <<<"$APPS"; }
