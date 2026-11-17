@@ -23,14 +23,22 @@ private_env() {
 }
 
 @test "setup_rbw takes the vault URL from the private overlay's private.sh" {
-  private_env 'export OTHER=1' 'export VAULTWARDEN_URL=https://vault.example.test'
+  private_env 'export VAULTWARDEN_URL="https://vault.example.test"'
   run setup_rbw
   assert_success
   run cat "$BATS_TEST_TMPDIR/rbw-calls"
   assert_line "config set base_url https://vault.example.test"
   assert_line "config set email me@example.test"
-  # Only the URL leaves the file: nothing else it exports reaches the installer.
-  [ -z "${OTHER:-}" ]
+}
+
+@test "setup_rbw reads the URL line without running private.sh" {
+  # private.sh is shell init: whatever else it runs must not run inside the installer.
+  private_env "touch '$BATS_TEST_TMPDIR/ran'" 'export VAULTWARDEN_URL=https://vault.example.test'
+  run setup_rbw
+  assert_success
+  [ ! -e "$BATS_TEST_TMPDIR/ran" ]
+  run cat "$BATS_TEST_TMPDIR/rbw-calls"
+  assert_line "config set base_url https://vault.example.test"
 }
 
 @test "VAULTWARDEN_URL already in the environment wins over private.sh" {

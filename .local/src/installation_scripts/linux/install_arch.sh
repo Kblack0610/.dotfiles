@@ -687,9 +687,10 @@ setup_theme() {
 #
 # The server URL is VAULTWARDEN_URL, exported by the private overlay's
 # ~/.config/shell/private.sh (the host is a sensitive token, so it cannot live in
-# this repo). It is read from the environment first, else from that file in a
-# subshell, so nothing else in it reaches the installer. With neither, rbw is left
-# unpointed rather than aimed at a guess.
+# this repo). It is read from the environment first, else from that file's
+# `export VAULTWARDEN_URL=` line, without running the file: it is shell init, and
+# anything else in it has no business running inside the installer. With neither,
+# rbw is left unpointed rather than aimed at a guess.
 #
 # Login is NOT automated: `rbw login` needs the Vaultwarden master password
 # interactively, and the resulting session/device state is exactly the kind of
@@ -705,7 +706,7 @@ setup_rbw() {
     local private_env="$HOME/.config/shell/private.sh"
     local vault_url="${VAULTWARDEN_URL:-}"
     if [[ -z "$vault_url" && -r "$private_env" ]]; then
-        vault_url="$(bash -c '. "$1" >/dev/null 2>&1; printf %s "${VAULTWARDEN_URL:-}"' _ "$private_env")"
+        vault_url="$(sed -n "s/^export VAULTWARDEN_URL=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}\$/\1/p" "$private_env" | tail -n 1)"
     fi
     if [[ -z "$vault_url" ]]; then
         log_warning "VAULTWARDEN_URL is unset and $private_env does not export it; rbw left unconfigured"
