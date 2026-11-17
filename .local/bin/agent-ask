@@ -20,7 +20,8 @@
 #                                       options with meanings, recommendation, context, and
 #                                       last the judge line, a deferral included
 #   agent-ask target [--reopen] <id>    where the asking session runs now, as an agent-panel
-#                                       jump target; fails saying why (ended, or no session).
+#                                       jump target; fails saying why (ended, live on a fleet
+#                                       worker, or no session).
 #                                       --reopen starts an ended one again first
 #   agent-ask reopen-on-answer <id>     set a pending ask's `resume` to reopen its session with the
 #                                       answer: the session may close before it comes (/wind-down auto)
@@ -861,7 +862,8 @@ deliver_one() {
   local went=() resume=""
   [ -n "$beside" ] || resume="$(field "$f" resume)"
   if [ -n "$row" ]; then
-    note="$(deliver_to_session "$f" "$said" "$row")"; went+=("typed into $(field "$f" session)")
+    note="$(deliver_to_session "$f" "$said" "$row")"
+    went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")
   elif [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; then
     answer_row "$f" "$answer" "$by"; went+=("a board row: no live session, resume or held item takes it")
   fi
@@ -1196,6 +1198,9 @@ cmd_target() {
     reopen_session "$f" "$sid"
     return
   fi
+  # A worker's session is live there: no pane here to jump to, and a reopen here would fork it.
+  local host; host="$(jq -r '.host // empty' <<< "$row")"
+  [ -z "$host" ] || { echo "session runs on $host at $(jq -r .target <<< "$row"); go to it there" >&2; return 1; }
   jq -r .target <<< "$row"
 }
 
@@ -1278,10 +1283,17 @@ session_cwd() {
   grep -m1 '"cwd":' "$t" | jq -r '.cwd // empty' 2>/dev/null
 }
 
-# live_row <claude_session>: the agent-panel row of that session while it lives, else nothing.
+# live_row <claude_session>: the agent-panel row of that session while it lives, else nothing. This
+# machine's panel first, then each fleet worker's (fleet_panel_row), whose row carries `host`: a
+# session placed on a worker is live there, so its answer is typed in there and it is never
+# reopened here as a second copy.
 live_row() {
-  [ -n "${1:-}" ] && command -v agent-panel >/dev/null 2>&1 || return 0
-  agent-panel list --json 2>/dev/null | jq -cn --arg s "$1" '[inputs | select(.session_id == $s)] | .[:1][]'
+  [ -n "${1:-}" ] || return 0
+  local row=''
+  command -v agent-panel >/dev/null 2>&1 &&
+    row="$(agent-panel list --json 2>/dev/null | jq -cn --arg s "$1" '[inputs | select(.session_id == $s)] | .[:1][]')"
+  [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
+  fleet_panel_row "$1"
 }
 
 # in_dialog <live row>: the session sits in a permission/question dialog, where a paste would
@@ -1293,14 +1305,20 @@ in_dialog() { [ -n "$1" ] && [ "$(jq -r .status <<< "$1" 2>/dev/null)" = waiting
 # the session sits in a permission/question dialog that a paste would answer by accident. Prints
 # why when the answer did not go in, which deliver_one records as the failed delivery's note.
 deliver_to_session() {
-  local f="$1" answer="$2" row="$3" pane
+  local f="$1" answer="$2" row="$3" pane host send=(agent-panel) rc=0
   [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
   in_dialog "$row" && { echo "its session is in a dialog, so the answer was not typed into it"; return 0; }
   # agent-panel send owns typing into a pane: it waits for the paste to be drawn before Enter
   # (Claude Code drops an Enter on the heels of a paste) and says when the Enter was not taken.
-  pane="$(jq -r .pane <<< "$row")"
-  agent-panel send --pane "$pane" "Answer to ask $(field "$f" id): $answer" >&2 ||
+  # A fleet worker's row (live_row) is typed in by that worker's agent-panel, over ssh.
+  IFS=$'\t' read -r pane host < <(jq -r '[.pane, .host // ""] | @tsv' <<< "$row")
+  [ -z "$host" ] || send=(fleet_host_run "$host" agent-panel)
+  "${send[@]}" send --pane "$pane" "Answer to ask $(field "$f" id): $answer" >&2 || rc=$?
+  if [ "$rc" = 255 ] && [ -n "$host" ]; then
+    echo "$host did not answer, so the answer was not typed into $(field "$f" session)"
+  elif [ "$rc" != 0 ]; then
     echo "it did not submit in $(field "$f" session); the answer is in that session's input box"
+  fi
   return 0
 }
 
@@ -2051,13 +2069,16 @@ usage() {
   awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
 }
 
+# The roster and the one ssh path to a worker (fleet_host_run, fleet_panel_row): loaded for every
+# run, the home's own included, since deliver_to_session types into a worker's session from there.
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # The asks live on the fleet home; anywhere else this runs there (state_forward, fleet-hosts.sh).
 if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
   state_forward agent-ask "" "$@"
 fi
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does

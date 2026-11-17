@@ -27,8 +27,8 @@
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    the fleet home, rc 1 when no machine matches it; each fleet worker: placed or not, run units, load, and why it takes no session
 #   (run, reap, start, fill and promote do nothing off the fleet home: home_guard)
-#   fleet-dispatch record            keep each world's pane record; page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run]  reopen a lost server's conversations as windows
+#   fleet-dispatch record [--here]   keep each world's pane record, then (on the home) each fleet worker's; page when a world's server died
+#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the home) on each fleet worker
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -2344,10 +2344,44 @@ record_world() {
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
 }
 
-# cmd_record -- every world a manifest declares. fleet-state.service runs it each minute, so a
-# record is at most that old; a world's sockets give no event to await for a pane's cwd or id.
+# on_workers [--quiet] <verb> [args...] -- run `fleet-dispatch <verb> --here [args...]` on each fleet
+# worker but this machine (fleet_peers), all at once, then print each one's output in roster order,
+# each line prefixed with the worker's name. A worker's tmux servers die on their own and only it can
+# read them, so each one keeps its own pane record and reopens its own sessions; --here keeps it from
+# fanning out again. Rc 1, said, when a worker's own verb failed. One that does not answer (ssh 255)
+# is no failure: its record stays there for its own next run, and a laptop asleep is not a failed
+# reopen. Restore says it; the minute record (--quiet) does not, or it would every minute.
+on_workers() {
+  local quiet='' name rc=0 r dir names=() pids=()
+  [ "$1" != --quiet ] || { quiet=1; shift; }
+  fleet_hosts >/dev/null
+  mapfile -t names < <(fleet_peers)
+  [ "${#names[@]}" -gt 0 ] || return 0
+  dir=$(mktemp -d) || return 1
+  for name in "${names[@]}"; do
+    { fleet_host_run "$name" fleet-dispatch "$1" --here "${@:2}" >"$dir/$name" 2>&1; echo $? >"$dir/$name.rc"; } &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+  for name in "${names[@]}"; do
+    sed "s/^/$name: /" "$dir/$name"
+    r=$(cat "$dir/$name.rc")
+    case "$r" in
+      0) ;;
+      255) [ -n "$quiet" ] || say "$1: $name did not answer; its own record stays there" ;;
+      *) say "$1: $name exited $r"; rc=1 ;;
+    esac
+  done
+  rm -rf "$dir"
+  return "$rc"
+}
+
+# cmd_record [--here] -- every world a manifest declares, then, on the fleet home, each fleet
+# worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
+# most that old; a world's sockets give no event to await for a pane's cwd or id.
 cmd_record() {
-  local f srv panel="$PANES/.panel"
+  local f srv panel="$PANES/.panel" here=''
+  [ "${1:-}" != --here ] || here=1
   mkdir -p "$PANES"
   exec 8>"$PANES/.lock"
   flock 8 || return 1
@@ -2358,6 +2392,7 @@ cmd_record() {
     record_world "${srv%.conf}" "$panel"
   done
   exec 8>&-
+  [ -n "$here" ] || ! fleet_is_home || on_workers --quiet record
 }
 
 
@@ -2409,24 +2444,29 @@ restore_world() {
   ) 7>"$PANES/.lock"
 }
 
-# cmd_restore -- the one verb after a lost server or a reboot. A record first, so a death the
-# minute timer has not seen yet counts, and a server already restarted by hand is not missed.
+# cmd_restore [--here] -- the one verb after a lost server or a reboot: this machine's lost servers,
+# then, on the fleet home, each fleet worker's on that worker (on_workers), unless --here. A record
+# first, so a death the minute timer has not seen yet counts, and a server already restarted by
+# hand is not missed.
 cmd_restore() {
-  local server='' dry=0 f rc=0 found=0
+  local server='' dry=0 here='' f rc=0 found=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) [ $# -ge 2 ] || { say "restore: --server needs a value"; return 2; }; server=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
+      --here) here=1; shift ;;
       *) say "restore: unknown argument: $1"; return 2 ;;
     esac
   done
-  cmd_record
+  cmd_record --here
   for f in "$PANES"/${server:-*}.lost.json; do
     [ -r "$f" ] || continue
     found=1
     restore_world "$f" "$dry" || rc=1
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
+  local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
+  if [ -z "$here" ] && fleet_is_home; then on_workers restore "${wargs[@]}" || rc=1; fi
   return "$rc"
 }
 
@@ -5113,7 +5153,7 @@ main() {
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
     start) shift; cmd_start "$@" ;;
-    record) cmd_record ;;
+    record) shift; cmd_record "$@" ;;
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
     item-tier) shift; cmd_item_tier "$@" ;;

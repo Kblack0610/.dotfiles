@@ -67,7 +67,7 @@ agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released
 agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, delivered or not sent and why, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private session-outcomes.conf)
-agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
+agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why, a session live on a fleet worker included. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
 agent-ask live-sessions                      the Claude session ids running now (what the questions panel and the card read to tell a live session from a dead one)
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; queue its delivery and return; --by human (default) | judge | shepherd sets answered_by
@@ -160,7 +160,7 @@ An ask that waits on something the human must do with their hands (wear a headse
 
 Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
-An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). If the session does not take the Enter, the delivery ends `failed` with a note saying where the text is.
+An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). A session on a fleet worker is found in that worker's agent-panel (`fleet_panel_row`, fleet-hosts.sh) and typed into there, through `fleet_host_run <host> agent-panel send`; `target` and `reopen` read the same row, so a session live on a worker is never reopened here. If the session does not take the Enter, or its worker does not answer, the delivery ends `failed` with a note saying where the text is.
 
 Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (the delivery calls it; `ask-resume --all` drains by hand).
 
