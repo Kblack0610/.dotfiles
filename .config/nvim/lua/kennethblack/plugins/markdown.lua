@@ -370,14 +370,18 @@ return {
         -- in the lane it sits in (its heading, else the lane of the open row above it), kept
         -- before the next row that lands in that lane when one is already there. The human's own
         -- `---` between rows is the same break, kept as a rule (sweep::is_group_rule): it is
-        -- theirs when the next non-blank line is no scaffold and no `## ` heading.
+        -- theirs when, past any more rules, the next non-blank line is no scaffold and no `## `
+        -- heading. It sits at column 0: an indented `---` is a row's note.
         local pending, last_open = {}, nil
+        local function is_rule(l)
+          return l:match "^%-%-%-%s*$" ~= nil
+        end
         local function is_group_rule(n)
-          if not body[n]:match "^%s*%-%-%-%s*$" then
+          if not is_rule(body[n]) then
             return false
           end
           for k = n + 1, #body do
-            if body[k]:match "%S" then
+            if body[k]:match "%S" and not is_rule(body[k]) then
               return not body[k]:match "^## " and not is_scaffold(vim.trim(body[k]))
             end
           end

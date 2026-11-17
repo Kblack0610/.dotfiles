@@ -48,13 +48,16 @@ pub(crate) const RULE: &str = "---";
 
 /// Is `lines[i]` a `---` the human put between Focus rows to group them, rather than the one
 /// the sweep writes above `### Done`? It is when a row follows it: the next non-blank line is
-/// no scaffold (human, 2026-11-17: "I'd like to add '---' for my own organization within focus").
+/// no scaffold, skipping the rest of a run of rules (human, 2026-11-17: "I'd like to add '---'
+/// for my own organization within focus"). It sits at column 0: an indented `---` is a row's
+/// note. Like a blank, a rule with no row above it in its lane has nothing to group and goes.
 pub(crate) fn is_group_rule<S: AsRef<str>>(lines: &[S], i: usize) -> bool {
-    lines[i].as_ref().trim() == RULE
+    let is_rule = |l: &str| l.trim_end() == RULE;
+    is_rule(lines[i].as_ref())
         && lines[i + 1..]
             .iter()
             .map(AsRef::as_ref)
-            .find(|l| !l.trim().is_empty())
+            .find(|l| !l.trim().is_empty() && !is_rule(l))
             .is_some_and(|n| !n.starts_with("## ") && !is_scaffold(n, Layout::Focus))
 }
 
@@ -402,7 +405,7 @@ mod tests {
     // lane") runs the same input through markdown.lua.
     #[test]
     fn golden_rules_group_rows_inside_a_lane() {
-        let note = "## Focus\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n";
+        let note = "## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n";
         let expected = "## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
