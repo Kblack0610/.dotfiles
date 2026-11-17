@@ -3,8 +3,8 @@
 #
 #   store-sync-age [--max-min N] [sync.log]
 #
-# git-sync-agent.sh logs a COMPLETE line each time a sync finished (pushed, or already up to
-# date); SKIP and ERROR lines mean it did not reach Forgejo. Exit 0 when the newest COMPLETE
+# store-sync logs a COMPLETE line each time origin (Forgejo) took HEAD, pushed or already up to
+# date; BACKUP, SKIP and ERROR lines mean it did not reach Forgejo. Exit 0 when the newest COMPLETE
 # line is at most N minutes old (default 30), 1 when it is older. A missing log or no COMPLETE
 # line prints `unreadable: ...`, which the Sentinel companion reads as "could not check".
 set -uo pipefail
@@ -34,8 +34,8 @@ age_min=$(( (now - then) / 60 ))
 if [ "$age_min" -le "$max_min" ]; then
   echo "store sync current: last COMPLETE $age_min min ago (limit $max_min)"
 else
-  # The newest SKIP/ERROR/CONFLICT/WARN line says why a sync did not finish.
-  why="$(grep -E '\] (SKIP|ERROR|CONFLICT|WARN):' "$log" | tail -n 1 | cut -c1-200 || true)"
+  # The newest SKIP/ERROR/BACKUP/WARN line says why a sync did not finish.
+  why="$(grep -E '\] (SKIP|ERROR|BACKUP|WARN):' "$log" | tail -n 1 | cut -c1-200 || true)"
   echo "store sync stale: last COMPLETE $age_min min ago at $stamp (limit $max_min)${why:+; last problem: $why}"
   exit 1
 fi

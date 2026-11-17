@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # store-sync-age: the probe behind the store-sync-fresh Sentinel watch. It reads the newest
-# COMPLETE line of git-sync-agent.sh's sync.log; SKIP and ERROR lines never count as a sync.
+# COMPLETE line of store-sync's sync.log; BACKUP, SKIP and ERROR lines never count as a sync.
 
 setup() {
   bats_require_minimum_version 1.5.0
