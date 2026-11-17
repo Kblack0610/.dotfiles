@@ -19,22 +19,28 @@
 #   lessons fat [--max N] [--json] [FILE|DIR...]
 #       "<file>:<line>\t<bytes>\t<first line>" per lesson over N bytes (LESSON_MAX_BYTES, 1500):
 #       the ones to rewrite as rule, why and one pointer. --json: one count line per file.
+#   lessons compact --dump FILE DIR      DIR/<key>.orig per lesson in FILE over the cap
+#   lessons compact [--dry-run] FILE DIR
+#       Replace each lesson that has a DIR/<key>.md with that text plus a pointer to its
+#       evidence, and move the old text verbatim to _archive/<project>-evidence.md. Refuses a
+#       text that changes the key, drops a <!-- marker -->, stays over the cap or splits the
+#       lesson; exit 1 if any.
 #
 # A lesson is a `## ` section, or a `- ` bullet that starts with a date, stands before any
 # section, or sits under a day group (a `## ` heading that is only a date; see PARSE); its
-# key hashes its first line. Delivery log, sig hits and the nightly caller:
-# ~/.config/agentctl/DREAMING.md "Lesson delivery and archive".
+# key hashes the first 160 chars of its first line. Delivery log, sig hits and the nightly
+# caller: ~/.config/agentctl/DREAMING.md "Lesson delivery and archive".
 set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
 # text before the first lesson). Per lesson r: key, date, title (first line), start (its
-# line number), bytes, text (lowercased, one line), sig (each `<!-- sig:DATE REGEX -->`
-# regex, after a newline).
+# line number), end (its last line that is not blank), bytes, text (lowercased, one line),
+# sig (each `<!-- sig:DATE REGEX -->` regex, after a newline).
 # shellcheck disable=SC2016
 PARSE='
 BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
@@ -60,7 +66,7 @@ function open_lesson(t,   k) {
 }
 # Before the rule that opens a bullet lesson, so the bullet opens under the group.
 /^- / && day {
-  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]
+  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]
   for (l = start[n]; l < NR; l++) own[l] = 0
   n--; cur = 0; insec = 0; day = 0
 }
@@ -70,6 +76,7 @@ function open_lesson(t,   k) {
   own[NR] = cur; raw[NR] = $0
   if (cur) {
     bytes[cur] += length($0) + 1
+    if (/[^[:space:]]/) end[cur] = NR
     text[cur] = text[cur] " " tolower($0)
     # The grammar of so_lesson_sigs (session-outcomes.sh), whose sigs key lesson_hits: the
     # last marker on the line, a YYYY-MM-DD date, the regex up to the first " -->".
@@ -333,6 +340,68 @@ cmd_chains() {
   done
 }
 
+# compact --dump: each lesson over max, from its first line to its end, to out/<key>.orig.
+# shellcheck disable=SC2016
+DUMP='
+END {
+  for (r = 1; r <= n; r++) if (bytes[r] > max) {
+    f = out "/" key[r] ".orig"; printf "" > f
+    for (l = start[r]; l <= end[r]; l++) print raw[l] > f
+    close(f); c++
+  }
+  print c + 0
+}
+'
+
+# compact: each lesson whose key is in kfile becomes rdir/<key>.md and a line "  <ptr><key>.", its
+# first line to its end; the old lines go to archto under a "<!-- <key> compacted -->" mark
+# and the result to keepto. Prints "refused <key>: <why>" per text it cannot use, then the
+# count it replaced. The text keeps the lesson's marker ("- " or "## ") and the first 160
+# chars after it, so the key and the delivery log stay with the lesson.
+# shellcheck disable=SC2016
+COMPACT='
+END {
+  while ((getline k < kfile) > 0) want[k] = 1
+  for (r = 1; r <= n; r++) { cnt[key[r]]++; at[key[r]] = r }
+  for (k in want) {
+    if (!(k in at)) { printf "refused %s: no lesson with that key\n", k; continue }
+    r = at[k]; f = rdir "/" k ".md"; t = ""; first = 1
+    while ((getline l < f) > 0) { t = first ? l : t "\n" l; first = 0 }
+    close(f)
+    sub(/[[:space:]]+$/, "", t); t = t "\n  " ptr k "."
+    p = raw[start[r]] ~ /^## / ? "## " : "- "
+    split(t, tl, "\n"); h = substr(tl[1], length(p) + 1)
+    gsub(/[[:space:]]+/, " ", h); sub(/^ /, "", h); sub(/ $/, "", h)
+    why = ""
+    # A marker (sig, seen, canonical) is what other tools key on: the text keeps each verbatim.
+    for (l = start[r]; l <= end[r] && why == ""; l++) {
+      s = raw[l]
+      while ((i = index(s, "<!--")) && (j = index(substr(s, i), "-->"))) {
+        m = substr(s, i, j + 2); s = substr(s, i + j + 2)
+        if (!index(t, m)) { why = "it drops the marker " m; break }
+      }
+    }
+    if (why != "") ;
+    else if (cnt[k] > 1) why = "two lessons share that key"
+    else if (substr(tl[1], 1, length(p)) != p) why = "the first line does not start with \"" p "\""
+    else if (hash(substr(h, 1, 160)) != k) why = "the first 160 chars of the first line changed (the key)"
+    else if (length(t) + 1 > max) why = (length(t) + 1) " bytes with the pointer, over " max
+    if (why != "") { printf "refused %s: %s\n", k, why; continue }
+    new[r] = t
+  }
+  for (l = 1; l <= NR; l++) {
+    r = own[l]
+    if ((r in new) && l <= end[r]) {
+      if (l == start[r]) { print new[r] > keepto; printf "\n<!-- %s compacted %s -->\n", key[r], today > archto; c++ }
+      print raw[l] > archto
+      continue
+    }
+    print raw[l] > keepto
+  }
+  print c + 0
+}
+'
+
 cmd_fat() {
   local max="${LESSON_MAX_BYTES:-1500}" json=0 arg f files=()
   while [ $# -gt 0 ]; do
@@ -465,6 +534,62 @@ cmd_archive() {
   echo "lessons archive: moved $total lesson(s) not picked or repeated since $cutoff"
 }
 
+cmd_compact() {
+  local max="${LESSON_MAX_BYTES:-1500}" dump=0 dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dump) dump=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      -h|--help) usage ;;
+      *) break ;;
+    esac
+  done
+  [ $# -eq 2 ] || usage 2
+  local f="$1" dir="$2" proj
+  [ -f "$f" ] || { echo "lessons compact: no file $f" >&2; return 2; }
+  proj=$(basename "$f" .md)
+  if [ "$dump" = 1 ]; then
+    mkdir -p "$dir"
+    echo "lessons compact: $proj: dumped $(LC_ALL=C awk -v max="$max" -v out="$dir" "$PARSE$DUMP" "$f") lesson(s) over $max bytes to $dir"
+    return 0
+  fi
+  [ -d "$dir" ] || { echo "lessons compact: no dir $dir" >&2; return 2; }
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/lessons-compact.XXXXXX")
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" RETURN
+  # Same snapshot rule as archive: a session may append a lesson while this runs.
+  cp -p "$f" "$tmp/snap"
+  find "$dir" -maxdepth 1 -name '*.md' -printf '%f\n' | sed -n 's/^\([0-9a-f]\{8\}\)\.md$/\1/p' > "$tmp/keys"
+  local out count refused before after
+  out=$(LC_ALL=C awk -v max="$max" -v kfile="$tmp/keys" -v rdir="$dir" -v keepto="$tmp/keep" \
+    -v archto="$tmp/arch" -v today="$(date +%F)" -v ptr="Evidence: \`_archive/$proj-evidence.md\` " \
+    "$PARSE$COMPACT" "$tmp/snap")
+  count=$(printf '%s\n' "$out" | tail -n 1)
+  refused=$(printf '%s\n' "$out" | sed '$d' | sort)
+  [ -z "$refused" ] || printf '%s\n' "$refused"
+  if [ "$count" -gt 0 ]; then
+    # A text with its own dated or top-level bullet would open a second lesson.
+    before=$(LC_ALL=C awk "$PARSE"'END { print n + 0 }' "$tmp/snap")
+    after=$(LC_ALL=C awk "$PARSE"'END { print n + 0 }' "$tmp/keep")
+    if [ "$before" != "$after" ]; then
+      echo "lessons compact: $proj: the texts turn $before lessons into $after; nothing written"
+      return 1
+    fi
+  fi
+  if [ "$dry" = 1 ]; then
+    echo "lessons compact: $proj: would compact $count"
+  elif [ "$count" -gt 0 ]; then
+    cmp -s "$tmp/snap" "$f" || { echo "lessons compact: $proj: changed while reading, nothing written; run it again"; return 1; }
+    mkdir -p "$(dirname "$f")/_archive"
+    cat "$tmp/arch" >> "$(dirname "$f")/_archive/$proj-evidence.md"
+    cp "$tmp/keep" "$tmp/keep.final" && chmod --reference="$f" "$tmp/keep.final" && mv "$tmp/keep.final" "$f"
+    echo "lessons compact: $proj: compacted $count, old text in _archive/$proj-evidence.md"
+  else
+    echo "lessons compact: $proj: compacted 0"
+  fi
+  [ -z "$refused" ]
+}
+
 case "${1:-}" in
   pick) shift; cmd_pick "$@" ;;
   dup) shift; cmd_dup "$@" ;;
@@ -472,6 +597,7 @@ case "${1:-}" in
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   fat) shift; cmd_fat "$@" ;;
+  compact) shift; cmd_compact "$@" ;;
   -h|--help|'') usage ;;
   *) echo "lessons: unknown command '$1'" >&2; usage 2 ;;
 esac

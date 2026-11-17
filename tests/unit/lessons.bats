@@ -376,3 +376,79 @@ $G:11	160	**$RECENT** **IFS tab read merges empty fields**, use a non-whitespace
   run "$BIN" fat "$G"
   assert_output ""
 }
+
+@test "compact swaps in the short text with a pointer, moves the old text verbatim, and keeps the key" {
+  group_file
+  LESSON_MAX_BYTES=100 run "$BIN" compact --dump "$G" "$DIR/c"
+  assert_output "lessons compact: group: dumped 2 lesson(s) over 100 bytes to $DIR/c"
+  k=$(grep -l Forgejo "$DIR"/c/*.orig); k=$(basename "$k" .orig)
+  printf -- '- **Forgejo runners need the dind sidecar restarted after a node drain.**\n  Restart it.\n' > "$DIR/c/$k.md"
+  cp "$G" "$DIR/before"
+  run "$BIN" compact --dry-run "$G" "$DIR/c"
+  assert_success
+  assert_output "lessons compact: group: would compact 1"
+  cmp "$G" "$DIR/before"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_success
+  assert_output "lessons compact: group: compacted 1, old text in _archive/group-evidence.md"
+  run diff "$DIR/before" "$G"
+  assert_output "6c6,7
+<   Seen on the 04-21 drain.
+---
+>   Restart it.
+>   Evidence: \`_archive/group-evidence.md\` $k."
+  run cat "$DIR/_archive/group-evidence.md"
+  assert_output "
+<!-- $k compacted $(date +%F) -->
+- **Forgejo runners need the dind sidecar restarted after a node drain.**
+  Seen on the 04-21 drain."
+  "$BIN" compact --dump "$G" "$DIR/after" >/dev/null 2>&1 || true
+  LESSON_MAX_BYTES=0 "$BIN" compact --dump "$G" "$DIR/after" >/dev/null
+  [ -f "$DIR/after/$k.orig" ] || fail "the key moved: $(ls "$DIR/after")"
+}
+
+@test "compact refuses a text that changes the key, stays over the cap or names no lesson, and writes the rest" {
+  group_file
+  LESSON_MAX_BYTES=100 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  kf=$(basename "$(grep -l Forgejo "$DIR"/c/*.orig)" .orig)
+  ki=$(basename "$(grep -l IFS "$DIR"/c/*.orig)" .orig)
+  printf -- '- **Forgejo runners: restart the dind sidecar after a drain.**\n' > "$DIR/c/$kf.md"
+  printf -- '- **%s** **IFS tab read merges empty fields**, use a non-whitespace separator.\n  Short.\n' "$RECENT" > "$DIR/c/$ki.md"
+  printf -- '- nothing\n' > "$DIR/c/00000000.md"
+  LESSON_MAX_BYTES=120 run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line --index 3 "lessons compact: group: compacted 0"
+  assert_line "refused 00000000: no lesson with that key"
+  assert_line "refused $ki: 147 bytes with the pointer, over 120"
+  assert_line "refused $kf: the first 160 chars of the first line changed (the key)"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line "lessons compact: group: compacted 1, old text in _archive/group-evidence.md"
+  grep -A1 Short. "$G" | grep -q "^  Evidence:"
+}
+
+@test "compact writes nothing when a text would open a second lesson" {
+  group_file
+  LESSON_MAX_BYTES=100 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  k=$(basename "$(grep -l Forgejo "$DIR"/c/*.orig)" .orig)
+  printf -- '- **Forgejo runners need the dind sidecar restarted after a node drain.**\n- **%s** a second lesson\n' "$RECENT" > "$DIR/c/$k.md"
+  cp "$G" "$DIR/before"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_output "lessons compact: group: the texts turn 6 lessons into 7; nothing written"
+  cmp "$G" "$DIR/before"
+  [ ! -e "$DIR/_archive/group-evidence.md" ]
+}
+
+@test "compact refuses a text that drops a marker the old lesson carried" {
+  group_file
+  LESSON_MAX_BYTES=0 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  k=$(basename "$(grep -l Flux "$DIR"/c/*.orig)" .orig)
+  printf -- '- **Flux pauses hide a drifted HelmRelease until resume.**\n' > "$DIR/c/$k.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line "refused $k: it drops the marker <!-- sig:$OLD flux.*paused -->"
+  printf -- '- **Flux pauses hide a drifted HelmRelease until resume.** <!-- sig:%s flux.*paused -->\n' "$OLD" > "$DIR/c/$k.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_success
+}
