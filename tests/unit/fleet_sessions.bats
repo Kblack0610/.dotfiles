@@ -2411,13 +2411,31 @@ research_item() {
   # NEGATIVE CONTROL: with no mirror marker the checkout is not Forgejo-canonical, so origin it is
   run default_base "$SANDBOX/wt"
   assert_output origin/master
-  rm -f "$CACHE"/base_*
+  rm -f "$CACHE"/*
 
   mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
   run canonical_remote "$SANDBOX/wt"
   assert_output forgejo
   run default_base "$SANDBOX/wt"
   assert_output forgejo/master
+  # offline, with no HEAD symref on the forgejo remote (git remote add sets none): origin's names the branch
+  rm -f "$CACHE"/base_*; git -C "$SANDBOX/wt" symbolic-ref --delete refs/remotes/forgejo/HEAD
+  run default_base "$SANDBOX/wt"
+  assert_output forgejo/master
+  # GitHub's answer is kept per remote, so a clone without the forgejo remote never reads forgejo/<b>
+  rm -f "$CACHE"/base_*
+  printf '#!/usr/bin/env bash\ncase "$1" in repo) echo master ;; esac\n' > "$SANDBOX/bin/gh"
+  run default_base "$SANDBOX/wt"
+  assert_output forgejo/master
+  [ "$(cat "$MAIN_CACHE"/base_*_forgejo)" = forgejo/master ]
+  [ -z "$(ls "$MAIN_CACHE" | grep -v '_forgejo$')" ]
+  # fetch_once fetches the canonical remote: a tip pushed to forgejo alone arrives
+  # (canonical_remote is already answered for this pass, so the remote may point at the bare repo meanwhile)
+  "${g[@]}" remote set-url forgejo "$SANDBOX/fj.git"
+  "${g[@]}" commit -q --allow-empty -m later; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
+  "${g[@]}" update-ref -d refs/remotes/forgejo/master
+  FLEET_FETCH=1 fetch_once "$SANDBOX/wt"
+  git -C "$SANDBOX/wt" rev-parse -q --verify refs/remotes/forgejo/master >/dev/null
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {

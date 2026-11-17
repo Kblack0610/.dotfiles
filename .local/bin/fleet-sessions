@@ -61,7 +61,7 @@ set -uo pipefail
 : "${FLEET_MAIN_TTL:=300}"
 # FLEET_BASE_TTL: seconds a repo's default branch is reused across passes. It was one `gh repo view` per
 # repo per pass (287 of the 4,651 calls in the hour the budget ran out, 2026-11-13 05:35Z) for a name
-# that changes about never; origin/HEAD is the offline fallback either way.
+# that changes about never; the canonical remote's HEAD symref is the offline fallback either way.
 : "${FLEET_BASE_TTL:=3600}"
 # Each fleet worker's sessions are rows too (remote_panel_lines).
 # shellcheck source=../lib/fleet-hosts.sh
@@ -1041,27 +1041,33 @@ sibling_pr() {
 
 # canonical_remote <dir> -> the git remote a checkout's default branch lives on: the Forgejo remote of a
 # Forgejo-canonical repo (home-config: `forgejo`; its `origin` is the GitHub mirror, which trails a merge until
-# the mirror runs), else origin. so_forge_remote is the rule agent-land shares.
+# the mirror runs), else origin. so_forge_remote is the rule agent-land shares. One answer per directory per pass.
 canonical_remote() {
-  local r
-  r="$(so_forge_remote "$1" 2>/dev/null)" && printf '%s\n' "${r%% *}" || echo origin
+  local r f="${CACHE:+$CACHE/canon_${1//\//%}}"
+  if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return; fi
+  r="$(so_forge_remote "$1" 2>/dev/null)" && r="${r%% *}" || r=origin
+  [ -z "$f" ] || { printf '%s\n' "$r" > "$f.$$" && mv -f "$f.$$" "$f"; }
+  printf '%s\n' "$r"
 }
 
 # default_base <dir> -> <canonical remote>/<default branch>, kept in MAIN_CACHE for FLEET_BASE_TTL across passes.
-# GitHub's answer wins: the remote's HEAD is set at clone time and goes stale when the default branch changes.
-# The symref is the offline fallback, and a name this clone has no remote ref for is unused.
+# The cache key names the remote too: clones of one origin URL may not share a forgejo remote.
+# GitHub's answer wins: a remote's HEAD is set at clone time and goes stale when the default branch changes.
+# The symref is the offline fallback (the canonical remote's, else origin's, which a later `git remote add`
+# never sets), and a name this clone has no remote ref for is unused.
 default_base() {
   local d="$1" key pass b slug rem confirmed=
   slug="$(repo_slug "$d")" || { echo origin/main; return; }
-  key="$MAIN_CACHE/base_$slug" pass="$CACHE/base_$slug"
+  rem="$(canonical_remote "$d")"
+  key="$MAIN_CACHE/base_${slug}_$rem" pass="$CACHE/base_${slug}_$rem"
   if [ -s "$key" ] && [ $(( $(date +%s) - $(date -r "$key" +%s) )) -lt "$FLEET_BASE_TTL" ]; then cat "$key"; return; fi
   if [ ! -s "$pass" ]; then
-    rem="$(canonical_remote "$d")"
     b="$(cd "$d" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
     if [ -n "$b" ] && git -C "$d" rev-parse -q --verify "refs/remotes/$rem/$b" >/dev/null 2>&1; then
       confirmed=1
     else
       b="$(git -C "$d" symbolic-ref -q --short "refs/remotes/$rem/HEAD" 2>/dev/null)"; b="${b#"$rem"/}"
+      [ -n "$b" ] || { b="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; b="${b#origin/}"; }
     fi
     # Only GitHub's answer outlives the pass: the symref may be the stale one, and a refused call must not pin it.
     if [ -n "$confirmed" ]; then mkdir -p "$MAIN_CACHE"; echo "$rem/$b" > "$key.$$" && mv "$key.$$" "$key"; fi
@@ -1272,11 +1278,12 @@ sync_facts() {
 # The local symref settles the usual case, so a clean pass costs no gh call. Each is its real path,
 # which is how a session's cwd reads.
 off_default_checkouts() {
-  local d cur base
+  local d cur base rem
   for d in "${DOTFILES:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
     [ -e "$d/.git" ] || continue
     cur="$(git -C "$d" symbolic-ref -q --short HEAD)"
-    [ "origin/$cur" = "$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD)" ] && continue
+    rem="$(canonical_remote "$d")"
+    [ "$rem/$cur" = "$(git -C "$d" symbolic-ref -q --short "refs/remotes/$rem/HEAD")" ] && continue
     base="$(default_base "$d")"
     [ "$cur" = "${base#*/}" ] || realpath "$d"
   done
@@ -1755,8 +1762,8 @@ collect() {
     fi
     [ "$host" != - ] || printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
     # ACTIVITY: CI is read on a branch off the default one, at its PR head, else at HEAD.
-    local act act_dir=-
-    if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$branch" != "$(default_base "$cwd" | cut -d/ -f2-)" ]; then act_dir="$cwd"; fi
+    local act act_dir=- dbase
+    if [ "$g" = 1 ] && [ "$branch" != - ]; then dbase="$(default_base "$cwd")"; [ "$branch" = "${dbase#*/}" ] || act_dir="$cwd"; fi
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$oid" "$now")"
     # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
     # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
