@@ -4764,6 +4764,17 @@ items_stub() {
   assert_line --partial 'or more (1 still open)'
 }
 
+@test "a baseline frozen with no scheduled session is never scored and does not fail the sample" {
+  rowp c lab/game-agent-3:1 0 5 pc > "$SNAP"; sample_at 0
+  printf '%s\n' '{"label":"empty","made_epoch":'"$T0"',"last_p50":null,"last_slow":null,"drain":{"in_per_h":1,"epoch":null},"schedule":[]}' > "$FLEET_BENCH_DIR/forecasts.jsonl"
+  run sample_at 60
+  assert_success
+  refute_output --partial 'cannot be subtracted'
+  run outcome
+  assert_output --partial WORKED
+  [ ! -s "$FLEET_BENCH_DIR/forecast-scores.jsonl" ]
+}
+
 @test "scorecard Forecast section carries the forecast and the newest baseline an hour or more old against since" {
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   { rowp a lab/game-agent-1:1 0 3 pa; rowp b lab/game-agent-2:1 0 2 pb; } > "$SNAP"; sample_at 0
