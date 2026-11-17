@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# store-sync-age - is the ~/.agent store sync current?
+#
+#   store-sync-age [--max-min N] [sync.log]
+#
+# git-sync-agent.sh logs a COMPLETE line each time a sync finished (pushed, or already up to
+# date); SKIP and ERROR lines mean it did not reach Forgejo. Exit 0 when the newest COMPLETE
+# line is at most N minutes old (default 30), 1 when it is older. A missing log or no COMPLETE
+# line prints `unreadable: ...`, which the Sentinel companion reads as "could not check".
+set -uo pipefail
+
+max_min=30
+log="${AGENT_SYNC_LOG:-$HOME/.agent/.sync/sync.log}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --max-min) [ $# -ge 2 ] || { echo "store-sync-age: --max-min needs a number" >&2; exit 2; }; max_min="$2"; shift 2 ;;
+    -*) echo "store-sync-age: unknown flag $1" >&2; exit 2 ;;
+    *) log="$1"; shift ;;
+  esac
+done
+case "$max_min" in ''|*[!0-9]*) echo "store-sync-age: --max-min wants whole minutes" >&2; exit 2 ;; esac
+
+[ -r "$log" ] || { echo "unreadable: $log is missing"; exit 1; }
+# `|| true`: grep exits 1 on no match, and `set -o pipefail` would turn that into a silent abort.
+line="$(grep -E '^\[[0-9-]+ [0-9:]+\] \[[^]]*\] COMPLETE:' "$log" | tail -n 1 || true)"
+[ -n "$line" ] || { echo "unreadable: no COMPLETE line in $log"; exit 1; }
+
+stamp="${line#\[}"; stamp="${stamp%%\]*}"
+then="$(date -d "$stamp" +%s 2>/dev/null)" || { echo "unreadable: cannot parse '$stamp' in $log"; exit 1; }
+now="${STORE_SYNC_NOW:-$(date +%s)}"
+age_min=$(( (now - then) / 60 ))
+[ "$age_min" -ge 0 ] || { echo "unreadable: newest COMPLETE stamp '$stamp' is in the future"; exit 1; }
+
+if [ "$age_min" -le "$max_min" ]; then
+  echo "store sync current: last COMPLETE $age_min min ago (limit $max_min)"
+else
+  # The newest SKIP/ERROR/CONFLICT/WARN line says why a sync did not finish.
+  why="$(grep -E '\] (SKIP|ERROR|CONFLICT|WARN):' "$log" | tail -n 1 | cut -c1-200 || true)"
+  echo "store sync stale: last COMPLETE $age_min min ago at $stamp (limit $max_min)${why:+; last problem: $why}"
+  exit 1
+fi
