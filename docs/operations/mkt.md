@@ -53,10 +53,30 @@ Every channel that a product or an event names is a key of `accounts`. Reddit, H
 - `mkt answer <id> <ask>` reads the answer. Option `skip` skips the item, `post` sends it through the channel's adapter, `hand`, or a URL with at most two other words ("posted: <url>"), is a hand post whose URL is logged as the send, and other words mean revise. An item no longer in review is refused, so a second run changes nothing.
 - `mkt log <id> <url> [--by who]` records a hand post of an approved item. An item already sent is refused.
 - `mkt log --project P --channel C --kind K --title T [--by who] [--reviewed-by who] <url>` records something sent outside `mkt draft` as a new item, already sent. `store-console` and `mobile-store-metadata` call this after a store page or listing goes live.
-- `mkt post <id> [--dry-run]` sends an item whose verdict is `post` through `post_<channel>`, a function in `mkt` that prints the public URL. No channel has an adapter yet, so every send is by hand and logged.
+- `mkt post <id> [--dry-run]` sends an item whose verdict is `post` through its channel's adapter (see Adapters) and records the send with the URL it gets back. It refuses an item with any other verdict, a channel with no adapter, and a channel whose mode for the product is not `"approve"`. `--dry-run` prints the payload the adapter would send, touches neither rbw nor the network, and says on stderr what a real send would refuse.
 - `mkt skip <id> [--by who]` closes an item that will not go out: a revise once its new draft exists, or a draft whose ask was refused. A sent item is refused.
 - `mkt list [--project P] [--state S] [--json]` and `mkt show <id>` read it.
 - `mkt scorecard [--project P] [--json]` is the channel scorecard, rendered from the ledger: one row per project, channel and kind with items sent, sent by hand vs through an adapter (a send `by: mkt`), items still open, the median hours from review ask to verdict, and the first and last send. Skipped items are left out. It replaces a hand-typed metrics sheet (board row mkt-5). Visits per item (UTM `utm_content`) join it once analytics reads them; until then a channel has no result to judge, so nothing asks to drop one.
+
+## Adapters
+
+An adapter is a function `post_<channel>` in `mkt` that sends one item's draft text through the provider's one client in `.local/bin` and prints the public URL. The review ask offers `post` only when the channel has an adapter and its mode for the product is `"approve"`; otherwise the ask offers `hand` and `skip`. Adapters post text only: an item with an image attachment is refused and goes out by hand.
+
+| Channel | Client | Account (rbw) | URL it records | Limit the client keeps to (read 2026-11-17) |
+|---|---|---|---|---|
+| `bluesky` | `bluesky-post` | folder `marketing`, entry `bluesky`: username is the handle, password is an app password | `https://bsky.app/profile/<handle>/post/<rkey>` | 300 characters; createSession 30 per 5 minutes, 300 a day |
+| `mastodon` | `mastodon-post` | folder `marketing`, entry `mastodon`: password is an access token with `write:statuses`, URL is the instance (`https://gamedev.place`) | the status `url` | 500 characters (`MASTODON_MAX_CHARS`); 300 calls per 5 minutes |
+| `discord` | `discord-post --link` | folder `discord`, entry `webhook_<project>`: the product's game channel (`.config/rbw/README.md`, "Discord webhooks") | `https://discord.com/channels/<guild>/<channel>/<message>` | 2000 characters; per-route buckets |
+
+Each client takes `--dry-run`, retries only a 429 (up to 3 times, a wait over 60 s fails), and holds one `flock` per machine. A 5xx or a timeout is not retried, because the post may exist, with one exception: `mkt` passes the item id to `mastodon-post` as its `Idempotency-Key`, so Mastodon retries those too. Credentials go to curl in a config file, never in argv.
+
+Set up a channel (the human makes the account):
+
+1. Make the account and add the rbw entry in the table, then `rbw sync`.
+2. Set the channel to `"approve"` for each product in `channels.yaml` that should post through it.
+3. `mkt post <id> --dry-run` on a drafted item shows the payload; the first real send goes through an approval ask answered `post`.
+
+Reddit, HN, Product Hunt, Steam events and X have no adapter and stay hand posts: answer the ask with the URL, or `mkt log <id> <url>`.
 
 ## mkt-drafts
 
@@ -91,4 +111,9 @@ Sentinel runs it monthly as the watch `mkt-costs-stale` on `~/.notes/lab/bnb/pro
 | An answered review stays in review | The ask's resume has not run: `ask-resume --dry-run` lists what it would run; `mkt answer <id> <ask>` by hand does the same. |
 | `mkt-drafts run` reports BLOCKED | The runner's budget stopped a call (`agentctl budget mkt-drafts`); the undrafted items stay planned and the next run takes them. Raise the day cap only after reading `calls.jsonl`. |
 | A product gets no drafts | `mkt-drafts plan` shows why: every channel `"off"`, no tag under 14 days old, or the product has no `tag_prefix` in `channels.yaml`. |
+| `<channel> is in mode "draft" for <project>` | The channel is not `"approve"` for that product in `channels.yaml` (or the file is missing, which reads as off). Post it by hand and `mkt log`, or change the mode. |
+| `no Bluesky account` or `no Mastodon account` | The rbw entry in the Adapters table is missing or in another folder: `rbw list --fields folder,name \| grep marketing`, then `rbw sync`. |
+| `answered 401` from bluesky-post | The app password was revoked or mistyped; make a new one and replace the entry's password. |
+| `not retried, the post may exist` | Look at the profile before running `mkt post` again; the item stays approved until a send is recorded. |
+| `has images, and the adapters post text only` | Post it by hand with the image, then `mkt log <id> <url>`. |
 | A preview image shows broken on Waiting | The file is not under the ledger, or not an image; agent-web serves only those. `mkt draft` copies attachments there itself. |

@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# bluesky-post: post one text to the studio's Bluesky account and print the post's public URL.
+#
+#   bluesky-post [--dry-run] "<text>"     (no text: read stdin)
+#
+# --dry-run prints the record it would create and touches neither rbw nor the network.
+# The account is rbw entry `bluesky` in folder `marketing`: username = the handle, password = an
+# app password (Settings -> Privacy and security -> App passwords), never the account password.
+# Links in the text become link facets, so they are clickable. Setup and troubleshooting:
+# docs/operations/mkt.md, "Adapters".
+set -euo pipefail
+
+FOLDER=marketing
+ENTRY=bluesky
+PDS="${BLUESKY_PDS:-https://bsky.social}"
+# Bluesky's limits (docs.bsky.app advanced-guides/rate-limits, read 2026-11-17): createSession 30 per
+# 5 minutes and 300 per day per account; writes 5,000 points an hour, 35,000 a day, 3 per create.
+# One post makes one session and one record, so one post at a time per machine (the flock) stays
+# far under both.
+MAX_CHARS=300     # Bluesky counts graphemes; code points are counted here, which is never fewer
+TIMEOUT=15        # seconds per request
+MAX_ATTEMPTS=3    # 429s only
+MAX_WAIT=60       # a longer wait fails instead of blocking the caller
+
+die() { echo "bluesky-post: $*" >&2; exit "${2:-1}"; }
+usage() { sed -n '3,3p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    -*) die "unknown flag $1" 2 ;;
+    *) break ;;
+  esac
+done
+if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
+[ -n "${text//[[:space:]]/}" ] || die "empty text" 2
+
+# The record, with a link facet per URL: Bluesky indexes facets by UTF-8 byte offsets.
+record="$(python3 -I -c '
+import json, re, sys
+from datetime import datetime, timezone
+text, cap = sys.argv[1], int(sys.argv[2])
+if len(text) > cap:
+    sys.exit(f"bluesky-post: text is {len(text)} characters; Bluesky allows {cap}")
+b = text.encode()
+facets = []
+for m in re.finditer(rb"https?://[^\s<>\"]+", b):
+    url = m.group().rstrip(b".,;:!?)")
+    facets.append({"index": {"byteStart": m.start(), "byteEnd": m.start() + len(url)},
+                   "features": [{"$type": "app.bsky.richtext.facet#link", "uri": url.decode()}]})
+rec = {"$type": "app.bsky.feed.post", "text": text, "langs": ["en"],
+       "createdAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+if facets:
+    rec["facets"] = facets
+print(json.dumps(rec))' "$text" "$MAX_CHARS")" || exit 2
+if [ "$dry" = 1 ]; then jq . <<<"$record"; exit 0; fi
+
+handle="$(rbw get --folder "$FOLDER" --field username "$ENTRY" 2>/dev/null)" && [ -n "$handle" ] ||
+  die "no Bluesky account (rbw $FOLDER/$ENTRY with the handle as its username)"
+pass="$(rbw get --folder "$FOLDER" "$ENTRY" 2>/dev/null)" && [ -n "$pass" ] ||
+  die "rbw $FOLDER/$ENTRY has no app password"
+
+work="$(umask 077; mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+if command -v flock >/dev/null; then
+  exec 9>"$lockdir/bluesky-post.lock"
+  flock 9
+fi
+
+header() { tr -d '\r' <"$work/headers" | awk -v h="$(tr 'A-Z' 'a-z' <<<"$1"):" 'tolower($1) == h { print $2 }' | tail -n1; }
+too_long() { awk -v s="$1" -v m="$MAX_WAIT" 'BEGIN { exit !(s + 0 > m + 0) }'; }
+
+# xrpc <method> <payload-file> [token]: POST it, retrying only a 429; the body lands in $work/body.
+# The password and the token go to curl in a config file, never in argv where ps shows them.
+xrpc() {
+  local method="$1" payload="$2" token="${3:-}" attempt=1 code wait
+  { printf 'url = "%s/xrpc/%s"\n' "$PDS" "$method"
+    [ -z "$token" ] || printf 'header = "Authorization: Bearer %s"\n' "$token"
+  } >"$work/curlrc"
+  while :; do
+    code="$(curl -sS --max-time "$TIMEOUT" -K "$work/curlrc" -X POST -H 'Content-Type: application/json' \
+      --data-binary @"$payload" -D "$work/headers" -o "$work/body" -w '%{http_code}')" ||
+      die "$method failed or timed out; not retried, check the profile before posting again"
+    case "$code" in
+      2??) return 0 ;;
+      429)
+        wait="$(header Retry-After)"
+        # RateLimit-Reset is the epoch second the window opens again.
+        [ -n "$wait" ] || { wait="$(header RateLimit-Reset)"; [[ "$wait" =~ ^[0-9]+$ ]] && wait=$(( wait - $(date +%s) )); }
+        [[ "$wait" =~ ^[0-9]+$ ]] && [ "$wait" -ge 1 ] || wait=1
+        too_long "$wait" && die "rate limited for ${wait}s, over the ${MAX_WAIT}s cap"
+        [ "$attempt" -lt "$MAX_ATTEMPTS" ] || die "still rate limited after $MAX_ATTEMPTS attempts"
+        sleep "$wait"; attempt=$((attempt + 1)) ;;
+      401) die "$method answered 401: $(jq -r '.message // .error // empty' "$work/body" 2>/dev/null); check the app password in rbw $FOLDER/$ENTRY" ;;
+      5??) die "$method answered $code; not retried, the post may exist, check the profile" ;;
+      *) die "$method answered $code: $(jq -r '.message // .error // empty' "$work/body" 2>/dev/null || head -c 300 "$work/body")" ;;
+    esac
+  done
+}
+
+jq -cn --arg i "$handle" --arg p "$pass" '{identifier: $i, password: $p}' >"$work/login"
+xrpc com.atproto.server.createSession "$work/login"
+rm -f "$work/login"
+token="$(jq -r '.accessJwt // empty' "$work/body")" did="$(jq -r '.did // empty' "$work/body")"
+[ -n "$token" ] && [ -n "$did" ] || die "createSession returned no session"
+handle="$(jq -r --arg h "$handle" '.handle // $h' "$work/body")"
+
+jq -cn --arg r "$did" --argjson rec "$record" '{repo: $r, collection: "app.bsky.feed.post", record: $rec}' >"$work/post"
+xrpc com.atproto.repo.createRecord "$work/post" "$token"
+uri="$(jq -r '.uri // empty' "$work/body")"
+[[ "$uri" == at://*/app.bsky.feed.post/* ]] || die "createRecord returned no post uri; check the profile"
+printf 'https://bsky.app/profile/%s/post/%s\n' "$handle" "${uri##*/}"
