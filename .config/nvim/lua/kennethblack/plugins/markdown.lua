@@ -799,24 +799,25 @@ return {
         end
       end
 
-      -- Smart task line, for turning bullets/prose into tasks on the fly. If the
-      -- current line is NOT a task yet (plain text, a `-`/`*`/`+` bullet, or blank),
-      -- convert it in place into `- [ ] <text>`. If it's ALREADY a task, leave it
-      -- alone and open an indented subtask beneath it instead, so repeated presses
-      -- build a task/subtask tree rather than a flat list of siblings.
+      -- Smart task line, for turning bullets/prose into tasks on the fly, by loose_task's
+      -- rules. Prose or a bullet is converted in place, a blank line becomes `- [ ] `; a
+      -- task gets an indented subtask beneath it, so repeated presses build a tree; a
+      -- heading, rule or comment gets a task below it. The cursor lands in insert mode
+      -- where the task's text goes.
       local function smart_task()
         local lnum = vim.api.nvim_win_get_cursor(0)[1]
         local line = vim.fn.getline(lnum)
-        local indent, rest = line:match "^(%s*)(.-)%s*$"
-
-        if rest:match("^%- " .. STATUS_PAT) then
-          vim.fn.append(lnum, indent .. "  - [ ] ")
-          vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
-          vim.cmd "startinsert!"
+        local indent = line:match "^%s*"
+        local task = loose_task(line) or (not line:match "%S" and "- [ ] ")
+        if task then
+          vim.fn.setline(lnum, indent .. task)
         else
-          local text = rest:gsub("^[-*+]%s*", "")
-          vim.fn.setline(lnum, indent .. "- [ ] " .. text)
+          local sub = line:match "^%s*%- %[.%]" and "  " or ""
+          vim.fn.append(lnum, indent .. sub .. "- [ ] ")
+          lnum = lnum + 1
         end
+        vim.api.nvim_win_set_cursor(0, { lnum, 0 })
+        vim.cmd "startinsert!"
       end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
@@ -872,7 +873,8 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
-          --   tt  convert line to task, or add an indented subtask if already one
+          --   tt  convert line to task, or add an indented subtask if already one;
+          --       the cursor lands in insert where the text goes. Visual: convert the lines.
           --   tP  raise priority  low -> high -> urgent, stops at urgent
           --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
@@ -898,6 +900,18 @@ return {
             smart_task,
             { buffer = buf, desc = "Convert line to task / add subtask", silent = true }
           )
+          -- Visual: convert the selected prose and bullets; blanks, tasks, headings,
+          -- rules and comments are left alone (loose_task returns nil for them).
+          vim.keymap.set("x", "<leader>tt", function()
+            vim.cmd "normal! \27"
+            for lnum = vim.fn.line "'<", vim.fn.line "'>" do
+              local line = vim.fn.getline(lnum)
+              local task = loose_task(line)
+              if task then
+                vim.fn.setline(lnum, line:match "^%s*" .. task)
+              end
+            end
+          end, { buffer = buf, desc = "Convert lines to tasks", silent = true })
 
           -- Task priority: tP raises toward urgent, tp lowers, along low -> high -> urgent,
           -- stopping at either end. Each press re-sweeps and follows the task

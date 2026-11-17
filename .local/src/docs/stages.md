@@ -41,6 +41,7 @@ The `Check` cell is one of three things:
 | draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
 | draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
 | draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
+| draft | game | A pitch in the lab (`docs/idea.md`) and a design doc in the repo (`docs/games/<id>.md`); story and look docs (`<id>-story.md`, `<id>-look.md`) only when the game has one. The sheet's `Docs:` line links them | `[ -f "$LAB/docs/idea.md" ] && { [ "$ROOT" = "$REPO" ] \|\| [ -f "$REPO/docs/games/$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]').md" ]; }` |
 | draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
 | dev | base | CI green on the default branch | not yet: needs the forge API |
 | dev | base | The `docs` system meets its `systems.md` criteria: a README with build, run and test, `docs/architecture.md`, a standards file or a link to the shared one | `project-stage-check "$NAME" --system docs` |
@@ -90,6 +91,7 @@ Each doc comes from an existing skill. There are no doc types beyond these.
 | Stage | Doc | Written with |
 | --- | --- | --- |
 | draft | brief | `one-pager` |
+| draft | a game's pitch and design doc | `docs-write` |
 | dev | README, `docs/architecture.md` | `docs-write` |
 | alpha | `docs/overview.md`, `docs/operations/deploy.md` | `docs-write` |
 | alpha | a game's taste, an app's brand sheet | `game-eval` (taste), `docs-write` |

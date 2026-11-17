@@ -14,7 +14,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `editor.sh` | `Prefix+Space` | ONE editor per session, at window 1, rooted where the session was born. Press it anywhere to go there, press it again to come back to the exact window you left. Created lazily on the first press, so a session you never edit in never pays for one. Space because its stock binding (next-layout) is the only one nothing here wanted — no existing key was moved. |
 | `sessionizer.sh` | `Prefix+f` | Jump to a repo or a worktree. The list is git repos under the search roots, the directories the manifests declare, and everything in `~/.worktrees` - not every directory under the roots. `ctrl-n` on a row starts a new Claude in a fresh worktree of it (`wt new --claude`). |
 | `worktree.sh` (`wt`) | `Prefix+F` / `Prefix+X` | One worktree per piece of work. `F` cuts a fresh worktree off the repo the current pane is in and lands you in a session named after it; `X` tears the current one down - kills the session and reaps the worktree, safe to press from inside it. No pickers. |
-| `servers.sh` (`tmx`) | `Prefix+H` / `C-h` / `N` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily |
+| `servers.sh` (`tmx`) | `Prefix+P` / `C-h` / `N` / `H` | Server layer: one tree of every world, session and window (collapsed to the worlds); toggle hub <-> lab; today's daily; the lab projects index |
 | `scratch.sh` | `Prefix+A` / `Prefix+F` in it | One scratch Claude in a full-screen popup to paste into; `F` inside sends the conversation to its own lab session and takes you there |
 | `agent-panel` (Rust) | `Prefix+g` / `Prefix+G` | View/select Claude agent windows (`G` = jump to next needing attention). `ctrl-n` starts a new Claude in a fresh worktree of the selected agent's repo (`wt new --claude`); `--query` opens it already filtered. Cross-platform binary; see `../agent-panel/`. |
 | `tags.sh` | `Prefix+t` / `Prefix+w` / `Prefix+W` | Tag windows important/pinned/agent or group them, and favourite a session (`Prefix+t f`); also on PATH as `tmux-tags` |
@@ -67,7 +67,7 @@ them in the session manager's config and have the window tag itself on startup.
 `Prefix+t f` favourites the session you are in, and pressing it again unfavourites it. A favourite is the session option `@fav`, server-lifetime like a tag. It is a mark only: wind-down protects `pinned` and `important` windows, not favourites. It is marked in four places:
 
 - the status bar: a yellow star before the agent counts
-- `Prefix+H` (`tmx pick`): a star in front of the session's row
+- `Prefix+P` (`tmx pick`): a star in front of the session's row
 - `Prefix+w`: `[fav]` after the session's window count
 - `Prefix+g` (agent-panel): `fav` in the tag column of every agent in the session
 
@@ -77,7 +77,7 @@ tmux-tags fav on -t dotfiles  # or on / off for a named session
 tmux-tags fav ls              # favourite sessions, one per line
 ```
 
-## Servers (`Prefix+H`, `tmx`)
+## Servers (`Prefix+P`, `tmx`)
 
 The layer **above** sessions. tmux has four:
 
@@ -93,9 +93,10 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | Keys / command | What |
 |---|---|
 | `Prefix+w` | **the sessions of the current world** - choose-tree, unchanged |
-| `Prefix+H` | **every world as a tree**: opens collapsed to the worlds; Enter goes to a world, session or window, Tab folds or unfolds a world (also bare `tmx`) |
+| `Prefix+P` | **every world as a tree**: opens collapsed to the worlds; Enter goes to a world, session or window, Tab folds or unfolds a world (also bare `tmx`) |
 | `Prefix+C-h` | **the other world**: hub goes to lab, anywhere else goes to hub, back on the window you left (`tmx toggle`) |
 | `Prefix+N` | **today's daily** on hub (`tmx root hub`) |
+| `Prefix+H` | **the lab notes**: the projects index (`lab/projects/index.md`) in the hub editor (`tmx open hub`) |
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
@@ -106,7 +107,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 
 **Resume vs root.** `C-h` resumes: it attaches to the most recently used session of the other world that is *not* its landing page, and a session restores its own active window, so flipping between two pieces of work is one key. `N` roots: it puts hub's landing page, today's note, back on screen. `tmx root <world>` is the world's first booted entry; `tmx root <world> <session>` is that session's page.
 
-**`Prefix+H` is the only view that crosses the server boundary.** `Prefix+w` is server-scoped by construction. Seeing hub and lab *together* has to be assembled from outside both, which is what `tmx pick` does. It opens collapsed, one row per world and one row for the stranded sessions after them:
+**`Prefix+P` is the only view that crosses the server boundary.** `Prefix+w` is server-scoped by construction. Seeing hub and lab *together* has to be assembled from outside both, which is what `tmx pick` does. It opens collapsed, one row per world and one row for the stranded sessions after them:
 
 ```
 + hub  2 sessions  2 need you
@@ -133,7 +134,7 @@ A **session** row with one agent window reads as its state, idle time and task; 
 | symptom | cause | fix |
 |---|---|---|
 | `fleet state is old` at the bottom, no states or stranded marks | the fleet state is over 5 minutes old, or its last pass could not read agent-panel, so every agent would look stranded | `systemctl --user status fleet-state.service`, then `fleet-sessions tick` |
-| `Prefix+H` takes seconds to open on a loaded machine | `tmx rows` forking per session or window: at load 60+ each fork costs milliseconds, and lab holds thirty sessions | it asks each world three things whatever it holds (`tests/integ/tmx_rows_cost.bats`); `time tmx rows` is about 0.25s at load 66 |
+| `Prefix+P` takes seconds to open on a loaded machine | `tmx rows` forking per session or window: at load 60+ each fork costs milliseconds, and lab holds thirty sessions | it asks each world three things whatever it holds (`tests/integ/tmx_rows_cost.bats`); `time tmx rows` is about 0.25s at load 66 |
 
 **No preview pane, deliberately.** A preview only describes the row under the cursor, so with hundreds of windows you would arrow through the list to find out what is in it. The list answers "what is this" itself, and starting collapsed is what keeps it short.
 
@@ -200,7 +201,7 @@ directory, two worlds, and nothing looked wrong from either side.
 The hop is handed to `tmx goto <world> <session>`, which is `hop`/`root`'s sibling:
 "take me to THIS session, wherever it lives". It goes through `_enter` like every
 other hop. Crossing
-worlds from inside a popup is not new - `Prefix+H` does it too.
+worlds from inside a popup is not new - `Prefix+P` does it too.
 
 `tmux-world route <dir>` prints the decision (`hub dotfiles`, or `here <name>` when nothing
 claims it) without touching a server, which is how it is tested.
@@ -357,7 +358,7 @@ breaking all three at once.
 |---|---|---|---|
 | `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
-| `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, or that tool unlocks it |
+| `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass), or a running, waiting or review agent-queue item names its session (so a crash that kills tmux does not free it before restore); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, that tool unlocks it, or the item closes |
 | `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone 7 days unchanged the `worktree-gc` runner files one queue item, `wt-held-<name>`, and closes it once the tree is gone | the item's session (`ingest-worktree`), or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 

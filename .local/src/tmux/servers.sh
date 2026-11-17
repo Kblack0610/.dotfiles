@@ -530,8 +530,11 @@ cmd_land() {
   # nothing to attach to. Say so, rather than falling through to `exec tmux attach`
   # and dying on tmux's "no sessions" — a client world reached from a machine that
   # does not hold any of that client's repos is the case that gets here.
+  # tmux must open on any machine with this config: when none of the world's repos are
+  # cloned here, land on one shell in ~, as an ad-hoc world with no manifest does.
   if [ "$(session_count "$target")" -eq 0 ]; then
-    die "$target has no sessions running (nothing it boots exists on this machine, and nothing else is open there)"
+    tmux -L "$target" new-session -A -d -s "$target" -c "$HOME" 2>/dev/null
+    printf 'tmx: nothing %s boots exists on this machine; opened a shell in ~\n' "$target" >&2
   fi
 
   # An explicit target from pick. Anything that is not one of the two keywords
@@ -657,7 +660,7 @@ cmd_goto() {
   _enter "$(_declared_world "${1:?goto needs a server name}" "$sess")" "$sess"
 }
 
-# How old the fleet state may be before Prefix+H stops trusting it. fleet-state.service
+# How old the fleet state may be before Prefix+P stops trusting it. fleet-state.service
 # writes it every minute, so five minutes means the writer has stopped.
 FLEET_STATE_MAX_AGE=300
 # The widest a row may be: the hub runs in an 80-column tmux pane (dashboards rule 11).
@@ -692,7 +695,7 @@ _fleet_load() {
 
 # The row helpers set a variable (_IDLE, _COL, _MID, _ROW) instead of printing it: a $(...)
 # is a fork, _all_rows formats every window, and on a loaded machine a fork costs
-# milliseconds, so Prefix+H took seconds to open with thirty agent sessions on lab.
+# milliseconds, so Prefix+P took seconds to open with thirty agent sessions on lab.
 
 # _idle_text <minutes> -> _IDLE: 45m, 8h, 2d.
 _idle_text() {
@@ -870,7 +873,7 @@ _all_rows() {
   printf '%s' "$body"
 }
 
-# pick -- Prefix+H, and a bare `tmx`. The one place to find a world, session or window.
+# pick -- Prefix+P, and a bare `tmx`. The one place to find a world, session or window.
 #
 # A tree over `_all_rows`: it opens collapsed to one row per world (the compact view), Enter
 # or a click on a world opens its sessions and windows beneath it, and Enter or a click on a

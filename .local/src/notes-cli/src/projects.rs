@@ -776,7 +776,10 @@ fn scaffold_missing(p: &Profile, dir: &Path, name: &str, o: &Overlays) -> Result
             }
             "ideas.md" => ideas_template(name),
             "playtest.md" => crate::playtest::header(name),
-            other => format!("# {name} - {}\n", other.trim_end_matches(".md")),
+            other => {
+                let stem = Path::new(other).file_stem().unwrap_or_default();
+                format!("# {name} - {}\n", stem.to_string_lossy())
+            }
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

@@ -1331,11 +1331,11 @@ mod tests {
         assert!(new.project_type["infra"].files.is_empty());
     }
 
-    /// The shipped defaults parse, and a game carries playtest.md.
+    /// The shipped defaults parse, and a game carries playtest.md and its pitch.
     #[test]
     fn the_default_project_types_parse() {
         let types = default_project_types();
-        assert_eq!(types["game"].files, vec!["playtest.md"]);
+        assert_eq!(types["game"].files, vec!["playtest.md", "docs/idea.md"]);
         assert_eq!(types["app"].requires, vec!["repo"]);
         assert!(types["infra"].files.is_empty());
     }

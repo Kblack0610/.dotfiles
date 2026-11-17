@@ -264,3 +264,104 @@ EOF
   [ ! -e "$old" ]
   [ -e "$now" ]
 }
+
+# --- groups: a heading that labels bullets is no lesson; each bullet is one -------------------
+
+group_file() {
+  G="$DIR/group.md"
+  cat > "$G" <<EOF2
+# group lessons
+
+## $OLD (dream sweep)
+
+- **Forgejo runners need the dind sidecar restarted after a node drain.**
+  Seen on the 04-21 drain.
+- **Flux pauses hide a drifted HelmRelease until resume.** <!-- sig:$OLD flux.*paused -->
+
+## Shell and tooling gotchas
+
+- **$RECENT** **IFS tab read merges empty fields**, use a non-whitespace separator.
+- **Grep under pipefail dies of SIGPIPE** when the writer writes again.
+
+## $OLD: One bullet is the body
+
+- the only bullet, which belongs to the section above
+
+## $OLD
+
+A date heading over prose stays one lesson.
+EOF2
+}
+
+@test "a day-group heading is no lesson; each bullet under it is one, dated by the heading" {
+  group_file
+  run "$BIN" pick -n 20 "$G"
+  assert_line --index 0 "## Lessons (newest 6; nothing matched this work)"
+  assert_line --partial "Forgejo runners need the dind sidecar"
+  assert_line --partial "Flux pauses hide"
+  refute_line --partial "(dream sweep)"
+  # Dated by the heading: archive sees both as old, and the sig stays on its bullet.
+  covered_log
+  mkdir -p "$LESSONS_OUTCOMES_DIR/proj"
+  printf '{"updated":"%s","lesson_hits":{"flux.*paused":1}}\n' "$RECENT" > "$LESSONS_OUTCOMES_DIR/proj/$(date +%Y-%m).jsonl"
+  run "$BIN" archive --dry-run "$DIR"
+  assert_line --regexp "^group [0-9a-f]{8} $OLD \*\*Forgejo runners"
+  refute_line --partial "Flux pauses hide"
+}
+
+@test "a titled heading stays one lesson over its bullets; a dated bullet in it opens its own" {
+  group_file
+  run "$BIN" pick -n 20 "$G"
+  assert_line "- Shell and tooling gotchas"
+  assert_line --partial "IFS tab read merges"
+  refute_line --partial "Grep under pipefail"
+}
+
+@test "archive moves a day heading with its bullets, and keeps it while any bullet stays" {
+  group_file
+  covered_log
+  mkdir -p "$LESSONS_OUTCOMES_DIR/proj"
+  printf '{"updated":"%s","lesson_hits":{"flux.*paused":1}}\n' "$RECENT" > "$LESSONS_OUTCOMES_DIR/proj/$(date +%Y-%m).jsonl"
+  run "$BIN" archive "$DIR"
+  assert_success
+  # Flux is kept by its sig hit, so the heading stays over it and goes with Forgejo too.
+  run grep -c "^## $OLD (dream sweep)$" "$G" "$DIR/_archive/group-stale.md"
+  assert_output "$G:1
+$DIR/_archive/group-stale.md:1"
+  run cat "$G"
+  assert_output --partial "Flux pauses hide"
+  refute_output --partial "Forgejo runners"
+  # With Flux stale too, the heading leaves with its last bullet.
+  rm "$LESSONS_OUTCOMES_DIR/proj/$(date +%Y-%m).jsonl"
+  run "$BIN" archive "$DIR"
+  run grep -c "^## $OLD (dream sweep)$" "$G"
+  assert_output "0"
+}
+
+@test "fat refuses a --max that is not a byte count" {
+  group_file
+  run "$BIN" fat --max "$G"
+  assert_failure 2
+  run "$BIN" fat --max 1k "$G"
+  assert_failure 2
+  assert_output --partial "--max takes a byte count"
+}
+@test "negative control: a titled heading over one bullet, and a date heading over prose, stay one lesson" {
+  group_file
+  run "$BIN" pick -n 20 "$G"
+  assert_line "- $OLD: One bullet is the body"
+  refute_line --partial "the only bullet"
+  assert_line "- $OLD"
+}
+
+@test "fat lists the lessons over the cap with their line and bytes, and --json counts per file" {
+  group_file
+  run "$BIN" fat --max 100 "$G"
+  assert_success
+  assert_output "$G:5	101	**Forgejo runners need the dind sidecar restarted after a node drain.**
+$G:11	160	**$RECENT** **IFS tab read merges empty fields**, use a non-whitespace separator."
+  run bash -c "\"\$0\" fat --json --max 100 \"\$1\" | jq -c '[.max, .lessons, .over, .over_bytes]'" "$BIN" "$G"
+  assert_output "[100,6,2,261]"
+  run "$BIN" fat "$G"
+  assert_output ""
+}

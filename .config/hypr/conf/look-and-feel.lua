@@ -39,8 +39,9 @@ hl.config({
         },
         blur = {
             enabled  = true,
-            size     = 3,
-            passes   = 1,
+            size     = 5,
+            passes   = 4,
+            special  = true,
             vibrancy = 0.1696,
         },
     },
@@ -90,25 +91,12 @@ hl.curve("easeInOutCubic", { type = "bezier", points = { {0.65, 0.05}, {0.36, 1}
 hl.curve("linear",         { type = "bezier", points = { {0, 0},       {1, 1} } })
 hl.curve("almostLinear",   { type = "bezier", points = { {0.5, 0.5},   {0.75, 1} } })
 hl.curve("quick",          { type = "bezier", points = { {0.15, 0},    {0.1, 1} } })
+hl.curve("easy",           { type = "spring", mass = 1, stiffness = 500, dampening = 35 })
 
-for _, a in ipairs({
-    { "global",        10,   "default" },
-    { "border",        5.39, "easeOutQuint" },
-    { "windows",       4.79, "easeOutQuint" },
-    { "windowsIn",     4.1,  "easeOutQuint", "popin 87%" },
-    { "windowsOut",    1.49, "linear",       "popin 87%" },
-    { "fadeIn",        1.73, "almostLinear" },
-    { "fadeOut",       1.46, "almostLinear" },
-    { "fade",          3.03, "quick" },
-    { "layers",        3.81, "easeOutQuint" },
-    { "layersIn",      4,    "easeOutQuint", "fade" },
-    { "layersOut",     1.5,  "linear",       "fade" },
-    { "fadeLayersIn",  1.79, "almostLinear" },
-    { "fadeLayersOut", 1.39, "almostLinear" },
-    { "workspaces",    1.94, "almostLinear", "fade" },
-    { "workspacesIn",  1.21, "almostLinear", "fade" },
-    { "workspacesOut", 1.94, "almostLinear", "fade" },
-    { "zoomFactor",    7,    "quick" },
-}) do
-    hl.animation({ leaf = a[1], enabled = true, speed = a[2], bezier = a[3], style = a[4] })
-end
+-- The CachyOS Hyprland edition's set: windows slide in on a spring, workspaces slide,
+-- everything else rides the quick curve.
+hl.animation({ leaf = "global",              enabled = true, speed = 3, bezier = "quick" })
+hl.animation({ leaf = "windows",             enabled = true, speed = 3, spring = "easy",  style = "slide" })
+hl.animation({ leaf = "workspaces",          enabled = true, speed = 5, bezier = "quick", style = "slide" })
+hl.animation({ leaf = "specialWorkspaceIn",  enabled = true, speed = 2, bezier = "quick", style = "slide top" })
+hl.animation({ leaf = "specialWorkspaceOut", enabled = true, speed = 2, bezier = "quick", style = "slide bottom" })
