@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# mkt-drafts - the drafter behind the mkt-drafts runner: one model call per product, channel and
+# trigger writes a draft, and `mkt draft` opens it in the outbound ledger with its approval ask.
+# Nothing here posts. Triggers, the trigger key and the knobs: docs/operations/mkt.md, "mkt-drafts".
+#
+#   mkt-drafts plan [--json]       what would be drafted now, one line each; no model, writes nothing
+#   mkt-drafts run [--max N]       agentctl: mkt-drafts.conf; draft every item of the plan, at most N
+#
+# The model replies {title, draft, reason}: a draft only, and `mkt draft` is the one writer.
+set -uo pipefail
+
+SELF_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/agent-proof.sh
+. "$SELF_DIR/../lib/agent-proof.sh" || { echo "mkt-drafts: agent-proof.sh not found" >&2; exit 1; }
+
+NAME="${AGENTCTL_NAME:-mkt-drafts}"
+MKT="${MKT:-$SELF_DIR/mkt}"
+RELEASE_STATE="${RELEASE_STATE:-$SELF_DIR/release-state}"
+DOCS="${MKT_DOCS_DIR:-$HOME/.notes/lab/bnb/projects/current/marketing/docs}"
+CHANNELS="${MKT_CHANNELS:-$DOCS/channels.yaml}"
+CALENDAR="${MKT_CALENDAR:-$DOCS/calendar.yaml}"
+TODAY="${MKT_DRAFTS_TODAY:-$(date -u +%F)}"
+
+# Provisional, confidence low (first run 2026-11-17, no history): a tag older than this was
+# announced by hand or not at all, and drafting it now would only flood the review queue. Revisit
+# after a month of rows.
+RELEASE_DAYS="${RELEASE_DAYS:-14}"
+# calendar.yaml says an event is drafted for within 14 days of its start (docs/operations/mkt.md).
+EVENT_DAYS="${EVENT_DAYS:-14}"
+# A weekly rule such as Screenshot Saturday is drafted this many days ahead of its day.
+RECUR_DAYS="${RECUR_DAYS:-3}"
+# The channels a week of merged PRs is worth a post on; the rest only get a release or an event.
+WEEKLY_CHANNELS="${WEEKLY_CHANNELS:-bluesky mastodon}"
+# Subjects that are not user-facing: a week of only these drafts nothing.
+INTERNAL_RE="${INTERNAL_RE:-(docs|ci|chore|test|tests|refactor|build|style|deps)([(:!])}"
+# The most drafts one run opens: each is a review ask for the human, so a first run or a backlog
+# arrives a few at a time, not all at once.
+MAX_DRAFTS="${MAX_DRAFTS:-6}"
+# The most of a changelog or a PR list the model is shown.
+CONTEXT_MAX=3000
+
+die() { echo "mkt-drafts: $*" >&2; exit 1; }
+
+# yaml_json <file>: the file as JSON, `{}` when it does not exist.
+yaml_json() {
+  [ -r "$1" ] || { echo '{}'; return; }
+  python3 -I -c 'import sys, json, yaml; print(json.dumps(yaml.safe_load(open(sys.argv[1])) or {}, default=str))' "$1"
+}
+
+# kind_of <channel>: what is drafted for it. The kinds are mkt's KINDS.
+kind_of() {
+  case "$1" in
+    appstore|play|steam) echo listing ;;
+    newsletter) echo email ;;
+    *) echo post ;;
+  esac
+}
+
+# next_day <weekday-name> -> the date of its next turn, today included.
+next_day() {
+  local want have n
+  want="$(date -u -d "$1" +%u 2>/dev/null)" || return 1
+  have="$(date -u -d "$TODAY" +%u)"
+  n=$(( (want - have + 7) % 7 ))
+  date -u -d "$TODAY + $n days" +%F
+}
+
+# product_channels <channels-json> <product> -> its channels not in mode "off", one per line.
+product_channels() {
+  jq -r --arg p "$2" '.products[$p].channels // {} | to_entries[] | select(.value == "draft" or .value == "approve") | .key' <<<"$1"
+}
+
+# emit <project> <channel> <trigger> <why> <context-json>: one plan item.
+emit() {
+  jq -nc --arg p "$1" --arg c "$2" --arg k "$(kind_of "$2")" --arg t "$3" --arg w "$4" --argjson x "$5" \
+    '{project: $p, channel: $c, kind: $k, trigger: $t, why: $w, context: $x}'
+}
+
+plan_items() {
+  local cfg cal prod chans c now tag at text prs key date rule d id
+  cfg="$(yaml_json "$CHANNELS")"
+  cal="$(yaml_json "$CALENDAR")"
+  [ "$(jq '.products // {} | length' <<<"$cfg")" -gt 0 ] || die "no products in $CHANNELS"
+  now="$(date -u -d "$TODAY" +%s)"
+  while IFS= read -r prod; do
+    chans="$(product_channels "$cfg" "$prod")"
+    [ -n "$chans" ] || continue
+    # release: a new tag
+    if [ "$(jq -r --arg p "$prod" '.products[$p].tag_prefix // ""' <<<"$cfg")" != "" ]; then
+      if text="$("$RELEASE_STATE" changelog --json "$prod" 2>/dev/null)"; then
+        tag="$(jq -r .tag <<<"$text")" at="$(jq -r '.at // 0' <<<"$text")"
+        if [ "$at" -ge $(( now - RELEASE_DAYS * 86400 )) ]; then
+          for c in $chans; do
+            emit "$prod" "$c" "release:$tag" "$tag shipped" \
+              "$(jq -c --argjson m "$CONTEXT_MAX" '{tag, changelog: (.text | .[0:$m])}' <<<"$text")"
+          done
+        fi
+      fi
+    fi
+    # weekly: user-facing PRs merged in the last 7 days
+    prs="$("$RELEASE_STATE" merged --days 7 "$prod" 2>/dev/null | grep -vE "^#[0-9]+ ($INTERNAL_RE)" || true)"
+    if [ -n "$prs" ]; then
+      key="week:$(date -u -d "$TODAY" +%G-W%V)"
+      for c in $chans; do
+        case " $WEEKLY_CHANNELS " in *" $c "*) ;; *) continue ;; esac
+        emit "$prod" "$c" "$key" "$(wc -l <<<"$prs") PRs merged in 7 days" \
+          "$(jq -nc --arg t "$prs" --argjson m "$CONTEXT_MAX" '{merged_prs: ($t | .[0:$m])}')"
+      done
+    fi
+    # event: a calendar event about to start, or running
+    while IFS= read -r ev; do
+      [ -n "$ev" ] || continue
+      id="$(jq -r .id <<<"$ev")"
+      for c in $(jq -r '.channels[]?' <<<"$ev"); do
+        grep -qx "$c" <<<"$chans" || continue
+        emit "$prod" "$c" "event:$id" "$(jq -r .title <<<"$ev")" \
+          "$(jq -c '{event: {title, start, end, notes}}' <<<"$ev")"
+      done
+    done < <(jq -c --arg p "$prod" --arg t "$TODAY" --argjson n "$EVENT_DAYS" '
+      .events // [] | .[] | select((.products // []) | index($p))
+      | select(.end >= $t and ((.start | strptime("%Y-%m-%d") | mktime) - 86400 * $n) <= ($t | strptime("%Y-%m-%d") | mktime))' <<<"$cal")
+    # recurring: a weekly rule's next day, close enough
+    while IFS= read -r ev; do
+      [ -n "$ev" ] || continue
+      rule="$(jq -r .rule <<<"$ev")"
+      [[ "$rule" =~ ^weekly:\ *([a-z]+)$ ]] || continue
+      date="$(next_day "${BASH_REMATCH[1]}")" || continue
+      [ "$(date -u -d "$date" +%s)" -le $(( now + RECUR_DAYS * 86400 )) ] || continue
+      id="$(jq -r .id <<<"$ev")"
+      for c in $(jq -r '.channels[]?' <<<"$ev"); do
+        grep -qx "$c" <<<"$chans" || continue
+        emit "$prod" "$c" "$id:$date" "$(jq -r .title <<<"$ev") on $date" \
+          "$(jq -c --arg d "$date" '{event: {title, start: $d, end: $d, notes}}' <<<"$ev")"
+      done
+    done < <(jq -c --arg p "$prod" '.recurring // [] | .[] | select((.products // []) | index($p))' <<<"$cal")
+  done < <(jq -r '.products // {} | keys[]' <<<"$cfg")
+}
+
+# plan: the items not yet in the ledger. A row in any state with the same project, channel and
+# trigger means it was drafted, answered or skipped, and is not asked again.
+plan() {
+  local seen
+  seen="$("$MKT" list --json)" || die "cannot read the ledger"
+  plan_items | jq -sc --argjson l "$seen" '
+    ($l | map(select(.trigger) | "\(.project)|\(.channel)|\(.trigger)")) as $done
+    | map(select("\(.project)|\(.channel)|\(.trigger)" as $k | $done | index($k) | not))'
+}
+
+cmd_plan() {
+  local json=0 out
+  [ "${1:-}" = --json ] && json=1
+  out="$(plan)" || exit 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return 0; fi
+  jq -r '.[] | [.project, .channel, .kind, .trigger, .why] | @tsv' <<<"$out"
+}
+
+# One model call for one plan item: the product's facts and the trigger in, {title, draft, reason} out.
+ask_model() {
+  local item="$1" cfg="$2" prod chan input
+  prod="$(jq -r .project <<<"$item")" chan="$(jq -r .channel <<<"$item")"
+  input="$(jq -c --arg p "$prod" --arg c "$chan" --argjson cfg "$cfg" '
+    . + {product: ($cfg.products[$p] | {shape, pitch, links, notes}), account: ($cfg.accounts[$c] // null)}' <<<"$item")"
+  # A registered agent: its role, model, prompt and budget are mkt-drafts.conf's.
+  agentctl-run --agent mkt-drafts -p "$input"
+}
+
+cmd_run() {
+  local max="$MAX_DRAFTS" items n id title=() total=0 made=0 declined=0 failed=0 item prod chan kind trig why reply rc tmp
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max) max="${2:-}"; shift 2 ;;
+      *) die "run: unknown argument $1" ;;
+    esac
+  done
+  [[ "$max" =~ ^[0-9]+$ ]] || die "--max takes a whole number"
+  items="$(plan)" || { proof_outcome "$NAME" FAILED "could not read the config or the ledger"; exit 1; }
+  total="$(jq length <<<"$items")"
+  if [ "$total" = 0 ]; then proof_outcome "$NAME" NOOP "nothing new to draft"; return 0; fi
+  tmp="$(mktemp -d)" || die "no temp dir"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+  local cfg; cfg="$(yaml_json "$CHANNELS")"
+  for ((n = 0; n < total && made + declined < max; n++)); do
+    item="$(jq -c ".[$n]" <<<"$items")"
+    prod="$(jq -r .project <<<"$item")" chan="$(jq -r .channel <<<"$item")"
+    kind="$(jq -r .kind <<<"$item")" trig="$(jq -r .trigger <<<"$item")" why="$(jq -r .why <<<"$item")"
+    rc=0; reply="$(ask_model "$item" "$cfg")" || rc=$?
+    if [ "$rc" = 75 ]; then
+      # A budget stop (lib/budget.sh): the rest waits for tomorrow's caps; agentctl-run has paged.
+      proof_outcome "$NAME" BLOCKED "budget stop after $made drafts, $((total - n)) items waiting"
+      return 0
+    fi
+    if [ "$rc" != 0 ] || ! jq -e '.draft | type == "string"' <<<"$reply" >/dev/null 2>&1; then
+      failed=$((failed + 1)); echo "mkt-drafts: no usable reply for $prod $chan $trig (exit $rc)" >&2; continue
+    fi
+    if [ -z "$(jq -r '.draft | gsub("\\s"; "")' <<<"$reply")" ]; then
+      # Declined: a skipped row keeps the trigger from being asked about again, and holds the reason.
+      jq -r '.reason // "the drafter had nothing true to post"' <<<"$reply" > "$tmp/declined.md"
+      id="$("$MKT" draft --project "$prod" --channel "$chan" --kind "$kind" --trigger "$trig" --by "$NAME" \
+        --title "declined: $why" --no-ask "$tmp/declined.md")" && "$MKT" skip "$id" --by "$NAME" && declined=$((declined + 1)) || failed=$((failed + 1))
+      continue
+    fi
+    jq -r .draft <<<"$reply" > "$tmp/draft.md"
+    title=()
+    [ -z "$(jq -r '.title // empty' <<<"$reply")" ] || title=(--title "$(jq -r .title <<<"$reply")")
+    if "$MKT" draft --project "$prod" --channel "$chan" --kind "$kind" --trigger "$trig" --by "$NAME" \
+        "${title[@]}" "$tmp/draft.md" >/dev/null; then
+      made=$((made + 1))
+    else
+      failed=$((failed + 1)); echo "mkt-drafts: mkt draft failed for $prod $chan $trig" >&2
+    fi
+  done
+  local left=$((total - made - declined - failed))
+  local words="$made drafted, $declined declined, $failed failed, $left left"
+  if [ "$failed" -gt 0 ] && [ "$made" = 0 ]; then proof_outcome "$NAME" FAILED "$words"; return 1; fi
+  proof_outcome "$NAME" WORKED "$words"
+}
+
+command -v jq >/dev/null || die "jq is required"
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  plan) cmd_plan "$@" ;;
+  run) cmd_run "$@" ;;
+  *) sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit 2 ;;
+esac

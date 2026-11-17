@@ -111,7 +111,7 @@ fi
     echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
     [[ -n $max_line ]] && echo "Each index line is '- [Label](file.md) - one clause'."
     [[ $kind == "lessons file" ]] &&
-      echo "For lessons: a lesson is the rule, why, and one evidence pointer; \`lessons fat\` lists the long ones, \`lessons archive --dry-run\` the stale ones."
+      echo "For lessons: a lesson is the rule, why, and one evidence pointer; \`lessons fat\` lists the long ones, \`lessons compact\` swaps in a short text and archives the rest, \`lessons archive --dry-run\` lists the stale ones."
   fi
   if [[ -n $dups ]]; then
     echo "context-budget-guard: $path restates an instruction another home already holds."

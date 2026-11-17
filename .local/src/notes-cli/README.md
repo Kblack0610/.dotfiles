@@ -99,7 +99,7 @@ Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview
 
 ```
 current/<name>/
-  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, the generated `Agents:` and `Docs:` lines, then `## Inbox` and `## Tasks`
+  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, the generated `Agents:` line and `Docs:` list, then `## Inbox` and `## Tasks`
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project
@@ -116,7 +116,7 @@ A project's `type` in `project-map.json` can add to the core through its `[proje
 
 `projects --new <name>` writes the core and its type's files and never overwrites one, so on an existing project it fills the gaps. The name must already be registered in `project-map.json`, or it refuses and writes nothing (with no registry on the machine it does not check). `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files (core or type), a registry fact the type requires, loose root notes, an agent board over 32 KiB, and a row open twice. With no registry it prints one SKIP line, because type overlays cannot be checked.
 
-The `Docs:` line under `Agents:` is written by `notes board` (so by every `notes today`), never by hand. It links each doc that exists, in this order: `docs/idea.md`; a game's repo docs, `docs/games/<id>.md` as design plus `<id>-story.md` and `<id>-look.md` when present (`<id>` is the lowercased basename of the tracker's `path`); `playtest.md`; `ideas.md`; `summary.md` as status; then any other `docs/*.md` and `docs/<dir>/README.md`. A doc named for a date or a pass (`-2026-11-05`, `-p3`) is a report and stays off the line. A game needs its pitch and its design doc; story and look are optional.
+The `Docs:` list under `Agents:`, one link per item, is written by `notes board` (so by every `notes today`), never by hand. It links each doc that exists, in this order: `docs/idea.md`; a game's repo docs, `docs/games/<id>.md` as design plus `<id>-story.md` and `<id>-look.md` when present (`<id>` is the lowercased basename of the tracker's `path`); `playtest.md`; `ideas.md`; `summary.md` as status; then any other `docs/*.md` and `docs/<dir>/README.md`. A doc named for a date or a pass (`-2026-11-05`, `-p3`) is a report and stays off the list. A game needs its pitch and its design doc; story and look are optional.
 
 ### One home per fact
 

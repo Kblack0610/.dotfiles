@@ -49,7 +49,7 @@ Every channel that a product or an event names is a key of `accounts`. Reddit, H
 
 ## Verbs
 
-- `mkt draft --project P --channel C --kind K [--title T] [--attach F]... <file>` opens an item and posts its review as an approval ask (`agent-ask post --kind approval --agent mkt`). The title defaults to the draft's first line. Image attachments (png, jpg, gif, webp) become the ask's `--preview` images, shown on the Waiting page above the answers and served by agent-web from `/api/asks/<id>/preview/<n>`, only for files inside the ledger. The ask's resume is `run: mkt answer <id>`, so `ask-resume` records the answer with no session waiting on it. The ask carries no session id, so no session gets the answer pasted back to it.
+- `mkt draft --project P --channel C --kind K [--title T] [--attach F]... <file>` opens an item and posts its review as an approval ask (`agent-ask post --kind approval --agent mkt`). The title defaults to the draft's first line. `--trigger KEY` stores what the draft answers (a tag, a week, an event) on the row, which is how `mkt-drafts` knows not to draft it twice. A `{utm}` in the copied draft is replaced by the item's UTM query string, so a drafter writes `<url>?{utm}`. Image attachments (png, jpg, gif, webp) become the ask's `--preview` images, shown on the Waiting page above the answers and served by agent-web from `/api/asks/<id>/preview/<n>`, only for files inside the ledger. The ask's resume is `run: mkt answer <id>`, so `ask-resume` records the answer with no session waiting on it. The ask carries no session id, so no session gets the answer pasted back to it.
 - `mkt answer <id> <ask>` reads the answer. Option `skip` skips the item, `post` sends it through the channel's adapter, `hand`, or a URL with at most two other words ("posted: <url>"), is a hand post whose URL is logged as the send, and other words mean revise. An item no longer in review is refused, so a second run changes nothing.
 - `mkt log <id> <url> [--by who]` records a hand post of an approved item. An item already sent is refused.
 - `mkt log --project P --channel C --kind K --title T [--by who] [--reviewed-by who] <url>` records something sent outside `mkt draft` as a new item, already sent. `store-console` and `mobile-store-metadata` call this after a store page or listing goes live.
@@ -57,6 +57,23 @@ Every channel that a product or an event names is a key of `accounts`. Reddit, H
 - `mkt skip <id> [--by who]` closes an item that will not go out: a revise once its new draft exists, or a draft whose ask was refused. A sent item is refused.
 - `mkt list [--project P] [--state S] [--json]` and `mkt show <id>` read it.
 - `mkt scorecard [--project P] [--json]` is the channel scorecard, rendered from the ledger: one row per project, channel and kind with items sent, sent by hand vs through an adapter (a send `by: mkt`), items still open, the median hours from review ask to verdict, and the first and last send. Skipped items are left out. It replaces a hand-typed metrics sheet (board row mkt-5). Visits per item (UTM `utm_content`) join it once analytics reads them; until then a channel has no result to judge, so nothing asks to drop one.
+
+## mkt-drafts
+
+`mkt-drafts` (`.local/bin/mkt-drafts`, runner `agents/mkt-drafts.conf` in the private overlay, daily 07:40) opens a draft per product, channel and trigger through `mkt draft --by mkt-drafts`, so each lands in the ledger with its approval ask. It plans with no model and makes one call per item, on the conf's budget (`agentctl budget mkt-drafts`); an exit 75 from `agentctl-run` is a BLOCKED run that retries tomorrow. Nothing is sent: the human answers each ask.
+
+Which items it plans, for every product in `channels.yaml` and every channel whose mode is not `"off"`:
+
+| Trigger | When | Key stored on the row |
+|---|---|---|
+| release | the newest tag with the product's `tag_prefix` is under 14 days old (`release-state changelog --json`, its `at` and `text`) | `release:<tag>` |
+| week | user-facing PRs merged in the last 7 days (`release-state merged`), on `bluesky` and `mastodon` only | `week:<ISO week>` |
+| event | a `calendar.yaml` event for the product and channel starts within 14 days or is running | `event:<id>` |
+| recurring | a `weekly: <day>` rule whose next day is within 3 days | `<id>:<date>` |
+
+A row in the ledger in any state, skipped included, with the same project, channel and trigger counts as drafted, so a skipped draft is not asked again. A decline (the model finds nothing true to say) is a skipped row whose draft file holds the reason. `kind` follows the channel: `listing` for appstore, play and steam, `email` for newsletter, `post` for the rest. `mkt-drafts plan [--json]` prints what a run would do and calls no model.
+
+Knobs, all env with defaults in the script: `RELEASE_DAYS` 14, `EVENT_DAYS` 14, `RECUR_DAYS` 3, `WEEKLY_CHANNELS`, `MAX_DRAFTS` 6 a run (the rest waits for the next run, so a first run on a long-tagged product is bounded). Not done: no image is attached, since nothing yet says which screenshot belongs to a release (`mkt draft --attach` takes them when something does), and a `per-release` calendar rule is covered by the release trigger instead of a second one.
 
 ## costs.csv check
 
@@ -72,4 +89,6 @@ Sentinel runs it monthly as the watch `mkt-costs-stale` on `~/.notes/lab/bnb/pro
 | `the review ask for <id> was not posted; the item stays a draft` | agent-ask refused the ask (its error is printed above, often a question over the cap). Fix the cause and draft again, then `mkt skip <id>` the draft left behind. |
 | Marketing says `outbound ledger ... quiet` | `~/.agent/outbound/<project>` is not a readable directory. |
 | An answered review stays in review | The ask's resume has not run: `ask-resume --dry-run` lists what it would run; `mkt answer <id> <ask>` by hand does the same. |
+| `mkt-drafts run` reports BLOCKED | The runner's budget stopped a call (`agentctl budget mkt-drafts`); the undrafted items stay planned and the next run takes them. Raise the day cap only after reading `calls.jsonl`. |
+| A product gets no drafts | `mkt-drafts plan` shows why: every channel `"off"`, no tag under 14 days old, or the product has no `tag_prefix` in `channels.yaml`. |
 | A preview image shows broken on Waiting | The file is not under the ledger, or not an image; agent-web serves only those. `mkt draft` copies attachments there itself. |

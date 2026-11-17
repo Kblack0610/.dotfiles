@@ -2,7 +2,7 @@
 # mkt - the outbound ledger: everything that goes out for a product, one item from draft to
 # review to sent. The ledger, states and verbs in full: docs/operations/mkt.md.
 #
-#   mkt draft --project P --channel C --kind K [--title T] [--attach F]... [--no-ask] <draft-file>
+#   mkt draft --project P --channel C --kind K [--title T] [--attach F]... [--trigger KEY] [--no-ask] <draft-file>
 #                                open an item and post its review ask, images as previews
 #   mkt answer <id> <ask-id>     the review ask's resume: the verdict; a URL in it logs the send
 #   mkt log <id> <url> [--by who]                 the human posted it by hand
@@ -129,7 +129,7 @@ ask_review() {
 }
 
 cmd_draft() {
-  local project="" channel="" kind="" title="" by="${MKT_BY:-agent}" ask=1 file="" attach=()
+  local project="" channel="" kind="" title="" by="${MKT_BY:-agent}" ask=1 file="" attach=() trigger=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -138,6 +138,7 @@ cmd_draft() {
       --title) title="$2"; shift 2 ;;
       --attach) attach+=("$2"); shift 2 ;;
       --by) by="$2"; shift 2 ;;
+      --trigger) trigger="$2"; shift 2 ;;
       --no-ask) ask=0; shift ;;
       -*) die "draft: unknown flag $1" ;;
       *) file="$1"; shift ;;
@@ -160,10 +161,12 @@ cmd_draft() {
   id="$(new_id)"; dir="$LEDGER/$project/files/$id"
   mkdir -p "$dir" || die "cannot make $dir"
   cp -- "$file" "$dir/" || die "cannot copy $file"
+  # {utm} in the draft becomes the item's UTM string, which is not known until the id is.
+  U="$(utm "$channel" "$kind" "$project" "$id")" perl -pi -e 's/\{utm\}/$ENV{U}/g' "$dir/$(basename "$file")" || die "cannot write the UTM into the draft"
   for a in "${attach[@]}"; do cp -- "$a" "$dir/" || die "cannot copy $a"; copies+=("$dir/$(basename "$a")"); done
   local ev
-  ev="$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, draft: $d, attachments: $at, utm: $u, by: $b}' \
-    --arg p "$project" --arg c "$channel" --arg k "$kind" --arg t "$title" --arg d "$dir/$(basename "$file")" \
+  ev="$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, draft: $d, attachments: $at, utm: $u, by: $b} + (if $tr == "" then {} else {trigger: $tr} end)' \
+    --arg tr "$trigger" --arg p "$project" --arg c "$channel" --arg k "$kind" --arg t "$title" --arg d "$dir/$(basename "$file")" \
     --argjson at "$(jq -nc '$ARGS.positional' --args "${copies[@]}")" \
     --arg u "$(utm "$channel" "$kind" "$project" "$id")" --arg b "$by")"
   append "$project" "$ev"

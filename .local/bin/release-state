@@ -12,6 +12,9 @@
 #                                         what a tag shipped (default: the newest release): its
 #                                         CHANGELOG.md section, else the merged PRs since the
 #                                         release before it; --list names every tag to pick from
+#   release-state merged [--days N] <project>
+#                                         the PRs merged on the project's branch in the last N days
+#                                         (default 7), one "#N subject" a line, newest first
 #   release-state released <project> <sha>...
 #                                         per commit, one JSON line: the first tag of the project's
 #                                         line that holds it and when that tag was made
@@ -91,7 +94,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -911,13 +914,39 @@ cmd_changelog() {
   fi
   range="${prev:+$prev..}$tag"
   if [ "$json" = 1 ]; then
+    # at: when the tag was made (epoch; a lightweight tag's commit date), so a caller can tell a new one
     jq -n --arg project "$proj" --arg tag "$tag" --arg prev "$prev" --arg source "$source" \
-      --arg range "$range" --arg text "$text" --arg all "$all" '{
+      --arg range "$range" --arg text "$text" --arg all "$all" --arg at "$(git_tag_at "$repo" "$tag")" '{
         project: $project, tag: $tag, prev: (if $prev == "" then null else $prev end),
+        at: ($at | split(" ")[1] // "" | tonumber? // null),
         source: $source, range: $range, text: $text, tags: ($all | split("\n"))}'
   else
     printf '%s %s (%s, from %s)\n\n%s\n' "$proj" "$tag" "$range" "$source" "${text:-no merged PRs in $range}"
   fi
+}
+
+# merged [--days N] <project> -> "#N subject" for each PR merged on the project's branch in the last
+# N days, newest first, scoped to the project's folder in a monorepo. Read from the fetched remote
+# branch, as pinned is, so an unpushed local commit is not a merge.
+cmd_merged() {
+  local days=7 proj="" repo path branch
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$proj" ] || die "too many arguments"; proj="$1"; shift ;;
+    esac
+  done
+  [ -n "$proj" ] || usage
+  [[ "$days" =~ ^[0-9]+$ ]] || die "--days takes a whole number"
+  project_tag_scope "$proj" || die "$proj has no checkout, so no merges to read"
+  repo="$_PTS_REPO"
+  path="$(project_field "$proj" path)"
+  branch="$(project_field "$proj" branch)"
+  [ -n "$branch" ] || branch="$(default_branch "$repo")"
+  [ -n "$branch" ] || die "$proj: no branch to read (no origin/HEAD, none declared)"
+  _gr_subjects "$repo" "$(branch_ref "$repo" "$branch")" "$path" 100000 "$days days ago" |
+    sed 's/^\(.*[^ ]\) *(#\([0-9][0-9]*\))[^()]*$/#\2 \1/'
 }
 
 # released <project> <sha>... -> one JSON object a commit: {sha, tag, at}, the oldest tag of the
@@ -943,6 +972,7 @@ cmd_released() {
 case "${1:-}" in
   changelog) shift; cmd_changelog "$@" ;;
   released) shift; cmd_released "$@" ;;
+  merged) shift; cmd_merged "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   show) shift; cmd_show "$@" ;;
   check) shift; cmd_check "$@" ;;
