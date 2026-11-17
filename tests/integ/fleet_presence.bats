@@ -92,3 +92,84 @@ ago() { echo $(( NOW - $1 * 60 )); }
   run "$SH" nonsense
   assert_failure 2
 }
+
+# The fleet home reads presence, but the human often sits at another machine: that machine
+# publishes its last input there, and the home takes the newest of its own and every report.
+
+@test "a report from the machine the human sits at counts on the home, named by host" {
+  socket hub
+  "$SH" desktop idle 7200
+  "$SH" report cachyos-rog "$(ago 3)" tmux
+  STUB_CLIENTS="$(ago 180)\n" run "$SH"
+  assert_output 'here 3 cachyos-rog:tmux'
+}
+
+@test "a headless home with no client reads the human from a report alone" {
+  "$SH" report cachyos-rog "$(ago 1)" desktop
+  STUB_PROCS=none run "$SH"
+  assert_output 'here 1 cachyos-rog:desktop'
+}
+
+@test "a report ages like a local input: a machine that stopped publishing goes away" {
+  "$SH" report cachyos-rog "$(ago 45)" tmux
+  STUB_PROCS=none run "$SH"
+  assert_output 'away 45 cachyos-rog:tmux'
+}
+
+@test "local input newer than every report wins, and a newer report replaces its host's last" {
+  socket hub
+  "$SH" desktop idle 7200
+  "$SH" report cachyos-rog "$(ago 20)" tmux
+  STUB_CLIENTS="$(ago 2)\n" run "$SH"
+  assert_output 'here 2 tmux'
+  "$SH" report cachyos-rog "$(ago 1)" desktop
+  STUB_CLIENTS="$(ago 2)\n" run "$SH"
+  assert_output 'here 1 cachyos-rog:desktop'
+}
+
+@test "report refuses a host, epoch or source it could not store as given" {
+  for args in "../x 1 tmux" "rog x tmux" "rog 1 tm/ux" "rog 1"; do
+    # shellcheck disable=SC2086 # each case is its argument list
+    run "$SH" report $args
+    assert_failure 2
+  done
+  [ ! -e "$XDG_RUNTIME_DIR/fleet-presence/../x" ] || fail "wrote outside the report dir"
+}
+
+# publish: FLEET_INVENTORY names state.lan the home; ssh is a stub that logs its call.
+publish_fixture() {
+  export FLEET_INVENTORY="$SANDBOX/inventory.yml" FLEET_HOST="$1"
+  printf 'all:\n  children:\n    fleet_workers:\n      vars:\n        fleet_state_host: state.lan\n      hosts:\n        worker:\n' > "$FLEET_INVENTORY"
+  stub ssh 'echo "ssh $*" >> "$HOME/ssh.log"'
+  stub getent 'exit 2'   # state.lan resolves to none of this machine's addresses, with no DNS wait
+}
+
+@test "publish on a machine that is not the home sends its last input to the home" {
+  publish_fixture cachyos-rog
+  socket hub
+  "$SH" desktop idle 7200
+  STUB_CLIENTS="$(ago 4)\n" run "$SH" publish
+  assert_success
+  run cat "$HOME/ssh.log"
+  assert_output --partial "state.lan PATH=\"\$HOME/.local/bin:\$PATH\" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 fleet-presence report cachyos-rog $(ago 4) tmux"
+}
+
+@test "publish sends unread as input now, so the home reads here, and sends nothing with no session" {
+  publish_fixture cachyos-rog
+  STUB_PROCS=hyprland run "$SH" publish
+  assert_success
+  run cat "$HOME/ssh.log"
+  assert_output --regexp 'fleet-presence report cachyos-rog [0-9]+ unread $'
+  rm "$HOME/ssh.log"
+  STUB_PROCS=none run "$SH" publish
+  assert_success
+  [ ! -e "$HOME/ssh.log" ] || fail "sent a report with nothing to report"
+}
+
+@test "publish on the home sends nothing: the home reads itself" {
+  publish_fixture state
+  socket hub
+  STUB_CLIENTS="$(ago 4)\n" run "$SH" publish
+  assert_success
+  [ ! -e "$HOME/ssh.log" ] || fail "the home published to itself"
+}

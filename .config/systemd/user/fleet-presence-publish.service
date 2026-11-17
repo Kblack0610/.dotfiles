@@ -1,0 +1,7 @@
+[Unit]
+Description=Send this machine's last tmux or desktop input to the fleet home (fleet-presence publish)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fleet-presence publish
+TimeoutStartSec=30

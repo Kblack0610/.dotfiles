@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# fleet-presence - is the human at this machine? Unattended work reads it before starting anything.
+# fleet-presence - is the human at a machine of the fleet? Unattended work reads it before starting anything.
 #
 #   fleet-presence                         print "<here|away|unread> <minutes> <source>"
 #   fleet-presence desktop idle <seconds>  hypridle on-timeout: desktop input stopped <seconds> ago
 #   fleet-presence desktop active          hypridle on-resume
+#   fleet-presence publish                 send this machine's last input to the fleet home (the timer)
+#   fleet-presence report <host> <epoch> <source>   on the home: the last input <host> saw
 #
-# Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN. tmux alone
-# would call the human away while they play a test build, when extra load hurts most, so the
-# desktop counts too. A source it cannot read prints unread, and readers treat that as here.
-# Agents do not count: send-keys and paste-buffer leave client_activity alone
-# (tests/ui/fleet_presence.bats).
-#
-# Time of day plays no part: a night is a long away.
+# Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN, here or on any
+# machine that published here (fleet-presence-publish.timer): the human often sits at a machine that
+# is not the fleet home, where dispatch reads this. Unread reads as here. Why each source counts and
+# what a report means: the fleet-dispatch skill, "Away".
 
 set -uo pipefail
 
 : "${AWAY_AFTER_MIN:=30}"
-# Runtime dir, so a reboot clears it: a stale time would read as away right after login. Holds the
-# epoch desktop input stopped; empty or absent means active.
-IDLE_FILE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fleet-desktop-idle"
+# Runtime dir, so a reboot clears both: a stale time would read as away right after login. The idle
+# file holds the epoch desktop input stopped; empty or absent means active. The report dir holds one
+# file per publishing machine, "<epoch> <source>".
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+IDLE_FILE="$RUN_DIR/fleet-desktop-idle"
+REPORT_DIR="$RUN_DIR/fleet-presence"
 
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 
@@ -42,21 +44,37 @@ desktop_activity() {
   if [ -s "$IDLE_FILE" ]; then cat "$IDLE_FILE"; else echo now; fi
 }
 
-cmd_status() {
-  local now desktop t_tmux age source
-  now="$(date +%s)"
-  desktop="$(desktop_activity)" || { echo "unread - hypridle"; return 0; }
-  [ "$desktop" != now ] || desktop="$now"
-  [ -z "$desktop" ] || [[ "$desktop" =~ ^[0-9]+$ ]] || { echo "unread - $IDLE_FILE"; return 0; }
+# local_activity -> "<epoch> <source>" for the newest input at this machine, "unread <what>" when
+# a source cannot be read, nothing when no client is attached and there is no desktop session.
+local_activity() {
+  local desktop t_tmux
+  desktop="$(desktop_activity)" || { echo "unread hypridle"; return 0; }
+  [ "$desktop" != now ] || desktop="$(date +%s)"
+  [ -z "$desktop" ] || [[ "$desktop" =~ ^[0-9]+$ ]] || { echo "unread $IDLE_FILE"; return 0; }
   t_tmux="$(tmux_activity)"
-  if [ "${t_tmux:-0}" -gt "${desktop:-0}" ]; then
-    age=$(( now - t_tmux )); source=tmux
-  elif [ -n "$desktop" ]; then
-    age=$(( now - desktop )); source=desktop
-  else
-    # No client and no desktop session: nobody can be at this machine.
-    echo "away - none"; return 0
+  if [ "${t_tmux:-0}" -gt "${desktop:-0}" ]; then echo "$t_tmux tmux"
+  elif [ -n "$desktop" ]; then echo "$desktop desktop"
   fi
+}
+
+# reported_activity -> "<epoch> <host>:<source>", one line per machine that published here.
+reported_activity() {
+  local f epoch src
+  for f in "$REPORT_DIR"/*; do
+    [ -f "$f" ] && read -r epoch src < "$f" && [[ "$epoch" =~ ^[0-9]+$ ]] || continue
+    echo "$epoch ${f##*/}:$src"
+  done
+}
+
+cmd_status() {
+  local now l epoch source age
+  now="$(date +%s)"
+  l="$(local_activity)"
+  case "$l" in unread\ *) echo "unread - ${l#unread }"; return 0 ;; esac
+  read -r epoch source < <({ [ -z "$l" ] || echo "$l"; reported_activity; } | sort -n | tail -n 1)
+  # No client, no desktop session and no report: nobody can be at this machine or one that publishes here.
+  [ -n "${epoch:-}" ] || { echo "away - none"; return 0; }
+  age=$(( now - epoch ))
   [ "$age" -ge 0 ] || age=0
   age=$(( age / 60 ))
   if [ "$age" -ge "$AWAY_AFTER_MIN" ]; then echo "away $age $source"; else echo "here $age $source"; fi
@@ -73,9 +91,34 @@ cmd_desktop() {
   esac
 }
 
+# publish: hand this machine's last input to the fleet home over the one path agent-queue and
+# agent-ask use (state_forward). On the home, or where no roster names one, state_forward returns
+# and nothing is sent: the home reads itself. Unread is sent as input now, since readers take it as
+# here; no client and no desktop session has nothing to send.
+cmd_publish() {
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  local l epoch source
+  l="$(local_activity)"
+  [ -n "$l" ] || return 0
+  read -r epoch source <<<"$l"
+  [ "$epoch" != unread ] || { epoch="$(date +%s)"; source=unread; }
+  state_forward fleet-presence "" report "$FLEET_HOST" "$epoch" "$source"
+}
+
+# report <host> <epoch> <source>: the newest input <host> saw, written whole so a reader never sees half.
+cmd_report() {
+  [ $# -eq 3 ] && [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$3" =~ ^[a-z]+$ ]] ||
+    die "usage: fleet-presence report <host> <epoch> <source>"
+  mkdir -p "$REPORT_DIR" || die "cannot make $REPORT_DIR"
+  printf '%s %s\n' "$2" "$3" > "$REPORT_DIR/.$1.tmp" && mv -f "$REPORT_DIR/.$1.tmp" "$REPORT_DIR/$1"
+}
+
 case "${1:-}" in
   "") cmd_status ;;
   desktop) shift; cmd_desktop "$@" ;;
-  -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (desktop)" ;;
+  publish) cmd_publish ;;
+  report) shift; cmd_report "$@" ;;
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (desktop, publish, report)" ;;
 esac
