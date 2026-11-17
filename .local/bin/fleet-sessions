@@ -138,7 +138,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 # session_bucket <status> <plan: 1 when status is waiting on an ExitPlanMode approval, else 0> <asks> <heavy 0|1> <idle_min> <git 0|1> \
 #                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
-#                <phases: - (no plan file) | none (no checklist) | done/total> <next phase|-> \
+#                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
 #                <open job: gate|queue|test|build|agent|human|jobs|none|hung|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
@@ -372,6 +372,7 @@ bucket_facts() {
         local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
         case "$phases" in
           -|none) echo "DONE $why" ;;
+          missing) echo "STALLED $why, its plan file is missing" ;;
           *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then echo "DONE $why"
              else echo "LANDED $why, next phase: $next"; fi ;;
         esac
@@ -445,6 +446,7 @@ work_blockers() {
     # An item that moved on took the work with it: nothing here is left to finish.
     -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and nothing merged") ;;
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
+    missing) [[ "${20:--}" == moved:* ]] || b+=("its plan file is missing") ;;
     *) [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]] || b+=("next phase: $next") ;;
   esac
   if [[ "${20:--}" == own:* ]]; then
@@ -452,7 +454,7 @@ work_blockers() {
     # case, ucp-agent-82 2026-11-11: apo-120 stayed open after its partial landing while its
     # phases ran as items elsewhere). Its close verdict is then after, not keep.
     local own="${20#own:}" held=0
-    case "$phases" in -|none) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; } && held=1 ;; esac
+    case "$phases" in -|none|missing) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; } && held=1 ;; esac
     for id in ${own//,/ }; do
       if [ "$held" = 1 ]; then b+=("its item $id is still open with every phase done or queued")
       else b+=("its item $id is running here"); fi
@@ -492,6 +494,12 @@ plan_bucket() {
           esac; fi ;;
     none) if [ "$merged" = 1 ]; then plan_done "$why" "$own" ", single-phase plan, its PR landed"
           else echo "LANDED $why, plan has no ## Phases checklist"; fi ;;
+    # A recorded plan that is nowhere has phases no one can read: never finished, whatever merged,
+    # unless its item moved on and took the work (ar-2368).
+    missing) case "$item" in
+            moved:*) echo "DONE $why, its plan file is missing, its item ${item#moved:}" ;;
+            *)       echo "STALLED $why, its plan file is missing" ;;
+          esac ;;
     *)
       if [ "${phases%/*}" -ge "${phases#*/}" ]; then plan_done "$why" "$own" ", all ${phases#*/} phases done" held
       elif [[ "$next" == queued:* ]]; then plan_done "$why" "$own" ", its next phases are queue items: ${next#queued:}" held
@@ -1432,6 +1440,7 @@ collect() {
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
     [ "$host" = - ] || planf=-
+    planf="$(plan_resolve "$planf")"
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
     IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
@@ -1518,18 +1527,24 @@ collect() {
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
     IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")
-    if [ "$planf" = - ] || [ ! -f "$planf" ]; then phases=-
+    # A plan the pane recorded that is nowhere (plan_resolve looked in every plans dir) is not a
+    # session with no plan: its phases are unknown, so it is never read as finished (ar-2368).
+    if [ "$planf" = - ]; then phases=-
+    elif [ ! -f "$planf" ]; then phases=missing
     elif [ "$ptotal" = - ]; then phases=none
     else phases="$pdone/$ptotal"; fi
     # The plan's unchecked phases are queue items of their own: its next phase is not this session's.
     # An item that records `phases:` holds only those checklist numbers, so later phases queued
     # while this session works the next one do not make it queued (ar-267: agent-2 read DONE
-    # mid-phase 3 because phases 4 and on were items); one with no `phases:` cannot say, and holds
-    # all. The plan is queued only when every open phase is held; else its first free one is next.
+    # mid-phase 3 because phases 4 and on were items); one with no `phases:` whose task names one
+    # ("Phase 2 of", "Phase Tailnet of": a number or the phase name's first word) holds that one,
+    # and one that names none holds all (ar-2368: forgejo-hetzner-tailnet's "Phase Tailnet of"
+    # held all six open phases, and two shepherds told its plan's session to close).
+    # The plan is queued only when every open phase is held; else its first free one is next.
     local dsp=- n=0 e=0
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
-    if [ "$phases" != - ] && [ "$phases" != none ] && [ "$pdone" -lt "$ptotal" ]; then
+    if [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ]; then
       local qd
       # Items match by file name: a plan symlinked to its canonical name (plan mode wrote one, the
       # phases were queued under the other) matches either.
@@ -1542,10 +1557,15 @@ collect() {
       qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$planf}" --arg own "${dsp#*: }" \
               --argjson open "$(plan_phase_list "$planf" | jq -c --argjson b "$pbase" '[to_entries[] | select(.value.state == "open") | {n: (.key + $b | tostring), name: .value.name}]')" \
               "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)))
-                 | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != "")))}] as $it
-              | def holds($n): (.ph | length) == 0 or (.ph | index($n)) != null;
-              [$it[] | select(. as $i | any($open[]; .n as $n | $i | holds($n)))] as $holders
-              | [$open[] | select(.n as $n | any($it[]; holds($n)) | not)] as $free
+                 | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
+                    tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
+              | def holds($o): .tp as $t
+                  | if (.ph | length) > 0 then (.ph | index($o.n)) != null
+                    elif $t == null then true
+                    elif ($t | test("^[0-9]+$")) then ($t | tonumber | tostring) == $o.n
+                    else ($o.name | ascii_downcase | startswith($t)) end;
+              [$it[] | select(. as $i | any($open[]; . as $o | $i | holds($o)))] as $holders
+              | [$open[] | select(. as $o | any($it[]; holds($o)) | not)] as $free
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(","))
                 else $free[0].name end' <<<"$qjson" 2>/dev/null)"

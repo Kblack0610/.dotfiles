@@ -30,6 +30,23 @@ plan_phases() {
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
+# plan_resolve <plan file|-> -> the path to read it at: itself when it exists; else, for a path in
+# a `~/.claude*/plans/` dir, the same file name in another one (each account's plan mode records its
+# own dir, approved.jsonl keeps it, and the plan can live on in another); else the path unchanged,
+# so a caller's `-f` test still sees it missing. 2026-11-14: virtual-strolling-nova was recorded
+# under ~/.claude-personal/plans and lived at ~/.claude/plans.
+plan_resolve() {
+  local p="$1" d
+  if [ "$p" = - ] || [ -f "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  case "${p%/*}" in
+    */.claude*/plans)
+      for d in "$HOME"/.claude*/plans; do
+        [ -f "$d/${p##*/}" ] && { printf '%s\n' "$d/${p##*/}"; return 0; }
+      done ;;
+  esac
+  printf '%s\n' "$p"
+}
+
 # A jq def: does this queue item (agent-queue list --json) carry phases of plan $p? By file name,
 # since a plan is read from ~/.claude*/plans/ and its cache in ~/.agent/plans/<project>/: its
 # `plan:` field (agent-queue add --plan), or a task that names the plan's file (queued by hand).
@@ -98,10 +115,10 @@ plans_orphaned() {
     rm -f "$items"; return 1
   fi
   while IFS= read -r line; do
-    plan=$(jq -r .plan <<<"$line"); sid=$(jq -r .session <<<"$line")
+    plan=$(plan_resolve "$(jq -r .plan <<<"$line")"); sid=$(jq -r .session <<<"$line")
     plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
     t=$(find "$HOME"/.claude*/projects -maxdepth 2 -name "$sid.jsonl" -mmin "-$PLAN_QUIET_MIN" -print -quit 2>/dev/null)
-    [ -n "$t" ] || printf '%s\n' "$line"
+    [ -n "$t" ] || jq -c --arg p "$plan" '.plan = $p' <<<"$line"
   done < <(jq -sc --arg live "$live" --slurpfile items "$items" \
     --argjson since "$(( $(date +%s) - PLAN_LEDGER_DAYS * 86400 ))" "$PLAN_ITEMS_JQ"'
     ($live | split("\n")) as $live

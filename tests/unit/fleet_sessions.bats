@@ -3967,3 +3967,83 @@ JSONL
   { cat "$SANDBOX/s.md"; seq 1 60; } > "$SANDBOX/long.md"
   [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
 }
+
+@test "a recorded plan file that is missing is its own verdict: STALLED, never DONE, unless its item moved on (ar-2368)" {
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
+  assert_output 'STALLED PR #875 merged, tree clean, its plan file is missing'
+  ! session_finished idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
+  run work_blockers '' idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
+  assert_output 'its plan file is missing'
+  # an item still running here is never read as every phase done or queued
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'own:x-1'
+  assert_output 'its plan file is missing; its item x-1 is running here'
+  # negative control: no plan recorded at all is still one phase, DONE once its PR merged
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - - -
+  assert_output 'DONE PR #875 merged, tree clean, no plan file, its PR landed'
+  # an item that moved on took the work with it
+  run b idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'moved:x-1 moved on (done)'
+  assert_output 'DONE clean, nothing on the branch, its plan file is missing, its item x-1 moved on (done)'
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'moved:x-1 moved on (done)')" ]
+}
+
+@test "plan_resolve: a plan recorded under one ~/.claude*/plans dir is read from another; elsewhere it stays as it is" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  mkdir -p "$HOME/.claude/plans" "$HOME/.claude-personal/plans"
+  printf '# p\n' > "$HOME/.claude/plans/p.md"
+  [ "$(plan_resolve "$HOME/.claude-personal/plans/p.md")" = "$HOME/.claude/plans/p.md" ]
+  [ "$(plan_resolve "$HOME/.claude/plans/p.md")" = "$HOME/.claude/plans/p.md" ]
+  [ "$(plan_resolve -)" = - ]
+  # a name in no plans dir, and a path outside them, come back unchanged for the caller's -f test
+  [ "$(plan_resolve "$HOME/.claude-personal/plans/q.md")" = "$HOME/.claude-personal/plans/q.md" ]
+  [ "$(plan_resolve "$SANDBOX/elsewhere/p.md")" = "$SANDBOX/elsewhere/p.md" ]
+}
+
+@test "end to end: a plan recorded under another account's plans dir reads its phases there; one that is nowhere keeps the session open (ar-2368)" {
+  landed_fixture
+  mkdir -p "$HOME/.claude/plans" "$HOME/.claude-personal/plans"
+  mv "$SANDBOX/plan.md" "$HOME/.claude/plans/plan.md"
+  panel "$SANDBOX/wt" "$HOME/.claude-personal/plans/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+  [ "$(jq -r .plan_file <<<"$output")" = "$HOME/.claude/plans/plan.md" ]
+  rm "$HOME/.claude/plans/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its plan file is missing' ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+}
+
+@test "end to end: an item whose task names one phase of the plan holds that phase only (ar-2368)" {
+  # 2026-11-14 forgejo-hetzner-tailnet ("Phase Tailnet of ~/.claude/plans/virtual-strolling-nova.md",
+  # no phases:) held all six open phases, and two shepherds told the plan's session to close.
+  landed_fixture
+  phases_plan '- [x] Provision (#875)' '- [ ] Tailnet: VM joined' '- [ ] Seed: rsync the data'
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  # task_item <slug> <task>: an item queued by hand, its task naming the plan's file, no phases:
+  task_item() {
+    printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
+      "$1" "$2" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"
+  }
+  task_item tailnet "Phase Tailnet of $SANDBOX/plan.md: mint the key"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Seed: rsync the data' ]
+  # by number, it holds the checklist's phase N
+  task_item tailnet "Phase 3 of $SANDBOX/plan.md: seed"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Tailnet: VM joined' ]
+  # every open phase named by an item: the plan is queued
+  task_item seed "Phase seed of $SANDBOX/plan.md"
+  task_item tailnet "Phase Tailnet of $SANDBOX/plan.md: mint the key"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # negative control: a task that names the plan and no phase still holds them all
+  rm "$HOME/.agent/queue/queued/20261103-100000-seed.md"
+  task_item tailnet "Execute $SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
