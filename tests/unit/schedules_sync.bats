@@ -1094,6 +1094,31 @@ def names():
   assert_success
   run jq -c '.repos[0] | [.error, .report.causes, (.files | keys)]' "$QUAR"
   assert_output '[null,["frame-timing"],["flake-causes.json","flake_patterns.py","quarantine.py","quarantine.txt"]]'
+
+  # a day later the listing is a 304: the report runs again from the cached siblings, no blob read
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run jq -c '.repos[0] | [.error, .report.today, .report.causes]' "$QUAR"
+  assert_output '[null,"2025-11-07",["frame-timing"]]'
+  run grep -c 'blobs/q' "$GHD/calls"
+  assert_output 0
+
+  # the table moves: only its blob is read again
+  blob o/game q6b '{"causes":[{"name":"frame-timing"},{"name":"scene-load"}]}'
+  sed -i 's/"q6"/"q6b"/' "$GHD/$(key 'repos/o/game/contents/scripts/test?ref=main')"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run jq -c '.repos[0] | [.error, .report.causes]' "$QUAR"
+  assert_output '[null,["frame-timing","scene-load"]]'
+  run grep -o 'blobs/q[0-9a-z]*' "$GHD/calls"
+  assert_output 'blobs/q6b'
+
+  # a sibling the base drops leaves the cache, so it is never imported from there
+  quarantine_files
+  SCHEDULES_NOW=$((SCHEDULES_NOW + 86400)) TZ=UTC run "$SUBJECT"
+  run bash -c 'find "$1" -maxdepth 1 -type f -printf "%f\n" | sort' _ "$XDG_STATE_HOME/ci/quarantine/o/game/scripts/test"
+  assert_output 'quarantine.py
+quarantine.txt'
 }
 
 # night_file <sha> <json>: o/game's scripts/night.json on main, as the contents API answers it
