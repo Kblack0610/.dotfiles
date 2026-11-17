@@ -1562,7 +1562,8 @@ collect() {
                   | if (.ph | length) > 0 then (.ph | index($o.n)) != null
                     elif $t == null then true
                     elif ($t | test("^[0-9]+$")) then ($t | tonumber | tostring) == $o.n
-                    else ($o.name | ascii_downcase | startswith($t)) end;
+                    else ($o.name | ascii_downcase | sub("^(phase +)?[0-9]+[.:)]? *"; "")
+                          | startswith($t) and (.[($t | length):] | test("^([^a-z0-9]|$)"))) end;
               [$it[] | select(. as $i | any($open[]; . as $o | $i | holds($o)))] as $holders
               | [$open[] | select(. as $o | any($it[]; holds($o)) | not)] as $free
               | if ($holders | length) == 0 then empty
@@ -1928,7 +1929,7 @@ explain() {
     | ["\(.target)  \(.bucket)  (state \(($now - $d.generated_epoch) / 60 | floor)m old)",
        line("task"; .topic // "-"),
        line("time"; "open \(.age_min | hrs): \($t.work_min | hrs) work, \($t.gate_min // 0 | hrs) gate, \($t.test_min // 0 | hrs) test, \($t.jobs_min | hrs) jobs, \($t.human_min | hrs) you, \($t.parked_min | hrs) parked; idle \(.idle_min | hrs) now; \(.compactions // 0) compactions"),
-       line("plan"; if .phases_total then "\(.phases_done)/\(.phases_total)\(if .next_phase then ", next: \(.next_phase)" else "" end)" else "no checklist" end),
+       line("plan"; if .phases_total then "\(.phases_done)/\(.phases_total)\(if .next_phase then ", next: \(.next_phase)" else "" end)" elif ((.reason // "") | test("plan file is missing")) then "plan file missing" else "no checklist" end),
        line("branch"; "\(.branch)\(if .pr != "-" then " (PR #\(.pr))" else "" end)"),
        line("PRs"; "\($m) merged of \($n)"),
        ((.prs // [])[] | "  \(.repo)#\(.number)  \((.state // "unknown") | ascii_downcase)\(if .merged_at then "  \(.merged_at | fromdate | strflocaltime("%a %H:%M"))" else "" end)"),

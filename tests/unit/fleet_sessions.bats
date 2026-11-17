@@ -3971,7 +3971,8 @@ JSONL
 @test "a recorded plan file that is missing is its own verdict: STALLED, never DONE, unless its item moved on (ar-2368)" {
   run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
   assert_output 'STALLED PR #875 merged, tree clean, its plan file is missing'
-  ! session_finished idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
+  run session_finished idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
+  [ "$status" -ne 0 ]
   run work_blockers '' idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
   assert_output 'its plan file is missing'
   # an item still running here is never read as every phase done or queued
@@ -4024,6 +4025,10 @@ JSONL
   task_item tailnet "Phase Tailnet of $SANDBOX/plan.md: mint the key"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # a name is matched as a whole first word, past a "Phase N:" prefix: "seed" is not "seeding"
+  phases_plan '- [x] Provision (#875)' '- [ ] Phase 2: Tailnet joined' '- [ ] Seeding: rsync the data'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Seeding: rsync the data' ]
   # negative control: a task that names the plan and no phase still holds them all
   rm "$HOME/.agent/queue/queued/20261103-100000-seed.md"
   task_item tailnet "Execute $SANDBOX/plan.md"
