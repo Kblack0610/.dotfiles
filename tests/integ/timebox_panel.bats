@@ -88,14 +88,22 @@ resume"
   assert_failure 2
 }
 
-@test "the key hint is two short lines, so the left pane beside the preview never clips 'q close'" {
-  hint=$(grep -o -e "--header=\$'[^']*'" "$PANEL")
-  assert [ -n "$hint" ]
-  hint=${hint#--header=\$\'}
-  hint=${hint%\'}
-  assert_equal "$(printf '%s' "$hint" | grep -o '\\n' | wc -l)" "1"
+@test "the key hint wraps to lines that fit the left pane of the 720 px float, so 'q close' shows" {
+  # A stub fzf records the --header the panel hands it. The float is about 80 columns, the preview
+  # takes 45%, and fzf indents a header by 2, so a line over 36 columns clips.
+  mkdir "$FX/bin"
+  cat > "$FX/bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in --header=*) printf '%s' "${a#--header=}" > "$FX/header" ;; esac
+done
+STUB
+  chmod +x "$FX/bin/fzf"
+  PATH="$FX/bin:$PATH" run "$PANEL" panel
+  assert_success
+  header=$(cat "$FX/header")
+  assert_regex "$header" 'q close'
   while IFS= read -r line; do
-    assert [ "${#line}" -le 50 ]
-  done < <(printf '%b\n' "$hint")
-  assert_regex "$hint" 'q close$'
+    assert [ "${#line}" -le 36 ]
+  done <<< "$header"
 }
