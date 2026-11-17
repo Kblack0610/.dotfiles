@@ -5,7 +5,7 @@
 #   fleet-presence desktop idle <seconds>  hypridle on-timeout: desktop input stopped <seconds> ago
 #   fleet-presence desktop active          hypridle on-resume
 #   fleet-presence publish                 send this machine's last input to the fleet home (the timer)
-#   fleet-presence report <host> <epoch> <source>   on the home: the last input <host> saw
+#   fleet-presence report <host> <seconds-ago> <source>   on the home: the last input <host> saw
 #
 # Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN, here or on any
 # machine that published here (fleet-presence-publish.timer): the human often sits at a machine that
@@ -93,25 +93,29 @@ cmd_desktop() {
 
 # publish: hand this machine's last input to the fleet home over the one path agent-queue and
 # agent-ask use (state_forward). On the home, or where no roster names one, state_forward returns
-# and nothing is sent: the home reads itself. Unread is sent as input now, since readers take it as
-# here; no client and no desktop session has nothing to send.
+# and nothing is sent: the home reads itself. It sends an age, not an epoch, so the home dates the
+# input by its own clock and a skewed clock here cannot read as here or away there. Unread sends
+# nothing: sent as input now it would pin the home to here for as long as this machine is on.
 cmd_publish() {
   # shellcheck source=../lib/fleet-hosts.sh
   . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  local l epoch source
+  local l epoch source age
   l="$(local_activity)"
   [ -n "$l" ] || return 0
   read -r epoch source <<<"$l"
-  [ "$epoch" != unread ] || { epoch="$(date +%s)"; source=unread; }
-  state_forward fleet-presence "" report "$FLEET_HOST" "$epoch" "$source"
+  [ "$epoch" != unread ] || { echo "fleet-presence: $source is unreadable here, so nothing was published" >&2; return 0; }
+  age=$(( $(date +%s) - epoch ))
+  [ "$age" -ge 0 ] || age=0
+  state_forward fleet-presence "" report "$FLEET_HOST" "$age" "$source"
 }
 
-# report <host> <epoch> <source>: the newest input <host> saw, written whole so a reader never sees half.
+# report <host> <seconds-ago> <source>: the newest input <host> saw, dated by this machine's clock and
+# written whole so a reader never sees half.
 cmd_report() {
-  [ $# -eq 3 ] && [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$3" =~ ^[a-z]+$ ]] ||
-    die "usage: fleet-presence report <host> <epoch> <source>"
+  [ $# -eq 3 ] && [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$3" =~ ^[a-z]+$ ]] ||
+    die "usage: fleet-presence report <host> <seconds-ago> <source>"
   mkdir -p "$REPORT_DIR" || die "cannot make $REPORT_DIR"
-  printf '%s %s\n' "$2" "$3" > "$REPORT_DIR/.$1.tmp" && mv -f "$REPORT_DIR/.$1.tmp" "$REPORT_DIR/$1"
+  printf '%s %s\n' "$(( $(date +%s) - $2 ))" "$3" > "$REPORT_DIR/.$1.tmp" && mv -f "$REPORT_DIR/.$1.tmp" "$REPORT_DIR/$1"
 }
 
 case "${1:-}" in

@@ -5,3 +5,7 @@ Description=Send this machine's last tmux or desktop input to the fleet home (fl
 Type=oneshot
 ExecStart=%h/.local/bin/fleet-presence publish
 TimeoutStartSec=30
+# 255 is ssh's: a laptop off the LAN or asleep cannot reach the home, which is normal for it; the
+# line state_forward writes stays in the journal. Its ssh key comes from the user manager's
+# SSH_AUTH_SOCK, the same agent fleet-dispatch's ssh uses.
+SuccessExitStatus=255
