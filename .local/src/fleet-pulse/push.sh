@@ -11,7 +11,9 @@
 # which is the intended degrade path.
 #
 # Token: read from ~/.config/fleet-pulse/token (private-overlay, never committed).
-# Endpoint name: this host's fleet key; override with $FLEET_NAME if reused.
+# Endpoint name: this host's fleet key. $FLEET_NAME wins; else the short hostname
+# (the fleet names a machine by its hostname: razer-laptop, hp-victus), so two Linux
+# hosts never push the same key.
 
 set -u
 
@@ -20,9 +22,17 @@ set -u
 # means re-pointing the fleet is one edit per machine instead of one per module.
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
-FLEET_NAME="${FLEET_NAME:-linux-cachyos}"
+if [[ -z "${FLEET_NAME:-}" ]]; then
+    FLEET_NAME="$(uname -n)"
+    FLEET_NAME="${FLEET_NAME%%.*}"
+    FLEET_NAME="$(printf '%s' "$FLEET_NAME" | tr 'A-Z_' 'a-z-')"
+    # The workstation's gatus key predates hostname naming; its hostname is the
+    # inventory's cachyos-x8664-main. Renaming the key would orphan its history and
+    # the roster entries in home-config and the private env file.
+    [[ "$FLEET_NAME" == "cachyos-x8664-main" ]] && FLEET_NAME="linux-cachyos"
+fi
 # Gatus keys are <group>_<name>, so this MUST match the group this host is declared
-# under in apps/gatus-fleet/configmap.yaml (homelab for personal computers,
+# under in apps/gatus-fleet/config.yaml (homelab for personal computers,
 # workplace for the work laptop / VDI). A wrong group is a silent HTTP 404, not an
 # auth error - which is exactly what a hardcoded "fleet_" prefix produced once the
 # fleet grew groups.
@@ -58,7 +68,7 @@ code="$(curl -fsS -m 10 -o /dev/null -w '%{http_code}' \
 if [[ "$code" == "200" ]]; then
     echo "fleet-pulse: pushed ${KEY} success=${SUCCESS} (HTTP 200)"
 elif [[ "$code" == "404" ]]; then
-    echo "fleet-pulse: ${KEY} not declared in gatus (HTTP 404) - check FLEET_GROUP/FLEET_NAME against apps/gatus-fleet/configmap.yaml" >&2
+    echo "fleet-pulse: ${KEY} not declared in gatus (HTTP 404) - check FLEET_GROUP/FLEET_NAME against apps/gatus-fleet/config.yaml (a host gatus polls, like razer-laptop, is expected to 404 and needs no push)" >&2
 else
     echo "fleet-pulse: push failed for ${KEY} (HTTP ${code:-none})" >&2
 fi
