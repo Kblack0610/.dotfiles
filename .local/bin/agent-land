@@ -355,7 +355,7 @@ catch_up() {
   return 1
 }
 
-pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=() ran_checks=''
+stub='' canon='' pr='' repo='' repo_from='' merged='' plan='' phase='' item="${AGENT_QUEUE_ITEM:-}" dry=0 partial=0 method=--squash admin=() ran_checks=''
 implied=${item:+'$AGENT_QUEUE_ITEM'}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -665,6 +665,10 @@ close_plan_rows() {
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
   [ -f "$plan" ] || die "no plan file: $plan"
+  # A pointer stub ("Phase N of <plan>.md") owns no phases: the tick, the last-phase test and the
+  # plan's rows all belong to the canonical plan it names; the stub's own line is ticked beside it.
+  IFS=$'\t' read -r canon _ < <(plan_pointer "$plan") || true
+  [ -z "${canon:-}" ] || { stub="$plan"; plan="$canon"; echo "plan: $stub is a pointer stub; its phases are in $plan"; }
   # Checked before the merge, so a bad phase name cannot leave a merged PR half recorded.
   n=$(P="- [ ] $phase" awk 'index($0, ENVIRON["P"]) == 1 { n++ } END { print n + 0 }' "$plan")
   [ "$n" -eq 1 ] || die "plan: $n unchecked lines start with \"- [ ] $phase\", need exactly 1"
@@ -870,10 +874,15 @@ fi
 
 if [ -n "$plan" ]; then
   tmp=$(mktemp)
-  P="- [ ] $phase" PR="$pr" awk '
-    index($0, ENVIRON["P"]) == 1 { sub(/^- \[ \]/, "- [x]"); $0 = $0 " (#" ENVIRON["PR"] ")" }
-    { print }' "$plan" >"$tmp" || fail plan "awk could not rewrite $plan"
-  cat "$tmp" >"$plan" && rm -f "$tmp"
+  tick() {
+    P="- [ ] $phase" PR="$pr" awk '
+      index($0, ENVIRON["P"]) == 1 { sub(/^- \[ \]/, "- [x]"); $0 = $0 " (#" ENVIRON["PR"] ")" }
+      { print }' "$1" >"$tmp" && cat "$tmp" >"$1"
+  }
+  tick "$plan" || fail plan "awk could not rewrite $plan"
+  # The stub's own line is a courtesy beside the canonical tick: the PR is merged, so it never fails the landing.
+  [ -z "$stub" ] || tick "$stub" || echo "plan: could not tick the stub $stub"
+  rm -f "$tmp"
   echo "plan: ticked \"$phase\""
   close_plan_rows
 fi

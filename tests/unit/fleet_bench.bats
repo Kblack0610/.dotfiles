@@ -6189,3 +6189,13 @@ start_rows() {
   run "$SUBJECT" canary shepherd
   assert_failure 1
 }
+
+@test "forecast reads a pointer stub's session through to the canonical plan's phase N (ar-2513)" {
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/canon.md"
+  printf 'Phase 3 of %s\n' "$SANDBOX/canon.md" > "$SANDBOX/stub.md"
+  { rowp a lab/game-agent-1:1 0 1 "$SANDBOX/stub.md"; } > "$SNAP"; sample_at 0
+  run env BENCH_NOW=$((T0 + 600)) "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '[.schedule[] | [.target, [.phases[].name]]]' <<<"$output"
+  assert_output '[["lab/game-agent-1:1",["three"]]]'
+}
