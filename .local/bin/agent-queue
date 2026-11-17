@@ -2469,6 +2469,9 @@ if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
   . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
   state_forward agent-queue "add retask attribute credit-of" "$@"
 fi
+# A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
+# nothing when they are clean, or when this queue is not the store's).
+[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;

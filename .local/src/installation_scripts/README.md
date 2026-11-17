@@ -35,7 +35,7 @@ gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private   # if not alread
 ~/.dotfiles-private/.local/bin/restore-private-state
 ```
 
-It stows the overlay (`setup_dotfiles_private`), clones `~/.agent` and `~/.notes` (Forgejo first, the GitHub backup if Forgejo has no credential yet), keeps any files a session already wrote there, builds the notes CLI, and starts the notes and agent sync timers. Credentials (rbw, SOPS key, kubeconfig, Forgejo) are separate.
+It stows the overlay (`setup_dotfiles_private`), joins `~/.agent` as a peer clone of the store (`store-sync join`, which needs the store deploy key), clones `~/.notes` (Forgejo first, the GitHub backup if Forgejo has no credential yet, keeping any files a session already wrote there), builds the notes CLI, and starts the notes and store sync timers. Credentials (rbw, SOPS key, kubeconfig, Forgejo, the store deploy key) are separate.
 
 ### From a checked-out repo
 
