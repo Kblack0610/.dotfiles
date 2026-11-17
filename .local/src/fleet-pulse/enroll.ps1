@@ -106,7 +106,7 @@ Write-Host ("  " + $out.Trim())
 if ($out -match 'pushed') {
     OK 'heartbeat accepted'
 } elseif ($out -match '404') {
-    Die "gatus does not know ${Group}_${Name}. Declare it as an external-endpoint in apps/gatus-fleet/configmap.yaml (and check -Name/-Group), then re-run."
+    Die "gatus does not know ${Group}_${Name}. Declare it as an external-endpoint in apps/gatus-fleet/config.yaml (and check -Name/-Group), then re-run."
 } else {
     Die 'no heartbeat. Endpoint unreachable, token rejected, or corporate egress blocked. NOT registering a task that would fail silently.'
 }
