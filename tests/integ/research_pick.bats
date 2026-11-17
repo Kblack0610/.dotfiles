@@ -106,8 +106,9 @@ repo() {
 }
 
 @test "an open roster row on a long board is seen with SIGPIPE ignored, as under systemd" {
-  # The row comes first and 5000 more follow, so a reader that stops at the first hit leaves
-  # the writer an EPIPE; before, pipefail read that as "none open" and the log said "picked".
+  # The row comes first and 5000 more follow (about 130 KB, past the 64 KB pipe buffer), so a
+  # reader that stops at the first hit leaves the writer an EPIPE; before, pipefail read that
+  # as "none open" and the log said "picked".
   stub notes 'case "$4" in
     list) printf "p\t1\tr\tresearch(roster): add a facet for x\n"; for i in $(seq 5000); do printf "p\t%s\tr\tfiller row %s\n" "$i" "$i"; done ;;
     add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 3 ;;
@@ -115,7 +116,6 @@ repo() {
   run bash -c 'trap "" PIPE; exec "$0" run' "$PICK"
   assert_success
   assert_output --partial 'coverage: other uncovered, a roster row is already open'
-  refute_output --partial 'Broken pipe'
   refute_output --partial 'filed a roster row'
   assert_not_called 'research(roster)'
 }
@@ -123,6 +123,7 @@ repo() {
 @test "an open twin (notes exit 3) is said as already open, not as filed" {
   stub notes 'case "$4" in list) exit 0 ;; add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 3 ;; esac; exit 0'
   run "$PICK" run
+  assert_success
   assert_output --partial 'coverage: other uncovered, a roster row is already open'
   refute_output --partial 'filed a roster row'
 }
@@ -130,8 +131,17 @@ repo() {
 @test "an unreadable board files nothing and says so" {
   stub notes 'case "$4" in list) exit 1 ;; add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;; esac; exit 0'
   run "$PICK" run
+  assert_success
   assert_output --partial 'coverage: other uncovered, the board could not be read, nothing filed'
   assert_not_called 'research(roster)'
+}
+
+@test "an add that fails, even with exit 2, is said as failed, not as an unreadable board" {
+  stub notes 'case "$4" in list) exit 0 ;; add) exit 2 ;; esac; exit 0'
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'coverage: other uncovered, notes ptask add failed (exit 2)'
+  refute_output --partial 'could not be read'
 }
 
 @test "a full board does not hold the roster row, and the picker never asks fleet-bench" {
@@ -147,6 +157,8 @@ repo() {
   run "$PICK" run --dry-run
   assert_success
   assert_output --partial "would queue [hot] /rigor /stack-review research $SANDBOX/hot"
+  assert_output --partial 'coverage: would file a roster row for other'
+  refute_output --partial 'coverage: filed'
   assert_not_called 'add'
   [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
 }

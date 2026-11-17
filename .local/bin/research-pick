@@ -178,15 +178,15 @@ cmd_run() {
   [ -n "$gap" ] || return 0
   IFS=$'\t' read -r name path <<<"${gap%%$'\n'*}"
   roster_open; rc=$?
-  if [ "$rc" = 1 ]; then
-    add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"
-    rc=$?
-    [ "$rc" = 0 ] && { say "coverage: filed a roster row for $name"; return 0; }
-    [ "$rc" = 3 ] && rc=0
-  fi
   case $rc in
-    0) say "coverage: $name uncovered, a roster row is already open" ;;
-    2) say "coverage: $name uncovered, the board could not be read, nothing filed" ;;
+    0) say "coverage: $name uncovered, a roster row is already open"; return 0 ;;
+    2) say "coverage: $name uncovered, the board could not be read, nothing filed"; return 0 ;;
+  esac
+  add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"
+  rc=$?
+  case $rc in
+    0) if [ "$DRY" = 1 ]; then say "coverage: would file a roster row for $name"; else say "coverage: filed a roster row for $name"; fi ;;
+    3) say "coverage: $name uncovered, a roster row is already open" ;;
     *) say "coverage: $name uncovered, notes ptask add failed (exit $rc)" ;;
   esac
   return 0
