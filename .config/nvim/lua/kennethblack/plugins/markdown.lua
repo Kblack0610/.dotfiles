@@ -819,15 +819,6 @@ return {
         vim.api.nvim_win_set_cursor(0, { lnum, 0 })
         vim.cmd "startinsert!"
       end
-
-      -- `o` on a task line opens the next task at the same indent, the way a list
-      -- continues; elsewhere plain `o`. Keys, not buffer edits, so a count, `.`, folds
-      -- and macros behave as they do for `o`; noremap keeps autopairs off the `[`.
-      -- An unused `- [ ] ` slot in `## Focus` is dropped by the save sweep.
-      local function open_task_below()
-        local indent = vim.fn.getline("."):match "^(%s*)%- %[.%]"
-        return indent and ("o<C-u>" .. indent .. "- [ ] ") or "o"
-      end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
         pattern = "markdown",
@@ -884,7 +875,7 @@ return {
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
           --   tt  convert line to task, or add an indented subtask if already one;
           --       the cursor lands in insert where the text goes. Visual: convert the lines.
-          --   o   on a task line, open the next task below (plain `o` elsewhere)
+          -- Core vim keys (o, O, Enter) stay stock: nothing here remaps them.
           --   tP  raise priority  low -> high -> urgent, stops at urgent
           --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
@@ -922,12 +913,6 @@ return {
               end
             end
           end, { buffer = buf, desc = "Convert lines to tasks", silent = true })
-          vim.keymap.set(
-            "n",
-            "o",
-            open_task_below,
-            { buffer = buf, expr = true, desc = "Open line (next task on a task line)" }
-          )
 
           -- Task priority: tP raises toward urgent, tp lowers, along low -> high -> urgent,
           -- stopping at either end. Each press re-sweeps and follows the task
