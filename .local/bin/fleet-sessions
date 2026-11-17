@@ -1792,7 +1792,7 @@ checkout_rows() {
 # One SHARED row per test that failed on FLEET_SHARED_RED_BRANCHES branches (a detached checkout
 # counts by its worktree) within the last FLEET_SHARED_RED_MIN minutes of $TEST_FAILURES and
 # $POOL_FAILURES, a branch red on both counted once. No session
-# owns it: fleet-shepherd check files one queue item that does (shared_sample), the pass tells
+# owns it: fleet-shepherd check finds or files the owner, an item or a quarantine row (shared_sample), the pass tells
 # the owners once (nudged), and only a red no item could be filed for escalates (ar-185, ar-623).
 # Its fact is the episode's first failure, an episode ending at a quiet gap longer than the window, so one more branch is not a new page and the
 # same test red again tomorrow is. Owners are the live sessions in the failing worktrees.
