@@ -9,6 +9,7 @@
 #   mkt log --project P --channel C --kind K --title T [--by who] [--reviewed-by who] <url>
 #                                a new item sent outside `mkt draft` (store-console, a store push)
 #   mkt post <id> [--dry-run]    send an item its reviewer answered `post` on, through its adapter
+#                                (bluesky, mastodon, discord; mode "approve" in channels.yaml only)
 #   mkt skip <id> [--by who]     close an item that will not go out (a revise redrafted, a stale draft)
 #   mkt list [--project P] [--state S] [--json]   the items, newest first
 #   mkt show <id>                one item as JSON
@@ -16,13 +17,16 @@
 #   mkt costs <costs.csv> [--max-age-days N]      the rows older than N days (183) or not verified; exit 1 when any
 set -uo pipefail
 
-PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+SELF_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$SELF_DIR/../../.config/shared-hooks/project-name.sh}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$PROJECT_NAME_LIB"
 # shellcheck source=../lib/fmt.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+. "$SELF_DIR/../lib/fmt.sh"
 
 LEDGER="${MKT_LEDGER_DIR:-$HOME/.agent/outbound}"
+# Each product's posting mode per channel; the schema is in docs/operations/mkt.md.
+CHANNELS="${MKT_CHANNELS:-$HOME/.notes/lab/bnb/projects/current/marketing/docs/channels.yaml}"
 # The kinds the plan names; a new one is a new word here and in the Marketing tab's docs.
 KINDS="post listing email pitch press-kit screenshots mockup"
 IMAGE_RE='\.(png|jpe?g|gif|webp)$'
@@ -39,9 +43,38 @@ COSTS_MAX_AGE_DAYS=183
 usage() { sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit "${1:-2}"; }
 die() { echo "mkt: $*" >&2; exit 1; }
 
-# A channel's adapter is a function `post_<channel> <item-json>` that sends the item and prints its
-# public URL. None exists yet, so every channel is posted by hand and logged with `mkt log`.
+# A channel's adapter is a function `post_<channel> <item-json> [--dry-run]` that sends the item
+# through the provider's one client beside this script and prints its public URL, or with
+# --dry-run prints the payload and sends nothing. Every other channel is posted by hand.
 has_adapter() { declare -F "post_${1//-/_}" >/dev/null; }
+
+# The adapters post the draft's text only; an item with an image goes out by hand.
+adapter_text() {
+  local f
+  f="$(jq -r '.draft // ""' <<<"$1")"
+  [ -f "$f" ] || die "$(jq -r .id <<<"$1") has no draft file to post"
+  jq -e --arg re "$IMAGE_RE" '[.attachments[]? | ascii_downcase | select(test($re))] | length == 0' <<<"$1" >/dev/null ||
+    die "$(jq -r .id <<<"$1") has images, and the adapters post text only; post it by hand, then: mkt log $(jq -r .id <<<"$1") <url>"
+  cat "$f"
+}
+post_bluesky() { local t; t="$(adapter_text "$1")" || return 1; shift; printf '%s' "$t" | "$SELF_DIR/bluesky-post" "$@"; }
+# The item id is the idempotency key, so a retried send never posts twice.
+post_mastodon() { local t; t="$(adapter_text "$1")" || return 1; printf '%s' "$t" | "$SELF_DIR/mastodon-post" --key "mkt-$(jq -r .id <<<"$1")" "${@:2}"; }
+# The webhook is the product's game channel, rbw discord/webhook_<project>.
+post_discord() { local t; t="$(adapter_text "$1")" || return 1; printf '%s' "$t" | "$SELF_DIR/discord-post" --channel "$(jq -r .project <<<"$1")" --link "${@:2}"; }
+
+# channel_mode <project> <channel>: the posting mode in channels.yaml, "off" when the file, the
+# product or the channel is missing. Only "approve" lets mkt send.
+channel_mode() {
+  [ -r "$CHANNELS" ] || { echo off; return; }
+  python3 -I -c 'import sys, yaml
+c = yaml.safe_load(open(sys.argv[1])) or {}
+m = ((c.get("products") or {}).get(sys.argv[2]) or {}).get("channels") or {}
+print(m.get(sys.argv[3]) or "off")' "$CHANNELS" "$1" "$2" 2>/dev/null || echo off
+}
+
+# can_post <project> <channel>: mkt may send it, so the review ask offers `post`.
+can_post() { has_adapter "$2" && [ "$(channel_mode "$1" "$2")" = approve ]; }
 
 # append <project> <event-json>: one line on the month file. A line this short is one write(2)
 # under O_APPEND, so two writers never interleave.
@@ -100,7 +133,7 @@ ask_review() {
   local it="$1" id project channel kind title draft opts rec why
   IFS=$'\t' read -r id project channel kind title draft < <(jq -r '[.id, .project, .channel, .kind, .title, .draft] | @tsv' <<<"$it")
   local hand="you post it on $channel yourself, then answer with its public URL so it is logged"
-  if has_adapter "$channel"; then
+  if can_post "$project" "$channel"; then
     opts="post=mkt sends it on $channel now and logs the URL it gets back|hand=$hand|skip=it is not sent"
     rec=post why="the draft is ready, and mkt records where it went"
   else
@@ -247,15 +280,28 @@ cmd_post() {
     case "$1" in --dry-run) dry=1; shift ;; *) id="$1"; shift ;; esac
   done
   [ -n "$id" ] || usage
-  local it state channel verdict
+  local it state channel verdict project mode
   it="$(item "$id")" || exit 1
-  IFS=$'\t' read -r state channel verdict < <(jq -r '[.state, .channel, (.verdict // "")] | @tsv' <<<"$it")
-  # Only the reviewer's `post` sends: a draft, a hand verdict or a skip never goes out from here.
-  [ "$state" = approved ] && [ "$verdict" = post ] ||
-    die "$id is $state${verdict:+ ($verdict)}; only an item its reviewer answered post on is sent"
-  has_adapter "$channel" ||
-    die "no adapter posts to $channel; post it by hand, then: mkt log $id <url>"
-  if [ "$dry" = 1 ]; then jq . <<<"$it"; return 0; fi
+  IFS=$'\t' read -r state channel verdict project < <(jq -r '[.state, .channel, (.verdict // ""), .project] | @tsv' <<<"$it")
+  # Only the reviewer's `post` on a channel with an adapter in mode "approve" sends: a draft, a hand
+  # verdict, a skip or a channel still in "draft" never goes out from here.
+  local block="" noad="no adapter posts to $channel; post it by hand, then: mkt log $id <url>"
+  mode="$(channel_mode "$project" "$channel")"
+  if [ "$state" != approved ] || [ "$verdict" != post ]; then
+    block="$id is $state${verdict:+ ($verdict)}; only an item its reviewer answered post on is sent"
+  elif ! has_adapter "$channel"; then
+    block="$noad"
+  elif [ "$mode" != approve ]; then
+    block="$channel is in mode \"$mode\" for $project in $CHANNELS, so it is posted by hand: mkt log $id <url>"
+  fi
+  # A dry run shows the payload whatever the verdict and mode, and names what would stop a send.
+  if [ "$dry" = 1 ]; then
+    has_adapter "$channel" || die "$noad"
+    "post_${channel//-/_}" "$it" --dry-run || exit 1
+    [ -z "$block" ] || echo "mkt: a real send would refuse: $block" >&2
+    return 0
+  fi
+  [ -z "$block" ] || die "$block"
   local url
   url="$("post_${channel//-/_}" "$it")" && [[ "$url" =~ ^https?:// ]] || die "the $channel adapter did not send $id"
   append "$(jq -r .project <<<"$it")" "$(event sent "$id" '{url: $u, by: "mkt"}' --arg u "$url")"
