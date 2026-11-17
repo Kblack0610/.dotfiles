@@ -6,7 +6,8 @@
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
-//! by their tmux session name, the one name an ask, a queue item and a state row all carry.
+//! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
+//! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
 //! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
@@ -750,11 +751,18 @@ pub fn needs(
     }
 
     for a in state["asks"].as_array().into_iter().flatten() {
-        let session = str_of(a, "session");
+        // Only the asking session owns an ask: its row is the one whose session_id is the ask's
+        // claude_session. The tmux name is no fallback, since a name outlives its session (a
+        // reboot) and a later session reuses it; an ask with no live owner blocks no session.
+        let owner = str_of(a, "claude_session");
+        let row = (!owner.is_empty())
+            .then(|| sessions.iter().find(|s| str_of(s, "session_id") == owner))
+            .flatten();
+        let target = row.map(|s| str_of(s, "target").to_string());
+        let session = target.as_deref().map_or("", tmux_name);
         if !session.is_empty() {
             shown.insert(session.to_string());
         }
-        let target = (!session.is_empty()).then(|| target_of(session)).flatten();
         let since = ts(str_of(a, "created"));
         let recommend = str_of(a, "recommend");
         // An ask's `task` is its queue item's slug, which for an item promoted from the board
@@ -1161,7 +1169,7 @@ mod tests {
             "generated_epoch": NOW,
             "counts": {"WORKING": 2, "NEEDS": 2, "STALLED": 0},
             "sessions": [
-                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
+                {"target": "lab/repo-agent-1:1", "session_id": "sid-1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
                 {"target": "hub/dotfiles:2", "bucket": "NEEDS", "asks": 0, "idle_min": 3,
                  "cwd": "/home/k/.dotfiles", "project": "dotfiles", "reason": "waiting on a prompt or permission"},
                 {"target": "lab/repo-agent-2:1", "bucket": "WORKING", "phases_done": 2,
@@ -1169,7 +1177,7 @@ mod tests {
             ],
             "asks": [
                 {"id": "a1", "project": "repo", "question": "Which one?\nmore", "session": "repo-agent-1",
-                 "created": "2026-11-05T08:00:00-0800"},
+                 "claude_session": "sid-1", "created": "2026-11-05T08:00:00-0800"},
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
@@ -1259,6 +1267,31 @@ mod tests {
             ]
         );
         assert!(!h.errors.iter().any(|e| e.contains("something-else")));
+    }
+
+    #[test]
+    fn an_ask_finds_its_session_by_claude_session_never_by_name() {
+        // Negative control: the same fixture with the ask's owner dead. The name still matches a
+        // live row (a later session reused it), and the ask holds nothing.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-dead");
+        let h = build(Some(&st), None, None, None, NOW);
+        let ask = h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap();
+        assert_eq!(ask.target, None);
+        assert!(!ask.score.as_ref().unwrap().session);
+        // The reused name's own session still needs the human, as its own row.
+        assert!(h.needs.iter().any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+        // An ask with no owner (headless) blocks no session either.
+        st["asks"][0]["claude_session"] = Value::Null;
+        let h = build(Some(&st), None, None, None, NOW);
+        assert_eq!(h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap().target, None);
+        // And the live owner's id finds it whatever name the ask recorded.
+        st["asks"][0]["claude_session"] = json!("sid-1");
+        st["asks"][0]["session"] = json!("alGRvp");
+        let h = build(Some(&st), None, None, None, NOW);
+        let ask = h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap();
+        assert_eq!(ask.target.as_deref(), Some("lab/repo-agent-1:1"));
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
     }
 
     #[test]
