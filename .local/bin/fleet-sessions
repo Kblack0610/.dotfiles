@@ -1287,6 +1287,9 @@ git_facts() {
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch")
   [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d")
   # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
+  # A PR queued for the landing slot (queued_in) waits as a queued gate shell does: a red that is only the gate line is
+  # the slot refusing it, and any other red is the PR's own (ar-1285).
+  [ "${state:-}" = OPEN ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$d" "$pr" && shell=queue
   [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red" "$shell")"
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
@@ -1680,12 +1683,12 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "origin/$branch" != "$(default_base "$cwd")" ]; then act_dir="$cwd"; fi
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$oid" "$now")"
     # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
-    # landing slot waits its turn, not on its own Checks.
-    local train="" tn
+    # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
+    local wait_on="" tn
     if [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ]; then
       tn=""; [ "$oid" = - ] || tn="$(train_of "$cwd" "$pr" "$oid")"
-      if [ -n "$tn" ]; then train="train #$tn"
-      elif [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$cwd" "$pr"; then train="the landing queue"; fi
+      if [ -n "$tn" ]; then wait_on="train #$tn"
+      elif [ "$ci" != FAIL ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$cwd" "$pr"; then wait_on="the landing queue"; fi
     fi
     # An idle session whose plan has a phase no item holds may be running it in place, by a live cron
     # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
@@ -1695,7 +1698,7 @@ collect() {
       cron="$(live_cron "$transcript" "$started" "$now")"; cron="${cron:--}"
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train" "$cron")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
@@ -1708,7 +1711,7 @@ collect() {
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then

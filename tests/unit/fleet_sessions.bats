@@ -3441,11 +3441,19 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   landed_fixture
   local oid
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  # store <ci> <labels> [<other PR's labels>]: the session's PR, and #21490 of another branch and head
+  # store <ci> <labels> [<other PR's labels>] [<red job ids>]: the session's PR, and #21490 of another branch and head.
+  # Its red job 78 failed only in the Merge gate line step (the slot refusing it), job 79 in a build step too.
   store() {
     printf 'feat/y\t21490\tOPEN\tFAIL\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-}" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t2149\tOPEN\t%s\t%s\t-\t\tmine\t%s\n' "$1" "$oid" "$2" >> "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2149\tOPEN\t%s\t%s\t%s\t\tmine\t%s\n' "$1" "$oid" "${4:-78}" "$2" >> "$LEDGER_DIR/prs.tsv"
   }
+  job 78 'Docs within their budgets:success' 'Merge gate line:failure'
+  job 79 'Build:failure' 'Merge gate line:failure'
+  cat > "$SANDBOX/bin/gh" <<GH
+#!/usr/bin/env bash
+case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
+exit 1
+GH
   store FAIL landing-queue
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
@@ -3457,7 +3465,12 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
 
-  # negative controls: no label, another label, only another PR (#21490 is not #2149) queued, or the knob off
+  # negative controls: a red of its own past the refusal, no label, another label, only another PR (#21490 is
+  # not #2149) queued, or the knob off
+  store FAIL landing-queue '' 79
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
   store FAIL ''
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
