@@ -358,7 +358,7 @@ breaking all three at once.
 |---|---|---|---|
 | `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
-| `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, or that tool unlocks it |
+| `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass), or a running, waiting or review agent-queue item names its session (so a crash that kills tmux does not free it before restore); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, that tool unlocks it, or the item closes |
 | `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone 7 days unchanged the `worktree-gc` runner files one queue item, `wt-held-<name>`, and closes it once the tree is gone | the item's session (`ingest-worktree`), or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
