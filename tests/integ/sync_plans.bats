@@ -74,6 +74,16 @@ landed_count() { landed | grep -c . || true; }
   assert_output 'mine.md'
 }
 
+@test "a plan the transcript names as ~/.claude/plans/<name> lands too" {
+  plan tilde >/dev/null
+  plan other >/dev/null
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/tilde.md"}}]}}\n' >> "$TRANSCRIPT"
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'tilde.md'
+}
+
 @test "THE REGRESSION: only the plan named in the transcript is claimed" {
   # Five plans touched today, one of them this session's. The old hook copied all
   # five. This is the exact shape that put one plan in seven project dirs.

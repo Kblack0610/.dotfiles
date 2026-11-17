@@ -77,9 +77,12 @@ DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
 while IFS= read -r f; do
   [ -n "$f" ] && [ -f "$f" ] || continue
 
-  # (2) this session actually touched it. Fixed-string match on the absolute
-  # path, so a $HOME containing regex metacharacters cannot change the meaning.
-  grep -qF -- "$f" "$TRANSCRIPT" 2>/dev/null || continue
+  # (2) this session actually touched it. Fixed-string match, so a $HOME containing regex
+  # metacharacters cannot change the meaning. A transcript names a plan by the absolute path
+  # or as `~/.claude/plans/<name>` (2026-11-16: 74 of 174 open plans had no copy because only
+  # the absolute form matched), so the match is on `/plans/<name>`, which both carry.
+  base=${f##*/}
+  grep -qF -- "/plans/$base" "$TRANSCRIPT" 2>/dev/null || continue
 
   # (3) first writer wins. A basename already held by ANOTHER project stays
   # there; copying it here is exactly the cross-project fan-out being removed.
@@ -88,7 +91,6 @@ while IFS= read -r f; do
   # not the session's: a game's plan written from the playground checkout counts on the game.
   dest=$(plan_epic_dir "$f")
   dest=${dest:-$DEST_DIR}
-  base=${f##*/}
   owned_elsewhere=$(find "$PLANS_ROOT" -mindepth 2 -type f -name "$base" \
     -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue
