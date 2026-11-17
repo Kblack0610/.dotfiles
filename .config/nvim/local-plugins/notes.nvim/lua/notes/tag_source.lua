@@ -1,11 +1,13 @@
 -- notes.tag_source: a blink.cmp source that opens a dropdown of known tags when you type `#` in
 -- a note, fed by `notes tags --kind`. Registered in plugins/blink.lua.
 --
---   a task row      `#` offers task tags, then topics
+--   a task row      `#` offers task tags, then projects as `#p:<name>`, then topics
+--   `#p:`           offers projects only (the word the outbox sweep routes a line on)
 --   anywhere else   `#` offers topics
 --   `tags: [` in frontmatter offers topics, written without the `#`
 --
--- The CLI owns which tags exist and what kind each is; this only decides what the cursor is on.
+-- The CLI owns which tags exist and what kind each is (projects come from `notes projects
+-- --stats`, every profile's); this only decides what the cursor is on.
 -- A hit runs the CLI each time, so there is no cache to go stale; a failed run offers nothing.
 
 local M = {}
@@ -22,7 +24,7 @@ function M.context(before, in_frontmatter)
     local word = before:match("[%w_%-/]*$")
     return { kinds = { "topic" }, start = #before - #word, prefix = word, sigil = "" }
   end
-  local token = before:match("[%w_%-/%.]*$")
+  local token = before:match("[%w_%-/%.:]*$")
   local hash = #before - #token
   if hash == 0 or before:sub(hash, hash) ~= "#" then
     return nil
@@ -34,12 +36,25 @@ function M.context(before, in_frontmatter)
   if token ~= "" and not token:match("^%a") then
     return nil
   end
+  -- `:` belongs to one tag only, `#p:<project>`.
+  local project = token:match("^[pP]:") ~= nil
+  if token:find(":", 1, true) and not (project and not token:find(":", 3, true)) then
+    return nil
+  end
   if select(2, head:gsub("`", "")) % 2 == 1 then
     return nil
   end
   local row = before:match("^%s*%- %[") ~= nil
+  local kinds = { "topic" }
+  if project then
+    kinds = { "project" }
+  elseif row and token:find("[/%.]") then
+    kinds = { "task", "topic" } -- no project name has a `/` or `.`, so skip the stats call
+  elseif row then
+    kinds = { "task", "project", "topic" }
+  end
   return {
-    kinds = row and { "task", "topic" } or { "topic" },
+    kinds = kinds,
     start = hash - 1,
     prefix = token,
     sigil = "#",
@@ -47,17 +62,18 @@ function M.context(before, in_frontmatter)
 end
 
 -- `tags` ({ { tag, count }, ... }, best first) as completion items at `ctx`. blink's keyword stops
--- at `/` and `.`, so past one of those it filters on the part after it and the tag must match
--- what came before, while the edit still replaces the whole `#token`.
+-- at `/`, `.` and `:`, so past one of those it filters on the part after it and the tag must match
+-- what came before, while the edit still replaces the whole `#token`. A `p:<name>` offered at a
+-- bare `#` filters on the name, so `#dod` finds `#p:dodginballs`.
 function M.items(ctx, tags, line, col)
-  local typed = ctx.prefix:match("^.*[/%.]") or ""
+  local typed = ctx.prefix:lower():match("^.*[/%.:]") or ""
   local items = {}
   for _, t in ipairs(tags) do
     if t.tag:sub(1, #typed) == typed then
       local text = ctx.sigil .. t.tag
       items[#items + 1] = {
         label = text,
-        filterText = t.tag:sub(#typed + 1),
+        filterText = typed == "" and t.tag:match("^p:(.+)") or t.tag:sub(#typed + 1),
         sortText = ("%05d"):format(#items),
         kind = KEYWORD_KIND,
         labelDetails = { description = tostring(t.count) },
@@ -88,8 +104,26 @@ local function in_frontmatter(bufnr, row)
   return row > 1
 end
 
--- `notes tags --kind <k>` for all of `kinds` at once, then on_done(tags) in `kinds` order. Async,
--- so the list never blocks typing; a kind that fails adds nothing.
+-- How to list each kind: the argv, and the `{ tag, count }` one stdout line holds or nil.
+local SOURCES = {
+  task = { { "notes", "tags", "--kind", "task" } },
+  topic = { { "notes", "tags", "--kind", "topic" } },
+  -- profile, name, stage, version, open, ...: the project as its `#p:` tag, its open rows.
+  project = {
+    { "notes", "projects", "--stats" },
+    function(l)
+      local name, open = l:match("^[^\t]*\t([^\t]+)\t[^\t]*\t[^\t]*\t(%d+)")
+      return name and ("p:" .. name:lower()), open
+    end,
+  },
+}
+
+local function tag_count(l)
+  return l:match("^(.-)\t(%d+)$")
+end
+
+-- Every kind in `kinds` listed at once, then on_done(tags) in `kinds` order. Async, so the list
+-- never blocks typing; a kind that fails adds nothing.
 local function fetch(kinds, on_done)
   local lists, left = {}, #kinds
   local function finish(i, list)
@@ -103,13 +137,19 @@ local function fetch(kinds, on_done)
     end
   end
   for i, kind in ipairs(kinds) do
-    local ok = pcall(vim.system, { "notes", "tags", "--kind", kind }, { text = true }, function(res)
+    local argv, parse = SOURCES[kind][1], SOURCES[kind][2] or tag_count
+    local ok = pcall(vim.system, argv, { text = true }, function(res)
       local list = {}
       for l in (res.code == 0 and res.stdout or ""):gmatch("[^\n]+") do
-        local tag, count = l:match("^(.-)\t(%d+)$")
+        local tag, count = parse(l)
         if tag then
           list[#list + 1] = { tag = tag, count = tonumber(count) }
         end
+      end
+      if kind == "project" then -- stats come in index order; best first like the tag kinds
+        table.sort(list, function(a, b)
+          return a.count > b.count
+        end)
       end
       finish(i, list)
     end)
@@ -130,7 +170,7 @@ function M:enabled()
 end
 
 function M:get_trigger_characters()
-  return { "#", "/", ".", "[" }
+  return { "#", "/", ".", ":", "[" }
 end
 
 function M:get_completions(context, callback)
