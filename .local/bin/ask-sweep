@@ -92,7 +92,7 @@ sweep_plans() {
     # An open plan with no cache copy has no project to file under: counted, never dropped unseen.
     [ -n "$project" ] || { PLANS_NO_COPY=$((PLANS_NO_COPY + 1)); continue; }
     board="$(board_of "$(basename "$project")")"
-    [ -n "$board" ] || continue
+    [ -n "$board" ] || { NO_BOARD["$(basename "$project")"]=1; continue; }
     # A variable, not a pipe: under pipefail `grep -q` quits at its match, `notes` dies of SIGPIPE on a
     # long list and the 141 reads as "no row" (2026-11-10..14: one plan filed seven times).
     rows="$(notes ptask "$board" --agent list 2>/dev/null)" || continue   # unreadable is not "no row"
