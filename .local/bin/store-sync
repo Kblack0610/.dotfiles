@@ -15,16 +15,16 @@
 set -uo pipefail
 
 STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
-CONF="${STORE_SYNC_CONF:-$HOME/.config/agentctl/store.env}"
+# CONF, SSH_KEY, ssh_cmd, net, load_conf: the remotes, shared with fleet-lease.
+# shellcheck source=../lib/store-remote.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-remote.sh"
 BRANCH=master
 # What a write hook (--now) commits: the coordination state, never the bulk logs.
-NOW_PATHS=(queue asks)
-SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}"
+NOW_PATHS=(queue asks presence)
 TRIES=3
 # A sync waits this long for another one on this machine to finish; past it the write stays
 # committed or on disk, and the next sync pushes it.
 LOCK_WAIT_S=300
-CONNECT_TIMEOUT_S=10
 HOST_TAG="$(hostname -s 2>/dev/null || hostname)"
 SYNC_DIR="$STORE/.sync"
 LOG="$SYNC_DIR/sync.log"
@@ -50,29 +50,6 @@ rotate_log() {
 usage() { awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"; }
 
 g() { git -C "$STORE" "$@"; }
-
-# ssh for one remote: the store's deploy key, when this machine has one, only for origin; backup
-# (GitHub) authenticates with this machine's own identities. -T: a `RequestTTY yes` in ssh_config
-# would otherwise print a pseudo-terminal warning on every call.
-ssh_cmd() {
-  local c="ssh -T -o BatchMode=yes -o ConnectTimeout=$CONNECT_TIMEOUT_S -o StrictHostKeyChecking=accept-new"
-  [ "$1" != origin ] || [ ! -f "$SSH_KEY" ] || c="$c -i $(printf %q "$SSH_KEY") -o IdentitiesOnly=yes"
-  printf '%s' "$c"
-}
-
-# net <remote> <git args...>: a git call that reaches that remote, bounded: ssh has its connect
-# timeout, and an https remote gives up after 15 s below 1 byte/s.
-net() {
-  local r="$1"; shift
-  GIT_TERMINAL_PROMPT=0 git -c core.sshCommand="$(ssh_cmd "$r")" \
-    -c http.lowSpeedLimit=1 -c http.lowSpeedTime=15 "$@"
-}
-
-load_conf() {
-  STORE_PRIMARY_URL="" STORE_BACKUP_URL=""
-  # shellcheck disable=SC1090
-  [ ! -r "$CONF" ] || . "$CONF"
-}
 
 # Point origin and backup at the conf's URLs; a URL the conf leaves empty keeps the clone's own.
 apply_remotes() {
@@ -109,7 +86,8 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # failed (rejected because another machine pushed first, or a transient error).
 sync_one() {
   local r="$1" ref files=()
-  if ! FETCH_ERR=$(net "$r" -C "$STORE" fetch -q "$r" 2>&1); then
+  # master alone: the lease branch (fleet-lease) is not the store, and its history stays off clones.
+  if ! FETCH_ERR=$(net "$r" -C "$STORE" fetch -q "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" 2>&1); then
     FETCH_ERR=$(printf '%s' "$FETCH_ERR" | tail -n 1 | cut -c1-200)
     return 1
   fi
@@ -239,7 +217,7 @@ cmd_join() {
   stamp=$(date +%Y%m%d%H%M%S)
   if [ -d "$STORE/.git" ]; then
     apply_remotes
-    net origin -C "$STORE" fetch -q origin 2>/dev/null || die "origin ($url) is unreachable; join needs it"
+    net origin -C "$STORE" fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || die "origin ($url) is unreachable; join needs it"
     g merge-base --is-ancestor HEAD "refs/remotes/origin/$BRANCH" 2>/dev/null && ahead=0
     if [ "$ahead" = 0 ] && { [ "$keep" = 1 ] || [ -z "$(g status --porcelain)" ]; }; then
       g merge -q --ff-only "refs/remotes/origin/$BRANCH" >/dev/null 2>&1 \
@@ -251,11 +229,11 @@ cmd_join() {
   fi
   # Not a clone, ahead of origin, or dirty: the remote's copy replaces it, and the old one is kept.
   local new="$STORE.peer-new-$stamp"
-  net origin clone -q "$url" "$new" 2>&1 | tail -n 1 >&2
+  net origin clone -q --single-branch -b "$BRANCH" "$url" "$new" 2>&1 | tail -n 1 >&2
   # A fresh clone has no commits of its own, so backup's copy is as safe a start as origin's.
   if [ ! -d "$new/.git" ] && [ -n "$STORE_BACKUP_URL" ]; then
     rm -rf "$new"
-    net backup clone -q "$STORE_BACKUP_URL" "$new" 2>&1 | tail -n 1 >&2
+    net backup clone -q --single-branch -b "$BRANCH" "$STORE_BACKUP_URL" "$new" 2>&1 | tail -n 1 >&2
     [ ! -d "$new/.git" ] || echo "store-sync: origin unreachable; cloned backup, and writes go there until origin answers" >&2
   fi
   [ -d "$new/.git" ] || die "clone of $url failed"

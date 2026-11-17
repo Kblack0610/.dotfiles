@@ -2054,12 +2054,6 @@ usage() {
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
-# The asks live on the fleet home; anywhere else this runs there (state_forward, fleet-hosts.sh).
-if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  state_forward agent-ask "" "$@"
-fi
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
 # nothing when they are clean, or when these asks are not the store's).
 [[ "$ASKS_ROOT/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT

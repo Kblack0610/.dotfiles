@@ -968,76 +968,65 @@ trainee_ready() {
   assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
 }
 
-@test "run: only the inventory's fleet_state_host runs a pass; the old workstation stands down and writes nothing" {
+# The lease guard: fleet-lease is the sandbox stub, which holds the lease unless FLEET_LEASE_STUB_RC
+# says otherwise; tests/unit/fleet_lease.bats proves the lease itself.
+OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the fleet lease until 12:00, so state skips it'
+
+@test "run: a machine that does not hold the fleet lease stands down and writes nothing" {
   game_ready
   worker '2.0 16 1'
-  FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT=$OTHER_HOLDS run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial "run: the fleet home is state.lan, not this machine (old-main), which stands down"
+  assert_output "fleet-dispatch: run: ${OTHER_HOLDS#fleet-lease: }"
   assert_not_called 'wt new'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "a stood-down pass queued an item"
   [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a stood-down pass wrote the headroom"
   [ ! -e "$HOME/.local/state/agentctl/dispatch/candidates.jsonl" ] || fail "a stood-down pass wrote the candidates"
   [ -z "$(outcome)" ] || fail "a stood-down pass published an outcome: $(outcome)"
-  FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
-  assert_output --partial 'which stands down'
   refute_output --partial 'would queue: game'
-  # The negative control: on the home the same pass runs and writes its headroom and outcome.
+  # The negative control: on the holder the same pass runs and writes its headroom and outcome.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
-  refute_output --partial 'stands down'
   assert_output --partial 'would queue: game'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  refute_output --partial 'stands down'
-  [ -s "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "the home's pass wrote no headroom"
-  [ -n "$(outcome)" ] || fail "the home's pass published no outcome"
+  [ -s "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "the holder's pass wrote no headroom"
+  [ -n "$(outcome)" ] || fail "the holder's pass published no outcome"
 }
 
-@test "reap, start, fill and promote do nothing off the fleet home" {
+@test "reap, start, fill and promote do nothing on a machine that does not hold the fleet lease" {
   game_ready
   worker '2.0 16 1'
   agent-queue add --project game --slug x "x" >/dev/null
   local verb
   for verb in reap start fill promote; do
-    FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" "$verb" --item x
+    FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT=$OTHER_HOLDS run "$REPO_ROOT/.local/bin/fleet-dispatch" "$verb" --item x
     assert_failure 1
-    assert_output "fleet-dispatch: $verb: the fleet home is state.lan, not this machine (old-main), which stands down"
+    assert_output "fleet-dispatch: $verb: ${OTHER_HOLDS#fleet-lease: }"
   done
   assert_not_called 'wt new'
   [ -n "$(qitem queued x)" ] || fail "a stood-down verb moved the item"
-  # The negative control: on the home the guard lets the verb through.
+  # The negative control: on the holder the guard lets the verb through.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
-  refute_output --partial 'stands down'
+  refute_output --partial 'holds the fleet lease'
 }
 
-@test "an unreadable roster, or a home that names no machine, stands every machine down loudly; hosts says so" {
+@test "a lease no remote can say is a fault: run exits 1 and writes nothing; hosts prints the lease status" {
   game_ready
   worker '2.0 16 1'
-  # An unreadable roster: a run is a fault, so agentctl sees it, and nothing is written.
-  FLEET_INVENTORY=/nonexistent run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  FLEET_LEASE_STUB_RC=2 FLEET_LEASE_STUB_OUT='fleet-lease: no remote of the store answered, so state cannot tell who holds the fleet lease and skips fleet-dispatch' \
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure 1
-  assert_output --partial 'run: the fleet roster cannot be read (/nonexistent could not be read), so this machine (state) stands down'
+  assert_output --partial 'run: no remote of the store answered'
   [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a stood-down pass wrote the headroom"
   assert_not_called 'wt new'
-  # A home that names no machine in the inventory: no machine is the home.
-  sed -i 's/fleet_state_host: state.lan/fleet_state_host: typo.lan/' "$FLEET_INVENTORY"
-  FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_failure 1
-  assert_equal "$stderr" "fleet-dispatch: hosts: the inventory's fleet_state_host typo.lan names no machine in the inventory, so no machine is the fleet home and every one stands down"
+  FLEET_LEASE_STUB_OUT='this machine (state) holds the fleet lease' run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  assert_line --index 0 'this machine (state) holds the fleet lease'
   assert_output --partial 'razer-laptop'
-  FLEET_HOST=old-main run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_failure 1
-  assert_output --partial 'run: the inventory'"'"'s fleet_state_host typo.lan names no machine in the inventory'
-  # The negative controls: the home is an inventory machine, so hosts names it and passes; on the home it names this machine.
-  sed -i 's/fleet_state_host: typo.lan/fleet_state_host: state.lan/' "$FLEET_INVENTORY"
-  FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_success
-  assert_equal "$stderr" ''
-  assert_line --index 0 'the fleet home is state.lan, not this machine (old-main), which stands down'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_success
-  assert_line --index 0 'the fleet home is state.lan: this machine (state)'
+  FLEET_LEASE_STUB_OUT='this machine (state) holds the fleet lease' run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  refute_output --partial 'fleet lease'
 }
 
 @test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
@@ -1050,7 +1039,7 @@ trainee_ready() {
   assert_not_called 'ssh'
   worker '2.0 16 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, or an agent-queue that does not forward'
+  assert_output --partial 'razer-laptop has no wt, no claude, or a store that is not a peer clone (store-sync join)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1'

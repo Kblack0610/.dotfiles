@@ -234,7 +234,7 @@ show() { git -C "$1" show "master:$2"; }
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\necho "$0 $*" >> "%s"\n' "$SANDBOX/hook.log" > "$SANDBOX/bin/store-sync"
   chmod +x "$SANDBOX/bin/store-sync"
-  export AGENT_STATE_LOCAL=1 AGENT_STORE_DIR="$HOME/.agent"
+  export AGENT_STORE_DIR="$HOME/.agent"
   mkdir -p "$HOME/.agent/queue"
   PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
   PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
