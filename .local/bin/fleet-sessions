@@ -148,7 +148,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <open job: gate|queue|test|build|agent|human|jobs|none|hung|wait|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
-#                 none open and every state known (a closed one was replaced or dropped), or -;
+#                 none open and every state known (a closed one was replaced or dropped), else
+#                 the merged PR its done queue item recorded (a landing train's), or -;
 #                 a session in the main checkout lands from worktrees, so its branch never has
 #                 a PR of its own>
 #                <item: the queue item this session worked, by its sessions: or session:, as
@@ -1578,6 +1579,23 @@ collect() {
               | if . == "" then "-" else . end), (.origin // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
         irow="${irow:--}"; iorigin="${iorigin:--}" ;;
     esac
+    # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
+    # open and every state known. A landing train merges a member's commits through its own train/* PR and
+    # closes the member, so the transcript names only the closed member while agent-land records the train
+    # PR on the item (ar-1324: ucp-342 #2166 closed, train #2178 merged, 2026-11-10, read STALLED). The item
+    # is this session's by item_of's join. pr: and merged: are lists in step; a merged: shorter than pr:
+    # cannot say which PR lacks its merge (agent-land settle_prior), so it names none.
+    if [ "$landed" = - ] && [ "$irel" = moved ] \
+       && jq -e 'all(.state != null and .state != "OPEN")' <<<"$prs" >/dev/null 2>&1; then
+      landed="$(jq -rn --arg s "$islug" --arg sid "$sid" --arg me "${target%%/*}:$tsess" '
+        [inputs | select(.slug == $s and .state == "done" and (.status // "") == "ok")
+          | (.sessions // "" | split(" ") | map(select(. != ""))) as $ss
+          | select(($ss | any(. == $sid)) or ($ss == [] and (.session // "") == $me))
+          | (.pr // "" | split(" ") | map(select(. != ""))) as $p | (.merged // "" | split(" ") | map(select(. != ""))) as $m
+          | select(($m | length) >= ($p | length)) | $p[] | "#" + sub(".*#"; "")]
+        | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
+      landed="${landed:--}"
+    fi
     local sjob=-; [ "$status" = shell ] && sjob="$ojob"
     if [ "$host" = - ]; then read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$cwd" "$edited" "$sjob")
     else read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names <<<"0 0 0 - - - 1 - - - - - -"; fi
