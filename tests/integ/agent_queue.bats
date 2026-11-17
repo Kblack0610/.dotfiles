@@ -2490,13 +2490,20 @@ teardown() {
   run "$AQ" move base done --status ok
   assert_success
   refute_output --partial "my-plan-p6: its plan phases are already ticked"
-  # An open 1b is its own item, named by its label.
+  # An open 1b is no queue item (no integer for `phases:`): it is named on stderr and skipped, and
+  # phase 2 keeps its number and its place in the chain.
   printf '## Phases\n\n- [x] 1. One (#1)\n- [ ] 1b. Follow-up\n- [ ] 2. Two\n' > "$SANDBOX/sub.md"
   run "$AQ" add --plan "$SANDBOX/sub.md" --project game --slug sub --dry-run
   assert_success
-  assert_line --index 0 --regexp '^would queue sub-p1b	phases 1b	after -$'
-  assert_line --index 2 --regexp '^would queue sub-p2	phases 2	after sub-p1b$'
-  assert_line --index 1 --partial ': Follow-up. Read the plan whole'
+  assert_output --partial "skipped open sub-phase(s) 1b"
+  assert_line --regexp '^would queue sub-p2	phases 2	after -$'
+  refute_output --partial "sub-p1b"
+  # A stub's phase N is the line numbered N, not the Nth line.
+  printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
+  [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
+  # Names that only look like a label are phases with a place: `P2P sync`, `3D models`, `2D. Layout`.
+  printf '## Phases\n\n- [ ] P2P sync\n- [ ] 3D models\n- [ ] 2D. Layout\n' > "$SANDBOX/look.md"
+  [ "$(plan_phase_list "$SANDBOX/look.md" | jq -c 'map(.n)')" = '[1,2,3]' ]
 }
 
 # story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
