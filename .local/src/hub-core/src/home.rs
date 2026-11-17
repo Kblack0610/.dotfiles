@@ -36,8 +36,9 @@ pub const DOMAINS: [&str; 12] = [
 pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
 /// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
 pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
-/// The domains shown even when Prometheus has no status for them, so a missing one reads as no data.
-pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
+/// The domains shown even when Prometheus has no status for them, so a missing one reads as no data:
+/// k3s and ci are the platform, and projects holds the playground and dotfiles CI watches that left ci.
+pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
 /// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
@@ -1667,10 +1668,11 @@ mod tests {
             [
                 ("k3s", Level::Nodata),
                 ("ci", Level::Warn),
+                ("projects", Level::Nodata),
                 ("prod", Level::Ok)
             ]
         );
-        assert_eq!(h.exceptions().count(), 2);
+        assert_eq!(h.exceptions().count(), 3);
         let red: Vec<&str> = h.needs.iter().map(|n| n.text.as_str()).collect();
         assert_eq!(red, ["watch:a", "watch:b"]);
         assert!(h.errors[0].starts_with("no fleet state"));

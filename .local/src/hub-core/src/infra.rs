@@ -343,7 +343,7 @@ impl Infra {
     }
 
     /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line and
-    /// Infra's health section; k3s and ci show even with no status, as no data.
+    /// Infra's health section; the ALWAYS domains show even with no status, as no data.
     pub fn health(&self) -> Vec<Chip> {
         let v = self.cc_values();
         DOMAINS
@@ -375,20 +375,23 @@ mod tests {
     }
 
     #[test]
-    fn health_keeps_strip_order_and_always_shows_k3s_and_ci() {
+    fn health_keeps_strip_order_and_always_shows_k3s_ci_and_projects() {
         let mut i = Infra::default();
         i.instant.insert(
             "cc",
             vec![
+                cc("cc:domain_status", ("domain", "prod"), 1.0),
                 cc("cc:domain_status", ("domain", "ci"), 2.0),
                 cc("cc:pool_status", ("pool", "unity"), 1.0),
             ],
         );
         let h = i.health();
         let names: Vec<_> = h.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["k3s", "ci"]);
+        assert_eq!(names, ["k3s", "ci", "projects", "prod"]);
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
+        assert_eq!(h[2].level, Level::Nodata);
+        assert_eq!(h[3].level, Level::Warn);
         assert_eq!(i.cc_values().get("cc:pool_status/unity"), Some(&1.0));
     }
 
