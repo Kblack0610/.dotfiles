@@ -196,19 +196,28 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, Str
     .collect()
 }
 
-/// The paths under `dir` (with its trailing slash) in the checkout's `origin/main` tree;
-/// empty when git fails or the ref is missing, so no link is written for a file not seen.
+/// The repo-root paths under `dir` (with its trailing slash) in the checkout's `origin/main`
+/// tree, as fresh as its last fetch (a sheet render never touches the network); empty when
+/// git fails or the ref is missing, so no link is written for a file not seen.
 fn main_files(checkout: &Path, dir: &str) -> Vec<String> {
     std::process::Command::new("git")
         .arg("-C")
         .arg(checkout)
-        .args(["ls-tree", "--name-only", "origin/main", dir])
+        .args([
+            "ls-tree",
+            "-z",
+            "--full-tree",
+            "--name-only",
+            "origin/main",
+            dir,
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
-                .lines()
+                .split('\0')
+                .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect()
         })
@@ -565,7 +574,11 @@ mod tests {
         // Those two files are on origin/main. The working tree then disagrees both ways, as
         // a clone behind main does: look is gone locally, and a story exists only locally.
         let git = |args: &[&str]| {
+            // A pre-commit hook exports these; left set, they aim git at the real repo.
             let ok = std::process::Command::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
                 .arg("-C")
                 .arg(&checkout)
                 .args([
