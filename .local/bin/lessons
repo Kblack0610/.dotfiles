@@ -58,7 +58,8 @@ function open_lesson(t,   k) {
 # A day group: a `## ` heading that is only a date (optional bold and parenthetical, "## 2026-04-21
 # (dream sweep)") over a `- ` bullet as its first text. The heading is no lesson (head[] marks
 # its line); each top-level bullet under it is one, dated by the heading when it has none.
-# Under any other heading a bullet is body unless it starts with a date.
+# Under any other heading a bullet is body unless it starts with a date, bare, bold or bracketed
+# ("- **[2026-09-18 dream] ..."), or its bold title ends in a dated parenthetical ("- **Title (2026-09-27, dream sweep).** ...").
 /^# / { cur = 0; insec = 0; grp = ""; day = 0 }
 /^## / {
   grp = ""; open_lesson(substr($0, 4)); insec = 1
@@ -70,7 +71,7 @@ function open_lesson(t,   k) {
   for (l = start[n]; l < NR; l++) own[l] = 0
   n--; cur = 0; insec = 0; day = 0
 }
-/^- / && (!insec || /^- (\*\*)?20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) { open_lesson(substr($0, 3)) }
+/^- / && (!insec || /^- (\*\*)?\[?20[0-9][0-9]-[01][0-9]-[0-3][0-9]/ || /^- \*\*[^*]*\(20[0-9][0-9]-[01][0-9]-[0-3][0-9][^)]*\)\.?\*\*/) { open_lesson(substr($0, 3)) }
 {
   if (day && NR > start[n] && /[^[:space:]]/) day = 0
   own[NR] = cur; raw[NR] = $0
