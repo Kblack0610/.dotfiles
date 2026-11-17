@@ -99,11 +99,12 @@ Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview
 
 ```
 current/<name>/
-  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, then `## Inbox` and `## Tasks`
+  README.md                the working sheet: `Version: vX.Y.Z #<stage>`, the generated `Agents:` and `Docs:` lines, then `## Inbox` and `## Tasks`
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text
   agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
+  docs/idea.md             type game only: the pitch, what it is and who it is for
   agent/versions/vX.Y.Z.md notes for a version, and the closed rows that rolled off either sheet's Done (`## Done rows` for the board, `## Sheet done rows` for the sheet) until the release freezes them
   versions/vX.Y.Z.md       frozen sheet of a closed version
   docs/                    every other note: the pitch, briefs, research, design docs, reviews, screenshots
@@ -111,9 +112,11 @@ current/<name>/
 
 Every project carries the same core: `README.md`, `summary.md`, `agent/README.md` and `ideas.md`, plus `versions/` and `docs/`. Anything else, including briefs and research, goes under `docs/`, and binaries (screenshots, renders) under `docs/assets/`; `notes doctor --projects` reports any other root entry. Version notes belong in `versions/` and nowhere else.
 
-A project's `type` in `project-map.json` can add to the core through its `[project_type.<type>]` table, shipped in `notes-cli/templates/project_types.toml` (a table of the same type in `config.toml` replaces it on one machine): `files` lists extra root files the type carries (game carries `playtest.md`), and `requires` lists registry facts it needs (only `repo` is checked: `trackers.<name>.repo`, or the name registered in `paths`). A type with no table adds nothing. The root notes a project may hold are the core ones plus its type's `files`; a project with no type, or a machine with no registry, may hold any type's.
+A project's `type` in `project-map.json` can add to the core through its `[project_type.<type>]` table, shipped in `notes-cli/templates/project_types.toml` (a table of the same type in `config.toml` replaces it on one machine): `files` lists extra files the type carries (game carries `playtest.md` and `docs/idea.md`), and `requires` lists registry facts it needs (only `repo` is checked: `trackers.<name>.repo`, or the name registered in `paths`). A type with no table adds nothing. The root notes a project may hold are the core ones plus its type's `files`; a project with no type, or a machine with no registry, may hold any type's.
 
 `projects --new <name>` writes the core and its type's files and never overwrites one, so on an existing project it fills the gaps. The name must already be registered in `project-map.json`, or it refuses and writes nothing (with no registry on the machine it does not check). `notes doctor` flags loose version notes and `projects --migrate` folds them in. `notes doctor --projects` checks the whole shape in every profile, one line per finding: missing files (core or type), a registry fact the type requires, loose root notes, an agent board over 32 KiB, and a row open twice. With no registry it prints one SKIP line, because type overlays cannot be checked.
+
+The `Docs:` line under `Agents:` is written by `notes board` (so by every `notes today`), never by hand. It links each doc that exists, in this order: `docs/idea.md`; a game's repo docs, `docs/games/<id>.md` as design plus `<id>-story.md` and `<id>-look.md` when present (`<id>` is the lowercased basename of the tracker's `path`); `playtest.md`; `ideas.md`; `summary.md` as status; then any other `docs/*.md` and `docs/<dir>/README.md`. A doc named for a date or a pass (`-2026-11-05`, `-p3`) is a report and stays off the line. A game needs its pitch and its design doc; story and look are optional.
 
 ### One home per fact
 
