@@ -28,6 +28,7 @@ setup() {
 
   export WT_ROOT="$SANDBOX/worktrees"
   export WT_PROJECT_MAP="$SANDBOX/no-such-map.json" # discovery off unless a test wants it
+  export AGENT_QUEUE_DIR="$HOME/.agent/queue" # never the queue of the session running the suite
   mkdir -p "$WT_ROOT"
 
   # The stub's has-session reports EXISTS by default (wind-down needs that); for a freshly
@@ -1317,12 +1318,12 @@ queue_item() {
   assert_success
 }
 
-@test "a waiting or review item claims its tree, a bare session name included" {
+@test "a waiting or review item claims its tree, a bare or padded session name included" {
   make_repo
   git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
   git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-2" origin/main
   queue_item waiting parked repo-agent-1
-  queue_item review in-review hub:repo-agent-2
+  queue_item review in-review $'hub:repo-agent-2 \r'
   run wt_occupied_reason "$WT_ROOT/repo-agent-1"
   assert_failure
   assert_output 'queue item parked (waiting) names its session'
