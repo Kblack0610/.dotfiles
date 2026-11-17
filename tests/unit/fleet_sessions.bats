@@ -3445,25 +3445,40 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   local oid d="$HOME/.agent/queue/done/$(date +%F)"
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf 'feat/x\t2166\tCLOSED\tFAIL\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
-  # done_item <status> <merged>: the item this session (sid-9) worked, done with the train PR recorded
+  # done_item <status> <merged> [<pr>] [<sessions>]: the item this session (sid-9) worked, done with the train PR recorded
   done_item() {
     mkdir -p "$d"
-    printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\nmerged: %s\nstatus: %s\nfinished: %s\n---\nskater\n' \
-      "$2" "$1" "$(date -u +%FT%TZ)" > "$d/20261108-025157-ucp-342.md"
+    printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: %s\npr: %s\nmerged: %s\nstatus: %s\nfinished: %s\n---\nskater\n' \
+      "${4:-sid-9}" "${3:-o/r#2178}" "$2" "$1" "$(date -u +%FT%TZ)" > "$d/20261108-025157-ucp-342.md"
   }
-  done_item ok 4594309f2ba9124d2548aa0dd142217711275404
+  local sha=4594309f2ba9124d2548aa0dd142217711275404
+  done_item ok "$sha"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [[ "$(jq -r .reason <<<"$output")" == 'PR #2166 closed, its PRs #2178 merged'* ]]
   [ "$(jq -r .finished <<<"$output")" = true ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
-
-  # negative controls: an item that did not land (cancelled, nothing merged), or one still running here
-  done_item cancelled ''
+  # an item that landed two PRs (pr: and merged: in step) names both
+  done_item ok "$sha $sha" 'o/r#2178 o/p#759'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
-  [ "$(jq -r .finished <<<"$output")" = false ]
+  [[ "$(jq -r .reason <<<"$output")" == 'PR #2166 closed, its PRs #2178,#759 merged'* ]]
+
+  # negative controls: an item that did not land (cancelled, nothing merged), a merged: shorter than
+  # pr: (which PR lacks its merge is unknown), a transcript that names an open PR, or one still running here
+  for args in "cancelled|" "ok|$sha|o/r#2178 o/p#759"; do
+    IFS='|' read -r st m p <<<"$args"; done_item "$st" "$m" "$p"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
+    [ "$(jq -r .finished <<<"$output")" = false ]
+  done
+  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; pr_store
+  printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
+  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out)
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, no plan file, its item ucp-342 moved on (done)' ]
+  panel "$SANDBOX/wt"
   rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
     > "$HOME/.agent/queue/running/20261108-025157-ucp-342.md"
