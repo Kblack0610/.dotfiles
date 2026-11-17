@@ -1388,8 +1388,10 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   phase s1 shell 40 81 1/4 WORKING shell t-s2   # plan owner: P2 is an item running in s2
   phase s3 shell 40 81 1/4 WORKING shell t-s2   # a second session on the same plan file
   phase s2 shell 40 10 1/1                      # the runner: its own phase is young
-  phase s4 shell 40 81 1/4 WORKING shell t-gone # the runner is no WORKING row here: nobody to name
+  phase s4 shell 40 81 1/4 WORKING shell t-gone # a stale session: on the item, no row at all: the plan row keeps its line
   phase s5 shell 40 81 1/4 WORKING shell t-s5   # it runs its own phase: unchanged
+  phase s6 shell 40 81 1/4 WORKING shell t-s7   # the runner is mid-turn: left to finish, nobody named
+  phase s7 busy 40 10 1/1
   phases_doc
   run "$SH" due
   assert_success
@@ -1397,8 +1399,10 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   assert_line "overdue: t-s5 phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-sessions mark s5 \"overdue phase 2/4\""
   refute_output --partial t-s1
   refute_output --partial t-s3
-  refute_output --partial t-s4
-  [ "$(grep -c '^overdue: ' <<<"$output")" = 2 ]
+  assert_line "overdue: t-s4 phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-sessions mark s4 \"overdue phase 2/4\""
+  refute_output --partial t-s6
+  refute_output --partial t-s7
+  [ "$(grep -c '^overdue: ' <<<"$output")" = 3 ]
 }
 
 @test "a NEEDS session carrying on past its ask keeps the overdue check; a plain or busy one does not" {
