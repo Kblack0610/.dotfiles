@@ -37,6 +37,7 @@ typical, ≤5 min worst case.
         notes-sync                      notes-sync (Termux)
 
    Every device also runs a 5-min fallback timer for resilience.
+   Every notes-sync is store-sync --store notes (see "The sync engine").
 ```
 
 ## Required inputs
@@ -188,19 +189,34 @@ curl -u "kblack0610:$TOKEN" -X PATCH \
   https://git.example.internal/api/v1/repos/kblack0610/.notes/hooks/<id>
 ```
 
+## The sync engine
+
+Every trigger above (notes-watch, notes-mqtt, notes-ntfy, the fallback timer, the Termux cron and boot hook) runs `notes-sync`, which is `store-sync --store notes`: the same engine that syncs `~/.agent` (`~/.local/bin/store-sync`). One run commits every change in `~/.notes`, fetches origin and merges it (merge, never rebase, so the note open in the editor is not rewritten), pushes origin, then pushes backup when the clone has one. Windows is the exception: `notes-sync.ps1` is its own port.
+
+- Log, lock and state: `~/.local/state/notes-sync/` (`sync.log`, which `notes doctor` reads; `conflict`; `backup-failures`).
+- `COMPLETE: origin at <sha>, backup at <sha>` means origin holds HEAD. `BACKUP:` means origin was unreachable and the commit went to backup. `SKIP:` means no remote answered and the commits wait for the next sync.
+- A merge conflict aborts the merge, keeps every local commit, logs `ERROR: merging origin conflicts in <files>`, and pages once. The same pair is not retried until one side moves.
+- A backup that fails 12 syncs in a row while origin answers pages once, and pages again when it recovers.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ERROR: merging origin conflicts in <file>` and a page | Two devices changed the same lines before either synced | In `~/.notes`: `git merge origin/master`, resolve, commit; the next sync pushes it |
+| Page: the notes store's backup has failed 12 syncs in a row | GitHub refuses the push (auth or a non-fast-forward) | `tail ~/.local/state/notes-sync/sync.log`; `backup failed: <why>` names it |
+| A phone stops syncing after its dotfiles clone was updated | Its `notes-sync` wrapper still names the deleted `git-sync-notes.sh` | Re-run `notes-phone-setup` |
+
 ## Runtime overrides
 
-Override at `~/.config/notes-sync.env`:
+`~/.config/notes-sync.env` is read by the units, not by the engine:
 
 ```text
-NOTES_SYNC_PRIMARY_REMOTE=origin
-NOTES_SYNC_BACKUP_REMOTE=backup           # only on the master device
-NOTES_SYNC_MIRROR_REMOTE=nas              # only during the NAS deprecation window
-NOTES_SYNC_BRANCH=master
+NOTES_DIR=$HOME/.notes                    # the vault, read by store-sync and notes-watch
 NOTES_MQTT_HOST=mosquitto.example.internal
 NOTES_MQTT_PORT=31883
 NOTES_MQTT_TOPIC=notes/sync/needed
+NOTES_NTFY_URL=https://ntfy.example.internal/notes-sync/raw
 ```
+
+The remotes are the clone's own (`notes-sync-bootstrap.sh` sets them), and the branch is `master`.
 
 ## Validation
 
@@ -211,30 +227,15 @@ git -C ~/.notes remote -v
 # Master device:
 #   origin  https://git.example.internal/kblack0610/.notes.git
 #   backup  git@github.com:Kblack0610/.notes.git
-#   nas     ssh://...nas.lan:2222/...    (only during deprecation window)
 #
 # Other devices:
 #   origin  https://git.example.internal/kblack0610/.notes.git
 
 # Push side: edit a file, watch the sync log
 date >> ~/.notes/inbox/_test.md
-journalctl --user -u notes-watch -f         # Linux
-log stream --predicate 'subsystem == "com.kblack.notes-watch"'   # macOS
+tail -f ~/.local/state/notes-sync/sync.log  # Linux, macOS, Termux
 Get-Content $env:LOCALAPPDATA\notes-sync\watch.log -Wait         # Windows
 
 # Pull side: push from another device, watch this device fire
 journalctl --user -u notes-mqtt -f          # Linux
 ```
-
-## Migrating an existing device off the legacy NAS bare repo
-
-```bash
-cd ~/.notes
-git remote rename origin nas                                       # legacy NAS becomes mirror
-git remote add origin https://git.example.internal/kblack0610/.notes.git   # Forgejo is primary now
-git fetch origin
-git push -u origin master
-echo "NOTES_SYNC_MIRROR_REMOTE=nas" >> ~/.config/notes-sync.env    # keep mirror push for 2 weeks
-```
-
-After ~2 weeks of clean operation the `nas` remote can be dropped and the bare repo on `asus-laptop:/home/kblack0610/git/.notes.git` archived.
