@@ -1610,6 +1610,10 @@ collect() {
     # ("Phase 2 of", "Phase Tailnet of": a number or the phase name's first word) holds that one,
     # and one that names none holds all (ar-2368: forgejo-hetzner-tailnet's "Phase Tailnet of"
     # held all six open phases, and two shepherds told its plan's session to close).
+    # An item whose task names this session (its id's first 8 characters or its target, as a whole
+    # token) is a report about it, not a holder of its phases (ar-2452: the bug-report item ar-2449
+    # quoted the plan's path, held P3, and close --self read "plan finished"). A misfire fails safe:
+    # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
     local dsp=- n=0 e=0
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
@@ -1624,9 +1628,12 @@ collect() {
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
       [ -z "${ptgt:-}" ] || { canon="$ptgt"; pbase="$pn"; }
-      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" \
+      qd="$(jq -rs --arg p "$planf" --arg q "${canon:-$plist}" --arg own "${dsp#*: }" --arg sid "${sid:0:8}" --arg tgt "$target" \
               --argjson open "$(jq -c --argjson b "$pbase" '[.[] | select(.state == "open") | {n: (.n + $b - 1 | tostring), name: .name}]' <<<"$plj")" \
-              "$PLAN_ITEMS_JQ"' [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)))
+              "$PLAN_ITEMS_JQ"' def names_me: (.task // "") as $t
+                | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
+                    | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
+              [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
               | def holds($o): .tp as $t
@@ -2054,7 +2061,8 @@ CLOSE_JQ='
       elif .manual_mode then {verdict: "keep", why: "manual permission mode: the human keeps it"}
       elif .finished and ($ask | not) then {verdict: "now", why: "plan finished, nothing open"}
       elif $started and $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer carries on without this window"}
-      elif $started and (.item.is // "") == "moved" then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
+      elif $started and (.item.is // "") == "moved" and (.dispatch != null or all($other[]; startswith("next phase:") | not))
+        then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
       elif .bucket == "LANDED" and .next_phase != null then {verdict: "after", why: "queue the next phases (agent-queue add --plan), then close"}
       elif .bucket == "CHAT" and $quiet >= $chat then {verdict: "now", why: "quiet \($quiet / 60 | floor)h with no plan, PR or item"}

@@ -72,8 +72,8 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 | 6 | in plan mode (`in_plan_mode`), its approval dialog open or not; or in Claude's manual permission mode (`manual_mode`, from `agent-panel`: investigate-only, so it does no work on its own) | keep: the human approves or ends it, or keeps it |
 | 7 | `finished` and no ask of its own | now |
 | 8 | dispatched, and its own asks are its only blockers | now: the answer carries on without the window (`/wind-down auto` sets each ask to reopen it, `agent-ask reopen-on-answer`) |
-| 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere) | now: the queue holds the rest |
-| 10 | STALLED, and its only blockers are its own queue items still open with every plan phase ticked or held by another item (a `--partial` landing never finalized; an item holds the phases its `phases:` names, else the one its task names (`Phase <N> of` or `Phase <name> of`), else all of them) | after: close its item (`agent-land` its last PR without `--partial`, or `agent-queue move <slug> done`); never now, since the reap would requeue a partial item |
+| 9 | dispatched, and its queue item moved on (done, requeued, or running elsewhere), and the window is dispatched (`dispatch`) or no plan phase is its next one (ar-2452) | now: the queue holds the rest |
+| 10 | STALLED, and its only blockers are its own queue items still open with every plan phase ticked or held by another item (a `--partial` landing never finalized; an item holds the phases its `phases:` names, else the one its task names (`Phase <N> of` or `Phase <name> of`), else all of them; one whose task names the session, by its id's first 8 characters or its target, is a report about it and holds none, ar-2452) | after: close its item (`agent-land` its last PR without `--partial`, or `agent-queue move <slug> done`); never now, since the reap would requeue a partial item |
 | 11 | LANDED with a next phase | after: queue the next phases, then close |
 | 12 | CHAT quiet `FLEET_CHAT_CLOSE_H` (24h) | now; under it, after |
 | 13 | an ask of its own is open | after: the human answers it |
