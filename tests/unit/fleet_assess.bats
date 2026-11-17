@@ -752,3 +752,17 @@ gate_ledger() {
   run main --gate
   assert_output ""
 }
+
+@test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
+  local ws="$BATS_TEST_TMPDIR/node_exporter/textfile" k3s="$BATS_TEST_TMPDIR/node-exporter-textfile"
+  unset PROM_TEXTFILE_DIR
+  export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  run "$REPO_ROOT/.local/bin/fleet-assess" --textfile
+  assert_success
+  [ ! -e "$ws" ] && [ ! -e "$k3s" ]
+  mkdir -p "$k3s"
+  run "$REPO_ROOT/.local/bin/fleet-assess" --textfile
+  assert_success
+  run grep -c '^fleet_agent_sessions ' "$k3s/fleet_local.prom"
+  assert_output 1
+}
