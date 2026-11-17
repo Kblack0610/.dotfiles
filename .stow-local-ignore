@@ -5,6 +5,7 @@
 ^/AGENTS\.md$
 ^/CLAUDE\.md$
 ^/README\.md$
+^/CHANGELOG\.md$
 ^/\.local/src/installation_scripts$
 
 # Nothing untracked belongs in $HOME. stow cannot read .gitignore, so every ignored
