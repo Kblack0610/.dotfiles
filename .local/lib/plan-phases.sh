@@ -30,6 +30,16 @@ plan_phases() {
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
+# plan_phase_key <plan file> -> its checklist's phase names, one line each, without the PR numbers a
+# landed tick appends (` (#2651)`, ` (o/r#5, #6)`), so a copy and the plan it was copied from have one
+# key however far each is ticked; nothing for a plan with fewer than two phases, too little to tell
+# two plans apart.
+plan_phase_key() {
+  [ -f "$1" ] || return 0
+  awk -v mode=list "$_PLAN_PHASES_AWK" "$1" | cut -f2- \
+    | sed -E 's/([[:space:]]*\([^()]*#[0-9]+[^()]*\))+[[:space:]]*$//' | awk '{ k[NR] = $0 } END { if (NR >= 2) for (i = 1; i <= NR; i++) print k[i] }'
+}
+
 # A jq def: does this queue item (agent-queue list --json) carry phases of plan $p? By file name,
 # since a plan is read from ~/.claude*/plans/ and its cache in ~/.agent/plans/<project>/: its
 # `plan:` field (agent-queue add --plan), or a task that names the plan's file (queued by hand).
