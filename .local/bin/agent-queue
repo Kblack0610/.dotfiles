@@ -15,7 +15,7 @@
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item
-#   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD]
+#   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
 #       only with --points, which adds `points` and the row's current `size`, so a caller that reads neither pays no board read
@@ -48,7 +48,7 @@
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
-#   stats [--json] [--flow] [--since YYYY-MM-DD]
+#   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
 # An urgent or high plan item starts its session at once (fleet-dispatch start --item), and so does an
 # urgent or high item `after:` one that closes ok; a low one waits for a dispatch pass, which starts the
@@ -868,6 +868,19 @@ order_filter() {
   printf '%s as $rank | %s' "$rank" "$ORDER"
 }
 
+# since_day <value> -> the local day a --since names: YYYY-MM-DD as given, Nd or N that many days
+# ago; anything else dies. list_files compares days as strings, so an unparsed `7d` sorted after
+# every day and read no done item: stats said done_24h 0 against 274 (ar-2430).
+since_day() {
+  if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -d "$1" +%F >/dev/null 2>&1; then
+    printf '%s\n' "$1"
+  elif [[ "$1" =~ ^([0-9]+)d?$ ]]; then
+    date -d "$((10#${BASH_REMATCH[1]})) days ago" +%F
+  else
+    die "--since is a day (YYYY-MM-DD) or days back (7d or 7), not '$1'"
+  fi
+}
+
 # list_files <states...> [--date D] [--since D] -> appends the caller's FILES with the item files in
 # those states, each state oldest first; done is one day (--date, today by default) or every day
 # from --since on, which wins.
@@ -1396,7 +1409,7 @@ cmd_list() {
       --points) points=1; shift ;;
       --state) state="${2:?}"; shift 2 ;;
       --date) date="${2:?}"; shift 2 ;;
-      --since) since="${2:?}"; shift 2 ;;
+      --since) since="$(since_day "${2:?}")" || exit 1; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
@@ -2337,7 +2350,7 @@ cmd_stats() {
     case "$1" in
       --json) json=1; shift ;;
       --flow) flow=true; shift ;;  # only day-log reads it, and the hub polls stats
-      --since) since="${2:?}"; shift 2 ;;
+      --since) since="$(since_day "${2:?}")" || exit 1; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
