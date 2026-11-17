@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# notes-mobile — one-tap entry into today's daily note.
+# notes-mobile: one-tap entry into today's daily note.
 #
 # Pull latest, open today's `~/.notes` daily note in neovim inside a persistent
 # tmux session, then push on exit. Designed for the Termux:Widget home-screen
@@ -9,7 +9,7 @@
 # the phone reattaches to the same nvim with the cursor where you left it. It is
 # also the seam the future mobile roadmap (swipeable panels/views) hangs off.
 #
-# No new sync logic — reuses notes-sync + the `notes` CLI + the notes.nvim plugin
+# No new sync logic: reuses notes-sync + the `notes` CLI + the notes.nvim plugin
 # (loads automatically when nvim opens a file under ~/.notes).
 #
 # Env overrides:

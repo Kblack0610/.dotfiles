@@ -70,7 +70,7 @@ fi
 # 2c. Termux needs "Display over other apps" to open a terminal from the home-screen
 #     shortcut; without it a tap only flashes a toast and nothing opens.
 if command -v am >/dev/null 2>&1; then
-    say "Shortcut permission: Android opens 'Display over other apps'. Turn on Termux."
+    say "Shortcut permission: Android opens 'Display over other apps' (Samsung: 'Appear on top'). Turn on Termux."
     am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION -d package:com.termux >/dev/null 2>&1 \
         && wait_enter "Turn it on"
 fi
@@ -112,7 +112,7 @@ esac
 # 5. Clone ~/.notes (idempotent).
 if [ -d "$NOTES_DIR/.git" ]; then
     say "~/.notes already present, pulling latest..."
-    git -C "$NOTES_DIR" pull --rebase --autostash -q 2>/dev/null || warn "pull failed (offline / not on Tailscale?)"
+    git -C "$NOTES_DIR" pull --rebase --autostash -q 2>/dev/null || warn "pull failed (offline, or a LAN-only host away from home?)"
 else
     say "Cloning ~/.notes..."
     if ! git clone -q "$NOTES_REMOTE" "$NOTES_DIR"; then

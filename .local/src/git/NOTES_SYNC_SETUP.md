@@ -93,20 +93,39 @@ Run a task manually: `Start-ScheduledTask -TaskName notes-sync-fallback`.
 
 ## Termux (Android) bootstrap
 
-**Fast path (one command, no private repo, no Rust build).** Connect Tailscale first, then in Termux:
+**Fast path (one command, no private repo, no Rust build).** Proved end to end on a Galaxy S21 (Android 15, Termux 0.119.0-beta.3, 2026-11-17). Steps, in order:
 
-```bash
-pkg install -y git \
-  && git clone --depth 1 https://github.com/Kblack0610/.dotfiles ~/.dotfiles \
-  && ~/.dotfiles/.local/bin/notes-phone-setup
-```
+1. Install three apps from F-Droid: **Termux**, **Termux:Widget** (the home-screen icon) and **Termux:Boot** (sync after a reboot). Termux:Widget is its own add-on app. All three must come from F-Droid: Android only lets add-ons signed with the same key as Termux talk to it, so a Play Store or GitHub Termux will not work with F-Droid add-ons.
+2. Open **Termux:Boot** once, so Android lets it run at boot.
+3. Make a Forgejo access token with the `write:repository` scope (Settings -> Applications -> Generate new token).
+4. In Termux, run:
 
-`notes-phone-setup` installs the runtime (git/nvim/tmux/cron), wires the real sync engine
-(`git-sync-notes.sh`), clones `~/.notes`, drops the `~/.shortcuts/notes` home-screen shortcut
-(Termux:Widget is built into Termux), and sets up boot + hourly sync. It prompts once for the notes
-URL + an access token (or pass `NOTES_REMOTE=` / `NOTES_TOKEN=` to skip prompts). The launcher works
-without the Rust `notes` CLI — it falls back to today's dated daily note. Last step: long-press the
-home screen -> Widgets -> Termux:Widget -> tap `notes`.
+   ```bash
+   pkg install -y git \
+     && git clone --depth 1 https://github.com/Kblack0610/.dotfiles ~/.dotfiles \
+     && ~/.dotfiles/.local/bin/notes-phone-setup
+   ```
+
+5. When Android opens **All files access**, turn on "Allow permission", go back to Termux and press Enter.
+6. When Android opens **Display over other apps** (Samsung calls it **Appear on top** and shows the app list), turn on Termux, go back and press Enter.
+7. Paste the notes URL (`https://git.example.internal/kblack0610/.notes.git`) and the token. The URL must be reachable from the phone: a LAN-only host works on the home Wi-Fi only, so use the public hostname if the phone should sync away from home.
+8. Add the icon: long-press the home screen -> Widgets -> Termux:Widget -> "Termux shortcut" (1x1) -> Add -> pick `notes` -> Add.
+
+Tap `notes`: it pulls, opens today's daily note in neovim inside the persistent `notes` tmux session, and on `:wq` commits, pushes and refreshes the `/sdcard/notes` mirror. Reopening reattaches where you left off. Without the Rust `notes` CLI the launcher falls back to `~/.notes/journal/daily/<date>.md`. Set `NOTES_REMOTE=` and `NOTES_TOKEN=` to skip the prompts.
+
+What the setup installs: `git openssh neovim tmux cronie termux-services`; wrappers in `~/.local/bin` (`notes-mobile`, `notes-sync`, `notes-mirror-shared`) that run the dotfiles scripts with Termux's bash; `~/.shortcuts/notes`; an hourly crontab line (`0 * * * *` sync plus mirror) run by the `crond` termux-service; and `~/.termux/boot/notes-sync.sh`, which starts termux-services and syncs once, retrying while the network comes up. The hourly sync only runs while Termux is alive: opening the Termux app (or a reboot, through Termux:Boot) starts `crond` again after Android kills it.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No Termux:Widget in the widget list | It is its own F-Droid app; Termux does not include it | Install Termux:Widget from F-Droid |
+| "Unsafe app blocked" by Play Protect, with only "Got it" | Play Protect flags F-Droid's Termux:Boot build (old target SDK) | Install it from the F-Droid app, or turn off Play Protect's app scan for that one install, then back on |
+| Tapping the `notes` icon flashes a toast and nothing opens | Termux lacks "Display over other apps" | Settings -> Apps -> Termux -> Display over other apps (Samsung: Appear on top) -> on |
+| Widget tap shows `notes-mobile: cannot execute: required file not found` | Shortcut pointed at a `#!/usr/bin/env bash` script, which only works where termux-exec is preloaded, and widget launches have none | Re-run `notes-phone-setup`; it now installs wrappers that call Termux's bash |
+| Storage step finishes but `/sdcard/notes` never appears | "All files access" was not turned on in time | Turn it on (Settings -> Apps -> Termux -> Files and media / All files access), then re-run the setup |
+| No hourly sync; `sv status crond` says down | `sv-enable crond` failed because termux-services was not running in the setup shell | Re-run the setup; it removes `$PREFIX/var/service/crond/down` and starts runsvdir |
+| Commits from the phone show `notes@` as the author email | The email fallback used a hostname Android does not set | Fixed: it falls back to `notes@phone`; set `NOTES_GIT_EMAIL` to choose |
+| Clone fails away from home | The URL is a LAN-only hostname; Tailscale does not route it | Use the public hostname for the notes remote |
+| `pkg install failed` | No working Termux mirror | Run `termux-change-repo`, pick a mirror, re-run |
 
 **Full path (builds the Rust CLI + all services).** Uses the private-overlay `notes-bootstrap`:
 
@@ -121,27 +140,27 @@ Plus install the official **ntfy Android app** and subscribe to:
 https://ntfy.example.internal/notes-sync
 ```
 
-(Tailscale always-on lets the phone reach `ntfy.example.internal` even on cellular.)
+(A LAN-only `ntfy` host is reachable on the home Wi-Fi only; Tailscale does not route it, so away from home subscribe through a public hostname.)
 
-The ntfy notifications use the OS push channel — near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
+The ntfy notifications use the OS push channel: near-zero battery cost. The Termux side keeps a 5-min cron + a `~/.termux/boot/notes-sync.sh` hook as fallback.
 
 ### One-tap into today's note
 
 `notes-termux-bootstrap` also installs `neovim`, `tmux`, and `rust` (to build the `notes` CLI) and writes a Termux:Widget shortcut at `~/.shortcuts/notes` that runs `notes-mobile`: pull, open today's daily note in neovim inside a persistent `notes` tmux session, push on exit. The tmux session means reopening the phone reattaches where you left off.
 
-To get the home-screen icon: long-press the launcher home screen -> Widgets -> **Termux:Widget** (built into Termux, no add-on) -> pick `notes`. Tapping it lands you straight in today's daily note. `notes-mobile` also runs on desktop/macOS for testing.
+To get the home-screen icon: install **Termux:Widget** from F-Droid, then long-press the home screen -> Widgets -> Termux:Widget -> "Termux shortcut" -> pick `notes`. Tapping it lands you straight in today's daily note. `notes-mobile` also runs on desktop/macOS for testing.
 
 ### Glance widget: today's note on the home screen
 
 Other apps cannot read `~/.notes` (Termux private storage), so `notes-mobile` and the phone's sync cron mirror today's note into shared storage via `notes-mirror-shared`:
 
-- `/sdcard/notes/today.md` — the full note (for a content widget)
-- `/sdcard/notes/tasks.txt` — checkbox lines as todo.txt (for a read-only task widget)
+- `/sdcard/notes/today.md`: the full note (for a content widget)
+- `/sdcard/notes/tasks.txt`: checkbox lines as todo.txt (for a read-only task widget)
 
-`notes-phone-setup` runs `termux-setup-storage` (one Android permission tap) and wires the mirror into boot + hourly sync. Then:
+`notes-phone-setup` runs `termux-setup-storage` (Android's "All files access" page) and wires the mirror into boot + hourly sync. Then:
 
 - **Task list (recommended, least fuss):** install **Simpletask** (FOSS) pointed at `/sdcard/notes/tasks.txt`. Renders a clean checklist widget, no formulas. Read-only for now (checking off does not sync back yet).
-- **Full note text:** install **KWGT**, add its widget, add one Text layer, and in the text field enter (wrapped in `$...$` so Kustom evaluates it rather than showing it literally): `$wg("/sdcard/notes/today.md", raw)$`. Grant KWGT storage access; if it comes up blank try `$wg("file:///sdcard/notes/today.md", raw)$`. KWGT shows plain text — markdown is not rendered. (`wg(path, raw)` reads a local file; `fl()` is for evaluating formulas, not file reads.)
+- **Full note text:** install **KWGT**, add its widget, add one Text layer, and in the text field enter (wrapped in `$...$` so Kustom evaluates it rather than showing it literally): `$wg("/sdcard/notes/today.md", raw)$`. Grant KWGT storage access; if it comes up blank try `$wg("file:///sdcard/notes/today.md", raw)$`. KWGT shows plain text: markdown is not rendered. (`wg(path, raw)` reads a local file; `fl()` is for evaluating formulas, not file reads.)
 
 The mirror is one-way; nothing writes back into the vault. A checkable widget that folds check-offs back into the note is a separate, deliberately-scoped feature.
 
