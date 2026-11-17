@@ -530,8 +530,11 @@ cmd_land() {
   # nothing to attach to. Say so, rather than falling through to `exec tmux attach`
   # and dying on tmux's "no sessions" — a client world reached from a machine that
   # does not hold any of that client's repos is the case that gets here.
+  # tmux must open on any machine with this config: when none of the world's repos are
+  # cloned here, land on one shell in ~, as an ad-hoc world with no manifest does.
   if [ "$(session_count "$target")" -eq 0 ]; then
-    die "$target has no sessions running (nothing it boots exists on this machine, and nothing else is open there)"
+    tmux -L "$target" new-session -A -d -s "$target" -c "$HOME" 2>/dev/null
+    printf 'tmx: nothing %s boots exists on this machine; opened a shell in ~\n' "$target" >&2
   fi
 
   # An explicit target from pick. Anything that is not one of the two keywords
