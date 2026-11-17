@@ -238,6 +238,38 @@ esac'
   assert_output 1
 }
 
+@test "a nightly-fix item naming the method alone, or a quarantine on main, owns a shared red, so check files nothing new (ar-2523)" {
+  # 2026-11-15: nightly-fix-skylinemoves-ucp-1467 named the class and method apart under a quarantine, and a duplicate was filed
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  export FLEET_SHEPHERD_QUARANTINE="$HOME/quarantine.json"
+  quarantine() { jq -n --arg e "$1" '{repos: [{report: {tests: [{test: "P.Tests.FooTests.Bar(\"y\")", ends: $e, row: "ucp-9"}]}}]}' > "$FLEET_SHEPHERD_QUARANTINE"; }
+  shared_doc '["sid-1"]'
+  STUB_ACTIVE='{"slug":"nightly-fix-foo-ucp-8","priority":"urgent","task":"fix(test): FooTests, 3 cases red; Bar red solo too"}' run checked
+  assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-8; tell sid-1'
+  # an item the quarantine row was filed for owns it, though it never names the test
+  : > "$FLEET_SHEPHERD_DIR/.shared"; quarantine 2999-01-01
+  STUB_ACTIVE='{"slug":"fix-foo","priority":"high","task":"fix the foo yard","row":"unity-core-playground:ucp-9"}' run checked
+  assert_line --partial 'is owned by queue item fix-foo; tell sid-1'
+  # with no live item for it, the quarantine row is the owner, and sessions merge main at once
+  : > "$FLEET_SHEPHERD_DIR/.shared"
+  STUB_ACTIVE='{"slug":"other","task":"x"}' run checked
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is quarantined on main under board row ucp-9; tell sid-1: do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  grep -q 'owned by board row ucp-9 (quarantined on main)' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative controls: an item not nightly-fix naming the method alone, and a quarantine that ended, own nothing
+  quarantine 2000-01-01
+  STUB_ACTIVE='{"slug":"other","task":"Bar red solo"}' run checked
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  grep -q 'no longer owned by board row ucp-9' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
