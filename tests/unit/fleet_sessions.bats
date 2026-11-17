@@ -1045,7 +1045,7 @@ MD
 - [ ] not a phase
 MD
   run plan_phase_list "$SANDBOX/plan.md"
-  assert_output '[{"state":"done","name":"Phase 1: sessions (#519)"},{"state":"deferred","name":"Phase 2: dashboard: deferred"},{"state":"open","name":"Phase 3: rollout"},{"state":"open","name":"Phase 4: cleanup"}]'
+  assert_output '[{"state":"done","name":"Phase 1: sessions (#519)","n":1},{"state":"deferred","name":"Phase 2: dashboard: deferred","n":2},{"state":"open","name":"Phase 3: rollout","n":3},{"state":"open","name":"Phase 4: cleanup","n":4}]'
   run plan_phase_list "$SANDBOX/missing.md"
   assert_output '[]'
 }

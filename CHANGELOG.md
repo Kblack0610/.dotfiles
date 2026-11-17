@@ -16,6 +16,7 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Fixed
 
+- `agent-queue`: `add --plan` reads `(independent; note)` markers and numbers phases by their `P<N>` label, not their place in the list (ar-1850).
 - `agent-queue`: `--since` takes `7d` and `7` as days back, never a silent zero (ar-2430, #2258).
 - `agent-queue`: `agent-land`'s item step retries a lock timeout (ar-2422, #2257).
 - `fleet-sessions`: three false reads from the 2026-11-14 fleet pass (ar-2426, #2259).

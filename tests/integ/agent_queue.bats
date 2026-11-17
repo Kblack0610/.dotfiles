@@ -1660,6 +1660,45 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 7 ]
 }
 
+@test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
+  cat > "$SANDBOX/labelled.md" <<'EOF2'
+## Phases
+
+- [x] P1 Landed thing (#9)
+- [ ] P7 Check a thing first (independent; queued elsewhere, ar-1)
+- [x] P9 Landed out of order (independent) (a note)
+- [ ] P8 Later thing (after 7; waits on the check)
+- [ ] P10 Last thing
+EOF2
+  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/labelled.md" --project game --after base --dry-run
+  assert_success
+  # NEGATIVE CONTROL: by position these would be p2, p4 and p5; by label they are p7, p8 and p10.
+  assert_line --index 0 --regexp '^would queue labelled-p7	phases 7	after base$'
+  assert_line --index 2 --regexp '^would queue labelled-p8	phases 8	after labelled-p7$'
+  assert_line --index 4 --regexp '^would queue labelled-p10	phases 10	after labelled-p8$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/labelled.md" --project game
+  assert_success
+  [ "$(field "$(item queued labelled-p7)" phases)" = 7 ]
+  [ "$(field "$(item queued labelled-p7)" title)" = "labelled P7: Check a thing first" ]
+  [ "$(field "$(item queued labelled-p8)" title)" = "labelled P8: Later thing" ]
+  # The ticked box and the open phase are read by the same number: p9 landed, p8 did not.
+  source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
+  [ "$(plan_phase_list "$SANDBOX/labelled.md" | jq -c 'map(.n)')" = "[1,7,9,8,10]" ]
+  printf '## Phases\n\n- [ ] P2 Two\n- [ ] P2 Again\n' > "$SANDBOX/dup.md"
+  run "$AQ" add --plan "$SANDBOX/dup.md" --project game --slug dup --dry-run
+  assert_failure
+  assert_output --partial "two phases carry the same number"
+  # A P0 phase is a phase like any other (it once read as an `(with 0)` on every later line), a
+  # label's punctuation leaves the title, and a repeated number among landed phases is harmless.
+  printf '## Phases\n\n- [x] P2 Done once (#1)\n- [x] P2 Done twice (#2)\n- [ ] P0. Preflight\n- [ ] P3 Three\n' > "$SANDBOX/zero.md"
+  run "$AQ" add --plan "$SANDBOX/zero.md" --project game --slug zero --dry-run
+  assert_success
+  assert_line --index 0 --regexp '^would queue zero-p0	phases 0	after -$'
+  assert_line --index 1 --partial ': Preflight. Read the plan whole'
+  assert_line --index 2 --regexp '^would queue zero-p3	phases 3	after zero-p0$'
+}
+
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
   "$AQ" add --project game --slug first "first"
   "$AQ" add --project game --slug second --after first "second"
@@ -2715,7 +2754,7 @@ notes --profile work ptask level run lv-8'
   echo 'feat(level): lv P1: one' > "$NOTES_FIXTURE/propose.out"
   run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
   assert_success
-  run grep -c -- '--agent propose -- lv P1: P1 one$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   run grep -c -- '--agent add -- feat(level): lv P1: one #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
   assert_output 1

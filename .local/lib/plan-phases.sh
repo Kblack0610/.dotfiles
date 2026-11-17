@@ -92,11 +92,15 @@ _epic_line() {
   [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
 }
 
-# plan_phase_list <plan file> -> one compact JSON array [{name, state}] in file order, [] when
-# the file or its checklist is missing.
+# plan_phase_list <plan file> -> one compact JSON array [{state, name, n}] in file order, [] when
+# the file or its checklist is missing. `n` is the phase's number, the one numbering every reader
+# of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
+# `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
+# checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list "$_PLAN_PHASES_AWK" "$1"; } \
-    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]'
+    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
+      | to_entries | map(.value + {n: ((.value.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // (.key + 1))})'
 }
 
 # The approved-plan ledger: one JSON line per approval, written only by the ExitPlanMode hook
