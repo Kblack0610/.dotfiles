@@ -770,6 +770,24 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = shots ]
 }
 
+@test "within one desk class the head is the urgent item, and one held by its after: is passed over (ar-2359)" {
+  # desk_head reads slug, after, tags and priority by column from header_rows: this pins each.
+  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_QUEUE_NOW=12:00
+  printf '#!/usr/bin/env bash\necho "here 5 tmux"\n' > "$SANDBOX/bin/fleet-presence"; chmod +x "$SANDBOX/bin/fleet-presence"
+  "$AQ" add --project game --slug blocker "still live" >/dev/null
+  "$AQ" add --project game --slug old --tags "hold:mac-desktop desk:listing" "oldest" >/dev/null
+  "$AQ" add --project game --slug waits --priority urgent --after blocker --tags "hold:mac-desktop desk:listing" "held by after" >/dev/null
+  "$AQ" add --project game --slug hot --priority urgent --tags "hold:mac-desktop desk:listing" "urgent" >/dev/null
+  "$AQ" add --project game --slug late --priority low --tags "hold:mac-desktop desk:listing" "low" >/dev/null
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind hot, listing)"
+  # Control: with hot gone, the oldest heads (late waits behind it), not waits, which its after: holds.
+  "$AQ" cancel hot --why "test" >/dev/null
+  run "$AQ" list --state queued
+  assert_output --partial "hold:mac-desktop (behind old, listing)"
+  refute_output --partial "behind waits"
+}
+
 @test "requeue --class tags the item's desk class once, and a later --class replaces it" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   "$AQ" add --project game --running --slug forms "fill the store forms" >/dev/null

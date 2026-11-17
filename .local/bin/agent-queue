@@ -559,7 +559,7 @@ desk_head() {
     rank="$(awk -F'\t' -v c="$cls" '$1 == c { print $2 }' <<<"$ranks")"
     case "$pri" in urgent) p=0 ;; low) p=2 ;; *) p=1 ;; esac
     printf '%s\t%s\t%s\t%s\t%s\n' "${rank:-9}" "$p" "$f" "$slug" "$cls"
-  done < <(items_in "$AQ_DIR/queued" | awk '{ print "0\t" $0 }' | header_rows) |
+  done < <([ ! -d "$AQ_DIR/queued" ] || find "$AQ_DIR/queued" -maxdepth 1 -name '*.md' ! -name '.*' -printf '%T@\t%p\n' | header_rows) |
     sort -t$'\t' -k1,1n -k2,2n -k3,3 | awk -F'\t' -v OFS='\t' 'NR == 1 { print $3, $4, $5 }'
 }
 
