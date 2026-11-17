@@ -1293,8 +1293,6 @@ live_row() {
   command -v agent-panel >/dev/null 2>&1 &&
     row="$(agent-panel list --json 2>/dev/null | jq -cn --arg s "$1" '[inputs | select(.session_id == $s)] | .[:1][]')"
   [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
-  declare -F fleet_panel_row >/dev/null ||
-    . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
   fleet_panel_row "$1"
 }
 
@@ -2071,13 +2069,16 @@ usage() {
   awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"
 }
 
+# The roster and the one ssh path to a worker (fleet_host_run, fleet_panel_row): loaded for every
+# run, the home's own included, since deliver_to_session types into a worker's session from there.
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+
 # Sourced (by the test suite) rather than run: every function is defined, no subcommand runs.
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # The asks live on the fleet home; anywhere else this runs there (state_forward, fleet-hosts.sh).
 if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
   state_forward agent-ask "" "$@"
 fi
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
