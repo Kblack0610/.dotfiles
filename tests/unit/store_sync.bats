@@ -303,3 +303,105 @@ show() { git -C "$1" show "master:$2"; }
   assert_success
   assert_output --partial "COMPLETE"
 }
+
+# notes_clone <name>: a ~/.notes clone with both remotes, as notes-sync-bootstrap.sh leaves it.
+notes_clone() {
+  git clone -q "$ORIGIN" "$SANDBOX/$1"
+  git -C "$SANDBOX/$1" remote add backup "$BACKUP"
+}
+
+# notes_on <name> <args...>: run the notes store's sync as that machine, with its own state dir.
+notes_on() { local m="$1"; shift; HOME="$SANDBOX/home-$m" NOTES_DIR="$SANDBOX/$m" "$BIN" --store notes "$@"; }
+
+pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true; }
+
+@test "the notes store syncs with no join and logs where notes doctor reads it" {
+  notes_clone n
+  echo 'a note' > "$SANDBOX/n/today.md"
+  run notes_on n
+  assert_success
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" today.md)" "a note"
+  assert_equal "$(tip "$BACKUP")" "$(tip "$ORIGIN")"
+  grep -q COMPLETE "$SANDBOX/home-n/.local/state/notes-sync/sync.log"
+  [ ! -e "$SANDBOX/n/.sync" ]
+  run notes_on n join
+  assert_failure
+  assert_output --partial "has no join"
+}
+
+@test "a notes conflict keeps the local commit and pages once, not on every retry" {
+  notes_clone a; notes_clone b
+  echo 'from a' > "$SANDBOX/a/today.md"
+  echo 'from b' > "$SANDBOX/b/today.md"
+  notes_on a >/dev/null
+  run notes_on b
+  assert_failure
+  assert_output --partial "conflicts in today.md"
+  assert_equal "$(git -C "$SANDBOX/b" show HEAD:today.md)" "from b"
+  assert_equal "$(show "$ORIGIN" today.md)" "from a"
+  assert_equal "$(pages)" 1
+  run notes_on b
+  assert_failure
+  assert_equal "$(pages)" 1
+}
+
+@test "a dead backup pages once after an hour, not while offline, and once on recovery" {
+  notes_clone n
+  local fails="$SANDBOX/home-n/.local/state/notes-sync/backup-failures"
+  printf '#!/bin/sh\nexit 1\n' > "$BACKUP/hooks/pre-receive"
+  chmod +x "$BACKUP/hooks/pre-receive"
+  echo 1 > "$SANDBOX/n/today.md"; notes_on n >/dev/null
+  [ -s "$fails" ]
+  # Just inside the hour: no page however many syncs run.
+  echo "$(( $(date +%s) - 3500 ))" > "$fails"
+  echo 2 > "$SANDBOX/n/today.md"; notes_on n >/dev/null
+  echo 3 > "$SANDBOX/n/today.md"; notes_on n >/dev/null
+  assert_equal "$(pages)" 0
+  # Negative control: offline, origin and backup both unreachable, so the streak is not judged.
+  echo "$(( $(date +%s) - 3700 ))" > "$fails"
+  mv "$ORIGIN" "$R/origin.down"; mv "$BACKUP" "$R/backup.down"
+  notes_on n >/dev/null
+  mv "$R/origin.down" "$ORIGIN"; mv "$R/backup.down" "$BACKUP"
+  assert_equal "$(pages)" 0
+  notes_on n >/dev/null
+  echo 4 > "$SANDBOX/n/today.md"; notes_on n >/dev/null
+  assert_equal "$(pages)" 1
+  grep -q 'agent-notify.*-p high.*has not taken a write.*for 6[0-9] minutes' "$NOTES_FIXTURE/calls.log"
+  rm "$BACKUP/hooks/pre-receive"
+  run notes_on n
+  assert_output --partial "backup at"
+  assert_equal "$(pages)" 2
+  grep -q 'agent-notify.*-p normal.*took HEAD again' "$NOTES_FIXTURE/calls.log"
+  [ ! -e "$fails" ]
+}
+
+@test "a backup conflict pages once while origin keeps syncing" {
+  notes_clone a; notes_clone b
+  mv "$ORIGIN" "$R/origin.down"
+  echo 'from a' > "$SANDBOX/a/today.md"
+  notes_on a >/dev/null
+  mv "$R/origin.down" "$ORIGIN"
+  echo 'from b' > "$SANDBOX/b/today.md"
+  run notes_on b
+  assert_failure
+  assert_output --partial "COMPLETE: origin at"
+  assert_output --partial "merging backup conflicts in today.md"
+  echo 'more from b' > "$SANDBOX/b/other.md"
+  run notes_on b
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" other.md)" "more from b"
+  assert_equal "$(pages)" 1
+  grep -q 'agent-notify.*stopped syncing with backup' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "a clone on another branch syncs nothing" {
+  notes_clone n
+  git -C "$SANDBOX/n" checkout -q -b side
+  echo 'on side' > "$SANDBOX/n/today.md"
+  run notes_on n
+  assert_failure
+  assert_output --partial "is on side, not master; nothing synced"
+  run git -C "$ORIGIN" show master:today.md
+  assert_failure
+}
