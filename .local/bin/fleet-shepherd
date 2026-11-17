@@ -227,8 +227,8 @@ tag_pane() {
 # verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
 # question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
 # NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
-# branches (shared) is owned by the queue item shared_sample filed, and its sessions are told
-# once; only one with no item escalates.
+# branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
+# and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
 # (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
@@ -732,26 +732,29 @@ shared_items() {
 # stays a `shared red:` line the pass escalates; a queue that reads empty or a document that
 # cannot be read changes nothing.
 # SHARED_OWNER_JQ: the active items as inputs, $t the test without its parameters, $q main's
-# unexpired quarantine entries; each owning item's slug out, then row:<row> per quarantine row.
+# unexpired quarantine entries, $full the test as it failed; each owning item's slug out, then
+# row:<row> per quarantine row. A quarantine entry with no parameters covers every case.
 SHARED_OWNER_JQ='def word: gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)") | "(^|[^A-Za-z0-9_.])" + . + "($|[^A-Za-z0-9_])";
-  ($t | split(".") | .[-2:] | join(".")) as $cm | ($t | split(".") | .[-1]) as $m
-  | [$q[] | select((.test // "" | sub("\\(.*"; "")) == $t) | .row // "" | select(. != "")] as $rows
+  ($t | split(".")) as $p | ($p[-2:] | join(".")) as $cm
+  | [$q[] | select(.test == $full or .test == $t) | .row // "" | select(. != "")] as $rows
   | select($t != "")
   | ( inputs | select((.priority // "") != "low")
       | ((.task // "") + " " + (.title // "")) as $text
       | select(($text | test($t | word) or test($cm | word))
-          or ((.slug // "" | startswith("nightly-fix-")) and ($text | test($m | word)))
-          or ([.row, .from] | map(. // "" | sub("^.*:"; "")) | any(IN($rows[]))))
+          or ((.slug // "" | startswith("nightly-fix-")) and ($p | length) > 1
+              and ($text | test($p[-1] | word) and test($p[-2] | word)))
+          or (.type == "fix" and (.row // "" | sub("^[^:]*:"; "") | IN($rows[]))))
       | .slug ),
     ($rows | unique[] | "row:" + .)'
-# shared_quarantine: main's quarantine entries that have not ended, as one JSON array.
+# shared_quarantine: main's quarantine entries that have not ended, as one JSON array. A lane
+# whose last read failed is skipped: its entries may have left main since.
 shared_quarantine() {
-  jq -c --arg today "$(date +%F)" '[.repos[]?.report.tests[]? | select((.ends // "") >= $today)]' \
-    "$FLEET_SHEPHERD_QUARANTINE" 2>/dev/null || echo '[]'
+  jq -c --arg today "$(date +%F)" '[.repos[]? | select(.error == null) | .report.tests[]?
+    | select((.ends // "") >= $today)]' "$FLEET_SHEPHERD_QUARANTINE" 2>/dev/null || echo '[]'
 }
 # shared_owners <test>: what owns it, from the items in $active and the entries in $quarantine.
 shared_owners() {
-  jq -rn --arg t "${1%%(*}" --argjson q "${quarantine:-[]}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null
+  jq -rn --arg t "${1%%(*}" --arg full "$1" --argjson q "${quarantine:-[]}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null
 }
 # shared_owner_name <owner>: an owner as a reader names it.
 shared_owner_name() {
