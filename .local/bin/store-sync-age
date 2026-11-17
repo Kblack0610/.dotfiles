@@ -13,7 +13,7 @@ max_min=30
 log="${AGENT_SYNC_LOG:-$HOME/.agent/.sync/sync.log}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --max-min) max_min="${2:?--max-min needs a number}"; shift 2 ;;
+    --max-min) [ $# -ge 2 ] || { echo "store-sync-age: --max-min needs a number" >&2; exit 2; }; max_min="$2"; shift 2 ;;
     -*) echo "store-sync-age: unknown flag $1" >&2; exit 2 ;;
     *) log="$1"; shift ;;
   esac
@@ -29,10 +29,13 @@ stamp="${line#\[}"; stamp="${stamp%%\]*}"
 then="$(date -d "$stamp" +%s 2>/dev/null)" || { echo "unreadable: cannot parse '$stamp' in $log"; exit 1; }
 now="${STORE_SYNC_NOW:-$(date +%s)}"
 age_min=$(( (now - then) / 60 ))
+[ "$age_min" -ge 0 ] || { echo "unreadable: newest COMPLETE stamp '$stamp' is in the future"; exit 1; }
 
 if [ "$age_min" -le "$max_min" ]; then
   echo "store sync current: last COMPLETE $age_min min ago (limit $max_min)"
 else
-  echo "store sync stale: last COMPLETE $age_min min ago at $stamp (limit $max_min)"
+  # The newest SKIP/ERROR/CONFLICT/WARN line says why a sync did not finish.
+  why="$(grep -E '\] (SKIP|ERROR|CONFLICT|WARN):' "$log" | tail -n 1 | cut -c1-200 || true)"
+  echo "store sync stale: last COMPLETE $age_min min ago at $stamp (limit $max_min)${why:+; last problem: $why}"
   exit 1
 fi

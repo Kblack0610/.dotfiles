@@ -61,3 +61,37 @@ setup() {
   run "$BIN" --max-min soon "$LOG"
   assert_failure 2
 }
+
+@test "the newest COMPLETE line wins over an older one" {
+  {
+    printf '[2026-11-17 08:00:00] [h] COMPLETE: Sync finished\n'
+    printf '[2026-11-17 11:55:00] [h] COMPLETE: Sync finished\n'
+  } > "$LOG"
+  run "$BIN" "$LOG"
+  assert_success
+  assert_output --partial "5 min ago"
+}
+
+@test "a stamp in the future is unreadable, never current" {
+  printf '[2026-11-17 13:00:00] [h] COMPLETE: Sync finished\n' > "$LOG"
+  run "$BIN" "$LOG"
+  assert_failure 1
+  assert_output --regexp '^unreadable: '
+}
+
+@test "a stale trip names the last SKIP or ERROR line" {
+  {
+    printf '[2026-11-17 10:00:00] [h] COMPLETE: Sync finished\n'
+    printf '[2026-11-17 11:45:00] [h] SKIP: origin unreachable: 403\n'
+  } > "$LOG"
+  run "$BIN" "$LOG"
+  assert_failure 1
+  assert_output --partial "last problem: [2026-11-17 11:45:00] [h] SKIP: origin unreachable: 403"
+}
+
+@test "an unknown flag and a --max-min with no value are usage errors" {
+  run "$BIN" --nope
+  assert_failure 2
+  run "$BIN" --max-min
+  assert_failure 2
+}
