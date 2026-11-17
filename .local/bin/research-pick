@@ -105,16 +105,20 @@ queue() {
   return 1
 }
 
-# add <board> <text>: file one row. 0 when filed or already open (exit 3), 1 otherwise.
+# add <board> <text>: file one row. The exit of notes: 0 filed, 3 an open twin, else failed.
 add() {
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$1" "$2"; return 0; fi
   notes ptask "$1" --agent add "$2" >/dev/null 2>&1
-  local rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
 
-# roster_open: whether a research(roster) row is open on the agent-runtime board.
-roster_open() { notes ptask agent-runtime --agent list 2>/dev/null | cut -f4 | grep -qF 'research(roster):'; }
+# roster_open: 0 when a research(roster) row is open on the agent-runtime board, 1 when none
+# is, 2 when the board cannot be read. The list is read whole first: a reader that stops at
+# the first hit (grep -q) leaves the writer an EPIPE, which pipefail turns into "none open".
+roster_open() {
+  local rows
+  rows=$(notes ptask agent-runtime --agent list 2>/dev/null) || return 2
+  awk -F'\t' 'index($4, "research(roster):") { hit = 1 } END { exit !hit }' <<<"$rows"
+}
 
 # uncovered: project-map projects on disk that no facet's repo lies in or under and the roster
 # does not exclude, one name a line.
@@ -169,16 +173,22 @@ cmd_run() {
   fi
 
   # One coverage row a night, the first uncovered project, unless one is already open.
-  local gap name path
-  gap="$(uncovered | head -n 1)"
-  if [ -n "$gap" ]; then
-    IFS=$'\t' read -r name path <<<"$gap"
-    if roster_open; then
-      say "coverage: $name uncovered, a roster row is already open"
-    elif add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"; then
-      say "coverage: picked a roster row for $name"
-    fi
-  fi
+  local gap name path rc
+  gap="$(uncovered)"
+  [ -n "$gap" ] || return 0
+  IFS=$'\t' read -r name path <<<"${gap%%$'\n'*}"
+  roster_open; rc=$?
+  case $rc in
+    0) say "coverage: $name uncovered, a roster row is already open"; return 0 ;;
+    2) say "coverage: $name uncovered, the board could not be read, nothing filed"; return 0 ;;
+  esac
+  add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"
+  rc=$?
+  case $rc in
+    0) if [ "$DRY" = 1 ]; then say "coverage: would file a roster row for $name"; else say "coverage: filed a roster row for $name"; fi ;;
+    3) say "coverage: $name uncovered, a roster row is already open" ;;
+    *) say "coverage: $name uncovered, notes ptask add failed (exit $rc)" ;;
+  esac
   return 0
 }
 

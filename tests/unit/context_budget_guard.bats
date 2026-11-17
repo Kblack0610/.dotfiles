@@ -110,6 +110,31 @@ payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_stri
   assert_success
 }
 
+@test "an edit that writes into a lesson over the cap names it, an edit to another lesson does not" {
+  L="$BATS_TEST_TMPDIR/home/.agent/lessons/proj.md"
+  mkdir -p "${L%/*}"
+  long=$(printf -- '- **A long lesson title.** %s' "$(printf 'evidence %.0s' $(seq 1 30))")
+  added='  Seen again on the 11-17 sweep, same cause.'
+  printf '# proj\n\n%s\n%s\n- **A short lesson that stays short.**\n' "$long" "$added" > "$L"
+  edit() { jq -nc --arg p "$L" --arg s "$1" '{tool_name: "Edit", tool_input: {file_path: $p, old_string: "", new_string: $s}}'; }
+  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit "$long")"
+  assert_failure 2
+  assert_output --partial "over the per-lesson cap"
+  assert_output --regexp "[0-9]+ bytes: \*\*A long lesson title\.\*\*"
+  assert_output --partial "lessons fat"
+  # evidence appended under an existing lesson is that lesson's growth, though the edit wrote no title
+  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit "$added")"
+  assert_failure 2
+  assert_output --partial "bytes: **A long lesson title.**"
+  # negative controls: an edit to the short lesson, and the same edit under a cap it fits, pass silently
+  LESSON_MAX_BYTES=200 run bash "$HOOK" <<< "$(edit '- **A short lesson that stays short.**')"
+  assert_success
+  assert_output ""
+  LESSON_MAX_BYTES=1500 run bash "$HOOK" <<< "$(edit "$long")"
+  assert_success
+  assert_output ""
+}
+
 # --- restated instructions: a line the edit wrote that another home already holds --------------------
 
 dups_fixture() {

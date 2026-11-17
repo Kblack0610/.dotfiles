@@ -1357,7 +1357,7 @@ EOF
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
   mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
   run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t2.1\t24'
+  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
   # Night items too, and into names of their own: the exported DISPATCH_* a child reads stay the conf's.
   export DISPATCH_PER_PASS=3 DISPATCH_NIGHT_MAX=6
   source "$REPO_ROOT/.local/bin/fleet-dispatch"

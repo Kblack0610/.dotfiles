@@ -28,6 +28,7 @@ setup() {
 
   export WT_ROOT="$SANDBOX/worktrees"
   export WT_PROJECT_MAP="$SANDBOX/no-such-map.json" # discovery off unless a test wants it
+  export AGENT_QUEUE_DIR="$HOME/.agent/queue" # never the queue of the session running the suite
   mkdir -p "$WT_ROOT"
 
   # The stub's has-session reports EXISTS by default (wind-down needs that); for a freshly
@@ -1283,6 +1284,52 @@ done_session_setup() {
   assert_failure
   assert_output --partial 'git-locked: the train reuses it'
   [ -f "$WT_ROOT/repo-train/.git" ]
+}
+
+# queue_item <state> <slug> <session> [body] -- one agent-queue item file in the sandbox store.
+queue_item() {
+  mkdir -p "$HOME/.agent/queue/$1"
+  printf 'slug: %s\nsession: %s\n---\n%s\n' "$2" "$3" "${4:-task}" > "$HOME/.agent/queue/$1/20261117-000000-$2.md"
+}
+
+@test "gc keeps a landed tree whose tmux died but whose running queue item names it as claimed" {
+  # 2026-11-17 boot catch-up: the crash took tmux, gc reaped 12 trees of running items as
+  # landed, and fleet-dispatch restore found them gone (ar-2657). The queue owns the tree.
+  make_repo
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-2" origin/main
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-3" origin/main
+  queue_item running foliage-p3 lab:repo-agent-1
+  queue_item done old-work lab:repo-agent-2
+  # A session line in the task text is not the item's session.
+  queue_item running other lab:elsewhere $'session: lab:repo-agent-3'
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^claimed\tkept\trepo-agent-1\t[^\t]+\tqueue item foliage-p3 \\(running\\) names its session$'
+  assert_line --regexp $'^landed\treaped\trepo-agent-2\t'
+  assert_line --regexp $'^landed\treaped\trepo-agent-3\t'
+  [ -f "$WT_ROOT/repo-agent-1/.git" ]
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'queue item foliage-p3 (running) names its session'
+  # Once the item closes, nothing holds it.
+  mv "$HOME/.agent/queue/running/20261117-000000-foliage-p3.md" "$HOME/.agent/queue/done/"
+  run wt_occupied_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+}
+
+@test "a waiting or review item claims its tree, a bare or padded session name included" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-2" origin/main
+  queue_item waiting parked repo-agent-1
+  queue_item review in-review $'hub:repo-agent-2 \r'
+  run wt_occupied_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output 'queue item parked (waiting) names its session'
+  run wt_occupied_reason "$WT_ROOT/repo-agent-2"
+  assert_failure
+  assert_output 'queue item in-review (review) names its session'
 }
 
 @test "a lock with no reason is foreign, and a reworded wt hold is still wt's" {
