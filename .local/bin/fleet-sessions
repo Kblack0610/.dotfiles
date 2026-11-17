@@ -1717,7 +1717,7 @@ collect() {
     # quoted the plan's path, held P3, and close --self read "plan finished"). A misfire fails safe:
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
-    local dsp=- n=0 e=0
+    local dsp=- n=0 e=0 prun=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
     if [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ]; then
@@ -1737,6 +1737,7 @@ collect() {
                     | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
               [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
                  | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
+                    ses: (if ((.session // "") | contains(":")) then (.session | sub(":"; "/")) else null end),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
               | def holds($o): .tp as $t
                   | if (.ph | length) > 0 then (.ph | index($o.n)) != null
@@ -1746,10 +1747,11 @@ collect() {
                           | startswith($t) and (.[($t | length):] | test("^([^a-z0-9]|$)"))) end;
               [$it[] | select(. as $i | any($open[]; . as $o | $i | holds($o)))] as $holders
               | [$open[] | select(. as $o | any($it[]; holds($o)) | not)] as $free
+              | ([$holders[] | select(holds($open[0]) and .ses != null) | .ses][0] // "-") as $run
               | if ($holders | length) == 0 then empty
-                elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(","))
-                else $free[0].name end' <<<"$qjson" 2>/dev/null)"
-      [ -z "$qd" ] || pq="$qd"
+                elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run
+                else $free[0].name + "\t" + $run end' <<<"$qjson" 2>/dev/null)"
+      [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; }
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
@@ -1826,12 +1828,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     case "$bucket" in DONE\ *|CHAT\ *) [ ! -e "$CLOSED/$sid" ] || n=1 ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}" "$qwait" "$qdepth"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}" "$qwait" "$qdepth" "$prun"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2273,7 +2275,8 @@ json_rows() {
       open_job: (if (.[56] // "-") == "-" then null else .[56] end),
       manual_mode: ((.[57] // "0") == "1"),
       wait_min: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
-      landing_queue: (if (.[59] // "-") == "-" then null else .[59] | tonumber end)} | '"$CLOSE_JQ"
+      landing_queue: (if (.[59] // "-") == "-" then null else .[59] | tonumber end),
+      phase_runner: (if (.[60] // "-") == "-" then null else .[60] end)} | '"$CLOSE_JQ"
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
