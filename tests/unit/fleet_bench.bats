@@ -1178,7 +1178,8 @@ echo "$*" >> "$L"
 [ "$1 $2" != "row parse" ] || exec bash "$S" row parse   # the shared stub's row.parse lookup table (parses)
 if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config's in $B.home, another's in $B.<project>
   H="$B.home"; [ "$2" = home-config ] || H="$B.$2"
-  case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;; esac
+  case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;;
+    drop) [ "$5" = --why ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
   exit 0
 fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
@@ -1190,6 +1191,8 @@ case "$4" in
        printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
   edit) [ "$6" = --text ] || exit 8
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  drop) [ "$6" = --why ] || exit 8
+        awk -F'\t' -v q="$5" 'index($3, tolower(q)) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
         [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
@@ -1603,7 +1606,7 @@ watch() {
   assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
   assert_equal "$(grep -c . <<<"$output")" 4
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -1614,7 +1617,7 @@ watch() {
   : > "$NLOG"
   run "$SUBJECT" triage
   assert_success
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run outcome
   assert_output NOOP
@@ -1626,7 +1629,7 @@ watch() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'no runner, unit, watch or log error at fault'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage --bogus
   assert_failure 2
@@ -1644,7 +1647,7 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_success
   assert_line 'retire: check(watch): drift tripped since'
   assert_line 'retire: fix(hold): liveness-179 went red'
-  run grep -vc -- '--agent list' "$NLOG"
+  run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
@@ -1865,6 +1868,37 @@ log_triage_setup() {
   errlog alpha -30 'error: lock /run/e/5.lock held by pid 6'
   run "$SUBJECT" triage --dry-run
   assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
+}
+
+@test "triage: a log row whose error the runner's newest runs no longer log closes; a live one or a thinly read runner keeps it" {
+  log_triage_setup
+  local live
+  live=$("$SUBJECT" triage --dry-run | grep -oE '^fix\(logs\): alpha error [0-9a-f]{8}:')
+  [ -n "$live" ]
+  local once; once=$(printf 'alpha\t%s' 'error: seen once' | sha1sum | cut -c1-8)
+  errlog alpha -30 'error: seen once'   # in the newest run: too few runs to file, but not gone
+  errlog beta -60 'all good'   # one readable run is not enough to call its error gone
+  # board keys are lowercase; the newest run of all logs no error line, so the read ends on a clean run
+  errlog Delta -60 'all good'; errlog Delta 5 'all good'
+  board_row ' ' "$live error: lock P held by pid N"
+  board_row ' ' 'fix(logs): alpha error 8b645240: alpha: queue item x may not spill to lazer: tier'
+  board_row ' ' "fix(logs): alpha error $once: error: seen once"
+  board_row ' ' 'fix(logs): beta error 1234abcd: error: beta broke'
+  board_row ' ' 'fix(logs): gamma error 5678cdef: error: gamma never ran'
+  board_row ' ' 'fix(logs): delta error 9abc0123: error: delta broke'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: fix(logs): alpha error 8b645240:'
+  assert_line 'retire: fix(logs): delta error 9abc0123:'
+  refute_line "retire: $live"
+  refute_line "retire: fix(logs): alpha error $once:"
+  refute_line --partial 'retire: fix(logs): beta'
+  refute_line --partial 'retire: fix(logs): gamma'
+  # with no run ledger nothing was read, so no log row is a recovery
+  rm "$AGENTCTL_STATE_DIR/runs.jsonl"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: fix(logs)'
 }
 
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
@@ -2124,6 +2158,61 @@ fix_item() {
   assert_success
   [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
   [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+# 2026-11-11/12 (ar-2111): ar-1092 and ar-1650 sat on the human's sheet while their routes were human;
+# the route changed, the agent board's upsert saw none of them, and ar-1674 and ar-2068 were filed as
+# second rows for the same watch.
+@test "triage: a watch whose route left the human's sheet keeps one row, on the agent board; a second run adds none" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [ ] %s\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c . "$BOARD.agent-runtime"
+  assert_output 0
+  run grep -c 'ptask agent-runtime drop check(watch): spend tripped since --why moved to the agent board' "$NLOG"
+  assert_output 1
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'tripped since' "$BOARD"
+  assert_output 1
+  run grep -c ' drop \| add ' "$NLOG"
+  assert_output 0
+}
+
+@test "triage: a watch whose route moved to the human's sheet drops its agent-board row and files one on the sheet" {
+  log_triage_setup
+  watch puck TRIP -25200 high
+  route 'watch.: puck' human:home-config - 'check the puck'
+  board_row ' ' 'check(watch): puck tripped since 2026-11-01, expected: x'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): puck' "$BOARD"
+  assert_output 0
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
+  run grep -c -- '--agent drop check(watch): puck tripped since --why moved to the home-config sheet' "$NLOG"
+  assert_output 1
+}
+
+@test "triage: a twin left on the human's sheet by an earlier route is dropped on a pass that adds nothing" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  printf 'board.md\t9\t%s\t- [ ] %s\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c . "$BOARD.agent-runtime"
+  assert_output 0
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
 }
 
 @test "triage: a tripped watch's item is outside the daily cap and does not count against it" {
@@ -4785,16 +4874,16 @@ qstats_fixture() {
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   for s in s1 s2 s3 s4; do echo "{\"session_id\":\"$s\",\"cost_usd\":4,\"class\":{\"size\":\"s\",\"kind\":\"fix\"}}"; done > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"glm","agent":"glm","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
-    echo '{"slug":"b","model":"glm","agent":"glm","status":"failed","sessions":"s2","lane_run":"r2"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","sessions":"s2","lane_run":"r2"}'
     echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent"}'
-    echo '{"slug":"d","model":"glm","agent":"glm","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
+    echo '{"slug":"d","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00) old_iso=$(date -u -d "@$((T0 - 30 * 86400))" +%FT%T+00:00)
   {
-    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"ok\"}"
-    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"redo\"}"
-    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"glm\",\"outcome\":\"failed\"}"
+    echo "{\"id\":\"r0\",\"ts\":\"$old_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"failed\"}"
     # a run with no lane and a full model id is the unrouted claude sonnet pairing, not a row of its own
     echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"ran\":\"claude-sonnet-5-5\",\"outcome\":\"redo\"}"
   } > "$BENCH_LANE_LOG"
@@ -4802,19 +4891,19 @@ qstats_fixture() {
   assert_success
   # c's own lane=agent is the board lane, not model-lane's: with no lane_run it is unrouted
   assert_equal "$(jq -c '[.models[] | [.class, .lane, .harness, .done, .landed]]' <<<"$output")" \
-    '[["fix/s","opus","glm",2,1],["fix/s","sonnet","glm",1,1],["fix/s","unrouted","claude",1,1]]'
+    '[["fix/s","opus","opencode-go",2,1],["fix/s","sonnet","opencode-go",1,1],["fix/s","unrouted","claude",1,1]]'
   by_cl=$output
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane,class --json
   assert_equal "$output" "$by_cl"
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
   assert_success
   assert_line '| Class | Lane | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
-  assert_line '| fix/s | sonnet | glm | glm | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
+  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 1 | 1 | 0 | 0 | $4 | $4 | list | - | - | - | - |'
   # lane alone keeps redo, counted on the runs of that lane in the window
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
   assert_success
   assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
-    '[["opus","glm",2,1,0,false],["sonnet","glm",1,1,1,false],["unrouted","claude",1,1,1,false]]'
+    '[["opus","opencode-go",2,1,0,false],["sonnet","opencode-go",1,1,1,false],["unrouted","claude",1,1,1,false]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
   assert_line '| Lane | Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
@@ -5679,8 +5768,8 @@ STUB
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
-  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nglm glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
-  echo '{"harnesses":{"codex":{"source":"codex"},"glm":{"source":"glm"}}}' > "$BENCH_HARNESSES"
+  printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nopencode-go glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
+  echo '{"harnesses":{"codex":{"source":"codex"},"opencode-go":{"source":"go"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" retro
@@ -5689,12 +5778,12 @@ STUB
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
   assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol@high)"
   assert_line "fleet-bench: canary: codex/sol@higher not queued, its slug is codex/sol@high's"
-  assert_line "fleet-bench: canary: glm/glm not queued, glm: past its pace line"
+  assert_line "fleet-bench: canary: opencode-go/glm not queued, go: past its pace line"
   assert_line --partial "fleet-bench: canary: ghost/x not queued, ghost has no source"
   [ -f "$CQ/canary-greet-$week-codex-sol.json" ]
   assert_equal "$(jq -r .effort "$CQ/canary-greet-$week-codex-sol-hi.json")" high
-  [ ! -f "$CQ/canary-greet-$week-glm-glm.json" ]
-  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex glm '
+  [ ! -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
+  assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex go '
   # no lanes file: retro queues the claude lane alone
   rm "$BENCH_CANARY_LANES" "$CQ"/*.json
   run "$SUBJECT" retro
@@ -5902,6 +5991,61 @@ STUB
   assert_failure 1
 }
 
+@test "sizes --check: median work by #pts band over BENCH_BANDS_DAYS of closes, exit 1 when l is not slower than m or m not slower than s" {
+  export ITEMS="$SANDBOX/done.jsonl" BENCH_SIZES_MIN=2
+  export BENCH_DONE_ITEMS_CMD=done-stub BENCH_ROADMAP_CMD=roadmap-stub
+  printf '#!/usr/bin/env bash\n[ "$1" = --since ] && echo "$2" > "%s.since" && cat "%s"\n' "$ITEMS" "$ITEMS" > "$SANDBOX/bin/done-stub"
+  printf '#!/usr/bin/env bash\necho %s\n' \
+    "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1,\"pts\":1},{\"id\":\"ar-2\",\"size\":\"m\",\"weight\":5,\"pts\":5},{\"id\":\"ar-3\",\"size\":\"l\",\"weight\":8,\"pts\":8},{\"id\":\"ar-4\",\"size\":\"s\",\"weight\":1,\"pts\":null}]}]'" \
+    > "$SANDBOX/bin/roadmap-stub"
+  chmod +x "$SANDBOX/bin/done-stub" "$SANDBOX/bin/roadmap-stub"
+  items() {  # <row>:<work>:<finished hours ago>[:<status>] ...
+    local a
+    for a in "$@"; do
+      IFS=: read -r r w h st <<<"$a"
+      jq -cn --arg r "ar:$r" --arg w "$w" --arg st "${st:-ok}" --arg f "$(date -u -d "@$((T0 - h * 3600))" +%FT%TZ)" \
+        '{slug: "x", status: $st, row: $r, work_min: $w, started: $f, finished: $f}'
+    done > "$ITEMS"
+  }
+  # climbs: s 10, m 30, l 90; ar-4 has a #size/s and no #pts, so its slow closes are not in s; the l item 8 days back is outside the 7-day window, and failed
+  # closes are not among the ok closes size_rule's minutes came from
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:90:1 ar-3:90:2 ar-3:5:192 ar-3:1:1:failed ar-3:1:2:failed ar-4:500:1 ar-4:500:2 ar-4:500:3
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_success
+  assert_output '- work p50 by #pts band, last 7d of closes: s 10 min (2), m 30 min (2), l 90 min (2): climbs'
+  # one read covers both windows, the size table's 28 days and the bands' 7
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 28 * 86400))" +%F)" ]
+  run env BENCH_NOW=$T0 BENCH_SIZES_DAYS=3 "$SUBJECT" sizes --check
+  assert_success
+  [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
+  # m no slower than s, l faster than m
+  items ar-1:30:1 ar-1:30:2 ar-2:30:1 ar-2:30:2 ar-3:20:1 ar-3:20:2
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 1
+  assert_output --partial 'inverted, m not slower than s, l not slower than m'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --json
+  assert_equal "$(jq -c '.bands | [.status, .s.p50, .m.p50, .l.p50, .days]' <<<"$output")" '["inverted",30,30,20,7]'
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes
+  assert_line '- work p50 by #pts band, last 7d of closes: s 30 min (2), m 30 min (2), l 20 min (2): inverted, m not slower than s, l not slower than m'
+  # a band under BENCH_SIZES_MIN items orders nothing, so it does not trip
+  items ar-1:10:1 ar-1:10:2 ar-2:30:1 ar-2:30:2 ar-3:20:1
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_success
+  assert_output --partial 's 10 min (2), m 30 min (2), l 20 min (1): too few to order l (under 2)'
+  # but it does not hide an inversion between the two bands that have the items
+  items ar-1:30:1 ar-1:30:2 ar-2:10:1 ar-2:10:2 ar-3:20:1
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 1
+  assert_output --partial 'l 20 min (1): inverted, m not slower than s; too few to order l (under 2)'
+  # a roadmap with no pts key on any row (a notes binary from before it) is unreadable, never a quiet week
+  printf '#!/usr/bin/env bash\necho %s\n' "'[{\"rows\":[{\"id\":\"ar-1\",\"size\":\"s\",\"weight\":1}]}]'" > "$SANDBOX/bin/roadmap-stub"
+  run env BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 2
+  assert_output --partial 'unreadable, no roadmap row carries pts'
+  run env BENCH_DONE_ITEMS_CMD=false BENCH_NOW=$T0 "$SUBJECT" sizes --check
+  assert_failure 2
+}
+
 # start_rows <count> <ready ms> [epoch] -> that many startup rows, the shape startup-telemetry.sh writes
 start_rows() {
   local i
@@ -6044,4 +6188,14 @@ start_rows() {
   rm "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SUBJECT" canary shepherd
   assert_failure 1
+}
+
+@test "forecast reads a pointer stub's session through to the canonical plan's phase N (ar-2513)" {
+  printf '## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/canon.md"
+  printf 'Phase 3 of %s\n' "$SANDBOX/canon.md" > "$SANDBOX/stub.md"
+  { rowp a lab/game-agent-1:1 0 1 "$SANDBOX/stub.md"; } > "$SNAP"; sample_at 0
+  run env BENCH_NOW=$((T0 + 600)) "$SUBJECT" forecast --json
+  assert_success
+  run jq -c '[.schedule[] | [.target, [.phases[].name]]]' <<<"$output"
+  assert_output '[["lab/game-agent-1:1",["three"]]]'
 }

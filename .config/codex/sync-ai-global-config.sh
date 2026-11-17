@@ -260,6 +260,21 @@ else
 fi
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
 
+# Unlike Claude's CLAUDE.md (hand-written, never touched above), OpenCode's AGENTS.md is both
+# the live config and a tracked file: $OPENCODE_HOME is itself a stow symlink into the private
+# overlay, so a stale rulesync source leaves that repo's main checkout dirty with no one
+# noticing until agent-land fails to fast-forward it (ar-1397, seen landing #724). Warn here
+# instead of staying silent; committing it is still a deliberate step, landed like any other
+# change under the stow split (dotfiles-land), not a bare commit this script makes for you.
+# -C "$OPENCODE_HOME" (not the resolved repo root) so the pathspec stays inside what git sees
+# as the repo: rev-parse dereferences the stow symlink, but a path built from it would not.
+opencode_repo="$(git -C "$OPENCODE_HOME" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$opencode_repo" ] && [ -n "$(git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md 2>/dev/null)" ]; then
+    echo "note: $OPENCODE_HOME/AGENTS.md changed and left $opencode_repo dirty." >&2
+    echo "  Land it there (dotfiles-land) before anything tries to fast-forward its main -" >&2
+    echo "  agent-land cannot otherwise." >&2
+fi
+
 # Mirror Claude agents + commands into OpenCode (skills/rules are read natively
 # by OpenCode from ~/.claude; agents/commands have no compat path).
 "$DOTFILES_ROOT/.config/codex/sync-opencode-claude-assets.sh"

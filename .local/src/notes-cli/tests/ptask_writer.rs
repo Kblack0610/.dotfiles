@@ -221,20 +221,59 @@ fn each_ptask_verb_writes_one_event_with_the_row_id() {
 }
 
 #[test]
-fn the_agent_board_refuses_untyped_sizeless_and_near_duplicate_rows() {
+fn a_multi_line_add_stamps_its_id_on_the_row_line_so_done_finds_it() {
+    let h = Home::new("multi-line");
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "fix(tests): menu fails some nights #size/s\n  Quarantined for the nightly.",
+        ],
+    ));
+    let board = h.board();
+    let row = board.lines().find(|l| l.starts_with("- [ ]")).unwrap();
+    assert!(row.ends_with("<!-- id:dm-1 -->"), "{board}");
+    assert!(
+        board.contains("\n  Quarantined for the nightly.\n"),
+        "{board}"
+    );
+    ok(&agent(&h, &["done", "--proof", "pr:9", "dm-1"]));
+    assert!(
+        h.board()
+            .contains("- [x] fix(tests): menu fails some nights"),
+        "{}",
+        h.board()
+    );
+
+    // The human's own words still go to the inbox as typed, every line of them.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "add",
+        "buy milk\n\n  - eggs\n    - a dozen",
+    ]));
+    assert!(
+        h.sheet()
+            .contains("- [ ] buy milk\n\n  - eggs\n    - a dozen"),
+        "{}",
+        h.sheet()
+    );
+}
+
+#[test]
+fn the_agent_board_refuses_untyped_and_near_duplicate_rows_and_takes_an_unsized_one() {
     let h = Home::new("refuse");
     let before = h.board();
     let untyped = agent(&h, &["add", "menu flickers #size/s"]);
     assert_eq!(untyped.status.code(), Some(1));
-    let sizeless = agent(&h, &["add", "fix(ui): menu flickers"]);
-    assert_eq!(sizeless.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&sizeless.stderr).contains("#size/"));
     assert_eq!(h.board(), before, "a refused add writes nothing");
 
+    // No size: the nightly `agentctl-inbox-triage --backlog --size` pass scores it.
     ok(&agent(
         &h,
-        &["add", "fix(ui): the pause menu flickers on resume #size/s"],
+        &["add", "fix(ui): the pause menu flickers on resume"],
     ));
+    assert!(!h.board().contains("#size/"), "{}", h.board());
     let twin = agent(
         &h,
         &["add", "fix(ui): pause menu flickers on resume #size/m"],
@@ -302,6 +341,51 @@ fn doctor_lists_each_untyped_row_with_the_edit_that_types_it() {
     ));
     let out = h.run(&["doctor", "--projects", "--untyped"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("0 untyped row(s)"));
+}
+
+// nc-86: `edit --text` keeps the old text's own tags (size, points); a typed one of the same
+// name replaces it.
+#[test]
+fn edit_text_keeps_the_rows_size_and_points_tags() {
+    let h = Home::new("edit-tags");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): menu flickers #size/s #pts/2"],
+    ));
+    // A tag other than the sizing is what --text types: leaving #plan out clears it.
+    ok(&agent(&h, &["add", "fix(ui): sound lags #plan #size/m"]));
+    ok(&agent(
+        &h,
+        &["edit", "dm-2", "--text", "fix(ui): sound is late"],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("sound is late") && row.contains("#size/m") && !row.contains("#plan"),
+        "{row}"
+    );
+    ok(&agent(
+        &h,
+        &["edit", "dm-1", "--text", "fix(ui): menu blinks"],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("menu blinks") && row.contains("#size/s") && row.contains("#pts/2"),
+        "{row}"
+    );
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--text",
+            "fix(ui): menu blinks on resume #size/m",
+        ],
+    ));
+    let row = h.board();
+    assert!(
+        row.contains("#size/m") && !row.contains("#size/s") && !row.contains("#pts/2"),
+        "{row}"
+    );
 }
 
 #[test]

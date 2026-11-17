@@ -24,7 +24,7 @@ Any one of these, on any decision, makes the ask the human's.
 
 This must be met on every decision, or the ask is the human's.
 
-- (reversible) A wrong answer can be undone by a revert or a later change, and nothing has reached anyone outside the fleet by then.
+- (reversible) A wrong answer can be undone by a revert or a later change, and nothing has reached anyone outside the fleet by then. Not met for a bulk change: closing, returning, moving or deleting 10 or more records (queue items, board rows, files) in one answer, since a revert restores each record but not the links between them (2026-11-12: a 198-item return lost about 40 `after:` chains). Count the records the ask names or implies. The 10 is provisional, confidence low: 1034 of 4406 queue items carry `after:`, so ten records lose about two chains; revisit once a bulk ask of 10 or more has been answered by the human, or by 2026-12-14.
 
 ## Noted, never a stop
 

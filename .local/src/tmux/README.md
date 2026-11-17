@@ -255,7 +255,7 @@ Every pane on it gets SIGHUP, so every conversation there stops. `fleet-dispatch
 | symptom | cause | fix |
 |---|---|---|
 | A whole server dies with SIGSEGV, `coredumpctl` shows `mode_tree_draw` | tmux 3.8 frees the pane under an in-pane prompt: `x y` in `Prefix+w` on the window it was opened from, or `t` then `X y` with that window tagged (tmux issue 5728) | run the patched package, `.local/src/tmux/patched/README.md`; a server is safe only once it has restarted on it |
-| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `session-registry` |
+| `fleet-dispatch restore` says `no lost server on record` | the server held no conversation at its last record, or a restore already finished (`<server>.restored.json` in `~/.agent/dispatch/panes/`) | one conversation: `fleet-dispatch start --resume`, with its id from `sessions list` |
 | A restored window sits on a mode other than the one it died in | the mode comes from the transcript's last `permissionMode`, so a change with no turn after it is not seen | shift-tab in the window |
 
 ## Projects and worktrees (`Prefix+f`)
@@ -386,6 +386,12 @@ deferred reap then re-runs the FULL policy, live-session rule included - which p
 honestly, because the session it would have objected to is the one just killed. Nothing is
 waived. Its outcome lands in `~/.agent/wt/done.log`, since by then there is nowhere else to
 print it.
+
+Run from a Claude session in its own worktree session, `wt done` does not schedule the kill
+itself: it arms the wind-down below (`wind-down.sh arm --session`), because a timed kill
+lands mid-turn, before that session's Stop hooks have run. The Stop pipeline fires it last
+and the outcome lands in `~/.agent/spin-down/fire.log`. A pane in another session, the
+keybinding and a plain shell take the timed kill above.
 
 `wind-down` closes the loop: `arm` records the worktree in its sentinel, and `fire` runs
 `wt reap` **after** the kill, in the same backgrounded chain. Before the kill it would always

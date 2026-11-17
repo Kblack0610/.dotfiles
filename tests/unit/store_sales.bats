@@ -1,59 +1,32 @@
 #!/usr/bin/env bats
-# store-sales: what each app store and Steam made on a day. rbw and curl are stubs; the curl stub
-# reads its stdin config (url, output, write-out) the way real curl does, writes the reply named by
-# the URL to the output file and prints the status, and logs argv apart so a test can prove a
-# credential reached curl only on stdin. The client is .local/lib/store-auth.sh. A reply <r>@<n> answers the n-th call for <r> only.
+# store-sales: what each app store and Steam made on a day. rbw and curl are the store stubs
+# (helpers/store.bash), the client .local/lib/store-auth.sh; this file routes each sales URL to its
+# reply.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/store'
   sandbox_init basic
 
   SS="$REPO_ROOT/.local/bin/store-sales"
   export SANDBOX STORE_RETRY_BASE=0
-  mkdir -p "$SANDBOX/rbw" "$SANDBOX/reply"
-  cat > "$SANDBOX/bin/rbw" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/rbw.calls"
-case "$1" in
-  unlocked) [ "${RBW_LOCKED:-0}" != 1 ] ;;
-  get) cat "$SANDBOX/rbw/$2" 2>/dev/null ;;
-  *) exit 1 ;;
-esac
-STUB
-  cat > "$SANDBOX/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/curl.argv"
-cfg="$(cat)"
-printf '%s\n' "$cfg" >> "$SANDBOX/curl.config"
-url="$(sed -n 's/^url = "\(.*\)"$/\1/p' <<<"$cfg")"
-out="$(sed -n 's/^output = "\(.*\)"$/\1/p' <<<"$cfg")"
+  store_stubs <<'ROUTE'
 case "$url" in
-  *oauth2.googleapis.com/token*) printf '%s' '{"access_token":"play-token"}'; exit 0 ;;
-  *salesReports*) r=asc ;;
-  *storage.googleapis.com*) r=play ;;
+  *salesReports*) answer asc ;;
+  *storage.googleapis.com*) answer play ;;
   *GetDetailedSales*) hw="${url##*highwatermark_id=}"; r="steam.$hw"
-     [ -f "$SANDBOX/reply/$r.body" ] || r=steam ;;
+     [ -f "$SANDBOX/reply/$r.body" ] || r=steam
+     answer "$r" ;;
   *) exit 22 ;;
 esac
-n=$(( $(cat "$SANDBOX/calls.$r" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$SANDBOX/calls.$r"
-[ -f "$SANDBOX/reply/$r@$n.code" ] && r="$r@$n"
-cp "$SANDBOX/reply/$r.body" "$out"
-printf '%s' "$(cat "$SANDBOX/reply/$r.code")"
-STUB
-  chmod +x "$SANDBOX/bin/rbw" "$SANDBOX/bin/curl"
+ROUTE
 }
 
-asc_key() {
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$SANDBOX/asc.pem" 2>/dev/null
-  jq -nc --arg p "$(base64 -w0 < "$SANDBOX/asc.pem")" '{key_id: "KID1", issuer_id: "ISS1", p8: $p, vendor_number: "8812345"}' > "$SANDBOX/rbw/store_sales_asc"
-}
+asc_key() { store_asc_key store_sales_asc '{"vendor_number": "8812345"}'; }
 
-play_key() {
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$SANDBOX/play.pem" 2>/dev/null
-  jq -nc --rawfile k "$SANDBOX/play.pem" '{client_email: "sales@acme.iam", private_key: $k, bucket: "pubsite_prod_rev_42"}' > "$SANDBOX/rbw/store_sales_play"
-}
+play_key() { store_play_key store_sales_play '{"bucket": "pubsite_prod_rev_42"}'; }
 
 steam_key() { printf 'STEAMFINKEY123' > "$SANDBOX/rbw/store_sales_steam"; }
 
@@ -75,12 +48,13 @@ src() { jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$output"; }
 
 @test "a locked vault never calls rbw get, and every store says why" {
   asc_key
-  RBW_LOCKED=1 run "$SS" 2026-11-09
+  : > "$SANDBOX/rbw/locked"
+  run "$SS" 2026-11-09
   assert_success
   assert_equal "$(src 'App Store' | jq -r .error)" "rbw is locked"
   assert_equal "$(src 'Google Play' | jq -r .error)" "rbw is locked"
   assert_equal "$(src Steam | jq -r .error)" "rbw is locked"
-  run grep -c '^get' "$SANDBOX/rbw.calls"
+  run grep -c '^rbw get' "$SANDBOX/rbw/calls.log"
   assert_output 0
 }
 

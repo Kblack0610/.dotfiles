@@ -17,7 +17,7 @@
 #
 # Attribution now needs THREE signals to agree, because no single one is sound:
 #   1. mtime      -- the plan was touched recently (the old, insufficient, test)
-#   2. transcript -- THIS session's transcript names it, so this session saw it
+#   2. transcript -- THIS session's transcript names it (absolute or `~/` path), so it saw it
 #   3. ownership  -- no other project dir already holds that basename
 # (2) alone over-attributes: a transcript also names plans the session merely READ,
 # and reading another project's plan is common. (3) is first-writer-wins, and is
@@ -63,7 +63,7 @@ fi
 # `epic: <code>-<N>` line carries, or nothing (no line, no map, an unknown code).
 plan_epic_dir() {
   local code proj
-  code=$(sed -nE 's/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/\1/p' "$1" 2>/dev/null | head -1)
+  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
   [ -n "$code" ] || return 0
   declare -F project_of_code >/dev/null 2>&1 || return 0   # the resolver source above was skipped
   proj=$(project_of_code "$code")
@@ -77,9 +77,12 @@ DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
 while IFS= read -r f; do
   [ -n "$f" ] && [ -f "$f" ] || continue
 
-  # (2) this session actually touched it. Fixed-string match on the absolute
-  # path, so a $HOME containing regex metacharacters cannot change the meaning.
-  grep -qF -- "$f" "$TRANSCRIPT" 2>/dev/null || continue
+  # (2) this session actually touched it. Fixed-string match, so a $HOME containing regex
+  # metacharacters cannot change the meaning. A transcript names a plan by its absolute path or
+  # as `~/.claude/plans/<name>`, so the match is on `.claude/plans/<name>` (and the
+  # `.claude-personal` symlink to it), which both forms carry and another dir named plans does not.
+  base=${f##*/}
+  grep -qF -e ".claude/plans/$base" -e ".claude-personal/plans/$base" -- "$TRANSCRIPT" 2>/dev/null || continue
 
   # (3) first writer wins. A basename already held by ANOTHER project stays
   # there; copying it here is exactly the cross-project fan-out being removed.
@@ -88,7 +91,6 @@ while IFS= read -r f; do
   # not the session's: a game's plan written from the playground checkout counts on the game.
   dest=$(plan_epic_dir "$f")
   dest=${dest:-$DEST_DIR}
-  base=${f##*/}
   owned_elsewhere=$(find "$PLANS_ROOT" -mindepth 2 -type f -name "$base" \
     -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue

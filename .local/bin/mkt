@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# mkt - the outbound ledger: everything that goes out for a product, one item from draft to
+# review to sent. The ledger, states and verbs in full: docs/operations/mkt.md.
+#
+#   mkt draft --project P --channel C --kind K [--title T] [--attach F]... [--no-ask] <draft-file>
+#                                open an item and post its review ask, images as previews
+#   mkt answer <id> <ask-id>     the review ask's resume: the verdict; a URL in it logs the send
+#   mkt log <id> <url> [--by who]                 the human posted it by hand
+#   mkt log --project P --channel C --kind K --title T [--by who] [--reviewed-by who] <url>
+#                                a new item sent outside `mkt draft` (store-console, a store push)
+#   mkt post <id> [--dry-run]    send an item its reviewer answered `post` on, through its adapter
+#   mkt skip <id> [--by who]     close an item that will not go out (a revise redrafted, a stale draft)
+#   mkt list [--project P] [--state S] [--json]   the items, newest first
+#   mkt show <id>                one item as JSON
+set -uo pipefail
+
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+
+LEDGER="${MKT_LEDGER_DIR:-$HOME/.agent/outbound}"
+# The kinds the plan names; a new one is a new word here and in the Marketing tab's docs.
+KINDS="post listing email pitch press-kit screenshots mockup"
+IMAGE_RE='\.(png|jpe?g|gif|webp)$'
+# The ask's question is one line under agent-ask's cap, so a title is cut to this.
+TITLE_MAX=80
+# How much of the draft the ask's context carries; the rest is in the copied file.
+DRAFT_CTX_MAX=1500
+ID_RE='^[0-9]{6}-[0-9a-f]{6}$'
+# An answer with a URL and at most this many other words ("posted:", "done, here") is a hand send.
+HAND_WORDS_MAX=2
+
+usage() { sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit "${1:-2}"; }
+die() { echo "mkt: $*" >&2; exit 1; }
+
+# A channel's adapter is a function `post_<channel> <item-json>` that sends the item and prints its
+# public URL. None exists yet, so every channel is posted by hand and logged with `mkt log`.
+has_adapter() { declare -F "post_${1//-/_}" >/dev/null; }
+
+# append <project> <event-json>: one line on the month file. A line this short is one write(2)
+# under O_APPEND, so two writers never interleave.
+append() {
+  local dir="$LEDGER/$1"
+  mkdir -p "$dir" || die "cannot make $dir"
+  printf '%s\n' "$2" >> "$dir/$(date -u +%Y-%m).jsonl" || die "cannot write the ledger in $dir"
+}
+
+event() { # <event> <id> <jq object of fields> [jq args...]
+  local ev="$1" id="$2" obj="$3"; shift 3
+  jq -nc --arg ts "$(now_utc)" --arg ev "$ev" --arg id "$id" "$@" "{ts: \$ts, id: \$id, event: \$ev} + ($obj)"
+}
+
+new_id() { printf '%s-%s\n' "$(date -u +%y%m%d)" "$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"; }
+
+# project_of <id>: the project whose ledger holds the item.
+project_of() {
+  [[ "$1" =~ $ID_RE ]] || die "'$1' is not an item id (YYMMDD-xxxxxx)"
+  local f
+  f="$(grep -lF "\"id\":\"$1\"" "$LEDGER"/*/*.jsonl 2>/dev/null | awk "NR==1")"
+  [ -n "$f" ] || die "no item $1 in $LEDGER"
+  basename "$(dirname "$f")"
+}
+
+# The fold every reader shares: events by id, in file order, into one item and its state.
+FOLD='
+def state: if .sent then "sent" elif .verdict == "skip" then "skipped"
+  elif .verdict == "revise" then "revise" elif .verdict then "approved"
+  elif .ask then "review" else "draft" end;
+group_by(.id) | map(
+  reduce .[] as $e ({};
+    . + ($e | del(.event, .ts))
+    + ({draft: {created: $e.ts}, review: {asked: $e.ts}, sent: {sent: $e.ts}}[$e.event] // {}))
+  | .state = state)'
+
+items() { # [project]: every item of one project, or of all
+  if [ -n "${1:-}" ]; then cat "$LEDGER/$1"/*.jsonl; else cat "$LEDGER"/*/*.jsonl; fi 2>/dev/null | jq -sc "$FOLD"
+}
+
+item() { local p; p="$(project_of "$1")" || exit 1; items "$p" | jq -c --arg id "$1" '.[] | select(.id == $id)'; }
+
+canon_project() {
+  local p
+  p="$(project_lookup "$1")" || die "'$1' is not a project in project-map.json"
+  printf '%s\n' "$p"
+}
+
+check_kind() { case " $KINDS " in *" $1 "*) ;; *) die "kind '$1' is not one of: $KINDS" ;; esac; }
+check_channel() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "channel '$1' is not a lowercase word (reddit, steam, bluesky)"; }
+
+utm() { printf 'utm_source=%s&utm_medium=%s&utm_campaign=%s&utm_content=%s' "$1" "$2" "$3" "$4"; }
+
+# ask_review <item-json>: post the item's review ask, then record it.
+ask_review() {
+  local it="$1" id project channel kind title draft opts rec why
+  IFS=$'\t' read -r id project channel kind title draft < <(jq -r '[.id, .project, .channel, .kind, .title, .draft] | @tsv' <<<"$it")
+  local hand="you post it on $channel yourself, then answer with its public URL so it is logged"
+  if has_adapter "$channel"; then
+    opts="post=mkt sends it on $channel now and logs the URL it gets back|hand=$hand|skip=it is not sent"
+    rec=post why="the draft is ready, and mkt records where it went"
+  else
+    opts="hand=$hand|skip=it is not sent"
+    rec=hand why="nothing posts to $channel for us yet, so it goes out by your hand"
+  fi
+  local previews=() p
+  while IFS= read -r p; do
+    [ -n "$p" ] && [[ "${p,,}" =~ $IMAGE_RE ]] && previews+=(--preview "$p")
+  done < <(jq -r '.attachments[]?' <<<"$it")
+  local text
+  text="$(tr '\n' ' ' < "$draft" | tr -s ' ' | cut -c1-"$DRAFT_CTX_MAX")"
+  local ctx="Outbound review: an agent drafted this $kind for $project to go out on $channel, and your answer is recorded in the outbound ledger (the record of everything we send) as item $id.${previews[*]:+ The images attached to it are shown above the answers.} Its title: $title. Draft file: $draft. The draft says: $text"
+  # The title gives way so the question fits agent-ask's cap; the full title is in the context.
+  local q="Send the $kind \"\" on $channel for $project?"
+  local room=$(( ${AGENT_ASK_QUESTION_MAX:-150} - ${#q} ))
+  q="Send the $kind \"${title:0:$(( room > 0 ? room : 0 ))}\" on $channel for $project?"
+  local ask
+  # The ask belongs to the item, not to the session that drafted it: the answer goes to `mkt
+  # answer` through its resume, so no session id or tmux session is recorded on it.
+  ask="$(env -u CLAUDE_CODE_SESSION_ID -u TMUX agent-ask post --project "$project" --kind approval \
+    --agent mkt --options "$opts" --recommend "$rec" --why "$why" --context "$ctx" \
+    --resume "run: mkt answer $id" "${previews[@]}" "$q")" || die "the review ask for $id was not posted; the item stays a draft"
+  append "$project" "$(event review "$id" '{ask: $a}' --arg a "$ask")"
+  printf '%s\n' "$ask"
+}
+
+cmd_draft() {
+  local project="" channel="" kind="" title="" by="${MKT_BY:-agent}" ask=1 file="" attach=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --channel) channel="$2"; shift 2 ;;
+      --kind) kind="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --attach) attach+=("$2"); shift 2 ;;
+      --by) by="$2"; shift 2 ;;
+      --no-ask) ask=0; shift ;;
+      -*) die "draft: unknown flag $1" ;;
+      *) file="$1"; shift ;;
+    esac
+  done
+  [ -n "$project" ] && [ -n "$channel" ] && [ -n "$kind" ] && [ -n "$file" ] || usage
+  [ -f "$file" ] || die "no draft file $file"
+  project="$(canon_project "$project")" || exit 1; check_kind "$kind"; check_channel "$channel"
+  # Every file is copied flat into the item's dir, so two with one name would overwrite each other.
+  local a names=" $(basename "$file") "
+  for a in "${attach[@]}"; do
+    [ -f "$a" ] || die "no attachment $a"
+    [[ "$names" != *" $(basename "$a") "* ]] || die "two files are named $(basename "$a"); rename one"
+    names+="$(basename "$a") "
+  done
+  [ -n "$title" ] || title="$(grep -m1 -v '^[[:space:]]*$' "$file" | sed -E 's/^#+[[:space:]]*//')"
+  title="$(tr -d '\t\n' <<<"$title" | cut -c1-"$TITLE_MAX")"
+  [ -n "$title" ] || die "the draft is empty; give --title"
+  local id dir copies=()
+  id="$(new_id)"; dir="$LEDGER/$project/files/$id"
+  mkdir -p "$dir" || die "cannot make $dir"
+  cp -- "$file" "$dir/" || die "cannot copy $file"
+  for a in "${attach[@]}"; do cp -- "$a" "$dir/" || die "cannot copy $a"; copies+=("$dir/$(basename "$a")"); done
+  local ev
+  ev="$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, draft: $d, attachments: $at, utm: $u, by: $b}' \
+    --arg p "$project" --arg c "$channel" --arg k "$kind" --arg t "$title" --arg d "$dir/$(basename "$file")" \
+    --argjson at "$(jq -nc '$ARGS.positional' --args "${copies[@]}")" \
+    --arg u "$(utm "$channel" "$kind" "$project" "$id")" --arg b "$by")"
+  append "$project" "$ev"
+  if [ "$ask" = 1 ]; then
+    local it; it="$(item "$id")" || exit 1
+    ask_review "$it" >/dev/null || exit 1
+  fi
+  printf '%s\n' "$id"
+}
+
+# The answer's first http(s) URL, trailing punctuation dropped.
+url_in() { grep -oE 'https?://[^[:space:]<>"]+' <<<"$1" | awk 'NR==1' | sed -E 's/[.,;:!)]+$//'; }
+
+cmd_answer() {
+  local id="${1:-}" ask="${2:-}"
+  [ -n "$id" ] && [ -n "$ask" ] || usage
+  local project; project="$(project_of "$id")" || exit 1
+  local state; state="$(item "$id" | jq -r .state)"
+  # A second run of the resume must not move the send or overwrite a hand log.
+  [ "$state" = review ] || die "$id is $state, not in review; its answer is already recorded"
+  local file answer by names
+  file="$(agent-ask show "$ask")" || die "no ask $ask"
+  answer="$(sed -n '/^answer: /{s///p;q;}' <<<"$file")"
+  by="$(sed -n '/^answered_by: /{s///p;q;}' <<<"$file")"
+  [ -n "$answer" ] || die "ask $ask has no answer yet"
+  names="$(agent-ask answer-names "$ask")"
+  local url verdict words
+  url="$(url_in "$answer")"
+  # "posted: <url>" is a hand send; a URL inside a longer request ("see <url>") is a revise.
+  words="$(wc -w <<<"${answer//"$url"/}")"
+  if grep -qx skip <<<"$names"; then verdict=skip
+  elif grep -qx post <<<"$names"; then verdict=post
+  elif grep -qx hand <<<"$names" || { [ -n "$url" ] && [ "$words" -le "$HAND_WORDS_MAX" ]; }; then verdict=hand
+  else verdict=revise
+  fi
+  append "$project" "$(event verdict "$id" '{verdict: $v, reviewed_by: $b, note: $n}' --arg v "$verdict" --arg b "${by:-human}" --arg n "$answer")"
+  if [ -n "$url" ] && [ "$verdict" = hand ]; then
+    append "$project" "$(event sent "$id" '{url: $u, by: $b}' --arg u "$url" --arg b "${by:-human}")"
+  elif [ "$verdict" = post ]; then
+    cmd_post "$id"
+  fi
+}
+
+cmd_log() {
+  local id="" url="" by="human" reviewed="" project="" channel="" kind="" title=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) by="$2"; shift 2 ;;
+      --reviewed-by) reviewed="$2"; shift 2 ;;
+      --project) project="$2"; shift 2 ;;
+      --channel) channel="$2"; shift 2 ;;
+      --kind) kind="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      -*) die "log: unknown flag $1" ;;
+      *) if [ -z "$id" ] && [ -z "$project" ] && [[ "$1" =~ $ID_RE ]]; then id="$1"; else url="$1"; fi; shift ;;
+    esac
+  done
+  [[ "$url" =~ ^https?:// ]] || die "log: give the public http(s) URL it went out at"
+  if [ -n "$id" ]; then
+    project="$(project_of "$id")" || exit 1
+    [ "$(item "$id" | jq -r .state)" != sent ] || die "$id is already logged as sent"
+  else
+    [ -n "$project" ] && [ -n "$channel" ] && [ -n "$kind" ] && [ -n "$title" ] || usage
+    project="$(canon_project "$project")" || exit 1; check_kind "$kind"; check_channel "$channel"
+    id="$(new_id)"
+    append "$project" "$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, attachments: [], utm: $u, by: $b}' \
+      --arg p "$project" --arg c "$channel" --arg k "$kind" --arg t "$(cut -c1-"$TITLE_MAX" <<<"$title")" \
+      --arg u "$(utm "$channel" "$kind" "$project" "$id")" --arg b "$by")"
+    [ -z "$reviewed" ] || append "$project" "$(event verdict "$id" '{verdict: "hand", reviewed_by: $r}' --arg r "$reviewed")"
+    printf '%s\n' "$id"
+  fi
+  append "$project" "$(event sent "$id" '{url: $u, by: $b}' --arg u "$url" --arg b "$by")"
+}
+
+cmd_post() {
+  local id="" dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --dry-run) dry=1; shift ;; *) id="$1"; shift ;; esac
+  done
+  [ -n "$id" ] || usage
+  local it state channel verdict
+  it="$(item "$id")" || exit 1
+  IFS=$'\t' read -r state channel verdict < <(jq -r '[.state, .channel, (.verdict // "")] | @tsv' <<<"$it")
+  # Only the reviewer's `post` sends: a draft, a hand verdict or a skip never goes out from here.
+  [ "$state" = approved ] && [ "$verdict" = post ] ||
+    die "$id is $state${verdict:+ ($verdict)}; only an item its reviewer answered post on is sent"
+  has_adapter "$channel" ||
+    die "no adapter posts to $channel; post it by hand, then: mkt log $id <url>"
+  if [ "$dry" = 1 ]; then jq . <<<"$it"; return 0; fi
+  local url
+  url="$("post_${channel//-/_}" "$it")" && [[ "$url" =~ ^https?:// ]] || die "the $channel adapter did not send $id"
+  append "$(jq -r .project <<<"$it")" "$(event sent "$id" '{url: $u, by: "mkt"}' --arg u "$url")"
+  printf '%s\n' "$url"
+}
+
+cmd_list() {
+  local project="" state="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="$(canon_project "$2")" || exit 1; shift 2 ;;
+      --state) state="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  local out
+  out="$(items "$project" | jq -c --arg s "$state" 'map(select($s == "" or .state == $s)) | sort_by(.created) | reverse')"
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return 0; fi
+  jq -r '.[] | [.id, .project, .channel, .kind, .state, (.url // .ask // ""), .title] | @tsv' <<<"$out"
+}
+
+cmd_skip() {
+  local id="${1:-}" by="human"
+  [ "${2:-}" = --by ] && by="${3:-human}"
+  [ -n "$id" ] || usage
+  local project; project="$(project_of "$id")" || exit 1
+  local state; state="$(item "$id" | jq -r .state)"
+  [ "$state" != sent ] || die "$id is already sent"
+  append "$project" "$(event verdict "$id" '{verdict: "skip", reviewed_by: $b}' --arg b "$by")"
+}
+
+cmd_show() { [ -n "${1:-}" ] || usage; item "$1" | jq .; }
+
+command -v jq >/dev/null || die "jq is required"
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  draft) cmd_draft "$@" ;;
+  answer) cmd_answer "$@" ;;
+  log) cmd_log "$@" ;;
+  post) cmd_post "$@" ;;
+  skip) cmd_skip "$@" ;;
+  list) cmd_list "$@" ;;
+  show) cmd_show "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac

@@ -82,5 +82,23 @@ harness_exec() {
     return 0
   fi
 
-  exec opencode run "${flags[@]}" "$@"
+  # The print call's input goes to opencode on stdin, never as an argument: an argument is capped
+  # at 128 KiB (E2BIG), and an agent's PROMPT file is prepended to it. `opencode run` appends
+  # piped stdin to its message. -p only marks the print call (opencode has no such flag), so it
+  # and its value are dropped, as claude.sh and codex.sh do.
+  local i input="" args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      -p|--print)
+        if [ $((i + 1)) -lt ${#args[@]} ] && [ "${args[i + 1]:0:1}" != - ]; then
+          input="${args[i + 1]}"
+          args=("${args[@]:0:i}" "${args[@]:i+2}")
+        else
+          args=("${args[@]:0:i}" "${args[@]:i+1}")
+        fi
+        break ;;
+    esac
+  done
+  [ -z "$input" ] || exec 0<<<"$input"
+  exec opencode run "${flags[@]}" "${args[@]+"${args[@]}"}"
 }

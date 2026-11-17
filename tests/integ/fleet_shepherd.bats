@@ -353,10 +353,10 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
   for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" 'just a shell prompt $' ''; do
     STUB_PANE="$screen" run checked
-    assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+    assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
   done
   STUB_IN_MODE=1 STUB_PANE="$IDLE" run checked
-  assert_output --partial 'nudge DONE: lab/1:1 DONE f-1'
+  assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
   # Nothing typed, nothing to refresh: one write per check.
@@ -1358,7 +1358,7 @@ idle_row() {
   doc "[$(idle_row lab/agent-1:1 %5 9)]"
   STUB_PANE='some output\n\nYou have hit your weekly limit\n\n' run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+  assert_output 'limit: lab/agent-1:1 [%5] stopped on the usage limit'
   grep -q -- '-L lab capture-pane -p -t %5' "$HOME/tmux.calls"
 }
 
@@ -1395,8 +1395,8 @@ accts() {
         $(acct_row hub/dotfiles:7 %45 idle main '["manual"]'), $(acct_row lab/agent-1:1 %5 idle alt)]"
   STUB_ACCTS="$(accts true 100 40)" STUB_PANE='You have hit your weekly limit\n' run "$SH" due
   assert_success
-  assert_output "limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
-limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
+  assert_output "limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt
+limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"
   # the account read covers them: no pane on main is read for the limit text
   run grep -sc capture-pane "$HOME/tmux.calls"
   refute_output --regexp '^[1-9]'
@@ -1406,12 +1406,12 @@ limit: hub/dotfiles:3 on main, out of usage, is in a dialog; then: list it for t
   doc "[$(acct_row hub/dotfiles:2 %27 idle main), $(idle_row lab/agent-1:1 %5 9)]"
   STUB_ACCTS="$(accts true 50 100)" run "$SH" due
   assert_success
-  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  assert_output 'limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
   # Negative control: main under both caps is not out of usage
   STUB_ACCTS="$(accts false 99 99)" run "$SH" due
   assert_failure
   STUB_ACCTS="$(accts false 99 99)" STUB_PANE='hit your weekly limit\n' run "$SH" due
-  assert_output 'limit: lab/agent-1:1 stopped on the usage limit'
+  assert_output 'limit: lab/agent-1:1 [%5] stopped on the usage limit'
 }
 
 # gw_accts <team capped>: accts with the sources rows, the team one capped or not
@@ -1425,7 +1425,7 @@ gw_accts() {
   doc "[$(acct_row lab/agent-55:1 %5 idle gateway), $(acct_row hub/dotfiles:2 %27 idle main)]"
   STUB_ACCTS="$(gw_accts true)" run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-55:1 idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
+  assert_output 'limit: lab/agent-55:1 [%5] idle on gateway, out of usage; then: claude-acct move lab/agent-55:1 --to alt'
   # Negative control: the team has budget, and a key's own row is not the team's
   STUB_ACCTS="$(gw_accts false)" run "$SH" due
   assert_failure
@@ -1435,7 +1435,7 @@ gw_accts() {
   doc "[$(acct_row lab/agent-55:1 %5 idle gateway | jq -c '.idle_min = 9'), $(idle_row lab/agent-1:1 %6 9)]"
   STUB_ACCTS="$(gw_accts false)" STUB_PANE='API Error: 429 Budget has been exceeded! Team=t1 Current cost: 380, Max budget: 250\n' run "$SH" due
   assert_success
-  assert_output 'limit: lab/agent-55:1 stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
+  assert_output 'limit: lab/agent-55:1 [%5] stopped on its gateway budget; then: claude-acct move lab/agent-55:1 --to alt'
 }
 
 @test "an account out of usage with no room anywhere is one line for the human" {
@@ -1453,7 +1453,7 @@ gw_accts() {
   # the verdict says capped under numbers that do not: it moves, to the best account with room
   STUB_ACCTS="$(accts true 40 40)" run "$SH" due
   assert_success
-  assert_output 'limit: hub/dotfiles:2 idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
+  assert_output 'limit: hub/dotfiles:2 [%27] idle on main, out of usage; then: claude-acct move hub/dotfiles:2 --to alt'
   run grep -nE 'week_used // 0\) >= 100|five_hour // 0\) >= 100' "$REPO_ROOT/.local/bin/fleet-shepherd"
   assert_failure
 }
@@ -1654,19 +1654,40 @@ gw_accts() {
   assert_failure 1
 }
 
-@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is accepted" {
+@test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is refused, not recomputed" {
   doc "[]"
   run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_failure 2
-  assert_output --partial 'nothing is due now'
+  assert_output --partial 'the last check found nothing due'
   run "$SH" skip 'unhandled: ' 'why'
   assert_failure 2
   assert_output --partial 'is empty'
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
-  # no check has seen this line: it is due now, so it is a due line
+  # no check has seen this line: skip reads what the last check wrote, so it is refused until one does
   doc "[$(row a DONE false false)]"
   run "$SH" skip 'nudge DONE: a f-a' 'why'
+  assert_failure 2
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  "$SH" check >/dev/null
+  run "$SH" skip 'nudge DONE: a f-a' 'why'
   assert_success
+  # a skipped line is left out of .due while it is due, but it is still a due line: a second reason is accepted
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge DONE: a f-a' 'a better why'
+  assert_success
+}
+
+@test "skip does not rebuild the due lines: it validates against the last check's .due" {
+  doc "[$(row a DONE false false)]"
+  "$SH" check >/dev/null
+  # a copy whose cmd_due fails loudly: skip must not call it
+  sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/sh-nocmd"
+  chmod +x "$BATS_TEST_TMPDIR/sh-nocmd"
+  grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/sh-nocmd"   # the sed matched
+  FLEET_LEAD_FUNCTIONS="$(dirname "$(readlink -f "$SH")")/../../.config/fleet-lead/functions.tsv" \
+    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge DONE: a f-a' 'why'
+  assert_success
+  refute_output --partial 'cmd_due called'
 }
 
 @test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
@@ -1934,10 +1955,134 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   "$SH" run >/dev/null
   local id; id="$(pass_id)"; live "$id" idle
   aged 1
-  # while it ran it parked lab/q (named on a clear machine) and p and hub:2 (named nowhere)
+  # while it ran it parked lab/q (named on a clear machine, once by session and once as <session>:%<pane> with its target) and p and hub:2 (named nowhere)
   touch "$CLAUDE_ACCT_PARKED_DIR/q" "$CLAUDE_ACCT_PARKED_DIR/p" "$CLAUDE_ACCT_PARKED_DIR/hub:2"
-  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
+  printf "target=lab/q:1\n" > "$CLAUDE_ACCT_PARKED_DIR/z:%9"
+  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1" | .pane = "%9"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
   run "$SH" run
-  assert_output --partial 'pace: parked lab/q:1 while the machine reads CLEAR'
-  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '1\t3')"
+  assert_output --partial 'pace: parked lab/q:1 [%9] while the machine reads CLEAR'
+  assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '2\t4')"
+}
+
+# paned <target> <bucket> <pane>: a session row whose fact does not name its target, so only the
+# target differs between two renumberings of the same window
+paned() { row "$1" "$2" false false | jq -c --arg p "$3" '.pane = $p | .fact = "stalled"'; }
+
+@test "a session line keeps its identity when the window renumbers: the pane id, not the index, keys it" {
+  doc "[$(paned hub/demo:5 LANDED %7)]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:5 [%7] stalled'
+  # renumber-windows closed an earlier window: same pane, now :4. It is the line the pass was
+  # handed and left, so it comes back owed, not as a new line.
+  doc "[$(paned hub/demo:4 LANDED %7)]"
+  run checked
+  assert_output 'unhandled: nudge LANDED: hub/demo:4 [%7] stalled'
+  "$SH" skip 'nudge LANDED: hub/demo:4 [%7] stalled' 'waits on purpose'
+  doc "[$(paned hub/demo:3 LANDED %7)]"
+  run checked
+  assert_failure 1
+  # Negative control: another pane at the same index is another session, and a new line
+  doc "[$(paned hub/demo:3 LANDED %8)]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:3 [%8] stalled'
+}
+
+@test "a skip written after the windows renumber still lands: the line check printed names an index that has moved" {
+  doc "[$(paned hub/dotfiles:6 STALLED %37), $(paned hub/dotfiles:15 STALLED %41)]"
+  run checked
+  assert_output 'nudge STALLED: hub/dotfiles:6 [%37] stalled
+nudge STALLED: hub/dotfiles:15 [%41] stalled'
+  # 2026-11-13: earlier windows closed between check and skip (:6 -> :4, :15 -> :13), and :13 is
+  # where another session was. The pass copies the lines check printed, and they still match.
+  doc "[$(paned hub/dotfiles:4 STALLED %37), $(paned hub/dotfiles:13 STALLED %41)]"
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:6 [%37] stalled' 'waits on purpose'
+  assert_success
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:15 [%41] stalled' 'waits on purpose'
+  assert_success
+  run checked
+  assert_failure 1
+  # Negative control: a pane that was never due is refused, whatever index it names
+  run "$SH" skip 'nudge STALLED: hub/dotfiles:13 [%99] stalled' 'nope'
+  assert_failure 2
+}
+
+@test "a limit line is keyed by its pane: a skip survives the renumbering, another pane at the index is a new line" {
+  doc "[$(acct_row hub/dotfiles:3 %19 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_output 'limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it'
+  "$SH" skip 'limit: hub/dotfiles:3 [%19] on main, out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it' 'listed'
+  doc "[$(acct_row hub/dotfiles:2 %19 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_failure 1
+  # Negative control: another pane at the index is another session, and a new line
+  doc "[$(acct_row hub/dotfiles:2 %20 waiting main)]"
+  STUB_ACCTS="$(accts true 100 40)" run checked
+  assert_output --partial 'limit: hub/dotfiles:2 [%20] on main'
+}
+
+@test "a pane stopped on the usage limit is keyed by its pane id too" {
+  doc "[$(idle_row lab/agent-1:3 %5 9)]"
+  STUB_PANE='You have hit your weekly limit\n' run checked
+  assert_output 'limit: lab/agent-1:3 [%5] stopped on the usage limit'
+  "$SH" skip 'limit: lab/agent-1:3 [%5] stopped on the usage limit' 'listed'
+  doc "[$(idle_row lab/agent-1:2 %5 9)]"
+  STUB_PANE='You have hit your weekly limit\n' run checked
+  assert_failure 1
+}
+
+@test "a pace line keys each parked target by its pane id, so a renumbered window is the same line" {
+  doc "[$(prow lab/p:3 | jq -c '.pane = "%8"'), $(prow lab/q:4 | jq -c '.pane = "%9"')]"
+  run checked
+  assert_output 'pace: parked lab/p:3 [%8], lab/q:4 [%9] while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  "$SH" skip 'pace: parked lab/p:3 [%8], lab/q:4 [%9] while the machine reads CLEAR with no hold; then: claude-acct unpark each' 'held on purpose'
+  doc "[$(prow lab/p:2 | jq -c '.pane = "%8"'), $(prow lab/q:3 | jq -c '.pane = "%9"')]"
+  run checked
+  assert_failure 1
+}
+
+@test "an overdue line keeps its identity while its basis count grows: a skip still matches" {
+  phase s1 shell 40 200
+  sed -i 's/"fact":"f"/"fact":"f","pane":"%3"/' "$HOME/rows"
+  sed -i 's/"basis":"b"/"basis":"project-median(274) x1.06 (n=1019)"/' "$HOME/eta"
+  sed -i "s/t-s1/hub\/demo:2/" "$HOME/rows" "$HOME/eta"
+  phases_doc
+  run checked
+  assert_output --partial "overdue: hub/demo:2 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))"
+  "$SH" skip "overdue: hub/demo:2 [%3] phase 2/4 'P2 the thing' open 200m, expected 40m (project-median(274) x1.06 (n=1019))" 'moving'
+  # a phase closed elsewhere: n grows, the age moves, the line is the same one
+  sed -i 's/n=1019/n=1020/; s/x1.06/x1.07/' "$HOME/eta"
+  sed -i 's/demo:2/demo:1/' "$HOME/rows" "$HOME/eta"   # renumber-windows closed an earlier window
+  phases_doc
+  run checked
+  assert_failure 1
+}
+
+@test "canary lane: a nudge to a pane-tagged session that is due an escalation now still scores as survived" {
+  export MODEL=claude-opus-5-5 CANARY_MODEL=claude-sonnet-5-5 CANARY_EVERY=1
+  doc "[$(paned lab/c:3 STALLED %4)]"
+  run "$SH" run
+  doc "[$(paned lab/c:2 STALLED %4 | jq -c '.nudged = true')]"
+  run "$SH" run
+  assert_output --partial 'escalate STALLED: lab/c:2 [%4]'
+  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+}
+
+@test "a pane tag inside a fact is part of the fact: only the target's tag is rewritten in the key" {
+  doc "[$(paned hub/demo:2 LANDED %7 | jq -c '.fact = "see foo/bar [%9]"')]"
+  run checked
+  assert_output 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]'
+  "$SH" skip 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]' 'waits'
+  assert_equal "$(cut -f1 "$FLEET_SHEPHERD_DIR/.skipped")" 'nudge LANDED: hub/%7 see foo/bar [%9]'
+}
+
+@test "an unhandled page names the window the line is about, not only its pane id" {
+  doc "[$(paned hub/demo:2 NEEDS %7)]"
+  export STUB_TRIPPED=''
+  "$SH" check >/dev/null
+  "$SH" check >/dev/null
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
+  "$SH" check >/dev/null
+  run grep 'escalate NEEDS' "$HOME/pages"
+  assert_output --partial '-r tmux:hub/demo:2 unhandled'
+  assert_output --partial 'escalate NEEDS: hub/demo:2 [%7]'
 }

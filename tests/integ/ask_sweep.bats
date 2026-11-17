@@ -82,6 +82,31 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output 'first-run'
 }
 
+# 2026-11-10..14 (ar-2111): a board's list outgrew the pipe, so `grep -q` in a pipe cut `notes` off, the
+# 141 under pipefail read as "no row", and one plan was filed seven times. The newest row lists first,
+# as a board's does, with about 2 MB behind it so the writer is still writing when grep quits; the stub execs cat so it dies of SIGPIPE as notes does.
+@test "a plan's row is found when the board's list is longer than a pipe: two runs add one row" {
+  plan bigplan '1 day ago 1 hour ago' "$OPEN"
+  local rows="$NOTES_FIXTURE/rows.board"
+  for i in $(seq 1 20000); do printf 'p\t%s\tk\t- [ ] unrelated row %s with enough words to be long, padding padding padding padding\n' "$i" "$i"; done > "$rows"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; rows="$NOTES_FIXTURE/rows.board"
+    case "$4" in add) { echo "p	0	k	- [ ] ${@: -1}"; cat "$rows"; } > "$rows.new"; mv "$rows.new" "$rows" ;; list) exec cat "$rows" ;; esac; exit 0'
+  run "$SWEEP" run
+  assert_success
+  run "$SWEEP" run
+  assert_success
+  run grep -c 'finish bigplan' "$rows"
+  assert_output 1
+}
+
+@test "a board that cannot be listed files nothing: unreadable is not 'no row'" {
+  plan unread '1 day ago 1 hour ago' "$OPEN"
+  stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = list ] && exit 1; exit 0'
+  run "$SWEEP" run
+  assert_success
+  assert_not_called ' add '
+}
+
 @test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
   plan recent '1 hour ago' "$OPEN"
@@ -103,6 +128,76 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   assert_not_called ' add '
   assert_output --partial 'no checklist 1'
+}
+
+@test "an open plan with no cache copy files no row and is counted, not dropped unseen" {
+  plan orphan '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/orphan.md"
+  plan homed '1 day ago 1 hour ago' "$OPEN"
+  run "$SWEEP" run
+  assert_success
+  assert_called 'ptask board --agent add --want ask chore(plan): finish homed'
+  assert_not_called 'finish orphan'
+  assert_output --partial 'open plans 2'
+  assert_output --partial 'no cache copy 1'
+}
+
+@test "the summary says what it read, so a clean read never looks like no read" {
+  plan bare '1 day ago 1 hour ago' 'just text'
+  message 'add a slide'
+  message 'and a swing'
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial 'read 1 plans and 1 transcripts (0 unreadable, 2 new messages), asked 1 boards, filed 0'
+  # the same run again: the transcript is read, its messages are past the watermark
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial 'read 1 plans and 1 transcripts (0 unreadable, 0 new messages), asked 0 boards'
+}
+
+@test "a missing transcripts or plans dir is FAILED with why, not a clean zero" {
+  rmdir "$ASK_SWEEP_TRANSCRIPTS"
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial 'no transcripts dir'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
+  mkdir "$ASK_SWEEP_TRANSCRIPTS"; rmdir "$ASK_SWEEP_PLANS"
+  run "$SWEEP" run
+  assert_failure
+  run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
+  assert_output --partial 'why: no plans dir'
+}
+
+@test "a bad line hides no message after it, and a transcript with no cwd is counted unreadable" {
+  local f="$ASK_SWEEP_TRANSCRIPTS/x-board/s.jsonl"
+  message 'before the cut'
+  printf '{"type":"user","trunc\n' >> "$f"
+  message 'after the cut'
+  mkdir -p "$ASK_SWEEP_TRANSCRIPTS/x-nocwd"
+  echo '{"type":"summary"}' > "$ASK_SWEEP_TRANSCRIPTS/x-nocwd/s.jsonl"
+  touch -d '1 hour ago' "$ASK_SWEEP_TRANSCRIPTS/x-nocwd/s.jsonl"
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial '1 transcripts (1 unreadable, 2 new messages)'
+  run cat "$NOTES_FIXTURE/prompt.board"
+  assert_output --partial 'after the cut'
+}
+
+@test "a cwd-less transcript beside a good one does not hide its dir, and none readable is FAILED" {
+  message 'add a slide'
+  echo '{"type":"summary"}' > "$ASK_SWEEP_TRANSCRIPTS/x-board/a.jsonl"
+  touch -d '1 hour ago' "$ASK_SWEEP_TRANSCRIPTS/x-board/a.jsonl"
+  answer
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial '2 transcripts (0 unreadable, 1 new messages)'
+  rm "$ASK_SWEEP_TRANSCRIPTS/x-board/s.jsonl"
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial '0 transcripts (1 unreadable'
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
 }
 
 @test "a missed ask is filed with its quote, and a small clear one joins the downtime queue" {
@@ -296,4 +391,20 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   assert_output --partial 'would file [board] chore(plan): finish stale'
   assert_not_called ' add '
+}
+
+@test "a pointer stub files no row: the plan it names is swept as itself (ar-2513)" {
+  plan canon '1 day ago 1 hour ago' "$OPEN"
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/canon.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  [ "$(grep -c 'finish canon' "$NOTES_FIXTURE/rows.board")" = 1 ]
+  run grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+  [ "$status" -ne 0 ]
+  # negative control: the same stub pointing nowhere is a plan of its own and files its row
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/nowhere.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  grep -q 'finish canon' "$NOTES_FIXTURE/rows.board"
+  grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
 }

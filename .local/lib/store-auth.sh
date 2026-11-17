@@ -1,16 +1,23 @@
 # shellcheck shell=bash
 # store-auth.sh - read-only store credentials from rbw, and the signed tokens the store APIs take.
-# Sourced by release-state and store-sales. A credential or token only ever reaches curl on stdin
+# Sourced by release-state, store-sales and store-reviews. A credential or token only ever reaches curl on stdin
 # and openssl through a process substitution: never argv, never a file on disk.
 #
 #   store_google_token <rbw entry> <scope>  -> STORE_TOKEN, or STORE_WHY (a service-account JSON)
 #   store_asc_jwt <rbw entry>               -> STORE_TOKEN, or STORE_WHY ({key_id, issuer_id, p8})
 #   Both leave the entry in STORE_RAW, so a caller reads its other fields without a second get.
 #   store_rbw_ready                         -> 0, or 1 with STORE_WHY (missing, locked)
+#   store_tokens [play <entry> <scope>] [asc <entry>]
+#                                           -> PLAY_TOKEN and PLAY_RAW, else PLAY_WHY; ASC_TOKEN and
+#                                              ASC_RAW, else ASC_WHY; for the stores named, each RAW the
+#                                              entry without its key. 1 with STORE_WHY, each named
+#                                              store's why too, when rbw is not ready
+#   store_api_error <file>                  -> the error text Apple or Google answered with, else empty
 #
 # The caller sets PROBE_TIMEOUT (seconds, the guard on every external call; default 20).
 
 STORE_TOKEN="" STORE_WHY="" STORE_RAW=""
+PLAY_TOKEN="" PLAY_WHY="" PLAY_RAW="" ASC_TOKEN="" ASC_WHY="" ASC_RAW=""
 
 declare -F now_epoch >/dev/null || now_epoch() { date +%s; }
 
@@ -47,6 +54,9 @@ store_fetch() {
     sleep "$wait"
   done
 }
+
+# store_api_error <file> -> Apple's or Google's error text in a store answer, else empty.
+store_api_error() { jq -r '[.errors[]?.detail, .error.message?] | map(select(. != null)) | first // empty' "$1" 2>/dev/null; }
 
 b64url() { basenc --base64url -w0 | tr -d '='; }
 
@@ -111,4 +121,35 @@ store_asc_jwt() {
   STORE_TOKEN="$(jwt ES256 "$(jq -nc --arg k "$kid" '{alg: "ES256", kid: $k, typ: "JWT"}')" \
     "$(jq -nc --arg i "$iss" --argjson now "$now" '{iss: $i, iat: $now, exp: ($now + 900), aud: "appstoreconnect-v1"}')" "$pem")"
   [ -n "$STORE_TOKEN" ] || { STORE_WHY="cannot sign with rbw entry $entry"; return 1; }
+}
+
+# keyless <entry json> <key field> -> the entry without its key, for the fields a caller reads.
+keyless() { printf '%s' "$1" | jq -c --arg k "$2" 'del(.[$k])' 2>/dev/null; }
+
+# One token per store, made once in the caller's main shell, before its readers fork; a bad entry
+# is that store's why, and the other store still reads. PLAY_RAW and ASC_RAW hold no key, and
+# STORE_RAW is emptied, so no private key outlives the signing.
+store_tokens() {
+  local play="" scope="" asc=""
+  PLAY_TOKEN="" PLAY_WHY="" PLAY_RAW="" ASC_TOKEN="" ASC_WHY="" ASC_RAW=""
+  while [ $# -gt 0 ]; do
+    case "$1:$#" in
+      play:[3-9]*) play="$2" scope="$3"; shift 3 ;;
+      asc:[2-9]*) asc="$2"; shift 2 ;;
+      *) echo "store_tokens: bad arguments at '$1'" >&2; return 2 ;;
+    esac
+  done
+  if ! store_rbw_ready; then
+    [ -z "$play" ] || PLAY_WHY="$STORE_WHY"
+    [ -z "$asc" ] || ASC_WHY="$STORE_WHY"
+    return 1
+  fi
+  if [ -n "$play" ]; then
+    if store_google_token "$play" "$scope"; then PLAY_TOKEN="$STORE_TOKEN" PLAY_RAW="$(keyless "$STORE_RAW" private_key)"; else PLAY_WHY="$STORE_WHY"; fi
+  fi
+  if [ -n "$asc" ]; then
+    if store_asc_jwt "$asc"; then ASC_TOKEN="$STORE_TOKEN" ASC_RAW="$(keyless "$STORE_RAW" p8)"; else ASC_WHY="$STORE_WHY"; fi
+  fi
+  STORE_RAW=""
+  return 0
 }

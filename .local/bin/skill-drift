@@ -344,9 +344,9 @@ check_name() {
 # cannot answer.
 check_meta() {
   local skill="$1" f="$2" parent="$3" cat tags rev
-  cat=$(fm "$f"  | sed -n 's/^  category:[[:space:]]*//p' | head -1 | tr -d ' ')
-  tags=$(fm "$f" | sed -n 's/^  tags:[[:space:]]*//p'     | head -1)
-  rev=$(fm "$f"  | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+  cat=$(fm "$f"  | sed -n 's/^  category:[[:space:]]*//p' | awk 'NR==1' | tr -d ' ')
+  tags=$(fm "$f" | sed -n 's/^  tags:[[:space:]]*//p'     | awk 'NR==1')
+  rev=$(fm "$f"  | sed -n 's/^  reviewed:[[:space:]]*//p' | awk 'NR==1' | tr -d ' "')
 
   if [ -z "$cat" ]; then
     add BADMETA "$skill" category "missing metadata.category"
@@ -473,6 +473,8 @@ check_paths() {
     orig="$p"
     case "$p" in
       *'...'*) continue ;;
+      # ~/Library is the macOS home tree: on any other host it names the agent machine's files.
+      '~/Library'|'$HOME/Library'|'~/Library/'*|'$HOME/Library/'*) [ "$(uname -s)" = Darwin ] || continue ;;
       # A placeholder or brace list: only the concrete directory before it is
       # checkable (`~/.openclaw/{a,b}` names a dead ~/.openclaw).
       *'<'*|*'>'*|*'{'*|*'}'*|*'*'*|*'?'*)
@@ -487,7 +489,10 @@ check_paths() {
     p="${p%/}"
     [ -e "$p" ] || spaced_path_exists "$f" "$orig" || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
+    # An scp-style `host:~/x` (a lowercase hostname right before the colon) is another
+    # host's file, so it is dropped first; `PATH=$HOME/a:~/b` keeps both paths.
     grep -v 'skill-drift: ignore' "$f" \
+      | sed -E 's/(^|[[:space:]`(])[a-z0-9][a-z0-9.@-]*:~\/[A-Za-z0-9._~\/<>{}*?@-]*/\1/g' \
       | grep -oE '(~|\$HOME)/[A-Za-z0-9._~/<>{}*?@-]*[A-Za-z0-9._>}*?@-]' \
       | sort -u
   )
@@ -598,7 +603,7 @@ check_undeployed() {
 # is not false, it is unsupported - nobody has looked.
 check_stale() {
   local skill="$1" f="$2" rev age
-  rev=$(fm "$f" | sed -n 's/^  reviewed:[[:space:]]*//p' | head -1 | tr -d ' "')
+  rev=$(fm "$f" | sed -n 's/^  reviewed:[[:space:]]*//p' | awk 'NR==1' | tr -d ' "')
   [ -n "$rev" ] || return 0
   age=$(( ( $(date +%s) - $(date -d "$rev" +%s 2>/dev/null || echo 0) ) / 86400 ))
   [ "$age" -gt "$STALE_DAYS" ] && add STALE "$skill" "$rev" "${age}d since last verified (limit ${STALE_DAYS}d)"

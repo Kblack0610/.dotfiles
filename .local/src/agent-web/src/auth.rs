@@ -1,10 +1,13 @@
-//! Sign in with Forgejo (OAuth2 authorization-code flow).
+//! Sign in with Forgejo (OAuth2 authorization-code flow), or with a local sign-in key.
 //!
 //! The page can type into live agent sessions, so the LAN allowlist at the ingress is
 //! not enough on its own. A signed-out visit is sent to Forgejo; on return agent-web
 //! exchanges the code for the user's login name, checks it against an allowlist, and
 //! hands the browser an opaque session id. Sessions live in
 //! `~/.config/agent-web/sessions.json` (0600) so a restart does not sign anyone out.
+//!
+//! The sign-in key (`login.key`, see `login_key`) is the way in that does not need Forgejo, so a
+//! Forgejo outage does not lock the dashboard.
 //!
 //! The OAuth app's client id and secret are read from `~/.config/agent-web/oauth.json`.
 //! The two Forgejo calls go through `curl`, with the secret on stdin rather than argv.
@@ -56,6 +59,23 @@ pub fn widget_token() -> Option<String> {
     let t = t.trim();
     (!t.is_empty()).then(|| t.to_string())
 }
+
+/// The sign-in key that does not depend on Forgejo (`login.key` beside the sessions file, mode
+/// 600). Read on each request, so a rewrite rotates it and a delete turns the form off with no
+/// restart. None when the file is missing or shorter than `KEY_MIN_LEN`.
+pub fn login_key() -> Option<String> {
+    usable_key(&fs::read_to_string(config_dir().join("login.key")).ok()?)
+}
+
+fn usable_key(text: &str) -> Option<String> {
+    let t = text.trim();
+    (t.len() >= KEY_MIN_LEN).then(|| t.to_string())
+}
+
+/// A key shorter than this is treated as no key (`openssl rand -hex 24` makes 48). There is no
+/// lockout on wrong keys: a key this long cannot be guessed, and a lock any visitor could trip
+/// would shut the owner out during the Forgejo outage this sign-in exists for.
+const KEY_MIN_LEN: usize = 32;
 
 /// Constant-time equality, so response timing does not leak a prefix of the secret.
 pub fn matches(given: &str, secret: &str) -> bool {
@@ -148,6 +168,11 @@ impl OAuth {
             base: required("AGENT_WEB_BASE_URL")?,
             allowed: parse_allowed(&allowed),
         })
+    }
+
+    /// The login a key sign-in starts a session for: the first allowed user.
+    pub fn key_user(&self) -> Option<&str> {
+        self.allowed.first().map(String::as_str)
     }
 
     pub fn is_allowed(&self, login: &str) -> bool {
@@ -360,6 +385,20 @@ mod tests {
         assert!(o.is_allowed("bob"));
         assert!(!o.is_allowed("mallory"));
         assert!(!o.is_allowed(""));
+    }
+
+    #[test]
+    fn key_user_is_the_first_allowed_login() {
+        assert_eq!(oauth().key_user(), Some("alice"));
+    }
+
+    #[test]
+    fn a_short_or_blank_key_is_no_key() {
+        assert_eq!(usable_key(""), None);
+        assert_eq!(usable_key("  \n"), None);
+        assert_eq!(usable_key("short"), None);
+        let k = "a".repeat(KEY_MIN_LEN);
+        assert_eq!(usable_key(&format!("{k}\n")), Some(k));
     }
 
     #[test]

@@ -209,13 +209,16 @@ fn kebab(word: &str) -> Option<String> {
     projects::is_area(&w).then_some(w)
 }
 
-/// `title` within the grammar's limit, cut at a word. The filer keeps the whole line: `edit --was`
-/// as the row's `was:` detail, `agent-queue` as `--detail`.
-fn cut(title: &str) -> String {
+/// `title` within the grammar's limit, cut at a word. The filer keeps the whole title: `edit --was`
+/// on a `full:` detail line, `agent-queue` as `--detail`.
+pub(crate) fn cut(title: &str) -> String {
     if title.chars().count() <= projects::TITLE_MAX {
         return title.to_string();
     }
     let head: String = title.chars().take(projects::TITLE_MAX).collect();
+    if title.chars().nth(projects::TITLE_MAX) == Some(' ') {
+        return head;
+    }
     match head.rsplit_once(' ') {
         Some((h, _)) => h.to_string(),
         None => head,

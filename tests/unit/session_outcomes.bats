@@ -397,6 +397,69 @@ EOF
   assert_equal "$(field e '.prs | length')" 0
 }
 
+# fj_alias_setup - the transcript prints the public ROOT_URL host (git.public.test), the PR store and the
+# project map's forges.forgejo hold the repo under git.example.test; both hosts are in SO_FORGEJO_HOSTS.
+fj_alias_setup() {
+  fj_setup
+  sed -i 's#git\.example\.test#git.public.test#g' "$TR/e.jsonl"
+  export SO_FORGEJO_HOSTS="git.example.test git.public.test"
+  jq -n '{forges: {forgejo: "git.example.test"}, trackers: {audio: {forgejo: "o/audio"}}}' > "$SANDBOX/map.json"
+  export SO_PROJECT_MAP="$SANDBOX/map.json"
+}
+
+@test "a Forgejo claim printed with the public ROOT_URL host reads the PR store's repo: one alias list, SO_FORGEJO_HOSTS" {
+  fj_alias_setup
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(outcome)" WORKED
+  assert_equal "$(field e '[.prs[] | "\(.repo)#\(.number) \(.state)"] | join(",")')" "git.example.test/o/audio#12 MERGED"
+  assert_equal "$(field e .prs_merged)" 1
+  refute_output --partial "claims dropped"
+  assert_equal "$(grep -c 'git.public.test' "$SANDBOX/ss.calls" || true)" 0
+}
+
+@test "a host SO_FORGEJO_HOSTS does not list is no alias: its claim is dropped and named" {
+  fj_alias_setup
+  export SO_FORGEJO_HOSTS="git.example.test"
+  touch "$GH_FIXTURE/prs.git.public.test-o-audio.unlisted"
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, not in the PR store: git.public.test/o/audio"
+}
+
+@test "so_canon_claims: only a listed alias host is rewritten; GitHub claims, other hosts and a null metrics pass through" {
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  export SO_FORGEJO_HOSTS="git.example.test GIT.public.test"
+  printf '{"forges":{"forgejo":"git.example.test"}}' > "$BATS_TEST_TMPDIR/m.json"
+  run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1},{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
+  assert_output '{"prs":[{"repo":"git.example.test/o/r","number":1},{"repo":"git.example.test/o/r","number":1},{"repo":"o/r","number":2},{"repo":"git.other.test/o/r","number":3}]}'
+  run so_canon_claims "$BATS_TEST_TMPDIR/m.json" <<<'null'
+  assert_output null
+  run so_canon_claims "$BATS_TEST_TMPDIR/none.json" <<<'{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
+  assert_output '{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
+}
+
+@test "a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo" {
+  fj_alias_setup
+  touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"
+  run "$SUBJECT" run
+  assert_failure
+  assert_output --partial "the PR store lacks repos the project map lists, their sessions held: git.example.test/o/audio"
+  assert_equal "$(outcome)" STALLED
+  assert_equal "$(field e .session_id)" null
+  assert_equal "$(field a .prs_merged)" 1
+  # an unreadable project map is no "nothing is mapped": the run stalls rather than drop the claim as a note
+  printf 'not json' > "$SANDBOX/bad.json"; SO_PROJECT_MAP="$SANDBOX/bad.json" run "$SUBJECT" run
+  assert_failure
+  assert_output --partial "could not read the Forgejo host and aliases"
+  # negative control: the same drop for a repo the map does not list stays a note
+  jq 'del(.trackers.audio)' "$SANDBOX/map.json" > "$SANDBOX/map2.json"; export SO_PROJECT_MAP="$SANDBOX/map2.json"
+  run "$SUBJECT" run
+  assert_success
+  assert_output --partial "claims dropped, not in the PR store: git.example.test/o/audio"
+}
+
 @test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
   # shellcheck source=/dev/null
   . "$SO_LIB_DIR/session-outcomes.sh"
@@ -1044,7 +1107,7 @@ EOF
 @test "a sandboxed harness's sessions are read from its own run DB beside the shared one; an unreadable one loses only its lines" {
   oc_db
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, glm: {launcher: "opencode"}}}' > "$SO_HARNESSES"
+  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, "opencode-go": {launcher: "opencode"}}}' > "$SO_HARNESSES"
   mkdir -p "$SANDBOX/oc-free/run/data/opencode"
   cp "$SO_OPENCODE_DB" "$SANDBOX/oc-free/run/data/opencode/opencode.db"
   sqlite3 "$SANDBOX/oc-free/run/data/opencode/opencode.db" "UPDATE session_v2 SET id = 'ses_free' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_free' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_free' WHERE session_id = 'ses_root';"
@@ -1169,14 +1232,14 @@ EOF
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
 }
 
-@test "a Claude session never reads codex or opencode: not from an agent: codex item, a glm item, or a codex stamp an earlier run left" {
+@test "a Claude session never reads codex or opencode: not from an agent: codex item, an opencode-go item, or a codex stamp an earlier run left" {
   oc_db
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n '{harnesses: {glm: {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
+  jq -n '{harnesses: {"opencode-go": {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
   {
     jq -cn '{slug: "cx", agent: "codex", sessions: "sess-a sess-c"}'
-    jq -cn '{slug: "gl", agent: "glm", sessions: "sess-b"}'
+    jq -cn '{slug: "gl", agent: "opencode-go", sessions: "sess-b"}'
     jq -cn '{slug: "lz", agent: "lazer-reserve", sessions: "sess-d"}'
   } > "$SANDBOX/items.jsonl"
   # c: an earlier run stamped codex on it (the 8473b997 shape); the re-observation must not keep it
@@ -1552,15 +1615,18 @@ gw_ready() {
 # rework_repo [fix|move] - a clone of o/r whose origin cannot be reached (GIT_SSH_COMMAND=false), so the
 # fetch fails and the refs as they stand are read. "feat: a (#10)" lands at PR 10's merge time;
 # with "fix", a fix 11h later rewrites its line and names #10; with "move", a fix naming #10 only
-# renames the file; without either, a feat rewrites it.
+# renames the file; with "lock", a fix naming #10 only regenerates web/pnpm-lock.yaml and Cargo.lock
+# the feat also wrote; without either, a feat rewrites it.
 rework_repo() {
   R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
   git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
   c() { GIT_AUTHOR_DATE="@$1 +0000" GIT_COMMITTER_DATE="@$1 +0000" git -C "$R" -c user.name=t -c user.email=t@t commit -qam "$2"; }
-  printf 'one\n' > "$R/a.sh"; git -C "$R" add a.sh; c 1792371600 "feat: a (#10)"
+  printf 'one\n' > "$R/a.sh"; mkdir "$R/web"; printf 'one\n' > "$R/web/pnpm-lock.yaml"; printf 'one\n' > "$R/Cargo.lock"
+  git -C "$R" add a.sh web/pnpm-lock.yaml Cargo.lock; c 1792371600 "feat: a (#10)"
   FEAT=$(git -C "$R" rev-parse HEAD)
   case "${1:-}" in
     fix) printf 'two\n' > "$R/a.sh"; c 1792411200 "fix: a again, after #10 (#13)" ;;
+    lock) printf 'two\n' > "$R/web/pnpm-lock.yaml"; printf 'two\n' > "$R/Cargo.lock"; c 1792411200 "fix: bump deps, after #10 (#13)" ;;
     move) git -C "$R" mv a.sh b.sh; c 1792411200 "fix: move a.sh to b.sh, after #10 (#13)" ;;
     *) printf 'two\n' > "$R/a.sh"; c 1792411200 "feat: a grows (#13)" ;;
   esac
@@ -1629,6 +1695,12 @@ rework_repo() {
 
 @test "rework: a fix that only moves a file rewrites no line, so the change is no candidate" {
   rework_repo move
+  "$SUBJECT" run
+  assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
+}
+
+@test "rework: a fix that only regenerates a lockfile rewrites no code line, so the change is no candidate" {
+  rework_repo lock
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
 }

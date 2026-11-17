@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# fleet-is-home - exit 0 when this machine is the fleet home (the roster's fleet_state_host), or no
+# roster names one; exit 1 with the reason on stderr otherwise.
+#
+# The singleton units (fleet-state, agent-ask-deliver, the store sync, agent-web, the agentctl
+# lanes) run it as ExecCondition, so on any other machine they skip instead of writing a second
+# store. It fetches the roster first when its last fetch is FLEET_ROSTER_MAX_SECS old, so a machine
+# back from being off reads the home the forge names now (fleet_roster_fresh).
+# FLEET_HOST overrides this machine's name. Library: .local/lib/fleet-hosts.sh (fleet_is_home).
+set -uo pipefail
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
+
+fleet_is_home && exit 0
+echo "fleet-is-home: $FLEET_HOST is not the fleet home; the inventory's fleet_state_host is $(fleet_state_host)" >&2
+exit 1

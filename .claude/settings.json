@@ -379,9 +379,7 @@
     "/tmp"
   ],
   "skillOverrides": {
-    "bitbucket-ops": "name-only",
     "blind-review": "name-only",
-    "bug-bash-wrapup": "name-only",
     "changelog-draft": "name-only",
     "clickup-ops": "name-only",
     "compact-prep": "name-only",
@@ -398,7 +396,6 @@
     "ingest-prs": "name-only",
     "ingest-worktree": "name-only",
     "init": "name-only",
-    "jira-subtask-conform": "name-only",
     "jira-ticket-pipeline": "name-only",
     "keybindings-help": "name-only",
     "marp-slide": "name-only",
@@ -414,7 +411,6 @@
     "schedule": "name-only",
     "scope": "name-only",
     "security-review": "name-only",
-    "session-registry": "name-only",
     "ui-audit": "name-only",
     "work-update": "name-only"
   }

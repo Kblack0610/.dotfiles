@@ -28,9 +28,31 @@ const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, becau
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
 const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
 
+// Whether the shown tab has drawn: #main carries data-drawn="<tab>" once the stream is open (its
+// reads, the sessions and asks, have started) and every path read since the tab was shown has
+// answered at least once, and the frame after the last answer asked for no new one: all the tab
+// asked for has painted (a placeholder shows only until its first answer). agent-web-shot waits
+// on it. A refetch of a path answered since (a poll, a pushed event) does not count: on a busy
+// fleet those overlap and would hold the mark off forever. A first read takes it off; setTab
+// (drawnReset) takes it off and forgets what was heard, and the stream's open checks again.
+const drawnWait = new Set(), drawnHeard = new Set();
+let drawnGone = false; // signed out: the page is reloading to sign in, and never draws
+function drawnCheck() {
+  if (typeof requestAnimationFrame !== "function") return; // a test's vm context without frames
+  // The frame comes after every microtask, so a read chained on the last one (`await api(a);
+  // await api(b)`) has started by then and holds the mark off.
+  requestAnimationFrame(() => { if (!drawnWait.size && conn.open && !drawnGone) $("main").dataset.drawn = st.tab; });
+}
+function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; }
+
 async function api(path, opts) {
+  if (!drawnHeard.has(path)) { drawnWait.add(path); delete $("main").dataset.drawn; }
+  try { return await apiRead(path, opts); }
+  finally { drawnHeard.add(path); if (drawnWait.delete(path) && !drawnWait.size) drawnCheck(); }
+}
+async function apiRead(path, opts) {
   const r = await reach(path, opts);
-  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
+  if (r.status === 401) { drawnGone = true; location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
     // What failed first, then the server's own words, then what to do (comms-standard, UI text).
     const what = path.replace(/^\/api\//, "").split(/[/?]/)[0] || "the page";

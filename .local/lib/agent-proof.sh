@@ -223,3 +223,11 @@ proof_outcome() {
     *) proof_report "$1" "$2" "${3:-}" ;;
   esac
 }
+
+# proof_runner_outcome VERDICT WORDS - proof_outcome for the runner this pass runs as
+# ($AGENTCTL_NAME, exported into every unit); outside agentctl it does nothing. For a tool that
+# is also run by hand: under agentctl a pass that declares no outcome is promoted to STALLED,
+# which trips fleet-liveness.
+proof_runner_outcome() {
+  [ -z "${AGENTCTL_NAME:-}" ] || proof_outcome "$AGENTCTL_NAME" "$1" "${2:-}"
+}

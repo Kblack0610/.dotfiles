@@ -31,9 +31,11 @@ Cleanly wrap up and spin down the current Claude session - write a short status 
 
 The kill is **gated on the Stop checks**: if content checks are FAILING, the teardown is
 deferred (the sentinel stays armed) and fires on the next clean Stop instead. So `/wind-down`
-never closes the window over broken or unpushed work. A new prompt from the user disarms it
-(`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session is not done, so
-re-run `/wind-down` when that work is finished.
+never closes the window over broken or unpushed work. A new prompt, typed or a cross-session
+message, disarms it (`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session
+is not done, so re-run `/wind-down` when that work is finished. Trust the hook's line over your
+own memory: a session resumed within a day of its teardown is told "wind-down is not armed"
+(the `.fired` marker that says so is reaped after a day).
 
 ## Steps
 
@@ -108,11 +110,11 @@ lab project exists for this repo, refresh its deterministic `## <- Release & sta
 ```
 
 Skip if the repo has no lab project.
-See the `lab-sync` skill.
+See the `lab-status` skill, "Refresh the feed".
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
 "where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
-`lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
+the feed can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
 
@@ -185,9 +187,8 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    `git reset --hard` and `git stash` may both be unavailable (a permission deny-rule; the stash
    stack is shared across worktrees). A denied command is a signal to reach for a different
    mechanism, not to stop: `git checkout <branch>`, `git restore <path>`, and `git checkout -b`
-   are non-destructive and usually permitted. Discarding tool-regenerated churn (Serena's
-   `.serena/project.yml`, theme output) with `git restore` is fine and is often what unblocks a
-   branch switch.
+   are non-destructive and usually permitted. Discarding tool-regenerated churn (theme output) with
+   `git restore` is fine and is often what unblocks a branch switch.
 5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
    RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
    and `agentctl-tmp-gc` (hourly) reclaims the scratchpads of sessions that never wound down.
@@ -203,7 +204,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there, because it closes this session a second later, before the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
+6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there: step 3 already armed the same teardown, which waits for the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -260,7 +261,7 @@ thing shown before the window closes.
   per project, so several armed sessions in the same repo do not clobber each other, and the
   directory `arm` runs from does not matter. A sentinel
   left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
-  prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
+  prompt or cross-session message arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
   `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.

@@ -139,9 +139,17 @@ pub const TABS: [Tab; 11] = [
         group: "Projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &["cards", "board", "deliverables", "stages", "requirements"],
+        sections: &[
+            "cards",
+            "board",
+            "deliverables",
+            "coverage",
+            "stages",
+            "requirements",
+        ],
         // The project list, every project's rows on one board (the Board tab until 2026-11-12),
-        // the deliverables, and the stage ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
+        // the deliverables, every product's departments (`hub_core::departments`), and the stage
+        // ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
         // anything else is a project, and a project with such a name opens as `<profile>/<name>`.
         inner: &[
             Inner {
@@ -158,6 +166,11 @@ pub const TABS: [Tab; 11] = [
                 id: "deliverables",
                 title: "Deliverables",
                 sections: &["deliverables"],
+            },
+            Inner {
+                id: "coverage",
+                title: "Coverage",
+                sections: &["coverage"],
             },
             Inner {
                 id: "ladder",
@@ -436,22 +449,63 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 }
 
 /// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
-/// human and the systems at a glance first, then the project's rows, its epics, the next stage's
-/// checklist, and what happened. Overview is the default; a section id opens the inner tab holding it.
-pub const PROJECT_PAGE: [Inner; 5] = [
+/// human and the systems at a glance first, then a product's five departments
+/// (`hub_core::departments`), then the work: its rows, its epics, the next stage's checklist,
+/// and what happened. Overview is the default; a section id opens the inner tab holding it.
+pub const PROJECT_PAGE: [Inner; 10] = [
     Inner {
         id: "overview",
         title: "Overview",
         sections: &["p-needs", "p-flight", "p-systems"],
     },
     Inner {
+        id: "analytics",
+        title: "Analytics",
+        sections: &[
+            "p-analytics-needs",
+            "p-analytics-numbers",
+            "p-analytics-pipes",
+        ],
+    },
+    Inner {
+        id: "marketing",
+        title: "Marketing",
+        sections: &[
+            "p-marketing-needs",
+            "p-marketing-outbound",
+            "p-marketing-numbers",
+            "p-marketing-pipes",
+        ],
+    },
+    Inner {
+        id: "legal",
+        title: "Legal",
+        sections: &[
+            "p-legal-needs",
+            "p-legal-checks",
+            "p-legal-numbers",
+            "p-legal-pipes",
+        ],
+    },
+    Inner {
+        id: "support",
+        title: "Support",
+        sections: &["p-support-needs", "p-support-numbers", "p-support-pipes"],
+    },
+    Inner {
+        id: "money",
+        title: "Money",
+        sections: &["p-money-needs", "p-money-numbers", "p-money-pipes"],
+    },
+    Inner {
         id: "rows",
         title: "Rows",
         sections: &["p-rows"],
     },
+    // Build until 2026-11-15: the same table as Projects > Deliverables, so the same name.
     Inner {
-        id: "build",
-        title: "Build",
+        id: "deliverables",
+        title: "Deliverables",
         sections: &["p-build"],
     },
     Inner {
@@ -465,6 +519,37 @@ pub const PROJECT_PAGE: [Inner; 5] = [
         sections: &["p-shipped", "p-timeline", "p-note"],
     },
 ];
+
+/// The project page's first work tab: the strip draws a break before it, between the
+/// departments and the work.
+pub const PROJECT_WORK: &str = "rows";
+
+/// Retired project-page inner ids and the inner tab that took their place, so an old
+/// `#projects/<p>/build` still lands. Keep a name here for good once it has shipped.
+pub const PROJECT_RETIRED: &[(&str, &str)] = &[("build", "deliverables")];
+
+/// The inner tabs a project's page shows: all ten for a product, Overview and the work tabs
+/// for infra (`departments::is_product` over its project-map type).
+pub fn project_page(product: bool) -> Vec<Inner> {
+    let depts = crate::departments::DEPARTMENTS.map(|d| d.id);
+    PROJECT_PAGE
+        .into_iter()
+        .filter(|i| product || !depts.contains(&i.id))
+        .collect()
+}
+
+/// The project-page inner tab `word` names: its id, a retired id, or a section it holds.
+pub fn project_inner(word: &str) -> Option<&'static Inner> {
+    let w = word.trim().to_ascii_lowercase();
+    let w = PROJECT_RETIRED
+        .iter()
+        .find(|(old, _)| *old == w)
+        .map_or(w.as_str(), |(_, new)| new);
+    PROJECT_PAGE
+        .iter()
+        .find(|i| i.id == w)
+        .or_else(|| PROJECT_PAGE.iter().find(|i| i.sections.contains(&w)))
+}
 
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists.
 pub const OFF_BAR: [&str; 1] = ["daily"];
@@ -875,6 +960,58 @@ mod tests {
     }
 
     #[test]
+    fn a_product_page_has_the_department_tabs_and_build_lands_on_deliverables() {
+        let ids = |p: Vec<Inner>| p.iter().map(|i| i.id).collect::<Vec<_>>();
+        let depts = crate::departments::DEPARTMENTS;
+        assert_eq!(
+            ids(project_page(true)),
+            [
+                "overview",
+                "analytics",
+                "marketing",
+                "legal",
+                "support",
+                "money",
+                "rows",
+                "deliverables",
+                "stage",
+                "activity"
+            ]
+        );
+        assert_eq!(
+            ids(project_page(false)),
+            ["overview", "rows", "deliverables", "stage", "activity"]
+        );
+        for d in depts {
+            let i = project_inner(d.id).unwrap();
+            assert_eq!(i.title, d.title);
+            for part in ["needs", "numbers", "pipes"] {
+                assert!(i.sections.contains(&format!("p-{}-{part}", d.id).as_str()));
+            }
+        }
+        let first_work = PROJECT_PAGE.iter().position(|i| i.id == PROJECT_WORK);
+        assert_eq!(
+            first_work,
+            Some(depts.len() + 1),
+            "the work tabs follow the departments"
+        );
+        let at = |w: &str| project_inner(w).map(|i| i.id);
+        assert_eq!(at("build"), Some("deliverables"));
+        assert_eq!(at("p-build"), Some("deliverables"));
+        assert_eq!(at("p-legal-checks"), Some("legal"));
+        assert_eq!(at("p-marketing-outbound"), Some("marketing"));
+        assert_eq!(at("nope"), None);
+        let mut all: Vec<&str> = PROJECT_PAGE
+            .iter()
+            .flat_map(|i| i.sections.to_vec())
+            .collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n, "a section id names one inner tab");
+    }
+
+    #[test]
     fn the_board_is_projects_all_rows_and_its_old_name_lands_there() {
         let projects = resolve("projects").unwrap();
         let at = |w: Option<&str>| inner_tab(projects, w).map(|i| i.id);
@@ -885,7 +1022,11 @@ mod tests {
         assert_eq!(at(Some("requirements")), Some("ladder"));
         assert_eq!(at(Some("ladder")), Some("ladder"));
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Projects", "All rows", "Deliverables", "Ladder"]);
+        assert_eq!(
+            titles,
+            ["Projects", "All rows", "Deliverables", "Coverage", "Ladder"]
+        );
+        assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");
     }
 

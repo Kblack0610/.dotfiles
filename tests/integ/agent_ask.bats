@@ -216,7 +216,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
 
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
-@test "answer and cancel fail the queued items the ask can no longer release, and only those" {
+@test "an answer fails the queued items it can no longer release, and only those; a cancel leaves them queued and flagged" {
   local opts='go=run it now|later=run it later' a b c d e
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
@@ -231,10 +231,13 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'state: queued'
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
-  "$AGENT_ASK" cancel "$b" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-b
-  assert_line 'status: failed'
-  assert_line "note: dead hold: ask:$b=go (cancelled)"
+  # 2026-11-13: cancelling yaZGII closed consoles-p3 unfinished. A cancel decides nothing, so the item
+  # stays queued and held, its live hold the flag, and the canceller is told how to re-gate or close it.
+  run --separate-stderr "$AGENT_ASK" cancel "$b"
+  assert_success
+  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b: set its tags without ask:$b=go"*"--why <why>"* ]]
+  run "$AGENT_ASK_QUEUE_CMD" show on-b --json
+  [ "$(jq -r '"\(.state) \(.hold) \(.note // "none")"' <<<"$output")" = "queued ask:$b=go (cancelled) none" ]
   # A judge answer is not the human's, who can still answer: the item stays queued.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
   "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
@@ -655,14 +658,31 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 31 tab-separated fields per ask, delivery and its answers after parked_until" {
+@test "list emits 32 tab-separated fields per ask, delivery and its answers after parked_until, previews last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '31'
+  assert_output '32'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
   assert_output '2026-11-06T14:30:00-0800'
+}
+
+@test "--preview stores each image's full path, |-joined, as the last list field, and refuses a missing file" {
+  mkdir -p "$SANDBOX/img"; : >"$SANDBOX/img/a.png"; : >"$SANDBOX/img/b.png"
+  "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a.png" --preview "$SANDBOX/img/b.png" 'ship it?' >/dev/null
+  run bash -c '"$AGENT_ASK" list demo | cut -f32'
+  assert_output "$(realpath "$SANDBOX/img/a.png")|$(realpath "$SANDBOX/img/b.png")"
+  run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/none.png" 'ship it?'
+  assert_failure 2
+  assert_output --partial 'no preview file'
+  # a tab in the path would shift every list column after it
+  : >"$SANDBOX/img/a"$'\t'"b.png"
+  run "$AGENT_ASK" post --project demo --preview "$SANDBOX/img/a"$'\t'"b.png" 'ship it?'
+  assert_failure 2
+  run "$AGENT_ASK" post --project demo --preview
+  assert_failure 2
+  assert_output --partial 'no preview file'
 }
 
 @test "the last three fields are judge_rule, judge_reason and answer_note, for agent-web's Details fold" {

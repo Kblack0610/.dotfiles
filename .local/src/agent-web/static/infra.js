@@ -74,11 +74,11 @@ function coreStrip(cores) {
 
 // Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
 // the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
-// no reading is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
+// no data is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
 // their disks.
 function diskCell(m) {
   const free = m.disk;
-  if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">no reading</td>`;
+  if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">${NO_DATA}</td>`;
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
 }
 
@@ -120,7 +120,7 @@ const MACH_COLS = { machine: ["machine"], where: ["where"], state: ["state"], bu
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   where: (m) => td("muted", esc(m.where)),
-  state: (m) => td(m.state === "up" ? "" : m.state === "no reading" ? "muted" : "warn", esc(m.state)),
+  state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
   busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
@@ -383,7 +383,7 @@ function historyChart(h, cores, colors) {
     const ci = segs.reduce((a, s) => a + s.v, 0);
     if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
     const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
-    const tip = x.cpu == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
+    const tip = x.cpu == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
     return { key: String(x.at), label: dayTick(x.at), tip, segs };
   });
   const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
@@ -484,7 +484,7 @@ const PROC_CELLS = {
 function tempChart(h) {
   if (!h.hours.some((x) => x.temp != null)) return "";
   const cols = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at),
-    tip: x.temp == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: hottest ${degC(x.temp)}`,
+    tip: x.temp == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: hottest ${degC(x.temp)}`,
     segs: [{ v: x.temp || 0, color: x.temp >= HOT_C ? "var(--b-stalled)" : OTHER }] }));
   return `${columns(cols, { height: 80, yfmt: degC })}<div class="muted">the CPU's hottest sensor each hour, amber from ${HOT_C}C</div>`;
 }
@@ -528,7 +528,7 @@ function machineBody(d) {
 // One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
-  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: no reading` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
+  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
   const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
     segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
   const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));

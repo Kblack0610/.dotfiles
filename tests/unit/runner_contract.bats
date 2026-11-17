@@ -104,12 +104,10 @@ EOF
 headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
-  # The three exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`,
-  # the `agent-codex run` that `--harness codex` launches, and ask-local, the terminal client for
-  # the gateway's local route (its route comes from agentctl-run; its chat call is its own).
+  # The two exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`
+  # and the `agent-codex run` that `--harness codex` launches.
   run headless_launches "$REPO_ROOT/.local"
-  assert_equal "${#lines[@]}" 3
-  assert_output --partial '/.local/bin/ask-local:'
+  assert_equal "${#lines[@]}" 2
   assert_output --partial '/.local/bin/fleet-dispatch:'
   assert_output --partial '/.local/bin/agent-codex:'
   run headless_launches "$REPO_ROOT/.config"

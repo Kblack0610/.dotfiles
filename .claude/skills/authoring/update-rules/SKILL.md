@@ -34,7 +34,7 @@ Ask first: **which repos does this rule apply in, and which tools should obey it
 
 | Scope | Edit | Affects |
 |---|---|---|
-| All AI tools (Claude + Codex + Gemini + OpenCode) | a section of `~/.dotfiles-private/.claude/CLAUDE.md` that `overview.md` names with a `<!-- shared: <section> -->` marker | Everything: the commit runs the sync, which splices the section into the staged `overview.md` |
+| All AI tools (Claude + Codex + Gemini + OpenCode) | a section of `~/.dotfiles-private/.claude/CLAUDE.md` that `overview.md` names with a `<!-- shared: <section> -->` marker | Everything: the sync splices the section into its staged copy of `overview.md` |
 | Non-Claude tools only | `~/.dotfiles-private/.config/rulesync-global/.rulesync/rules/overview.md` + run sync | Codex, Gemini, OpenCode |
 | Claude-only (user-global) | `~/.dotfiles-private/.claude/CLAUDE.md` | Claude Code (symlinked to `~/.claude/CLAUDE.md`) |
 | Codex-only (repo root) | `~/.dotfiles-private/AGENTS.md` | Codex CLI (auto-loaded from repo root) |
@@ -69,7 +69,7 @@ What it writes, and what it explicitly does NOT:
 - Writes: `~/.codex/AGENTS.md`, `~/.codex/config.toml` (managed block only), `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, `~/.config/opencode/AGENTS.md`, `~/.config/opencode/opencode.json`
 - `~/.config/opencode/` is stowed from `~/.dotfiles-private`, so the opencode output is tracked: commit it in the PR that changes the rule. From a worktree, point the sync at it: `RULESYNC_ROOT=<wt>/.config/rulesync-global OPENCODE_HOME=<wt>/.config/opencode`. Why: left uncommitted from 2026-09-25 to 2026-11-02, it sat stale in git and dirty in the main checkout.
 - Does NOT write: `~/.claude/CLAUDE.md` (a symlink into `~/.dotfiles-private/.claude/`; editing the private file IS the deploy) or any Claude MCP config.
-- `CLAUDE.md` is the one source of the shared sections: never copy one into `overview.md`, add a marker (`tests/unit/rules_shared_block.bats`). From a worktree also set `RULES_CLAUDE_MD=<wt>/.claude/CLAUDE.md`, and commit the regenerated opencode `AGENTS.md` with any change to a shared section.
+- `CLAUDE.md` is the one source of the shared sections: never copy one into `overview.md`, add a marker (`tests/unit/rules_shared_block.bats`). From a worktree also set `RULES_CLAUDE_MD=<wt>/.claude/CLAUDE.md`, and commit the regenerated opencode `AGENTS.md` with any change to a shared section: the private pre-commit runs `splice-shared-rules.py --check` on the staged files and blocks the commit until it does.
 
 ## Running the sync
 

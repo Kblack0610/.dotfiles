@@ -54,7 +54,7 @@ pub struct Alert {
     pub since: Option<i64>,
     /// The fix item and its outcome (`ar-1601 fixing`), or `-`.
     pub owner: String,
-    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check), `unknown` (the
+    /// `fixing`, `queued`, `no owner`, `error` (the watch cannot check), `not read` (the
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,
@@ -418,7 +418,7 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>) {
     let Some(fixes) = fixes else {
         a.owner = "-".into();
         if !a.error() {
-            a.state = "unknown".into();
+            a.state = crate::reading::NOT_READ.into();
         }
         return;
     };
@@ -1099,7 +1099,7 @@ mod tests {
             Ok(String::new()),
             NOW,
         );
-        assert_eq!(a.firing[0].state, "unknown");
+        assert_eq!(a.firing[0].state, crate::reading::NOT_READ);
     }
 
     #[test]

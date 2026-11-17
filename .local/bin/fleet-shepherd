@@ -236,10 +236,16 @@ CLOSE_NUDGE_JQ='def close_nudge:
   elif (.bucket | IN("DONE","CHAT")) then .bucket
   else null end;'
 
+# ptag: a session row's tmux pane id as " [%37]", beside its target. The target's window index
+# renumbers when an earlier window closes (renumber-windows is on), so on 2026-11-12 the open lines
+# named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
+# the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
+PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
+
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ"'
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -253,13 +259,13 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | close_nudge as $close
       | if $close then
-          "nudge \($close): \(.target) \(.fact // "")"
+          "nudge \($close): \(.target)\(ptag) \(.fact // "")"
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
           if ($ask | not) and (.bucket | IN("LANDED","STALLED"))
-          then "nudge \(.bucket): \(.target) \(.fact // "")" else empty end
+          then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
-          "escalate \(.bucket): \(.target) \(.reason // "")"
+          "escalate \(.bucket): \(.target)\(ptag) \(.reason // "")"
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -279,13 +285,13 @@ cmd_due() {
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
       [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
     done
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" '
+    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" "$PANE_TAG_JQ"'
       ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
       | ($pre | split("\n")) as $pre
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
           and (.target as $t | $pre | index($t) | not)
           and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
-        | .target] | join(", ")' "$STATE_FILE" 2>/dev/null)"
+        | "\(.target)\(ptag)"] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
   fi
   local b
@@ -366,7 +372,7 @@ overdue_due() {
       printf 'overdue: %s; then: fleet-sessions mark %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
     fi
   done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
-      --slurpfile s "$STATE_FILE" --arg eta "$eta" '
+      --slurpfile s "$STATE_FILE" --arg eta "$eta" "$PANE_TAG_JQ"'
     ($s[0].sessions // [] | map(select((.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
                                        and .activity != "busy"
                                        and ((.labels // []) | index("manual") | not)))
@@ -378,7 +384,7 @@ overdue_due() {
     | select($age >= $limit)
     | "phase \(.phases_done + 1)/\(.phases_total)" as $ph
     | [.session_id, "overdue \($ph)",
-       "\([.phase_min, $floor] | max)\u001f\(.target) \($ph) '"'"'\($w[.session_id].next_phase // "-")'"'"' open \($age)m, expected \(.phase_min)m (\(.basis // "-"))"]
+       "\([.phase_min, $floor] | max)\u001f\(.target)\($w[.session_id] | ptag) \($ph) '"'"'\($w[.session_id].next_phase // "-")'"'"' open \($age)m, expected \(.phase_min)m (\(.basis // "-"))"]
     | @tsv')
 }
 
@@ -401,13 +407,13 @@ limit_due() {
     + (if any((.sources // [])[]; .kind == "litellm-team" and .room.capped) then ["gateway"] else [] end)' <<<"${rows:-null}" 2>/dev/null)" || capped='[]'
   room_name="$(jq -r '.pick // empty' <<<"${rows:-null}" 2>/dev/null)"
   if [ "${capped:-[]}" != '[]' ]; then
-    jq -r --argjson capped "$capped" --arg room "$room_name" '
+    jq -r --argjson capped "$capped" --arg room "$room_name" "$PANE_TAG_JQ"'
       (.sessions // []) | map((.account // "") as $a
         | select(((.labels // []) | index("manual") | not) and ($capped | index($a)) != null))
       | (.[] | select(.activity == "idle" and $room != "")
-             | "limit: \(.target) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
+             | "limit: \(.target)\(ptag) idle on \(.account), out of usage; then: claude-acct move \(.target) --to \($room)"),
         (.[] | select(.activity == "waiting")
-             | "limit: \(.target) on \(.account), out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"),
+             | "limit: \(.target)\(ptag) on \(.account), out of usage, is in a dialog; then: list it for the human, and fleet-shepherd skip it"),
         (if $room == "" then group_by(.account)[] | select(any(.activity == "idle"))
            | "limit: \(.[0].account) is out of usage and no account has room; then: tell the human once (\(length) live on it), and fleet-shepherd skip it"
          else empty end)' "$STATE_FILE" 2>/dev/null
@@ -420,9 +426,9 @@ limit_due() {
     tmux ${server:+-L "$server"} capture-pane -p -t "$pane" 2>/dev/null \
       | grep -v '^[[:space:]]*$' | tail -n 6 | grep -qiE "$re" || continue
     if [ "$account" = gateway ] && [ -n "$room_name" ]; then
-      echo "limit: $target stopped on its gateway budget; then: claude-acct move $target --to $room_name"
+      echo "limit: $target [$pane] stopped on its gateway budget; then: claude-acct move $target --to $room_name"
     else
-      echo "limit: $target stopped on the usage limit"
+      echo "limit: $target [$pane] stopped on the usage limit"
     fi
   done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" '(.sessions // [])[]
     | select((.labels // []) | index("manual") | not)
@@ -610,7 +616,7 @@ remind_sample() {
   while IFS=$'\t' read -r sid target bucket fact reason pr next plan; do
     case "$sid" in ''|*/*|.|..) continue ;; esac
     awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
-    at="$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null | head -1)"
+    at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
     when="$(date -d "$at" +%s 2>/dev/null)" || continue
     [ $((now - when)) -ge $((min * 60)) ] || continue
     decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
@@ -759,10 +765,10 @@ shared_sample() {
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
-      slug="$(sed -n 's/^[a-z]* \([^ ]*\) -> .*/\1/p' <<<"$out" | head -1)"
+      slug="$(sed -n '/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
-        slug="$(sed -n 's/.*already in the queue: //p' <<<"$out" | head -1)"
+        slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"
         [ -z "$slug" ] || shared_owners "$test" | grep -qxF -- "$slug" || slug=""
       fi
     fi
@@ -856,9 +862,16 @@ cmd_check() {
   printf '%s\n' "$due"
 }
 
-# due_key <line> -> the line's identity across passes: no `unhandled:` lead, no ledger call, and
-# minute counts as Nm, so an overdue phase an hour older is still the same line.
-due_key() { sed -E 's/^unhandled: //; s/; then: .*$//; s/[0-9]+m/Nm/g' <<<"$1"; }
+# due_key <line> -> the line's identity across passes: no `unhandled:` lead, no ledger call, the
+# target's window index replaced by its pane id (`hub/dotfiles:6 [%37]` -> `hub/%37`; every
+# line that names a target carries the tag: nudge, escalate, overdue, limit, pace: parked), minute
+# counts as Nm, and an overdue line's basis dropped: its `(project-median(274) x1.06 (n=1019))`
+# moves whenever a phase closes, so a skip stored under it stopped matching.
+due_key() {
+  sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
+          /^pace: parked /s#([^ /,]+/)[^ ,]+ \[(%[0-9]+)\]#\1\2#g
+          s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
+}
 
 # receipts: due lines in, out the ones a pass still owes. Every line a pass is given is answered
 # by moving it (a mark or escalate, so it is no longer due) or by `fleet-shepherd skip`: a skipped
@@ -892,8 +905,8 @@ receipts() {
         # A session's due line is cmd_due's "<verb> <BUCKET>: <server>/<session>:<window> ...",
         # so its target is where the page points; other lines (pace, infra) point nowhere.
         ref=""
-        [[ "$key" =~ ^(nudge|escalate)\ [A-Z]+:\ ([^ /]+/[^ ]+:[0-9]+) ]] && ref="tmux:${BASH_REMATCH[2]}"
-        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - handed) / 60 ))m: $key" >/dev/null 2>&1 || true
+        [[ "$line" =~ ^(nudge|escalate)\ [A-Z]+:\ ([^ /]+/[^ ]+:[0-9]+) ]] && ref="tmux:${BASH_REMATCH[2]}"
+        agent-notify -p high -t shepherd ${ref:+-r "$ref"} "unhandled $(( (now - handed) / 60 ))m: ${line%%; then: *}" >/dev/null 2>&1 || true
         printf '%s\n' "$key" >> "$PAGED"
       fi
     else
@@ -910,7 +923,7 @@ receipts() {
   awk -F'\t' 'NR == FNR { if ($0 != "") k[$0] = 1; next } $1 in k' <(printf '%s' "$keys") "$HANDED" > "$HANDED.tmp" \
     && mv -f "$HANDED.tmp" "$HANDED"
   [ "${FLEET_SHEPHERD_HAND:-1}" = 0 ] || hand_keys "$given"
-  printf '%s' "$rows" > "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due)
+  printf '%s' "$rows" > "$DUE_LAST.tmp" && mv -f "$DUE_LAST.tmp" "$DUE_LAST"   # agent-web's Shepherd tab reads it (hub_core::boards::due); a rename, because skip reads it too
   if [ -n "$owed" ]; then
     # A line the debounce holds is waiting its turn, so that check is not one more in the streak.
     # Each owed line carries its own count, so two passes that each leave a different line are
@@ -953,19 +966,18 @@ last_working() {
 # skip_known <key>: 0 when the key is a line due now. Anything else is refused with the nearest due
 # lines, because a skip stored under a shortened or reworded line never matches the due line, which
 # then comes back as unhandled (2026-11-09: a pass skipped 'overdue: lab/...-agent-58:1' and the
-# next check reported agent-58 and agent-59 unhandled). The due lines are cmd_due's, read live
-# (it writes nothing), not the ledger a check last wrote, which a line that appeared since is not in.
+# next check reported agent-58 and agent-59 unhandled). The due lines are the ones the last check
+# wrote to $DUE_LAST plus the lines already skipped (a skipped line is left out of .due while it is
+# still due): cmd_due rebuilds them all, too slow for an interactive verb, and a pass is only ever
+# handed lines a check wrote. A line that came due since is refused here and reaches the next check.
 skip_known() {
-  local key="$1" due rc=0 k n best="" bestn=-1 near="" cnt=0 pre="" suf=""
+  local key="$1" k n bestn=-1 near="" cnt=0 pre="" suf="" keys
   [ -n "$key" ] || { echo "fleet-shepherd: not skipped: the line is empty" >&2; return 1; }
-  due="$(cmd_due)" || rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "fleet-shepherd: not skipped: the due lines could not be read (cmd_due exit $rc)" >&2; return 1; }
-  local keys
-  keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"$due")"
+  keys="$({ cut -f4- "$DUE_LAST" 2>/dev/null; cut -f1 "$SKIPPED" 2>/dev/null; } | while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done)"
   # exact, whole-line compare: grep would treat a multi-line key as several patterns
   KEY="$key" awk 'ENVIRON["KEY"] == $0 { f = 1 } END { exit !f }' <<<"$keys" && return 0
   if [ -z "$keys" ]; then
-    echo "fleet-shepherd: not skipped: '$key' is not a due line, and nothing is due now" >&2
+    echo "fleet-shepherd: not skipped: '$key' is not a due line, and the last check found nothing due" >&2
     return 1
   fi
   # an elided line ('lab/...-agent-58:1') matches a due line holding both ends of it
@@ -1167,7 +1179,7 @@ lane_cols() {
     [[ "$k" =~ ^nudge\ (DONE|LANDED|STALLED|CHAT):\ ([^ ]+) ]] || continue
     grep -qxF -- "$k" <<<"$now_keys" && continue
     nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
-    awk -v t="$t" '{ sub(/^unhandled: /, "") } $1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"${SCORE_DUE:-}" &&
+    awk -v t="$t" '$1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"$now_keys" &&
       survived=$((survived + 1))
   done < <(tail -n +2 "$LEDGER/.lane-$id" 2>/dev/null)
   rm -f "$LEDGER/.lane-$id"
@@ -1177,13 +1189,13 @@ lane_cols() {
   # each one's session alone, since a park file is named <session> or <session>:%<pane>, and a window
   # ledger by the window its target recorded
   clear="$(sed -nE 's/^(unhandled: )?pace: parked (.*) while the machine reads CLEAR.*/\2/p' <<<"${SCORE_DUE:-}" |
-    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
+    tr ',' '\n' | sed -E 's/^ *[^/]*\///; s/ *\[%[0-9]+\]//; s/ *$//' | awk 'NF { print; s = $0; sub(/:.*/, "", s); print s }')"
   for p in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
     [ -f "$p" ] || continue
     t="$(stat -c %Y "$p")"; [ "$t" -ge "$start" ] && [ "$t" -le "$end" ] || continue
     parks=$((parks + 1))
     [ -z "$clear" ] || ! { grep -qxF -- "${p##*/}" <<<"$clear" ||
-      grep -qxF -- "$(sed -n 's/^target=[^/]*\///p' "$p" | head -n 1)" <<<"$clear"; } || wrong=$((wrong + 1))
+      grep -qxF -- "$(sed -n '/^target=[^/]*\//{s///p;q;}' "$p")" <<<"$clear"; } || wrong=$((wrong + 1))
   done
   printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
 }
@@ -1624,7 +1636,7 @@ cmd_stuck() {
   jq -r '"stuck: \(.stuck_why)",
     "last pass: \(.last_pass_id // "none" | .[:8]) \(.last_verdict // "")",
     (if .pass_id then "pass now: \(.pass_id[:8]) \(.pass_status), \(.pass_age_s // 0 | . / 60 | floor)m: \(.attach)" else empty end)' <<<"$s"
-  cut -f4 "$DUE_LAST" 2>/dev/null | head -n 5
+  head -n 5 "$DUE_LAST" 2>/dev/null | cut -f4
   return 1
 }
 

@@ -68,7 +68,7 @@ publish() {
   # The file declares its own page tint; default white. The `|| true` matters:
   # most diagrams declare nothing, and under `set -e`/`pipefail` a no-match grep
   # would abort the whole run on the first untinted file.
-  bg="$(grep -o 'data-render-bg="[^"]*"' "$f" 2>/dev/null | head -1 | cut -d'"' -f2 || true)"
+  bg="$(grep -o 'data-render-bg="[^"]*"' "$f" 2>/dev/null | awk 'NR==1' | cut -d'"' -f2 || true)"
   bg="${bg:-white}"
 
   if ! rsvg-convert -b "$bg" -z 2 "$f" -o "$png" 2>/dev/null; then

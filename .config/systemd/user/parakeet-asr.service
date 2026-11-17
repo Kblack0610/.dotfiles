@@ -1,7 +1,6 @@
 [Unit]
 Description=Parakeet ONNX ASR daemon (gungan dictation backend: batch + live stream)
 Documentation=https://github.com/k2-fsa/sherpa-onnx
-After=network.target
 
 [Service]
 Type=simple
