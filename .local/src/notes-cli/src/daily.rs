@@ -31,6 +31,7 @@ use crate::config::{self, Profile};
 use crate::logging::Logger;
 use crate::md;
 use crate::status;
+use crate::sweep;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
 use std::fs;
@@ -308,27 +309,33 @@ fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> V
 }
 
 /// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it, and
-/// one blank before a task where the human left a group break between rows of one lane. A
-/// lane heading or rule ends a break, so the sweep's own spacing never carries.
+/// one blank (or the human's own `---`) before a task where they left a group break between
+/// rows of one lane. A lane heading or the sweep's rule above `### Done` ends a break, so the
+/// sweep's own spacing never carries.
 fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut under_open = false;
-    let mut gap = false;
-    for l in lines {
-        if l.trim().is_empty() {
-            gap = !out.is_empty();
+    let mut gap: Option<&'static str> = None;
+    for (n, l) in lines.iter().enumerate() {
+        let rule = sweep::is_group_rule(lines, n);
+        if l.trim().is_empty() || rule {
+            if out.is_empty() {
+                gap = None;
+            } else {
+                sweep::mark_break(&mut gap, if rule { sweep::RULE } else { "" });
+            }
         } else if md::is_open_task(l) {
-            if std::mem::take(&mut gap) {
-                out.push(String::new());
+            if let Some(b) = gap.take() {
+                out.push(b.to_string());
             }
             out.push(md::stamp_line(l, today, prev_date));
             under_open = true;
         } else if under_open && is_note(l) {
-            gap = false;
+            gap = None;
             out.push(l.clone());
         } else {
             under_open = false;
-            gap = false;
+            gap = None;
         }
     }
     out
@@ -343,10 +350,15 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     let mut deferring = false;
     // A group break stays in the note, never in the schedule: it lands before the next KEPT
     // task, so one beside a deferred task neither leads, trails nor doubles.
-    let mut gap = false;
+    let mut gap: Option<&'static str> = None;
     for l in lines {
-        if l.is_empty() {
-            gap = !keep.is_empty();
+        // carry_focus emits a break only as a blank or the human's `---`
+        if l.is_empty() || l == sweep::RULE {
+            if keep.is_empty() {
+                gap = None;
+            } else {
+                sweep::mark_break(&mut gap, if l.is_empty() { "" } else { sweep::RULE });
+            }
             continue;
         }
         if !is_note(l) {
@@ -355,8 +367,10 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
         if deferring {
             defer.push(l.clone());
         } else {
-            if !is_note(l) && std::mem::take(&mut gap) {
-                keep.push(String::new());
+            if !is_note(l) {
+                if let Some(b) = gap.take() {
+                    keep.push(b.to_string());
+                }
             }
             keep.push(l.clone());
         }
@@ -2087,6 +2101,35 @@ mod tests {
         assert_eq!(keep, v(&["- [ ] a"]));
         let (keep, _) = route_by_due(&v(&["- [ ] a", far, "", "- [ ] b"]), d("2026-06-30"));
         assert_eq!(keep, v(&["- [ ] a", "", "- [ ] b"]));
+    }
+
+    #[test]
+    fn carry_focus_keeps_the_humans_rules_not_the_sweeps() {
+        let lines = v(&[
+            "### Low",
+            "- [ ] a #low",
+            "---",
+            "- [ ] b #low",
+            "",
+            "---",
+            "",
+            "- [ ] c #low",
+            "",
+            "---",
+            "### Done",
+            "- [x] gone",
+        ]);
+        let out = carry_focus(&lines, d("2026-06-30"), d("2026-06-29"));
+        let rules: Vec<bool> = out.iter().map(|l| l == "---").collect();
+        // a rule between rows carries (one, even padded by blanks); the one above Done does not
+        assert_eq!(rules, [false, true, false, true, false], "{out:?}");
+        // and a rule beside a deferred task stays in the note, before the next kept task
+        let far = "- [ ] far [2026-07-15]";
+        let (keep, defer) = route_by_due(&v(&["- [ ] a", "---", far, "- [ ] b"]), d("2026-06-30"));
+        assert_eq!(
+            (keep, defer),
+            (v(&["- [ ] a", "---", "- [ ] b"]), v(&[far]))
+        );
     }
 
     #[test]
