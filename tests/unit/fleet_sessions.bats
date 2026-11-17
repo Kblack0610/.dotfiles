@@ -960,19 +960,6 @@ MD
   assert_output 'hung'
 }
 
-@test "self_wait leaves a tail --pid on another process alone (ar-1118)" {
-  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
-  local root=$! tl="" spins=0
-  LIVE_PIDS="-$root"
-  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
-    kill -0 "$root" || fail 'the stand-in exited before tail started'
-    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
-    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
-  done
-  run self_wait "$root"
-  assert_output ''
-}
-
 @test "a shell waiting on itself is not WORKING, and is a blocker on the row (ar-1118)" {
   FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
   # an open green PR, 25m idle: a real gate would read WORKING shell
@@ -4034,4 +4021,121 @@ JSONL
   task_item tailnet "Execute $SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
+@test "sibling_pr: a check run superseded by a later run of the same check is not CI red (ar-2426)" {
+  # 2026-11-14 platform#1551: a pull_request edit ran Task PR gate again, the rollup kept the failed
+  # "Task line" beside the passing one, and the row read CI red while gh pr checks was all green.
+  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
+  cat > "$SANDBOX/bin/gh" <<'SH'
+#!/usr/bin/env bash
+cat "$SANDBOX/view.json"
+SH
+  chmod +x "$SANDBOX/bin/gh"; export SANDBOX MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  check() { printf '{"__typename":"CheckRun","name":"%s","workflowName":"%s","status":"COMPLETED","conclusion":"%s","startedAt":"%s","detailsUrl":"https://github.com/o/three/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "$4" "${6:-$5}" "$5"; }   # <name> <workflow> <conclusion> <started> <job> [run, else the job id]
+  view() { printf '{"headRefOid":"abc123","statusCheckRollup":[%s]}\n' "$(IFS=,; echo "$*")" > "$SANDBOX/view.json"; }
+  local prs='[{"repo":"o/three","number":3,"state":"OPEN"}]'
+  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" "$(check Build CI SUCCESS 2026-11-14T17:26:46Z 12)" \
+       "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:27:29Z 13)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tPASS\tabc123')"
+  # negative controls: the newer run red, and a red check of another name, are still red
+  view "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:26:46Z 11)" "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:27:29Z 13)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
+  view "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:27:29Z 13)" "$(check 'Task line' 'Other gate' FAILURE 2026-11-14T17:26:46Z 11)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
+  # a newer run still queued is running, not the older red
+  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" \
+       '{"name":"Task line","workflowName":"Task PR gate","status":"QUEUED","conclusion":"","startedAt":"0001-01-01T00:00:00Z","detailsUrl":"https://github.com/o/three/actions/runs/14/job/15"}'
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tPENDING\tabc123')"
+  # red names only the newest run's job
+  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:27:29Z 13)"
+  [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 13 ]
+  # matrix shards share a name in one run: a failed shard is red whatever a later shard did
+  view "$(check Test CI FAILURE 2026-11-14T17:26:46Z 21 20)" "$(check Test CI SUCCESS 2026-11-14T17:27:29Z 22 20)"
+  run sibling_pr "$SANDBOX/one" "$prs"
+  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
+  [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 21 ]
+}
+
+@test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
+  # 2026-11-14: a `tail --pid <pid>` waiting on another process, the event wait the rules ask for,
+  # read "background shell is not a gate or test" and drew a nudge.
+  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
+  local root=$! tl="" spins=0
+  LIVE_PIDS="-$root"
+  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
+    kill -0 "$root" || fail 'the stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
+    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+  done
+  run self_wait "$root"
+  assert_output 'wait'
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - wait
+  assert_output 'WORKING shell'
+  # past FLEET_SHELL_STALE_MIN it is bucketed on its facts, as a gate is
+  run b shell 0 0 0 120 1 0 0 875 MERGED PASS 1 - 2/3 x - wait
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell idle over 120m'
+  # a tail on a shell further up its own tree than its parent is hung, not a wait
+  setsid bash -c 'bash -c '\''g=$$ bash -c "tail --pid=\$g -f /dev/null; :"; :'\''; :' >/dev/null 2>&1 3>&- &
+  local deep=$!
+  LIVE_PIDS="$LIVE_PIDS -$deep"; spins=0
+  until pgrep -s "$deep" -x tail >/dev/null; do
+    kill -0 "$deep" || fail 'the deep stand-in exited before tail started'
+    [ $((++spins)) -lt 20000 ] || fail 'deep tail never started'
+  done
+  run self_wait "$deep"
+  assert_output 'hung'
+  # negative control: a shell the transcript could not class, with no such tail, is still not a wait
+  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
+  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
+}
+
+@test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {
+  # 2026-11-14 hub/dotfiles:8, :9 and :13: a planner chat's plan was plan mode's random file, its
+  # phases queue items of a named copy (school-front-p*, outskirts-p1, db-soccer-p*), so the row read
+  # LANDED with a next phase and was told to queue them again.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  copy() { { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; } > "$SANDBOX/quirky-donut.md"; }
+  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  panel "$SANDBOX/wt" "$SANDBOX/quirky-donut.md"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  item() { printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: %s\n---\nphase of the plan\n' \
+    "$1" "$2" "$3" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"; }
+  item rollout "$SANDBOX/plan.md" 2
+  item docs "$SANDBOX/plan.md" 3
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs,rollout' ]
+  [ "$(jq -c '[.phases_done, .phases_total]' <<<"$output")" = '[1,3]' ]
+  # negative controls: a phase the named plan has free is next, and a copy whose phases differ is its own plan
+  rm "$HOME/.agent/queue/queued/20261103-100000-docs.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 3: docs"]' ]
+  item docs "$SANDBOX/plan.md" 3
+  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs and more'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .next_phase]' <<<"$output")" = '["LANDED","Phase 1: fleet-sessions"]' ]
+  # a tick the session made in its own copy counts when the named plan lacks it
+  phases_plan '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  copy '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .phases_done, .phases_total]' <<<"$output")" = '["DONE",1,3]' ]
+  # a copy whose phases match two named plans is its own
+  cp "$SANDBOX/plan.md" "$SANDBOX/other.md"; item other "$SANDBOX/other.md" 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
+  rm "$HOME/.agent/queue/queued/20261103-100000-other.md"
+  # a plan an item names by its own file name is never read through a copy
+  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  item own "$SANDBOX/quirky-donut.md" 1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
 }
