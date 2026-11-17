@@ -869,13 +869,14 @@ order_filter() {
 }
 
 # since_day <value> -> the local day a --since names: YYYY-MM-DD as given, Nd or N that many days
-# ago; anything else dies. list_files compares days as strings, so an unparsed `7d` sorted after
-# every day and read no done item: stats said done_24h 0 against 274 (ar-2430).
+# ago (up to 4 digits: date reads a longer run, like 20261114, as a time of day); anything else
+# dies. list_files compares days as strings, so an unparsed `7d` sorted after every day and read
+# no done item: stats said done_24h 0 against 274 (ar-2430).
 since_day() {
   if [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -d "$1" +%F >/dev/null 2>&1; then
     printf '%s\n' "$1"
-  elif [[ "$1" =~ ^([0-9]+)d?$ ]]; then
-    date -d "$((10#${BASH_REMATCH[1]})) days ago" +%F
+  elif [[ "$1" =~ ^([0-9]{1,4})d?$ ]]; then
+    date -d "$((10#${BASH_REMATCH[1]})) days ago" +%F || die "--since $1: date could not count back"
   else
     die "--since is a day (YYYY-MM-DD) or days back (7d or 7), not '$1'"
   fi
@@ -2345,7 +2346,7 @@ start_next() {
 
 cmd_stats() {
   local json="" flow=false since
-  since="$(date -d '7 days ago' +%F)"
+  since="$(since_day 7)"
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1; shift ;;

@@ -2095,7 +2095,8 @@ EOF
     run bash -c "'$AQ' list --state done --since $form --json | jq -r .slug"
     assert_output d1
   done
-  for bad in 1w 3dd 2026-13-01; do
+  # 20261114 and 99999 are digits date reads as a time of day, which would come back as today.
+  for bad in 1w 3dd 2026-13-01 20261114 99999; do
     run "$AQ" stats --json --since "$bad"
     assert_failure
     assert_output --partial "--since is a day (YYYY-MM-DD) or days back (7d or 7), not '$bad'"
