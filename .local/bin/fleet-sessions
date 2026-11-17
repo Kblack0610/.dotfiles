@@ -328,7 +328,7 @@ wait_procs() {
   while IFS=$'\t' read -r kind pid; do [ "$kind" != S ] || skip[$pid]=1; done <<<"$pick"
   while IFS=$'\t' read -r kind pid; do
     [ "$kind" = P ] && [ -z "${skip[$pid]:-}" ] || continue
-    cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
+    cmd="$(tr '\0\n' '  ' 2>/dev/null < "/proc/$pid/cmdline")"   # one record a process, whatever its argv holds
     case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
     printf '%s\t%s\n' "$pid" "$cmd"
   done <<<"$pick"
