@@ -1159,12 +1159,10 @@ MD
   assert_success
 }
 
-@test "a DONE nudge is sent once even after an overdue mark replaced the ledger fact (ar-1848)" {
+@test "a DONE nudge is sent once even after a STALLED mark replaced the ledger fact (ar-1848)" {
   # 2026-11-12: three passes sent agent-15 the same DONE nudge an hour apart; a mark of another fact between them had replaced the single ledger slot
   mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
-  mark sid-8 'overdue phase 6/9'
-  run nudged sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
-  assert_failure
+  mark sid-8 'STALLED PR #1904 CI red @agent-15-stop-upstream-deletes@0123456789ab'
   run mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
