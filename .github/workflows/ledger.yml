@@ -7,6 +7,11 @@ name: consolidation ledger
 # here. Counts come from the two checkouts alone (fleet-bench ledger_roster), never live state.
 on:
   workflow_call:
+    inputs:
+      runs-on:
+        description: "runner label; the private repo passes self-hosted, since GitHub bills hosted minutes there"
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: read
@@ -14,7 +19,7 @@ permissions:
 jobs:
   ledger:
     name: ledger check
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runs-on }}
     timeout-minutes: 5
     steps:
       # No token is left in either checkout: the second runs public main's fleet-bench.
