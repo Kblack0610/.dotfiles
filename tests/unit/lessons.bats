@@ -467,3 +467,31 @@ $(sed -n 5,7p "$DIR/before")"
   assert_failure 1
   assert_line "refused $k: it drops the marker <!-- sig:$OLD flux.*paused -->"
 }
+
+@test "under a titled heading, a bracketed-date bullet and a bullet whose bold title ends in a dated parenthetical open lessons" {
+  F="$DIR/dated.md"
+  cat > "$F" <<EOF2
+# dated bullets
+
+## Shell gotchas
+
+- **[$RECENT dream, Lane A] Bracketed dream bullets are lessons.** Body.
+- **Parenthetical dream bullets are lessons ($RECENT, dream sweep).** Body.
+- **Corrected $RECENT:** a sub-point that stays body.
+- **Supporting facts, all measured $RECENT, stay body.**
+- **Fix (see $RECENT)**: a parenthetical before a colon stays body.
+- **Observed ($RECENT)**: a dated title with no period stays body.
+- [$RECENT 14:00] a bracketed timestamp with no bold stays body.
+EOF2
+  run "$BIN" pick -n 20 "$F"
+  assert_line "- Shell gotchas"
+  assert_line --partial "[$RECENT dream, Lane A] Bracketed dream bullets"
+  assert_line --partial "Parenthetical dream bullets are lessons ($RECENT"
+  refute_line --partial "Corrected $RECENT"
+  refute_line --partial "Supporting facts"
+  refute_line --partial "a parenthetical before a colon"
+  refute_line --partial "a dated title with no period"
+  refute_line --partial "a bracketed timestamp"
+  run bash -c "\"\$0\" fat --json --max 0 \"\$1\" | jq .lessons" "$BIN" "$F"
+  assert_output "3"
+}
