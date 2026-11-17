@@ -427,7 +427,7 @@ load 'fleet_dispatch/common'
   [ -n "$f" ] || fail "fix-menu is not running"
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
 }
 
 @test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
@@ -439,7 +439,7 @@ load 'fleet_dispatch/common'
   assert_success
   assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
   assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring patch configmap ci-runner-governor-override --type merge -p'
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 ubuntu@fleet-worker-1.tail.example'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 ubuntu@fleet-worker-1.tail.example'
   v=$(demand_of fleet-worker-1)
   assert_equal "$(jq -r .demand <<<"$v")" 1
   ttl=$(( $(jq -r .until <<<"$v") - $(date +%s) ))

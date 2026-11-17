@@ -1879,6 +1879,64 @@ J
   assert_output --partial 'dispatch is held'
 }
 
+# 2026-11-10: four human urgent items sat 2h behind an account over its weekly pace while run-floor
+# starts kept `starved` silent: a run start in the window cleared everything.
+@test "starved: an urgent item no pass started is named even when a run pass started another item in the window" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s started game-agent-3 on lab (run) for game: queue item other\n' "$(date -d '-10 minutes' '+%Y-%m-%d %H:%M')" > "$FLEET_DISPATCH_DIR/log.md"
+  # Negative control: a high item the same fresh run start covers is not starved.
+  queued_item moving high "$old"
+  run cmd_starved
+  assert_success
+  assert_output ''
+  queued_item stuck urgent "$old"
+  acct main:pace
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck (urgent'
+  # A fresh urgent item is not yet starved.
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck.md
+  queued_item new-urgent urgent "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_starved
+  assert_success
+}
+
+# 2026-11-10: the same four sat 4h, 2h of it under a dispatch hold that read as "nothing is starved" (ar-1432).
+@test "starved: neither a dispatch hold nor load clears an urgent item from the human; an agent's urgent and a fresh one still read as held" {
+  local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+  stub agent-hold 'echo "held: dispatch since 2026-11-10T09:00:00-0800 by binks: load 72.9; no new sessions"; exit 1'
+  # Negative controls: an agent's urgent item and a fresh human one wait on the hold by design.
+  queued_item agents urgent "$old"
+  sed -i 's/^from: human/from: shepherd/' "$AGENT_QUEUE_DIR/queued/20261103-100000-agents.md"
+  queued_item fresh urgent "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'dispatch is held'
+  queued_item mine urgent "$old"
+  run cmd_starved
+  assert_failure
+  assert_output --partial "dispatch is held (agent-hold dispatch) by binks: load 72.9; no new sessions; the human's urgent items wait on it"
+  assert_output --partial 'mine (urgent from the human'
+  refute_output --partial 'agents'
+  refute_output --partial 'fresh'
+  # Load alone holds the agent's urgent item; the human's still trips.
+  stub agent-hold 'exit 0'
+  echo '30.00 30.00 30.00 1/1 1' > "$DISPATCH_LOADAVG"
+  rm "$AGENT_QUEUE_DIR"/queued/*-mine.md
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by load'
+  # An item with no from: line is the human's (agent-queue's default), and the load verdict is named.
+  queued_item mine urgent "$old"
+  sed -i '/^from: /d' "$AGENT_QUEUE_DIR/queued/20261103-100000-mine.md"
+  run cmd_starved
+  assert_failure
+  assert_output --partial "held by load (load 30.00 on"
+  assert_output --partial "the human's urgent items wait on it"
+  assert_output --partial 'mine (urgent from the human'
+}
+
 @test "starved: a high item behind a fleet at its pace target is held, not starved, whatever gate is closed; one under it, a stale count, an urgent item or a standing hold starves" {
   local old; old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   queued_item stuck high "$old"
@@ -2550,32 +2608,32 @@ J
   route_ready
   HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before route_ready set it
   local it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
-  ACCT_ROWS='{"accounts":[{"dir":"/home/u/.claude-personal","rank":1}],"sources":[{"name":"glm","rank":0.5,"room":{"ok":true,"why":"it has room"}}]}'
-  # A plain fallback fit: glm has room and ranks first, but no score put it there.
-  v='{"candidates":[{"harness":"claude","model":"opus","fit":0},{"harness":"glm","model":"glm","fit":1}]}'
-  ! route "$it" "$v" || fail "an unscored glm fallback took the item"
-  assert_equal "$ROUTE_WHY" 'claude: no account has room; glm: pay-per-use, so it takes only a class it was promoted for or its trial pick'
+  ACCT_ROWS='{"accounts":[{"dir":"/home/u/.claude-personal","rank":1}],"sources":[{"name":"paid","rank":0.5,"room":{"ok":true,"why":"it has room"}}]}'
+  # A plain fallback fit: paid has room and ranks first, but no score put it there.
+  v='{"candidates":[{"harness":"claude","model":"opus","fit":0},{"harness":"paid","model":"glm","fit":1}]}'
+  ! route "$it" "$v" || fail "an unscored paid fallback took the item"
+  assert_equal "$ROUTE_WHY" 'claude: no account has room; paid: pay-per-use, so it takes only a class it was promoted for or its trial pick'
   # Promoted for the class, with no account room: the overflow takes it.
-  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
-  route "$it" "$v" || fail "a promoted glm with room did not take the item ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'glm glm'
+  v='{"promoted":["paid:glm"],"candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  route "$it" "$v" || fail "a promoted paid with room did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'paid glm'
   # The trial pick counts the same.
-  v='{"trial":"glm:glm","candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":1}]}'
-  route "$it" "$v" || fail "the glm trial pick did not take the item ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS" glm
-  # Negative control: an account with room takes it, though glm ranks first at the same fit.
+  v='{"trial":"paid:glm","candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":1}]}'
+  route "$it" "$v" || fail "the paid trial pick did not take the item ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" paid
+  # Negative control: an account with room takes it, though paid ranks first at the same fit.
   ACCT_RC=0
-  v='{"promoted":["glm:glm"],"candidates":[{"harness":"glm","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
+  v='{"promoted":["paid:glm"],"candidates":[{"harness":"paid","model":"glm","fit":0},{"harness":"claude","model":"opus","fit":0}]}'
   route "$it" "$v" || fail "nothing set: claude with room did not take it ($ROUTE_WHY)"
   assert_equal "$ROUTE_HARNESS" claude
   # Past tier 1 it waits rather than spend.
   ACCT_RC=1 it='{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu","tags":"tier2"}'
-  ! route "$it" "$v" || fail "a tier-2 item went to glm"
-  assert_equal "$ROUTE_WHY" 'glm: pay-per-use takes tier-1 work only, and this is tier 2; claude: no account has room'
+  ! route "$it" "$v" || fail "a tier-2 item went to paid"
+  assert_equal "$ROUTE_WHY" 'paid: pay-per-use takes tier-1 work only, and this is tier 2; claude: no account has room'
   # A pinned item (a canary) is the human's pairing: none of this applies.
-  it='{"slug":"x","project":"game","mode":"oneshot","title":"canary","agent":"glm","model":"glm","tags":"tier2"}'
-  route "$it" '' || fail "a pinned glm item was refused ($ROUTE_WHY)"
-  assert_equal "$ROUTE_HARNESS" glm
+  it='{"slug":"x","project":"game","mode":"oneshot","title":"canary","agent":"paid","model":"glm","tags":"tier2"}'
+  route "$it" '' || fail "a pinned paid item was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" paid
 }
 
 @test "routing never lifts another gate: load holds it" {
@@ -2605,7 +2663,7 @@ J
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
 @test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
@@ -2618,26 +2676,25 @@ J
   [ -z "$(qitem running fix-crash)" ] || fail "held an item whose host left the roster"
 }
 
-@test "focus: candidates drop an off-focus project's rows but keep #requested and #urgent ones; suggest names the focus" {
+@test "focus: candidates keep every project's rows, and suggest names no focus hold" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row game agent 'game row' "- [ ] game row $T"
   row app agent 'app row' "- [ ] app row $T"
   row app agent 'app asked' "- [ ] app asked #requested $T"
-  row app agent 'app urgent' "- [ ] app urgent #urgent $T"
-  # Negative control: with no focus, every row is a candidate.
+  # Negative control: with no focus, every row is a candidate too.
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,app urgent,game row'
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,game row'
   focus_on game
   run cmd_candidates
   assert_success
-  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app urgent,game row'
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd,)" 'app asked,app row,game row'
   SUGGEST=1 run cmd_candidates
-  assert_equal "$(jq -r 'select(.key == "app row") | .off' <<<"$output")" 'focus: only game'
+  assert_equal "$(jq -r 'select(.key == "app row") | .off // ""' <<<"$output")" ''
 }
 
-@test "focus: an only project ranks with focus, first, and why names it" {
+@test "focus: a focus project ranks first, and why names it" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   focus_on game
@@ -2646,11 +2703,11 @@ J
   run cmd_candidates
   assert_success
   run jq -sr "$RANK_JQ"'rank[] | "\(.key): \(.pprio) \(.why)"' <<<"$output"
-  assert_line --index 0 --partial 'game row: 0 only project'
+  assert_line --index 0 --partial 'game row: 0 focus project'
   assert_line --index 1 --partial 'app asked: 2'
 }
 
-@test "focus: promote tags a #requested row's item requested, so a focus elsewhere does not hold it" {
+@test "focus: promote tags a #requested row's item requested, which the requested floor counts" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row app human 'asked one' '- [ ] asked one #requested <!-- id:gm-7 -->'
@@ -2667,38 +2724,30 @@ J
   assert_equal "$(qfield "$(qitem queued gm-8)" tags)" ''
   assert_equal "$(qfield "$(qitem queued gm-9)" tags)" requested
   run agent-queue list --json --state queued
-  assert_equal "$(jq -r 'select(.slug == "gm-7") | .hold // "none"' <<<"$output")" none
-  assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold' <<<"$output")" 'focus: only game'
+  assert_equal "$(jq -r 'select(.slug == "gm-8") | .hold // "none"' <<<"$output")" none
 }
 
-@test "focus: starved fires on a focus with no work, and not once it has some or with no focus" {
+@test "focus: a focus with no work does not trip starved" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   agent-queue add --project app --slug a1 --priority low "app work" >/dev/null
-  # Negative control: no focus, nothing starved.
-  run cmd_starved
-  assert_success
   focus_on game
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'focus: only game has no work'
-  row game agent 'game row' "- [ ] game row $T"
   run cmd_starved
   assert_success
   refute_output --partial 'focus:'
 }
 
-@test "focus: headroom names the focus and counts the items it holds; stats publishes both as numbers" {
+@test "focus: headroom names the focus and counts the runnable items it has; stats publishes the project count" {
   two_items
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[[],0,2]'
+  assert_equal "$(jq -c '[.focus, .focus_runnable, .runnable]' <<<"$output")" '[[],0,2]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   refute_output --partial 'focus:'
   focus_on game
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -c '[.focus, .focus_held, .runnable]' <<<"$output")" '[["game"],1,1]'
+  assert_equal "$(jq -c '[.focus, .focus_runnable, .runnable]' <<<"$output")" '[["game"],1,2]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'focus:     only game; 1 queued item(s) held off focus (reds, urgent and #requested still run)'
+  assert_output --partial 'focus:     game first; 1 runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)'
   run cmd_stats
-  assert_equal "$(jq -c '[.focus_projects, .held_focus]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '[.focus_projects, has("held_focus")]' <<<"$output")" '[1,false]'
 }

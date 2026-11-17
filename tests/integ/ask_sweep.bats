@@ -130,6 +130,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'no checklist 1'
 }
 
+@test "an open plan with no cache copy files no row and is counted, not dropped unseen" {
+  plan orphan '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/orphan.md"
+  plan homed '1 day ago 1 hour ago' "$OPEN"
+  run "$SWEEP" run
+  assert_success
+  assert_called 'ptask board --agent add --want ask chore(plan): finish homed'
+  assert_not_called 'finish orphan'
+  assert_output --partial 'open plans 2'
+  assert_output --partial 'no cache copy 1'
+}
+
 @test "the summary says what it read, so a clean read never looks like no read" {
   plan bare '1 day ago 1 hour ago' 'just text'
   message 'add a slide'
@@ -379,4 +391,20 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   assert_output --partial 'would file [board] chore(plan): finish stale'
   assert_not_called ' add '
+}
+
+@test "a pointer stub files no row: the plan it names is swept as itself (ar-2513)" {
+  plan canon '1 day ago 1 hour ago' "$OPEN"
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/canon.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  [ "$(grep -c 'finish canon' "$NOTES_FIXTURE/rows.board")" = 1 ]
+  run grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
+  [ "$status" -ne 0 ]
+  # negative control: the same stub pointing nowhere is a plan of its own and files its row
+  plan stub '1 day ago 1 hour ago' "Phase 3 of $ASK_SWEEP_PLANS/nowhere.md\n\n## Phases\n\n- [ ] three\n"
+  run "$SWEEP" run
+  assert_success
+  grep -q 'finish canon' "$NOTES_FIXTURE/rows.board"
+  grep -q 'finish stub' "$NOTES_FIXTURE/rows.board"
 }

@@ -679,6 +679,7 @@ def pr_row(forge, name, p, branch, merged):
     return {"forge": forge, "repo": name, "number": p["number"], "branch": branch, "base": base.get("ref"),
             "state": "MERGED" if merged else ("OPEN" if p.get("state") == "open" else "CLOSED"),
             "draft": bool(p.get("draft")), "title": p.get("title"), "author": user.get("login"),
+            "labels": sorted({lb.get("name") for lb in p.get("labels") or [] if lb.get("name")}),
             "created_at": utc(p.get("created_at")), "updated_at": utc(p.get("updated_at")),
             "closed_at": utc(p.get("closed_at")), "merged_at": utc(p.get("merged_at")) if merged else None,
             "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),

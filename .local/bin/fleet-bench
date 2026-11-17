@@ -3430,25 +3430,20 @@ log_norm() {
           s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
 }
 
-# triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
-# runs of the last TRIAGE_LOG_HOURS, one of them among the runner's newest BENCH_GUARD_RECUR readable
-# runs: a cause fixed earlier in the window is not red now, and cause_tries would count its merged
-# fix as one that did not hold. That many runs outlast a dispatch pass for the fastest runner, so an
-# intermittent error is still seen. Each run's bytes come from its runs.jsonl err range; a range past
-# the end of the log was rotated away and is skipped. #high at twice the recurrence.
-triage_log_rows() {
-  local sd t ledger name a b f sig
+# log_lines -> each readable run of the last TRIAGE_LOG_HOURS, oldest first, as "<name> TAB <err
+# start>", then one "<name> TAB <err start> TAB <normalized> TAB <line>" per error line it logged.
+# Each run's bytes come from its runs.jsonl err range; a range past the end of the log was rotated
+# away and is no run. rc 1 when runs.jsonl cannot be read.
+log_lines() {
+  local sd name a b f
   proof_lib && sd=$(proof_state_dir)
-  [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 0
-  t=$(now)
-  ledger=$(jq -rs --argjson s $((t - TRIAGE_LOG_HOURS * 3600)) \
+  [ -n "$sd" ] && [ -r "$sd/runs.jsonl" ] || return 1
+  jq -rs --argjson s $(($(now) - TRIAGE_LOG_HOURS * 3600)) \
     'map(select((.finished // 0) >= $s and (.err[0] | type) == "number" and (.err[1] | type) == "number"
-      and .err[1] >= .err[0])) | sort_by(.finished)[] | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null)
+      and .err[1] >= .err[0])) | sort_by(.finished)[] | [.name, .err[0], .err[1]] | @tsv' "$sd/runs.jsonl" 2>/dev/null |
   while IFS=$'\t' read -r name a b; do
-    [ -n "$name" ] || continue
     f="$sd/$name.stderr.log"
-    [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
-    # a readable run, quiet or not, oldest first
+    [ -n "$name" ] && [ -r "$f" ] && [ "$(stat -c %s "$f")" -ge "$b" ] || continue
     printf '%s\t%s\n' "$name" "$a"
     [ "$b" -gt "$a" ] || continue
     # one dd reads the range: `tail | head -c` cut the pipe early, and under systemd (SIGPIPE
@@ -3456,14 +3451,46 @@ triage_log_rows() {
     dd if="$f" iflag=skip_bytes,count_bytes skip="$a" count=$((b - a)) status=none |
       grep -aiE -- "$TRIAGE_ERR_RE" | tr -d '\t\r' |
       while IFS= read -r line; do printf '%s\t%s\t%s\t%s\n' "$name" "$a" "$(log_norm <<<"$line")" "$line"; done
-  done <<<"$ledger" |
+  done
+  # a run with no error line ends the loop on grep's 1, which is no failure to read
+  return 0
+}
+
+# log_sig <runner> <normalized line> -> the 8-hex signature a fix(logs) row key carries
+log_sig() { printf '%s\t%s' "$1" "$2" | sha1sum | cut -c1-8; }
+
+# log_recent -> "runner <name>" for each runner with BENCH_GUARD_RECUR or more readable runs in the
+# window, and the row key of each signature any of a runner's newest BENCH_GUARD_RECUR readable runs
+# logged, lowercased as board keys are. A log row is recovered when its runner is listed and its key
+# is not: the error is gone from as many newest runs as filing needs to see it. rc 1 when unread.
+log_recent() {
+  local kind name norm
+  log_lines | awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
+    NF == 2 { run[$1, ++runs[$1]] = $2; next }
+    { k = $1 FS $3; r[k] = $1; seen[k, $2] = 1 }
+    END { for (n in runs) if (runs[n] >= min) print "runner" FS n
+          for (k in r) for (j = runs[r[k]]; j > 0 && j > runs[r[k]] - min; j--)
+            if ((k, run[r[k], j]) in seen) { print "sig" FS k; break } }' |
+  while IFS=$'\t' read -r kind name norm; do
+    if [ "$kind" = runner ]; then echo "runner $name"; else echo "fix(logs): $name error $(log_sig "$name" "$norm"):"; fi
+  done | tr '[:upper:]' '[:lower:]'
+}
+
+# triage_log_rows -> one row per runner stderr error signature seen in BENCH_GUARD_RECUR or more
+# runs of the last TRIAGE_LOG_HOURS, one of them among the runner's newest BENCH_GUARD_RECUR readable
+# runs: a cause fixed earlier in the window is not red now, and cause_tries would count its merged
+# fix as one that did not hold. That many runs outlast a dispatch pass for the fastest runner, so an
+# intermittent error is still seen. #high at twice the recurrence.
+triage_log_rows() {
+  local name norm n sample sig
+  log_lines |
   awk -F'\t' -v min="$BENCH_GUARD_RECUR" '
     NF == 2 { run[$1, ++runs[$1]] = $2; next }
     { k = $1 FS $3; r[k] = $1; if (!((k, $2) in seen)) { seen[k, $2] = 1; n[k]++ } if (!(k in s)) s[k] = $4 }
     END { for (k in n) if (n[k] >= min) for (j = runs[r[k]]; j > 0 && j > runs[r[k]] - min; j--)
             if ((k, run[r[k], j]) in seen) { print k FS n[k] FS s[k]; break } }' |
   while IFS=$'\t' read -r name norm n sample; do
-    sig=$(printf '%s\t%s' "$name" "$norm" | sha1sum | cut -c1-8)
+    sig=$(log_sig "$name" "$norm")
     # a # would read as a tag on the board
     sample=$(sed -E 's/^\[[^]]*\][[:space:]]*//; s/#/no./g' <<<"$sample" | cut -c1-80)
     printf 'fix(logs): %s error %s:\tfix(logs): %s error %s: %s\t%s\n' "$name" "$sig" "$name" "$sig" "$sample" \
@@ -4064,29 +4091,34 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
-# triage_retire <dry> -> closes each check(watch) or fix(hold) row nobody started whose key left
-# reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it again.
-# Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
-# board cannot be read, a watch whose probe could not run (ERROR), every hold row when a repo's runs
+# triage_retire <dry> -> closes each check(watch), fix(hold) or fix(logs) row nobody started whose
+# key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
+# again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
+# board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
+# as recovered (its error in a newest run, too few runs, no ledger), every hold row when a repo's runs
 # could not be read, and a ci- hold whose merge has left the REDS_DAYS window hold_reds reads. A row
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds holds_read=1 live board slugs title raw key
-  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red)'
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner
+  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
   t=$(now)
   items=$(reds_items "$t") || return 0
   holds=$(hold_reds "$t" "$items") || holds_read=0
+  recent=$(log_recent) || logs_read=0
   live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
   slugs=$(jq -r '.[].slug' <<<"$items")
   while IFS=$'\t' read -r _ _ title raw; do
     [[ $title =~ $shape ]] || continue
-    key=${BASH_REMATCH[1]}
+    key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    if [[ $key == 'fix(logs): '* ]]; then
+      [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
+    fi
     if [[ $key == 'fix(hold): '* ]]; then
       [ "$holds_read" = 1 ] || continue
       if [[ $key == 'fix(hold): ci-'* ]]; then
@@ -4515,12 +4547,12 @@ forecast_json() {
   [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
   slots=$(queue_slots) || slots=''
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
-      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
+      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_session_phases "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
   # an item with `phases:` (agent-queue add --plan) counts those; one that only names its plan, its plan's open phases
   iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "" and (.phases // "") == "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
     | while IFS=$'\t' read -r slug pf; do
-        printf '{"%s":%s}\n' "$slug" "$(plan_phase_list "$pf" | jq 'map(select(.state == "open")) | length')"
+        printf '{"%s":%s}\n' "$slug" "$(plan_session_phases "$pf" | jq 'map(select(.state == "open")) | length')"
       done | jq -cs 'add // {}')
   jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
      --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" \

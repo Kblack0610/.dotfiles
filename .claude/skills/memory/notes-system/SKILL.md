@@ -1,7 +1,7 @@
 ---
 name: notes-system
 description: >-
-  The ~/.notes toolchain and its profile-aware `notes` Rust CLI: journal, backlogs, zettels, sync, doctor. Use for any notes read, write or layout question. Never hand-write into ~/.notes/journal/.
+  My notes and the ~/.notes toolchain, its profile-aware `notes` Rust CLI: daily note, journal, backlogs, zettels, sync, doctor, phone setup. Use for "my notes", "the daily note", "set up notes on my phone", any notes read, write or layout question. Never hand-write into ~/.notes/journal/.
 metadata:
   category: memory
   tags: [notes, journal, cli]
@@ -27,7 +27,7 @@ Use for any notes read, write or layout question. Never hand-write into `~/.note
 - **Autonomy rung:** draft / author (never edits auth/runtime state; uses the `notes` CLI, never
   hand-writes the journal)
 - **Carrying primitive:** skill voice - home here; also voices `wind-down`,
-  `one-pager`, `lab-sync`
+  `one-pager`, `lab-status`
 - **Notify channel:** the notes vault + generated summaries
 - **Registry:** `~/.dotfiles-private/.claude/PERSONAS.md`
 
@@ -130,7 +130,7 @@ The rules every agent follows on a project's two lanes. The verbs are in the CLI
 - A `design(` row is filed on the agent board only once the human has said yes to its idea, by closing its `decide(` row or answering an ask, and a detail line names that row or ask. Dispatch runs it through `one-pager` to a brief and one review ask, and only while `design` is on in `kinds.json`. Why: each design run adds an ask, and the human's ask queue is the limit.
 - Where a row goes: project is the product, type is the kind of work, area is the part. A game with its own `store/` listing has its own board; shared systems, the CI gate, store tooling, the registry and games with no store listing (game name as area) go on `unity-core-playground`; hosts and the cluster on `home-config`; API work on the `bnb-platform` app. There is no `deploy` type and no `unity-core` board. `agentctl-inbox-triage` applies the same rule. Why: one game platform project, chosen 2026-11-05, so shared work never splits across boards.
 - Today's `## Focus` (`notes focus`) is the human's list, never your queue. Which projects agents work first is the project's `#prio/<word>` (`notes projects --prio`), not Focus.
-- After creating, staging, rolling or archiving a lab project, moving rows, or editing a summary or index, run `lab-refresh` (the `lab-sync` skill, "After any lab change").
+- After creating, staging, rolling or archiving a lab project, moving rows, or editing a summary or index, run `lab-refresh` (the `lab-status` skill, "After any lab change").
 
 ## Other scripts
 

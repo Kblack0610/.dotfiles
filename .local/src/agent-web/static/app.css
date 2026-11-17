@@ -260,6 +260,10 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
    .istrip, so the other .seg controls keep their boxes. */
 .seg.istrip { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 12px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
 .seg.istrip button { flex: none; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 16px; font-weight: 500; transition: color .15s, border-color .15s; }
+.seg.istrip .isep { flex: none; align-self: stretch; width: 1px; margin: 8px 6px; background: var(--line); }
+/* An opened project's breadcrumb: Projects (back to the list) > its name. */
+.crumb { margin: 0 0 8px; font-size: 13px; }
+.crumb a { color: var(--accent); text-decoration: none; } .crumb a:hover, .crumb a:focus-visible { text-decoration: underline; }
 .seg.istrip button:hover { color: var(--ink); }
 .seg.istrip button.on { color: var(--ink); background: transparent; border-color: transparent; border-bottom-color: var(--accent); font-weight: 650; }
 .seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
@@ -596,6 +600,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .need .opts { margin-bottom: 8px; }
 /* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
 .actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
+.aprev { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.aprev img { max-width: 100%; max-height: 240px; border: 1px solid var(--line); border-radius: 4px; }
 .aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--fill); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
 .aopt:hover { border-color: var(--accent); }

@@ -1,0 +1,3 @@
+#!/bin/sh
+# getent: resolves nothing, so no test reaches the real DNS. A test that needs a name writes its own.
+exit 2

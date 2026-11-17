@@ -40,7 +40,8 @@ PR = re.compile(r"^#(\d+) (open|merged)$")
 # grouped by what clears them. A retired wording stays while watch.log still holds it.
 NEEDS = (("plan_approval", ("plan awaiting approval",)), ("ask", ("pending ask",)),
          ("question", ("question to the human",)), ("prompt", ("prompt or permission",)))
-STALLED = (("main_red", ("nightly red after", "main red after")), ("merged_dirty", ("merged, ",)),
+STALLED = (("main_red", ("nightly red after", "main red after")), ("plan_missing", ("plan file is missing",)),
+           ("merged_dirty", ("merged, ",)),
            ("after_merge", ("commits after merged PR",)), ("ci_red", ("CI red",)),
            ("green_unmerged", ("green, not merged",)), ("conflict", ("conflicts with",)),
            ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)),

@@ -348,7 +348,7 @@ pub const LEGEND: &[(&str, &str)] = &[
 /// The keys inside a pool, which draw on its money and so are not sources beside it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Keys {
-    /// `3 in lazer, 0 live, tightest glm 96%`, worded here so both surfaces print the same.
+    /// `3 in lazer, 0 live, tightest reserve 96%`, worded here so both surfaces print the same.
     pub head: String,
     /// `warn` when a key's usage is unreadable or it refuses while its pool has room, which only
     /// the fold can show, so it starts open; `ok` otherwise.
@@ -1151,7 +1151,7 @@ mod tests {
         let unreadable = Account {
             state: "unreadable",
             room: None,
-            ..key("glm", "lazer", 96.0, true)
+            ..key("reserve", "lazer", 96.0, true)
         };
         let fold = keys_fold(&ordered(vec![pool(false), unreadable.clone()]));
         assert_eq!(fold.unwrap().level, "warn");
@@ -1169,7 +1169,7 @@ mod tests {
         let level = |pool_ok, key_ok| {
             keys_fold(&ordered(vec![
                 pool(pool_ok),
-                key("glm", "lazer", 96.0, key_ok),
+                key("reserve", "lazer", 96.0, key_ok),
                 key("eval", "lazer", 18.0, true),
             ]))
             .unwrap()

@@ -11,6 +11,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  export FLEET_HOST=state   # this machine is the fixture's fleet_state_host, state.lan; a case that is not sets its own
   cat > "$FLEET_INVENTORY" <<'EOF'
 all:
   vars:
@@ -77,7 +78,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
+  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
@@ -120,7 +121,7 @@ EOF
   assert_failure
 }
 
-@test "state_forward does nothing without AGENT_STATE_HOST" {
+@test "state_forward does nothing on the fleet home without AGENT_STATE_HOST" {
   run state_forward agent-queue add list
   assert_success
   assert_not_called ssh
@@ -132,7 +133,7 @@ EOF
   run "$REPO_ROOT/.local/bin/agent-queue" set fix-menu pr=12
   assert_success
   assert_output 'set on state'
-  assert_called 'ssh -n -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 AGENT_QUEUE_ITEM=fix-menu agent-queue set fix-menu pr=12  <<none'
   assert_not_called TMUX
   [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
   # `add` and `retask` read a task from stdin, so those verbs keep it.
@@ -150,8 +151,142 @@ EOF
   run "$REPO_ROOT/.local/bin/agent-ask" list
   assert_failure 255
   assert_output --partial 'the state host state.lan did not answer over ssh; nothing was written'
-  assert_called 'exec env -u AGENT_STATE_HOST agent-ask list  <<none'
+  assert_called 'exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-ask list  <<none'
   [ -z "$(ls -A "$HOME/.agent/asks")" ] || fail "wrote local asks"
+}
+
+@test "a machine that is not the fleet home forwards to the home the roster names, with no AGENT_STATE_HOST" {
+  export FLEET_HOST=old-main
+  echo 'listed on state' > "$NOTES_FIXTURE/ssh.out"
+  run "$REPO_ROOT/.local/bin/agent-queue" list
+  assert_success
+  assert_output 'listed on state'
+  assert_called 'state.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-queue list  <<none'
+  [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
+}
+
+@test "a forwarded run never forwards again, even where a stale roster names another home" {
+  export FLEET_HOST=old-main AGENT_STATE_LOCAL=1
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+}
+
+@test "with no roster every machine is home and nothing forwards" {
+  export FLEET_HOST=old-main FLEET_INVENTORY=/nonexistent
+  run fleet_is_home
+  assert_success
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+}
+
+@test "a home named by a DHCP name, not the hostname, is home when the name resolves to one of its IPs" {
+  export FLEET_HOST=ws-hostname
+  printf '#!/bin/sh\n[ "$2" = state.lan ] && echo "192.0.2.2       STREAM state.lan"\n' > "$SANDBOX/bin/getent"
+  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.2/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  chmod +x "$SANDBOX/bin/getent" "$SANDBOX/bin/ip"
+  run fleet_is_home
+  assert_success
+  run state_forward agent-queue add list
+  assert_success
+  assert_not_called ssh
+  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.9/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  run fleet_is_home
+  assert_failure
+}
+
+@test "fleet-is-home passes on the home and fails elsewhere naming the home" {
+  run "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_success
+  assert_output ''
+  FLEET_HOST=old-main run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_failure 1
+  assert_equal "$stderr" "fleet-is-home: old-main is not the fleet home; the inventory's fleet_state_host is state"
+}
+
+@test "a roster fetched within FLEET_ROSTER_MAX_SECS is read as it is, with no fetch" {
+  home_config_fixture
+  export -f project_repo_path
+  touch "$(_fh_stamp "$HC")"
+  local before; before=$(git -C "$HC" rev-parse forgejo/master)
+  run "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_success
+  assert_equal "$(git -C "$HC" rev-parse forgejo/master)" "$before"
+}
+
+@test "a machine back from being off, whose stale roster names it, reads the other home the forge names and forwards" {
+  home_config_fixture
+  export -f project_repo_path
+  stub getent 'exit 2'   # no name resolves to this machine
+  roster_names state.lan
+  run fleet_roster_fetch
+  assert_success
+  local stale; stale=$(git -C "$HC" rev-parse forgejo/master)
+  assert_equal "$(git -C "$HC" show "$stale:ansible/inventory.yml" | grep -c 'fleet_state_host: state.lan')" 1
+  roster_names razer-laptop.lan   # merged on the forge while this machine was off
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-is-home"
+  assert_failure 1
+  assert_equal "$stderr" "fleet-is-home: state is not the fleet home; the inventory's fleet_state_host is razer-laptop"
+  run fleet_is_home
+  assert_failure
+  echo 'listed on razer' > "$NOTES_FIXTURE/ssh.out"
+  jq -n --arg hc "$HC" '{paths: {($hc): "home-config"}}' > "$SANDBOX/map.json"   # agent-queue resolves home-config itself
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$(_fh_stamp "$HC")"
+  git -C "$HC" update-ref refs/remotes/forgejo/master "$stale"   # stale again, naming this machine
+  PROJECT_MAP_FILE="$SANDBOX/map.json" run "$REPO_ROOT/.local/bin/agent-queue" list
+  assert_success
+  assert_output 'listed on razer'
+  assert_called 'razer-laptop.lan PATH="$HOME/.local/bin:$PATH" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 agent-queue list  <<none'
+  [ ! -d "$HOME/.agent/queue" ] || fail "wrote a local queue"
+}
+
+@test "a reader that comes while another fetches the stale roster waits for it and reads the home it fetched" {
+  home_config_fixture
+  stub getent 'exit 2'
+  roster_names state.lan
+  fleet_roster_fetch
+  roster_names razer-laptop.lan
+  local stamp; stamp=$(_fh_stamp "$HC")
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS - 1))" "$stamp"
+  mkfifo "$SANDBOX/held" "$SANDBOX/go" "$SANDBOX/at-lock"
+  local real; real=$(command -v flock)
+  # The first reader holds the lock and fetches only once the second has reached the lock.
+  ( exec 9>>"$stamp.lock"; "$real" 9; echo held > "$SANDBOX/held"; read -r _ < "$SANDBOX/go"; fleet_roster_fetch ) &
+  read -r _ < "$SANDBOX/held"
+  stub flock "echo at-lock > '$SANDBOX/at-lock'; exec '$real' \"\$@\""
+  ( unset FLEET_HOSTS_JSON; fleet_state_host > "$SANDBOX/second" ) &
+  local second=$!
+  read -r _ < "$SANDBOX/at-lock"
+  echo go > "$SANDBOX/go"
+  wait "$second"
+  wait
+  assert_equal "$(cat "$SANDBOX/second")" razer-laptop
+}
+
+@test "a stale roster whose fetch fails is read as it is, and fetched again only after FLEET_ROSTER_RETRY_SECS" {
+  home_config_fixture
+  git -C "$HC" remote set-url forgejo "$SANDBOX/gone.git"
+  run --separate-stderr fleet_hosts
+  assert_success
+  assert_output ''
+  assert_equal "$stderr" "fleet-hosts: fetching forgejo/master in $HC failed, so the roster is as last fetched"
+  run --separate-stderr fleet_hosts
+  assert_success
+  assert_equal "$stderr" ''
+  git -C "$HC" remote set-url forgejo "$SANDBOX/up.git"
+  touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS))" "$(_fh_stamp "$HC")"   # the retry window has passed
+  assert_equal "$(fleet_host razer-laptop | jq -r .dest)" 192.0.2.26
+}
+
+@test "the singleton units carry the fleet-is-home condition, and so write the store here" {
+  for u in fleet-state agent-ask-deliver; do
+    grep -qx 'ExecCondition=%h/.local/bin/fleet-is-home' "$REPO_ROOT/.config/systemd/user/$u.service" ||
+      fail "$u.service has no fleet-is-home ExecCondition"
+    grep -qx 'Environment=AGENT_STATE_LOCAL=1' "$REPO_ROOT/.config/systemd/user/$u.service" ||
+      fail "$u.service does not set AGENT_STATE_LOCAL=1"
+  done
 }
 
 @test "wt new --host opens the session on the worker, detached, with the launch command, and prints its name" {
@@ -188,9 +323,17 @@ home_config_fixture() {
   project_repo_path() { printf '%s' "$HC"; }
 }
 
+# roster_names <addr>: push a roster to the fixture's forge whose fleet_state_host is <addr>.
+roster_names() {
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          fleet_state_host: %s\n' "$1" > "$SANDBOX/pusher/ansible/inventory.yml"
+  git -C "$SANDBOX/pusher" -c user.name=t -c user.email=t@t commit -qam "home $1"
+  git -C "$SANDBOX/pusher" push -q forgejo master
+}
+
 @test "the roster is home-config's mainline as last fetched, never its working tree, whatever branch it is on" {
   home_config_fixture
   git -C "$HC" checkout -q -b feature
+  touch "$(_fh_stamp "$HC")"   # fetched just now, so the read does not fetch
   run fleet_hosts
   assert_success
   assert_output ''

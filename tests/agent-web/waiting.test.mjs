@@ -83,6 +83,12 @@ test("an ask's options say what each does, the recommended one why, and its cont
   assert.match(html, /<div class="actx md"><p>the release is Friday<\/p><\/div>/);
 });
 
+test("an ask's preview images show between its context and its answers, each served by the ask", () => {
+  const html = askHtml(ask({ context: "a mockup", previews: ["shot.png", "b.jpg"] }));
+  assert.match(html, /<\/div><div class="aprev"><a href="\/api\/asks\/a1\/preview\/0"[^>]*><img src="\/api\/asks\/a1\/preview\/0" alt="shot.png"[^>]*><\/a><a href="\/api\/asks\/a1\/preview\/1".*<\/div><div class="aopts">/s);
+  assert.doesNotMatch(askHtml(ask()), /aprev/, "no previews, no strip");
+});
+
 test("the judge's line says what it did or would do, a deferral included, with its rule and reason", () => {
   assert.match(askHtml(ask({ judge: "human", rule: "taste", reason: "only you know" })), /<div class="cline">Judge: deferred \(taste\) - only you know<\/div>/);
   assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">Judge: would take the recommendation, type not proven<\/div>/);

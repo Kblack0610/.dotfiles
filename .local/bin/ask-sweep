@@ -38,7 +38,7 @@ HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
-DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; ASKED=0; FAULT=0; STOPPED=0
+DRY=0; FILED=0; OVER=0; PLANS_OPEN=0; PLANS_UNCHECKED=0; PLANS_NO_COPY=0; ASKED=0; FAULT=0; STOPPED=0
 # What was read, so a run that read nothing never reports the zeros of a clean read.
 PLANS_READ=0; READ=0; UNREAD=0; MSGS=0
 declare -A NO_BOARD=()
@@ -64,7 +64,7 @@ file_row() {
 board_of() { project_board "$1"; }
 
 sweep_plans() {
-  local first live f slug done_n total next project board rows
+  local first live f slug canon stub done_n total next project board rows
   first="$ASK_SWEEP_DIR/first-run"
   [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   # The first real run only starts the clock, and a dry run before it has nothing to report.
@@ -76,6 +76,9 @@ sweep_plans() {
   while IFS= read -r -d '' f; do
     [ "$f" -ot "$first" ] && continue
     PLANS_READ=$((PLANS_READ + 1))
+    # A pointer stub owns no phases: it is swept as the plan it names, whose one row it shares.
+    IFS=$'\t' read -r canon _ < <(plan_pointer "$f") || true
+    stub="$f"; [ -z "${canon:-}" ] || f="$canon"
     IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
     if [ "$total" = - ]; then
@@ -84,11 +87,12 @@ sweep_plans() {
     fi
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
-    grep -qxF "$f" <<<"$live" && continue
+    grep -qxF -e "$f" -e "$stub" <<<"$live" && continue
     project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
-    [ -n "$project" ] || continue
+    # An open plan with no cache copy has no project to file under: counted, never dropped unseen.
+    [ -n "$project" ] || { PLANS_NO_COPY=$((PLANS_NO_COPY + 1)); continue; }
     board="$(board_of "$(basename "$project")")"
-    [ -n "$board" ] || continue
+    [ -n "$board" ] || { NO_BOARD["$(basename "$project")"]=1; continue; }
     # A variable, not a pipe: under pipefail `grep -q` quits at its match, `notes` dies of SIGPIPE on a
     # long list and the 141 reads as "no row" (2026-11-10..14: one plan filed seven times).
     rows="$(notes ptask "$board" --agent list 2>/dev/null)" || continue   # unreadable is not "no row"
@@ -269,7 +273,7 @@ cmd_run() {
   [ "$READ" = 0 ] && [ "$UNREAD" -gt 0 ] && {
     FAULT=1; say "no transcript was readable"; proof_why "$UNREAD transcripts, none readable"; }
   [ "$FAULT" = 0 ] || rc=1
-  summary="read $PLANS_READ plans and $READ transcripts ($UNREAD unreadable, $MSGS new messages), asked $ASKED boards, filed $FILED, over the cap $OVER, ${#NO_BOARD[@]} projects with no board, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED"
+  summary="read $PLANS_READ plans and $READ transcripts ($UNREAD unreadable, $MSGS new messages), asked $ASKED boards, filed $FILED, over the cap $OVER, ${#NO_BOARD[@]} projects with no board, open plans $PLANS_OPEN, no checklist $PLANS_UNCHECKED, no cache copy $PLANS_NO_COPY"
   say "$summary"
   [ "$DRY" = 1 ] && return "$rc"
   verdict=NOOP

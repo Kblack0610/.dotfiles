@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# event-catalogue - the events each product sends and their properties, one JSON file per product.
+#
+#   event-catalogue [build]       write ~/.agent/event-catalogue/<project>.json for every product
+#   event-catalogue show <p>      print one product's catalogue
+#   event-catalogue check <p>     exit 0 when the product has a catalogue with an event in it
+#
+# The sources are the `analytics` file rows of departments.tsv (~/.config/agentctl/), each
+# `<repo-key>:<path>`; a `.ts` file is read as the AnalyticsEvents const, a `.md` file as its
+# `## Usage events` table. A source that cannot be read gives no file and an error line, never an
+# empty catalogue. Readers, output and troubleshooting: docs/operations/event-catalogue.md.
+set -uo pipefail
+
+LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh"
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$LIB}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+
+DEPARTMENTS_TSV="${DEPARTMENTS_TSV:-$HOME/.config/agentctl/departments.tsv}"
+OUT_DIR="${EVENT_CATALOGUE_DIR:-$HOME/.agent/event-catalogue}"
+
+die() { echo "event-catalogue: $*" >&2; exit 2; }
+usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+need_jq() { command -v jq >/dev/null 2>&1 || die "jq is not installed"; }
+
+# parse_ts <file> <project>: events as JSON lines {name, group, props}. A `// ` comment is a
+# group heading only when a blank line or the const opening precedes it; any other comment is a
+# note and changes nothing. A group named "<Product> specific events" is kept only when <Product>,
+# squashed to lowercase letters and digits, is the squashed project name.
+parse_ts() {
+  awk -v proj="$(squash "$2")" '
+    function squash(s) { s = tolower(s); gsub(/[^a-z0-9]/, "", s); return s }
+    /export const AnalyticsEvents[ ]*=/ { on = 1; blank = 1; next }
+    on && /^[ ]*}[ ]*as const/ { on = 0 }
+    !on { next }
+    /^[ ]*$/ { blank = 1; next }
+    /^[ ]*\/\/ / {
+      if (!blank) next
+      g = $0; sub(/^[ ]*\/\/ /, "", g)
+      props = ""
+      if (match(g, / *\(all carry [^)]*\)/)) {
+        note = substr(g, RSTART, RLENGTH); g = substr(g, 1, RSTART - 1)
+        while (match(note, /`[^`]+`/)) { props = props (props == "" ? "" : ",") substr(note, RSTART + 1, RLENGTH - 2); note = substr(note, RSTART + RLENGTH) }
+      }
+      scope = ""
+      if (match(g, / specific events$/)) scope = squash(substr(g, 1, RSTART - 1))
+      group = g; blank = 0
+      next
+    }
+    { blank = 0 }
+    /^[ ]*[A-Z0-9_]+:[ ]*'\''[^'\'']+'\''/ {
+      if (scope != "" && scope != proj) next
+      v = $0; sub(/^[^'\'']*'\''/, "", v); sub(/'\''.*$/, "", v)
+      printf "%s\t%s\t%s\n", v, group, props
+    }' "$1" \
+    | jq -Rc 'split("\t") | {name: .[0], group: .[1], props: (.[2] // "" | split(",") | map(select(. != "")))}'
+}
+
+# parse_md <file>: the `## Usage events` table as JSON lines {name, group, props, when}. A Kind
+# cell may list several backticked names, each its own event. The Props cell is read up to its
+# first colon, so "`reason`: `unreachable`, `port`" has the one property reason.
+parse_md() {
+  awk '
+    /^## Usage events[ ]*$/ { on = 1; next }
+    on && /^## / { on = 0 }
+    on && /^\|/ { print }' "$1" | jq -Rc '
+    split("|") | map(gsub("^ +| +$"; "")) | select(length >= 4)
+    | {kind: .[1], when: .[2], props: .[3]}
+    | select(.kind | test("`"))
+    | . as $r
+    | ($r.props | split(":")[0] | [match("`([^`]+)`"; "g").captures[0].string]) as $p
+    | ($r.kind | [match("`([^`]+)`"; "g").captures[0].string][])
+    | {name: ., group: "usage events", props: $p, when: $r.when}'
+}
+
+# analytics_rows: "<project>\t<source>" for each analytics file row of the department catalog.
+analytics_rows() {
+  [ -f "$DEPARTMENTS_TSV" ] || die "no department catalog at $DEPARTMENTS_TSV"
+  awk -F'\t' '!/^#/ && NF >= 5 && $1 == "analytics" && $3 == "file" && $4 != "*" { print $4 "\t" $2 }' "$DEPARTMENTS_TSV"
+}
+
+squash() { tr '[:upper:]' '[:lower:]' <<<"$1" | tr -cd 'a-z0-9'; }
+
+# resolve <source>: the file a `<repo-key>:<path>` row names; empty when the repo is not cloned.
+resolve() {
+  local key="${1%%:*}" path="${1#*:}" dir
+  [ "$key" != "$1" ] || return 0
+  dir="$(project_repo_path "$key")"
+  [ -n "$dir" ] && [ -f "$dir/$path" ] && printf '%s\n' "$dir/$path"
+  return 0
+}
+
+# build_one <project> <source>...: write the product's file from its sources, in row order;
+# returns 1 and writes nothing when any source gave no events.
+build_one() {
+  local proj="$1" src file lines="" got bad=0 srcs=()
+  shift
+  for src in "$@"; do
+    file="$(resolve "$src")"
+    [ -n "$file" ] || { echo "event-catalogue: $proj: cannot read $src" >&2; bad=1; continue; }
+    case "$file" in
+      *.ts) got="$(parse_ts "$file" "$proj")" ;;
+      *.md) got="$(parse_md "$file")" ;;
+      *) echo "event-catalogue: $proj: no reader for $src" >&2; bad=1; continue ;;
+    esac
+    [ -n "$got" ] || { echo "event-catalogue: $proj: no events in $src" >&2; bad=1; continue; }
+    lines+="$got"$'\n'
+    srcs+=("$src")
+  done
+  # One unreadable source means a catalogue that is missing events: write none, and drop the last
+  # good file, so check and the Analytics tab say "no catalogue" instead of showing a stale one.
+  [ "$bad" = 0 ] || { rm -f "$OUT_DIR/$proj.json"; return 1; }
+  mkdir -p "$OUT_DIR" || die "cannot make $OUT_DIR"
+  local tmp
+  tmp="$(mktemp "$OUT_DIR/.$proj.XXXXXX")" || die "cannot write in $OUT_DIR"
+  printf '%s' "$lines" | jq -sc --arg p "$proj" --argjson now "$(date +%s)" --argjson s "$(printf '%s\n' "${srcs[@]}" | jq -Rsc 'split("\n")[:-1]')" \
+    '{project: $p, generated_epoch: $now, sources: $s, events: (unique_by(.name) | sort_by(.group, .name))}' >"$tmp" \
+    && chmod 0644 "$tmp" && mv -f "$tmp" "$OUT_DIR/$proj.json" || { rm -f "$tmp"; return 1; }
+}
+
+build() {
+  local rows proj fail=0 n=0
+  rows="$(analytics_rows)" || exit 2
+  while IFS= read -r proj; do
+    [ -n "$proj" ] || continue
+    mapfile -t srcs < <(awk -F'\t' -v p="$proj" '$1 == p { print $2 }' <<<"$rows")
+    if build_one "$proj" "${srcs[@]}"; then
+      n=$((n + 1)); echo "event-catalogue: $proj: $(jq '.events | length' "$OUT_DIR/$proj.json") events"
+    else
+      fail=1
+    fi
+  done < <(cut -f1 <<<"$rows" | sort -u)
+  [ "$n" -gt 0 ] || { echo "event-catalogue: no catalogue was written" >&2; return 1; }
+  return "$fail"
+}
+
+# project_arg <name>: a project key, never a path.
+project_arg() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "not a project name: $1"; }
+
+case "${1:-build}" in
+  build) [ "$#" -le 1 ] || usage; need_jq; build ;;
+  show) [ "$#" -eq 2 ] || usage; project_arg "$2"; [ -f "$OUT_DIR/$2.json" ] || die "no catalogue for $2"; cat "$OUT_DIR/$2.json" ;;
+  check) [ "$#" -eq 2 ] || usage; project_arg "$2"; need_jq; jq -e '.events | length > 0' "$OUT_DIR/$2.json" >/dev/null 2>&1 ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac

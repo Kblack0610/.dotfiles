@@ -142,8 +142,12 @@ function askCard(a, held = "") {
   const owner = st.agents.find((x) => a.session && x.session === a.session);
   const from = owner ? owner.short || owner.target : a.agent;
   const judge = judgeText(a);
-  // What follows the question: its context, the judge's view, then the answers.
-  const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
+  // What follows the question: its context, its preview images (`mkt draft`), the judge's view,
+  // then the answers.
+  const prev = (a.previews || []).map((p, i) => `<a href="/api/asks/${encodeURIComponent(a.id)}/preview/${i}" target="_blank" rel="noopener">` +
+    `<img src="/api/asks/${encodeURIComponent(a.id)}/preview/${i}" alt="${esc(p)}" loading="lazy"></a>`).join("");
+  const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${prev ? `<div class="aprev">${prev}</div>` : ""}` +
+    `${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
   const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
   const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? waited(a.created) : "", held]);
   const body = a.title ? a.body : "";

@@ -13,13 +13,14 @@
 # Credentials, series and statuses: docs/operations/store-reviews.md.
 set -uo pipefail
 
-PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
-# shellcheck source=../../.config/shared-hooks/project-name.sh
-. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/store-apps.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-apps.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 
 # Timeout guard on every external call, in seconds.
 PROBE_TIMEOUT="${STORE_REVIEWS_TIMEOUT:-15}"
@@ -46,7 +47,12 @@ ASC_PAGE=200
 PLAY_PAGE=100
 PAGES=5
 
-die() { echo "store-reviews: $*" >&2; exit 2; }
+# A die in a $( ) subshell leaves the outcome to its caller's die, so a pass declares once.
+die() {
+  echo "store-reviews: $*" >&2
+  [ "$BASHPID" != "$$" ] || proof_runner_outcome FAILED "$*"
+  exit 2
+}
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 for t in jq curl openssl; do
@@ -65,22 +71,6 @@ TMP="$(mktemp -d)" || die "cannot make a scratch dir"
 trap 'rm -rf "$TMP"' EXIT
 NOW="$(now_epoch)"
 SINCE=$((NOW - WINDOW_DAYS * 86400))
-
-# apps -> one {project, store, app} per line: every product's store targets, each app once.
-apps() {
-  local map
-  map="$(project_map_file)"
-  [ -f "$map" ] || die "no registry at $map"
-  project_machine_profile >/dev/null
-  jq -c --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map" "$PROJECT_VISIBLE_JQ"'
-    [(.trackers // {}) | to_entries[]
-     | select(.value | type == "object") | .key as $p | select($p | visible($m))
-     | (.value.targets // [])[] | objects | .live // {}
-     | ({project: $p, store: "steam", app: .steam.app},
-        {project: $p, store: "play", app: .play.package},
-        {project: $p, store: "app_store", app: .testflight.app})
-     | select(.app != null) | .app |= tostring] | unique[]' "$map"
-}
 
 # row <app-json> <error> | row <app-json> "" <counts-json>: an app's record. A row with an error
 # has no counts, and counts that could not be computed are an error.
@@ -166,23 +156,14 @@ app_store() {
     | {listed: true, total: $t, recent: ($r | length), recent_positive: ($r | map(select(.rating >= 4)) | length)}' "$TMP"/asc."$2".* 2>/dev/null)"
 }
 
-APPS="$(apps)" || die "could not read the store targets from $(project_map_file)"
+APPS="$(store_apps)" || die "could not read the store targets from $(project_map_file)"
 # One token per store that has apps, made once; a locked vault or a missing entry is that store's
 # error for each of its apps.
-PLAY_TOKEN="" PLAY_WHY="" ASC_TOKEN="" ASC_WHY=""
 has() { grep -q "\"store\":\"$1\"" <<<"$APPS"; }
-if has play || has app_store; then
-  if store_rbw_ready; then
-    if has play; then
-      if store_google_token "$RBW_PLAY" "$PLAY_SCOPE"; then PLAY_TOKEN="$STORE_TOKEN"; else PLAY_WHY="$STORE_WHY"; fi
-    fi
-    if has app_store; then
-      if store_asc_jwt "$RBW_ASC"; then ASC_TOKEN="$STORE_TOKEN"; else ASC_WHY="$STORE_WHY"; fi
-    fi
-  else
-    PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
-  fi
-fi
+need=()
+has play && need+=(play "$RBW_PLAY" "$PLAY_SCOPE")
+has app_store && need+=(asc "$RBW_ASC")
+[ "${#need[@]}" -eq 0 ] || store_tokens "${need[@]}" || true
 
 # Stores run side by side; one store's apps run in turn. The store name is its reader function.
 grep -n . <<<"$APPS" > "$TMP/apps"
@@ -215,6 +196,18 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  prom_textfile store_reviews.prom prom_lines "$doc" || echo "store-reviews: could not write store_reviews.prom" >&2
+  # The runner's outcome. An app that could not be read is in the file (store_reviews_up 0 for its
+  # store), so a locked vault on one store is not a failed pass; a pass that published nothing or
+  # read no app at all is.
+  read -r n unread < <(jq -r '"\(.apps | length) \([.apps[] | select(.error)] | length)"' <<<"$doc")
+  why=""
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile store_reviews.prom prom_lines "$doc"; then
+    why="could not write store_reviews.prom"
+    echo "store-reviews: $why" >&2
+  elif [ "${unread:-0}" = "${n:-0}" ]; then why="no store app could be read (${n:-0} apps)"
+  fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
+  else proof_runner_outcome WORKED "$n apps, $unread unread"; fi
 fi
 printf '%s\n' "$doc"

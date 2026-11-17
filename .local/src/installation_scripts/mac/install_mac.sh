@@ -422,31 +422,6 @@ setup_firefox() {
     "$installer" || log_warning "Firefox not set up yet: fix the error above (a new Mac: open Firefox once, quit it), then run $installer"
 }
 
-# Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
-# MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
-# so it runs on every machine; only the sync wiring is gated on the URL.
-setup_notes_sync() {
-    log_section "Setting up notes CLI + sync"
-
-    local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
-    if [[ ! -x "$bootstrap" ]]; then
-        log_warning "notes-bootstrap not found at $bootstrap — skipping"
-        return 0
-    fi
-
-    # The notes CLI build needs no sync URL — always build it so daily-note
-    # tooling and profile resolution work even on machines without notes sync.
-    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
-        log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
-        "$bootstrap" --build-only
-        return 0
-    fi
-
-    "$bootstrap" --primary-url "$NOTES_PRIMARY_REMOTE_URL" \
-                 ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
-}
-
 # Override main installation for macOS
 install_all() {
     # Create structure
@@ -490,6 +465,7 @@ install_all() {
     step dotfiles   setup_git
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
+    step dotfiles   setup_ai_memory
 
     # System configuration
     step system     configure_macos_defaults
@@ -501,9 +477,6 @@ install_all() {
     # Firefox policies and profile files (after apply_dotfiles: the private
     # overlay holds the Tab Keeper policy)
     step desktop    setup_firefox
-
-    # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
-    step notes      setup_notes_sync
 }
 
 post_install_notes() {

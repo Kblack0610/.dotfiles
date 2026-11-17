@@ -1107,7 +1107,7 @@ EOF
 @test "a sandboxed harness's sessions are read from its own run DB beside the shared one; an unreadable one loses only its lines" {
   oc_db
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, glm: {launcher: "opencode"}}}' > "$SO_HARNESSES"
+  jq -n --arg d "$SANDBOX/oc-free" '{harnesses: {ocfree: {launcher: "opencode", sandbox: "ocfree", config_dir: $d}, "opencode-go": {launcher: "opencode"}}}' > "$SO_HARNESSES"
   mkdir -p "$SANDBOX/oc-free/run/data/opencode"
   cp "$SO_OPENCODE_DB" "$SANDBOX/oc-free/run/data/opencode/opencode.db"
   sqlite3 "$SANDBOX/oc-free/run/data/opencode/opencode.db" "UPDATE session_v2 SET id = 'ses_free' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_free' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_free' WHERE session_id = 'ses_root';"
@@ -1232,14 +1232,14 @@ EOF
   assert_equal "$(jq -r .harness "$SO_OUT/old/2026-11.jsonl" | paste -sd' ')" 'lazer-reserve claude'
 }
 
-@test "a Claude session never reads codex or opencode: not from an agent: codex item, a glm item, or a codex stamp an earlier run left" {
+@test "a Claude session never reads codex or opencode: not from an agent: codex item, an opencode-go item, or a codex stamp an earlier run left" {
   oc_db
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
-  jq -n '{harnesses: {glm: {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
+  jq -n '{harnesses: {"opencode-go": {launcher: "opencode"}, codex: {launcher: "codex"}, "lazer-reserve": {launcher: "claude-lazer"}}}' > "$SO_HARNESSES"
   {
     jq -cn '{slug: "cx", agent: "codex", sessions: "sess-a sess-c"}'
-    jq -cn '{slug: "gl", agent: "glm", sessions: "sess-b"}'
+    jq -cn '{slug: "gl", agent: "opencode-go", sessions: "sess-b"}'
     jq -cn '{slug: "lz", agent: "lazer-reserve", sessions: "sess-d"}'
   } > "$SANDBOX/items.jsonl"
   # c: an earlier run stamped codex on it (the 8473b997 shape); the re-observation must not keep it
@@ -1615,15 +1615,18 @@ gw_ready() {
 # rework_repo [fix|move] - a clone of o/r whose origin cannot be reached (GIT_SSH_COMMAND=false), so the
 # fetch fails and the refs as they stand are read. "feat: a (#10)" lands at PR 10's merge time;
 # with "fix", a fix 11h later rewrites its line and names #10; with "move", a fix naming #10 only
-# renames the file; without either, a feat rewrites it.
+# renames the file; with "lock", a fix naming #10 only regenerates web/pnpm-lock.yaml and Cargo.lock
+# the feat also wrote; without either, a feat rewrites it.
 rework_repo() {
   R="$SANDBOX/r"; export GIT_SSH_COMMAND=false
   git init -q -b main "$R"; git -C "$R" remote add origin git@github.com:o/r.git
   c() { GIT_AUTHOR_DATE="@$1 +0000" GIT_COMMITTER_DATE="@$1 +0000" git -C "$R" -c user.name=t -c user.email=t@t commit -qam "$2"; }
-  printf 'one\n' > "$R/a.sh"; git -C "$R" add a.sh; c 1792371600 "feat: a (#10)"
+  printf 'one\n' > "$R/a.sh"; mkdir "$R/web"; printf 'one\n' > "$R/web/pnpm-lock.yaml"; printf 'one\n' > "$R/Cargo.lock"
+  git -C "$R" add a.sh web/pnpm-lock.yaml Cargo.lock; c 1792371600 "feat: a (#10)"
   FEAT=$(git -C "$R" rev-parse HEAD)
   case "${1:-}" in
     fix) printf 'two\n' > "$R/a.sh"; c 1792411200 "fix: a again, after #10 (#13)" ;;
+    lock) printf 'two\n' > "$R/web/pnpm-lock.yaml"; printf 'two\n' > "$R/Cargo.lock"; c 1792411200 "fix: bump deps, after #10 (#13)" ;;
     move) git -C "$R" mv a.sh b.sh; c 1792411200 "fix: move a.sh to b.sh, after #10 (#13)" ;;
     *) printf 'two\n' > "$R/a.sh"; c 1792411200 "feat: a grows (#13)" ;;
   esac
@@ -1692,6 +1695,12 @@ rework_repo() {
 
 @test "rework: a fix that only moves a file rewrites no line, so the change is no candidate" {
   rework_repo move
+  "$SUBJECT" run
+  assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
+}
+
+@test "rework: a fix that only regenerates a lockfile rewrites no code line, so the change is no candidate" {
+  rework_repo lock
   "$SUBJECT" run
   assert_equal "$(field a '.rework | tojson')" '{"measured":1,"candidate_7d":0,"verified_30d":0}'
 }

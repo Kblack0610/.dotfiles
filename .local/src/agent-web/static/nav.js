@@ -13,7 +13,9 @@ function headingOf(e) {
 }
 
 function drawOutline() {
-  const items = tabAnchors().map((e) => [e.id.slice(4), headingOf(e)]).filter((x) => x[1]);
+  // A hidden pane of a record's page (a product's Legal) is reached by its strip tab, not here.
+  const items = tabAnchors().filter((e) => !e.closest?.("[data-pin][hidden]"))
+    .map((e) => [e.id.slice(4), headingOf(e)]).filter((x) => x[1]);
   const shown = items.length >= 2 ? items : [];
   const key = st.tab + JSON.stringify(shown);
   if (key === outlineKey) return; // a live repaint rarely changes the sections

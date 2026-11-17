@@ -23,6 +23,7 @@ mod cli;
 mod cloud;
 mod costs;
 mod deliverables;
+mod departments;
 mod epics;
 mod feed;
 mod fleet;
@@ -54,7 +55,7 @@ use std::time::Duration;
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use assets::LOGIN;
-use axum::extract::{Path as UrlPath, Query, Request, State};
+use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -162,6 +163,7 @@ async fn main() -> Result<()> {
         .route("/api/asks/parked", get(parked_asks))
         .route("/api/asks/park", post(park))
         .route("/api/asks/{id}/trace", get(ask_trace))
+        .route("/api/asks/{id}/preview/{n}", get(ask_preview))
         .route("/api/watch", get(watch_board))
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
@@ -197,6 +199,11 @@ async fn main() -> Result<()> {
         .route("/api/stages/requirements", get(stages::get_requirements))
         .route("/api/projects", get(projects::get))
         .route("/api/projects/{name}/page", get(projects::page))
+        .route(
+            "/api/projects/{name}/departments",
+            get(departments::get_project),
+        )
+        .route("/api/coverage", get(departments::get))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
@@ -220,6 +227,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login))
+        .route("/login/key", post(login_key))
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
@@ -649,14 +657,37 @@ async fn require_auth(
 async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
     match signed_in(&s, &headers) {
         Some(_) => Html(assets::index()).into_response(),
-        None => Html(LOGIN.replace("{{error}}", "")).into_response(),
+        None => Html(login_page("")).into_response(),
     }
 }
 
 fn denied(code: StatusCode, msg: &str) -> Response {
     let err = format!(r#"<div class="err">{msg}</div>"#);
-    (code, Html(LOGIN.replace("{{error}}", &err))).into_response()
+    (code, Html(login_page(&err))).into_response()
 }
+
+/// The sign-in page: the Forgejo button always, the key form while `login.key` holds a key.
+fn login_page(error: &str) -> String {
+    login_html(error, auth::login_key().is_some())
+}
+
+fn login_html(error: &str, with_key: bool) -> String {
+    LOGIN
+        .replace("{{error}}", error)
+        .replace("{{key_form}}", if with_key { KEY_FORM } else { "" })
+}
+
+/// One sign-in line in the audit log, written off the request's thread. `method` is `key` for the
+/// local key and None for Forgejo.
+fn record_signin(actor: &str, action: &str, method: Option<&str>) {
+    let mut e = hub_core::audit::Entry::new(actor, action, "agent-web", "web");
+    if let Some(m) = method {
+        e = e.to(serde_json::json!({ "method": m }));
+    }
+    tokio::task::spawn_blocking(move || hub_core::audit::record(&e));
+}
+
+const KEY_FORM: &str = r#"<form method="post" action="/login/key"><input type="password" name="key" autocomplete="current-password" placeholder="Sign-in key" required><button class="btn" type="submit">Sign in with key</button></form>"#;
 
 /// Start the OAuth flow: remember a random state in a short-lived cookie and hand the
 /// browser to Forgejo. Forgejo shows its own sign-in form if there is no session there.
@@ -713,8 +744,7 @@ async fn callback(
     };
     if !s.oauth.is_allowed(&login) {
         eprintln!("agent-web: rejected Forgejo user {login}");
-        let refused = hub_core::audit::Entry::new(&login, "signin.refused", "agent-web", "web");
-        tokio::task::spawn_blocking(move || hub_core::audit::record(&refused));
+        record_signin(&login, "signin.refused", None);
         return denied(
             StatusCode::FORBIDDEN,
             "That Forgejo account is not allowed here.",
@@ -722,8 +752,7 @@ async fn callback(
     }
     let id = match s.sessions.create(&login) {
         Ok(id) => {
-            let started = hub_core::audit::Entry::new(&login, "signin.started", "agent-web", "web");
-            tokio::task::spawn_blocking(move || hub_core::audit::record(&started));
+            record_signin(&login, "signin.started", None);
             id
         }
         Err(e) => {
@@ -747,6 +776,42 @@ async fn callback(
             .append(header::SET_COOKIE, c.parse().unwrap());
     }
     resp
+}
+
+#[derive(Deserialize)]
+struct KeyForm {
+    key: String,
+}
+
+/// Sign in with the local key, for when Forgejo is down. Same session as the OAuth callback
+/// makes, for the first allowed user, so that name is whoever holds the key.
+async fn login_key(State(s): State<Shared>, Form(f): Form<KeyForm>) -> Response {
+    let (Some(key), Some(user)) = (auth::login_key(), s.oauth.key_user()) else {
+        return denied(StatusCode::NOT_FOUND, "Key sign-in is not set up.");
+    };
+    if !auth::matches(f.key.trim(), &key) {
+        record_signin("login-key", "signin.refused", Some("key"));
+        return denied(StatusCode::FORBIDDEN, "That key is not right.");
+    }
+    let id = match s.sessions.create(user) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("agent-web: could not store session: {e:#}");
+            return denied(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not start a session.",
+            );
+        }
+    };
+    record_signin(user, "signin.started", Some("key"));
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, auth::session_cookie(&id)),
+            (header::LOCATION, "/".to_string()),
+        ],
+    )
+        .into_response()
 }
 
 async fn logout(State(s): State<Shared>, headers: HeaderMap) -> Response {
@@ -1116,12 +1181,15 @@ struct Ask {
     assume_at: String,
     /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
     parked_until: String,
+    /// The file names of its preview images (`--preview`), served by `/api/asks/{id}/preview/{n}`.
+    previews: Vec<String>,
 }
 
 /// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note, assume_at, resume, parked_until.
+/// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
+/// delivery_answer, previews.
 fn parse_asks(tsv: &str) -> Vec<Ask> {
     tsv.lines()
         .filter_map(|l| {
@@ -1159,6 +1227,11 @@ fn parse_asks(tsv: &str) -> Vec<Ask> {
                     answer_note: col(23).into(),
                     assume_at: col(24).into(),
                     parked_until: col(26).into(),
+                    previews: col(31)
+                        .split('|')
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                        .collect(),
                 }
             })
         })
@@ -1226,6 +1299,30 @@ async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::V
     serde_json::from_str(&out)
         .map(Json)
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+}
+
+/// An ask's `n`th preview image, only one under the outbound ledger (hub-core `outbound::preview`).
+async fn ask_preview(UrlPath((id, n)): UrlPath<(String, usize)>) -> ApiResult<Response> {
+    if !ask_id_ok(&id) {
+        return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
+    }
+    let (mime, bytes) = tokio::task::spawn_blocking(move || {
+        let ledger = hub_core::boards::outbound_dir();
+        let (path, mime) = hub_core::outbound::preview(&boards::asks_dir(), &ledger, &id, n)?;
+        std::fs::read(&path)
+            .map(|b| (mime, b))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    })
+    .await
+    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    // A preview is the ledger's copy and never changes, so the browser keeps it across re-renders.
+    let keep = "private, max-age=86400, immutable";
+    Ok((
+        [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, keep)],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
@@ -2010,6 +2107,16 @@ mod tests {
     }
 
     #[test]
+    fn the_sign_in_page_shows_the_key_form_only_with_a_key_and_leaves_no_placeholder() {
+        let with = login_html("", true);
+        let without = login_html("", false);
+        assert!(with.contains(r#"action="/login/key""#));
+        assert!(!without.contains("/login/key"));
+        assert!(!with.contains("{{") && !without.contains("{{"));
+        assert!(login_html("<b>x</b>", false).contains("<b>x</b>"));
+    }
+
+    #[test]
     fn parses_ask_rows() {
         let tsv = "Y3g\tbnb\t\tpending\tgate\tShip it?\tapprove|hold\t\t\t\tapprove\nshort\trow\n";
         let asks = parse_asks(tsv);
@@ -2065,6 +2172,13 @@ mod tests {
         let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
         assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
         assert_eq!(parse_asks(&armed)[0].parked_until, "");
+        // previews trail delivery, delivery_note, answer and delivery_answer, as file names.
+        let shown = format!(
+            "{}\t\t\t\t\t/o/dodge/files/x/shot.png|/o/dodge/files/x/b.jpg\n",
+            parked.trim_end_matches('\n')
+        );
+        assert_eq!(parse_asks(&shown)[0].previews, ["shot.png", "b.jpg"]);
+        assert!(parse_asks(&parked)[0].previews.is_empty());
     }
 
     #[test]

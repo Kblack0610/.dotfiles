@@ -735,7 +735,7 @@ mod tests {
             "keys": [
                 {"alias": "comms-triage", "team": "lazer-core", "spend": 0.02, "max_budget": 25.0, "budget_duration": "30d", "models": ["fast"], "priority": "must"},
                 {"alias": "claude-reserve", "team": "lazer-pool", "spend": 92.0, "max_budget": 100.0, "budget_duration": "30d", "models": ["claude-sonnet-5"], "priority": "low", "consumer": "cl --lazer"},
-                {"alias": "glm-pilot", "team": "lazer-pool", "spend": 48.0, "max_budget": 50.0, "blocked": true, "models": ["reasoning (glm-5.3)"], "priority": "off"}
+                {"alias": "old-pilot", "team": "lazer-pool", "spend": 48.0, "max_budget": 50.0, "blocked": true, "models": ["reasoning (glm-5.3)"], "priority": "off"}
             ],
             "sources": [
                 {"name": "codex", "kind": "codex", "reserve": 30, "priority": "low"},
@@ -958,7 +958,7 @@ mod tests {
             "subscription",
             "anthropic-native",
         )]);
-        let g = row(&c, "glm-pilot");
+        let g = row(&c, "old-pilot");
         assert_eq!((g.status.as_str(), g.level), ("blocked", "ok"));
         assert_eq!(g.runs_on, "gateway glm-5.3");
         assert_eq!(g.fallback, "none");
