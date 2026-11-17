@@ -1358,8 +1358,10 @@ finding() {
 phase() {
   local d="${5:-1/4}"
   jq -cn --arg s "$1" --arg r "$2" --arg b "${6:-WORKING}" --arg a "${7:-${2%% *}}" \
+    --arg pr "${8:-}" \
     '{target:"t-\($s)", session_id:$s, bucket:$b, reason:$r, activity:$a, nudged:false,
-    escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0}' >> "$HOME/rows"
+    escalated:false, labels:[], next_phase:"P2 the thing", fact:"f", idle_min:0,
+    phases:[{state:"open", name:"P2 the held item"}], phase_runner:(if $pr == "" then null else $pr end)}' >> "$HOME/rows"
   jq -cn --arg s "$1" --argjson m "$3" --argjson a "$4" --argjson d "${d%/*}" --argjson n "${d#*/}" \
     '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
       phase_since_epoch:(now - $a * 60 - 30 | floor), basis:"b"}' >> "$HOME/eta"
@@ -1380,6 +1382,23 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   refute_output --partial t-s3
   refute_output --partial t-s4
   refute_output --partial t-s5
+}
+
+@test "an overdue line names the session running the open phase's item, once, not every session on the plan (ar-1497)" {
+  phase s1 shell 40 81 1/4 WORKING shell t-s2   # plan owner: P2 is an item running in s2
+  phase s3 shell 40 81 1/4 WORKING shell t-s2   # a second session on the same plan file
+  phase s2 shell 40 10 1/1                      # the runner: its own phase is young
+  phase s4 shell 40 81 1/4 WORKING shell t-gone # the runner is no WORKING row here: nobody to name
+  phase s5 shell 40 81 1/4 WORKING shell t-s5   # it runs its own phase: unchanged
+  phases_doc
+  run "$SH" due
+  assert_success
+  assert_line "overdue: t-s2 phase 2/4 'P2 the held item' open 81m, expected 40m (b); then: fleet-sessions mark s2 \"overdue phase 2/4\""
+  assert_line "overdue: t-s5 phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-sessions mark s5 \"overdue phase 2/4\""
+  refute_output --partial t-s1
+  refute_output --partial t-s3
+  refute_output --partial t-s4
+  [ "$(grep -c '^overdue: ' <<<"$output")" = 2 ]
 }
 
 @test "a NEEDS session carrying on past its ask keeps the overdue check; a plain or busy one does not" {
