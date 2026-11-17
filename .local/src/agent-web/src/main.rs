@@ -55,7 +55,7 @@ use std::time::Duration;
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use assets::LOGIN;
-use axum::extract::{Path as UrlPath, Query, Request, State};
+use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -227,6 +227,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/", get(index))
         .route("/login", get(login))
+        .route("/login/key", post(login_key))
         .route("/oauth/callback", get(callback))
         .route("/logout", post(logout))
         .route("/healthz", get(|| async { "ok" }))
@@ -656,14 +657,37 @@ async fn require_auth(
 async fn index(State(s): State<Shared>, headers: HeaderMap) -> Response {
     match signed_in(&s, &headers) {
         Some(_) => Html(assets::index()).into_response(),
-        None => Html(LOGIN.replace("{{error}}", "")).into_response(),
+        None => Html(login_page("")).into_response(),
     }
 }
 
 fn denied(code: StatusCode, msg: &str) -> Response {
     let err = format!(r#"<div class="err">{msg}</div>"#);
-    (code, Html(LOGIN.replace("{{error}}", &err))).into_response()
+    (code, Html(login_page(&err))).into_response()
 }
+
+/// The sign-in page: the Forgejo button always, the key form while `login.key` holds a key.
+fn login_page(error: &str) -> String {
+    login_html(error, auth::login_key().is_some())
+}
+
+fn login_html(error: &str, with_key: bool) -> String {
+    LOGIN
+        .replace("{{error}}", error)
+        .replace("{{key_form}}", if with_key { KEY_FORM } else { "" })
+}
+
+/// One sign-in line in the audit log, written off the request's thread. `method` is `key` for the
+/// local key and None for Forgejo.
+fn record_signin(actor: &str, action: &str, method: Option<&str>) {
+    let mut e = hub_core::audit::Entry::new(actor, action, "agent-web", "web");
+    if let Some(m) = method {
+        e = e.to(serde_json::json!({ "method": m }));
+    }
+    tokio::task::spawn_blocking(move || hub_core::audit::record(&e));
+}
+
+const KEY_FORM: &str = r#"<form method="post" action="/login/key"><input type="password" name="key" autocomplete="current-password" placeholder="Sign-in key" required><button class="btn" type="submit">Sign in with key</button></form>"#;
 
 /// Start the OAuth flow: remember a random state in a short-lived cookie and hand the
 /// browser to Forgejo. Forgejo shows its own sign-in form if there is no session there.
@@ -720,8 +744,7 @@ async fn callback(
     };
     if !s.oauth.is_allowed(&login) {
         eprintln!("agent-web: rejected Forgejo user {login}");
-        let refused = hub_core::audit::Entry::new(&login, "signin.refused", "agent-web", "web");
-        tokio::task::spawn_blocking(move || hub_core::audit::record(&refused));
+        record_signin(&login, "signin.refused", None);
         return denied(
             StatusCode::FORBIDDEN,
             "That Forgejo account is not allowed here.",
@@ -729,8 +752,7 @@ async fn callback(
     }
     let id = match s.sessions.create(&login) {
         Ok(id) => {
-            let started = hub_core::audit::Entry::new(&login, "signin.started", "agent-web", "web");
-            tokio::task::spawn_blocking(move || hub_core::audit::record(&started));
+            record_signin(&login, "signin.started", None);
             id
         }
         Err(e) => {
@@ -754,6 +776,42 @@ async fn callback(
             .append(header::SET_COOKIE, c.parse().unwrap());
     }
     resp
+}
+
+#[derive(Deserialize)]
+struct KeyForm {
+    key: String,
+}
+
+/// Sign in with the local key, for when Forgejo is down. Same session as the OAuth callback
+/// makes, for the first allowed user, so that name is whoever holds the key.
+async fn login_key(State(s): State<Shared>, Form(f): Form<KeyForm>) -> Response {
+    let (Some(key), Some(user)) = (auth::login_key(), s.oauth.key_user()) else {
+        return denied(StatusCode::NOT_FOUND, "Key sign-in is not set up.");
+    };
+    if !auth::matches(f.key.trim(), &key) {
+        record_signin("login-key", "signin.refused", Some("key"));
+        return denied(StatusCode::FORBIDDEN, "That key is not right.");
+    }
+    let id = match s.sessions.create(user) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("agent-web: could not store session: {e:#}");
+            return denied(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not start a session.",
+            );
+        }
+    };
+    record_signin(user, "signin.started", Some("key"));
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, auth::session_cookie(&id)),
+            (header::LOCATION, "/".to_string()),
+        ],
+    )
+        .into_response()
 }
 
 async fn logout(State(s): State<Shared>, headers: HeaderMap) -> Response {
@@ -2046,6 +2104,16 @@ mod tests {
             classify(Path::new("/h/.claude/projects/-h-x/abc.json")),
             None
         );
+    }
+
+    #[test]
+    fn the_sign_in_page_shows_the_key_form_only_with_a_key_and_leaves_no_placeholder() {
+        let with = login_html("", true);
+        let without = login_html("", false);
+        assert!(with.contains(r#"action="/login/key""#));
+        assert!(!without.contains("/login/key"));
+        assert!(!with.contains("{{") && !without.contains("{{"));
+        assert!(login_html("<b>x</b>", false).contains("<b>x</b>"));
     }
 
     #[test]

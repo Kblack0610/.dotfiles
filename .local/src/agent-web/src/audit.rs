@@ -81,7 +81,11 @@ fn s<'a>(f: &'a Map<String, Value>, k: &str) -> &'a str {
     f.get(k).and_then(Value::as_str).unwrap_or("")
 }
 
-/// Sign-in is recorded where it happens, in the OAuth callback (`signin.started`, `signin.refused`).
+/// Sign-in is recorded where it happens, by `record_signin` in the OAuth callback and `login_key`
+/// (`signin.started`, `signin.refused`); `layer` skips `SIGNIN_KEY`, whose ROUTES entry only
+/// satisfies `every_mutating_route_is_named`.
+const SIGNIN_KEY: &str = "/login/key";
+
 pub const ROUTES: &[Route] = &[
     own("POST", "/api/send", sent),
     route(
@@ -178,6 +182,7 @@ pub const ROUTES: &[Route] = &[
         &["slug"],
         &["priority"],
     ),
+    route("POST", SIGNIN_KEY, |_| "signin.started".into(), &[], &[]),
     route("POST", "/logout", |_| "signin.ended".into(), &[], &[]),
 ];
 
@@ -268,7 +273,7 @@ fn entry(actor: &str, method: &Method, path: &str, body: &[u8]) -> Entry {
 }
 
 pub async fn layer(State(s): State<Shared>, req: Request, next: Next) -> Response {
-    if matches!(*req.method(), Method::GET | Method::HEAD) {
+    if matches!(*req.method(), Method::GET | Method::HEAD) || req.uri().path() == SIGNIN_KEY {
         return next.run(req).await;
     }
     // A signed-out request changes nothing: require_auth refuses it, and /logout has no session.
