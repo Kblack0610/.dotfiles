@@ -25,7 +25,8 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    each fleet worker: placed or not, run units, load, and why it takes no session
+#   fleet-dispatch hosts [--json]    the fleet home, rc 1 when no machine matches it; each fleet worker: placed or not, run units, load, and why it takes no session
+#   (run, reap, start, fill and promote do nothing off the fleet home: home_guard)
 #   fleet-dispatch record            keep each world's pane record; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run]  reopen a lost server's conversations as windows
 #
@@ -2098,8 +2099,8 @@ cmd_start() {
     [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: a fleet worker cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
     fleet_hosts >/dev/null
     hjson=$(fleet_host "$host") || { say "start: $host is not in the fleet roster ($FLEET_HOSTS_GROUP)"; return 2; }
-    state_env=$(jq -r .state_host <<<"$hjson")
-    [ -n "$state_env" ] || { say "start: $host has no fleet_state_host, so its session could not write the queue"; return 2; }
+    state_env=$(fleet_state_addr)
+    [ -n "$state_env" ] || { say "start: the roster names no fleet_state_host, so a session on $host could not write the queue"; return 2; }
     state_env="AGENT_STATE_HOST=$(printf '%q' "$state_env") "
   fi
   # A new session goes where the manifests say; --server only puts a resume back where it was.
@@ -3556,10 +3557,42 @@ demand_write() {
   if [ "$ok" = 1 ]; then say "demand $2"; else say "demand $2 unwritten: $(tail -n 1 <<<"$out")"; fi
 }
 
-# cmd_hosts [--json] -- each worker in the roster, as a pass would read it now.
+# home_line -> which machine the roster's fleet home is, in words. Rc 0 when it is this machine, 1
+# when it is another, 2 when the roster cannot be read, or its fleet_state_host is not this machine
+# and resolves to no address (fleet_is_home rc 3): then no machine matches it and every one stands
+# down, and only this says so.
+home_line() {
+  local a rc
+  fleet_is_home; rc=$?
+  a=$(fleet_state_addr)
+  case "$rc" in
+    0) if [ -n "$a" ]; then echo "the fleet home is $a: this machine ($FLEET_HOST)"
+       else echo "the roster names no fleet_state_host, so this machine ($FLEET_HOST) is the fleet home"; fi ;;
+    2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 2 ;;
+    3) echo "the inventory's fleet_state_host $a is not this machine ($FLEET_HOST) and resolves to no address, so no machine is the fleet home and every one stands down"; return 2 ;;
+    *) echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"; return 1 ;;
+  esac
+}
+
+# home_guard <verb> -- rc 0 on the fleet home. Elsewhere <verb> does nothing, not even publish a
+# pass outcome, and says why, with home_line's rc: 1 off the home, 2 a fault to see.
+home_guard() {
+  local line rc
+  fleet_hosts >/dev/null   # once, so home_line's subshell reads it parsed
+  line=$(home_line) && return 0
+  rc=$?
+  say "$1: $line"
+  return "$rc"
+}
+
+# cmd_hosts [--json] -- the fleet home (home_line), then each worker in the roster, as a pass would
+# read it now. Rc 1, said on stderr, when no machine is the home (home_line rc 2).
 cmd_hosts() {
-  local h name rows=()
+  local h name rows=() home hrc=0
   fleet_roster_fetch
+  fleet_hosts >/dev/null
+  home=$(home_line) || [ $? != 2 ] || hrc=1
+  if [ "$hrc" = 1 ]; then say "hosts: $home"; elif [ "${1:-}" != --json ]; then echo "$home"; fi
   probe_hosts "$(live_runs)"
   while IFS= read -r h; do
     [ -n "$h" ] || continue
@@ -3567,9 +3600,10 @@ cmd_hosts() {
     rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
   done < <(fleet_hosts)
-  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
+  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return "$hrc"; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
   else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)"'; fi
+  return "$hrc"
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
@@ -4574,7 +4608,6 @@ triage_pass() {
 
 cmd_run() {
   local why live room
-  fleet_roster_fetch
   fleet_hosts >/dev/null   # once, so each subshell of the pass inherits the roster
   DRY=0
   [ "${1:-}" = --dry-run ] && DRY=1
@@ -4582,12 +4615,6 @@ cmd_run() {
   exec 9>"$DIR/.lock"
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
-  # The store has one writer: a machine that is not the inventory's fleet_state_host (the old
-  # workstation, back from an outage) neither reaps nor starts. No worker naming one is one machine.
-  if ! fleet_is_home; then
-    PROOF_HELD_KEEP=1 settle NOOP "this machine ($FLEET_HOST) is not the fleet home: the inventory's fleet_state_host is $(fleet_state_host)"
-    return 0
-  fi
   export AGENT_STATE_LOCAL=1   # this pass is the home's writer: its agent-queue calls skip the roster read
 
   [ "$DRY" = 1 ] || cmd_reap
@@ -5042,6 +5069,12 @@ cmd_verdicts() {
 }
 
 main() {
+  # The store has one writer, the fleet home: elsewhere (the old workstation back from an outage, a
+  # machine whose roster cannot be read) the verbs that write it stand down before they read it.
+  case "${1:-}" in
+    run) fleet_roster_fetch; home_guard "$1" || return $(($? == 2)) ;;   # an off-home pass is no fault, an unreadable roster is
+    reap | start | fill | promote) home_guard "$1" || return 1 ;;
+  esac
   case "${1:-}" in
     run)
       shift; cmd_run "$@"; local rc=$?
@@ -5070,7 +5103,7 @@ main() {
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
-    -h | --help) sed -n '2,39p' "$0" ;;
+    -h | --help) sed -n '2,40p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
 }

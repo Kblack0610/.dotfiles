@@ -1290,7 +1290,7 @@ trainee_start_ready() {
   sed -i '/fleet_state_host/d' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON
   run cmd_start --host razer-laptop --item x
   assert_failure 2
-  assert_output --partial 'has no fleet_state_host'
+  assert_output --partial 'the roster names no fleet_state_host, so a session on razer-laptop could not write the queue'
   assert_not_called 'wt new'
 }
 
