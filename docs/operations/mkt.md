@@ -35,6 +35,13 @@ Kinds: `post listing email pitch press-kit screenshots mockup` (`KINDS` in `mkt`
 - `mkt post <id> [--dry-run]` sends an item whose verdict is `post` through `post_<channel>`, a function in `mkt` that prints the public URL. No channel has an adapter yet, so every send is by hand and logged.
 - `mkt skip <id> [--by who]` closes an item that will not go out: a revise once its new draft exists, or a draft whose ask was refused. A sent item is refused.
 - `mkt list [--project P] [--state S] [--json]` and `mkt show <id>` read it.
+- `mkt scorecard [--project P] [--json]` is the channel scorecard, rendered from the ledger: one row per project, channel and kind with items sent, sent by hand vs through an adapter (a send `by: mkt`), items still open, the median hours from review ask to verdict, and the first and last send. Skipped items are left out. It replaces a hand-typed metrics sheet (board row mkt-5). Visits per item (UTM `utm_content`) join it once analytics reads them; until then a channel has no result to judge, so nothing asks to drop one.
+
+## costs.csv check
+
+`mkt costs <costs.csv> [--max-age-days N]` lists the marketing benchmark rows due a re-check, one per line (`id`, `item`, why), then a count. A row is due when its `last_checked` is older than N days (183, about 6 months) or not a date, or its `notes` do not open with `verified`. Exit 0 means none is due, 1 means some are, and 2 (with an `unreadable:` line) means the file or its header could not be read.
+
+Sentinel runs it monthly as the watch `mkt-costs-stale` on `~/.notes/lab/bnb/projects/current/bnb-studios/docs/marketing/costs.csv`. It pages once when rows go due and once when they are clear again. A row is cleared by re-checking its source and updating `last_checked` and `notes`, which is the quarterly marketing research refresh's job.
 
 ## Troubleshooting
 

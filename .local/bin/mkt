@@ -12,6 +12,8 @@
 #   mkt skip <id> [--by who]     close an item that will not go out (a revise redrafted, a stale draft)
 #   mkt list [--project P] [--state S] [--json]   the items, newest first
 #   mkt show <id>                one item as JSON
+#   mkt scorecard [--project P] [--json]          per channel and kind: sent, hand vs adapter, review time
+#   mkt costs <costs.csv> [--max-age-days N]      the rows older than N days (183) or not verified; exit 1 when any
 set -uo pipefail
 
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
@@ -31,6 +33,8 @@ DRAFT_CTX_MAX=1500
 ID_RE='^[0-9]{6}-[0-9a-f]{6}$'
 # An answer with a URL and at most this many other words ("posted:", "done, here") is a hand send.
 HAND_WORDS_MAX=2
+# A costs.csv row is due a re-check once its last_checked is older than this (6 months).
+COSTS_MAX_AGE_DAYS=183
 
 usage() { sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"; exit "${1:-2}"; }
 die() { echo "mkt: $*" >&2; exit 1; }
@@ -71,7 +75,7 @@ def state: if .sent then "sent" elif .verdict == "skip" then "skipped"
 group_by(.id) | map(
   reduce .[] as $e ({};
     . + ($e | del(.event, .ts))
-    + ({draft: {created: $e.ts}, review: {asked: $e.ts}, sent: {sent: $e.ts}}[$e.event] // {}))
+    + ({draft: {created: $e.ts}, review: {asked: $e.ts}, verdict: {decided: $e.ts}, sent: {sent: $e.ts}}[$e.event] // {}))
   | .state = state)'
 
 items() { # [project]: every item of one project, or of all
@@ -283,6 +287,79 @@ cmd_skip() {
 
 cmd_show() { [ -n "${1:-}" ] || usage; item "$1" | jq .; }
 
+# The scorecard: one row per project, channel and kind, skipped items left out. A send by "mkt"
+# went through an adapter, any other sender by hand; review hours run from the ask to its verdict.
+SCORE='
+def median: sort | length as $n | if $n == 0 then null
+  elif $n % 2 == 1 then .[($n - 1) / 2] else (.[$n / 2 - 1] + .[$n / 2]) / 2 end;
+map(select(.state != "skipped")) | group_by([.project, .channel, .kind]) | map(
+  map(select(.state == "sent")) as $s | {
+    project: .[0].project, channel: .[0].channel, kind: .[0].kind,
+    sent: ($s | length),
+    hand: ($s | map(select(.by != "mkt")) | length),
+    adapter: ($s | map(select(.by == "mkt")) | length),
+    open: (map(select(.state != "sent")) | length),
+    review_hours: (map(select(.asked and .decided)
+      | ((.decided | fromdate) - (.asked | fromdate)) / 3600) | median
+      | if . == null then null else (. * 10 | round) / 10 end),
+    first_sent: ($s | map(.sent) | min), last_sent: ($s | map(.sent) | max)})
+| sort_by(.project, -.sent, .channel)'
+
+cmd_scorecard() {
+  local project="" json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project="$(canon_project "$2")" || exit 1; shift 2 ;;
+      --json) json=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  local out
+  out="$(items "$project" | jq -c "$SCORE")"
+  if [ "$json" = 1 ]; then printf '%s\n' "$out"; return 0; fi
+  [ "$(jq length <<<"$out")" -gt 0 ] || { echo "no items in $LEDGER${project:+/$project}"; return 0; }
+  { printf 'PROJECT\tCHANNEL\tKIND\tSENT\tHAND\tADAPTER\tOPEN\tREVIEW_H\tFIRST\tLAST\n'
+    jq -r '.[] | [.project, .channel, .kind, .sent, .hand, .adapter, .open, (.review_hours // "-"),
+      ((.first_sent // "-")[:10]), ((.last_sent // "-")[:10])] | @tsv' <<<"$out"
+  } | column -t -s $'\t'
+}
+
+# costs <file>: the benchmark rows due a re-check, one per line, then a count. A row is due when
+# its last_checked is older than --max-age-days or not a date, or its notes do not open with
+# "verified". Exit 1 when any is due. An unreadable file prints `unreadable:` and exits 2, which
+# Sentinel reads as UNKNOWN rather than as a breach.
+cmd_costs() {
+  local file="" age="$COSTS_MAX_AGE_DAYS"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max-age-days) age="$2"; shift 2 ;;
+      -*) die "costs: unknown flag $1" ;;
+      *) file="$1"; shift ;;
+    esac
+  done
+  [ -n "$file" ] || usage
+  [[ "$age" =~ ^[0-9]+$ ]] || die "costs: --max-age-days takes a whole number of days"
+  [ -r "$file" ] || { echo "unreadable: costs file $file"; exit 2; }
+  awk -F, -v cutoff="$(date -u -d "-$age days" +%F)" -v age="$age" -v file="$file" '
+    NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; n = NF
+      if (!col["id"] || !col["item"] || !col["last_checked"] || col["notes"] != NF) {
+        print "unreadable: " file " has no id, item, last_checked and last notes columns"; bad = 1; exit 2 }
+      next }
+    /^[[:space:]]*$/ { next }
+    { rows++; why = ""
+      if (NF != n) why = "has " NF " fields, not " n
+      else {
+        d = $col["last_checked"]
+        if (d !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) why = "last_checked is not a date"
+        else if (d < cutoff) why = "checked " d ", over " age " days ago"
+        if ($col["notes"] !~ /^verified/) why = why (why ? "; " : "") "notes: " substr($col["notes"], 1, 40)
+      }
+      if (why) { due++; printf "%s\t%s\t%s\n", $col["id"], $col["item"], why } }
+    END { if (bad) exit 2
+      printf "%d of %d rows in %s are due a re-check (older than %d days, or not verified)\n", due, rows, file, age
+      exit (due > 0) }' "$file"
+}
+
 command -v jq >/dev/null || die "jq is required"
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -293,6 +370,8 @@ case "$cmd" in
   skip) cmd_skip "$@" ;;
   list) cmd_list "$@" ;;
   show) cmd_show "$@" ;;
+  scorecard) cmd_scorecard "$@" ;;
+  costs) cmd_costs "$@" ;;
   -h|--help|help) usage 0 ;;
   *) usage ;;
 esac
