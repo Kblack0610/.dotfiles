@@ -39,8 +39,9 @@ pub fn split(target: &str) -> Option<(&str, &str)> {
     ok.then_some((host, local))
 }
 
-/// The row of `target` in the worker-panel snapshot's text, as the live agent it names; Err
-/// (why) when the snapshot is unreadable or older than the ttl it carries.
+/// The row of `target` in the worker-panel snapshot's text, as the live agent it names. Err (why)
+/// when the snapshot is unreadable or older than the ttl it carries, when the target's worker is one
+/// the minute record could not read (its sessions are unknown, not gone), or when the row has no pane.
 pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, String> {
     let doc: serde_json::Value = serde_json::from_str(snapshot)
         .map_err(|e| format!("the worker snapshot is unreadable: {e}"))?;
@@ -54,17 +55,29 @@ pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, S
             now.saturating_sub(at)
         ));
     }
-    Ok(doc["rows"]
+    let host = split(target).map_or("", |(h, _)| h);
+    let row = doc["rows"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|r| r["target"] == target)
-        .and_then(|r| {
-            Some(Live {
-                host: Some(r["host"].as_str()?.to_string()),
-                pane: r["pane"].as_str()?.to_string(),
-            })
-        }))
+        .find(|r| r["target"] == target);
+    let Some(row) = row else {
+        let silent = doc["silent"].as_array().into_iter().flatten();
+        return if silent.into_iter().any(|h| h == host) {
+            Err(format!(
+                "{host} did not answer the last minute record, so its sessions are not known"
+            ))
+        } else {
+            Ok(None)
+        };
+    };
+    let pane = row["pane"]
+        .as_str()
+        .ok_or_else(|| format!("the snapshot's row for {target} has no pane"))?;
+    Ok(Some(Live {
+        host: Some(host.to_string()),
+        pane: pane.to_string(),
+    }))
 }
 
 /// The live agent at a worker's target, from the snapshot file: no ssh.
@@ -123,7 +136,13 @@ impl Live {
     /// `tmux -L <server> <args...>` aimed at its pane with `-t`.
     async fn tmux(&self, verb: &str, args: &[&str]) -> Result<String, Failed> {
         let (srv, pane) = tmux::split(&self.pane);
-        let mut argv = vec!["tmux", "-L", srv.unwrap_or("default"), verb, "-t", pane];
+        let Some(srv) = srv else {
+            return Err(Failed::Exit(
+                1,
+                format!("pane {} names no tmux server", self.pane),
+            ));
+        };
+        let mut argv = vec!["tmux", "-L", srv, verb, "-t", pane];
         argv.extend_from_slice(args);
         run(self.host.as_deref(), &argv, &[]).await
     }
@@ -188,6 +207,30 @@ mod tests {
         assert!(live_in(SNAP, "hp@lab/s1:2", 1180).is_ok());
         assert!(live_in(SNAP, "hp@lab/s1:2", 1181).is_err());
         assert!(live_in("not json", "hp@lab/s1:2", 1000).is_err());
+    }
+
+    #[test]
+    fn a_worker_the_record_could_not_read_is_unknown_not_empty() {
+        let snap = r#"{"at":1000,"ttl":180,"rows":[
+            {"target":"hp@lab/s1:1","pane":"lab/%3"}],"silent":["nuc"]}"#;
+        assert!(live_in(snap, "nuc@lab/s1:1", 1100).is_err());
+        assert!(live_in(snap, "hp@lab/s1:9", 1100).unwrap().is_none());
+        assert!(live_in(snap, "hp@lab/s1:1", 1100).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_row_without_a_pane_is_an_error() {
+        let snap = r#"{"at":1000,"ttl":180,"rows":[{"target":"hp@lab/s1:1"}]}"#;
+        assert!(live_in(snap, "hp@lab/s1:1", 1100).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_pane_with_no_server_is_refused_before_any_call() {
+        let l = Live {
+            host: None,
+            pane: "%3".into(),
+        };
+        assert!(matches!(l.capture(0).await, Err(Failed::Exit(1, _))));
     }
 
     // Paused time: the runtime jumps to the timeout while the child still sleeps, so no wait.

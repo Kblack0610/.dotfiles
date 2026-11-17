@@ -1364,7 +1364,8 @@ SH
   assert_success
   assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
   # A worker that did not answer has no row in the published snapshot, which is still fresh.
-  assert_equal "$(jq -c '.rows' "$snap")" '[]'
+  # It names that worker silent, so a reader asks it live instead of reading no rows as no sessions.
+  assert_equal "$(jq -c '[.rows, .silent]' "$snap")" '[[],["razer-laptop"]]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null

@@ -505,6 +505,25 @@ case "$*" in *192.0.2.30*) [ -f "$NOTES_FIXTURE/hp.down" ] && exit 255; echo "{\
   assert_not_called 'ssh'
 }
 
+@test "a worker the snapshot names silent is asked live, so its session is not read as gone" {
+  export FLEET_HOST=razer-laptop
+  printf '%s\n' '{"target":"razer-laptop@lab/r:1","pane":"lab/%1","session_id":"s1","host":"razer-laptop"}' |
+    fleet_panel_publish 180 hp-victus
+  assert_equal "$(jq -c .silent "$(fleet_panel_file)")" '["hp-victus"]'
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
+echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s2\"}"'
+  run fleet_panel_row s2
+  assert_success
+  assert_output --partial '"host":"hp-victus"'
+  assert_called '192.0.2.30'
+  # A session the snapshot lists is answered from it; the silent worker is not asked.
+  : > "$NOTES_FIXTURE/calls.log"
+  export FLEET_HOST=state
+  run fleet_panel_row s1
+  assert_output --partial '"host":"razer-laptop"'
+  assert_not_called '192.0.2.30'
+}
+
 @test "an empty snapshot is a fresh answer: no worker has the session, and none is asked" {
   : | fleet_panel_publish 180
   run fleet_panel_row s1

@@ -1511,17 +1511,19 @@ handoff_of() {
 # through blind_row, which names the row the loop is on.
 # The rows are also published (fleet_panel_publish) as worker-panel.json for FLEET_PANEL_TTL seconds:
 # the one read of the workers' sessions each minute, which agent-ask and agent-web read instead of
-# each asking every worker over ssh. The ttl covers a pass's own timeout (fleet-state.service, 120s)
-# and the next minute's start.
+# each asking every worker over ssh, with the workers that did not answer (or read with a gap) named
+# in `silent`, which a reader asks itself. The ttl covers a pass's own timeout (fleet-state.service,
+# 120s) and the next minute's start.
 : "${FLEET_PANEL_TTL:=180}"
 remote_panel_lines() {
-  local name out rc why all=''
+  local name out rc why all='' quiet=()
   fleet_hosts >/dev/null
   while IFS= read -r name; do
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
     # not log the sessions it missed as gone.
     rc=0; out="$(fleet_host_panel "$name")" || rc=$?
     [ "$rc" -eq 3 ] && { unreadable "agent-panel@$name"; echo + >> "$CACHE/blind"; }
+    [ "$rc" -eq 0 ] || quiet+=("$name")
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
       # ssh exits 255 when the host does not answer; any other code is agent-panel's own failure.
       why="did not answer"; [ "$rc" -eq 255 ] || why="ran agent-panel, which exited $rc"
@@ -1530,7 +1532,8 @@ remote_panel_lines() {
     fi
     [ -z "$out" ] || { printf '%s\n' "$out"; all+="$out"$'\n'; }
   done < <(fleet_hosts | jq -r .name)
-  printf '%s' "$all" | fleet_panel_publish "$FLEET_PANEL_TTL" || true
+  printf '%s' "$all" | fleet_panel_publish "$FLEET_PANEL_TTL" "${quiet[@]}" ||
+    echo "fleet-sessions: could not publish $(fleet_panel_file); readers ask the workers instead" >&2
   return 0
 }
 
