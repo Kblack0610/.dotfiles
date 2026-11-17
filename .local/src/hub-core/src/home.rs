@@ -1285,7 +1285,10 @@ mod tests {
         assert_eq!(ask.target, None);
         assert!(!ask.score.as_ref().unwrap().session);
         // The reused name's own session still needs the human, as its own row.
-        assert!(h.needs.iter().any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
         // The queue item waiting on the dead asker is still the ask's own, so it is no second row.
         st["asks"][0]["task"] = json!("asked");
         let q = Queue {
@@ -1293,18 +1296,27 @@ mod tests {
             ..Default::default()
         };
         let h = build(Some(&st), Some(&q), None, None, NOW);
-        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue && n.id == "asked"));
+        assert!(!h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "asked"));
         // An ask with no owner (headless) blocks no session either.
         st["asks"][0]["claude_session"] = Value::Null;
         let h = build(Some(&st), None, None, None, NOW);
-        assert_eq!(h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap().target, None);
+        assert_eq!(
+            h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap().target,
+            None
+        );
         // And the live owner's id finds it whatever name the ask recorded.
         st["asks"][0]["claude_session"] = json!("sid-1");
         st["asks"][0]["session"] = json!("alGRvp");
         let h = build(Some(&st), None, None, None, NOW);
         let ask = h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap();
         assert_eq!(ask.target.as_deref(), Some("lab/repo-agent-1:1"));
-        assert!(!h.needs.iter().any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+        assert!(!h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
     }
 
     #[test]
