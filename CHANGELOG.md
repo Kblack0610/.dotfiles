@@ -16,6 +16,7 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Fixed
 
+- `agent-queue`, `fleet-sessions`: a `1b.` sub-phase line takes no place in a plan's numbering and `add --plan` skips it, so adding one no longer makes a queued item read another phase as ticked (ar-1277).
 - `agent-queue`: `add --plan` reads `(independent; note)` markers and numbers phases by their `P<N>` label, not their place in the list (ar-1850).
 - `agent-queue`: `--since` takes `7d` and `7` as days back, never a silent zero (ar-2430, #2258).
 - `agent-queue`: `agent-land`'s item step retries a lock timeout (ar-2422, #2257).

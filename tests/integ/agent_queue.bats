@@ -2476,6 +2476,36 @@ teardown() {
   assert_called 'fleet-dispatch start --item my-plan-p6'
 }
 
+@test "a 1b sub-phase takes no place: items keep their phase numbers, and a 1b is read by its label" {
+  plan_fixture
+  "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
+  "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null
+  [ "$(field "$(item queued my-plan-p6)" phases)" = 6 ]
+  # Someone adds a 1b under the landed phase 1 after the items were queued, and phase 5 lands. By
+  # position 5 would now be "4. Fourth" and 6 would be "5. Fifth", ticked: p6 would close, never worked.
+  sed -i 's/^- \[x\] 1\. Landed thing: details/&\n- [x] 1b. Follow-up of phase 1 (#7)/; s/^- \[ \] 5\. Fifth/- [x] 5. Fifth/' "$SANDBOX/my-plan.md"
+  # NEGATIVE CONTROL: by position this list would be [1,2,3,4,5,6,7] and p6 would read ticked.
+  source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
+  [ "$(plan_phase_list "$SANDBOX/my-plan.md" | jq -c 'map(.n)')" = '[1,"1b",2,3,4,5,6]' ]
+  run "$AQ" move base done --status ok
+  assert_success
+  refute_output --partial "my-plan-p6: its plan phases are already ticked"
+  # An open 1b is no queue item (no integer for `phases:`): it is named on stderr and skipped, and
+  # phase 2 keeps its number and its place in the chain.
+  printf '## Phases\n\n- [x] 1. One (#1)\n- [ ] 1b. Follow-up\n- [ ] 2. Two\n' > "$SANDBOX/sub.md"
+  run "$AQ" add --plan "$SANDBOX/sub.md" --project game --slug sub --dry-run
+  assert_success
+  assert_output --partial "skipped open sub-phase(s) 1b"
+  assert_line --regexp '^would queue sub-p2	phases 2	after -$'
+  refute_output --partial "sub-p1b"
+  # A stub's phase N is the line numbered N, not the Nth line.
+  printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
+  [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
+  # Names that only look like a label are phases with a place: `P2P sync`, `3D models`, `2D. Layout`.
+  printf '## Phases\n\n- [ ] P2P sync\n- [ ] 3D models\n- [ ] 2D. Layout\n' > "$SANDBOX/look.md"
+  [ "$(plan_phase_list "$SANDBOX/look.md" | jq -c 'map(.n)')" = '[1,2,3]' ]
+}
+
 # story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
 # every call lands in calls.log; `ptask ... start <id>` fails once closed.<id> exists (no open row);
 # `ptask ... add` prints its row with id lv-9 and exits 0, or, with
