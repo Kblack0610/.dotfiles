@@ -87,3 +87,15 @@ resume"
   run "$PANEL" act teleport
   assert_failure 2
 }
+
+@test "the key hint is two short lines, so the left pane beside the preview never clips 'q close'" {
+  hint=$(grep -o -e "--header=\$'[^']*'" "$PANEL")
+  assert [ -n "$hint" ]
+  hint=${hint#--header=\$\'}
+  hint=${hint%\'}
+  assert_equal "$(printf '%s' "$hint" | grep -o '\\n' | wc -l)" "1"
+  while IFS= read -r line; do
+    assert [ "${#line}" -le 50 ]
+  done < <(printf '%b\n' "$hint")
+  assert_regex "$hint" 'q close$'
+}
