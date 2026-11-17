@@ -64,7 +64,7 @@ Each session object carries `close` {`verdict`, `why`}: may it close `now`, `aft
 
 | # | Facts | Verdict |
 |---|---|---|
-| 1 | label `manual` | keep: the human keeps it |
+| 1 | label `manual` (set by the human, or by the session itself on the human's order to stay open, wind-down step 0) | keep: the human keeps it |
 | 2 | PARKED | keep: its claude is gone |
 | 3 | on a fleet worker (`host`) | keep: its git facts are on the worker |
 | 4 | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |

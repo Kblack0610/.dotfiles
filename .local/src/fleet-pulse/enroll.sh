@@ -30,7 +30,7 @@ usage() {
 usage: enroll.sh --name <fleet-name> --group <group> [options]
 
   --name   NAME     this machine's fleet key, e.g. gp-mac, lazer-machine, windows
-  --group  GROUP    workplace | homelab   (must match apps/gatus-fleet/configmap.yaml)
+  --group  GROUP    workplace | homelab   (must match apps/gatus-fleet/config.yaml)
   --gatus  URL      fleet endpoint (default: existing GATUS_BASE, else prompt)
   --token  TOKEN    shared bearer token (avoid: visible in ps; prefer the prompt)
   --token-file F    read the token from a file
@@ -132,7 +132,7 @@ out="$(FLEET_NAME="$NAME" FLEET_GROUP="$GROUP" GATUS_BASE="$GATUS" FLEET_TOKEN_F
 printf '  %s\n' "$out"
 case "$out" in
     *"HTTP 200"*) ok "heartbeat accepted" ;;
-    *404*) die "gatus does not know ${GROUP}_${NAME}. Declare it as an external-endpoint in apps/gatus-fleet/configmap.yaml (and check --name/--group), then re-run." ;;
+    *404*) die "gatus does not know ${GROUP}_${NAME}. Declare it as an external-endpoint in apps/gatus-fleet/config.yaml (and check --name/--group), then re-run." ;;
     *) die "no heartbeat. Endpoint unreachable, token rejected, or egress blocked. NOT installing an agent that would fail silently." ;;
 esac
 [ "$PROBE_ONLY" = "1" ] && { say "--probe-only: nothing written, nothing installed"; exit 0; }
@@ -275,7 +275,7 @@ else
     # silently edits tracked files (it once stripped a line from the tracked unit).
     if [ -e "$UNIT_DIR/fleet-pulse.service" ]; then
         ok "fleet-pulse.service already exists - left untouched"
-        say "identity comes from that unit (or push.sh's defaults), NOT from this run"
+        say "identity comes from that unit (or push.sh's hostname default), NOT from this run"
         say "if it reports under the wrong name, edit it: Environment=FLEET_NAME=$NAME"
     else
         say "installing systemd user timer"
