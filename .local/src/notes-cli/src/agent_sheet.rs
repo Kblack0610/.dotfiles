@@ -115,8 +115,29 @@ pub fn link_line(agent_home: &str) -> String {
 /// The head lines code owns on a human sheet, in the order they sit under `Version:`.
 const HEAD_KEYS: [&str; 2] = ["Agents: ", "Docs:"];
 
+/// A head line [`with_head`] owns: `Agents: ...` anywhere, and in the head `Docs:` alone or
+/// `Docs: ...` (the one-line form it replaced).
+fn owned_key(t: &str, in_head: bool) -> (bool, bool) {
+    let docs = in_head && (t == HEAD_KEYS[1] || t.starts_with("Docs: "));
+    (t.starts_with(HEAD_KEYS[0]) || docs, docs)
+}
+
+/// An item [`docs_list`] writes: one link and nothing else, so a bullet the human adds under
+/// the list is theirs and stays.
+fn is_doc_item(t: &str) -> bool {
+    let Some(link) = t.strip_prefix("- ") else {
+        return false;
+    };
+    let wiki = link.starts_with("[[") && link.ends_with("]]") && link.matches("]]").count() == 1;
+    let md = link.starts_with('[')
+        && link.ends_with(')')
+        && link.matches("](").count() == 1
+        && !link.contains(' ');
+    wiki || md
+}
+
 /// Put `lines` directly under the sheet's `Version:` line, replacing any [`HEAD_KEYS`] line
-/// already in the head (above the first `## `), and the `- ` items right under `Docs:`.
+/// already in the head (above the first `## `), and the link items right under `Docs:`.
 /// Empty lines are skipped.
 ///
 /// Idempotent by construction: it removes the old lines before inserting, so running it on
@@ -134,9 +155,9 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
         // An `Agents:` line anywhere is a stray from before the head was code-owned; a
         // `Docs:` word below the head is the human's.
         let t = l.trim_start();
-        in_docs = in_docs && t.starts_with("- ");
-        let docs = in_head && t.starts_with(HEAD_KEYS[1]);
-        if t.starts_with(HEAD_KEYS[0]) || docs || in_docs {
+        in_docs = in_docs && is_doc_item(t);
+        let (owned, docs) = owned_key(t, in_head);
+        if owned || in_docs {
             in_docs |= docs;
             continue;
         }
@@ -309,7 +330,9 @@ pub fn ensure_pair(
     let Ok(content) = fs::read_to_string(&sheet) else {
         return Ok(());
     };
-    if let Some(out) = with_head(&content, &[link_line(agent_home), docs.to_string()]) {
+    let mut head = vec![link_line(agent_home)];
+    head.extend(docs.lines().map(str::to_string));
+    if let Some(out) = with_head(&content, &head) {
         md::write_atomic(&sheet, &out)?;
         log.info("agent", &format!("linked {}", sheet.display()));
     }
@@ -553,25 +576,45 @@ mod tests {
 
     #[test]
     fn the_docs_list_sits_under_agents_and_rewrites_in_place() {
-        let head = [
-            link_line("lab/p/demo/agent/README"),
-            "Docs:\n- [[x|new]]\n- [[y|two]]".to_string(),
-        ];
+        let head: Vec<String> = [
+            link_line("lab/p/demo/agent/README").as_str(),
+            "Docs:",
+            "- [[x|new]]",
+            "- [two](https://x/two.md)",
+        ]
+        .map(str::to_string)
+        .into();
         // From the old one-line form, and from a longer list: the old items all go, and the
         // body below (its blank line, its task rows) stays.
         for sheet in [
             "# demo\nVersion: v0.0.2\nDocs: [[a|old]] - [[b|old2]]\n\n## Tasks\n- [ ] a\n",
-            "# demo\nVersion: v0.0.2\nDocs:\n- [[a|old]]\n- [[b|old2]]\n- [[c|old3]]\n\n## Tasks\n- [ ] a\n",
+            "# demo\nVersion: v0.0.2\nDocs:\n- [[a|old]]\n- [b](https://x/b.md)\n- [[c|old3]]\n\n## Tasks\n- [ ] a\n",
         ] {
             let out = with_head(sheet, &head).unwrap();
             assert_eq!(
                 out,
                 "# demo\nVersion: v0.0.2\nAgents: [[lab/p/demo/agent/README|agent board]] - \
-                 [[lab/projects/agent-board|all projects]]\nDocs:\n- [[x|new]]\n- [[y|two]]\n\n\
-                 ## Tasks\n- [ ] a\n"
+                 [[lab/projects/agent-board|all projects]]\nDocs:\n- [[x|new]]\n\
+                 - [two](https://x/two.md)\n\n## Tasks\n- [ ] a\n"
             );
             assert!(with_head(&out, &head).is_none(), "idempotent");
         }
+    }
+
+    #[test]
+    fn a_bullet_the_human_wrote_under_the_docs_list_stays() {
+        // Only a lone link is a generated item; a note, or a link with words, is the human's.
+        // A head line that merely starts with `Docs:` is not the key either.
+        let sheet = "# demo\nVersion: v0.0.2\nDocs:\n- [[a|old]]\n- ping X\n- see [[b|b]] first\n\
+                     Docs:see README\n\n## Tasks\n";
+        let head = ["Docs:".to_string(), "- [[x|new]]".to_string()];
+        let out = with_head(sheet, &head).unwrap();
+        assert_eq!(
+            out,
+            "# demo\nVersion: v0.0.2\nDocs:\n- [[x|new]]\n- ping X\n- see [[b|b]] first\n\
+             Docs:see README\n\n## Tasks\n"
+        );
+        assert!(with_head(&out, &head).is_none(), "idempotent");
     }
 
     #[test]
