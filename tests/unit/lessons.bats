@@ -55,6 +55,17 @@ covered_log() {
   assert_line --index 2 --partial "Tmux sessions survive"
 }
 
+@test "pick --matched gives only the matched lessons, and nothing when none match" {
+  run "$BIN" pick -n 3 --matched "$F" "waybar chip width"
+  assert_success
+  assert_line --index 0 --regexp '^## Lessons for this work \([0-9]+ matched on: [a-z, ]+\)$'
+  assert_line --index 1 --partial "Waybar chips cost width"
+  refute_output --partial "Lessons reach a session"
+  run "$BIN" pick --matched "$F" "kubernetes ingress"
+  assert_success
+  assert_output ""
+}
+
 @test "pick needs two shared words from a multi-word query" {
   run "$BIN" pick -n 1 "$F" "nightly kubernetes"
   assert_line --index 0 --partial "nothing matched"

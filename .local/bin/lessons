@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # lessons - hand a session the lessons that fit its work, and archive the ones nothing uses.
 #
-#   lessons pick [-n N] FILE [TEXT...]
+#   lessons pick [-n N] [--matched] FILE [TEXT...]
 #       N lessons (default 5) from FILE: the ones sharing the most distinctive words with TEXT
-#       first, then the newest, each cut to 200 chars.
+#       first, then the newest, each cut to 200 chars. --matched: no newest, nothing if none match.
 #   lessons dup MEMORY_FILE FILE
 #       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
 #       (TF-IDF cosine over its bullets and headings); agentctl-dream refuses a new memory file at 0.38.
@@ -137,11 +137,11 @@ END {
     for (j = 1; j <= m; j++) if ((top, j) in hit) used[terms[j]] = 1
   }
   matched = got
-  for (r = n; r >= 1 && got < want; r--) if (!(r in taken)) { taken[r] = 1; order[++got] = r }
+  for (r = n; r >= 1 && got < want && !only; r--) if (!(r in taken)) { taken[r] = 1; order[++got] = r }
   if (!got) exit
   on = ""; k = 0
   for (j = 1; j <= m && k < 6; j++) if (terms[j] in used) { on = on (k++ ? ", " : "") terms[j] }
-  if (matched) printf "## Lessons for this work (%d matched on: %s; %d newest)\n", matched, on, got - matched
+  if (matched) printf "## Lessons for this work (%d matched on: %s%s)\n", matched, on, only ? "" : "; " (got - matched) " newest"
   else printf "## Lessons (newest %d; nothing matched this work)\n", got
   for (i = 1; i <= got; i++) print cut("- " title[r = order[i]])
 }
@@ -360,10 +360,11 @@ cmd_fat() {
 }
 
 cmd_pick() {
-  local want=5 file
+  local want=5 only=0 file
   while [ $# -gt 0 ]; do
     case "$1" in
       -n) want="$2"; shift 2 ;;
+      --matched) only=1; shift ;;
       -h|--help) usage ;;
       *) break ;;
     esac
@@ -371,7 +372,7 @@ cmd_pick() {
   file="${1:-}"; [ -n "$file" ] || usage 2
   shift
   [ -r "$file" ] || return 0
-  LC_ALL=C awk -v want="$want" -v query="$*" "$TOK$PARSE$PICK" "$file"
+  LC_ALL=C awk -v want="$want" -v only="$only" -v query="$*" "$TOK$PARSE$PICK" "$file"
 }
 
 # Appends one delivery line; the month file is append-only, so concurrent preflights are safe.
