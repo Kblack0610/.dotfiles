@@ -146,7 +146,6 @@ publish_fixture() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml" FLEET_HOST="$1"
   printf 'all:\n  children:\n    fleet_workers:\n      vars:\n        fleet_state_host: state.lan\n      hosts:\n        worker:\n' > "$FLEET_INVENTORY"
   stub ssh 'echo "ssh $*" >> "$HOME/ssh.log"'
-  stub getent 'exit 2'   # state.lan resolves to none of this machine's addresses, with no DNS wait
 }
 
 @test "publish on a machine that is not the home sends the age of its last input, never its clock" {

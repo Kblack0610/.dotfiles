@@ -59,6 +59,15 @@ sandbox_worlds() {
   echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
 }
 
+# sandbox_fleet_home -- a roster that names this machine (FLEET_HOST=state) the fleet home, state.lan,
+# with one worker it never places or probes, so a fleet-dispatch verb that writes the store runs
+# (home_guard). With no roster it stands down; a test that wants workers writes its own.
+sandbox_fleet_home() {
+  export FLEET_HOST=state FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n          fleet_state_host: state.lan\n' > "$FLEET_INVENTORY"
+  unset FLEET_HOSTS_JSON
+}
+
 sandbox_init() {
   local fixture="${1:-basic}"
 

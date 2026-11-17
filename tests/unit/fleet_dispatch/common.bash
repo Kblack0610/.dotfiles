@@ -79,7 +79,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
-  export FLEET_HOST=state   # the fixtures' fleet_state_host, state.lan
+  sandbox_fleet_home   # this machine is the fixtures' fleet_state_host, state.lan
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
@@ -837,7 +837,7 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 # --- fleet workers -----------------------------------------------------------------------
 
 # worker <load cores ready> [place] -- one fleet worker, razer-laptop, in an inventory whose
-# ansible_host sits in another group, with the game repo cloned. ssh answers its probe with those
+# ansible_host sits in another group and that lists the home, state, with the game repo cloned. ssh answers its probe with those
 # three words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 worker() {
@@ -847,6 +847,9 @@ all:
   vars:
     fleet_state_host: state.lan
   children:
+    desktops:
+      hosts:
+        state: {}
     laptops:
       hosts:
         razer-laptop:

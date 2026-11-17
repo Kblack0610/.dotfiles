@@ -24,6 +24,7 @@ _fh_lib="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${FLEET_FETCH_SECS:=20}"   # seconds fleet_roster_fetch may take before the roster stays as last fetched
 : "${FLEET_ROSTER_MAX_SECS:=900}"   # a roster last fetched longer ago is fetched before it is read: fleet-dispatch's pass cadence
 : "${FLEET_ROSTER_RETRY_SECS:=60}"   # after a failed fetch, seconds before a read tries again
+: "${FLEET_ROSTER_TRUST_SECS:=3600}"   # a roster last fetched longer ago, before this machine booted, cannot say which machine is home (_fh_untrusted): four pass cadences
 
 # fleet_inventory_repo -> home-config's checkout, from the project map.
 fleet_inventory_repo() {
@@ -74,49 +75,71 @@ fleet_inventory_text() {
 
 # fleet_roster_fetch: fetch that ref alone, so a roster change merged on the forge reaches the next
 # pass; the working tree never moves. It cannot prompt, and runs no gc in a checkout others share.
-# A failed fetch says so on stderr and returns 1; the roster stays as last fetched. A fetch that
-# lands stamps the checkout (_fh_stamp), which is what fleet_roster_fresh ages.
+# A failed fetch says so on stderr, marks <stamp>.failed and returns 1; the roster stays as last
+# fetched. A fetch that lands stamps the checkout (_fh_stamp) and clears the mark, so the stamp is
+# always the last fetch that landed: fleet_roster_fresh ages it, and fleet_is_home trusts it.
 fleet_roster_fetch() {
   [ -z "${FLEET_INVENTORY:-}" ] || return 0
-  local hc ref; hc=$(fleet_inventory_repo) && ref=$(fleet_roster_ref "$hc") || return 0
-  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes' timeout "$FLEET_FETCH_SECS" \
-    git -C "$hc" -c gc.auto=0 fetch --quiet "${ref%%/*}" "${ref#*/}" 2>/dev/null || {
-    echo "fleet-hosts: fetching $ref in $hc failed, so the roster is as last fetched" >&2
-    return 1
-  }
-  touch "$(_fh_stamp "$hc")" 2>/dev/null || true
+  local hc ref stamp; hc=$(fleet_inventory_repo) && ref=$(fleet_roster_ref "$hc") || return 0
+  stamp=$(_fh_stamp "$hc")
+  if GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes' timeout "$FLEET_FETCH_SECS" \
+    git -C "$hc" -c gc.auto=0 fetch --quiet "${ref%%/*}" "${ref#*/}" 2>/dev/null; then
+    [ -z "$stamp" ] || { touch "$stamp"; rm -f "$stamp.failed"; } 2>/dev/null || true
+    return 0
+  fi
+  echo "fleet-hosts: fetching $ref in $hc failed, so the roster is as last fetched" >&2
+  [ -z "$stamp" ] || touch "$stamp.failed" 2>/dev/null || true
+  return 1
 }
 
 # _fh_stamp <checkout> -> the file in its git dir whose mtime is the roster's last fetch. The ref's
 # reflog cannot say: a fetch that finds nothing new writes no entry.
 _fh_stamp() { git -C "$1" rev-parse --path-format=absolute --git-path fleet-roster-fetched 2>/dev/null; }
 
-# _fh_stale <stamp> -> rc 0 when the stamp is FLEET_ROSTER_MAX_SECS old or more, or missing.
-_fh_stale() {
+# _fh_older <file> <secs> -> rc 0 when the file was last touched <secs> ago or more, or is missing.
+_fh_older() {
   local last; last=$(date -r "$1" +%s 2>/dev/null || echo 0)
-  [ $(($(date +%s) - last)) -ge "$FLEET_ROSTER_MAX_SECS" ]
+  [ $(($(date +%s) - last)) -ge "$2" ]
 }
 
-# fleet_roster_fresh <checkout>: fetch the roster when its last fetch is FLEET_ROSTER_MAX_SECS old or
-# more. One reader fetches under a lock beside the stamp; the others wait for it and read what it
-# fetched, so units that start together at boot all see the new home. A failed fetch sets the stamp
-# to come due again FLEET_ROSTER_RETRY_SECS on, so a forge that is down costs one fetch a minute,
-# not one a call, and the roster reads as last fetched. A reader that cannot write the lock (a
-# sandboxed lane) never fetches and reads the ref as it is.
+# _fh_due <stamp> -> rc 0 when the last fetch is FLEET_ROSTER_MAX_SECS old or more and none failed in
+# the last FLEET_ROSTER_RETRY_SECS.
+_fh_due() { _fh_older "$1" "$FLEET_ROSTER_MAX_SECS" && _fh_older "$1.failed" "$FLEET_ROSTER_RETRY_SECS"; }
+
+# fleet_roster_fresh <checkout>: fetch the roster when it is due (_fh_due). One reader fetches under
+# a lock beside the stamp; the others wait for it and read what it fetched, so units that start
+# together at boot all see the new home. A forge that is down costs one fetch a minute, not one a
+# call, and the roster reads as last fetched. A reader that cannot write the lock (a sandboxed lane)
+# never fetches and reads the ref as it is.
 fleet_roster_fresh() {
   local stamp; stamp=$(_fh_stamp "$1") && [ -n "$stamp" ] || return 0
-  _fh_stale "$stamp" || return 0
+  _fh_due "$stamp" || return 0
   { : >>"$stamp.lock"; } 2>/dev/null || return 0
   {
-    flock -w "$((FLEET_FETCH_SECS + 5))" 9 && _fh_stale "$stamp" || return 0
-    fleet_roster_fetch && return 0
-    touch -d "@$(($(date +%s) - FLEET_ROSTER_MAX_SECS + FLEET_ROSTER_RETRY_SECS))" "$stamp" 2>/dev/null
+    flock -w "$((FLEET_FETCH_SECS + 5))" 9 && _fh_due "$stamp" || return 0
+    fleet_roster_fetch
     return 0
   } 9>>"$stamp.lock"
 }
 
+# _fh_untrusted -> why the roster as last fetched cannot name the home, or nothing: its last fetch
+# that landed is FLEET_ROSTER_TRUST_SECS old or more and from before this machine booted. A machine
+# back from days off whose fetch fails reads its old roster, which may still name it; the home, up
+# through a forge outage, keeps the roster it last fetched. FLEET_INVENTORY is a file, never fetched.
+# FLEET_BOOTED_AT (epoch seconds) stands in for /proc/stat's btime; with neither, every roster past
+# FLEET_ROSTER_TRUST_SECS is untrusted.
+_fh_untrusted() {
+  [ -z "${FLEET_INVENTORY:-}" ] || return 0
+  local hc stamp last boot; hc=$(fleet_inventory_repo) && stamp=$(_fh_stamp "$hc") && [ -n "$stamp" ] || return 0
+  _fh_older "$stamp" "$FLEET_ROSTER_TRUST_SECS" || return 0
+  last=$(date -r "$stamp" +%s 2>/dev/null || echo 0)
+  boot=${FLEET_BOOTED_AT:-$(awk '$1 == "btime" { print $2 }' /proc/stat 2>/dev/null)}
+  [ "$last" -lt "${boot:-$(date +%s)}" ] || return 0
+  printf 'no fetch of it has landed since this machine booted, and the last is over %ss old' "$FLEET_ROSTER_TRUST_SECS"
+}
+
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, state_is_me, power}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], state_host, state_match, power}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass).
@@ -125,20 +148,39 @@ fleet_roster_fresh() {
 # equals, so ansible_host may sit in another group. Nothing when the
 # file or group is missing. Read once per shell (FLEET_HOSTS_JSON): a caller that loops over it, or
 # runs fleet_host_run in one, calls fleet_hosts >/dev/null first, so the subshells inherit it.
+# FLEET_ROSTER_ERR, set with it, is why the roster cannot be read (no checkout or file, no group, no
+# host in it, a parse that failed, a last fetch too old), and empty when it can.
 fleet_hosts() {
   if [ -z "${FLEET_HOSTS_JSON+x}" ]; then
-    local inv; inv=$(fleet_inventory_text) || inv=''
-    FLEET_HOSTS_JSON=''
-    # A file that never names the group has no workers; the common case skips python.
-    grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" <<<"$inv" || inv=''
-    [ -z "$inv" ] || FLEET_HOSTS_JSON=$(python3 -I - <(printf '%s\n' "$inv") "$FLEET_HOSTS_GROUP" "$FLEET_HOST" <<'PY'
+    local inv
+    FLEET_HOSTS_JSON='' FLEET_ROSTER_ERR=''
+    if ! inv=$(fleet_inventory_text); then
+      FLEET_ROSTER_ERR="$(fleet_inventory || echo "home-config's checkout") could not be read"
+    # A file that never names the group has no workers; that case skips python.
+    elif ! grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" <<<"$inv"; then
+      FLEET_ROSTER_ERR="the inventory has no $FLEET_HOSTS_GROUP group"
+    elif ! FLEET_HOSTS_JSON=$(_fh_parse "$inv"); then
+      FLEET_HOSTS_JSON='' FLEET_ROSTER_ERR="the inventory did not parse"
+    elif [ -z "$FLEET_HOSTS_JSON" ]; then
+      FLEET_ROSTER_ERR="the $FLEET_HOSTS_GROUP group lists no host"
+    else
+      FLEET_ROSTER_ERR=$(_fh_untrusted)
+    fi
+  fi
+  [ -z "$FLEET_HOSTS_JSON" ] || printf '%s\n' "$FLEET_HOSTS_JSON"
+}
+
+# _fh_parse <inventory yaml> -> fleet_hosts' lines for FLEET_HOSTS_GROUP; rc 1, said on stderr, when
+# python has no yaml module or the YAML does not load.
+_fh_parse() {
+  python3 -I - <(printf '%s\n' "$1") "$FLEET_HOSTS_GROUP" "$FLEET_HOST" <<'PY'
 import json, os, sys
 try:
     import yaml
 except ImportError:
     sys.exit("fleet-hosts: python3 has no yaml module (python-yaml), so the fleet roster reads as empty")
 
-inv, group, me = sys.argv[1], sys.argv[2], sys.argv[3]
+inv, group, me = sys.argv[1], sys.argv[2], sys.argv[3].lower()
 doc = yaml.safe_load(open(inv)) or {}
 root = doc.get("all") or {}
 base = dict(root.get("vars") or {})
@@ -160,21 +202,32 @@ def walk(name, node, chain):
     for c, cn in (node.get("children") or {}).items():
         walk(c, cn, path)
 
-def merged(h):
+walk("all", root, [])
+
+# Which machine fleet_state_host names, from the inventory alone, so a LAN DNS outage never makes
+# the home stand down: a host's name, or an ansible_host or fleet_ssh_host from its own entry (a
+# group or all.vars value is shared, so it would name every member). "me" is this machine
+# (FLEET_HOST), "other" another inventory machine, "none" no machine the inventory knows.
+def dialed(h):
+    hv = hmerged.get(h, {})
+    return {h.lower()} | {str(hv[k]).lower() for k in ("ansible_host", "fleet_ssh_host") if hv.get(k)}
+
+names = {h.lower(): dialed(h) for h in hmerged}
+def match(state):
+    a = state.rsplit("@", 1)[-1].lower()
+    if not a:
+        return ""
+    short = a.split(".")[0]
+    if short == me or a in names.get(me, set()):
+        return "me"
+    if any(a in n or short == h for h, n in names.items()):
+        return "other"
+    return "none"
+
+for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
     v.update(hmerged.get(h, {}))
-    return v
-
-walk("all", root, [])
-# The names other machines dial this one by, from its own host entry only (a group or all.vars value
-# is shared, so it would make every member home), so telling whether fleet_state_host names this
-# machine needs no DNS lookup.
-mine = hmerged.get(me, {})
-my_addrs = {me} | {str(mine[k]) for k in ("ansible_host", "fleet_ssh_host") if mine.get(k)}
-for h in members.get(group, []):
-    v = merged(h)
-    state = str(v.get("fleet_state_host", ""))
     user = v.get("ansible_user")
     host = v.get("fleet_ssh_host") or v.get("ansible_host", h)
     repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or [])]
@@ -185,37 +238,43 @@ for h in members.get(group, []):
         "max_live": int(v.get("fleet_max_live", 1)),
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
-        "state_host": state,
-        "state_is_me": bool(state) and (state in my_addrs or state.split(".")[0] == me),
+        "state_host": v.get("fleet_state_host", ""),
+        "state_match": match(str(v.get("fleet_state_host") or "")),
         "power": str(v.get("fleet_power", "")),
     }))
 PY
-)
-  fi
-  [ -z "$FLEET_HOSTS_JSON" ] || printf '%s\n' "$FLEET_HOSTS_JSON"
 }
 
-# _fh_home -> "<addr><TAB><true|false>": the roster's fleet_state_host as written (the name ssh
-# dials) and whether it names this machine; empty when no worker names one. It is the one record of
-# which machine is the fleet home, so a machine back from an outage reads that it no longer is.
-# The address names this machine when its short name is FLEET_HOST, or it is this machine's own
-# inventory ansible_host or fleet_ssh_host: the workstation's entry gives its DHCP name
-# (pc-home-cachy-main.lan), which is not its hostname (cachyos-x8664-main). There is no DNS
-# lookup, so a LAN DNS outage never makes the home stand down.
+# _fh_home -> "<addr><TAB><me|other|none>": the roster's fleet_state_host as written (the name ssh
+# dials) and which machine it names (_fh_parse's state_match); empty when no worker names one. It is
+# the one reader of which machine is the fleet home, so a machine back from an outage reads that it
+# no longer is. The workstation's entry gives its DHCP name (pc-home-cachy-main.lan), which is not
+# its hostname (cachyos-x8664-main), so the inventory, not DNS, says the two are one machine.
 _fh_home() {
-  fleet_hosts | jq -nr 'first(inputs | select(.state_host != "")) | [.state_host, .state_is_me] | @tsv' 2>/dev/null
+  fleet_hosts | jq -nr 'first(inputs | select(.state_host != "")) | [.state_host, .state_match] | @tsv' 2>/dev/null
 }
 
-# fleet_state_addr -> that address. fleet_state_host -> its short name, up to the first dot.
+# fleet_state_addr -> that address.
 fleet_state_addr() { _fh_home | cut -f1; }
-fleet_state_host() { fleet_state_addr | cut -d. -f1; }
 
-# fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or no roster names one
-# (a machine without home-config's checkout, or a fleet of one, keeps everything local).
+# fleet_is_home -> rc 0 when this machine (FLEET_HOST) is the fleet home, or a roster that reads
+# names no fleet_state_host (one machine). Rc 1 when it names another machine, 3 when it names no
+# machine in the inventory. Rc 2 when the roster cannot be read (FLEET_ROSTER_ERR says why): a
+# machine without home-config's checkout, or back from being off with a fetch that fails, cannot
+# tell it is not the home, so it stands down as one that is not.
 fleet_is_home() {
-  local a me
-  IFS=$'\t' read -r a me < <(_fh_home)
-  [ -z "$a" ] || [ "$me" = true ]
+  fleet_hosts >/dev/null
+  [ -n "$FLEET_HOSTS_JSON" ] && [ -z "${FLEET_ROSTER_ERR:-}" ] || {
+    FLEET_ROSTER_ERR=${FLEET_ROSTER_ERR:-the roster lists no host}
+    return 2
+  }
+  local a m
+  IFS=$'\t' read -r a m < <(_fh_home)
+  case "$a:$m" in
+    :*|*:me) return 0 ;;
+    *:other) return 1 ;;
+    *) return 3 ;;
+  esac
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
@@ -265,7 +324,7 @@ state_forward() {
   [ -z "${AGENT_STATE_LOCAL:-}" ] || return 0
   local to=${AGENT_STATE_HOST:-}
   # One roster read: the same test as fleet_is_home.
-  [ -n "$to" ] || { local me; IFS=$'\t' read -r to me < <(_fh_home); [ "$me" != true ] || to=; }
+  [ -n "$to" ] || { local m; IFS=$'\t' read -r to m < <(_fh_home); [ "$m" != me ] || to=; }
   [ -n "$to" ] || return 0
   local tool="$1" stdin_verbs=" $2 " env=(-u AGENT_STATE_HOST AGENT_STATE_LOCAL=1) v rc
   shift 2
