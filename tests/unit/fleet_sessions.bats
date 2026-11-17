@@ -2391,6 +2391,35 @@ research_item() {
   [ "$(cat "${MAIN_CACHE:-$HOME/.cache/fleet}"/base_*)" = origin/develop ]
 }
 
+@test "default_base: a Forgejo-canonical checkout reads its forgejo remote, not the GitHub mirror origin (ar-2583)" {
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  git init -q --bare "$SANDBOX/gh-mirror.git"
+  git init -q --bare "$SANDBOX/fj.git"
+  git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" commit -q --allow-empty -m init
+  "${g[@]}" push -q origin HEAD:master 2>/dev/null
+  # the merge landed on Forgejo; the mirror has not run, so origin/master still lacks it
+  "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
+  "${g[@]}" commit -q --allow-empty -m merged
+  "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
+  "${g[@]}" fetch -q forgejo; "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  export SO_FORGEJO_HOSTS="fj.example"
+  CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
+  "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
+
+  # NEGATIVE CONTROL: with no mirror marker the checkout is not Forgejo-canonical, so origin it is
+  run default_base "$SANDBOX/wt"
+  assert_output origin/master
+  rm -f "$CACHE"/base_*
+
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  run canonical_remote "$SANDBOX/wt"
+  assert_output forgejo
+  run default_base "$SANDBOX/wt"
+  assert_output forgejo/master
+}
+
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

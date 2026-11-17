@@ -1039,24 +1039,33 @@ sibling_pr() {
   jq -r --arg r "$repo" --argjson n "$n" "$CI_JQ"' [$r, $n, ci, (.headRefOid // "-")] | @tsv' <<<"$view"
 }
 
-# default_base <dir> -> origin/<default branch>, kept in MAIN_CACHE for FLEET_BASE_TTL across passes.
-# GitHub's answer wins: origin/HEAD is set at clone time and goes stale when the default branch changes.
+# canonical_remote <dir> -> the git remote a checkout's default branch lives on: the Forgejo remote of a
+# Forgejo-canonical repo (home-config: `forgejo`; its `origin` is the GitHub mirror, which trails a merge until
+# the mirror runs), else origin. so_forge_remote is the rule agent-land shares.
+canonical_remote() {
+  local r
+  r="$(so_forge_remote "$1" 2>/dev/null)" && printf '%s\n' "${r%% *}" || echo origin
+}
+
+# default_base <dir> -> <canonical remote>/<default branch>, kept in MAIN_CACHE for FLEET_BASE_TTL across passes.
+# GitHub's answer wins: the remote's HEAD is set at clone time and goes stale when the default branch changes.
 # The symref is the offline fallback, and a name this clone has no remote ref for is unused.
 default_base() {
-  local d="$1" key pass b slug confirmed=
+  local d="$1" key pass b slug rem confirmed=
   slug="$(repo_slug "$d")" || { echo origin/main; return; }
   key="$MAIN_CACHE/base_$slug" pass="$CACHE/base_$slug"
   if [ -s "$key" ] && [ $(( $(date +%s) - $(date -r "$key" +%s) )) -lt "$FLEET_BASE_TTL" ]; then cat "$key"; return; fi
   if [ ! -s "$pass" ]; then
+    rem="$(canonical_remote "$d")"
     b="$(cd "$d" && gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
-    if [ -n "$b" ] && git -C "$d" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1; then
+    if [ -n "$b" ] && git -C "$d" rev-parse -q --verify "refs/remotes/$rem/$b" >/dev/null 2>&1; then
       confirmed=1
     else
-      b="$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"; b="${b#origin/}"
+      b="$(git -C "$d" symbolic-ref -q --short "refs/remotes/$rem/HEAD" 2>/dev/null)"; b="${b#"$rem"/}"
     fi
     # Only GitHub's answer outlives the pass: the symref may be the stale one, and a refused call must not pin it.
-    if [ -n "$confirmed" ]; then mkdir -p "$MAIN_CACHE"; echo "origin/$b" > "$key.$$" && mv "$key.$$" "$key"; fi
-    echo "origin/${b:-main}" > "$pass"
+    if [ -n "$confirmed" ]; then mkdir -p "$MAIN_CACHE"; echo "$rem/$b" > "$key.$$" && mv "$key.$$" "$key"; fi
+    echo "$rem/${b:-main}" > "$pass"
   fi
   cat "$pass"
 }
@@ -1117,7 +1126,7 @@ main_health() {
   key="$CACHE/main_$(repo_slug "$dir")"
   if [ ! -f "$key" ]; then
     base="$(default_base "$dir")"
-    b="${base#origin/}"
+    b="${base#*/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh, or runs main_state
     # cannot read, as healthy.
     if ! runs="$(branch_runs "$dir" "$b")" || ! st="$(main_state <<<"$runs")"; then
@@ -1233,14 +1242,14 @@ ahead_files() {
   grep -c . <<<"$changed" || true
 }
 
-# fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch origin once per repo per pass,
+# fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch the canonical remote once per repo per pass,
 # so behind and conflicts are measured against the remote tip, not the last manual fetch.
 # Worktrees of one repo share its refs, so one fetch covers them all.
 fetch_once() {
   [ "${FLEET_FETCH:-0}" = 1 ] || return 0
   local key
   key="$CACHE/fetched_$(repo_slug "$1")" || return 0
-  [ -f "$key" ] || { git -C "$1" fetch -q origin 2>/dev/null; : > "$key"; }
+  [ -f "$key" ] || { git -C "$1" fetch -q "$(canonical_remote "$1")" 2>/dev/null; : > "$key"; }
 }
 
 # sync_facts <dir> <base> -> "behind conflicts fork": commits on the base this branch lacks,
@@ -1269,7 +1278,7 @@ off_default_checkouts() {
     cur="$(git -C "$d" symbolic-ref -q --short HEAD)"
     [ "origin/$cur" = "$(git -C "$d" symbolic-ref -q --short refs/remotes/origin/HEAD)" ] && continue
     base="$(default_base "$d")"
-    [ "$cur" = "${base#origin/}" ] || realpath "$d"
+    [ "$cur" = "${base#*/}" ] || realpath "$d"
   done
 }
 
@@ -1747,7 +1756,7 @@ collect() {
     [ "$host" != - ] || printf '%s\t%s\n' "${cwd##*/}" "$sid" >> "$CACHE/cwds"   # SHARED rows' owners, by worktree
     # ACTIVITY: CI is read on a branch off the default one, at its PR head, else at HEAD.
     local act act_dir=-
-    if [ "$g" = 1 ] && [ "$branch" != - ] && [ "origin/$branch" != "$(default_base "$cwd")" ]; then act_dir="$cwd"; fi
+    if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$branch" != "$(default_base "$cwd" | cut -d/ -f2-)" ]; then act_dir="$cwd"; fi
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$oid" "$now")"
     # A PR of this clone's repo riding an open landing train waits on that train's gate, and one queued for the
     # landing slot waits its turn, unless its own Checks are red past the slot's refusal (git_facts left ci FAIL).
@@ -1859,7 +1868,7 @@ checkout_rows() {
     [ -n "$where" ] || where="${gs##* to }"
     at="${at//[^0-9]/}"
     actor="$(awk -F'\t' -v h="$head" '$3 == h { a = $4 } END { print a }' "$LEDGER/checkout-moves.tsv" 2>/dev/null)"
-    reason="$name checkout on ${where:-$short} since $(date -d "@$at" '+%a %H:%M' 2>/dev/null || echo unknown), moved by ${actor:-an unrecorded actor}: stowed scripts run it, git -C $d switch ${base#origin/}"
+    reason="$name checkout on ${where:-$short} since $(date -d "@$at" '+%a %H:%M' 2>/dev/null || echo unknown), moved by ${actor:-an unrecorded actor}: stowed scripts run it, git -C $d switch ${base#*/}"
     printf 'CHECKOUT\t%s\tcheckout-%s\t-\t-\t-\t0\t0\t-\t0\t%s\t-\t1\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tCHECKOUT %s @%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$name" "$name" "$reason" "$name" "$short"
   done <<<"$1"
 }
