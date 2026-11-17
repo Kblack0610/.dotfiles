@@ -30,7 +30,7 @@ valid_sid "$sid" && [ ! -e "$STATE/$sid.done" ] || exit 0
 # The ranker reads the first 12 distinct words, so 2000 chars is plenty and keeps a pasted log
 # under the argument size limit. A prompt under three words ("continue", "hi") says nothing about
 # the work, so the next prompt keeps the chance.
-prompt=$(jq -r '.prompt // empty' <<<"$INPUT" | head -c 2000)
+prompt=$(jq -r '(.prompt // "")[:2000]' <<<"$INPUT")
 [ "$(wc -w <<<"$prompt")" -ge 3 ] || exit 0
 mkdir -p "$STATE" && : > "$STATE/$sid.done" || exit 0
 shown="$STATE/$sid"
