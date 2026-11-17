@@ -3729,6 +3729,10 @@ verdict() {
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
+  # ar-2452: an item it queued --running and handed to another session keeps its id in sessions:,
+  # but holds none of its own plan's phases; with one open, the queue does not hold the rest.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, target: "hub/dotfiles:1", next_phase: "P3", item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "keep: next phase: P3" ]
+  [ "$(verdict '{bucket: "DONE", finished: false, target: "hub/dotfiles:1", item: {slug: "f", is: "moved", origin: "hand"}}')" = "now: its item f moved on: the queue holds the rest" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
   # Only a STALLED row: a NEEDS row with its own ask open waits on the human (the ask rule).
   [ "$(verdict '{bucket: "NEEDS", reason: "1 pending ask(s)", asks: 1, own_asks: 1, finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "after: the human answers its ask" ]
@@ -4019,6 +4023,32 @@ JSONL
   # negative control: a task that names the plan and no phase still holds them all
   rm "$HOME/.agent/queue/queued/20261103-100000-seed.md"
   task_item tailnet "Execute $SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
+@test "end to end: an item whose task names this session is a report about it and holds none of its phases (ar-2452)" {
+  # 2026-11-15 03:28Z: the bug-report item ar-2449 quoted session 81b68e13's plan path and named no
+  # phase, so it held P3, and close --self told the coordinator "plan finished, nothing open".
+  landed_fixture
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  "$SANDBOX/bin/agent-queue" move fix-wave-save done --status ok >/dev/null 2>&1 || true
+  mkdir -p "$HOME/.agent/queue/queued"
+  report() {
+    printf 'slug: report\nproject: agent-runtime\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
+      "$1" > "$HOME/.agent/queue/queued/20261103-100000-report.md"
+  }
+  # by session id, or by its target: the phase is still the session's next one
+  for who in 'session sid-9' 'coordinator lab/s1:1,'; do
+    report "fix(fleet-sessions): $who reads finished while its plan $SANDBOX/plan.md has Phase 2 unchecked"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+    [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
+    [ "$(jq -r .finished <<<"$output")" = false ]
+  done
+  # negative control: another session's target (lab/s1:12) is not this one, so the item still holds the plan
+  report "fix(fleet-sessions): lab/s1:12 misreads $SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
