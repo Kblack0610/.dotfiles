@@ -1524,11 +1524,31 @@ OUT
   CLAUDE_CODE_SESSION_ID=conv-item agent-queue add --project game --running --slug hub-work "hub work" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
-  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work, prompted to carry on'
+  # A running item's conversation gets the restore prompt as its first message, naming the item.
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item fleet-dispatch\\ restore\\ reopened\\ this\\ session"
+  assert_called 'Carry\ on\ with\ queue\ item\ hub-work\ from'
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
+}
+
+@test "restore prompts no conversation whose item waits, nor one with no item" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane waiting "$G" conv-wait
+  lost_pane mine "$G" conv-human
+  CLAUDE_CODE_SESSION_ID=conv-wait agent-queue add --project game --running --slug hub-wait "hub wait" >/dev/null
+  agent-queue move hub-wait waiting >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "hub:dotfiles:waiting: would reopen conv-wait in $G (bypassPermissions) for queue item hub-wait"
+  refute_output --partial 'prompted'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called '--resume conv-wait'
+  assert_called '--resume conv-human'
+  assert_not_called 'restore\ reopened'
 }
 
 @test "restore keeps the record when a reopen fails, so a rerun finishes it" {

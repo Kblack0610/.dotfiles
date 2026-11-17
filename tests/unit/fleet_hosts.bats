@@ -52,7 +52,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\", \"power\": \"\"}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"state_host\": \"state.lan\", \"state_is_me\": true, \"power\": \"\"}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
@@ -181,19 +181,25 @@ EOF
   assert_not_called ssh
 }
 
-@test "a home named by a DHCP name, not the hostname, is home when the name resolves to one of its IPs" {
+@test "a home named by a DHCP name, not the hostname, is home by its own inventory entry, with no DNS lookup" {
   export FLEET_HOST=ws-hostname
-  printf '#!/bin/sh\n[ "$2" = state.lan ] && echo "192.0.2.2       STREAM state.lan"\n' > "$SANDBOX/bin/getent"
-  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.2/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
-  chmod +x "$SANDBOX/bin/getent" "$SANDBOX/bin/ip"
+  # A DNS lookup would be logged; the LAN DNS being down must not change the answer.
+  stub getent 'echo "getent $*" >> "$NOTES_FIXTURE/calls.log"; exit 2'
+  sed -i 's/^    laptops:$/    desktops:\n      hosts:\n        ws-hostname:\n          ansible_connection: local\n          fleet_ssh_host: state.lan\n&/' "$FLEET_INVENTORY"
   run fleet_is_home
   assert_success
   run state_forward agent-queue add list
   assert_success
   assert_not_called ssh
-  printf '#!/bin/sh\necho "2: eth0    inet 192.0.2.9/24 brd 192.0.2.255 scope global eth0"\n' > "$SANDBOX/bin/ip"
+  # Its ansible_host names it too: a roster that gives the home's IP.
+  sed -i 's/fleet_ssh_host: state.lan/ansible_host: 192.0.2.2/; s/fleet_state_host: state.lan/fleet_state_host: 192.0.2.2/' "$FLEET_INVENTORY"
+  run fleet_is_home
+  assert_success
+  # Another machine, whose entry names neither, is not home and forwards.
+  export FLEET_HOST=razer-laptop
   run fleet_is_home
   assert_failure
+  assert_not_called getent
 }
 
 @test "fleet-is-home passes on the home and fails elsewhere naming the home" {
