@@ -1814,7 +1814,8 @@ SH
 
   # exit 3, a repo the ledger does not sync, is no runs: no NIGHTLY row and nothing unreadable
   rm "$LEDGER_DIR/FAIL"
-  printf '#!/usr/bin/env bash\nexit 3\n' > "$SCHEDULES_SYNC"
+  # (runs only: a GitHub repo the PR store does not list is unreadable by design)
+  printf '#!/usr/bin/env bash\n[ "$1" = runs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.main | length' "$SANDBOX/state.json")" = 0 ]
   [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
@@ -2462,6 +2463,50 @@ research_item() {
   "${g[@]}" update-ref -d refs/remotes/forgejo/master
   FLEET_FETCH=1 fetch_once "$SANDBOX/wt"
   git -C "$SANDBOX/wt" rev-parse -q --verify refs/remotes/forgejo/master >/dev/null
+}
+
+@test "git_facts: a Forgejo-canonical branch squash-merged, its file rewritten on master since, reads its merged PR from Forgejo (ar-2587)" {
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  git init -q --bare "$SANDBOX/gh-mirror.git"; git init -q --bare "$SANDBOX/fj.git"
+  git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
+  # the branch changes site.yml; Forgejo squash-merges it as #1084, then master rewrites the same file
+  "${g[@]}" checkout -q -b fix/pxe
+  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe'
+  local head; head="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" checkout -q -b m HEAD~1
+  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe (#1084)'
+  echo 2 > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'later (#1090)'
+  # the mirror has run too, so origin/master is the same tip
+  "${g[@]}" push -q forgejo m:master 2>/dev/null; "${g[@]}" push -q origin m:master 2>/dev/null
+  "${g[@]}" checkout -q fix/pxe
+  "${g[@]}" fetch -q forgejo; "${g[@]}" fetch -q origin
+  "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
+  "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
+  export SO_FORGEJO_HOSTS="fj.example"
+  CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
+  # the store holds the PR under its Forgejo name only; the GitHub mirror lists none
+  printf 'fix/pxe\t1084\tMERGED\tPASS\t%s\t-\t2026-11-17T01:01:08Z\n' "$head" > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
+  touch "$LEDGER_DIR/prs.tsv"
+  # the file differs from the master tip, so ahead alone would call it unlanded
+  run ahead_files "$SANDBOX/wt" forgejo/master
+  assert_output 1
+  run git_facts "$SANDBOX/wt"; local f; read -r -a f <<<"$output"
+  [ "${f[2]} ${f[3]} ${f[4]} ${f[6]}" = "1 1084 MERGED 1" ]
+  grep -qx 'prs fj.example/o/r --checks' "$LEDGER_DIR/calls"
+  run work_blockers '' idle 0 0 0 30 "${f[@]:0:7}" - 1/1 - "${f[9]}" -
+  assert_output ''
+  # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, the GitHub mirror,
+  # whose PR list lacks #1084, so the same tree is unlanded with no PR
+  rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  rm -rf "$CACHE" "$MAIN_CACHE"; mkdir -p "$CACHE"
+  run git_facts "$SANDBOX/wt"; read -r -a f <<<"$output"
+  [ "${f[2]} ${f[3]}" = "1 -" ]
+  run work_blockers '' idle 0 0 0 30 "${f[@]:0:7}" - 1/1 - "${f[9]}" -
+  assert_output --partial 'not on the default branch, no PR'
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
@@ -3241,6 +3286,9 @@ explain_state() {
   [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
   [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
   [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
+  # hub Home joins an ask to its session by this id, never by the tmux name above
+  [ "$(jq -r '.asks[0].claude_session' "$doc")" = sid-9 ]
+  [ "$(jq -r '.asks[0].claude_session' "$doc")" = "$(jq -r '.sessions[0].session_id' "$doc")" ]
   # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
   [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
   [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]

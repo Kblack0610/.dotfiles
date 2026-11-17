@@ -11,7 +11,7 @@
 #   claude-acct status [--json]   # every source: window used, window gone, run-out, live sessions,
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
-#   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
+#   claude-acct textfile [dir]    # write <dir>/claude_acct.prom for node_exporter (default: the collector's dir)
 #   claude-acct gateway [--out FILE]
 #                        # snapshot the gateway's teams, keys (never a key's secret or hash), the
 #                        # sources and the config's aliases and fallbacks into FILE (default
@@ -488,6 +488,8 @@ RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # shellcheck source=../lib/prom.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
 PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
@@ -854,9 +856,11 @@ fleet_line() {
         + (if .idle_at != null then "; if idle \(.idle_at | at)" else "" end)' <<< "$j"
 }
 
-# textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
+# textfile [dir]: written to a temp file and renamed, so a scrape never reads half. With no dir
+# it is the machine's collector dir (prom-textfile.sh), and a machine with none is skipped.
 cmd_textfile() {
-    local dir="${1:?usage: claude-acct textfile <dir>}" tmp
+    local dir tmp
+    dir=$(prom_textfile_target "${1:-}") || return 0
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):

@@ -6,7 +6,7 @@
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe)
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
-#   fleet-assess --textfile DIR  write DIR/fleet_local.prom for node_exporter (the local gates)
+#   fleet-assess --textfile [DIR] write DIR/fleet_local.prom for node_exporter (the local gates; default: the collector's dir)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
 # Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
@@ -38,6 +38,8 @@ set -uo pipefail
 : "${GH_CALLERS_WINDOW_S:=600}"  # gh_callers counts the call log over this many seconds
 : "${FLEET_GH_PROBE_TTL_S:=300}" # the actions/workflows reading is reused this long: fleet-dispatch asks every pass and each ask spent one of that bucket's calls (172 REST an hour, 2026-11-13)
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
@@ -508,7 +510,9 @@ write_textfile() {
 
 main() {
   if [ "${1:-}" = --textfile ]; then
-    write_textfile "${2:?usage: fleet-assess --textfile <dir>}"
+    local dir
+    dir="$(prom_textfile_target "${2:-}")" || return 0
+    write_textfile "$dir"
     return
   fi
   if [ "${1:-}" = --blocked ]; then
