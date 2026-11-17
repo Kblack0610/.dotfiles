@@ -86,3 +86,100 @@ check() { cd "$REPO" && STOP_SESSION_ID="${1:-}" run --separate-stderr bash "$CH
   check "$S1"
   assert_success
 }
+
+# item_session [lost] -- this is queue item fix-x's session: agent-queue is a stub that shows the item
+# (with `lost:` set to the given value) and logs each set; store-sync is a stub that logs its call.
+item_session() {
+  export AGENT_QUEUE_ITEM=fix-x
+  jq -n --arg lost "${1:-}" '{slug: "fix-x", state: "running"} + (if $lost == "" then {} else {lost: $lost} end)' > "$SANDBOX/item.json"
+  printf '#!/usr/bin/env bash\ncase "$1" in show) cat %q ;; set) echo "agent-queue $*" >> %q ;; esac\n' "$SANDBOX/item.json" "$SANDBOX/calls.log" > "$SANDBOX/bin/agent-queue"
+  printf '#!/bin/sh\necho "store-sync $*" >> %q\n' "$SANDBOX/calls.log" > "$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/store-sync"
+  : > "$SANDBOX/calls.log"
+}
+
+@test "a queue item's session pushes the turn's commits and records the branch on its item" {
+  item_session
+  check "$S1"
+  assert_success
+  [[ "$stderr" == *"Pushed Branch 'feat/x' has 1 unpushed commit(s) to origin/feat/x for queue item fix-x"* ]]
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/x)" = "$(git -C "$REPO" rev-parse HEAD)" ]
+  grep -qxF "agent-queue set fix-x branch=feat/x@$(git -C "$REPO" rev-parse HEAD)" "$SANDBOX/calls.log"
+  grep -qxF "store-sync --now" "$SANDBOX/calls.log"
+}
+
+@test "a queue item's branch with no upstream is pushed to origin under its own name and tracks it" {
+  item_session
+  git -C "$REPO" checkout -q -b feat/y
+  check "$S1"
+  assert_success
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/y)" = "$(git -C "$REPO" rev-parse HEAD)" ]
+  [ "$(git -C "$REPO" rev-parse --abbrev-ref '@{upstream}')" = origin/feat/y ]
+  grep -qxF "agent-queue set fix-x branch=feat/y@$(git -C "$REPO" rev-parse HEAD)" "$SANDBOX/calls.log"
+}
+
+@test "the branch already recorded is not set again" {
+  item_session
+  jq --arg b "feat/x@$(git -C "$REPO" rev-parse HEAD)" '.branch = $b' "$SANDBOX/item.json" > "$SANDBOX/i" && mv "$SANDBOX/i" "$SANDBOX/item.json"
+  check "$S1"
+  assert_success
+  ! grep -q 'agent-queue set' "$SANDBOX/calls.log"
+}
+
+@test "a queue item's push that fails blocks as unpushed work" {
+  item_session
+  git -C "$REPO" remote set-url origin "$SANDBOX/missing.git"
+  check "$S1"
+  assert_failure 2
+  [[ "$stderr" == *"FAILED: Branch 'feat/x' has 1 unpushed commit(s), and pushing it to origin/feat/x failed"* ]]
+  ! grep -q 'agent-queue set' "$SANDBOX/calls.log"
+}
+
+@test "a queue item's session does not push while its own background run is live" {
+  item_session
+  hold "$S1"
+  check "$S1"
+  assert_failure 1
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/x)" != "$(git -C "$REPO" rev-parse HEAD)" ]
+}
+
+@test "a session with no queue item is asked to push, never pushed for" {
+  item_session
+  unset AGENT_QUEUE_ITEM
+  check "$S1"
+  assert_failure 2
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/x)" != "$(git -C "$REPO" rev-parse HEAD)" ]
+}
+
+@test "a session its item names as lost is told to stop, and nothing is pushed" {
+  item_session "razer-laptop $S2 $S1"
+  check "$S1"
+  assert_failure 2
+  [[ "$stderr" == *"FAILED: queue item fix-x was re-queued to another node while razer-laptop did not answer"* ]]
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/x)" != "$(git -C "$REPO" rev-parse HEAD)" ]
+  ! grep -q 'agent-queue set' "$SANDBOX/calls.log"
+}
+
+@test "the fence reads the store's latest before a push: a lost mark that arrives by sync stops it" {
+  item_session
+  # The stale clone shows no mark; the sync brings in the one reap wrote while this host was down.
+  printf '#!/bin/sh\njq %q %q > %q.n && mv %q.n %q\n' ".lost = \"razer-laptop $S1\"" "$SANDBOX/item.json" "$SANDBOX/item.json" "$SANDBOX/item.json" "$SANDBOX/item.json" > "$SANDBOX/bin/store-sync"
+  check "$S1"
+  assert_failure 2
+  [[ "$stderr" == *"re-queued to another node"* ]]
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/x)" != "$(git -C "$REPO" rev-parse HEAD)" ]
+}
+
+@test "a lost mark naming other sessions does not stop this one" {
+  item_session "razer-laptop $S2"
+  check "$S1"
+  assert_success
+}
+
+@test "a worker's session reads its item from the state host and runs no store sync" {
+  item_session
+  export AGENT_STATE_HOST=state.lan
+  check "$S1"
+  assert_success
+  ! grep -q 'store-sync' "$SANDBOX/calls.log"
+}
