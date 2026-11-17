@@ -1086,6 +1086,31 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_output --partial 'answered, not pending'
 }
 
+@test "a session live on a fleet worker is never reopened here, and target says where it runs" {
+  local id
+  sandbox_worlds
+  sandbox_fleet_worker hp
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-9"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-9.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  printf '{"session_id":"sid-9","target":"lab/dotfiles:2","pane":"lab/%%4"}\n' >"$SANDBOX/hp/agent-panel.list"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'ship it?')"
+  run --separate-stderr "$AGENT_ASK" target --reopen "$id"
+  assert_failure
+  assert_equal "$stderr" "session runs on hp at hp@lab/dotfiles:2; go to it there"
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial 'is live'
+  assert_not_called 'fleet-dispatch start'
+  # Negative control: once it is gone from the worker too, the reopen starts it here.
+  : >"$SANDBOX/hp/agent-panel.list"
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id"
+}
+
 # ── lifecycle: one home ──────────────────────────────────────────────────────
 # An ask stays pending until the human answers or drops it, however old and whether or not its
 # session lives. Nothing marks it stale or copies it to a board.

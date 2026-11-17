@@ -1610,6 +1610,62 @@ OUT
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
 }
 
+# roster_workers <hp rc> -- the roster's idle-worker (down), hp at 192.0.2.40 and this machine, state; ssh
+# reaches hp alone, which prints a line and exits <hp rc>.
+roster_workers() {
+  printf '        hp:\n          ansible_host: 192.0.2.40\n          fleet_state_host: state.lan\n        state:\n          fleet_state_host: state.lan\n' >> "$FLEET_INVENTORY"
+  unset FLEET_HOSTS_JSON
+  stub ssh "echo \"ssh \$*\" >> \"\$NOTES_FIXTURE/calls.log\"
+case \"\$*\" in *192.0.2.40*) echo 'did its own'; exit $1 ;; esac
+exit 255"
+}
+
+@test "record on the fleet home runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
+  record_setup
+  world '10 1000' "$PANE1"
+  roster_workers 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_output 'hp: did its own'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch record --here'
+  assert_called 'idle-worker PATH='
+  assert_not_called ' state PATH='
+  [ -f "$RECORD" ] || fail "this machine's own record was not kept"
+  # --here, the call a worker gets, asks no one.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  assert_success
+  assert_not_called 'ssh'
+  # A machine that is not the fleet home keeps its own record and asks no one: the home fans out.
+  : > "$NOTES_FIXTURE/calls.log"
+  FLEET_HOST=hp run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_not_called 'ssh'
+  roster_workers 4
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_failure
+  assert_output --partial 'record: hp exited 4'
+}
+
+@test "restore reopens each worker's own sessions there with its flags, and a worker that does not answer is said, not failed" {
+  restore_setup
+  roster_workers 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
+  assert_success
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch restore --here --server hub --dry-run'
+  assert_not_called ' state PATH='
+  assert_line 'hp: did its own'
+  assert_output --partial 'restore: idle-worker did not answer; its own record stays there'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --here
+  assert_success
+  assert_not_called 'ssh'
+  roster_workers 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_output --partial 'restore: hp exited 1'
+}
+
 @test "a server that dies again keeps the lost record a restore only part finished, and adds the new conversations once" {
   record_setup
   PANE3=$'%3\tdotfiles\tfresh\t/fresh/dir'
