@@ -61,7 +61,7 @@ lost_fence() {
 # push_item <remote> <remote branch> <what> -- push HEAD there for the item, and record it on the item.
 # A failed push (offline, a moved remote branch) is unpushed work, blocked as before.
 push_item() {
-  local out sha
+  local out sha was sv
   lost_fence sync
   if ! out=$(timeout 60 git push -q ${4:+-u} "$1" "HEAD:refs/heads/$2" 2>&1); then
     unpushed "$3, and pushing it to $1/$2 failed: $(tail -n 1 <<<"$out")"
@@ -69,34 +69,37 @@ push_item() {
   fi
   echo "Pushed $3 to $1/$2 for queue item $ITEM" >&2
   [ "$1" = origin ] || return 0
+  # Read again: a reap that gave this run up during the push gets no record from it. A run that
+  # started from `salvage:` carries it forward, so the next start begins from this push, not that one.
+  lost_fence
   sha=$(git rev-parse HEAD)
-  [ "$(agent-queue show "$ITEM" --json 2>/dev/null | jq -r '.branch // ""' 2>/dev/null)" = "$2@$sha" ] ||
-    agent-queue set "$ITEM" "branch=$2@$sha" >/dev/null 2>&1 ||
+  IFS=$'\t' read -r was sv < <(agent-queue show "$ITEM" --json 2>/dev/null | jq -r '[.branch // "-", .salvage // ""] | @tsv' 2>/dev/null)
+  [ "${was:-}" = "$2@$sha" ] ||
+    agent-queue set "$ITEM" "branch=$2@$sha" ${sv:+"salvage=$2@$sha"} >/dev/null 2>&1 ||
     echo "Could not record branch $2@$sha on queue item $ITEM" >&2
 }
 
 lost_fence
 
+# Only a branch that tracks its own name pushes to its upstream: one cut from origin/main tracks main
+# (`git worktree add -b <branch> <dir> origin/main`), and an item's push goes to origin/<branch>, never there.
 UPSTREAM=$(git rev-parse --abbrev-ref "@{upstream}" 2>/dev/null)
 if [ -z "$UPSTREAM" ]; then
   AHEAD=$(git rev-list "$MAIN_BRANCH"..HEAD --count 2>/dev/null)
-  if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
-    what="Branch '$BRANCH' has $AHEAD unpushed commit(s) with no remote tracking branch"
-    if [ -n "$ITEM" ] && ! inflight && git remote get-url origin >/dev/null 2>&1; then
-      push_item origin "$BRANCH" "$what" -u
-    else
-      unpushed "$what"
-    fi
-  fi
+  what="Branch '$BRANCH' has $AHEAD unpushed commit(s) with no remote tracking branch"
 else
   AHEAD=$(git rev-list "$UPSTREAM"..HEAD --count 2>/dev/null)
-  if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
-    what="Branch '$BRANCH' has $AHEAD unpushed commit(s)"
-    if [ -n "$ITEM" ] && ! inflight; then
-      push_item "${UPSTREAM%%/*}" "${UPSTREAM#*/}" "$what"
-    else
-      unpushed "$what"
-    fi
+  what="Branch '$BRANCH' has $AHEAD unpushed commit(s)"
+fi
+if [ "${AHEAD:-0}" -gt 0 ] 2>/dev/null; then
+  if [ -z "$ITEM" ] || inflight; then
+    unpushed "$what"
+  elif [ -n "$UPSTREAM" ] && [ "${UPSTREAM#*/}" = "$BRANCH" ]; then
+    push_item "${UPSTREAM%%/*}" "$BRANCH" "$what"
+  elif git remote get-url origin >/dev/null 2>&1; then
+    push_item origin "$BRANCH" "$what" -u
+  else
+    unpushed "$what"
   fi
 fi
 

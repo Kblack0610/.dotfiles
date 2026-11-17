@@ -1772,6 +1772,7 @@ lost_host_item() {
   agent-queue set fix-crash branch=feat/fix@abc123 'note=patched the parser, tests next' >/dev/null
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   export DISPATCH_HOST_DEAD=600
+  stub store-sync-age 'exit 0'   # this machine reached the store: its own link is up
   MISS="$FLEET_DISPATCH_DIR/host-miss/razer-laptop"
 }
 
@@ -1843,4 +1844,15 @@ lost_host_item() {
   assert_success
   refute_output --partial 'requeued queue item fix-crash'
   [ -n "$(qitem review fix-crash)" ] || fail "a parked review item was requeued for its lost host"
+}
+
+@test "reap counts no miss for a worker while this machine itself has not reached the store: the fault may be here" {
+  lost_host_item
+  stub store-sync-age 'exit 1'
+  mkdir -p "${MISS%/*}"; echo $(( $(date +%s) - 700 )) > "$MISS"; touch -d '-100 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  [ -n "$(qitem running fix-crash)" ] || fail "a dispatcher cut off re-queued a worker's item"
+  grep -q 'this machine has not synced the store in 30 minutes either' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the missing witness'
 }

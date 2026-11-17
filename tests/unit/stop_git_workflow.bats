@@ -183,3 +183,25 @@ item_session() {
   assert_success
   ! grep -q 'store-sync' "$SANDBOX/calls.log"
 }
+
+@test "a queue item's branch cut from origin/main, tracking main, pushes to origin under its own name, never to main" {
+  item_session
+  main=$(git -C "$SANDBOX/origin.git" rev-parse main)
+  git -C "$REPO" checkout -q -b feat/z --track origin/main
+  echo three >> "$REPO/a.txt"; git -C "$REPO" commit -qam three
+  check "$S1"
+  assert_success
+  assert_equal "$(git -C "$SANDBOX/origin.git" rev-parse main)" "$main"
+  [ "$(git -C "$SANDBOX/origin.git" rev-parse feat/z)" = "$(git -C "$REPO" rev-parse HEAD)" ]
+  [ "$(git -C "$REPO" rev-parse --abbrev-ref '@{upstream}')" = origin/feat/z ]
+  grep -qxF "agent-queue set fix-x branch=feat/z@$(git -C "$REPO" rev-parse HEAD)" "$SANDBOX/calls.log"
+}
+
+@test "a run that started from salvage carries it forward to its own push" {
+  item_session
+  jq '.salvage = "feat/x@0123abc"' "$SANDBOX/item.json" > "$SANDBOX/i" && mv "$SANDBOX/i" "$SANDBOX/item.json"
+  check "$S1"
+  assert_success
+  sha=$(git -C "$REPO" rev-parse HEAD)
+  grep -qxF "agent-queue set fix-x branch=feat/x@$sha salvage=feat/x@$sha" "$SANDBOX/calls.log"
+}

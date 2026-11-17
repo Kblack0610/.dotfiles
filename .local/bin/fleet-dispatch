@@ -725,13 +725,19 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 # items are re-dispatched (settle_item). Asked once a reap (REAP_HOST caches it). $DIR/host-miss/<host>
 # holds the first miss, and its mtime the last: a host that answers loses its mark, and a miss after a
 # gap longer than DISPATCH_HOST_DEAD with no reap asking (no item there) starts the count again.
-# An answer of any kind, even a failed command, is a live host.
+# An answer of any kind, even a failed command, is a live host, and a miss counts only while this
+# machine reaches the store's origin (store-sync-age): a dispatcher cut off reads every worker as down.
 declare -gA REAP_HOST=()
 host_lost() {
   local h="$1" f="$DIR/host-miss/$1" now first last
   if [ -z "${REAP_HOST[$h]+set}" ]; then
     REAP_HOST[$h]=0
     if fleet_host_run "$h" true >/dev/null 2>&1 || [ $? -ne 255 ]; then rm -f "$f"
+    elif ! store-sync-age >/dev/null 2>&1; then
+      # No witness of our own link: the store has not reached origin in 30 minutes (store-sync-age), so a
+      # worker that does not answer may be this machine cut off (2026-09-08: 21h of link loss): no miss is
+      # counted, and one past DISPATCH_HOST_DEAD after the last starts the run again.
+      logline "reap: fleet worker $h did not answer, and this machine has not synced the store in 30 minutes either: no miss counted"
     else
       now=$(date +%s)
       first=$(cat "$f" 2>/dev/null) last=$(stat -c %Y "$f" 2>/dev/null) || last=0
@@ -3038,7 +3044,8 @@ settle_item() {
       agent-queue move "$1" queued --if "$st" >/dev/null || return 0
       br=$(jq -r 'select((.pr // "") == "") | .branch // empty' <<<"$it")
       sids=$(jq -r '.sessions // ""' <<<"$it")
-      agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null
+      agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null ||
+        logline "reaped $2: queue item $1 requeued, but lost: and salvage: did not record: its next brief starts from the trunk"
       note_add "$1" "$it" "session $2 lost with its host $3, unanswered for ${DISPATCH_HOST_DEAD}s; requeued from ${br:-${pr:-the trunk}}"
       dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "host $3 lost" --item "$1" --why "item was $st"
       logline "reaped $2: host $3 lost, queue item $1 requeued from ${br:-${pr:-the trunk}}"
