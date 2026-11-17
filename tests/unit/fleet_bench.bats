@@ -1870,6 +1870,37 @@ log_triage_setup() {
   assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: error: lock /run/a/1\.lock held by pid 4411 #low$'
 }
 
+@test "triage: a log row whose error the runner's newest runs no longer log closes; a live one or a thinly read runner keeps it" {
+  log_triage_setup
+  local live
+  live=$("$SUBJECT" triage --dry-run | grep -oE '^fix\(logs\): alpha error [0-9a-f]{8}:')
+  [ -n "$live" ]
+  local once; once=$(printf 'alpha\t%s' 'error: seen once' | sha1sum | cut -c1-8)
+  errlog alpha -30 'error: seen once'   # in the newest run: too few runs to file, but not gone
+  errlog beta -60 'all good'   # one readable run is not enough to call its error gone
+  # board keys are lowercase; the newest run of all logs no error line, so the read ends on a clean run
+  errlog Delta -60 'all good'; errlog Delta 5 'all good'
+  board_row ' ' "$live error: lock P held by pid N"
+  board_row ' ' 'fix(logs): alpha error 8b645240: alpha: queue item x may not spill to lazer: tier'
+  board_row ' ' "fix(logs): alpha error $once: error: seen once"
+  board_row ' ' 'fix(logs): beta error 1234abcd: error: beta broke'
+  board_row ' ' 'fix(logs): gamma error 5678cdef: error: gamma never ran'
+  board_row ' ' 'fix(logs): delta error 9abc0123: error: delta broke'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: fix(logs): alpha error 8b645240:'
+  assert_line 'retire: fix(logs): delta error 9abc0123:'
+  refute_line "retire: $live"
+  refute_line "retire: fix(logs): alpha error $once:"
+  refute_line --partial 'retire: fix(logs): beta'
+  refute_line --partial 'retire: fix(logs): gamma'
+  # with no run ledger nothing was read, so no log row is a recovery
+  rm "$AGENTCTL_STATE_DIR/runs.jsonl"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: fix(logs)'
+}
+
 @test "triage: reading a run's stderr range writes no Broken pipe when SIGPIPE is ignored, as under systemd" {
   log_triage_setup
   # a later run big enough that a reader stopping at the range end would cut a pipe mid-write
