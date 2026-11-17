@@ -799,29 +799,21 @@ return {
         end
       end
 
-      -- `line` as a `- [ ]` task: plain text, a `-`/`*`/`+` bullet or blank becomes one,
-      -- and `* [x] done` keeps its box (as loose_task does). nil when it is already a task.
-      local function as_task(line)
-        local indent, rest = line:match "^(%s*)(.-)%s*$"
-        if rest:match("^%- " .. STATUS_PAT) then
-          return nil
-        end
-        local text = rest:gsub("^[-*+]%s*", "")
-        return indent .. (text:match "^%[.%]" and "- " or "- [ ] ") .. text
-      end
-
-      -- Smart task line, for turning bullets/prose into tasks on the fly. A line that
-      -- is NOT a task yet is converted in place; one that already is gets an indented
-      -- subtask beneath it, so repeated presses build a task/subtask tree. Either way
-      -- the cursor lands in insert mode where the task's text goes.
+      -- Smart task line, for turning bullets/prose into tasks on the fly, by loose_task's
+      -- rules. Prose or a bullet is converted in place, a blank line becomes `- [ ] `; a
+      -- task gets an indented subtask beneath it, so repeated presses build a tree; a
+      -- heading, rule or comment gets a task below it. The cursor lands in insert mode
+      -- where the task's text goes.
       local function smart_task()
         local lnum = vim.api.nvim_win_get_cursor(0)[1]
         local line = vim.fn.getline(lnum)
-        local task = as_task(line)
+        local indent = line:match "^%s*"
+        local task = loose_task(line) or (not line:match "%S" and "- [ ] ")
         if task then
-          vim.fn.setline(lnum, task)
+          vim.fn.setline(lnum, indent .. task)
         else
-          vim.fn.append(lnum, line:match "^%s*" .. "  - [ ] ")
+          local sub = line:match "^%s*%- %[.%]" and "  " or ""
+          vim.fn.append(lnum, indent .. sub .. "- [ ] ")
           lnum = lnum + 1
         end
         vim.api.nvim_win_set_cursor(0, { lnum, 0 })
@@ -829,17 +821,12 @@ return {
       end
 
       -- `o` on a task line opens the next task at the same indent, the way a list
-      -- continues; on any other line it is plain `o`. An unused `- [ ] ` slot in
-      -- `## Focus` is dropped by the save sweep.
+      -- continues; elsewhere plain `o`. Keys, not buffer edits, so a count, `.`, folds
+      -- and macros behave as they do for `o`; noremap keeps autopairs off the `[`.
+      -- An unused `- [ ] ` slot in `## Focus` is dropped by the save sweep.
       local function open_task_below()
-        local lnum = vim.api.nvim_win_get_cursor(0)[1]
-        local indent = vim.fn.getline(lnum):match("^(%s*)%- " .. STATUS_PAT)
-        if not indent then
-          return vim.api.nvim_feedkeys((vim.v.count > 0 and vim.v.count or "") .. "o", "n", false)
-        end
-        vim.fn.append(lnum, indent .. "- [ ] ")
-        vim.api.nvim_win_set_cursor(0, { lnum + 1, 0 })
-        vim.cmd "startinsert!"
+        local indent = vim.fn.getline("."):match "^(%s*)%- %[.%]"
+        return indent and ("o<C-u>" .. indent .. "- [ ] ") or "o"
       end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
@@ -923,18 +910,24 @@ return {
             smart_task,
             { buffer = buf, desc = "Convert line to task / add subtask", silent = true }
           )
-          -- Visual: convert every non-blank line of the selection that is not a task yet.
+          -- Visual: convert the selected prose and bullets; blanks, tasks, headings,
+          -- rules and comments are left alone (loose_task returns nil for them).
           vim.keymap.set("x", "<leader>tt", function()
             vim.cmd "normal! \27"
             for lnum = vim.fn.line "'<", vim.fn.line "'>" do
               local line = vim.fn.getline(lnum)
-              local task = line:match "%S" and as_task(line)
+              local task = loose_task(line)
               if task then
-                vim.fn.setline(lnum, task)
+                vim.fn.setline(lnum, line:match "^%s*" .. task)
               end
             end
           end, { buffer = buf, desc = "Convert lines to tasks", silent = true })
-          vim.keymap.set("n", "o", open_task_below, { buffer = buf, desc = "Open line (next task on a task line)" })
+          vim.keymap.set(
+            "n",
+            "o",
+            open_task_below,
+            { buffer = buf, expr = true, desc = "Open line (next task on a task line)" }
+          )
 
           -- Task priority: tP raises toward urgent, tp lowers, along low -> high -> urgent,
           -- stopping at either end. Each press re-sweeps and follows the task
