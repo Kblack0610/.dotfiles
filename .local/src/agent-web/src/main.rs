@@ -88,7 +88,6 @@ const KEYS: &[&str] = &[
 struct AppState {
     oauth: auth::OAuth,
     sessions: auth::Sessions,
-    key_guard: auth::KeyGuard,
     events: broadcast::Sender<String>,
     /// True once the server is stopping: each live-update stream ends, so the drain finishes.
     stopping: watch::Receiver<bool>,
@@ -132,7 +131,6 @@ async fn main() -> Result<()> {
         stopping,
         oauth,
         sessions,
-        key_guard: auth::KeyGuard::default(),
         actions: feed::Cache::new(events.subscribe()),
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
@@ -670,14 +668,23 @@ fn denied(code: StatusCode, msg: &str) -> Response {
 
 /// The sign-in page: the Forgejo button always, the key form while `login.key` holds a key.
 fn login_page(error: &str) -> String {
-    let form = if auth::login_key().is_some() {
-        KEY_FORM
-    } else {
-        ""
-    };
+    login_html(error, auth::login_key().is_some())
+}
+
+fn login_html(error: &str, with_key: bool) -> String {
     LOGIN
         .replace("{{error}}", error)
-        .replace("{{key_form}}", form)
+        .replace("{{key_form}}", if with_key { KEY_FORM } else { "" })
+}
+
+/// One sign-in line in the audit log, written off the request's thread. `method` is `key` for the
+/// local key and None for Forgejo.
+fn record_signin(actor: &str, action: &str, method: Option<&str>) {
+    let mut e = hub_core::audit::Entry::new(actor, action, "agent-web", "web");
+    if let Some(m) = method {
+        e = e.to(serde_json::json!({ "method": m }));
+    }
+    tokio::task::spawn_blocking(move || hub_core::audit::record(&e));
 }
 
 const KEY_FORM: &str = r#"<form method="post" action="/login/key"><input type="password" name="key" autocomplete="current-password" placeholder="Sign-in key" required><button class="btn" type="submit">Sign in with key</button></form>"#;
@@ -737,8 +744,7 @@ async fn callback(
     };
     if !s.oauth.is_allowed(&login) {
         eprintln!("agent-web: rejected Forgejo user {login}");
-        let refused = hub_core::audit::Entry::new(&login, "signin.refused", "agent-web", "web");
-        tokio::task::spawn_blocking(move || hub_core::audit::record(&refused));
+        record_signin(&login, "signin.refused", None);
         return denied(
             StatusCode::FORBIDDEN,
             "That Forgejo account is not allowed here.",
@@ -746,8 +752,7 @@ async fn callback(
     }
     let id = match s.sessions.create(&login) {
         Ok(id) => {
-            let started = hub_core::audit::Entry::new(&login, "signin.started", "agent-web", "web");
-            tokio::task::spawn_blocking(move || hub_core::audit::record(&started));
+            record_signin(&login, "signin.started", None);
             id
         }
         Err(e) => {
@@ -779,27 +784,13 @@ struct KeyForm {
 }
 
 /// Sign in with the local key, for when Forgejo is down. Same session as the OAuth callback
-/// makes, for the first allowed user. A wrong key counts toward `auth::KeyGuard`'s lock.
+/// makes, for the first allowed user, so that name is whoever holds the key.
 async fn login_key(State(s): State<Shared>, Form(f): Form<KeyForm>) -> Response {
-    let record = |actor: String, action: &str| {
-        let e = hub_core::audit::Entry::new(&actor, action, "agent-web", "web")
-            .to(serde_json::json!({"method": "key"}));
-        tokio::task::spawn_blocking(move || hub_core::audit::record(&e));
-    };
-    let at = auth::KeyGuard::now();
-    if s.key_guard.locked(at) {
-        eprintln!("agent-web: key sign-in refused: locked after repeated failures");
-        return denied(
-            StatusCode::TOO_MANY_REQUESTS,
-            "Too many wrong keys. Wait a few minutes.",
-        );
-    }
     let (Some(key), Some(user)) = (auth::login_key(), s.oauth.key_user()) else {
         return denied(StatusCode::NOT_FOUND, "Key sign-in is not set up.");
     };
     if !auth::matches(f.key.trim(), &key) {
-        s.key_guard.failed(at);
-        record("login-key".into(), "signin.refused");
+        record_signin("login-key", "signin.refused", Some("key"));
         return denied(StatusCode::FORBIDDEN, "That key is not right.");
     }
     let id = match s.sessions.create(user) {
@@ -812,7 +803,7 @@ async fn login_key(State(s): State<Shared>, Form(f): Form<KeyForm>) -> Response 
             );
         }
     };
-    record(user.to_string(), "signin.started");
+    record_signin(user, "signin.started", Some("key"));
     (
         StatusCode::SEE_OTHER,
         [
@@ -2113,6 +2104,16 @@ mod tests {
             classify(Path::new("/h/.claude/projects/-h-x/abc.json")),
             None
         );
+    }
+
+    #[test]
+    fn the_sign_in_page_shows_the_key_form_only_with_a_key_and_leaves_no_placeholder() {
+        let with = login_html("", true);
+        let without = login_html("", false);
+        assert!(with.contains(r#"action="/login/key""#));
+        assert!(!without.contains("/login/key"));
+        assert!(!with.contains("{{") && !without.contains("{{"));
+        assert!(login_html("<b>x</b>", false).contains("<b>x</b>"));
     }
 
     #[test]

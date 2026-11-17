@@ -62,47 +62,20 @@ pub fn widget_token() -> Option<String> {
 
 /// The sign-in key that does not depend on Forgejo (`login.key` beside the sessions file, mode
 /// 600). Read on each request, so a rewrite rotates it and a delete turns the form off with no
-/// restart. None when the file is missing or shorter than `KEY_MIN_LEN`: a short key is refused
-/// outright rather than guarded by the throttle alone.
+/// restart. None when the file is missing or shorter than `KEY_MIN_LEN`.
 pub fn login_key() -> Option<String> {
-    let t = fs::read_to_string(config_dir().join("login.key")).ok()?;
-    let t = t.trim();
+    usable_key(&fs::read_to_string(config_dir().join("login.key")).ok()?)
+}
+
+fn usable_key(text: &str) -> Option<String> {
+    let t = text.trim();
     (t.len() >= KEY_MIN_LEN).then(|| t.to_string())
 }
 
-/// A key shorter than this is treated as no key (`openssl rand -hex 24` makes 48).
-const KEY_MIN_LEN: usize = 24;
-/// This many wrong keys inside `KEY_WINDOW_SECS` lock the key form for the rest of the window.
-/// One global count, not one per client: behind the tunnel every request shares an address.
-const KEY_MAX_FAILS: u32 = 5;
-const KEY_WINDOW_SECS: u64 = 300;
-
-/// The throttle on key sign-in. While locked even the right key is refused, or the lock would
-/// not slow a guesser. Forgejo sign-in is unaffected, so a lock never shuts out the owner.
-#[derive(Default)]
-pub struct KeyGuard {
-    /// (when the window's first failure happened, failures in the window)
-    fails: Mutex<(u64, u32)>,
-}
-
-impl KeyGuard {
-    pub fn locked(&self, at: u64) -> bool {
-        let (start, n) = *self.fails.lock().unwrap();
-        n >= KEY_MAX_FAILS && at < start + KEY_WINDOW_SECS
-    }
-
-    pub fn failed(&self, at: u64) {
-        let mut f = self.fails.lock().unwrap();
-        if f.1 == 0 || at >= f.0 + KEY_WINDOW_SECS {
-            *f = (at, 0);
-        }
-        f.1 += 1;
-    }
-
-    pub fn now() -> u64 {
-        now()
-    }
-}
+/// A key shorter than this is treated as no key (`openssl rand -hex 24` makes 48). There is no
+/// lockout on wrong keys: a key this long cannot be guessed, and a lock any visitor could trip
+/// would shut the owner out during the Forgejo outage this sign-in exists for.
+const KEY_MIN_LEN: usize = 32;
 
 /// Constant-time equality, so response timing does not leak a prefix of the secret.
 pub fn matches(given: &str, secret: &str) -> bool {
@@ -420,18 +393,12 @@ mod tests {
     }
 
     #[test]
-    fn the_key_form_locks_after_five_failures_and_reopens_after_the_window() {
-        let g = KeyGuard::default();
-        for i in 0..KEY_MAX_FAILS {
-            assert!(!g.locked(1000 + u64::from(i)), "locked early at {i}");
-            g.failed(1000 + u64::from(i));
-        }
-        assert!(g.locked(1010));
-        assert!(g.locked(1000 + KEY_WINDOW_SECS - 1));
-        assert!(!g.locked(1000 + KEY_WINDOW_SECS));
-        // A failure after the window starts a new one instead of extending the old lock.
-        g.failed(2000);
-        assert!(!g.locked(2001));
+    fn a_short_or_blank_key_is_no_key() {
+        assert_eq!(usable_key(""), None);
+        assert_eq!(usable_key("  \n"), None);
+        assert_eq!(usable_key("short"), None);
+        let k = "a".repeat(KEY_MIN_LEN);
+        assert_eq!(usable_key(&format!("{k}\n")), Some(k));
     }
 
     #[test]
