@@ -368,20 +368,37 @@ return {
         local last = nil
         -- Group breaks (daily only), mirroring sweep::bucket: a blank after a row marks a break
         -- in the lane it sits in (its heading, else the lane of the open row above it), kept
-        -- before the next row that lands in that lane when one is already there.
+        -- before the next row that lands in that lane when one is already there. The human's own
+        -- `---` between rows is the same break, kept as a rule (sweep::is_group_rule): it is
+        -- theirs when the next non-blank line is no scaffold and no `## ` heading.
         local pending, last_open = {}, nil
+        local function is_group_rule(n)
+          if not body[n]:match "^%s*%-%-%-%s*$" then
+            return false
+          end
+          for k = n + 1, #body do
+            if body[k]:match "%S" then
+              return not body[k]:match "^## " and not is_scaffold(vim.trim(body[k]))
+            end
+          end
+          return false
+        end
         local function land(i, row)
           if pending[i] and #open[i] > 0 then
-            table.insert(open[i], "")
+            table.insert(open[i], pending[i])
           end
           pending[i] = nil
           table.insert(open[i], row)
           last_open = i
         end
-        for _, l in ipairs(body) do
-          if daily and not l:match "%S" then
+        for n, l in ipairs(body) do
+          local rule = daily and is_group_rule(n)
+          if daily and (rule or not l:match "%S") then
             if last_open then
-              pending[cur_lane or last_open] = true
+              local i = cur_lane or last_open
+              if pending[i] ~= "---" then -- a rule outranks the blanks padding it
+                pending[i] = rule and "---" or ""
+              end
             end
           elseif is_scaffold(l) then
             had_scaffold = true
