@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [pipeline, fleet, queue, dispatch, shepherd, sessions, flow, throughput, bottleneck]
-  reviewed: "2026-11-14"
+  reviewed: "2026-11-16"
 ---
 
 # Pipeline eval
@@ -25,6 +25,7 @@ Every number comes from a deterministic source, never a model's score of a trans
 | which dispatch limit binds now (pace target, load, run units, holds) | `fleet-dispatch headroom --json`, `fleet-dispatch run --dry-run` |
 | who holds the live slots: open job and time split per project | `fleet-sessions --json` (`open_job`; `queue` is a session waiting its landing turn) |
 | merge line: batches cut vs merged, waiters per project | the project's merge-train PRs (`gh pr list --state all --search 'chore(train) in:title created:>=D'`), and `open_job == "queue"` counts |
+| fleet host uptime in the window | the boot spans of `journalctl --list-boots` clipped to the window; cross-check against `activity.log`, which is per host and gets a line every pass, so a gap is a pass that never ran |
 | trend | `day-log week --json` and the daily records in `~/.agent/daylog/` (`work.stages` from 2026-11-05) |
 
 The day-log skill's "The snapshot schema" says what each record field means. When a source lacks a number you need, extend the tool that owns it, with a fixture test, and add it to the day-log record; never count by hand. This file holds only the procedure.
@@ -40,7 +41,7 @@ Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-clean
 ## Steps
 
 1. **In flight first.** `agent-queue list`, `gh pr list` on both dotfiles repos, and the agent-runtime board rows for queue, dispatch, shepherd and wind-down.
-2. **Baseline.** Pick a window of at least 7 days that ends at a local midnight. Save every source's JSON under `~/.cache/pipeline-eval/p<N>/`. Per stage record: time (p50, p90 and total minutes), how often it waits on the human (`NEEDS` by reason), rework (`STALLED:ci_red`, `ci.rerun_after_red`, `plans.phases_unticked`, conflicts), sessions with no PR, and the ETA basis rows. Split `agent-queue` wait into items held by an `after:` predecessor and free items, and split session stages into agent worktrees and the human's main sessions (`by_project`): the same wait means different things in each. Name every source you could not read cleanly and keep it out of the totals. Read the fleet host's uptime over the window first (`journalctl --list-boots`, and the gaps in `activity.log`, which is per host); state the up hours and compare rates per up hour, since a day the host was down covers fewer hours.
+2. **Baseline.** Pick a window of at least 7 days that ends at a local midnight. Save every source's JSON under `~/.cache/pipeline-eval/p<N>/`. Per stage record: time (p50, p90 and total minutes), how often it waits on the human (`NEEDS` by reason), rework (`STALLED:ci_red`, `ci.rerun_after_red`, `plans.phases_unticked`, conflicts), sessions with no PR, and the ETA basis rows. Split `agent-queue` wait into items held by an `after:` predecessor and free items, and split session stages into agent worktrees and the human's main sessions (`by_project`): the same wait means different things in each. Name every source you could not read cleanly and keep it out of the totals. Before reading any per-day count, take the window's up hours from the uptime row of the source table and divide the counts of starts, done and added (not stage minutes) by them when the host was down for part of the window.
 3. **Find the binding stage.** Walk output backwards from landed: is the merge line merging what reaches it (batches merged of cut), do sessions hold slots without working (`open_job` and the time split per project), and does dispatch start nothing (activity.log reasons, `headroom`)? The first stage whose input exceeds its output is the bottleneck; every stage behind it only queues. For "output is down" a same-day window is fine for this step; the stage table still uses the 7-day window.
 4. **Spread before you push.** When one project's merge line or pool binds, starting more of its items only lengthens its line. Dispatch already holds a project whose landing waiters reach `DISPATCH_LINE_MAX` and counts no waiter toward the pace target (the `fleet-dispatch` skill owns the knob); the pass checks the hold fired and that other projects' items started meanwhile: in activity.log a start the hold sent elsewhere carries `held by merge line:`, and `merge line full` is only a pass that started nothing. The merge line's own fixes (batch size, ejecting a red PR, queue order) are queue items in the project that owns the line.
 5. **Find the waste.** For each stage, the largest minutes first: which reason, which project, and the file or behaviour behind it (a dispatch gate, a hook, a merge rule, a missing nudge). Write down what you ruled out, with its number.
