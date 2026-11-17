@@ -54,3 +54,29 @@ m 2.5
 EOF
 )"
 }
+
+@test "the collector dir is the first of PROM_TEXTFILE_DIRS that exists: the workstation's, else a k3s node's" {
+  local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
+  export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  run prom_textfile_default_dir
+  assert_output "$ws"
+  mkdir -p "$k3s"
+  run prom_textfile_default_dir
+  assert_output "$k3s"
+  mkdir -p "$ws"
+  run prom_textfile_default_dir
+  assert_output "$ws"
+}
+
+@test "target: a given dir is used as is; none given reads PROM_TEXTFILE_DIR, and no collector is status 1 with no output" {
+  run prom_textfile_target "$SANDBOX/given"
+  assert_success
+  assert_output "$SANDBOX/given"
+  run prom_textfile_target
+  assert_failure
+  assert_output ''
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  run prom_textfile_target
+  assert_success
+  assert_output "$PROM_TEXTFILE_DIR"
+}
