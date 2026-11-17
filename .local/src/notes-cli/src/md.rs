@@ -224,8 +224,14 @@ pub fn section_text(content: &str, heading: &str) -> Option<String> {
     }
 }
 
+/// A checkbox row: `- [` then a one-character state (` `, `x`, `/`, `~`, ...) then `]`. A
+/// link bullet (`- [[page]]`, `- [label](url)`) is not one.
 pub fn is_task(line: &str) -> bool {
-    line.trim_start().starts_with("- [")
+    let Some(rest) = line.trim_start().strip_prefix("- [") else {
+        return false;
+    };
+    let mut c = rest.chars();
+    c.next().is_some() && c.next() == Some(']')
 }
 
 pub fn is_checked(line: &str) -> bool {
@@ -249,9 +255,7 @@ pub fn is_open_task(line: &str) -> bool {
 pub fn loose_task(line: &str) -> Option<String> {
     let t = line.trim();
     let heading = t.starts_with('#') && t.trim_start_matches('#').starts_with(' ');
-    // `- [[a link]]` passes is_task, and only a one-character box is a task here.
-    let boxed = is_task(t) && t.as_bytes().get(4) == Some(&b']');
-    if t.is_empty() || boxed || heading || t.starts_with("---") || t.starts_with("<!--") {
+    if t.is_empty() || is_task(t) || heading || t.starts_with("---") || t.starts_with("<!--") {
         return None;
     }
     let text = t
@@ -1711,6 +1715,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_task_has_a_one_character_box_and_a_link_bullet_does_not() {
+        for l in ["- [ ] a", "- [x] a", "  - [/] a", "- [~] a", "- [ ]"] {
+            assert!(is_task(l), "{l}");
+        }
+        for l in [
+            "- [[lab/p/idea|idea]]",
+            "- [design](https://x)",
+            "- a",
+            "* [ ] a",
+            "- [] a",
+        ] {
+            assert!(!is_task(l), "{l}");
+            assert!(!is_open_task(l), "{l}");
+        }
+    }
 
     #[test]
     fn loose_task_takes_text_and_leaves_the_rest() {

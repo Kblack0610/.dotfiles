@@ -113,10 +113,11 @@ pub fn link_line(agent_home: &str) -> String {
 }
 
 /// The head lines code owns on a human sheet, in the order they sit under `Version:`.
-const HEAD_KEYS: [&str; 2] = ["Agents: ", "Docs: "];
+const HEAD_KEYS: [&str; 2] = ["Agents: ", "Docs:"];
 
 /// Put `lines` directly under the sheet's `Version:` line, replacing any [`HEAD_KEYS`] line
-/// already in the head (above the first `## `). Empty lines are skipped.
+/// already in the head (above the first `## `), and the `- ` items right under `Docs:`.
+/// Empty lines are skipped.
 ///
 /// Idempotent by construction: it removes the old lines before inserting, so running it on
 /// every board write cannot stack duplicates the way an append would. Returns the new
@@ -124,6 +125,7 @@ const HEAD_KEYS: [&str; 2] = ["Agents: ", "Docs: "];
 /// must not cause a write).
 pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
     let mut in_head = true;
+    let mut in_docs = false;
     let mut out: Vec<String> = Vec::new();
     for l in content.lines() {
         if l.starts_with("## ") {
@@ -132,8 +134,10 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
         // An `Agents:` line anywhere is a stray from before the head was code-owned; a
         // `Docs:` word below the head is the human's.
         let t = l.trim_start();
-        let owned = t.starts_with(HEAD_KEYS[0]) || (in_head && t.starts_with(HEAD_KEYS[1]));
-        if owned {
+        in_docs = in_docs && t.starts_with("- ");
+        let docs = in_head && t.starts_with(HEAD_KEYS[1]);
+        if t.starts_with(HEAD_KEYS[0]) || docs || in_docs {
+            in_docs |= docs;
             continue;
         }
         out.push(l.to_string());
@@ -224,11 +228,14 @@ fn main_files(checkout: &Path, dir: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `Docs:` line a human sheet carries: every doc of the project that exists, in a fixed
+/// The `Docs:` list a human sheet carries: every doc of the project that exists, in a fixed
 /// order. The pitch (`docs/idea.md`), the `repo` docs ([`repo_docs`]), `playtest.md`,
 /// `ideas.md`, `summary.md` as status, then every other `docs/*.md` and `docs/*/README.md`
 /// by name, less [`is_report`] ones. A file that does not exist is not linked.
-pub fn docs_line(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String {
+///
+/// One link per `- ` item: an editor wraps on the raw text, so a single line of full-path
+/// links wraps into a ragged block even when the link targets are concealed.
+pub fn docs_list(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String {
     let wiki = |f: &Path, label: &str| {
         let t = vault_rel(vault, f);
         (!t.is_empty() && f.is_file()).then(|| format!("[[{t}|{label}]]"))
@@ -260,12 +267,12 @@ pub fn docs_line(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String 
     if parts.is_empty() {
         return String::new();
     }
-    format!("Docs: {}", parts.join(" - "))
+    format!("Docs:\n- {}", parts.join("\n- "))
 }
 
 /// A doc named for one moment, not the project: its stem ends in a date (`-2026-11`,
-/// `-2026-11-05`) or a pass number (`-p3`). The Docs line keeps to the standing docs, so a
-/// project with a run of pass reports still has one short line.
+/// `-2026-11-05`) or a pass number (`-p3`). The Docs list keeps to the standing docs, so a
+/// project with a run of pass reports still has a short list.
 fn is_report(stem: &str) -> bool {
     let parts: Vec<&str> = stem.split('-').collect();
     let num = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
@@ -281,7 +288,7 @@ fn is_report(stem: &str) -> bool {
 }
 
 /// Ensure both halves of the link for one project: the agent sheet exists, and the human's
-/// sheet points at it and at its docs (`docs`, from [`docs_line`]).
+/// sheet points at it and at its docs (`docs`, from [`docs_list`]).
 ///
 /// Best-effort per project. A project whose sheet cannot be read is skipped rather than
 /// fatal - this runs from `notes today`, and one unreadable sheet must not stop the note.
@@ -366,7 +373,7 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
                 .as_deref()
                 .map(|r| repo_docs(r, &proj))
                 .unwrap_or_default();
-            let docs = docs_line(&p.vault, dir, &repo);
+            let docs = docs_list(&p.vault, dir, &repo);
             if ensure_pair(log, dir, &proj, &human_home, &agent_home, &docs).is_ok() {
                 n += 1;
             }
@@ -484,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn docs_line_links_only_what_exists_in_a_fixed_order() {
+    fn docs_list_links_only_what_exists_in_a_fixed_order() {
         let vault = tree(
             "docs",
             &[
@@ -500,19 +507,23 @@ mod tests {
         );
         let dir = vault.join("lab/p/demo");
         let repo = vec![("design".to_string(), "https://x/demo.md".to_string())];
-        let line = docs_line(&vault, &dir, &repo);
+        let line = docs_list(&vault, &dir, &repo);
         assert_eq!(
             line,
-            "Docs: [[lab/p/demo/docs/idea|idea]] - [design](https://x/demo.md) - \
-             [[lab/p/demo/playtest|playtest]] - [[lab/p/demo/ideas|ideas]] - \
-             [[lab/p/demo/summary|status]] - [[lab/p/demo/docs/marketing/README|marketing]] - \
-             [[lab/p/demo/docs/zeta|zeta]]"
+            "Docs:\n\
+             - [[lab/p/demo/docs/idea|idea]]\n\
+             - [design](https://x/demo.md)\n\
+             - [[lab/p/demo/playtest|playtest]]\n\
+             - [[lab/p/demo/ideas|ideas]]\n\
+             - [[lab/p/demo/summary|status]]\n\
+             - [[lab/p/demo/docs/marketing/README|marketing]]\n\
+             - [[lab/p/demo/docs/zeta|zeta]]"
         );
         let _ = fs::remove_dir_all(&vault);
     }
 
     #[test]
-    fn dated_and_pass_reports_stay_off_the_docs_line() {
+    fn dated_and_pass_reports_stay_off_the_docs_list() {
         for stem in [
             "capacity-budget-2026-11-05",
             "landscape-review-2026-11",
@@ -532,36 +543,48 @@ mod tests {
         }
     }
 
-    // THE NEGATIVE CONTROL for the docs line: nothing on disk, nothing linked, no line.
+    // THE NEGATIVE CONTROL for the docs list: nothing on disk, nothing linked, no list.
     #[test]
-    fn docs_line_is_empty_for_a_project_with_no_docs() {
+    fn docs_list_is_empty_for_a_project_with_no_docs() {
         let vault = tree("nodocs", &["lab/p/bare/README.md"]);
-        assert_eq!(docs_line(&vault, &vault.join("lab/p/bare"), &[]), "");
+        assert_eq!(docs_list(&vault, &vault.join("lab/p/bare"), &[]), "");
         let _ = fs::remove_dir_all(&vault);
     }
 
     #[test]
-    fn the_docs_line_sits_under_agents_and_rewrites_in_place() {
-        let sheet = "# demo\nVersion: v0.0.2\nDocs: old\n\n## Tasks\n- [ ] a\n";
+    fn the_docs_list_sits_under_agents_and_rewrites_in_place() {
         let head = [
             link_line("lab/p/demo/agent/README"),
-            "Docs: new".to_string(),
+            "Docs:\n- [[x|new]]\n- [[y|two]]".to_string(),
         ];
-        let out = with_head(sheet, &head).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert!(lines[2].starts_with("Agents: "), "{out}");
-        assert_eq!(lines[3], "Docs: new", "{out}");
-        assert_eq!(out.matches("Docs: ").count(), 1, "{out}");
-        assert!(with_head(&out, &head).is_none(), "idempotent");
+        // From the old one-line form, and from a longer list: the old items all go, and the
+        // body below (its blank line, its task rows) stays.
+        for sheet in [
+            "# demo\nVersion: v0.0.2\nDocs: [[a|old]] - [[b|old2]]\n\n## Tasks\n- [ ] a\n",
+            "# demo\nVersion: v0.0.2\nDocs:\n- [[a|old]]\n- [[b|old2]]\n- [[c|old3]]\n\n## Tasks\n- [ ] a\n",
+        ] {
+            let out = with_head(sheet, &head).unwrap();
+            assert_eq!(
+                out,
+                "# demo\nVersion: v0.0.2\nAgents: [[lab/p/demo/agent/README|agent board]] - \
+                 [[lab/projects/agent-board|all projects]]\nDocs:\n- [[x|new]]\n- [[y|two]]\n\n\
+                 ## Tasks\n- [ ] a\n"
+            );
+            assert!(with_head(&out, &head).is_none(), "idempotent");
+        }
     }
 
     #[test]
     fn a_docs_word_below_the_head_is_not_the_head_line() {
         // Only the head is code-owned; a row or note further down is the human's.
         // A stray `Agents:` line below it is still cleaned, as with_link did.
-        let sheet = "# demo\nVersion: v0.0.2\n\n## Notes\nDocs: keep me\nAgents: stray\n";
-        let out = with_head(sheet, &["Docs: new".to_string()]).unwrap();
-        assert!(out.contains("## Notes\nDocs: keep me\n"), "{out}");
+        let sheet =
+            "# demo\nVersion: v0.0.2\n\n## Notes\nDocs: keep me\n- mine too\nAgents: stray\n";
+        let out = with_head(sheet, &["Docs:\n- [[x|new]]".to_string()]).unwrap();
+        assert!(
+            out.contains("## Notes\nDocs: keep me\n- mine too\n"),
+            "{out}"
+        );
         assert!(!out.contains("Agents: stray"), "{out}");
     }
 
