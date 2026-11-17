@@ -131,7 +131,7 @@ fn is_doc_item(t: &str) -> bool {
     };
     let filler = link
         .strip_suffix(": none yet")
-        .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase()));
+        .is_some_and(|s| SLOT_NAMES.contains(&s));
     let wiki = link.starts_with("[[") && link.ends_with("]]") && link.matches("]]").count() == 1;
     let md = link.starts_with('[')
         && link.ends_with(')')
@@ -179,6 +179,12 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
 /// A game's repo docs by the playground convention, as `(slot, file suffix)`: the design doc
 /// `docs/games/<id>.md`, and the optional `<id>-story.md` and `<id>-look.md`.
 const REPO_SLOTS: [(&str, &str); 3] = [("design", ""), ("story", "-story"), ("look", "-look")];
+
+/// Every slot [`docs_list`] can write as `<slot>: none yet`, so only those filler items are
+/// the list's own and a human bullet of the same shape stays.
+const SLOT_NAMES: [&str; 7] = [
+    "idea", "design", "story", "look", "playtest", "ideas", "status",
+];
 
 /// Where repo docs are exported in the vault, one dir per repo. Hidden, so every notes walker
 /// skips it, and gitignored in the vault, so a machine with an older fetch never syncs older
@@ -242,7 +248,7 @@ pub fn repo_docs(
 ///
 /// A no-op while the tree is unchanged (`dest/.tree` holds the tree id last exported), so the
 /// steady-state cost is one `git rev-parse`. A change replaces `dest` whole, so a doc removed
-/// on main goes too. False when git or tar fails; an earlier export then stays as it was.
+/// on main goes too. False when git, tar or the swap fails; an earlier export then stays.
 fn export_docs(checkout: &Path, dest: &Path) -> bool {
     use std::process::{Command, Stdio};
     let git = || {
@@ -267,11 +273,14 @@ fn export_docs(checkout: &Path, dest: &Path) -> bool {
         return false;
     };
     // Per process, so two renders at once never extract into one dir.
-    let tmp = dest.with_file_name(format!(
-        "{}.tmp{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
+    let side = |kind: &str| {
+        dest.with_file_name(format!(
+            "{}.{kind}{}",
+            name.to_string_lossy(),
+            std::process::id()
+        ))
+    };
+    let (tmp, old) = (side("tmp"), side("old"));
     let _ = fs::remove_dir_all(&tmp);
     let extract = || -> std::io::Result<bool> {
         fs::create_dir_all(&tmp)?;
@@ -296,12 +305,20 @@ fn export_docs(checkout: &Path, dest: &Path) -> bool {
         let _ = fs::remove_dir_all(&tmp);
         return false;
     }
+    // The old export moves aside and is deleted only once the new one is in place, so a
+    // failed swap puts it back rather than leaving no export at all.
+    let had = dest.exists();
     let swapped = fs::write(tmp.join(".tree"), format!("{tree}\n")).is_ok()
-        && (!dest.exists() || fs::remove_dir_all(dest).is_ok())
-        && fs::rename(&tmp, dest).is_ok();
-    if !swapped {
-        let _ = fs::remove_dir_all(&tmp);
-    }
+        && (!had || fs::rename(dest, &old).is_ok())
+        && {
+            let in_place = fs::rename(&tmp, dest).is_ok();
+            if !in_place && had {
+                let _ = fs::rename(&old, dest);
+            }
+            in_place
+        };
+    let _ = fs::remove_dir_all(&tmp);
+    let _ = fs::remove_dir_all(&old);
     swapped
 }
 
@@ -657,10 +674,12 @@ mod tests {
              - [[lab/p/g/docs/notes|notes]]"
         );
         // A filler item is the list's own, so a rewrite replaces it rather than keeping it.
-        let sheet = "# g\nVersion: v1\nDocs:\n- story: none yet\n- [[a|b]]\n\n## Tasks\n";
+        // A same-shaped bullet with a name that is not a slot is the human's and stays.
+        let sheet =
+            "# g\nVersion: v1\nDocs:\n- story: none yet\n- [[a|b]]\n- todo: none yet\n\n## Tasks\n";
         assert_eq!(
             with_head(sheet, &["Docs:".to_string(), "- [[x|story]]".to_string()]).unwrap(),
-            "# g\nVersion: v1\nDocs:\n- [[x|story]]\n\n## Tasks\n"
+            "# g\nVersion: v1\nDocs:\n- [[x|story]]\n- todo: none yet\n\n## Tasks\n"
         );
         let _ = fs::remove_dir_all(&vault);
     }
