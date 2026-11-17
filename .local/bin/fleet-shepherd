@@ -139,11 +139,14 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_REMIND_H:=4}"
 REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
-SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug>: the queue item that owns each shared red episode
+SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug | row:<board row>>: what owns each shared red episode
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
 # playground's gates, local (UNITY_TEST_FAILURES) and on the runner pool (UNITY_POOL_FAILURES,
 # from pool-test-failures), so that repo owns the quarantine and the fix.
 : "${FLEET_SHARED_RED_PROJECT:=unity-core-playground}"
+# Main's quarantine as schedules-sync last read it (its SCHEDULES_QUARANTINE): each lane's
+# report.tests[] is {test, ends, row}, and a test quarantined there already has an owner row.
+: "${FLEET_SHEPHERD_QUARANTINE:=${XDG_STATE_HOME:-$HOME/.local/state}/ci/quarantine.json}"
 LIMIT_RE='weekly limit|usage limit|hit your .*limit|/login' # as the skill's step 1 names them
 GATEWAY_LIMIT_RE='Budget has been exceeded'                 # the gateway's 429, matched only on a gateway session
 
@@ -224,8 +227,8 @@ tag_pane() {
 # verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
 # question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
 # NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
-# branches (shared) is owned by the queue item shared_sample filed, and its sessions are told
-# once; only one with no item escalates.
+# branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
+# and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
 # (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
@@ -251,6 +254,8 @@ cmd_due() {
       | ($items[$r.fact] // null) as $item
       | if $item == null then
           "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\""
+        elif (.nudged | not) and ((.owners // []) | length) > 0 and ($item | startswith("row:")) then
+          "nudge SHARED: \(.test) is quarantined on main under board row \($item[4:]); tell \(.owners | join(",")): do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark \(.id) \"\(.fact)\""
         elif (.nudged | not) and ((.owners // []) | length) > 0 then
           "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         else empty end )
@@ -714,35 +719,52 @@ remind_decision() {
   esac
 }
 
-# shared_items -> {fact: item slug} from $SHARED_ITEMS, as JSON for cmd_due.
+# shared_items -> {fact: owner} from $SHARED_ITEMS, as JSON for cmd_due.
 shared_items() {
   [ -s "$SHARED_ITEMS" ] || { echo '{}'; return; }
   jq -Rn '[inputs | split("\t") | select(length == 2) | {(.[0]): .[1]}] | add // {}' "$SHARED_ITEMS"
 }
 
-# shared_sample: one queue item owns each shared red episode (ar-623). A test red on several
-# branches at once is a shared cause, and before this every branch's session gated again into it
-# alone: 2026-10-30..11-06, 55% of playground test reds sat on 3+ branches and red gates burned 57%
-# of gate pool hours, while the page these rows sent was answered twice. An owner is a live item,
-# not low priority, whose task or title names the test as Class.Method or in full: on 2026-11-14 a
-# landed item and a low gate-spread item that cited the class as evidence were named owners
-# (ar-2448). An owner that stops being one (it landed) is dropped and the fact matched again;
-# with no owner, one is filed per test to quarantine it with an owner and expiry (playground
-# docs/operations/ci.md rule 5) and fix it. A failed add, or one whose slug is taken by an item
-# that does not own the test, files nothing, so the row stays a `shared red:` line the pass
-# escalates; a queue that reads empty or a document that cannot be read changes nothing.
-# SHARED_OWNER_JQ: the active items in, $t the test without its parameters, each owner's slug out.
+# shared_sample: one owner holds each shared red episode (ar-623); who counts as an owner is the
+# SHARED row of .local/src/docs/fleet-states.md (ar-2448, ar-2523). An owner that stops being one
+# is dropped and the fact matched again; with no owner, one item is filed per test. A failed add,
+# or one whose slug is taken by an item that does not own the test, files nothing, so the row
+# stays a `shared red:` line the pass escalates; a queue that reads empty or a document that
+# cannot be read changes nothing.
+# SHARED_OWNER_JQ: the active items as inputs, $t the test without its parameters, $q main's
+# unexpired quarantine entries, $full the test as it failed; each owning item's slug out, then
+# row:<row> per quarantine row. A quarantine entry with no parameters covers every case.
 SHARED_OWNER_JQ='def word: gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)") | "(^|[^A-Za-z0-9_.])" + . + "($|[^A-Za-z0-9_])";
-  ($t | split(".") | .[-2:] | join(".")) as $cm
-  | select($t != "" and (.priority // "") != "low")
-  | select(((.task // "") + " " + (.title // "")) | test($t | word) or test($cm | word))
-  | .slug'
-# shared_owners <test>: the slugs of the items in $active that own it.
-shared_owners() { jq -r --arg t "${1%%(*}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null; }
+  ($t | split(".")) as $p | ($p[-2:] | join(".")) as $cm
+  | [$q[] | select(.test == $full or .test == $t) | .row // "" | select(. != "")] as $rows
+  | select($t != "")
+  | ( inputs | select((.priority // "") != "low")
+      | ((.task // "") + " " + (.title // "")) as $text
+      | select(($text | test($t | word) or test($cm | word))
+          or ((.slug // "" | startswith("nightly-fix-")) and ($p | length) > 1
+              and ($text | test($p[-1] | word) and test($p[-2] | word)))
+          or (.type == "fix" and (.row // "" | sub("^[^:]*:"; "") | IN($rows[]))))
+      | .slug ),
+    ($rows | unique[] | "row:" + .)'
+# shared_quarantine: main's quarantine entries that have not ended, as one JSON array. A lane
+# whose last read failed is skipped: its entries may have left main since.
+shared_quarantine() {
+  jq -c --arg today "$(date +%F)" '[.repos[]? | select(.error == null) | .report.tests[]?
+    | select((.ends // "") >= $today)]' "$FLEET_SHEPHERD_QUARANTINE" 2>/dev/null || echo '[]'
+}
+# shared_owners <test>: what owns it, from the items in $active and the entries in $quarantine.
+shared_owners() {
+  jq -rn --arg t "${1%%(*}" --arg full "$1" --argjson q "${quarantine:-[]}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null
+}
+# shared_owner_name <owner>: an owner as a reader names it.
+shared_owner_name() {
+  case "$1" in row:*) echo "board row ${1#row:} (quarantined on main)" ;; *) echo "queue item $1" ;; esac
+}
 shared_sample() {
-  local fact test reason cm active slug out keep rows
+  local fact test reason cm active quarantine slug out keep rows
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
+  quarantine="$(shared_quarantine)"
   rows="$(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)" || return 0
   # Keep the mappings of the document's live facts whose item still owns the test. A queue that
   # reads empty proves no owner gone, so it keeps every mapping and only files for the rest.
@@ -752,7 +774,7 @@ shared_sample() {
       if shared_owners "$test" | grep -qxF -- "$slug"; then
         printf '%s\t%s\n' "$fact" "$slug"
       else
-        cmd_log "shared red: $test is no longer owned by queue item $slug: it landed, is low, or does not name the test" >/dev/null
+        cmd_log "shared red: $test is no longer owned by $(shared_owner_name "$slug"): it landed, is low, does not name the test, or its quarantine ended" >/dev/null
       fi
     done <<<"$rows")" &&
     { printf '%s' "${keep:+$keep$'\n'}" > "$SHARED_ITEMS.tmp" && mv "$SHARED_ITEMS.tmp" "$SHARED_ITEMS"; }
@@ -774,7 +796,7 @@ shared_sample() {
     fi
     [ -n "$slug" ] || { cmd_log "shared red: could not file an owner for $test: ${out##*: }" >/dev/null; continue; }
     printf '%s\t%s\n' "$fact" "$slug" >> "$SHARED_ITEMS"
-    cmd_log "shared red: $reason; owned by queue item $slug" >/dev/null
+    cmd_log "shared red: $reason; owned by $(shared_owner_name "$slug")" >/dev/null
   done <<<"$rows"
 }
 

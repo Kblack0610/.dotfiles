@@ -238,6 +238,76 @@ esac'
   assert_output 1
 }
 
+# shared_round <active-json>: a fresh shared red episode checked against that queue, with no owner on record
+shared_round() {
+  : > "$FLEET_SHEPHERD_DIR/.shared"; : > "$HOME/aq.calls"
+  STUB_ACTIVE="$1" run checked
+}
+
+@test "a nightly-fix item naming the class and method apart owns a shared red, so check files nothing new (ar-2523)" {
+  # 2026-11-15: nightly-fix-skylinemoves-ucp-1467 named SkylineMovesPlayTests and TheDashFiresOnARoofAndInTheAir apart, and a duplicate was filed
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  shared_doc '["sid-1"]'
+  shared_round '{"slug":"nightly-fix-foo-ucp-8","priority":"urgent","task":"fix(test): FooTests, 3 cases red; Bar red solo too"}'
+  assert_line --partial 'is owned by queue item nightly-fix-foo-ucp-8; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative controls: a nightly-fix item naming the method under another class, and an item not nightly-fix naming both, own nothing
+  shared_round '{"slug":"nightly-fix-baz-ucp-7","priority":"urgent","task":"fix(test): BazTests, Bar red solo"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  shared_round '{"slug":"other","priority":"high","task":"FooTests, Bar red solo"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+}
+
+@test "a test quarantined on main is owned by the fix item filed for its row, else by the row, so check files nothing new (ar-2523)" {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) printf "%s\n" "$STUB_ACTIVE" ;;
+  add) echo "queued shared-red-footests -> /q/x.md" ;;
+esac'
+  export FLEET_SHEPHERD_QUARANTINE="$HOME/quarantine.json"
+  # quarantine <test> <ends> [<lane error>]: main's quarantine as schedules-sync writes it, one entry under row ucp-9
+  quarantine() { jq -n --arg t "$1" --arg e "$2" --arg err "${3:-}" '{repos: [{error: (if $err == "" then null else $err end),
+    report: {tests: [{test: $t, ends: $e, row: "ucp-9"}]}}]}' > "$FLEET_SHEPHERD_QUARANTINE"; }
+  shared_doc '["sid-1"]'
+  quarantine 'P.Tests.FooTests.Bar("x")' 2999-01-01
+  shared_round '{"slug":"fix-foo","type":"fix","priority":"high","task":"fix the foo yard","row":"unity-core-playground:ucp-9"}'
+  assert_line --partial 'is owned by queue item fix-foo; tell sid-1'
+  # an item for the row that is no fix item is no owner, so the row is, and sessions merge main at once
+  shared_round '{"slug":"foo-epic","type":"feat","priority":"high","task":"the foo yard","row":"unity-core-playground:ucp-9"}'
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is quarantined on main under board row ucp-9; tell sid-1: do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  grep -q 'owned by board row ucp-9 (quarantined on main)' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # an entry with no parameters covers every case
+  quarantine 'P.Tests.FooTests.Bar' 2999-01-01
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is quarantined on main under board row ucp-9'
+  # once its quarantine ends, the row is dropped and an owner is filed
+  quarantine 'P.Tests.FooTests.Bar' 2000-01-01
+  STUB_ACTIVE='{"slug":"other","task":"x"}' run checked
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  grep -q 'no longer owned by board row ucp-9' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative controls: another case quarantined, a lane whose read failed, and no quarantine file own nothing
+  quarantine 'P.Tests.FooTests.Bar("y")' 2999-01-01
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  quarantine 'P.Tests.FooTests.Bar("x")' 2999-01-01 'quarantine.py report: ModuleNotFoundError'
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  rm "$FLEET_SHEPHERD_QUARANTINE"
+  shared_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by queue item shared-red-footests; tell sid-1'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
