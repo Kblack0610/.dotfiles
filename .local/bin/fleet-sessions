@@ -822,20 +822,31 @@ unreadable() { echo "$1" >> "$CACHE/unreadable"; }
 # pass, so tick keeps that row's last cells (keep_blind). Every read of a failed source calls it.
 blind_row() { : > "$CACHE/blind_row"; }
 
+# prs_key <dir> -> the pass cache file of <dir>'s PRs (prs_for, train_of, queued_in, queue_depth). It names the
+# forge remote as well as origin: clones of one origin URL may not land on one forge.
+prs_key() {
+  local slug
+  slug="$(repo_slug "$1")" || return 1
+  printf '%s\n' "$CACHE/${slug}_$(canonical_remote "$1")"
+}
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
 # from the PR store (`schedules-sync prs --checks`, unreadable once 30 minutes stale): ci is the run ledger's
-# reading of the head commit, red the job archive's failed job ids (- for none it has yet). A clone
-# on a Forgejo host (so_forgejo_hosts: the submodule External/asset-library) reads its host/owner/repo,
-# and one the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass),
-# as has a GitHub mirror of a Forgejo-canonical repo (forge_canonical: its PRs are on Forgejo); any
-# other GitHub repo it does not list is unreadable (`schedules-sync repos` is the list).
+# reading of the head commit, red the job archive's failed job ids (- for none it has yet). The repo is
+# the one the checkout lands on (forge_of): a clone on a Forgejo host (so_forgejo_hosts: the submodule
+# External/asset-library) or a Forgejo-canonical one (home-config, whose origin is the GitHub mirror with
+# no PRs) reads host/owner/repo. Read off origin, home-config's merged PRs were never found, and a branch
+# whose files master rewrote after the merge read "no PR" (ar-2587).
+# One the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass), as
+# has a mirror-only clone of a Forgejo-canonical repo; any other GitHub repo it does not list is
+# unreadable (`schedules-sync repos` is the list).
 prs_for() {
-  local dir="$1" key host repo out rc=0
-  key="$CACHE/$(repo_slug "$dir")" || return 0
+  local dir="$1" key repo out rc=0
+  key="$(prs_key "$dir")" || return 0
   if [ ! -f "$key" ]; then
-    repo="$(origin_repo "$dir")" || return 0
-    host="$(origin_host "$dir")"
-    [[ " $(so_forgejo_hosts) " != *" $host "* ]] || repo="$host/$repo"
+    repo="$(forge_of "$dir")"
+    if [ "$repo" != origin ]; then repo="${repo#* }"
+    else repo="$(origin_repo "$dir")" || return 0; fi
     out="$("$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null)" || rc=$?
     if [ "$rc" = 0 ] && jq -r '.[] | [.branch // "-", .number, .state, .ci, .head_sha // "-", .red] | @tsv' \
          <<<"$out" > "$key" 2>/dev/null; then
@@ -858,7 +869,7 @@ prs_for() {
 # since the train was built is not on it: that PR is its session's again. A train head this clone lacks holds nothing.
 train_of() {
   local key n head members
-  key="$CACHE/$(repo_slug "$1")" || return 0
+  key="$(prs_key "$1")" || return 0
   prs_for "$1" > /dev/null
   [ -f "$key.trains" ] || return 0
   while IFS=$'\t' read -r n head members; do
@@ -870,7 +881,7 @@ train_of() {
 # queued_in <dir> <pr> -> true when PR #<pr> of <dir>'s repo carries FLEET_QUEUE_LABEL in the PR store.
 queued_in() {
   local key
-  key="$CACHE/$(repo_slug "$1")" || return 1
+  key="$(prs_key "$1")" || return 1
   prs_for "$1" > /dev/null
   [ -f "$key.queued" ] && grep -qxF "$2" "$key.queued"
 }
@@ -879,7 +890,7 @@ queued_in() {
 # when the store could not say.
 queue_depth() {
   local key
-  key="$CACHE/$(repo_slug "$1")" || return 0
+  key="$(prs_key "$1")" || return 0
   prs_for "$1" > /dev/null
   [ ! -f "$key.queued" ] || grep -c . "$key.queued"
 }
@@ -1042,11 +1053,15 @@ sibling_pr() {
 
 # canonical_remote <dir> -> the git remote a checkout's default branch lives on: the Forgejo remote of a
 # Forgejo-canonical repo (home-config: `forgejo`; its `origin` is the GitHub mirror, which trails a merge until
-# the mirror runs), else origin. so_forge_remote is the rule agent-land shares. One answer per directory per pass.
-canonical_remote() {
+# the mirror runs), else origin. so_forge_remote is the rule agent-land shares.
+canonical_remote() { local r; r="$(forge_of "$1")"; printf '%s\n' "${r%% *}"; }
+
+# forge_of <dir> -> so_forge_remote's "<remote> HOST/OWNER/REPO" for a checkout that lands on Forgejo, else
+# "origin". One answer per directory per pass, which canonical_remote and prs_for share.
+forge_of() {
   local r f="${CACHE:+$CACHE/canon_${1//\//%}}"
   if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return; fi
-  r="$(so_forge_remote "$1" 2>/dev/null)" && r="${r%% *}" || r=origin
+  r="$(so_forge_remote "$1" 2>/dev/null)" || r=origin
   [ -z "$f" ] || { printf '%s\n' "$r" > "$f.$$" && mv -f "$f.$$" "$f"; }
   printf '%s\n' "$r"
 }
