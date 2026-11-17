@@ -2080,6 +2080,31 @@ EOF
   assert_output "edge new "
 }
 
+# 2026-11-14: `stats --since 7d` read done_24h 0 against 274, since 7d sorted after every day dir.
+@test "stats and list --since take 7d and 7 as days back, the same as the day, and refuse any other form" {
+  "$AQ" add --project game --slug d1 "d"; "$AQ" move d1 done --status ok
+  day="$(date -d '3 days ago' +%F)"
+  run "$AQ" stats --json --flow --since "$day"
+  assert_success
+  want="$(jq -c '[.since, .recent.done_24h, .per_day, (.flow // {} | map_values(.done))]' <<<"$output")"
+  assert_equal "$(jq -c '.[1]' <<<"$want")" 1
+  for form in 3d 3; do
+    run "$AQ" stats --json --flow --since "$form"
+    assert_success
+    assert_equal "$(jq -c '[.since, .recent.done_24h, .per_day, (.flow // {} | map_values(.done))]' <<<"$output")" "$want"
+    run bash -c "'$AQ' list --state done --since $form --json | jq -r .slug"
+    assert_output d1
+  done
+  # 20261114 and 99999 are digits date reads as a time of day, which would come back as today.
+  for bad in 1w 3dd 2026-13-01 20261114 99999; do
+    run "$AQ" stats --json --since "$bad"
+    assert_failure
+    assert_output --partial "--since is a day (YYYY-MM-DD) or days back (7d or 7), not '$bad'"
+    run "$AQ" list --since "$bad"
+    assert_failure
+  done
+}
+
 @test "list groups by state and says when nothing is there" {
   run "$AQ" list
   assert_output --partial "nothing"
