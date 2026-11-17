@@ -342,8 +342,7 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
-    /// Dirs `notes find` searches. Optional: when empty, resolve() uses knowledge, permanent,
-    /// refs, and the vault's employment/ and lab/ trees.
+    /// Dirs `notes find` searches. Optional: when empty, resolve() searches the whole vault.
     #[serde(default)]
     search_dirs: Vec<String>,
     /// Other orgs this profile rolls up (`rollup = ["acmecorp"]`). Empty = own only. Read here
@@ -772,17 +771,11 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     tag_scan.dedup();
     tag_scan.retain(|d| d.exists());
 
-    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the prose
-    // that holds knowledge: compiled articles, zettels, refs, and the vault-wide employment/
-    // (interview prep, job notes) and lab/ trees. Daily notes stay out: they are noise.
+    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the whole
+    // vault, so a note is found wherever it was filed. find.rs SKIP_DIRS drops the
+    // machine-written logs and boards, and its ranking keeps knowledge/ on top.
     let mut search_dirs: Vec<PathBuf> = if rp.search_dirs.is_empty() {
-        vec![
-            join(&rp.knowledge),
-            join(&rp.zettel),
-            join(&rp.refs),
-            vault.join("employment"),
-            vault.join("lab"),
-        ]
+        vec![vault.clone()]
     } else {
         rp.search_dirs.iter().map(|s| join(s)).collect()
     };
