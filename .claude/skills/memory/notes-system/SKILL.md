@@ -159,7 +159,7 @@ Android-specific variant of `notes-bootstrap`. Use on Termux when the auto-detec
 
 ### `notes-mobile`
 
-One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on APK, then place the widget). Runs on desktop/macOS too for testing.
+One-tap entry into today's daily note: pull, open `notes path daily` in neovim inside a persistent `notes` tmux session (reattaches on reopen), push on exit. On Termux it is wired to a home-screen icon via the `.shortcuts/notes` Termux:Widget shortcut (install the Termux:Widget add-on from F-Droid, then place the widget; steps and troubleshooting: `NOTES_SYNC_SETUP.md`, Termux section). Runs on desktop/macOS too for testing.
 
 ### `journal-create` (deprecated)
 
