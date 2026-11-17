@@ -14,7 +14,7 @@
 #       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts
+#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, a `1b.` or `P1b` line is sub-phase "1b" and takes no place, else its place counts
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1341,7 +1341,7 @@ add_plan() {
              else .items[.of[$p.after | tostring]][0].n end) as $dep
             | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
     | .items | map({dep: .[0].dep, phases: map(.n),
-        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
+        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "") | sub("^([0-9]+[A-Za-z]?[.)]|[Pp][0-9]+[A-Za-z]?[.:)]?) +"; ""))}
       | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
       | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
     die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
@@ -2298,8 +2298,8 @@ phases_ticked() {
   plan="$(fm_get "$1" plan)" phases="$(fm_get "$1" phases)"
   [ -n "$plan" ] && [ -n "$phases" ] && [ -f "$plan" ] || return 1
   plan_phase_list "$plan" | jq -e --arg ph "$phases" '
-    . as $all | ($ph | split(" ") | map(tonumber? // empty)) as $n
-    | ($n | length) > 0 and all($n[]; . as $k | (first($all[] | select(.n == $k) | .state) // "open") != "open")' >/dev/null
+    . as $all | ($ph | split(" ") | map(select(. != ""))) as $n
+    | ($n | length) > 0 and all($n[]; . as $k | (first($all[] | select((.n | tostring) == $k) | .state) // "open") != "open")' >/dev/null
 }
 
 # start_next <slug> -- the urgent and high items `after:` this one start the moment it closes ok, unless
