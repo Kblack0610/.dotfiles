@@ -4582,6 +4582,13 @@ mod inbox_tests {
     }
 
     #[test]
+    fn a_was_rewrite_title_whose_80th_char_ends_a_word_keeps_that_word() {
+        let title = format!("{} more", "x".repeat(80));
+        let (t, _) = fit_title(&format!("fix(ui): {title}"));
+        assert_eq!(t, format!("fix(ui): {}", "x".repeat(80)));
+    }
+
+    #[test]
     fn a_was_rewrite_title_that_fits_is_left_alone() {
         let (t, full) = fit_title("fix(ui): short title #size/s");
         assert_eq!(t, "fix(ui): short title #size/s");
