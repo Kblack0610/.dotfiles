@@ -605,10 +605,12 @@ ledger_write() {
 }
 # mark <sid> <fact>: the claim on a nudge, taken before the message goes out. Exit 1 when the fact
 # is already nudged, whichever pass nudged it, and the ledger is left as it is (a second mark would
-# clear the escalation the first one earned). A DONE or CHAT fact is a close nudge, and a session is
-# sent one for good: $CLOSED/<sid> outlives release_left, which drops the ledger entry of a session
-# that left DONE. A coordinator that works again after /wind-down and goes DONE again was typed the
-# same close every half hour (2026-11-17: hub/dotfiles:1, four times in 90 minutes).
+# clear the escalation the first one earned). A DONE or CHAT fact (every fact starts with its bucket)
+# is a close nudge, and a session is sent one for good: $CLOSED/<sid> is the claim, kept after the
+# ledger fact is overwritten by a LANDED or STALLED nudge. A coordinator that worked again after
+# /wind-down and went DONE again was typed the same close every half hour (2026-11-17:
+# hub/dotfiles:1, four times in 90 minutes). The row's `nudged` cell reads it (collect), so a
+# DONE or CHAT row with a claim is nudged: never typed to again, escalated once if it stays.
 CLOSED="$LEDGER/.closed"
 mark() {
   case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
@@ -624,15 +626,14 @@ mark() {
   ) 8>"$LEDGER/mark.lock"
 }
 
-# release_left <rows>: a session that left DONE is no longer holding the DONE nudge, so its next
-# DONE is a new fact and is nudged (fact_key makes every DONE one fact while it lasts). One that
-# left NEEDS drops its NEEDS escalation the same way, so its next ask or dialog pages once.
+# release_left <rows>: a session that left NEEDS drops its NEEDS escalation, so its next ask or
+# dialog pages once. A session that left DONE keeps its entry: its next DONE is the same fact, and
+# the close claim in $CLOSED covers a ledger fact another nudge overwrote.
 release_left() {
   local b sid _
   while IFS=$'\t' read -r b _ sid _; do
     [ -n "$sid" ] && [ -f "$LEDGER/$sid" ] || continue
-    if [ "$b" != DONE ] && [ "$(fact_key "$(sed -n 's/^fact: //p' "$LEDGER/$sid")")" = DONE ]; then rm -f "$LEDGER/$sid"
-    elif [ "$b" != NEEDS ] && grep -q '^escalated: NEEDS ' "$LEDGER/$sid"; then sed -i '/^escalated: NEEDS /d' "$LEDGER/$sid"; fi
+    if [ "$b" != NEEDS ] && grep -q '^escalated: NEEDS ' "$LEDGER/$sid"; then sed -i '/^escalated: NEEDS /d' "$LEDGER/$sid"; fi
   done <<<"$1"
 }
 escalate() { ledger_write "$1" escalated "$2" && finding_paged "$1" "$2"; }
@@ -1743,6 +1744,7 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
+    case "$bucket" in DONE\ *|CHAT\ *) [ ! -e "$CLOSED/$sid" ] || n=1 ;; esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \

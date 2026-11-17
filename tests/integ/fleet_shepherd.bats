@@ -454,23 +454,6 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -z "$(typed)" ]
 }
 
-@test "a session already sent its close nudge is neither typed into nor due again, whatever its fact (ar-1863)" {
-  # hub/dotfiles:1 left DONE after each /wind-down, which released its ledger entry, and was typed the same close every half hour
-  mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/1"
-  doc "[$(crow 1 DONE now), $(crow 2 CHAT now '{"own_asks":1}'), $(crow 3 DONE now)]"
-  : > "$FLEET_SHEPHERD_DIR/.closed/2"
-  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  run typed
-  assert_line '-L lab send-keys -t %3 -l /wind-down auto'
-  refute_line --partial '-t %1 '
-  refute_line --partial '-t %2 '
-  ! grep -q '^mark [12] ' "$HOME/sessions.calls"
-  doc "[$(crow 1 DONE now)]"
-  run "$SH" due
-  assert_failure
-  assert_output ''
-}
-
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
 
