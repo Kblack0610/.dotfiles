@@ -1973,3 +1973,26 @@ EOS
   assert_output 0
 }
 
+
+@test "--plan on a pointer stub ticks the canonical plan, and the stub's own line beside it (ar-2513)" {
+  printf '%s\n' '## Phases' '' '- [x] 1. first (#1)' '- [ ] 2. gate-then-land' '- [ ] 3. last' >"$SANDBOX/canon.md"
+  printf '%s\n' "Phase 2 of $SANDBOX/canon.md" '' '## Phases' '' '- [ ] 2. gate-then-land' >"$SANDBOX/stub.md"
+  run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "2. gate-then-land"
+  assert_success
+  assert_line "plan: $SANDBOX/stub.md is a pointer stub; its phases are in $SANDBOX/canon.md"
+  run cat "$SANDBOX/canon.md"
+  assert_output - <<'EOF2'
+## Phases
+
+- [x] 1. first (#1)
+- [x] 2. gate-then-land (#42)
+- [ ] 3. last
+EOF2
+  run grep -c '^- \[x\] 2. gate-then-land (#42)$' "$SANDBOX/stub.md"
+  assert_output 1
+  # negative control: a phase the canonical plan lacks is refused, whatever the stub says
+  printf '%s\n' "Phase 2 of $SANDBOX/canon.md" '' '## Phases' '' '- [ ] 9. nope' >"$SANDBOX/stub.md"
+  run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "9. nope"
+  assert_failure
+  assert_output --partial "plan: 0 unchecked lines"
+}

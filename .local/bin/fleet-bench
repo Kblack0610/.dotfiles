@@ -4547,12 +4547,12 @@ forecast_json() {
   [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
   slots=$(queue_slots) || slots=''
   names=$(jq -r '[.session_id, .plan_file // ""] | @tsv' <<<"$live" | while IFS=$'\t' read -r sid pf; do
-      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_phase_list "$pf" | jq -c 'map(select(.state == "open") | .name)')"
+      [ -n "$pf" ] && printf '{"%s":%s}\n' "$sid" "$(plan_session_phases "$pf" | jq -c 'map(select(.state == "open") | .name)')"
     done | jq -cs 'add // {}')
   # an item with `phases:` (agent-queue add --plan) counts those; one that only names its plan, its plan's open phases
   iphases=$( [ "$items" = "!" ] || jq -r 'select((.plan // "") != "" and (.phases // "") == "") | [.slug, .plan] | @tsv' <<<"$items" 2>/dev/null \
     | while IFS=$'\t' read -r slug pf; do
-        printf '{"%s":%s}\n' "$slug" "$(plan_phase_list "$pf" | jq 'map(select(.state == "open")) | length')"
+        printf '{"%s":%s}\n' "$slug" "$(plan_session_phases "$pf" | jq 'map(select(.state == "open")) | length')"
       done | jq -cs 'add // {}')
   jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
      --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" \
