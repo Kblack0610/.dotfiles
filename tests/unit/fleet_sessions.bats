@@ -1091,7 +1091,7 @@ MD
   escalate sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
   run mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p4 p5'
   assert_failure 1
-  assert_output --partial 'already nudged'
+  assert_output --partial 'already sent its close nudge'
   run mark sid-3 'DONE clean, nothing on the branch, its PRs #658,#1479 merged, no plan file, its PR landed'
   assert_failure 1
   run nudged sid-3 'DONE clean, no plan file'
@@ -1107,16 +1107,25 @@ MD
   assert_failure 1
 }
 
-@test "a session that left DONE is nudged again when it is next DONE; one still DONE keeps its nudge" {
+@test "a session that left DONE keeps its entry and, once marked DONE or CHAT, is never sent a second close nudge (ar-1863)" {
   mark sid-4 'DONE clean, no plan file'
   mark sid-5 'DONE clean, no plan file'
   mark sid-6 'STALLED PR #9 CI red @feat/x'
   release_left "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
   run nudged sid-4 'DONE clean, no plan file'
   assert_success
+  # sid-5 left DONE, and its entry stays: the same DONE fact is still nudged, and a later DONE or CHAT is refused
   run nudged sid-5 'DONE clean, no plan file'
-  assert_failure
+  assert_success
+  run mark sid-5 'DONE clean, nothing on the branch, its PRs #9 merged'
+  assert_failure 1
+  assert_output --partial 'already sent its close nudge'
+  run mark sid-5 'CHAT idle, no plan file'
+  assert_failure 1
+  # a STALLED fact is not a close nudge and is marked as before
   run nudged sid-6 'STALLED PR #9 CI red @feat/x'
+  assert_success
+  run mark sid-6 'STALLED PR #9 green, not merged @feat/x'
   assert_success
 }
 
@@ -1820,6 +1829,28 @@ clean_fixture() {
   rm "$LEDGER_DIR/prs.tsv"
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+}
+
+@test "end to end: a DONE or CHAT row whose session was sent its close nudge reads nudged, whatever the ledger fact now says (ar-1863)" {
+  clean_fixture
+  S="$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$S" --json
+  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
+  [ "$(jq -r .nudged <<<"$output")" = false ]
+  "$S" mark sid-9 "$(jq -r .fact <<<"$output")"
+  # a later LANDED nudge overwrites the ledger fact, as it did for hub/dotfiles:1; the claim stays
+  "$S" mark sid-9 'LANDED PR #875 merged, tree clean @feat/x'
+  run "$S" --json
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+  # the same session DONE after working again: still nudged, so cmd_due never types a second close
+  queue_item queued lab:s1
+  run "$S" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .nudged <<<"$output")" = true ]
+  # a session that was never sent one is unaffected
+  rm "$FLEET_SHEPHERD_DIR/.closed/sid-9"
+  run "$S" --json
+  [ "$(jq -r .nudged <<<"$output")" = false ]
 }
 
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
