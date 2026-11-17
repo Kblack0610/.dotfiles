@@ -263,3 +263,43 @@ show() { git -C "$1" show "master:$2"; }
   assert_line "$SANDBOX/id key"
   assert_line IdentitiesOnly=yes
 }
+
+@test "an origin that refuses every push still leaves the write on backup, and says so" {
+  peer a
+  printf '#!/bin/sh\necho "read-only key" >&2\nexit 1\n' > "$ORIGIN/hooks/pre-receive"
+  chmod +x "$ORIGIN/hooks/pre-receive"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  run on a --now
+  assert_failure
+  assert_output --partial "ERROR: origin did not take"
+  assert_output --partial "backup at"
+  assert_equal "$(show "$BACKUP" queue/item.md)" "state: done"
+}
+
+@test "a conflict with backup skips backup but still lands the write on origin" {
+  peer a; peer b
+  mv "$ORIGIN" "$R/origin.down"
+  echo 'state: a' > "$SANDBOX/a/queue/item.md"
+  on a --now
+  mv "$R/origin.down" "$ORIGIN"
+  echo 'state: b' > "$SANDBOX/b/queue/item.md"
+  run on b --now
+  assert_failure
+  assert_output --partial "COMPLETE: origin at"
+  assert_output --partial "merging backup conflicts in queue/item.md"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: b"
+  assert_equal "$(show "$BACKUP" queue/item.md)" "state: a"
+}
+
+@test "a machine with no store joins from backup while origin is unreachable, then pushes to origin" {
+  mv "$ORIGIN" "$R/origin.down"
+  run on new join
+  assert_success
+  assert_output --partial "cloned backup"
+  assert_equal "$(git -C "$SANDBOX/new" remote get-url origin)" "$ORIGIN"
+  mv "$R/origin.down" "$ORIGIN"
+  echo 'state: done' > "$SANDBOX/new/queue/item.md"
+  run on new --now
+  assert_success
+  assert_output --partial "COMPLETE"
+}

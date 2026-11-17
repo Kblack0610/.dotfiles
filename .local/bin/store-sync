@@ -5,11 +5,12 @@
 #   store-sync join [--keep-dirty]  make this clone a peer (once per machine)
 #
 # Every machine is a peer clone and the remote is the truth. agent-queue and agent-ask run
-# `--now --bg` after each write: it commits only the coordination paths (NOW_PATHS) and
-# pushes them at once; store-sync.timer runs the bulk pass. origin is Forgejo over the tailnet and
-# backup is GitHub (store.env); backup takes the write when origin is unreachable. Remote commits
-# come in by merge, never rebase, and a conflict stops with every local commit kept. COMPLETE in
-# .sync/sync.log means origin holds HEAD, which store-sync-age reads. An unjoined clone never pushes.
+# `--now --bg` after each write: it commits the coordination paths (NOW_PATHS), plus any dirty
+# file the merge also changes, and pushes at once; store-sync.timer runs the bulk pass. origin is
+# Forgejo over the tailnet and backup is GitHub (store.env); backup takes the write when origin is
+# unreachable or refuses it. Remote commits come in by merge, never rebase, and a conflict stops
+# with every local commit kept. COMPLETE in .sync/sync.log means origin holds HEAD, which
+# store-sync-age reads. An unjoined clone never pushes.
 # Design, rollout and troubleshooting: ~/.config/agentctl/QUEUE.md, "The store: every machine a peer".
 set -uo pipefail
 
@@ -36,6 +37,7 @@ die() { echo "store-sync: $*" >&2; exit 2; }
 log() {
   mkdir -p "$SYNC_DIR"
   printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$HOST_TAG" "$1" >> "$LOG"
+  rotate_log
   [ "${QUIET:-0}" = 1 ] || printf '%s\n' "$1"
 }
 
@@ -181,7 +183,7 @@ cmd_sync() {
   commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
     || { log "ERROR: could not commit ${paths[*]}"; exit 1; }
 
-  local round=0 again r rc rs=()
+  local round=0 again r rc rs=() conflict=""
   declare -A down=() why=()
   mapfile -t rs < <(remotes)
   [ "${#rs[@]}" -gt 0 ] || { log "ERROR: $STORE has no origin or backup remote ($CONF)"; exit 1; }
@@ -189,14 +191,17 @@ cmd_sync() {
     round=$((round + 1)) again=0
     for r in "${rs[@]}"; do
       [ -z "${down[$r]:-}" ] || continue
-      # Backup takes a write only after origin has it, or while origin is unreachable.
-      if [ "$r" = backup ] && has_remote origin && [ -z "${down[origin]:-}" ] && ! at_head origin; then
+      # Backup takes a write after origin has it, while origin is unreachable, or in the last
+      # round once origin has refused it; so it never runs ahead of an origin that takes writes.
+      if [ "$r" = backup ] && has_remote origin && [ -z "${down[origin]:-}" ] && ! at_head origin && [ "$round" -lt "$TRIES" ]; then
         again=1; continue
       fi
       sync_one "$r"; rc=$?
       case "$rc" in
         1) down[$r]=1 why[$r]="$FETCH_ERR" ;;
-        2) log "ERROR: merging $r conflicts in ${CONFLICT_FILES:-the same files as last time}; resolve by hand in $STORE (local commits kept, nothing pushed)"; exit 1 ;;
+        2) conflict="merging $r conflicts in ${CONFLICT_FILES:-the same files as last time}"
+           [ "$r" = origin ] && { log "ERROR: $conflict; resolve by hand in $STORE (local commits kept, nothing pushed)"; exit 1; }
+           down[$r]=1 why[$r]="merge conflict" ;;
         3) again=1 why[$r]="${PUSH_ERR:-could not merge}" ;;
       esac
     done
@@ -214,13 +219,13 @@ cmd_sync() {
     log "COMPLETE: origin at $head, $bk"
   elif [ -n "${down[origin]:-}" ] && [ "$bk" = "backup at $head" ]; then
     log "BACKUP: origin unreachable (${why[origin]}); the write is on backup at $head"
-  elif [ -n "${down[origin]:-}" ] && { ! has_remote backup || [ -n "${down[backup]:-}" ]; }; then
+  elif [ -n "${down[origin]:-}" ] && [ -z "$conflict" ] && { ! has_remote backup || [ -n "${down[backup]:-}" ]; }; then
     log "SKIP: no remote reachable (${why[origin]}); $(g rev-list --count "refs/remotes/origin/$BRANCH..HEAD" 2>/dev/null || echo some) commit(s) kept for the next sync"
   else
     log "ERROR: origin did not take $head after $TRIES rounds: ${why[origin]:-unknown}; $bk"
     exit 1
   fi
-  rotate_log
+  [ -z "$conflict" ] || { log "ERROR: $conflict; resolve by hand in $STORE (local commits kept)"; exit 1; }
 }
 
 cmd_join() {
@@ -247,6 +252,12 @@ cmd_join() {
   # Not a clone, ahead of origin, or dirty: the remote's copy replaces it, and the old one is kept.
   local new="$STORE.peer-new-$stamp"
   net origin clone -q "$url" "$new" 2>&1 | tail -n 1 >&2
+  # A fresh clone has no commits of its own, so backup's copy is as safe a start as origin's.
+  if [ ! -d "$new/.git" ] && [ -n "$STORE_BACKUP_URL" ]; then
+    rm -rf "$new"
+    net backup clone -q "$STORE_BACKUP_URL" "$new" 2>&1 | tail -n 1 >&2
+    [ ! -d "$new/.git" ] || echo "store-sync: origin unreachable; cloned backup, and writes go there until origin answers" >&2
+  fi
   [ -d "$new/.git" ] || die "clone of $url failed"
   if [ -e "$STORE" ]; then
     moved="$STORE.pre-peer-$stamp"
