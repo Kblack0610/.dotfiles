@@ -180,13 +180,29 @@ sandbox_codex_refusal() {
     else empty end' "$SANDBOX_FILE"
 }
 
-# sandbox_codex_flags -> one -c override per line for codex's workspace-write sandbox: the
-# profile's allowWrite (~/ expanded) plus the git common dir as writable roots, network off.
+# The codex permission profile a sandboxed lane runs under, defined on the command line only.
+SANDBOX_CODEX_PERMS="agentctl-lane"
+
+# sandbox_codex_flags -> one -c override per line: a codex permission profile (default_permissions
+# and its [permissions] table, in place of --sandbox, which codex refuses beside them) that extends
+# :workspace (cwd and the tmp dirs writable, the rest readable) with the profile's allowWrite (~/
+# expanded) and sandbox_git_writes writable, and sandbox_git_denies and the profile's denyWrite
+# read-only, network off. A narrower entry wins, and jq keeps the last of a repeated key, so a deny
+# beats a write on the same path. Bubblewrap enforces it on Linux; the legacy writable_roots could
+# not deny a path under a root, so the common dir's hooks and config were writable.
 sandbox_codex_flags() {
-  jq -r --arg common "$(sandbox_git_common)" --arg home "$HOME" '
-    "sandbox_workspace_write.writable_roots=\(((.sandbox.filesystem.allowWrite // []) | map(sub("^~/"; $home + "/")))
-        + (if $common == "" then [] else [$common] end) | tojson)",
-    "sandbox_workspace_write.network_access=false"' \
+  local common own
+  common="$(sandbox_git_common)"; own="$(sandbox_git_own)"
+  jq -r --arg home "${HOME%/}" --arg name "$SANDBOX_CODEX_PERMS" \
+    --argjson gitwrite "$(sandbox_git_writes "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+    def abs: sub("^~/"; $home + "/");
+    ([(.sandbox.filesystem.allowWrite // []) | map(abs) + $gitwrite | .[] | {key: ., value: "write"}]
+      + [$gitdeny + ((.sandbox.filesystem.denyWrite // []) | map(abs)) | .[] | {key: ., value: "read"}]
+      | from_entries) as $fs
+    | "default_permissions=\($name | tojson)",
+      "permissions={\($name | tojson)={extends=\":workspace\", network={enabled=false}, filesystem={\(
+        $fs | to_entries | map("\(.key | tojson)=\(.value | tojson)") | join(", "))}}}"' \
     "$SANDBOX_FILE"
 }
 

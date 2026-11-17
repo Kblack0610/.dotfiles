@@ -58,8 +58,8 @@ harness_exec() {
   [ -n "$model" ] && flags+=(-m "$model")
   if [ "$ROLE_WRITE" = no ]; then flags+=(--sandbox read-only)
   elif [ -n "${SANDBOX_FILE:-}" ]; then
-    # A sandboxed lane writes only its workspace and the profile's roots (lib/sandbox.sh).
-    flags+=(--sandbox workspace-write)
+    # A sandboxed lane writes only its workspace, the profile's roots and the git paths a commit
+    # writes, through a permission profile (lib/sandbox.sh), which codex refuses beside --sandbox.
     while IFS= read -r o; do flags+=(-c "$o"); done < <(sandbox_codex_flags)
   else flags+=(--dangerously-bypass-approvals-and-sandbox); fi
   [ "$ROLE_TASK" = no ] && flags+=(--disable multi_agent)
