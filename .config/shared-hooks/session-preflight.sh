@@ -204,8 +204,8 @@ startup_mark board
 # Lessons by relevance: `lessons pick` ranks the project's lessons against the work this
 # session is on and fills the rest with the newest. SessionStart sees only the cwd, so the
 # work is the queue item's title for a dispatched session (about half of them), plus the
-# branch and the cwd's place in the repo; a hand session on main gets the newest. A
-# first-prompt hook would know more, but every prompt would pay for it.
+# branch and the cwd's place in the repo; a hand session on main gets the newest. The
+# first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less these.
 # Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
 WORK_TEXT=""
@@ -274,6 +274,8 @@ add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PICK" ] || printf '%s\n' "$PICK" | lessons log "$PROJECT_NAME" "$LESSONS_FILE" 2>/dev/null || true
+  [ -z "$PICK" ] || [ -z "$HOOK_SID" ] ||
+    printf '%s\n' "$PICK" | bash "$(dirname "$(realpath "$0")")/first-prompt-lessons.sh" shown "$HOOK_SID" 2>/dev/null || true
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
