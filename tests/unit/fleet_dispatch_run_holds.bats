@@ -430,6 +430,18 @@ load 'fleet_dispatch/common'
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
 }
 
+@test "a home written as user@host in another case is the one value the guard and the worker's AGENT_STATE_HOST read" {
+  game_ready
+  worker '2.0 16 1'
+  sed -i 's/fleet_state_host: state.lan/fleet_state_host: kb@STATE.lan/' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'stands down'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_STATE_HOST=kb@STATE.lan AGENT_QUEUE_ITEM=fix-menu"
+}
+
 @test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
   game_ready
   cloud_worker
