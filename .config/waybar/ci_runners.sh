@@ -17,8 +17,6 @@
 # The chip's colour is cc:domain_status{domain="ci"}, the one CI judgement the board and
 # Grafana also draw, so the bar cannot call CI green while the board calls it red. A failed
 # read shows `CI: prom down`, never the last numbers.
-#
-# Forgejo Actions runners export no metrics yet, so they are not here.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
