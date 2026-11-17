@@ -4172,3 +4172,66 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
 }
+
+# A phase a live cron of the session runs is the session's own, in place (ar-2449: the coordinator
+# hub/dotfiles:1 read LANDED "P3 land today" and drew a wind-down nudge while its hourly cron ran P3).
+@test "a next phase a live cron runs reads WORKING, not LANDED; the same row with no cron stays LANDED (ar-2449)" {
+  # args: status plan asks heavy idle git dirty ahead pr state ci in_pr red phases next conflicts job names landed item train cron
+  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/3 'P3 land today' - - - - - - yes
+  assert_output 'WORKING clean, nothing on the branch, a live cron runs its next phase: P3 land today'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/3 'P3 land today' - - - - - - -
+  assert_output 'LANDED clean, nothing on the branch, next phase: P3 land today'
+  # the same through a merged PR
+  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/3 'P3 land today' - - - - - - yes
+  assert_output 'WORKING PR #875 merged, tree clean, a live cron runs its next phase: P3 land today'
+  # a cron does not hide unlanded work, an open ask or a finished plan
+  run b idle 0 0 0 30 1 3 0 - - - 1 - 1/3 'P3' - - - - - - yes
+  assert_output 'STALLED 3 dirty file(s), no PR'
+  run b idle 0 1 0 30 1 0 0 - - - 1 - 1/3 'P3' - - - - - - yes
+  assert_output --partial 'NEEDS'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - 3/3 - - - - - - - yes
+  assert_output --partial 'DONE'
+}
+
+# live_cron <transcript> <start epoch|-> <now epoch>: the transcript's recurring CronCreate results
+# ("Scheduled recurring job <id>") less its CronDelete ones ("Cancelled job <id>").
+cron_line() {   # <ts> <result text>
+  jq -nc --arg ts "$1" --arg c "$2" '{type: "user", timestamp: $ts, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
+}
+
+@test "live_cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
+  local t="$BATS_TEST_TMPDIR/t.jsonl" now start
+  now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-14T00:00:00Z +%s)"
+  {
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Scheduled recurring job zzzz"}]}}'   # prose, not a result
+    cron_line 2026-11-15T10:00:00.123Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: Nov 15 11:17am. Session-only.'
+  } > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output yes
+  # a one-shot is not in-place work
+  cron_line 2026-11-15T10:00:00Z 'Scheduled one-shot task f0f8a782 (43 9 13 11 *). Next run: Nov 13 9:43am.' > "$BATS_TEST_TMPDIR/o.jsonl"
+  run live_cron "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; assert_output ''
+  # cancelled
+  cron_line 2026-11-15T20:00:00Z 'Cancelled job a6a8114f.' >> "$t"
+  run live_cron "$t" "$start" "$now"; assert_output ''
+  # a second job keeps it live, a cancel of the first notwithstanding
+  cron_line 2026-11-15T21:00:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
+  run live_cron "$t" "$start" "$now"; assert_output yes
+  # made before this claude started: the process that held it is gone
+  run live_cron "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; assert_output ''
+  # past the 7-day expiry
+  run live_cron "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; assert_output ''
+  # no transcript, no cron
+  run live_cron "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; assert_output ''
+}
+
+@test "live_cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
+  local t="$BATS_TEST_TMPDIR/d.jsonl" now start
+  now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T00:00:00Z +%s)"
+  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job c1c1c1c1 (Every hour at :17). Next run: x. Written to disk.' > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output yes
+  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output ''
+  run live_cron "$t" - "$now"; assert_output ''
+  cron_line 2026-11-16T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output yes
+}

@@ -151,6 +151,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 requeued or running in another session, here:<slug> waiting here,
 #                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #                [<train: the open landing train the OPEN PR rides (train_of), or ->]
+#                [<cron: yes when a recurring cron the session scheduled is still live (live_cron), or ->]
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -354,11 +355,33 @@ api_error_stop() {
         else "" end' 2>/dev/null | tail -n 1 | grep . || true
 }
 
+# live_cron <transcript> <claude start epoch|-> <now epoch> -> "yes" when a recurring cron job the session
+# scheduled (CronCreate, "Scheduled recurring job <id>") is still live, else nothing: no CronDelete
+# ("Cancelled job <id>") answered it, it was made after this claude started when its result says
+# "Session-only" (such a job dies with its process, so an earlier run of a resumed session left none;
+# with no known start it counts as none; a durable job outlives the process) and under 7 days ago (Claude
+# Code expires a recurring job then). Any such job counts, not only one naming the plan: closing the
+# session ends its crons, so it is not finished. A one-shot is not in-place work. The transcript is the
+# only record: a session-only job is never written to disk and no event names it. Only the lines naming a
+# job are read (7 ms on a 43 MB transcript, so no cache).
+live_cron() {
+  [ -s "${1:-}" ] || return 0
+  local since="${2:--}"; [[ "$since" =~ ^[0-9]+$ ]] || since=9999999999
+  { grep -a -E 'Scheduled recurring job|Cancelled job' "$1" 2>/dev/null || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
+    def text: if type == "array" then map(.text? // "") | join(" ") else tostring end;
+    reduce (inputs | fromjson? | select(.type == "user") | .timestamp as $ts | (.message.content | if type == "array" then .[] else empty end)
+        | select(.type == "tool_result") | {ts: (($ts // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0), c: (.content | text)}) as $e
+      ({}; if ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {ts: $e.ts, durable: ($e.c | test("Session-only") | not)}
+           elif ($e.c | test("^Cancelled job [0-9a-f]+")) then del(.[$e.c | capture("^Cancelled job (?<i>[0-9a-f]+)").i])
+           else . end)
+    | if any(.[]; (.durable or .ts >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null
+}
+
 # bucket_facts: session_bucket past the session status, from the same arguments.
 bucket_facts() {
   local plan="$2" asks="$3" heavy="$4" idle="$5" git="$6" dirty="$7" ahead="$8" \
         pr="$9" state="${10}" ci="${11}" inpr="${12}" red="${13:--}" phases="${14:--}" next="${15:--}" nm="" \
-        landed="${19:--}" item="${20:--}" train="${21:--}"
+        landed="${19:--}" item="${20:--}" train="${21:--}" cron="${22:--}"
   [ "${18:--}" = - ] || nm=" (${18})"
   [ "$heavy" = 1 ] && { echo "WORKING heavy child process"; return; }
   [ "$asks" -gt 0 ] && { echo "NEEDS $asks pending ask(s)"; return; }
@@ -372,7 +395,7 @@ bucket_facts() {
       if [ "$red" != - ]; then echo "STALLED nightly red after PR #$pr: $red"
       elif [ "$dirty" -gt 0 ]; then echo "STALLED PR #$pr merged, $dirty dirty file(s) left$nm"
       elif [ "$inpr" != 1 ]; then echo "STALLED commits after merged PR #$pr"
-      else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item"; fi ;;
+      else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item" "$cron"; fi ;;
     OPEN)
       if handed_off "$item" "$pr" "$dirty" "$inpr"; then
         local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
@@ -392,13 +415,13 @@ bucket_facts() {
       esac ;;
     CLOSED)
       # Closed beside a merged PR of its own was replaced; alone it is the session's to explain.
-      if [ "$landed" != - ]; then plan_bucket "PR #$pr closed, its PRs $landed merged" "$phases" "$next" 1 "$item"
+      if [ "$landed" != - ]; then plan_bucket "PR #$pr closed, its PRs $landed merged" "$phases" "$next" 1 "$item" "$cron"
       else echo "STALLED PR #$pr closed without merging"; fi ;;
     *)
       if [ "$dirty" -gt 0 ]; then echo "STALLED $dirty dirty file(s)$nm, no PR"
       elif [ "$ahead" -gt 0 ]; then echo "STALLED $ahead file(s) not on the default branch, no PR"
-      elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1 "$item"
-      else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item"; fi ;;
+      elif [ "$landed" != - ]; then plan_bucket "clean, nothing on the branch, its PRs $landed merged" "$phases" "$next" 1 "$item" "$cron"
+      else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item" "$cron"; fi ;;
   esac
 }
 
@@ -474,7 +497,7 @@ work_blockers() {
   printf '%s' "$out"
 }
 
-# plan_bucket <reason so far> <phases> <next> <merged 0|1> [<item>]: nothing is unlanded, so the
+# plan_bucket <reason so far> <phases> <next> <merged 0|1> [<item>] [<cron>]: nothing is unlanded, so the
 # plan decides. All phases ticked is DONE, and so is one whose unchecked phases are queue items
 # (next is queued:<slugs>); one left is LANDED naming it. A plan with no checklist,
 # or no plan file, is one phase of work: DONE once its PR merged. Without a merged PR, no
@@ -487,8 +510,11 @@ work_blockers() {
 # item's, so it is STALLED naming the item, never DONE. 2026-11-06: unity-core-playground-agent-6
 # merged #1922 for steam-untested-reason, read DONE and was told to wind down while its own
 # steam-beta-cut-1106 was running with three release.yml runs in flight.
+# A next phase a live cron of the session runs is the session's own, in place: WORKING, never LANDED
+# (2026-11-16 the coordinator hub/dotfiles:1 read LANDED "P3 land today" and drew a wind-down nudge
+# while its hourly cron was landing P3).
 plan_bucket() {
-  local why="$1" phases="$2" next="$3" merged="${4:-0}" item="${5:--}" own=-
+  local why="$1" phases="$2" next="$3" merged="${4:-0}" item="${5:--}" cron="${6:--}" own=-
   # The first running item names the row, so a side item starting or ending is not a new fact.
   [[ "$item" == own:* ]] && { own="${item#own:}"; own="${own%%,*}"; }
   case "$phases" in
@@ -509,6 +535,7 @@ plan_bucket() {
     *)
       if [ "${phases%/*}" -ge "${phases#*/}" ]; then plan_done "$why" "$own" ", all ${phases#*/} phases done" held
       elif [[ "$next" == queued:* ]]; then plan_done "$why" "$own" ", its next phases are queue items: ${next#queued:}" held
+      elif [ "$cron" = yes ]; then echo "WORKING $why, a live cron runs its next phase: $next"
       else echo "LANDED $why, next phase: $next"; fi ;;
   esac
 }
@@ -1639,8 +1666,15 @@ collect() {
     # A PR of this clone's repo riding an open landing train waits on that train's gate, not on its own Checks.
     local train=""
     [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] && [ "$oid" != - ] && train="$(train_of "$cwd" "$pr" "$oid")"
+    # An idle session whose plan has a phase no item holds may be running it in place, by a live cron
+    # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
+    local cron=-
+    if [ "$host" = - ] && [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ] \
+       && [[ "$pq" != queued:* ]]; then
+      cron="$(live_cron "$transcript" "$started" "$now")"; cron="${cron:--}"
+    fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$train" "$cron")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
     # An idle session whose last message is an API Error line is stopped, whatever else reads WORKING
