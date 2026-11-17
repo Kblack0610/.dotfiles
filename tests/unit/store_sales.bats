@@ -245,3 +245,139 @@ src() { jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$output"; }
   run "$SS" 2026-11-09
   assert_equal "$(cat "$SANDBOX/calls.steam")" 1
 }
+
+# The per-app amounts and publish: the same replies, keyed by the store's own app id.
+asc_report() {
+  printf 'Title\tSKU\tApple Identifier\tParent Identifier\tUnits\tDeveloper Proceeds\tCurrency of Proceeds\n' > "$SANDBOX/asc.tsv"
+  printf 'Shape City\tSC1\t6830805897\t\t3\t0.70\tUSD\n' >> "$SANDBOX/asc.tsv"
+  printf 'Gems\tSC1.gems\t7700000001\tSC1\t2\t1.40\tUSD\n' >> "$SANDBOX/asc.tsv"
+  printf 'Other App\tOA1\t6000000009\t\t1\t2.00\tEUR\n' >> "$SANDBOX/asc.tsv"
+  gzip -c "$SANDBOX/asc.tsv" > "$SANDBOX/asc.gz"
+  reply asc 200 "$SANDBOX/asc.gz"
+}
+play_report() {
+  {
+    echo '"Order Charged Date","Financial Status","Product Title","Product ID","Currency of Sale","Charged Amount"'
+    echo '2026-11-09,Charged,Shape City,com.acme.shapecity,USD,2.99'
+    echo '2026-11-09,Charged,Shape City,com.acme.shapecity,USD,2.99'
+    echo '2026-11-09,Charged,Unlisted,com.acme.unlisted,USD,1.00'
+  } > "$SANDBOX/salesreport_202611.csv"
+  (cd "$SANDBOX" && rm -f play.zip && zip -q play.zip salesreport_202611.csv)
+  reply play 200 "$SANDBOX/play.zip"
+}
+steam_report() {
+  jq -nc '{response: {max_id: "7", app_info: [{appid: 100, app_name: "Apociseum"}, {appid: 101, app_name: "Apociseum DLC"}],
+    results: [
+      {appid: 100, gross_sales_usd: "9.9900", net_sales_usd: "8.9900", net_units_sold: 1},
+      {appid: 101, primary_appid: 100, gross_sales_usd: "2.0000", net_sales_usd: "1.5000", net_units_sold: 1}]}}' > "$SANDBOX/p0.json"
+  jq -nc '{response: {max_id: "7", results: []}}' > "$SANDBOX/p7.json"
+  reply steam.0 200 "$SANDBOX/p0.json"; reply steam.7 200 "$SANDBOX/p7.json"
+}
+
+@test "apps: each store's amounts by its own app id; an in-app purchase goes to its parent app, a DLC to its primary app" {
+  asc_key; play_key; steam_key; asc_report; play_report; steam_report
+  run "$SS" 2026-11-09
+  assert_success
+  assert_equal "$(src 'App Store' | jq -c '[.apps[] | select(.app == "6830805897") | [.made[0].amount, .sales]]')" '[[4.9,5]]'
+  assert_equal "$(src 'App Store' | jq -c '[.apps[].app]')" '["6000000009","6830805897"]'
+  assert_equal "$(src 'Google Play' | jq -c '.apps')" \
+    '[{"app":"com.acme.shapecity","title":"Shape City","made":[{"currency":"USD","amount":5.98}],"sales":2},{"app":"com.acme.unlisted","title":"Unlisted","made":[{"currency":"USD","amount":1.0}],"sales":1}]'
+  assert_equal "$(src Steam | jq -c '[.apps[] | [.app, .title, .made[0].amount]]')" '[["100","Apociseum",10.49]]'
+  # the source totals are unchanged by the split
+  assert_equal "$(src Steam | jq -c '.made')" '[{"currency":"USD","amount":10.49}]'
+}
+
+publish_setup() {
+  export PROJECT_MACHINE_PROFILE=personal PROM_TEXTFILE_DIR="$SANDBOX/textfile"
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  cat > "$PROJECT_MAP_FILE" <<'MAP'
+{"trackers": {
+  "shape-city": {"type": "game", "targets": [
+    {"id": "play", "live": {"play": {"package": "com.acme.shapecity", "track": "internal"}}},
+    {"id": "testflight", "live": {"testflight": {"app": "6830805897"}}}]},
+  "apociseum": {"type": "game", "targets": [{"id": "steam", "live": {"steam": {"app": 100}}}]},
+  "quiet": {"type": "game", "targets": [{"id": "steam", "live": {"steam": {"app": 555}}}]}}}
+MAP
+}
+
+@test "publish: amounts per product and store through the project map, a read store with no sales writes usd 0, the rest is unattributed" {
+  publish_setup; asc_key; play_key; steam_key; asc_report; play_report; steam_report
+  run "$SS" publish 2026-11-09
+  assert_success
+  assert_equal "$(jq -r .date <<<"$output")" 2026-11-09
+  p="$PROM_TEXTFILE_DIR/store_sales.prom"
+  run grep -F 'store_sales_amount{project="shape-city",store="app_store",currency="usd"} 4.9' "$p"
+  assert_success
+  run grep -F 'store_sales_amount{project="shape-city",store="play",currency="usd"} 5.98' "$p"
+  assert_success
+  run grep -F 'store_sales_amount{project="apociseum",store="steam",currency="usd"} 10.49' "$p"
+  assert_success
+  run grep -F 'store_sales_units{project="shape-city",store="app_store"} 5' "$p"
+  assert_success
+  run grep -F 'store_sales_amount{project="quiet",store="steam",currency="usd"} 0' "$p"
+  assert_success
+  # the apps no product lists: the EUR app on the App Store and the unlisted Play package
+  run grep -F 'store_sales_unattributed{store="app_store",currency="eur"} 2' "$p"
+  assert_success
+  run grep -F 'store_sales_unattributed{store="play",currency="usd"} 1' "$p"
+  assert_success
+  run grep -c '^store_sales_up{store=".*"} 1$' "$p"
+  assert_output 3
+  run grep -E '^store_sales_day_seconds [0-9]+$' "$p"
+  assert_success
+}
+
+@test "publish: a store that could not be read writes no amount and holds itself down, never a zero" {
+  publish_setup; asc_key; steam_key; asc_report; steam_report
+  # no Play entry: Play says so
+  run "$SS" publish 2026-11-09
+  assert_success
+  p="$PROM_TEXTFILE_DIR/store_sales.prom"
+  run grep -F 'store_sales_up{store="play"} 0' "$p"
+  assert_success
+  run grep -E 'store_sales_(amount|units)\{project="shape-city",store="play"' "$p"
+  assert_failure
+  # negative control: the stores that read still write
+  run grep -F 'store_sales_amount{project="shape-city",store="app_store",currency="usd"} 4.9' "$p"
+  assert_success
+}
+
+@test "publish: a store with an app of two products writes it for each" {
+  publish_setup; asc_key; play_key; steam_key; asc_report; play_report; steam_report
+  jq '.trackers.twin = {"type": "game", "targets": [{"id": "steam", "live": {"steam": {"app": 100}}}]}' "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  run "$SS" publish 2026-11-09
+  run grep -F 'store_sales_amount{project="twin",store="steam",currency="usd"} 10.49' "$PROM_TEXTFILE_DIR/store_sales.prom"
+  assert_success
+}
+
+@test "publish under agentctl: WORKED with the stores read; FAILED with no textfile directory or no store read" {
+  publish_setup; asc_key; play_key; steam_key; asc_report; play_report; steam_report
+  AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SS" publish 2026-11-09
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/store-sales/last-outcome")" WORKED
+  run grep -E 'outcome=WORKED 3 of 3 stores read' "$SANDBOX/astate/store-sales/activity.log"
+  assert_success
+  PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SS" publish 2026-11-09
+  assert_equal "$(cat "$SANDBOX/astate/store-sales/last-outcome")" FAILED
+  run grep -F "no textfile directory $SANDBOX/none" "$SANDBOX/astate/store-sales/activity.log"
+  assert_success
+  # every store down: the file is written (store_sales_up 0 for each), the pass is not
+  rm "$SANDBOX/rbw/store_sales_asc" "$SANDBOX/rbw/store_sales_play" "$SANDBOX/rbw/store_sales_steam"
+  AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/bstate" run "$SS" publish 2026-11-09
+  assert_equal "$(cat "$SANDBOX/bstate/store-sales/last-outcome")" FAILED
+  run grep -F 'no store could be read' "$SANDBOX/bstate/store-sales/activity.log"
+  assert_success
+  # negative control: outside agentctl nothing is declared
+  AGENTCTL_STATE_DIR="$SANDBOX/cstate" run env -u AGENTCTL_NAME "$SS" publish 2026-11-09
+  [ ! -e "$SANDBOX/cstate" ]
+}
+
+@test "publish: an unreadable project map is FAILED once with its reason" {
+  publish_setup; rm -f "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=store-sales AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SS" publish 2026-11-09
+  assert_failure
+  assert_equal "$(cat "$SANDBOX/astate/store-sales/last-outcome")" FAILED
+  run grep -c 'outcome=FAILED' "$SANDBOX/astate/store-sales/activity.log"
+  assert_output 1
+}
