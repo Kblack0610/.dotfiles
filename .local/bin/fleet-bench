@@ -61,7 +61,8 @@
 #                                row may claim each KPI its lever moves; the cap holds pick and file)
 #   fleet-bench retro            a verdict on each claim whose PR landed BENCH_EFFECT_DAYS ago (a
 #                                regression files a revert row), and one agent-board row per lesson
-#                                that recurred in BENCH_GUARD_RECUR sessions (a guard row), and
+#                                that recurred in BENCH_GUARD_RECUR sessions or that dream found
+#                                again in BENCH_GUARD_SEEN sweeps (a guard row), and
 #                                queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
@@ -223,7 +224,9 @@ set -uo pipefail
 : "${TRIAGE_WATCH_AFTER:=1800}"      # triage: seconds a watch must stay TRIP before it is a row and a red item: two dispatch passes, so its owner runs the hour it trips (human, 2026-11-10, ar-1531)
 : "${TRIAGE_WATCH_HIGH_AFTER:=900}" # triage: the same for a high or urgent watch: one dispatch pass, so one flap is not a row
 : "${BENCH_GUARD_RECUR:=2}"         # retro: sessions a lesson must recur in before it wants a guard
-: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_forgejo_pr
+: "${BENCH_GUARD_SEEN:=3}"          # retro: dream sweeps that found a lesson again (its seen marker) before it wants a guard (provisional, rules.jsonl)
+: "${BENCH_DREAMS_DIR:=$HOME/.agent/dreams}"   # insight_expired_share: <project>/insights.md, dream the writer
+: "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_lesson_seen, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
@@ -1660,6 +1663,20 @@ ledger_roster() {
   echo "launches_direct=$(headless_launches "${src[@]}" | cut -d: -f1 | sort -u | wc -l)"
 }
 
+# insight_expired_share EPOCH -> the share (two decimals) of the insights dated 30 to 60 days before
+# EPOCH whose last status reads expired, over every project's insights.md; ? when none is dated there.
+# A record is a dated level-two heading up to the next one, as agentctl-dream's maintain_insights reads it.
+insight_expired_share() {
+  local files=("$BENCH_DREAMS_DIR"/*/insights.md)
+  [ -f "${files[0]}" ] || { echo '?'; return 0; }
+  LC_ALL=C awk -v lo="$(date -d "@$(($1 - 60 * 86400))" +%F)" -v hi="$(date -d "@$(($1 - 30 * 86400))" +%F)" '
+    function close_rec() { if (d != "" && d > lo && d <= hi) { n++; if (st ~ /^expired/) x++ } d = ""; st = "" }
+    FNR == 1 { close_rec() }
+    /^## / { close_rec(); if (match($0, /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([ \t]|$)/)) d = substr($0, 4, 10); next }
+    /^(\*\*Status:\*\*|Status:)/ { st = $0; sub(/^(\*\*Status:\*\*|Status:)[ \t]*/, "", st); st = tolower(st) }
+    END { close_rec(); if (n) printf "%.2f\n", x / n; else print "?" }' "${files[@]}"
+}
+
 # ledger_counts -> key=value lines: the roster, then the fleet's live counts
 ledger_counts() {
   local t rows sd=""
@@ -1691,6 +1708,9 @@ ledger_counts() {
   # that held (session-outcomes lessons); ? when none has a verdict yet or the cache cannot be read
   echo "lesson_held_share=$($BENCH_LESSONS_CMD 2>/dev/null | jq -er '(.held + .recurring) as $n
     | if $n > 0 then .held / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
+  # insight_expired_share: of the dream insights whose 30-day window closed in the last 30 days (heading
+  # dated 30 to 60 days ago), the share whose last status is expired: questions nobody answered or routed
+  echo "insight_expired_share=$(insight_expired_share "$t")"
   # worktrees_held, worktrees_held_over_7d: trees held with nobody in them, and those idle past 7 days, from
   # the newest worktree-gc row; ? with no row, one older than WORKTREE_GC_STALE_H, or one dated in the future
   jq -nrR --argjson t "$t" --argjson h "$WORKTREE_GC_STALE_H" '
@@ -2221,7 +2241,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share worktrees_held worktrees_held_over_7d"
+KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_critical_live_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -3276,13 +3296,24 @@ cmd_improve() {
 }
 
 # retro_guard_rows -> one "check(lesson): guard <hash>:<TAB>text<TAB>priority" line per lesson whose sig
-# (so_lesson_sigs) hit in BENCH_GUARD_RECUR or more sessions after it was written: a lesson the
-# fleet keeps relearning wants a hook, test or lint, and the lesson goes once that lands.
+# (so_lesson_sigs) hit in BENCH_GUARD_RECUR or more sessions after it was written, or that the dream
+# sweep found again in BENCH_GUARD_SEEN or more sweeps (so_lesson_seen, keyed by its file and title; a
+# lesson with a sig is measured by its sig alone, so one lesson never has two rows):
+# a lesson the fleet keeps relearning wants a hook, test or lint, and the lesson goes once that lands.
 retro_guard_rows() {
-  local sigs sig claim since file n h key
+  local sigs seen sig claim since file n h key title last
   # shellcheck source=/dev/null
   . "$BENCH_SO_LIB" || return 1
   sigs=$(so_lesson_sigs) || return 1
+  seen=$(so_lesson_seen) || return 1
+  jq -r --argjson min "$BENCH_GUARD_SEEN" --argjson sigs "$sigs" '.[] | select(.seen >= $min)
+    | select(.claim as $c | all($sigs[]; .claim != $c)) | [.title, .claim, .file, .last, .seen] | @tsv' <<<"$seen" |
+  while IFS=$'\t' read -r title claim file last n; do
+    h=$(printf '%s %s' "$file" "$title" | sha1sum | cut -c1-8)
+    key="check(lesson): guard $h:"
+    printf '%s\t%s lesson "%s" (%s, last %s) was found again in %s dream sweeps; make it a hook, test or lint, then delete the lesson\t%s\n' \
+      "$key" "$key" "$claim" "$file" "$last" "$n" "$( [ "$n" -ge $((BENCH_GUARD_SEEN * 2)) ] && echo '#high' || echo '#low')"
+  done
   jq -r --argjson min "$BENCH_GUARD_RECUR" --slurpfile o <(outcomes_newest) '
     .[] as $s | ([$o[] | select(((.lesson_hits // {})[$s.sig] // 0) > 0)] | length) as $n
     | select($n >= $min) | [$s.sig, $s.claim, $s.since, $s.file, $n] | @tsv' <<<"$sigs" |
@@ -3305,7 +3336,7 @@ cmd_retro() {
   # The week's canary run rides this weekly pass; a failure to queue it is said, never fatal here.
   canary_queue || say "canary: could not queue this week's run"
   canary_queue_lanes || say "canary: could not queue every lane's run"
-  grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs unreadable"; return 1; }
+  grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs or seen markers unreadable"; return 1; }
   if [ -z "$grows" ]; then
     why+=("no lesson recurred")
     if [ -n "$IMPROVE_LINE" ]; then report_outcome WORKED "$IMPROVE_LINE"; return 0; fi

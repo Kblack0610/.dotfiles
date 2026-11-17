@@ -3881,6 +3881,31 @@ check_fixture() {
   refute grep -q ' add ' "$NLOG"
 }
 
+@test "retro files one guard row for a lesson dream found again in 3 sweeps (its seen marker), none at 2" {
+  kpi_setup; rm "$KPI_THRESHOLDS"
+  mkdir -p "$SO_LESSONS_DIR"
+  printf -- '## 2026-10-02\n\n- **Name the pid.** why\n  <!-- seen:3 2026-11-05 -->\n- **Two is not enough.** why\n  <!-- seen:2 2026-11-05 -->\n' > "$SO_LESSONS_DIR/dotfiles.md"
+  run "$SUBJECT" retro
+  assert_success
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'lesson "name the pid." (dotfiles.md, last 2026-11-05) was found again in 3 dream sweeps'
+  refute_output --partial 'two is not enough'
+  sed -i 's/seen:3 /seen:6 /' "$SO_LESSONS_DIR/dotfiles.md"
+  : > "$NLOG"
+  run "$SUBJECT" retro
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+  run grep 'guard ' "$BOARD"
+  assert_output --partial 'found again in 6 dream sweeps'
+  # A lesson with a sig is guarded by its sig alone: its seen marker files no second row.
+  printf -- '- **Has a sig.** x <!-- sig:2026-10-01 nosuchcmd -->\n  <!-- seen:9 2026-11-05 -->\n' >> "$SO_LESSONS_DIR/dotfiles.md"
+  run "$SUBJECT" retro
+  run grep -c '^check(lesson): guard ' <(cut -f3 "$BOARD")
+  assert_output 1
+}
+
 @test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
@@ -5538,6 +5563,20 @@ epics_fixture() {
   assert_line 'lesson_held_share=?'
   BENCH_LESSONS_CMD=false run "$SUBJECT" ledger
   assert_line 'lesson_held_share=?'
+}
+
+@test "ledger: insight_expired_share is the expired share of insights dated 30 to 60 days back, by last status; ? with none there" {
+  kpi_setup
+  export BENCH_DREAMS_DIR="$SANDBOX/dreams"; mkdir -p "$BENCH_DREAMS_DIR/a" "$BENCH_DREAMS_DIR/b"
+  d40=$(date -d "@$((T0 - 40 * 86400))" +%F); d10=$(date -d "@$((T0 - 10 * 86400))" +%F); d90=$(date -d "@$((T0 - 90 * 86400))" +%F)
+  printf '## %s - q1\n**Status:** open\n**Status:** expired\n\n## %s - q2\n**Status:** confirmed\n\n## Notes\n**Status:** expired\n' "$d40" "$d40" > "$BENCH_DREAMS_DIR/a/insights.md"
+  printf '## %s - q3\nStatus: expired\n\n## %s - q4\n**Status:** routed\n\n## %s - recent\n**Status:** expired\n\n## %s - old\n**Status:** expired\n' "$d40" "$d40" "$d10" "$d90" > "$BENCH_DREAMS_DIR/b/insights.md"
+  run "$SUBJECT" ledger
+  assert_success
+  assert_line 'insight_expired_share=0.50'
+  rm -r "$BENCH_DREAMS_DIR"
+  run "$SUBJECT" ledger
+  assert_line 'insight_expired_share=?'
 }
 
 @test "chain: plans_unqueued counts an approved plan with open phases and no session or item; unreadable sessions read ?" {
