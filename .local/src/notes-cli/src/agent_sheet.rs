@@ -122,18 +122,22 @@ fn owned_key(t: &str, in_head: bool) -> (bool, bool) {
     (t.starts_with(HEAD_KEYS[0]) || docs, docs)
 }
 
-/// An item [`docs_list`] writes: one link and nothing else, so a bullet the human adds under
-/// the list is theirs and stays.
+/// An item [`docs_list`] writes: one link and nothing else, or a slot's `<slot>: none yet`,
+/// so a bullet the human adds under the list is theirs and stays. A lone markdown link is
+/// the form the repo docs were written in before they were exported to the vault.
 fn is_doc_item(t: &str) -> bool {
     let Some(link) = t.strip_prefix("- ") else {
         return false;
     };
+    let filler = link
+        .strip_suffix(": none yet")
+        .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase()));
     let wiki = link.starts_with("[[") && link.ends_with("]]") && link.matches("]]").count() == 1;
     let md = link.starts_with('[')
         && link.ends_with(')')
         && link.matches("](").count() == 1
         && !link.contains(' ');
-    wiki || md
+    wiki || md || filler
 }
 
 /// Put `lines` directly under the sheet's `Version:` line, replacing any [`HEAD_KEYS`] line
@@ -172,101 +176,182 @@ pub fn with_head(content: &str, lines: &[String]) -> Option<String> {
     (out != content).then_some(out)
 }
 
-/// A game's docs in its repo, by the playground convention `docs/games/<id>.md` plus the
-/// optional `<id>-story.md` and `<id>-look.md`, as `(label, url)` for those on `origin/main`.
+/// A game's repo docs by the playground convention, as `(slot, file suffix)`: the design doc
+/// `docs/games/<id>.md`, and the optional `<id>-story.md` and `<id>-look.md`.
+const REPO_SLOTS: [(&str, &str); 3] = [("design", ""), ("story", "-story"), ("look", "-look")];
+
+/// Where repo docs are exported in the vault, one dir per repo. Hidden, so every notes walker
+/// skips it, and gitignored in the vault, so a machine with an older fetch never syncs older
+/// text over a newer one.
+const EXPORT_DIR: &str = ".repos";
+
+/// A game's repo docs as `(slot, wikilink target)`, in [`REPO_SLOTS`] order, the target
+/// `None` for a slot that is not on `origin/main`; `None` for a project that is not one game.
 ///
-/// `<id>` is the lowercased basename of the tracker's `path`, the rule `stages.md` checks
-/// use. Empty for a project that is not a game or has no checkout or forge slug here.
-/// The files are read from the checkout's `origin/main` tree, not its working tree: the
-/// links point at `blob/main`, and the human's clone can sit hundreds of commits behind.
-pub fn repo_docs(reg: &project_map::Registry, project: &str) -> Vec<(String, String)> {
-    let Some(project) = reg.lookup(project) else {
-        return Vec::new();
-    };
+/// The repo owns these docs (the code cites them, PRs change them with it), so they are not
+/// copied into the lab: the sheet links a read-only export of the checkout's `origin/main`
+/// ([`export_docs`]), which `gf` opens like any other note. `<id>` is the lowercased basename
+/// of the tracker's `path`, the rule `stages.md` checks use. `origin/main` and not the working
+/// tree, because the human's clone can sit hundreds of commits behind.
+pub fn repo_docs(
+    reg: &project_map::Registry,
+    project: &str,
+    vault: &Path,
+) -> Option<Vec<(&'static str, Option<String>)>> {
+    let project = reg.lookup(project)?;
     if reg.kind(project).as_deref() != Some("game") {
-        return Vec::new();
+        return None;
     }
-    let Some(t) = reg.tracker(project) else {
-        return Vec::new();
+    let field = |k: &str| {
+        reg.tracker(project)
+            .and_then(|t| t.get(k)?.as_str())
+            .unwrap_or("")
+            .to_string()
     };
-    let field = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    let id = Path::new(field("path"))
-        .file_name()
-        .map(|f| f.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let repo = field("repo");
-    let checkout = reg.checkout(repo);
-    // The GitHub slug of the same repo the checkout is: a Forgejo-only repo gets no links
-    // rather than a github.com URL that does not exist.
-    let slug = reg
-        .tracker(repo)
-        .and_then(|r| r.get("github")?.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let (Some(checkout), Some(slug), false) = (checkout, slug, id.is_empty()) else {
-        return Vec::new();
-    };
-    let on_main = main_files(&checkout, "docs/games/");
-    [
-        ("design", format!("{id}.md")),
-        ("story", format!("{id}-story.md")),
-        ("look", format!("{id}-look.md")),
-    ]
-    .into_iter()
-    .filter(|(_, f)| on_main.contains(&format!("docs/games/{f}")))
-    .map(|(label, f)| {
-        let url = format!("https://github.com/{slug}/blob/main/docs/games/{f}");
-        (label.to_string(), url)
-    })
-    .collect()
+    // No `path` means no single game (the playground holds many), so no slots to fill.
+    let id = Path::new(&field("path"))
+        .file_name()?
+        .to_string_lossy()
+        .to_lowercase();
+    // Named for the checkout dir, so the export path reads as the repo it came from.
+    let export = reg.checkout(&field("repo")).and_then(|c| {
+        let name = c.file_name()?.to_string_lossy().to_string();
+        let dest = vault.join(EXPORT_DIR).join(&name);
+        export_docs(&c, &dest);
+        Some((name, dest))
+    });
+    Some(
+        REPO_SLOTS
+            .iter()
+            .map(|(slot, suffix)| {
+                let target = export.as_ref().and_then(|(name, dest)| {
+                    let f = format!("docs/games/{id}{suffix}");
+                    dest.join(format!("{f}.md"))
+                        .is_file()
+                        .then(|| format!("{EXPORT_DIR}/{name}/{f}"))
+                });
+                (*slot, target)
+            })
+            .collect(),
+    )
 }
 
-/// The repo-root paths under `dir` (with its trailing slash) in the checkout's `origin/main`
-/// tree, as fresh as its last fetch (a sheet render never touches the network); empty when
-/// git fails or the ref is missing, so no link is written for a file not seen.
-fn main_files(checkout: &Path, dir: &str) -> Vec<String> {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(checkout)
-        .args([
-            "ls-tree",
-            "-z",
-            "--full-tree",
-            "--name-only",
-            "origin/main",
-            dir,
-        ])
+/// Export `docs/games/` of the checkout's `origin/main` into `dest`, every file read-only so
+/// an edit there is refused rather than lost on the next export. As fresh as the checkout's
+/// last fetch: a sheet render never touches the network.
+///
+/// A no-op while the tree is unchanged (`dest/.tree` holds the tree id last exported), so the
+/// steady-state cost is one `git rev-parse`. A change replaces `dest` whole, so a doc removed
+/// on main goes too. False when git or tar fails; an earlier export then stays as it was.
+fn export_docs(checkout: &Path, dest: &Path) -> bool {
+    use std::process::{Command, Stdio};
+    let git = || {
+        let mut c = Command::new("git");
+        c.arg("-C").arg(checkout);
+        c
+    };
+    let Some(tree) = git()
+        .args(["rev-parse", "--verify", "-q", "origin/main:docs/games"])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .split('\0')
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    else {
+        return false;
+    };
+    let stamp = dest.join(".tree");
+    if fs::read_to_string(&stamp).is_ok_and(|s| s.trim() == tree) {
+        return true;
+    }
+    let Some(name) = dest.file_name() else {
+        return false;
+    };
+    // Per process, so two renders at once never extract into one dir.
+    let tmp = dest.with_file_name(format!(
+        "{}.tmp{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&tmp);
+    let extract = || -> std::io::Result<bool> {
+        fs::create_dir_all(&tmp)?;
+        let mut archive = git()
+            .args(["archive", "--format=tar", "--prefix=docs/games/", &tree])
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let tar = Command::new("tar")
+            .arg("-x")
+            .arg("-C")
+            .arg(&tmp)
+            .stdin(
+                archive
+                    .stdout
+                    .take()
+                    .ok_or(std::io::ErrorKind::BrokenPipe)?,
+            )
+            .status()?;
+        Ok(archive.wait()?.success() && tar.success())
+    };
+    if !matches!(extract(), Ok(true)) || read_only(&tmp).is_err() {
+        let _ = fs::remove_dir_all(&tmp);
+        return false;
+    }
+    let swapped = fs::write(tmp.join(".tree"), format!("{tree}\n")).is_ok()
+        && (!dest.exists() || fs::remove_dir_all(dest).is_ok())
+        && fs::rename(&tmp, dest).is_ok();
+    if !swapped {
+        let _ = fs::remove_dir_all(&tmp);
+    }
+    swapped
 }
 
-/// The `Docs:` list a human sheet carries: every doc of the project that exists, in a fixed
-/// order. The pitch (`docs/idea.md`), the `repo` docs ([`repo_docs`]), `playtest.md`,
-/// `ideas.md`, `summary.md` as status, then every other `docs/*.md` and `docs/*/README.md`
-/// by name, less [`is_report`] ones. A file that does not exist is not linked.
+/// Mark every file under `dir` read-only.
+fn read_only(dir: &Path) -> std::io::Result<()> {
+    for e in fs::read_dir(dir)? {
+        let path = e?.path();
+        if path.is_dir() {
+            read_only(&path)?;
+        } else {
+            let mut perm = fs::metadata(&path)?.permissions();
+            perm.set_readonly(true);
+            fs::set_permissions(&path, perm)?;
+        }
+    }
+    Ok(())
+}
+
+/// The `Docs:` list a human sheet carries, in a fixed order: the pitch (`docs/idea.md`), a
+/// game's `repo` docs ([`repo_docs`]), `playtest.md`, `ideas.md`, `summary.md` as status,
+/// then every other `docs/*.md` and `docs/*/README.md` by name, less [`is_report`] ones: the
+/// place for any doc outside the standard set.
+///
+/// A game always shows its standard slots, so every game sheet reads the same: a missing one
+/// is the plain item `<slot>: none yet` (no stub file, which would pass the stage checks with
+/// nothing in it). Any other project lists only what exists.
 ///
 /// One link per `- ` item: an editor wraps on the raw text, so a single line of full-path
 /// links wraps into a ragged block even when the link targets are concealed.
-pub fn docs_list(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String {
-    let wiki = |f: &Path, label: &str| {
+pub fn docs_list(
+    vault: &Path,
+    dir: &Path,
+    repo: Option<&[(&'static str, Option<String>)]>,
+) -> String {
+    let lab = |f: &Path| {
         let t = vault_rel(vault, f);
-        (!t.is_empty() && f.is_file()).then(|| format!("[[{t}|{label}]]"))
+        (!t.is_empty() && f.is_file()).then_some(t)
+    };
+    let slot = |label: &str, target: Option<String>| match target {
+        Some(t) => Some(format!("[[{t}|{label}]]")),
+        None => repo.is_some().then(|| format!("{label}: none yet")),
     };
     let mut parts: Vec<String> = Vec::new();
-    parts.extend(wiki(&dir.join("docs/idea.md"), "idea"));
-    parts.extend(repo.iter().map(|(label, url)| format!("[{label}]({url})")));
-    parts.extend(wiki(&dir.join("playtest.md"), "playtest"));
-    parts.extend(wiki(&dir.join("ideas.md"), "ideas"));
-    parts.extend(wiki(&dir.join("summary.md"), "status"));
+    parts.extend(slot("idea", lab(&dir.join("docs/idea.md"))));
+    for (label, target) in repo.unwrap_or_default() {
+        parts.extend(slot(label, target.clone()));
+    }
+    parts.extend(slot("playtest", lab(&dir.join("playtest.md"))));
+    parts.extend(slot("ideas", lab(&dir.join("ideas.md"))));
+    parts.extend(slot("status", lab(&dir.join("summary.md"))));
     let mut extra: Vec<(String, PathBuf)> = fs::read_dir(dir.join("docs"))
         .into_iter()
         .flatten()
@@ -284,7 +369,11 @@ pub fn docs_list(vault: &Path, dir: &Path, repo: &[(String, String)]) -> String 
         })
         .collect();
     extra.sort();
-    parts.extend(extra.iter().filter_map(|(label, f)| wiki(f, label)));
+    parts.extend(
+        extra
+            .iter()
+            .filter_map(|(label, f)| Some(format!("[[{}|{label}]]", lab(f)?))),
+    );
     if parts.is_empty() {
         return String::new();
     }
@@ -392,11 +481,8 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             };
             let human_home = vault_rel(&p.vault, &human);
             let agent_home = vault_rel(&p.vault, &sheet_path(dir));
-            let repo = reg
-                .as_deref()
-                .map(|r| repo_docs(r, &proj))
-                .unwrap_or_default();
-            let docs = docs_list(&p.vault, dir, &repo);
+            let repo = reg.as_deref().and_then(|r| repo_docs(r, &proj, &p.vault));
+            let docs = docs_list(&p.vault, dir, repo.as_deref());
             if ensure_pair(log, dir, &proj, &human_home, &agent_home, &docs).is_ok() {
                 n += 1;
             }
@@ -529,18 +615,52 @@ mod tests {
             ],
         );
         let dir = vault.join("lab/p/demo");
-        let repo = vec![("design".to_string(), "https://x/demo.md".to_string())];
-        let line = docs_list(&vault, &dir, &repo);
+        let line = docs_list(&vault, &dir, None);
         assert_eq!(
             line,
             "Docs:\n\
              - [[lab/p/demo/docs/idea|idea]]\n\
-             - [design](https://x/demo.md)\n\
              - [[lab/p/demo/playtest|playtest]]\n\
              - [[lab/p/demo/ideas|ideas]]\n\
              - [[lab/p/demo/summary|status]]\n\
              - [[lab/p/demo/docs/marketing/README|marketing]]\n\
              - [[lab/p/demo/docs/zeta|zeta]]"
+        );
+        let _ = fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn a_game_shows_every_standard_slot_with_filler_for_a_missing_one() {
+        let vault = tree(
+            "game",
+            &[
+                "lab/p/g/README.md",
+                "lab/p/g/ideas.md",
+                "lab/p/g/docs/notes.md",
+            ],
+        );
+        let repo = [
+            ("design", Some(".repos/r/docs/games/g".to_string())),
+            ("story", None),
+            ("look", Some(".repos/r/docs/games/g-look".to_string())),
+        ];
+        assert_eq!(
+            docs_list(&vault, &vault.join("lab/p/g"), Some(&repo)),
+            "Docs:\n\
+             - idea: none yet\n\
+             - [[.repos/r/docs/games/g|design]]\n\
+             - story: none yet\n\
+             - [[.repos/r/docs/games/g-look|look]]\n\
+             - playtest: none yet\n\
+             - [[lab/p/g/ideas|ideas]]\n\
+             - status: none yet\n\
+             - [[lab/p/g/docs/notes|notes]]"
+        );
+        // A filler item is the list's own, so a rewrite replaces it rather than keeping it.
+        let sheet = "# g\nVersion: v1\nDocs:\n- story: none yet\n- [[a|b]]\n\n## Tasks\n";
+        assert_eq!(
+            with_head(sheet, &["Docs:".to_string(), "- [[x|story]]".to_string()]).unwrap(),
+            "# g\nVersion: v1\nDocs:\n- [[x|story]]\n\n## Tasks\n"
         );
         let _ = fs::remove_dir_all(&vault);
     }
@@ -570,7 +690,7 @@ mod tests {
     #[test]
     fn docs_list_is_empty_for_a_project_with_no_docs() {
         let vault = tree("nodocs", &["lab/p/bare/README.md"]);
-        assert_eq!(docs_list(&vault, &vault.join("lab/p/bare"), &[]), "");
+        assert_eq!(docs_list(&vault, &vault.join("lab/p/bare"), None), "");
         let _ = fs::remove_dir_all(&vault);
     }
 
@@ -632,13 +752,12 @@ mod tests {
     }
 
     #[test]
-    fn repo_docs_follow_the_game_convention_and_skip_what_is_missing() {
+    fn repo_docs_export_origin_main_read_only_and_link_into_the_export() {
         let checkout = tree(
             "repo",
             &["docs/games/shapecity.md", "docs/games/shapecity-look.md"],
         );
-        // Those two files are on origin/main. The working tree then disagrees both ways, as
-        // a clone behind main does: look is gone locally, and a story exists only locally.
+        let vault = tree("repovault", &[]);
         let git = |args: &[&str]| {
             // A pre-commit hook exports these; left set, they aim git at the real repo.
             let ok = std::process::Command::new("git")
@@ -662,49 +781,79 @@ mod tests {
                 .success();
             assert!(ok, "git {args:?}");
         };
+        fs::write(checkout.join("docs/games/shapecity.md"), "on main\n").unwrap();
         git(&["init", "-q"]);
         git(&["add", "."]);
         git(&["commit", "-qm", "docs"]);
         git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        // The working tree then disagrees both ways, as a clone behind main does: look is
+        // gone locally, a story exists only locally, and the design doc reads differently.
         fs::remove_file(checkout.join("docs/games/shapecity-look.md")).unwrap();
         fs::write(checkout.join("docs/games/shapecity-story.md"), "").unwrap();
+        fs::write(checkout.join("docs/games/shapecity.md"), "local\n").unwrap();
         let map = format!(
-            r#"{{"paths": {{"{0}": "ucp", "{0}/": "fj"}},
+            r#"{{"paths": {{"{0}": "ucp"}},
                 "trackers": {{
                   "ucp": {{"github": "Org/ucp"}},
-                  "fj": {{"forgejo": "me/fj"}},
                   "shape-city": {{"type": "game", "repo": "ucp", "path": "Assets/Games/ShapeCity"}},
-                  "fj-game": {{"type": "game", "repo": "fj", "path": "Assets/Games/ShapeCity"}},
+                  "no-clone": {{"type": "game", "repo": "elsewhere", "path": "Assets/Games/X"}},
+                  "many-games": {{"type": "game", "repo": "ucp"}},
                   "an-app": {{"type": "app", "repo": "ucp", "path": "Assets/Games/ShapeCity"}}
                 }}}}"#,
             checkout.display()
         );
         let reg = project_map::Registry::parse(&map).unwrap();
-        let docs = repo_docs(&reg, "shape-city");
-        let labels: Vec<&str> = docs.iter().map(|(l, _)| l.as_str()).collect();
+        let name = checkout.file_name().unwrap().to_string_lossy().to_string();
+        let target = |f: &str| Some(format!(".repos/{name}/docs/games/{f}"));
+        let docs = repo_docs(&reg, "shape-city", &vault).unwrap();
         assert_eq!(
-            labels,
-            ["design", "look"],
+            docs,
+            [
+                ("design", target("shapecity")),
+                ("story", None),
+                ("look", target("shapecity-look")),
+            ],
             "origin/main decides: a local-only story is not linked, a look missing locally is"
         );
-        assert_eq!(
-            docs[0].1,
-            "https://github.com/Org/ucp/blob/main/docs/games/shapecity.md"
-        );
+        let dest = vault.join(".repos").join(&name);
+        let design = dest.join("docs/games/shapecity.md");
+        assert_eq!(fs::read_to_string(&design).unwrap(), "on main\n");
+        assert!(fs::metadata(&design).unwrap().permissions().readonly());
+
+        // Unchanged on main: nothing is rewritten.
+        fs::write(dest.join("marker"), "").unwrap();
+        assert_eq!(repo_docs(&reg, "Shape-City", &vault).unwrap(), docs);
         assert!(
-            repo_docs(&reg, "an-app").is_empty(),
-            "only a game has repo docs"
+            dest.join("marker").is_file(),
+            "an unchanged tree is not re-exported"
         );
+
+        // Main moves: the export follows it whole, the story appears, the marker goes.
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "story"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let docs = repo_docs(&reg, "shape-city", &vault).unwrap();
+        assert_eq!(docs[1], ("story", target("shapecity-story")));
+        assert_eq!(docs[2], ("look", None));
+        assert_eq!(fs::read_to_string(&design).unwrap(), "local\n");
         assert!(
-            repo_docs(&reg, "fj-game").is_empty(),
-            "a repo with no GitHub slug gets no github.com links"
+            !dest.join("marker").exists(),
+            "a changed tree replaces the export"
+        );
+
+        assert_eq!(repo_docs(&reg, "an-app", &vault), None, "only a game");
+        assert_eq!(
+            repo_docs(&reg, "many-games", &vault),
+            None,
+            "a repo of many games has no one game's slots"
         );
         assert_eq!(
-            repo_docs(&reg, "Shape-City"),
-            docs,
-            "any spelling of the name"
+            repo_docs(&reg, "no-clone", &vault),
+            Some(vec![("design", None), ("story", None), ("look", None)]),
+            "a game with no checkout here still has its slots"
         );
         let _ = fs::remove_dir_all(&checkout);
+        let _ = fs::remove_dir_all(&vault);
     }
 
     #[test]
