@@ -1929,8 +1929,14 @@ clean_fixture() {
   [ "$(jq -c .unreadable "$doc")" = '["agent-queue"]' ]
   cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+  # and the session asking to close itself is told to wait, where an item-less CHAT would close now
+  export FLEET_CHAT_CLOSE_H=0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_failure 1
+  assert_output 'after: this pass could not read agent-queue; ask again once it reads'
 
-  # NEGATIVE CONTROL: a good read that really has no item logs the move, and names nothing unreadable
+  # NEGATIVE CONTROL: a good read that really has no item logs the move, names nothing unreadable,
+  # and the same CHAT row closes now
   cp "$SANDBOX/agent-queue.ok" "$SANDBOX/bin/agent-queue"
   rm -r "$HOME/.agent/queue/running"
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
@@ -1938,6 +1944,9 @@ clean_fixture() {
   [ "$(jq -c .unreadable "$doc")" = '[]' ]
   run cat "$FLEET_SHEPHERD_DIR/watch.log"
   assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  stage STALLED -> CHAT'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_success
+  assert_line --index 0 --partial 'now: '
 }
 
 @test "end to end: a DONE or CHAT row whose session was sent its close nudge reads nudged, whatever the ledger fact now says (ar-1863)" {

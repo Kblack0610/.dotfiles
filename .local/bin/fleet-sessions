@@ -2284,6 +2284,12 @@ close_self() {
   local row
   row="$(awk -F'\t' -v s="$CLOSE_SELF" '$3 == s {print; exit}' <<<"$1")"
   [ -n "$row" ] || { echo "fleet-sessions: no live session $CLOSE_SELF" >&2; return 2; }
+  # A row a failed source fed is not this session's state (a lock-busy agent-queue read hides its
+  # running item, ar-2839), so it waits for a good read, as tick keeps its cells (keep_blind).
+  if [ -n "${CACHE:-}" ] && grep -qxF -e "$CLOSE_SELF" -e '*' "$CACHE/blind" 2>/dev/null; then
+    echo "after: this pass could not read $(sort -u "$CACHE/unreadable" 2>/dev/null | paste -sd, -); ask again once it reads"
+    return 1
+  fi
   row="$(json_rows <<<"$row")"
   jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$row"
   [ "$(jq -r .close.verdict <<<"$row")" = now ]
