@@ -73,7 +73,7 @@ impl Default for Cache {
         Self {
             table: ReadCache::new("session-table"),
             page: ReadCache::new("session-page"),
-            capacity: ReadCache::new("capacity"),
+            capacity: ReadCache::new("session-capacity"),
         }
     }
 }
