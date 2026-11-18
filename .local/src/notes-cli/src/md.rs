@@ -1619,7 +1619,7 @@ where
 {
     let lines: Vec<&str> = content.lines().collect();
     let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
-    let end = row_block_end(&lines, idx);
+    let end = brief_end(&lines, idx);
     let row = lines[idx];
     let indent = row.len() - row.trim_start().len();
     let block = lines[idx + 1..end]
@@ -1638,25 +1638,48 @@ where
 /// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
 /// every non-blank line after it indented deeper than it is. A child row sits two spaces in
 /// (the writers' step), so a task row indented only one space deeper is a sibling with a
-/// stray space, and ends the block (a tab is a child's indent, not a stray space).
+/// stray space, and ends the block (a tab is a child's indent, not a stray space). A blank
+/// ends it: this is the inbox's block, where an indented run after a blank is not a detail
+/// ([`brief_end`] is the sheet row's).
 pub fn row_block_end(lines: &[&str], i: usize) -> usize {
+    block_end(lines, i, false)
+}
+
+/// [`row_block_end`] for a task row on a sheet, whose brief can hold a paragraph break: a
+/// blank stays in the block when the next non-blank line is still deeper, and ends it
+/// otherwise, so the blanks after a block are never part of it.
+pub fn brief_end(lines: &[&str], i: usize) -> usize {
+    block_end(lines, i, true)
+}
+
+fn block_end(lines: &[&str], i: usize, blanks: bool) -> usize {
     let depth = |l: &str| l.len() - l.trim_start().len();
     let own = depth(lines[i]);
+    let inside = |l: &str| {
+        depth(l) > own && !(is_task(l) && depth(l) == own + 1 && l[own..].starts_with(' '))
+    };
     let mut end = i + 1;
-    while end < lines.len()
-        && !lines[end].trim().is_empty()
-        && depth(lines[end]) > own
-        && !(is_task(lines[end])
-            && depth(lines[end]) == own + 1
-            && lines[end][own..].starts_with(' '))
-    {
-        end += 1;
+    while end < lines.len() {
+        let skip = if !lines[end].trim().is_empty() {
+            0
+        } else if blanks {
+            lines[end..]
+                .iter()
+                .position(|l| !l.trim().is_empty())
+                .unwrap_or(lines.len() - end)
+        } else {
+            break;
+        };
+        match lines.get(end + skip) {
+            Some(l) if inside(l) => end += skip + 1,
+            _ => break,
+        }
     }
     end
 }
 
 /// The lines of the block under the row at index `i` (its details and children), trimmed: the
-/// one reader of a row's details, what `notes board --json` and the inbox both report.
+/// reader of an inbox line's details.
 pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
     lines[i + 1..row_block_end(lines, i)]
         .iter()
@@ -1664,16 +1687,82 @@ pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
         .collect()
 }
 
-/// The detail lines for a row at `indent`: each of `details` two spaces deeper, blanks
-/// skipped. A detail is one line; a newline inside one splits it.
-pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
-    details
+/// The brief under the sheet task row at index `i` ([`brief_end`]): what `notes board --json`
+/// reports as `details`. Each line comes back without the row's indent and the writers'
+/// two-space step, so a nested list or a code block keeps its shape; a blank line comes back
+/// empty, and trailing whitespace is dropped.
+pub fn brief_details(lines: &[&str], i: usize) -> Vec<String> {
+    let strip = lines[i].len() - lines[i].trim_start().len() + 2;
+    lines[i + 1..brief_end(lines, i)]
         .iter()
-        .flat_map(|d| d.lines())
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .map(|d| format!("{indent}  {d}"))
+        .map(|d| {
+            let d = d.trim_end();
+            let lead = d.len() - d.trim_start_matches(' ').len();
+            let rest = &d[lead.min(strip)..];
+            // A line indented with a tab alone, which the writers never produce, loses it as
+            // before; a tab after the step is the brief's own (a Makefile recipe) and stays.
+            if lead == 0 {
+                rest.trim_start_matches('\t')
+            } else {
+                rest
+            }
+            .to_string()
+        })
         .collect()
+}
+
+/// `text` with the indent its non-blank lines share taken off, so a block typed under a row
+/// ("title\n  more") lands as the detail `more` and keeps its own shape below that.
+pub fn dedent(text: &str) -> String {
+    let lead = |l: &str| l.len() - l.trim_start_matches(' ').len();
+    let common = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(lead)
+        .min()
+        .unwrap_or(0);
+    text.lines()
+        .map(|l| l.get(common..).unwrap_or("").trim_end_matches('\r'))
+        .map(|l| if l.trim().is_empty() { "" } else { l })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The detail lines for a row at `indent`: each of `details` two spaces deeper, as written. A
+/// detail is one line; a newline inside one splits it. Blank lines between text lines stay (empty,
+/// never whitespace); the ones before the first and after the last go, since nothing reads
+/// them back.
+pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
+    // An empty element is a blank line (`--detail ''`, or a blank entry of a brief read back).
+    let lines: Vec<&str> = details
+        .iter()
+        .flat_map(|d| {
+            let mut ls: Vec<&str> = d.lines().collect();
+            if ls.is_empty() {
+                ls.push("");
+            }
+            ls
+        })
+        .map(str::trim_end)
+        .collect();
+    let text = |l: &&str| !l.trim().is_empty();
+    let Some(first) = lines.iter().position(text) else {
+        return Vec::new();
+    };
+    let last = lines.iter().rposition(text).unwrap_or(first);
+    let mut out: Vec<String> = Vec::new();
+    for d in &lines[first..=last] {
+        if d.trim().is_empty() {
+            // One blank is a paragraph break; a run of them would not survive the sheet's own
+            // tidy of blank runs, so it is one here.
+            if out.last().is_some_and(|p| !p.is_empty()) {
+                out.push(String::new());
+            }
+        } else {
+            out.push(format!("{indent}  {d}"));
+        }
+    }
+    out
 }
 
 /// Add `details` as indented lines at the end of the block of the first row in `## heading`
@@ -1692,7 +1781,7 @@ where
     let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
     let row = lines[idx];
     let indent = &row[..row.len() - row.trim_start().len()];
-    let at = row_block_end(&lines, idx);
+    let at = brief_end(&lines, idx);
     let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
     for (k, d) in detail_lines(indent, details).into_iter().enumerate() {
         out.insert(at + k, d);
@@ -2877,14 +2966,49 @@ after
             out,
             "## Tasks\n- [ ] a #high\n  old detail\n  - [ ] child\n  new one\n- [ ] b #high\n"
         );
-        // a blank line ends a block; a multi-line detail splits
-        let c = "## Tasks\n- [ ] a\n\n  not a's\n";
+        // a blank line then a line that is not indented ends a block; a multi-line detail splits
+        let c = "## Tasks\n- [ ] a\n\n- [ ] not a's\n";
         let out = append_details(c, "Tasks", |l| l.contains(" a"), &["x\ny".into()]).unwrap();
-        assert_eq!(out, "## Tasks\n- [ ] a\n  x\n  y\n\n  not a's\n");
+        assert_eq!(out, "## Tasks\n- [ ] a\n  x\n  y\n\n- [ ] not a's\n");
         assert_eq!(
             append_details(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
             None
         );
+    }
+
+    // A brief written under a row reads back as it went in: nested indentation, a fenced block
+    // and a paragraph break all survive, and the blank after the block is not part of it.
+    #[test]
+    fn a_brief_round_trips_with_its_indentation_and_blank_lines() {
+        let brief = "goal: lossless\n\n- one\n  - nested\n    - deeper\n\n```sh\nif x; then\n    echo hi\nfi\n```\nlast";
+        let c = "## Tasks\n- [ ] a #high\n\n- [ ] b\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a "), &[brief.into()]).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let got = brief_details(&lines, 1);
+        assert_eq!(got.join("\n"), brief, "{out}");
+        assert_eq!(brief_end(&lines, 1), lines.len() - 2, "{out}");
+        // and under a nested row, whose own indent is not part of the brief
+        let c = "## Tasks\n- [ ] p\n  - [ ] a\n";
+        let out = append_details(c, "Tasks", |l| l.contains("] a"), &[brief.into()]).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(brief_details(&lines, 2).join("\n"), brief, "{out}");
+        // blanks around the text are not written, none is whitespace-only, trailing spaces go,
+        // and an empty element is a blank line
+        assert_eq!(
+            detail_lines("", &["\n a \n \n b \n\n".into()]),
+            ["   a", "", "   b"]
+        );
+        assert_eq!(
+            detail_lines("", &["x".into(), String::new(), "y".into()]),
+            ["  x", "", "  y"]
+        );
+        // a tab after the step is the brief's own (a recipe line); the inbox reader is unchanged:
+        // a blank ends its block and its details come back trimmed
+        let lines = ["- [ ] a", "  all:", "  \tcc x"];
+        assert_eq!(brief_details(&lines, 0), ["all:", "\tcc x"]);
+        let lines = ["- intro", "", "  - [ ] ask one", "  - [ ] ask two"];
+        assert_eq!(row_block_end(&lines, 0), 1);
+        assert_eq!(brief_end(&lines, 0), 4);
     }
 
     #[test]

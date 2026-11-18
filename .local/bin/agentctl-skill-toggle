@@ -30,6 +30,7 @@ DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 HIDE_CAP="${SKILL_TOGGLE_HIDE_CAP:-5}"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
+github_over_https
 report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
 # A run that fails before its PR exists undoes what it made, since nothing else reaps a branch
 # with no PR or closes its item; once the PR exists, reap closes the item when it merges.
