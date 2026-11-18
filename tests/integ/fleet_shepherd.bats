@@ -453,6 +453,60 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -n "$(typed)" ]
 }
 
+@test "a close-now row held by the human's draft pages them once a day and closes once the box is empty" {
+  doc "[$(crow 1 DONE now)]"
+  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'then after the last part of phase four, queue the rest of it}"
+  STUB_PANE="$draft" run checked
+  assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
+  run cat "$HOME/pages"
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 is done (DONE f-1), but your unsent draft 'then after the last part of phase four,...' sits in its prompt. Send it, or clear it and it closes itself."
+  grep -q 'close: lab/1:1 DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  [ -z "$(typed)" ]
+  ! grep -q '^mark ' "$HOME/sessions.calls"
+  # The same draft on the next check pages nothing more.
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
+  [ "$(wc -l < "$HOME/pages")" = 1 ]
+  # Cleared, the next check types the close as for any empty box.
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  [ "$(wc -l < "$HOME/pages")" = 1 ]
+}
+
+@test "a dim ghost suggestion, a busy screen, copy mode or a refused page is no draft page" {
+  doc "[$(crow 1 DONE now)]"
+  ghost="${IDLE/$'\xc2\xa0'/$'\xc2\xa0\e[2m'try asking about the queue$'\e[22m'}"
+  # A colour index of 2 is a colour, not dim: that text is a draft.
+  colour="${IDLE/$'\xc2\xa0'/$'\xc2\xa0\e[38;5;2m'mine$'\e[39m'}"
+  for screen in "$ghost" "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'mine}"$'\n  esc to interrupt'; do
+    STUB_PANE="$screen" "$SH" check >/dev/null || true
+  done
+  STUB_IN_MODE=1 STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'mine}" "$SH" check >/dev/null || true
+  [ ! -s "$HOME/pages" ]
+  # agent-notify refusing is not recorded: the next check tries again.
+  stub agent-notify 'exit 1'
+  STUB_PANE="$colour" "$SH" check >/dev/null || true
+  ! grep -q 'draft: ' "$FLEET_SHEPHERD_DIR/.remind"
+  stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  STUB_PANE="$colour" "$SH" check >/dev/null || true
+  grep -q "your unsent draft 'mine'" "$HOME/pages"
+  [ -z "$(typed)" ]
+}
+
+@test "a draft page and the escalation reminder for the same fact never silence each other" {
+  doc "[$(crow 1 DONE now)]"
+  STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  # Later the pass nudged and escalated the same fact, and hours went by: the reminder still goes.
+  doc "[$(crow 1 DONE now '{"nudged":true, "escalated":true, "idle_min":400}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  "$SH" check >/dev/null || true
+  [ "$(grep -c 'lab/1:1: one decision closes it' "$HOME/pages")" = 1 ]
+  # And both stay recorded for today, each under its own key.
+  grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+  grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+}
+
 @test "check types nothing for a manual, nudged, keep or after row, a row another writer marked, or a session off the lease" {
   doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"nudged":true}'), $(crow 3 DONE keep),
         $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"

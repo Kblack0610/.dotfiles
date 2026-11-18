@@ -694,17 +694,18 @@ remind_sample() {
 # send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
 # cancelling the human's copy mode, and reads the screen again after the mark, just before the
-# keys; any other screen is left for the pass, which sends the message by SendMessage. The mark
-# claims the fact first, so the two never both send it; a send that fails after it reaches the
-# human through the row's escalation. Having typed, it refreshes the document, so cmd_due reads
-# those rows as nudged.
+# keys; any other screen is left for the pass, which sends the message by SendMessage, and a
+# box holding the human's draft also pages them (draft_page), unmarked, so it closes once
+# emptied. The mark claims the fact first, so the two never both send it; a send that fails
+# after it reaches the human through the row's escalation. Having typed, it refreshes the
+# document, so cmd_due reads those rows as nudged.
 close_sample() {
   local sid target pane close fact server cmd typed=""
   while IFS=$'\t' read -r sid target pane close fact; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
-    pane_takes_keys "$server" "$pane" || continue
+    pane_takes_keys "$server" "$pane" || { draft_page "$sid" "$target" "$pane" "$close" "$fact"; continue; }
     fleet-sessions mark "$sid" "$fact" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$server" "$pane"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
@@ -724,6 +725,43 @@ close_sample() {
   [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
 }
 
+# draft_page <sid> <target> <pane> <close> <fact>: a close-now session that close_sample cannot
+# type into only because the human's unsent draft sits in its prompt pages the human, once per
+# fact per day. Nothing else would: the pass leaves a draft alone, and its skip holds until the
+# fact changes, which clearing a draft never does; remind_sample waits for a nudged and escalated
+# row. The row is not marked, so the check after the box empties types the close as usual. The
+# page's ledger line is keyed "draft: <fact>" in $REMINDED, which never equals a reminder's fact,
+# so neither silences the other.
+draft_page() {
+  local server="${2%%/*}" today draft
+  [ "$(tmux -L "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 0
+  draft="$(prompt_box "$(undim "$(tmux -L "$server" capture-pane -e -p -t "$3" 2>/dev/null)")")" || return 0
+  [ -n "$draft" ] || return 0
+  today="$(date +%F)"
+  touch "$REMINDED" 2>/dev/null || return 0
+  awk -F'\t' -v d="$today" -v s="$1" -v f="draft: $5" '$1 == d && $2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && return 0
+  [ "${#draft}" -le 40 ] || { draft="${draft:0:40}"; draft="${draft% }..."; }
+  agent-notify -p high -k decision -t "$2: your draft holds its close" -r "tmux:$2" \
+    "$2 is done ($5), but your unsent draft '$draft' sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
+  printf '%s\t%s\t%s\n' "$today" "$1" "draft: $5" >> "$REMINDED"
+  cmd_log "close: $2 $4: held by your unsent draft; paged" >/dev/null
+}
+
+# undim <screen captured with -e> -> the screen as plain text, less what was drawn dim (SGR 2),
+# which is how a ghost suggestion shows in an empty box: no one's draft. Colour arguments
+# (38/48;5;n and ;2;r;g;b) are skipped, so a colour index of 2 is not read as dim.
+undim() {
+  perl -CSD -ne 'BEGIN { $d = 0 } my $o = "";
+    for my $p (split /(\e\[[0-9;]*m)/) {
+      if ($p =~ /^\e\[([0-9;]*)m$/) {
+        my @c = split /;/, ($1 eq "" ? "0" : $1);
+        while (@c) { my $c = shift @c;
+          if ($c eq "38" || $c eq "48") { my $k = shift(@c) // ""; splice(@c, 0, $k eq "2" ? 3 : 1) }
+          elsif ($c eq "2") { $d = 1 } elsif ($c eq "0" || $c eq "22") { $d = 0 } }
+      } elsif (!$d) { $o .= $p } }
+    $o =~ s/\e\[[0-9;?]*[A-Za-z]//g; print $o' <<<"$1"
+}
+
 # pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
 pane_takes_keys() {
   local screen
@@ -732,19 +770,23 @@ pane_takes_keys() {
   idle_prompt "$screen"
 }
 
-# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working: the
-# lines between the screen's last two rule lines (a run of ─, the top one may carry the session's
-# name) hold no more than the prompt glyph and blanks,
-# and the footer has no "esc to interrupt" (cut short on a narrow pane, so its head is matched).
+# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working.
 # A draft, a ghost suggestion, a dialog or a screen it cannot read all fail, toward the pass.
-idle_prompt() {
+idle_prompt() { local box; box="$(prompt_box "$1")" && [ -z "$box" ]; }
+
+# prompt_box <screen> -> the text in Claude's input box, blanks collapsed, less the prompt glyph:
+# the lines between the screen's last two rule lines (a run of box-drawing dashes, the top one
+# may carry the session's name). Exit 1 when there is no box or something is working: the footer shows "esc to
+# interrupt" (cut short on a narrow pane, so its head is matched). The one box reader.
+prompt_box() {
   grep -qF 'esc to inter' <<<"$1" && return 1
   awk -v nb=$'\xc2\xa0' '
     { l[NR] = $0 }
     /^───/ && /─ *$/ { r2 = r1; r1 = NR }
     END {
       if (!r2 || r1 - r2 < 2) exit 1
-      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, "", s); gsub(/[ \t]/, "", s); if (s != "") exit 1 }
+      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, " ", s); out = out " " s }
+      gsub(/[ \t]+/, " ", out); sub(/^ /, "", out); sub(/ $/, "", out); print out
     }' <<<"$1"
 }
 
