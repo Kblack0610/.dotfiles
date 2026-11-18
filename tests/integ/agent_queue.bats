@@ -3095,6 +3095,22 @@ second line of the brief
   assert_success
 }
 
+
+@test "an over-cap add that names --row files no second row, and a short task under a different --title keeps its words" {
+  story_notes
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --row lv-2 --slug named "feat(menu): named"
+  assert_failure 5
+  assert_output --partial "row lv-2 is left un-started where it is"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
+  assert_failure 5
+  assert_called "--detail brief: the real wording of the task"
+}
+
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
   story_notes
   export AGENT_QUEUE_CAP=1

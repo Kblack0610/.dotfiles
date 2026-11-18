@@ -992,15 +992,16 @@ project_board() {
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
-# brief_args <task> -> sets BRIEF_ARGS to one `--detail "brief: <line>"` pair per non-blank line of the
-# task, markers off. A task that is one line of 80 characters or less sets none: its board row holds it.
+# brief_args <task> [<row-text>] -> sets BRIEF_ARGS to one `--detail "brief: <line>"` pair per non-blank line of the
+# task, markers off (an unclosed one cut at its opener). A task that is one line of 80 characters or less
+# sets none when its board row already says it: <row-text>, when given, is that row's text.
 # The `brief:` prefix keeps a line that starts `- [ ]` from reading as a child row.
 BRIEF_ARGS=()
 brief_args() {
   local l clean
   BRIEF_ARGS=()
-  clean="$(sed -E 's/<!--[^>]*-->//g' <<<"$1")"
-  [ "$(grep -c '[^[:space:]]' <<<"$clean")" -gt 1 ] || [ "${#clean}" -gt 80 ] || return 0
+  clean="$(sed -E 's/<!--[^>]*-->//g; s/<!--.*$//; s/^.*-->//' <<<"$1")"
+  [ "$(grep -c '[^[:space:]]' <<<"$clean")" -gt 1 ] || [ "${#clean}" -gt 80 ] || { [ -n "${2:-}" ] && [ "$clean" != "$2" ]; } || return 0
   while IFS= read -r l; do [ -z "${l//[[:space:]]/}" ] || BRIEF_ARGS+=(--detail "brief: $l"); done <<<"$clean"
 }
 
@@ -1033,7 +1034,7 @@ overflow_row() {
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row), and <brief> is the
 # whole task, kept under the row as `brief:` detail lines when it says more than the row does.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=() keep="${6:-}" brief="${7:-}" l
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=() keep="${6:-}" brief="${7:-}"
   [ -z "${5:-}" ] || want=(--want "$5")
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -1046,7 +1047,7 @@ file_story() {
   [ -n "$text" ] || return 0
   row="$(notes --profile "$lab" ptask "$project" --agent propose -- "$text" 2>&1)" ||
     { echo "agent-queue: no story row filed on $project: ${row##*$'\n'}" >&2; return 0; }
-  [ -z "$brief" ] || brief_args "$brief"
+  [ -z "$brief" ] || brief_args "$brief" "$text"
   if [ "${#BRIEF_ARGS[@]}" -gt 0 ]; then detail=("${BRIEF_ARGS[@]}")
   elif [ "${#text}" -gt 80 ]; then detail=(--detail "$text"); fi
   out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of" 2>&1)" || rc=$?
@@ -1204,8 +1205,11 @@ cmd_add() {
   [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
-  if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "${title:-$(head -1 <<<"$text")}"; then
-    overflow_row "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text"
+  local hold_title="${title:-$(head -1 <<<"$text")}"
+  if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
+    unlock # the board write is notes' and can be slow: the lock covers only the count
+    if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text"; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"

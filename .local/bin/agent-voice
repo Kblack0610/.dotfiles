@@ -83,8 +83,13 @@ cmd_send() {
 
   case "$to" in
     new:?*)
-      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" ||
-        die "send: agent-queue add failed for ${to#new:}"
+      local rc=0
+      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" || rc=$?
+      if [ "$rc" -eq 5 ]; then # over the cap: the text waits on its board row, which dispatch starts as slots open
+        echo "agent-voice: the queue is at its cap; your words are on a board row for ${to#new:}, which dispatch starts as slots open" >&2
+        exit 4
+      fi
+      [ "$rc" -eq 0 ] || die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
       [ -n "$slug" ] || die "send: agent-queue add printed no item: $out"
       fleet-dispatch start --item "$slug" >&2 && return 0
