@@ -1869,3 +1869,85 @@ lost_host_item() {
   [ -n "$(qitem running fix-crash)" ] || fail "a dispatcher cut off re-queued a worker's item"
   grep -q 'this machine has not synced the store in 30 minutes either' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the missing witness'
 }
+
+# paced_restore <n> -- n lost conversations, each listed by a running queue item, so each reopen is
+# a wake (the restore prompt); agent-hold is the real one in the sandbox.
+paced_restore() {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_HOLD_ASSESS="$SANDBOX/none"
+  LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; mkdir -p "${LOST%/*}"
+  stub agent-hold "exec '$REPO_ROOT/.local/bin/agent-hold' \"\$@\""
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  # A server restore starts must not hold the restore lock: it would block every later walk.
+  stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"; ! ls -l /proc/$$/fd | grep -q restore.lock || echo "tmx holds the restore lock" >> "$NOTES_FIXTURE/calls.log"'
+  local i
+  for ((i = 1; i <= $1; i++)); do
+    lost_pane "w$i" "$G" "conv-$i"
+    CLAUDE_CODE_SESSION_ID="conv-$i" agent-queue add --project game --running --slug "item-$i" "item $i" >/dev/null
+  done
+}
+
+@test "restore wakes a batch of 3, holds the rest under the restore hold, and the next walk on room wakes them (2026-11-17)" {
+  paced_restore 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 3
+  assert_output --partial 'hub:dotfiles:w4: waits for a wake batch (queue item item-4)'
+  assert_output --partial 'hub: 2 wait for a wake batch'
+  assert_output --partial 'restore: 2 wait for a wake batch of at most 3'
+  assert_not_called 'holds the restore lock'
+  run agent-hold show restore
+  assert_output --partial 'kind: load'
+  assert_output --partial 'roster: conv-4,conv-5'
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/panes/.restore-owed")" 2
+  [ -f "$LOST" ] || fail "a restore with wakes owed consumed its record"
+  # The budget is spent: a walk inside the settle window wakes nothing more.
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 1 > "$HOME/.claude/sessions/1.json"
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 2 > "$HOME/.claude/sessions/2.json"
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 3 > "$HOME/.claude/sessions/3.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'restore: 2 wait for a wake batch'
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 3
+  # One wake ages out: the next walk wakes one, and the hold's roster follows what still waits.
+  sed -i '1s/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'restore: 1 wait for a wake batch'
+  run agent-hold show restore
+  assert_output --partial 'roster: conv-5'
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 4 > "$HOME/.claude/sessions/4.json"
+  # The settle window passes: the next walk wakes the last one, lifts its hold and consumes the record.
+  sed -i 's/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'released the restore hold'
+  assert_called '--resume conv-5'
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 5
+  run agent-hold show restore
+  assert_failure
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "the owed marker outlived the restore"
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.restored.json" ] && [ ! -f "$LOST" ] || fail "a finished restore left its record"
+}
+
+@test "restore leaves a restore hold it did not set where it is" {
+  paced_restore 1
+  agent-hold set restore --by someone "their own pause" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  run agent-hold show restore
+  assert_output --partial 'by: someone'
+}
+
+@test "the minute record starts the next batch only while wakes are owed and the budget has room" {
+  paced_restore 0
+  stub fleet-assess '[ -e "$NOTES_FIXTURE/hot" ] && exit 1; exit 0'
+  run restore_tick
+  assert_not_called 'fleet-restore'
+  echo 2 > "$FLEET_DISPATCH_DIR/panes/.restore-owed"
+  touch "$NOTES_FIXTURE/hot"
+  run restore_tick
+  assert_not_called 'fleet-restore'
+  rm "$NOTES_FIXTURE/hot"
+  run restore_tick
+  assert_called 'systemctl --user start --no-block fleet-restore.service'
+}
