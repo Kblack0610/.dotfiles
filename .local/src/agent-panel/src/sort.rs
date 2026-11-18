@@ -206,6 +206,11 @@ pub fn state_file() -> Option<PathBuf> {
     panels_file("agent-panel.sort")
 }
 
+/// The sort the panel was last left in, project when none.
+pub fn saved() -> Sort {
+    state_file().map(|f| load(&f)).unwrap_or_default()
+}
+
 /// The custom order: `panels/agent-panel.order`, one target per line.
 pub fn order_file() -> Option<PathBuf> {
     panels_file("agent-panel.order")
