@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# fleet-node - make this machine a fleet node, and say what it still lacks.
+#
+# Usage:
+#   fleet-node install [--no-sudo] [install.sh args]
+#       the whole agent runtime, unattended: install.sh --yes --only base,fleet,dotfiles
+#       (claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed
+#       dotfiles). A native host and the fleet-agent image both run this one definition.
+#   fleet-node signin
+#       what only the human can do here, one line each: each Claude account dir that is not
+#       signed in, gh, the private overlay, the store. Prints nothing and exits 0 when none is left.
+#   fleet-node ready
+#       exit 0 when signin has nothing left, printing nothing: fleet-dispatch's readiness probe.
+#
+# Logins are never copied here (Auth-State Safety): the human signs each one in, once a node.
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+dotfiles=$(cd "$here/../.." && pwd)
+accounts="$dotfiles/.config/claude-acct/accounts"
+
+# missing -> one line per thing the human still has to do on this node.
+missing() {
+  local name dir creds
+  # `name dir` lines; `-` is the main account, ~/.claude (claude-acct/accounts).
+  while read -r name dir; do
+    case "$name" in '' | '#'*) continue ;; esac
+    if [ "$dir" = - ]; then
+      creds="$HOME/.claude/.credentials.json"
+      [ -s "$creds" ] || echo "sign in account $name: run claude, then /login"
+    else
+      dir=${dir/#\~/$HOME}
+      creds="$dir/.credentials.json"
+      [ -s "$creds" ] || echo "sign in account $name: CLAUDE_CONFIG_DIR=${dir/#$HOME/\~} claude, then /login"
+    fi
+  done <"$accounts"
+  [ -s "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" ] || echo "sign in to GitHub: gh auth login"
+  [ -d "$HOME/.dotfiles-private/.git" ] ||
+    echo "clone the private overlay: gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private, then ~/.dotfiles-private/.local/bin/restore-private-state"
+  [ -d "$HOME/.agent/.git" ] ||
+    echo "join the store: ~/.dotfiles-private/.local/bin/restore-private-state (it needs the store deploy key)"
+  return 0
+}
+
+case "${1:-}" in
+  install)
+    shift
+    exec bash "$dotfiles/.local/src/installation_scripts/install.sh" --yes --only base,fleet,dotfiles "$@"
+    ;;
+  signin)
+    out=$(missing)
+    [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
+    ;;
+  ready)
+    [ -z "$(missing)" ]
+    ;;
+  -h | --help | help)
+    sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"
+    ;;
+  *)
+    echo "usage: fleet-node install|signin|ready" >&2
+    exit 2
+    ;;
+esac

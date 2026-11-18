@@ -3479,7 +3479,8 @@ unpark_preempted() {
 
 # probe_hosts <live_runs> -- one ssh to each placed worker (fleet_place) for its load, its cores, and
 # whether wt and claude are on its PATH and its agent-queue forwards (an older one would write the
-# queue on the worker): HOST_PROBE[<name>] is "<load> <cores> <ready 0|1>", or
+# queue on the worker), and whether `fleet-node ready` finds nothing left for the human
+# (every Claude account, gh, the overlay and the store signed in or joined): HOST_PROBE[<name>] is "<load> <cores> <ready 0|1>", or
 # "unreachable". HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
 # and start_items takes each start there off it. HOST_POWER[<name>] is its fleet_power. Read once a
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
@@ -3494,7 +3495,7 @@ probe_hosts() {
     HOST_POWER[$name]=$power
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
     # shellcheck disable=SC2016 # the worker's shell expands nothing here; the quotes are for cut
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && echo 1 || echo 0' 2>/dev/null); then
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && fleet-node ready && echo 1 || echo 0' 2>/dev/null); then
       HOST_PROBE[$name]=$(tr '\n' ' ' <<<"$out")
     else
       HOST_PROBE[$name]=unreachable
@@ -3513,7 +3514,7 @@ host_why() {
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   read -r load cores ready <<<"$p"
-  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or an agent-queue that does not forward"; return; }
+  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, an agent-queue that does not forward, or something to sign in (fleet-node signin there)"; return; }
   over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
   return 0
 }

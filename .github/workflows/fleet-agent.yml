@@ -1,0 +1,53 @@
+name: fleet-agent image
+
+# Builds the fleet-agent image (containers/fleet-agent) and proves it is a worker: the entrypoint
+# syncs a fresh HOME volume and starts sshd, then fleet-dispatch's own readiness probe runs in it.
+# A new image is pushed to GHCR only from main.
+on:
+  pull_request:
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-node
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - .github/workflows/fleet-agent.yml
+  push:
+    branches: [main]
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-node
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - .github/workflows/fleet-agent.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      IMAGE: ghcr.io/kblack0610/fleet-agent
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        run: |
+          docker buildx build --load -f containers/fleet-agent/Containerfile \
+            --build-arg FLEET_REV="$GITHUB_SHA" -t "$IMAGE:$GITHUB_SHA" .
+      - name: Smoke - a fresh volume syncs and the readiness probe sees a worker
+        run: tests/fleet-agent-smoke.sh "$IMAGE:$GITHUB_SHA"
+      - name: Push
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:$GITHUB_SHA" "$IMAGE:latest"
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"

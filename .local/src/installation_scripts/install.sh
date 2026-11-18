@@ -112,8 +112,10 @@ main() {
             --without=*) export INSTALL_WITHOUT="${1#*=}"; shift ;;
             --list)      INSTALL_MODE=list; shift ;;
             --dry-run)   INSTALL_MODE=dry-run; shift ;;
+            -y|--yes)    export INSTALL_YES=1; shift ;;
             -h|--help)
-                echo "Usage: install.sh [--no-sudo] [--list] [--dry-run] [--only a,b | --with a,b] [--without a,b]"
+                echo "Usage: install.sh [--yes] [--no-sudo] [--list] [--dry-run] [--only a,b | --with a,b] [--without a,b]"
+                echo "  -y, --yes              Ask nothing: proceed, and every prompt takes its default"
                 echo "  --no-sudo, --no-root   Skip every step that needs a root password"
                 echo "  --list                 Show this OS's modules and which run by default"
                 echo "  --dry-run              Print the steps that would run, install nothing"
@@ -147,8 +149,8 @@ main() {
     echo -e "${GREEN}System detected: ${BLUE}$os_type${NC}"
     echo ""
 
-    # Ask for confirmation (listing and dry runs change nothing)
-    if [[ "$INSTALL_MODE" == run ]]; then
+    # Ask for confirmation (listing and dry runs change nothing; --yes has said yes)
+    if [[ "$INSTALL_MODE" == run && "${INSTALL_YES:-}" != 1 ]]; then
         read -p "Do you want to proceed with installation? (y/n): " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then

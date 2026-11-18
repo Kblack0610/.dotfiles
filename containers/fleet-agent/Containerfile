@@ -1,0 +1,50 @@
+# fleet-agent: the whole agent runtime in one image, so a session runs on any box with docker.
+# What goes in is `fleet-node install`, the same definition a native host runs; this file adds
+# only the user, sshd, and the split between what the image owns and what a login owns.
+#
+# Build from the repo root (CI does): docker build -f containers/fleet-agent/Containerfile .
+# Run it with fleet-agent (.local/bin/fleet-agent), never by hand: that script names the volumes.
+#
+# Nothing secret or login-shaped is in a layer. At build time HOME is moved to /opt/fleet/home
+# (the seed); at run time HOME is a named volume and the entrypoint syncs the seed into it.
+FROM debian:trixie-slim
+
+ARG FLEET_USER=kblack0610
+ARG FLEET_UID=1000
+# The dotfiles commit this image was built from; CI passes the sha it tags with.
+ARG FLEET_REV=dev
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 FLEET_USER=${FLEET_USER}
+
+# The floor fleet-node install itself needs (sudo, curl, git, stow), plus what the entrypoint
+# uses (rsync, sshd). zsh is the login shell, as on every native host.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      sudo ca-certificates curl git stow rsync zsh openssh-server procps less tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u "$FLEET_UID" -s /bin/zsh "$FLEET_USER" \
+    && usermod -p '*' "$FLEET_USER" \
+    && echo "$FLEET_USER ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/fleet-agent
+
+USER ${FLEET_USER}
+WORKDIR /home/${FLEET_USER}
+COPY --chown=${FLEET_UID}:${FLEET_UID} . /home/${FLEET_USER}/.dotfiles
+RUN ~/.dotfiles/.local/bin/fleet-node install \
+    && rm -rf ~/.cargo/registry ~/.cargo/git ~/.cache ~/.npm \
+    && echo "$FLEET_REV" >~/.fleet-agent-rev
+
+USER root
+# Claude Code updates itself in place; the image tag is what pins it, so a rebuild carries
+# upgrades. /etc/environment reaches ssh sessions through pam_env.
+RUN mkdir -p /opt/fleet /etc/ssh/keys /run/sshd \
+    && mv /home/${FLEET_USER} /opt/fleet/home \
+    && install -d -o "$FLEET_UID" -g "$FLEET_UID" -m 700 /home/${FLEET_USER} \
+    && echo DISABLE_AUTOUPDATER=1 >>/etc/environment \
+    && rm -f /etc/ssh/ssh_host_*
+COPY containers/fleet-agent/sshd.conf /etc/ssh/sshd_config.d/fleet-agent.conf
+COPY containers/fleet-agent/entrypoint.sh /usr/local/sbin/fleet-agent-entrypoint
+
+LABEL org.opencontainers.image.source=https://github.com/Kblack0610/.dotfiles \
+      org.opencontainers.image.description="fleet-agent: the agent runtime (fleet-node install) behind sshd" \
+      org.opencontainers.image.revision=${FLEET_REV}
+EXPOSE 22
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/sbin/fleet-agent-entrypoint"]
