@@ -292,7 +292,7 @@ similar_rows() {
     }
     [ -z "$got" ] || out+="$(awk -F'\t' -v n="$n" -v l="$lane" '$1 != "-" { printf "%s\t%s\t%s\t%s\t%s\n", n, $1, $2, l, $3 }' <<<"$got")"$'\n'
   done
-  sort -s -t $'\t' -k3,3nr <<<"$out" | sed '/^$/d' | head -n "$INBOX_SIMILAR_TOP"
+  sort -s -t $'\t' -k3,3nr <<<"$out" | awk -v top="$INBOX_SIMILAR_TOP" 'NF && ++k <= top'
 }
 
 # drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
