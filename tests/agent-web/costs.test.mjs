@@ -451,10 +451,11 @@ test("a tool row with parts opens to every one of them, and Other opens to each 
   assert.match(h, /data-tokpart="Bash" class="tokpart sel"><td><span class="muted">-<\/span> Bash/);
   for (const n of ["sed -n", "grep", "cat", "rg", "git show", "ls"]) assert.match(h, new RegExp(`padding-left:1\\.5em">${n}<`), `${n} is named`);
   assert.match(h, /padding-left:1\.5em">ls<\/td>.*background:var\(--c-other\)/, "past the four slots, a named row is grey");
-  const nested = tail(tokens(), { "Other (22)": true, "Other (22)/Edit": true });
-  assert.match(nested, /data-tokpart="Other \(22\)\/Edit"/);
+  // Keyed "Other", not its label: the count differs between windows and snapshots.
+  const nested = tail(tokens(), { Other: true, "Other/Edit": true });
+  assert.match(nested, /data-tokpart="Other\/Edit"/);
   assert.match(nested, /padding-left:3em">code \.rs</);
-  assert.doesNotMatch(nested, /data-tokpart="Other \(22\)\/Write"/, "nothing splits Write, so it does not open");
+  assert.doesNotMatch(nested, /data-tokpart="Other\/Write"/, "nothing splits Write, so it does not open");
 });
 
 test("a snapshot from before the parts still draws its tool table, with nothing to open", () => {

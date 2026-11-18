@@ -272,7 +272,7 @@ impl CostsView {
             KeyCode::Char('x') => {
                 let (by, window, open) = (self.by, self.window, self.sections_open);
                 let (history_open, inner) = (self.history_open, self.inner);
-                let (tokens, langfuse) = (self.tokens, self.langfuse);
+                let (tokens, langfuse) = (std::mem::take(&mut self.tokens), self.langfuse);
                 *self = CostsView {
                     by,
                     window,
@@ -383,7 +383,6 @@ impl CostsView {
             KeyCode::Char('U') => {
                 self.reveal("tokens");
                 self.tokens.day = !self.tokens.day;
-                self.tokens.part = None;
                 Some(None)
             }
             KeyCode::Char('i') => {
@@ -506,7 +505,7 @@ impl CostsView {
                 }
                 "totals" => self.totals(&b, p, now, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
-                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w)),
+                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), &self.tokens, p, now, w)),
                 "langfuse" => {
                     out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
                     if b.tokens.is_some() {

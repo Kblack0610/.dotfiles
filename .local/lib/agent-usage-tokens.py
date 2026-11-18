@@ -11,7 +11,8 @@
 No scanner of its own: every number comes from one of the counted tools, so this file only
 joins them. Who owns which number:
   claude-recall tool-output  per-response tokens, context per response, tool output and its
-                             carried cost, by project, tool and Bash command head, and
+                             carried cost, by project, tool, Bash command head and each
+                             tool by file type (by_tool_filetype), and
                              the stretches that ran longest without a compaction (long_runs),
                              cache write by cause, the context split (start, tool,
                              conversation), responses per session, hook-forced turns

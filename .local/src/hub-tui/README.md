@@ -76,7 +76,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `o`, Esc, Enter | Daily: show the outbox, `o` or Esc back to the note; on the outbox, Enter opens it in `$EDITOR` in a new tmux window |
 | Left/Right | Sessions: step the inner tab (Sessions, Runners, Shepherd), except while a query is typed or an action is armed |
 | `j`/`k`, Enter | Sessions > Runners: pick a row, open its runner's page; on a runner's page `[` / `]` step to the previous / next runner and Esc goes back |
-| `u`, `U`, `i`, `l` | Costs: open or fold Where the tokens go, switch its window between 7d and yesterday, open the next tool row's parts (Bash by command, a tool by file type, Other to every tool it holds; past the last it closes), open or fold What Langfuse sees (typing a query, they are text) |
+| `u`, `U`, `i`, `l` | Costs: open or fold Where the tokens go, switch its window between 7d and yesterday, open the next row that has parts, at any depth (Bash by command, a tool by file type, Other to every tool it holds, and each of those to its file types; past the last it closes), open or fold What Langfuse sees (typing a query, they are text) |
 | `/`, `f`, `s`, `S`, `x`, Esc | Sessions > Runners: the shared table keys (query as `tier:3 state:failed -who:x`, state chip, sort, direction, clear); Esc clears the view |
 | `n` / `N` | Log: the next / previous section |
 | `h`, `j`/`k`, Enter, Esc | Log: list the recorded days, pick one, open it, close the list |

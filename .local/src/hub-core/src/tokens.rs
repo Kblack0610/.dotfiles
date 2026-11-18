@@ -1,5 +1,6 @@
-//! The Costs tab's "Where the tokens go" and "What Langfuse sees": tool output by tool and by Bash command, over the newest week
-//! of snapshots and the newest day. It sums `~/.agent/token-usage/<day>.json`, the nightly record
+//! The Costs tab's "Where the tokens go" and "What Langfuse sees": tool output by tool, each tool
+//! opening to its parts (Bash by command, the rest by file type), over the newest week of
+//! snapshots and the newest day. It sums `~/.agent/token-usage/<day>.json`, the nightly record
 //! `agent-usage tokens snapshot` writes from `claude-recall tool-output`; running that from a view
 //! takes minutes. `costs::read` parses the files once; this sums the parsed days, and the dollars
 //! per tool are the tool cut over the same days.
@@ -15,7 +16,7 @@ const WEEK_DAYS: usize = 7;
 /// Tools named in the table before the rest fold into an Other that opens to every one of them:
 /// agent-web's four chart `SLOTS` (dashboards rule 5).
 const NAMED: usize = 4;
-/// The tool the `by_command` heads split.
+/// The tool whose parts are the `by_command` heads; every other tool's are its `by_tool_filetype` rows.
 pub const SHELL: &str = "Bash";
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]

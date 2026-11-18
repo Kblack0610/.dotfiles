@@ -6,30 +6,51 @@ use hub_core::costs::tokens as count;
 use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{clip_line, Table};
+use crate::fit::{clip_line, Cell, Table};
 use crate::fmt::{clock, dur, kilo, pct, Palette};
 
 fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
 
-/// The tokens fold: `u` folds or opens it, `U` switches its window, `i` opens the next tool row
-/// that has parts (its index in the window's tools) and past the last closes it. None is the
-/// default, open (dashboards rule 4).
-#[derive(Clone, Copy, Debug, Default)]
+/// The tokens fold: `u` folds or opens it, `U` switches its window, `i` opens the next row that
+/// has parts, at any depth, and past the last closes it. None is the default, open (dashboards
+/// rule 4).
+#[derive(Clone, Debug, Default)]
 pub struct TokensView {
     pub open: Option<bool>,
     pub day: bool,
-    pub part: Option<usize>,
+    /// The open row as the keys of it and its parents (`part_key`), empty when none is open: a
+    /// name, not an index, so a new snapshot that reorders the tools keeps the same row open.
+    pub part: Vec<String>,
+}
+
+/// A row's key in an open path: an Other row is "Other", since its label counts the tools it
+/// holds and that count differs between windows and snapshots (agent-web keys it the same way).
+fn part_key(r: &Share) -> &str {
+    if r.other {
+        "Other"
+    } else {
+        &r.name
+    }
+}
+
+/// Every row with parts as its path, a parent before its own parts: the order `i` steps in.
+fn openable(rows: &[Share], pre: &[String], out: &mut Vec<Vec<String>>) {
+    for r in rows.iter().filter(|r| !r.parts.is_empty()) {
+        let path = [pre, &[part_key(r).to_string()]].concat();
+        out.push(path.clone());
+        openable(&r.parts, &path, out);
+    }
 }
 
 impl TokensView {
-    pub fn is_open(self, t: Option<&Tokens>) -> bool {
+    pub fn is_open(&self, t: Option<&Tokens>) -> bool {
         t.is_some() && self.open.unwrap_or(true)
     }
 
     /// The window the fold shows.
-    pub fn split(self, t: &Tokens) -> &Split {
+    pub fn split<'a>(&self, t: &'a Tokens) -> &'a Split {
         if self.day {
             &t.day
         } else {
@@ -37,17 +58,23 @@ impl TokensView {
         }
     }
 
-    /// The tool row `i` opens next: the first after the open one with parts, None past the last.
-    pub fn next_part(self, s: &Split) -> Option<usize> {
-        let from = self.part.map_or(0, |i| i + 1);
-        (from..s.tools.len()).find(|&i| !s.tools[i].parts.is_empty())
+    /// The row `i` opens next: the one after the open one, the first when none is open or the
+    /// open one is gone from this snapshot, and none past the last.
+    pub fn next_part(&self, s: &Split) -> Vec<String> {
+        let mut all = vec![];
+        openable(&s.tools, &[], &mut all);
+        let at = all
+            .iter()
+            .position(|p| *p == self.part)
+            .map_or(0, |i| i + 1);
+        all.into_iter().nth(at).unwrap_or_default()
     }
 }
 
 /// Where the tokens go: a head line with the week's total, and open, one window's two tables.
 pub fn tokens(
     t: Option<&Tokens>,
-    v: TokensView,
+    v: &TokensView,
     p: Palette,
     now: i64,
     w: usize,
@@ -104,7 +131,7 @@ pub fn tokens(
         ),
         w,
     ));
-    out.extend(token_table(&s.tools, v.part, p, w));
+    out.extend(token_table(&s.tools, &v.part, p, w));
     out.push(clip_line(
         Line::styled(
             "  + opens: i the next tool's rows; nightly, claude-recall tool-output; U yesterday | 7d",
@@ -266,31 +293,31 @@ fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
     .fit(w, p.head())
 }
 
-/// The tool table: a row with parts wears `+`, and the open one (`part`) wears `-` with every part
-/// under it, indented.
-fn token_table(tools: &[Share], part: Option<usize>, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let cells = |r: &Share, name: String| {
-        vec![
-            name.into(),
-            r.calls.to_string().into(),
-            format!("{} ch", count(Some(r.chars as f64))).into(),
-            format!("{:.1}%", r.share * 100.0).into(),
-            count(Some(r.carried_tokens as f64)).into(),
-        ]
-    };
-    let mut rows = vec![];
-    for (i, r) in tools.iter().enumerate() {
-        let on = part == Some(i) && !r.parts.is_empty();
-        let mark = match (r.parts.is_empty(), on) {
-            (true, _) => "  ",
-            (false, false) => "+ ",
-            (false, true) => "- ",
-        };
-        rows.push(cells(r, format!("{mark}{}", r.name)));
-        if on {
-            rows.extend(r.parts.iter().map(|c| cells(c, format!("    {}", c.name))));
+/// The tool table: a row with parts wears `+`, and the open one (`part`) and its parents wear `-`
+/// with every part under them, indented a step per level.
+fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Line<'static>> {
+    fn walk(rs: &[Share], part: &[String], depth: usize, rows: &mut Vec<Vec<Cell>>) {
+        for r in rs {
+            let on = !r.parts.is_empty() && part.first().is_some_and(|k| k == part_key(r));
+            let mark = match (r.parts.is_empty(), on) {
+                (true, _) => "  ",
+                (false, false) => "+ ",
+                (false, true) => "- ",
+            };
+            rows.push(vec![
+                format!("{}{mark}{}", "    ".repeat(depth), r.name).into(),
+                r.calls.to_string().into(),
+                format!("{} ch", count(Some(r.chars as f64))).into(),
+                format!("{:.1}%", r.share * 100.0).into(),
+                count(Some(r.carried_tokens as f64)).into(),
+            ]);
+            if on {
+                walk(&r.parts, &part[1..], depth + 1, rows);
+            }
         }
     }
+    let mut rows = vec![];
+    walk(tools, part, 0, &mut rows);
     Table {
         header: vec!["BY TOOL", "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
         rows,
@@ -334,7 +361,13 @@ mod tests {
                 },
                 row("WebSearch", 2_000_000, 0.005),
                 Share {
-                    parts: vec![row("Edit", 9_000_000, 0.02)],
+                    parts: vec![
+                        Share {
+                            parts: vec![row("code .rs", 8_000_000, 0.018)],
+                            ..row("Edit", 9_000_000, 0.02)
+                        },
+                        row("Write", 1_000_000, 0.002),
+                    ],
                     ..row("Other (22)", 10_000_000, 0.026)
                 },
             ],
@@ -454,7 +487,7 @@ mod tests {
         );
     }
 
-    fn token_text(t: Option<&Tokens>, v: TokensView, w: usize) -> Vec<String> {
+    fn token_text(t: Option<&Tokens>, v: &TokensView, w: usize) -> Vec<String> {
         tokens(t, v, Palette::default(), NOW, w)
             .iter()
             .map(crate::fit::plain)
@@ -464,7 +497,7 @@ mod tests {
     #[test]
     fn the_tokens_fold_starts_open_and_folds_to_one_line() {
         let t = token_fixture(false);
-        let l = token_text(Some(&t), TokensView::default(), 80);
+        let l = token_text(Some(&t), &TokensView::default(), 80);
         assert!(
             l[0].starts_with("- WHERE THE TOKENS GO") && l.len() > 1,
             "{l:?}"
@@ -472,9 +505,9 @@ mod tests {
         let shut = TokensView {
             open: Some(false),
             day: false,
-            part: None,
+            part: vec![],
         };
-        let l = token_text(Some(&t), shut, 80);
+        let l = token_text(Some(&t), &shut, 80);
         assert_eq!(
             l,
             ["+ WHERE THE TOKENS GO  7d 18.0B, tool output 15%  u opens it"]
@@ -484,27 +517,27 @@ mod tests {
     #[test]
     fn a_stale_snapshot_opens_the_fold_and_says_so_until_it_is_folded() {
         let t = token_fixture(true);
-        let l = token_text(Some(&t), TokensView::default(), 80);
+        let l = token_text(Some(&t), &TokensView::default(), 80);
         assert!(l[0].starts_with("- WHERE THE TOKENS GO"), "{l:?}");
         assert!(l[0].contains("stale, 2026-11-05"), "{l:?}");
         assert!(l.len() > 1);
         let shut = TokensView {
             open: Some(false),
             day: false,
-            part: None,
+            part: vec![],
         };
-        assert_eq!(token_text(Some(&t), shut, 80).len(), 1);
+        assert_eq!(token_text(Some(&t), &shut, 80).len(), 1);
     }
 
     #[test]
     fn no_snapshot_is_a_head_with_nothing_to_open() {
-        let l = token_text(None, TokensView::default(), 80);
+        let l = token_text(None, &TokensView::default(), 80);
         assert_eq!(l.len(), 1);
         assert!(l[0].contains("no snapshot"), "{l:?}");
         let open = TokensView {
             open: Some(true),
             day: false,
-            part: None,
+            part: vec![],
         };
         assert!(!open.is_open(None));
     }
@@ -516,7 +549,7 @@ mod tests {
             open: Some(true),
             ..Default::default()
         };
-        let l = token_text(Some(&t), v, 80);
+        let l = token_text(Some(&t), &v, 80);
         let all = l.join("\n");
         assert!(all.contains("7d: 18.0B context, 120k/response"), "{all}");
         assert!(
@@ -530,14 +563,14 @@ mod tests {
         );
         assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
         v.day = true;
-        let all = token_text(Some(&t), v, 80).join("\n");
+        let all = token_text(Some(&t), &v, 80).join("\n");
         assert!(all.contains("yesterday: 3.9B context"), "{all}");
         let stale = Tokens {
             stale: true,
             date: "2026-11-02".into(),
             ..t.clone()
         };
-        let all = token_text(Some(&stale), v, 80).join("\n");
+        let all = token_text(Some(&stale), &v, 80).join("\n");
         assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
     }
 
@@ -545,25 +578,53 @@ mod tests {
     fn i_opens_each_tool_with_parts_in_turn_and_past_the_last_closes() {
         let t = token_fixture(false);
         let mut v = TokensView::default();
-        v.part = v.next_part(v.split(&t));
-        assert_eq!(v.part, Some(0), "Bash first");
-        let all = token_text(Some(&t), v, 80).join("\n");
+        let step = |v: &mut TokensView| v.part = v.next_part(v.split(&t));
+        step(&mut v);
+        assert_eq!(v.part, ["Bash"], "Bash first");
+        let all = token_text(Some(&t), &v, 80).join("\n");
         assert!(
-            all.contains("- Bash") && all.contains("    sed -n"),
+            all.contains("- Bash") && all.contains("      sed -n"),
+            "{all}"
+        );
+        assert!(!all.contains("Edit"), "only the open row's parts: {all}");
+        step(&mut v);
+        // WebSearch has no parts, so it is skipped; Other is keyed "Other", not its count.
+        assert_eq!(v.part, ["Other"]);
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(
+            all.contains("- Other (22)") && all.contains("    + Edit") && !all.contains("sed -n"),
             "{all}"
         );
         assert!(
-            !all.contains("    Edit"),
-            "only the open row's parts: {all}"
-        );
-        v.part = v.next_part(v.split(&t));
-        assert_eq!(v.part, Some(2), "WebSearch has no parts, so it is skipped");
-        let all = token_text(Some(&t), v, 80).join("\n");
-        assert!(
-            all.contains("- Other (22)") && all.contains("    Edit") && !all.contains("sed -n"),
+            !all.contains("code .rs") && !all.contains("+ Write"),
             "{all}"
         );
-        v.part = v.next_part(v.split(&t));
-        assert_eq!(v.part, None, "past the last, it closes");
+        step(&mut v);
+        assert_eq!(v.part, ["Other", "Edit"], "a tool inside Other opens too");
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(
+            all.contains("    - Edit") && all.contains("          code .rs"),
+            "{all}"
+        );
+        step(&mut v);
+        assert!(v.part.is_empty(), "past the last, it closes");
+    }
+
+    #[test]
+    fn the_open_row_is_a_name_so_a_reordered_snapshot_keeps_it_open() {
+        let mut t = token_fixture(false);
+        let v = TokensView {
+            part: vec!["Other".into(), "Edit".into()],
+            ..Default::default()
+        };
+        t.week.tools.reverse();
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(all.contains("code .rs") && !all.contains("sed -n"), "{all}");
+        t.week.tools.retain(|r| !r.other);
+        assert_eq!(
+            v.next_part(&t.week),
+            ["Bash"],
+            "a row gone from the snapshot starts over"
+        );
     }
 }

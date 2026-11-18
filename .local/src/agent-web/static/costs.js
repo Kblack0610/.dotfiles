@@ -342,7 +342,7 @@ function costsBurn(d) {
 function tokensTable(rows) {
   const out = [];
   const walk = (rs, depth, pre) => rs.forEach((r, i) => {
-    const path = pre + r.name, kids = r.parts || [], on = kids.length > 0 && !!cost.tokOpen[path];
+    const path = pre + (r.other ? "Other" : r.name), kids = r.parts || [], on = kids.length > 0 && !!cost.tokOpen[path];
     const mark = kids.length ? `<span class="muted">${on ? "-" : "+"}</span> ` : "";
     out.push(`<tr${kids.length ? ` data-tokpart="${esc(path)}" class="tokpart${on ? " sel" : ""}"` : ""}>` +
       `<td${depth ? ` style="padding-left:${depth * 1.5}em"` : ""}>${mark}${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +

@@ -681,7 +681,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 @media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
 #sec-spend tr[data-sid] { cursor: pointer; }
 #sec-tokens tr[data-tokpart] { cursor: pointer; }
-#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#sec-spend tr[data-sid].sel, #sec-tokens tr.tokpart.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* Releases > an app's status page (releases.js appPageHtml): one check per panel, its uptime
    windows on a line, 90 day bars of one height (30 on a phone, the newest), then 24h latency. */
 .appbanner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
