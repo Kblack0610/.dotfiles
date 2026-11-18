@@ -14,11 +14,10 @@ first_step() {
   awk '/^    steps:$/ {s=1; next} s && /^      #/ {next} s && /^      - / {n++} n==1 {print} n==2 {exit}' "$1"
 }
 
-@test "the skill lint's first step is ci-fresh-workspace, on self-hosted runners only" {
+@test "the skill lint's first step is ci-fresh-workspace alone, on self-hosted runners only" {
   run first_step "$WF"
   assert_success
-  assert_line --partial "run: ci-fresh-workspace"
-  assert_line --partial "if: runner.environment == 'self-hosted'"
+  assert_equal "$(printf "%s\n" "${lines[@]}" | sed -E "s/^ +(- )?//" | sort | tr "\n" "|")" "if: runner.environment == 'self-hosted'|name: Fresh workspace|run: ci-fresh-workspace|"
 }
 
 @test "first_step reads the first step, not a later one" {
