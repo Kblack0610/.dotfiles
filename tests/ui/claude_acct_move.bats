@@ -184,5 +184,5 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   run "$ACCT" unpark "$p2"
   assert_success
   wait_until 'registered_sid sid-w2 "$ALT"'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(ls -A "$HOME/.agent/parked" | grep -v "^\.lock\.")" ]   # the .lock.<session> files stay
 }
