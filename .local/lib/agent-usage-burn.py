@@ -962,8 +962,10 @@ def main():
         if not a.json:
             print_fleet_cost(d)
         return
-    # A session with no fleet-cost row cost nothing priceable: its model had no fit (named in
-    # fleet_cost.unpriced), so its cost is unknown, never $0.
+    # A session with no fleet-cost row has no price of its own: its model had no fit (named in
+    # fleet_cost.unpriced) or it ran on the gateway (the other_harness.gateway line), so its cost is
+    # unknown, never $0, and its origin counts it in sessions_unpriced. Per merged PR divides the
+    # whole fleet total, gateway and helper lines included: what the fleet spent per PR it merged.
     usd_by_sid = {r["sid"]: r["usd"] for r in d["by_session"]} if d else {}
     sessions, by_origin, first_by_origin = {}, defaultdict(Counter), defaultdict(list)
     zero_ctx = sess_ctx = 0
@@ -985,6 +987,7 @@ def main():
         o = by_origin[origin]
         o["sessions"] += 1
         o["cost_usd"] += c or 0
+        o["sessions_unpriced"] += c is None
         o["turns"] += v["turns"] - v["subagent_turns"]
         o["context"] += v["context"] - v["subagent_context"]
         o["opus_turns"] += opus("m:")
@@ -1051,7 +1054,7 @@ def main():
         "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
                          "share": round(acc["mix"][k]["turns"] / turns_all, 3) if turns_all else None}
                      for k in MIX},
-        "by_origin": {k: {**v, "cost_usd": round(v["cost_usd"], 2)} if k != "subagent" else dict(v)
+        "by_origin": {k: {**v, "cost_usd": round(v["cost_usd"], 2) if d else None} if k != "subagent" else dict(v)
                       for k, v in sorted(by_origin.items(), key=lambda x: (-x[1]["cost_usd"], -x[1]["context"]))},
         "by_session": sessions,
         "cache_write_by_cause": {k: dict(v) for k, v in sorted(acc["cw_cause"].items(), key=lambda x: -x[1]["cache_write"])},

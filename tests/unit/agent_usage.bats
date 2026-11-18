@@ -335,9 +335,9 @@ burn() {
   burn_home
   export PROM_LIB="$HOME/prom-down.sh"
   printf 'prom_q() { return 7; }\n' > "$PROM_LIB"
-  run sh -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.cost, .per_merged_pr.cost_usd, .by_session.s1.cost_usd, (.cost_error | test(\"Prometheus\")), .registry.cost_usd + 0]'"
+  run sh -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.cost, .per_merged_pr.cost_usd, .by_session.s1.cost_usd, .by_origin.run.cost_usd, .by_origin.run.sessions_unpriced, (.cost_error | test(\"Prometheus\")), .registry.cost_usd + 0]'"
   assert_success
-  assert_output '[null,null,null,true,5]'
+  assert_output '[null,null,null,null,1,true,5]'
 }
 
 @test "burn: dream runs count real runs only, by night" {

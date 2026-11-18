@@ -36,7 +36,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
 @test "snapshot: burn with no dollar figure leaves cost null and says why in errors" {
   printf 'prom_q() { return 7; }\n' > "$HOME/prom-down.sh"
   PROM_LIB="$HOME/prom-down.sh" run "$AU" tokens snapshot
-  assert_equal "$(snap '[.cost_per_merged_pr, .fleet_cost, (.errors | map(test("^fleet-cost: Prometheus")) | any)]')" '[null,null,true]'
+  assert_equal "$(snap '[.cost_per_merged_pr, .fleet_cost, (.errors | map(test("^burn: no dollar figure [(]Prometheus")) | any)]')" '[null,null,true]'
 }
 
 @test "snapshot: by tool, by command head, cost by project, and the stretches between compactions" {

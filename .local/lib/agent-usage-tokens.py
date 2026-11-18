@@ -114,7 +114,7 @@ def snapshot(day):
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
     if (got["burn"][0] or {}).get("cost_error"):   # burn ran, but has no dollar figure
-        errors.append(f"fleet-cost: {got['burn'][0]['cost_error']}")
+        errors.append(f"burn: no dollar figure ({got['burn'][0]['cost_error']})")
     whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
     rows = whole.get("rows") or {}
     proj, cmd, tool, skill = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
