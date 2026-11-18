@@ -1204,7 +1204,7 @@ skip_known() {
   return 1
 }
 
-# expire_skips <now>: drop each skip older than FLEET_SHEPHERD_SKIP_MAX_MIN, and its key from $HANDED,
+# expire_skips <now>: drop each skip older than FLEET_SHEPHERD_SKIP_MAX_MIN, its key from $PAGED, and from $HANDED,
 # so the line comes back plain and is handed afresh; kept in $HANDED it would come back unhandled,
 # aged from its first handing, and page the human high at once. The log keeps the old why.
 expire_skips() {
@@ -1214,6 +1214,9 @@ expire_skips() {
   awk -F'\t' -v c="$cut" '!($3 != "" && $3 < c)' "$SKIPPED" > "$SKIPPED.tmp" && mv -f "$SKIPPED.tmp" "$SKIPPED"
   awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($1 in g)' <(printf '%s\n' "$gone") "$HANDED" > "$HANDED.tmp" \
     && mv -f "$HANDED.tmp" "$HANDED"
+  # and from $PAGED: a line paged before its skip may page again if it is left once more
+  awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($0 in g)' <(printf '%s\n' "$gone") "$PAGED" > "$PAGED.tmp" \
+    && mv -f "$PAGED.tmp" "$PAGED"
   while IFS=$'\t' read -r k why t; do
     cmd_log "skip expired after $(( ($1 - t) / 3600 ))h: $k (was: $why)"
   done <<<"$gone"

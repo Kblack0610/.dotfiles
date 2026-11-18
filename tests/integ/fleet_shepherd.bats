@@ -2028,11 +2028,13 @@ gw_accts() {
   # long ago: it comes back as a fresh line, not as an owed one that pages high.
   sed -i "s/\t[0-9]*$/\t$(( $(date +%s) - 241 * 60 ))/" "$FLEET_SHEPHERD_DIR/.skipped"
   sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
+  # paged once before it was skipped: the expiry spends that page too, so a later miss pages again
+  printf '%s\n' 'nudge STALLED: a f-a' >> "$FLEET_SHEPHERD_DIR/.paged"
   run checked
   assert_output 'nudge STALLED: a f-a'
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
-  run grep -c unhandled "$HOME/pages"
-  assert_output 0
+  [ ! -s "$FLEET_SHEPHERD_DIR/.paged" ]
+  [ ! -e "$HOME/pages" ] || ! grep -q unhandled "$HOME/pages"
   run grep 'skip expired after 4h: nudge STALLED: a f-a (was: regate once the pool fix lands)' "$FLEET_SHEPHERD_DIR/log.md"
   assert_success
 }
