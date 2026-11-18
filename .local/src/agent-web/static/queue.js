@@ -330,11 +330,11 @@ function qCompose() {
     `<select id="q-project"><option value="">project...</option>${opt(qst.projects, d.project)}</select>` +
     `<select id="q-mode">${["oneshot", "plan"].map((m) => `<option value="${m}"${m === d.mode ? " selected" : ""}>${Q_MODE[m]}</option>`).join("")}</select>` +
     `<select id="q-priority">${opt(Q_PRIORITIES, d.priority)}</select>` +
-    `<input id="q-tags" placeholder="tags: night, at:02:30" value="${esc(d.tags)}">` +
+    `<input id="q-tags" placeholder="tags: ui, at:02:30" value="${esc(d.tags)}">` +
     `<button class="btn primary" id="q-add"${qst.busy ? " disabled" : ""}>${qst.busy ? "Adding..." : "Add to queue"}</button>` +
     `</div><div class="err" id="q-msg">${esc(qst.msg)}</div>` +
     `<div class="muted qhint">Run to PR starts when a slot frees, by priority, and ends at a PR; Plan first opens a planning session now. ` +
-    `night waits for the night window and stops at the PR; at:HH:MM waits for that time.</div></div>`;
+    `at:HH:MM waits for that time.</div></div>`;
 }
 
 function renderQueue() {

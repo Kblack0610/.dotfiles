@@ -98,7 +98,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   printf "slug: b\n${hdr}finished: 2026-11-07T02:00:00Z\nstatus: ok\nweight: light\n---\nb\n" \
     > "$AGENT_QUEUE_DIR/done/2026-11-07/20261107-000000-b.md"
   printf "slug: c\n${hdr}after: b\nweight: light\n---\nc\n" > "$AGENT_QUEUE_DIR/queued/20261107-010000-c.md"
-  printf "slug: n\n${hdr}tags: night\nweight: light\n---\nn\n" > "$AGENT_QUEUE_DIR/queued/20261107-010001-n.md"
+  printf "slug: n\n${hdr}tags: at:23:59\nweight: light\n---\nn\n" > "$AGENT_QUEUE_DIR/queued/20261107-010001-n.md"
   printf "slug: p\n${hdr}mode: plan\n---\np\n" > "$AGENT_QUEUE_DIR/queued/20261107-010002-p.md"
   printf "slug: q\n${hdr}phases: one two\n---\nq\n" > "$AGENT_QUEUE_DIR/queued/20261107-010003-q.md"
   export AGENT_QUEUE_NOW=12:00
@@ -111,7 +111,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   c="$("$AQ" show c --json)"
   [ "$(jq -r '.hold // "none"' <<<"$c")" = none ]
   [ "$(jq -r .ready <<<"$c")" = 2026-11-07T02:00:00Z ]
-  [[ "$(jq -r .hold <<<"$("$AQ" show n --json)")" == night* ]]
+  [ "$(jq -r .hold <<<"$("$AQ" show n --json)")" = at:23:59 ]
   [ "$(jq -r .weight <<<"$("$AQ" show p --json)")" = heavy ]
   [ "$(jq -r .weight <<<"$("$AQ" show q --json)")" = heavy ]
 }
@@ -560,32 +560,20 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_output "after x closed failed, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show x"
 }
 
-@test "night and at: tags hold until their time, other tags are labels" {
-  "$AQ" add --project game --slug tonight --priority urgent --tags night "a"
+@test "at: tags hold until their time, other tags are labels" {
   "$AQ" add --project game --slug later --priority high --tags "at:18:00 ui" "b"
   "$AQ" add --project game --slug now --tags ui "c"
   AGENT_QUEUE_NOW=12:00 run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = now ]
   AGENT_QUEUE_NOW=18:30 run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = later ]
-  AGENT_QUEUE_NOW=02:00 run "$AQ" next --json
-  [ "$(jq -r .slug <<<"$output")" = tonight ]
-  AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=23:30 run "$AQ" next --json
-  [ "$(jq -r .slug <<<"$output")" = tonight ]
 }
 
-@test "the night window is the clock hours' night part, and with none a night item holds and says why" {
+@test "a night tag is a label: it holds nothing at any hour" {
   "$AQ" add --project game --slug tonight --tags night "a"
-  export MACHINE_MODE_HOURS="$BATS_TEST_TMPDIR/hours"
-  printf 'day|02:00-22:00|open|x\nnight|22:00-02:00|full|y\n' > "$MACHINE_MODE_HOURS"
-  AGENT_QUEUE_NOW=22:30 run "$AQ" next --json
+  AGENT_QUEUE_NOW=12:00 run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = tonight ]
-  AGENT_QUEUE_NOW=03:00 run "$AQ" next --json
-  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
-  printf 'day|00:00-24:00|open|x\n' > "$MACHINE_MODE_HOURS"
-  AGENT_QUEUE_NOW=02:00 run "$AQ" next --json
-  [ "$(jq -r '.slug // empty' <<<"$output")" != tonight ]
-  [ "$(jq -r .hold <<<"$("$AQ" show tonight --json)")" = "night (the hours file has no night part)" ]
+  [ "$(jq -r '.hold // "none"' <<<"$("$AQ" show tonight --json)")" = none ]
 }
 
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
@@ -674,7 +662,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 @test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_DIR/game/$i.md"; done
-  "$AQ" add --project game --slug one --tags "night ask:h1=a+b" "one"
+  "$AQ" add --project game --slug one --tags "ui ask:h1=a+b" "one"
   "$AQ" add --project game --slug two --tags "ask:h1=a ask:h2=b" "two"
   "$AQ" add --project game --slug free "no ask"
   "$AQ" add --project game --slug gone --tags "ask:h2=a" "gone"
@@ -810,7 +798,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
   chmod +x "$SANDBOX/bin/model-lane"
-  "$AQ" add --project game --running --slug forms --tags "night" "fill the store forms" >/dev/null
+  "$AQ" add --project game --running --slug forms --tags "ui" "fill the store forms" >/dev/null
   "$AQ" set forms "lane_run=r-forms" >/dev/null
   run "$AQ" requeue forms --hold "../x"
   assert_failure
@@ -824,12 +812,12 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" requeue forms --hold mac-desktop
   assert_success; assert_output --partial "forms: running -> queued"
   f="$(item queued forms)"
-  [ "$(field "$f" tags)" = "night hold:mac-desktop" ]
+  [ "$(field "$f" tags)" = "ui hold:mac-desktop" ]
   [ -z "$(field "$f" lane_run)" ]
   [ -z "$(field "$f" started)" ]
   # A second requeue adds the tag once.
   "$AQ" requeue forms --hold mac-desktop >/dev/null
-  [ "$(field "$(item queued forms)" tags)" = "night hold:mac-desktop" ]
+  [ "$(field "$(item queued forms)" tags)" = "ui hold:mac-desktop" ]
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
   assert_failure
   run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
@@ -845,7 +833,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   # Started, its hold tag is spent: its own session may claim the desktop, and a later requeue
   # must not hold it behind that claim.
   "$AQ" move forms running >/dev/null
-  [ "$(field "$(item running forms)" tags)" = night ]
+  [ "$(field "$(item running forms)" tags)" = ui ]
 }
 
 @test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
@@ -1683,7 +1671,7 @@ notes --profile bnb ptask game --agent run gm-9"
   AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --priority urgent --slug d1 "a session's urgent"
   assert_success
   assert_not_called 'start --item d1'
-  run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
+  run "$AQ" add --project game --priority urgent --tags at:23:59 --slug n1 "tonight"
   assert_success
   assert_output --partial 'n1 is held'
   assert_not_called 'start --item n1'
@@ -1798,7 +1786,7 @@ EOF
   assert_line --index 2 --regexp '^would queue my-plan-p4	phases 4 5	after my-plan-p2$'
   assert_line --index 4 --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
-  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --priority high --tags night
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --priority high --tags ui
   assert_success
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
   f="$(item queued my-plan-p2)"
@@ -1807,7 +1795,7 @@ EOF
   [ "$(field "$f" plan)" = "$SANDBOX/my-plan.md" ]
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
-  [ "$(field "$f" tags)" = night ]
+  [ "$(field "$f" tags)" = ui ]
   [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   f="$(item queued my-plan-p4)"
@@ -2498,7 +2486,7 @@ EOF
 
 @test "stats counts states, outcomes, waits, time to PR and sources from the timestamps" {
   "$AQ" add --project game --slug a "a"
-  "$AQ" add --project app --slug b --from shepherd --tags night "b"
+  "$AQ" add --project app --slug b --from shepherd --tags ui "b"
   "$AQ" add --project game --slug c --from board:game:fix-x "c"
   "$AQ" move a running
   "$AQ" set a started=2026-11-03T10:30:00Z
@@ -2528,7 +2516,7 @@ EOF
   [ "$(jq -c '.per_day' <<<"$output")" = '{"2026-11-02":1,"2026-11-03":1}' ]
   [ "$(jq -c '.by_source.shepherd | [.done, .cancelled, .prs]' <<<"$output")" = '[1,1,0]' ]
   [ "$(jq -c '.by_project.game | [.done, .ok, .prs, .wait_minutes_median, .to_pr_minutes_median]' <<<"$output")" = '[1,1,1,30,90]' ]
-  [ "$(jq -r '.done_by_tag.night' <<<"$output")" = 1 ]
+  [ "$(jq -r '.done_by_tag.ui' <<<"$output")" = 1 ]
   run "$AQ" stats
   assert_success
   assert_output --partial "done:"
@@ -2880,7 +2868,7 @@ STUB
 
 @test "a canary item files no story row, and --from takes only the known origins, research:<facet> among them" {
   story_notes
-  run "$AQ" add --project level --from canary --tags 'night canary' --slug c1 "check(canary): greet 2026w45"
+  run "$AQ" add --project level --from canary --tags canary --slug c1 "check(canary): greet 2026w45"
   assert_success
   refute_output --partial 'story'
   run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
@@ -3541,8 +3529,8 @@ second line of the brief
 }
 
 @test "an item held only to its time of day counts against the cap at every hour" {
-  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_NIGHT=23:00-06:00
-  "$AQ" add --project game --tags night --slug n1 "night one" >/dev/null
+  export AGENT_QUEUE_CAP=2
+  "$AQ" add --project game --tags at:20:00 --slug n1 "evening one" >/dev/null
   "$AQ" add --project game --tags at:18:00 --slug evening "evening" >/dev/null
   run "$AQ" add --project game --slug day "day"
   assert_failure 5

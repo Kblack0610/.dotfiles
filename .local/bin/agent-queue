@@ -60,11 +60,11 @@
 # Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
 # the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
 # wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
-# filer's, waits for a dispatch pass, which starts the queue in priority order; one held (night, at:,
+# filer's, waits for a dispatch pass, which starts the queue in priority order; one held (at:,
 # ask:) waits for the pass after that releases. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
-# Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
+# Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
 # pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
 # have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until the human answers that agent-ask,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
@@ -92,9 +92,6 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
-# The night window a `night` item may start in, local time, which may wrap midnight: the `night`
-# part of the system's clock hours (.config/machine-mode/hours), read when a night hold is checked.
-AQ_NIGHT="${AGENT_QUEUE_NIGHT:-}"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -345,11 +342,11 @@ AQ_HELD_DAYS=7
 AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 
 # admission_now -> "<runnable> <cap>": the queued items that can start now, and the cap. An item held
-# only to its time of day (`night`, at:HH:MM) counts at every hour: uncounted by day, 225 night items
-# took the count from 205 to 362 at 01:00 on 2026-11-18.
+# only to its time of day (at:HH:MM) counts at every hour: uncounted by day, 225 items held to the
+# night window took the count from 205 to 362 at 01:00 on 2026-11-18.
 admission_now() {
   local runnable
-  runnable="$(snap_json . queued | jq '[.[] | select(.hold == null or (.hold | startswith("night") or test("^at:[0-9]{2}:[0-9]{2}$")))] | length')" || return 1
+  runnable="$(snap_json . queued | jq '[.[] | select(.hold == null or (.hold | test("^at:[0-9]{2}:[0-9]{2}$")))] | length')" || return 1
   printf '%s %s\n' "$runnable" "$AQ_CAP"
 }
 
@@ -512,10 +509,6 @@ hold_for() {
   for tag in $tags; do [[ "$tag" =~ ^at:([0-9]{4}-[0-9]{2}-[0-9]{2})T ]] && nday="${BASH_REMATCH[1]}"; done
   for tag in $tags; do
     case "$tag" in
-      night)
-        [ -n "$AQ_NIGHT" ] || AQ_NIGHT="$(clock_window night)"
-        [ -n "$AQ_NIGHT" ] || { HOLD="night (the hours file has no night part)"; return; }
-        hhmm_in "$now" "$AQ_NIGHT" || { HOLD="night ($AQ_NIGHT)"; return; } ;;
       at:[0-9][0-9]:[0-9][0-9]) [ "${now/:/}" -ge "${tag//[!0-9]/}" ] || { HOLD="$tag"; return; } ;;
       at:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]) [[ ! "$stamp" < "${tag#at:}" ]] || { HOLD="$tag"; return; } ;;
       pr:?*/?*#[0-9]*)
@@ -572,7 +565,7 @@ desk_starting() {
 
 # desk_head <resource> -> "<file>\t<slug>\t<class>" of the queued item that takes the resource next:
 # the best class (agent-hold classes), then priority, then the oldest. Only an item that could start
-# counts: one still held by another tag (night, at:, after) would keep the desktop from the rest, and a
+# counts: one still held by another tag (at:, after) would keep the desktop from the rest, and a
 # desk:auth item counts only while the human is here.
 desk_head() {
   local res="$1" f slug after tags pri cls rank p ranks away="" HOLD DESK_SCAN=1
@@ -2829,7 +2822,7 @@ cmd_stats() {
     # `--running` or plan item starts the minute it is added; counting its 0 hid every real wait.
     def waits: [.[] | mins(.ready; .started)];
     def waited: waits | map(select(. > 0));
-    # A hold_reason line by its first word: "after x", "night (..)", "at:HH:MM", "pr:o/r#N not merged",
+    # A hold_reason line by its first word: "after x", "at:HH:MM", "pr:o/r#N not merged",
     # "nightly:repo (..)".
     def hold_kind: split(" ")[0] | split(":")[0];
     def source: (.from // "human") | split(":")[0];

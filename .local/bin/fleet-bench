@@ -73,7 +73,7 @@
 #                                | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
-#                                the PR's own tests as the oracle. queue adds one night item per task
+#                                the PR's own tests as the oracle. queue adds one canary item per task
 #                                a week (retro runs it), retire cancels an earlier week's queued ones, start puts the session's worktree at the
 #                                task's base, score lays the oracle over it and records pass or fail
 #                                once per run; verify proves each oracle fails at base, passes at merge;
@@ -4919,7 +4919,7 @@ canary_oracle() {
   (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}") >>"$3" 2>&1
 }
 
-# canary_brief <task> <slug> [sandboxed] -> the night item's whole task: no /one-shot, no PR (fleet-dispatch
+# canary_brief <task> <slug> [sandboxed] -> the canary item's whole task: no /one-shot, no PR (fleet-dispatch
 # starts a `canary` item on this text as it is). A run in its harness's own lane sandbox sees its
 # worktree alone, so fleet-dispatch runs the start, score and done steps around it and its brief is
 # the task alone.
@@ -4939,7 +4939,7 @@ canary_brief() {
     "4. agent-queue move \($slug) done --status ok, then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
 }
 
-# canary queue [--harness h [--model m]]: one night item per task for this ISO week, none for a
+# canary queue [--harness h [--model m]]: one canary item per task for this ISO week, none for a
 # task whose item exists in any state, so a second retro the same week queues nothing. `from:
 # canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
 # canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
@@ -5036,7 +5036,7 @@ canary_lane_queue() {
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
     if canary_known "$slug"; then had=$((had + 1)); continue; fi
-    $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
+    $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
       --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
@@ -5051,7 +5051,7 @@ canary_lane_queue() {
 }
 
 # canary_retire -- cancel the queued canary items of an earlier week than canary_week: a week's set
-# replays the same tasks, so a leftover only spends a night slot on last week's lane beside this week's
+# replays the same tasks, so a leftover only spends a slot on last week's lane beside this week's
 # (22 week-46 codex items still queued on 2026-11-17). A running one is left to finish. canary_top_up runs it
 # first. Returns 1 when one could not be cancelled.
 canary_retire() {

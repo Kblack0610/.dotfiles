@@ -353,28 +353,18 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "a dry run started the urgent item"
 }
 
-@test "night: a run pass promotes night rows past a shut account gate and a full queue; a decision row and a dispatch hold stay out" {
-  night_ready
+@test "tier3 lane: a run pass promotes no tier-3 row past a shut account gate or a full queue: only the day fill under the gates pulls it" {
+  pr_lane_ready
   project game beta "$SANDBOX/repos/game"
   for n in 1 2 3 4; do agent-queue add --project game --slug "work-$n" --priority high "work $n" >/dev/null; done
   acct
   row agent-runtime agent 'wt done never reaps' '- [ ] wt done never reaps (worktree.sh:213) #tier/3'
-  row agent-runtime agent 'decide(app): fold it' '- [ ] decide(app): fold it #tier/3'
-  night_verdict 'wt done never reaps' wt
-  night_verdict 'decide(app): fold it' fold
+  pr_lane_verdict 'wt done never reaps' wt
 
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'queued 1 for the night; '
-  assert_equal "$(night_keys)" 'wt done never reaps'
+  assert_equal "$(pr_lane_keys)" ''
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
-
-  # Negative control: the same row under a dispatch hold is not promoted.
-  row agent-runtime agent 'drop the dead timer' '- [ ] drop the dead timer #tier/3'
-  night_verdict 'drop the dead timer' timer
-  stub agent-hold 'echo "dispatch held"; exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(night_keys)" 'wt done never reaps'
 }
 
 @test "the human's queue item starts while the human is here, past a board-filled one the spent trickle holds" {
@@ -457,22 +447,20 @@ load 'fleet_dispatch/common'
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
 
-# 2026-11-18: canary and night work filled the workstation first while razer-laptop sat idle.
+# 2026-11-18: canary work filled the workstation first while razer-laptop sat idle.
 @test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
-  export AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=02:00   # a night item starts only in the window
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
-  worker '2.0 16 1 50' true '[canary, night]'
-  agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
+  worker '2.0 16 1 50' true '[canary]'
+  agent-queue add --project game --slug c --from canary --tags canary "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=c"
 }
 
 @test "fleet_first: a canary starts here when the worker that lists canary does not take a session" {
-  export AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=02:00   # a night item starts only in the window
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
-  worker '2.0 16 1 12' true '[canary, night]'
-  agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
+  worker '2.0 16 1 12' true '[canary]'
+  agent-queue add --project game --slug c --from canary --tags canary "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item c'
@@ -481,7 +469,7 @@ load 'fleet_dispatch/common'
 
 @test "fleet_first: a canary starts here when no worker lists its class" {
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
-  worker '2.0 16 1 50' true '[night-only]'
+  worker '2.0 16 1 50' true '[other-only]'
   agent-queue add --project game --slug c --from canary --tags canary "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
@@ -489,9 +477,9 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new --host'
 }
 
-@test "fleet_first: a plain item starts here even when a worker lists canary and night" {
+@test "fleet_first: a plain item starts here even when a worker lists canary" {
   project game beta "$SANDBOX/repos/game"   # no board row: the queue item is the only one
-  worker '2.0 16 1 50' true '[canary, night]'
+  worker '2.0 16 1 50' true '[canary]'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success

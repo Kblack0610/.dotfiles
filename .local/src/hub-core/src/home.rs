@@ -558,14 +558,14 @@ pub(crate) fn day_start(day: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
-/// A `night` queue item that finished failed: it ran unwatched, so its failure is the human's.
-/// A failed night task needs the human for a day after it ends; after that the queue holds it.
+/// A tier-3 PR queue item (tag `tier3`) that finished failed: it ran unattended, so its failure is the human's.
+/// A failed one needs the human for a day after it ends; after that the queue holds it.
 pub const NIGHT_WINDOW_SECS: i64 = 86_400;
 
-fn night_failed(i: &Item) -> bool {
+fn pr_item_failed(i: &Item) -> bool {
     i.state == State::Done
         && i.status.as_deref() == Some("failed")
-        && i.tag_list().any(|t| t == "night")
+        && i.tag_list().any(|t| t == "tier3")
 }
 
 /// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
@@ -916,14 +916,14 @@ pub fn needs(
         now.zip(done)
             .is_none_or(|(n, d)| n - d <= NIGHT_WINDOW_SECS)
     };
-    for i in items.iter().filter(|i| night_failed(i) && recent(i)) {
+    for i in items.iter().filter(|i| pr_item_failed(i) && recent(i)) {
         out.push(Need {
             project: i.project.clone(),
             ..condition(
                 Kind::Night,
                 i.slug.clone(),
                 format!(
-                    "Night task {} failed: {}. Run agent-queue show {}.",
+                    "Tier-3 task {} failed: {}. Run agent-queue show {}.",
                     i.slug,
                     i.title(),
                     i.slug
@@ -1196,7 +1196,7 @@ mod tests {
         st["janitor"] = json!([{"when": "Fri 06:30", "who": "janitor", "what": "pvc stuck"}]);
         st["mail"] = json!([{"from": "alarm@aws", "subject": "ALARM: 5xx", "acct": "gigantic", "copies": 5}]);
         let mut failed = item("night-1", State::Done, None);
-        failed.tags = "night tier3".into();
+        failed.tags = "tier3".into();
         failed.status = Some("failed".into());
         failed.finished = Some("2026-11-05T03:00:00-0800".into());
         // Negative controls: a night item that ended ok, and a failed item that was no night task.
@@ -1235,7 +1235,7 @@ mod tests {
         );
         assert_eq!(
             text(Kind::Night),
-            "Night task night-1 failed: Do night-1. Run agent-queue show night-1."
+            "Tier-3 task night-1 failed: Do night-1. Run agent-queue show night-1."
         );
         assert_eq!(
             text(Kind::Janitor),

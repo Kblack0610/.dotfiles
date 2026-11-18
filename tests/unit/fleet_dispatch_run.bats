@@ -280,16 +280,14 @@ bats_require_minimum_version 1.5.0
 
 # 2026-11-11 (ar-1675): the judge's daily cap led every gated pass's reason, so the Stopped line,
 # hub Home and the queue-starved red named the judge's budget instead of the account hold.
-@test "a judge budget stop in a pass a gate held is a note: the gate leads the reason and the Stopped line" {
+@test "a pass a gate held: the gate is the reason and the Stopped line" {
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   two_items
-  row game human 'fix the new crash' "- [ ] fix the new crash $T"
-  stub judge-stub 'exit 75'
   export DISPATCH_RUN_FLOOR=0
   acct "main:pace::5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(outcome)" BLOCKED
-  grep -q 'outcome=BLOCKED why: could not judge the new rows (stopped at its budget); no account has room' "$d/activity.log" ||
+  grep -q 'outcome=BLOCKED why: no account has room' "$d/activity.log" ||
     fail "$(cat "$d/activity.log")"
   echo "$(( $(date +%s) - 2 * 3600 - 30 ))" > "$d/held_since"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
@@ -492,9 +490,9 @@ bats_require_minimum_version 1.5.0
 
 @test "run --dry-run never calls the judge and leaves verdicts.jsonl as it was" {
   game_ready
-  night_ready
+  pr_lane_ready
   row game human 'add a new map' "- [ ] add a new map $T"
-  row agent-runtime agent 'unjudged night' '- [ ] fix the unjudged night row #tier/3'
+  row agent-runtime agent 'unjudged tier3' '- [ ] fix the unjudged tier3 row #tier/3'
   cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/verdicts.before"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_success
@@ -845,7 +843,7 @@ case "$1" in log) echo run-9 ;; classify)
   done
   assert_not_called 'opencode run'
   # Positive controls: the same pinned item as a tier-3 canary starts on nim (a canary opens no PR;
-  # the queue's own canaries are tier 3 by their night tag), and so does a tier-1 item, so each
+  # the queue's own canaries are tier 3 by their tier3 tag), and so does a tier-1 item, so each
   # refusal above came from max_tier alone.
   harness_set '.harnesses.nim.max_tier = 1'
   canary_item pin-nim c-1; agent-queue set pin-nim tags="canary tier3" >/dev/null
