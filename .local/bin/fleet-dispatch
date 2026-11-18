@@ -18,7 +18,7 @@
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
-#   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch, a review item queued
+#   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
@@ -80,6 +80,7 @@ unset _k _v
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
+: "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${DISPATCH_CANARY_FLOOR:=3}"   # live canary items (tag `canary`) a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a night canary sat at position 222 of 606 queued while every night pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
 : "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
@@ -181,7 +182,7 @@ MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench'
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
-TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch: the diff a trainee run left, which its review item applies (cmd_trainee_review)
+TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch and <slug>.base: the diff a trainee run left and its base, which a batch review applies (cmd_trainee_review, trainee_batch_start)
 
 # Tier 3 (CI, gates, runners, build and deploy, harness, tooling) never gets a merging session from a
 # worker, whatever workers.json says: the human's decision of 2026-10-27, after a dispatched session
@@ -1962,22 +1963,92 @@ trainee_why() {
   ladder_row_why "$it" "a trainee" "$(jq -r '(.tiers // [1]) | map(tostring) | join(" ")' <<<"$TRAINEE_CONF")" \
     "$(jq -r '.tier3_share // 0' <<<"$TRAINEE_CONF")" || return 1
   [ "$pts" -le "$max" ] || { echo "it is $pts points, and a trainee takes $max at most"; return 1; }
+  trainee_public_why "$it" || return 1
   [ -n "$h" ] || return 0
   jq -e --arg h "$h" 'any(.candidates[]?; .harness == $h)' <<<"$TRAINEE_CONF" >/dev/null ||
     { echo "$h is no trainee in lanes.yaml"; return 1; }
   ladder_open_why "$h"
 }
 
+# trainee_public_why <item json> [names] -> why a trainee may not see or do the row, rc 1, or nothing. Its
+# provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
+# So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
+# .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a shell, bats or
+# markdown file outside any cargo or npm tree; a directory, every file under it. With `names` it must
+# name one: the trainee floor promotes no row that does not show its work stays in that repo.
+trainee_public_why() {
+  local it="$1" repo text toks tok files f n=0 manifests
+  repo=$(repo_dir "$(jq -r '.project // ""' <<<"$it")")
+  [ -n "$repo" ] && [[ " $DISPATCH_TRAINEE_REPOS " == *" $repo "* ]] ||
+    { echo "its repo ${repo:-(none)} is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"; return 1; }
+  [ -r "$repo/.githooks/sensitive-tokens.txt" ] || { echo "$repo has no .githooks/sensitive-tokens.txt to check its words by"; return 1; }
+  text=$(jq -r '[.title // empty, .task // empty] | join("\n")' <<<"$it")
+  ! grep -qEf <(grep -vE '^[[:space:]]*(#|$)' "$repo/.githooks/sensitive-tokens.txt") <<<"$text" ||
+    { echo "its words match $repo/.githooks/sensitive-tokens.txt"; return 1; }
+  toks=$(row_paths "$text" "$repo")
+  manifests=$(git -C "$repo" ls-files -- 'Cargo.toml' '*/Cargo.toml' 'package.json' '*/package.json' 2>/dev/null | sed -E 's#/[^/]+$##; t; s#.*#.#')
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
+    [ -n "$files" ] || files=$(git -C "$repo" ls-files -- "*/$tok" 2>/dev/null)
+    [ -n "$files" ] || { echo "it names $tok, which $repo does not track"; return 1; }
+    while IFS= read -r f; do
+      trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no shell, bats or markdown file outside a cargo or npm tree"; return 1; }
+    done <<<"$files"
+    n=$((n + 1))
+  done <<<"$toks"
+  [ "${2:-}" != names ] || [ "$n" -gt 0 ] || { echo "it names no file, so nothing shows its work stays in $repo"; return 1; }
+}
+
+# row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
+# or a file extension (no URL, no #tag, no id comment), and each bare word that is a .local/bin command
+# the repo tracks. A leading ~/ or ./ and trailing punctuation go.
+row_paths() {
+  local words cmds
+  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
+    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://' | grep . | sort -u)
+  cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
+  grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
+  [ -z "$cmds" ] || grep -vE '/|\.[A-Za-z0-9]+$' <<<"$words" | grep -xFf <(echo "$cmds") | sed 's#^#.local/bin/#'
+  return 0
+}
+
+# trainee_file_ok <repo> <file> <manifest dirs> -- rc 0 when the gateway sandbox can build what a change
+# to the file needs: a .sh, .bash, .zsh, .bats or .md file, or one with no extension whose first line is
+# a sh, bash or zsh shebang, and in no directory a Cargo.toml or package.json sits in or above.
+trainee_file_ok() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    # "." is a manifest at the repo root: the whole tree builds with it.
+    [ "$d" != . ] && [[ "$2" != "$d"/* ]] || return 1
+  done <<<"$3"
+  case "${2##*/}" in
+    *.sh | *.bash | *.zsh | *.bats | *.md) return 0 ;;
+    *.*) return 1 ;;
+  esac
+  head -n 1 "$1/$2" 2>/dev/null | grep -qE '^#!.*[/ ](ba|z)?sh([[:space:]]|$)'
+}
+
+# ladder_counts <harness> -> "<open> <live>": the rows a ladder run took on the harness (trainee: or
+# direct:) that are running, waiting or in review, and every item running on it, a canary too (the
+# provider's concurrency); rc 1 when the queue is unreadable.
+ladder_counts() {
+  agent-queue list --json --state active 2>/dev/null | jq -sre --arg h "$1" '[.[] | select(.state != "queued" and .agent == $h)]
+    | "\([.[] | select((.trainee // .direct // "") | startswith($h + ":"))] | length) \([.[] | select(.state == "running")] | length)"'
+}
+
 # ladder_open_why <harness> -> why the harness takes no more ladder rows, rc 1, or nothing: it holds
-# fewer than lanes.yaml trainee `max_open` rows a ladder run took (trainee: or direct:), running,
-# waiting or in review.
+# fewer than lanes.yaml trainee `max_open` rows a ladder run took, and runs fewer items than the
+# block's `max_live` names for it (a harness it names no cap for has none past max_open).
 ladder_open_why() {
-  local h="$1" open max
-  open=$(agent-queue list --json --state active 2>/dev/null |
-    jq -se --arg h "$h" '[.[] | select(.state != "queued" and .agent == $h and ((.trainee // .direct // "") | startswith($h + ":")))] | length') ||
-    { echo "the queue is unreadable, so $h's open ladder rows are unknown"; return 1; }
+  local h="$1" n open live max cap
+  n=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's open ladder rows are unknown"; return 1; }
+  read -r open live <<<"$n"
   max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
   [ "$open" -lt "$max" ] || { echo "$h holds $open ladder rows, its max_open in lanes.yaml"; return 1; }
+  cap=$(jq -r --arg h "$h" '.max_live[$h] // empty' <<<"$TRAINEE_CONF")
+  [ -z "$cap" ] || [ "$live" -lt "$cap" ] || { echo "$h runs $live items, its max_live in lanes.yaml"; return 1; }
 }
 
 # trainee_brief <item json> -- a trainee's run: the task, done in its worktree and left there. The
@@ -1999,12 +2070,12 @@ linked_base() {
 }
 
 # cmd_trainee_review <slug> -- the tail of a trainee's run (gateway_launch), outside its sandbox, in its
-# worktree. The diff it left becomes TRAINEE_DIR/<slug>.patch, the worktree goes back to its base so wt
-# reaps it, and a review item `review-<slug>` pinned to claude on the reviewer lane's model (lanes.yaml
-# trainee:) is queued to land it or send the row back; the row waits in review, where reap leaves an
-# item with a note. No diff, or no reviewer, is a reject (cmd_trainee_reject).
+# worktree. The diff it left becomes TRAINEE_DIR/<slug>.patch beside its base (<slug>.base), the
+# worktree goes back to that base so wt reaps it, and the row waits in review, where reap leaves an
+# item with a note, for the next batch review (trainee_batch_start). No diff, or no reviewer lane
+# (lanes.yaml trainee:), is a reject (cmd_trainee_reject).
 cmd_trainee_review() {
-  local slug="${1:?trainee-review: needs a slug}" it trn base patch model key rev
+  local slug="${1:?trainee-review: needs a slug}" it trn base patch
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-review: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
@@ -2013,61 +2084,88 @@ cmd_trainee_review() {
   base=$(linked_base) || { say "trainee-review: $PWD is no linked worktree"; return 1; }
   mkdir -p "$TRAINEE_DIR" || { say "trainee-review: no $TRAINEE_DIR"; return 1; }
   patch="$TRAINEE_DIR/$slug.patch"
-  git add -A && git diff --cached --binary "$base" >"$patch" || { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
+  git add -A && git diff --cached --binary "$base" >"$patch" && echo "$base" >"$TRAINEE_DIR/$slug.base" ||
+    { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
   [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$trn left no diff"; return; }
-  # The worktree goes back to its base only once the review is queued: until then it holds the diff too.
+  # The worktree goes back to its base only once the row waits in review: until then it holds the diff too.
   trainee_load
-  model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
-  if [ -z "$model" ]; then
+  if [ -z "$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")" ]; then
     cmd_trainee_reject "$slug" --why "lanes.yaml names no trainee reviewer" || return
   else
-    key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
-    rev="review-$slug"
-    agent-queue add --from trainee --project "$(jq -r .project <<<"$it")" --priority "$(jq -r '.priority // "low"' <<<"$it")" \
-      --tags "trainee-review tier1" --slug "$rev" -- "$(trainee_review_task "$it" "$trn" "$base" "$patch" "$key" "$rev")" >/dev/null &&
-      agent-queue set "$rev" "model=$model" >/dev/null ||
-      { say "trainee-review: could not queue $rev; $slug stays running, its diff in $patch and in $PWD"; return 1; }
-    agent-queue set "$slug" "note=trainee $trn left a diff; $rev lands it or sends the row back" >/dev/null &&
-      agent-queue move "$slug" review >/dev/null || { say "trainee-review: could not move $slug to review; $rev is queued"; return 1; }
-    say "trainee-review: $slug's diff is $patch; $rev reviews it on $model"
+    agent-queue set "$slug" "note=trainee $trn left a diff; the next trainee batch review lands it or sends the row back" >/dev/null &&
+      agent-queue move "$slug" review >/dev/null ||
+      { say "trainee-review: could not move $slug to review; it stays running, its diff in $patch and in $PWD"; return 1; }
+    say "trainee-review: $slug's diff is $patch; it waits for the next batch review"
   fi
   git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
 }
 
-# trainee_review_task <item json> <trainee> <base> <patch> <task key> <review slug> -> the review
-# item's whole brief (item_brief passes it as it stands).
+# trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
+# trainee's, their patch in TRAINEE_DIR, no PR yet (an approved row whose PR has not merged is no new
+# diff), and no per-diff review-<slug> item (the old hand-off) open.
+trainee_waiting() {
+  agent-queue list --json --state active 2>/dev/null | jq -sc '(map(.slug) | map({key: ., value: 1}) | from_entries) as $s
+    | .[] | select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == "") and ($s["review-" + .slug] | not))' |
+    while IFS= read -r it; do [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] && echo "$it"; done
+  return 0
+}
+
+# trainee_review_task <item json> <trainee> <base> <patch> <task key> -> one row's part of a batch
+# review's brief (trainee_batch_task).
 trainee_review_task() {
-  local slug t3=''
+  local slug repo t3=''
   slug=$(jq -r .slug <<<"$1")
+  repo=$(repo_dir "$(jq -r '.project // ""' <<<"$1")")
   # A tier-3 row lands behind agent-land's review_gate, so its review says so up front.
   [ "$(item_tier "$1")" != 3 ] || t3=" This row is tier 3: before landing, run /code-review high on the PR, fix or answer each finding, and add the PR body line \"Review: /code-review high, <what it found and what you did>\", which agent-land requires."
   cat <<EOF
-This is agent-queue item $6. This is agent-queue item $6. Review the diff a trainee left for queue item $slug, then land it or send the row back.$t3
+## Queue item $slug
 
-The trainee $2 ran this row in a sandbox, on base $3, and could not commit. Its whole change is the patch $4.
+The trainee $2 ran this row in a sandbox, on base $3 of ${repo:-its project repo}, and could not commit. Its whole change is the patch $4.$t3
 
 The row it was given:
 $(jq -r .task <<<"$1")
 
-Approve only when the diff does the row correctly and fully and needs at most small fixes; anything more is a reject, so the trainee's record stays true.
-- Approve: cut a worktree off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Land with \`agent-land <N> --item $slug\`, then \`agent-queue move $6 done --status ok\`.
-- Reject: \`fleet-dispatch trainee-reject $slug --why "<one line: what was wrong>"\`, then \`agent-queue move $6 done --status ok\`. The row goes back to the normal queue, on claude.
+- Approve: cut a worktree of ${repo:-the repo} off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Land with \`agent-land <N> --item $slug\`.
+- Reject: \`fleet-dispatch trainee-reject $slug --why "<one line: what was wrong>"\`. The row goes back to the normal queue, on claude.
 EOF
+}
+
+# trainee_batch_task <batch slug> <item json lines> -> a batch review item's whole brief (item_brief
+# passes it as it stands): one part a waiting row, made when the batch is filed and started.
+trainee_batch_task() {
+  local it trn
+  cat <<EOF
+This is agent-queue item $1. Review each diff the trainees left below, one at a time, and land it or send its row back: one PR per approved row.
+
+Approve only when the diff does the row correctly and fully and needs at most small fixes; anything more is a reject, so the trainee's record stays true. When every row below is landed or sent back, \`agent-queue move $1 done --status ok\`.
+EOF
+  while IFS= read -r it; do
+    [ -n "$it" ] || continue
+    trn=$(jq -r .trainee <<<"$it")
+    echo
+    trainee_review_task "$it" "$trn" "$(cat "$TRAINEE_DIR/$(jq -r .slug <<<"$it").base" 2>/dev/null || echo unknown)" \
+      "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" "$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")"
+  done <<<"$2"
 }
 
 # cmd_trainee_reject <slug> --why <text> -- the row goes back to the normal queue on claude (its outcome
 # a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:` stays, so no
 # trainee takes it again (trainee_why).
 cmd_trainee_reject() {
-  local slug="${1:?trainee-reject: needs a slug}" why='' it trn
+  local slug="${1:?trainee-reject: needs a slug}" why='' it trn run
   shift
   [ "${1:-}" = --why ] && [ -n "${2:-}" ] || { say "trainee-reject: needs --why \"<one line>\""; return 2; }
   why=$2
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-reject: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-reject: no trainee ran $slug"; return 2; }
+  # The why goes on the trainee's run, the reject reason `model-lane score` prints per pair; the requeue
+  # below files the same redo again, which model-lane checks no bar for twice.
+  run=$(jq -r '.lane_run // empty' <<<"$it")
+  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
   ladder_back "$slug" "trainee $trn rejected: $why" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
-  rm -f "$TRAINEE_DIR/$slug.patch"
+  rm -f "$TRAINEE_DIR/$slug.patch" "$TRAINEE_DIR/$slug.base"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
 
@@ -3381,6 +3479,118 @@ canary_floor_start() {
   CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
+# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
+# pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the batch review
+# (trainee_batch_start), then one start a pass on each trainee harness with a slot: the first queued
+# row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
+# promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
+# it, route still needs the trainee's source room, and each pass says why the floor is shut when it
+# is: a silent starved floor is how the canary floor went unseen. Rc FLOOR_SHUT when nothing started.
+# Off with lanes.yaml trainee `candidates: []`.
+trainee_floor_start() {
+  local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc
+  trainee_load
+  mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
+  [ "${#hs[@]}" -gt 0 ] || { say "trainee floor: shut, lanes.yaml has no trainee: lane (model-lane trainee)"; return "$FLOOR_SHUT"; }
+  why=$(gate)
+  [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
+  trainee_batch_start; rc=$?
+  # A batch that could not be filed or started is logged, never the end of the pass (the queue may be locked).
+  case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: the batch review did not file or start (rc $rc); the trainee slots still fill" ;; esac
+  queued=${NEXT_QUEUED-$(next_items --points)}
+  for h in "${hs[@]}"; do
+    [ -n "$(harness_sandbox "$h")" ] || { shut+=("$h runs in no lane sandbox"); continue; }
+    why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
+    it=$(trainee_queued_pick "$h" "$queued")
+    if [ -z "$it" ]; then
+      [ "$bread" = 1 ] || { board=$(day_picks 999); bread=1; }
+      c=$(trainee_board_pick "$h" "$board")
+      [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
+      key=$(jq -r .key <<<"$c")
+      board=$(jq -c --arg k "$key" --arg p "$(jq -r .project <<<"$c")" 'select(.key != $k or .project != $p)' <<<"$board")
+      if [ "$DRY" = 1 ]; then say "trainee floor: would promote $(jq -r .project <<<"$c") row $key and start it on $h"; continue; fi
+      PROMOTED=''
+      promote "$c" "$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")" \
+        "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')" >/dev/null && [ -n "$PROMOTED" ] || { shut+=("$h: could not promote row $key"); continue; }
+      it=$(agent-queue show "$PROMOTED" --json --points)
+      say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
+    fi
+    TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
+    [ "$rc" = 0 ] || return "$rc"
+    queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
+  done
+  [ "${#shut[@]}" -eq 0 ] || { why=$(printf '%s; ' "${shut[@]}"); say "trainee floor: ${why%; }"; }
+  [ "${STARTED:-0}" -gt "$before" ] || return "$FLOOR_SHUT"
+}
+
+# trainee_ok <item json> <harness> -- rc 0 when the trainee harness may run the row: trainee_why (no
+# harness, so no queue read a row: the caller asked ladder_open_why once) and its projects allowlist.
+trainee_ok() {
+  trainee_why "$1" >/dev/null && harness_project_why "$HARNESSES" "$2" "$(jq -r '.project // ""' <<<"$1")" >/dev/null
+}
+
+# trainee_queued_pick <harness> <item json lines> -> the first queued item, in queue order, the
+# harness's trainees may run: unpinned, with points (row or #pts/N), and trainee_ok.
+trainee_queued_pick() {
+  local it
+  while IFS= read -r it; do
+    [ -n "$it" ] || continue
+    ! item_pinned "$it" || continue
+    trainee_ok "$it" "$1" && { echo "$it"; return 0; }
+  done < <(jq -c 'select(((.points // "") | tostring | test("^[0-9]+$")) or ((.task // "") | test("#pts/[0-9]+"; "i")))' <<<"$2" 2>/dev/null)
+  return 0
+}
+
+# trainee_board_pick <harness> <day_picks rows> -> the first row, in their rank, the harness's trainees
+# may run once promoted (its item as row_item builds it, trainee_ok) and that names the files it
+# changes (trainee_public_why names).
+trainee_board_pick() {
+  local c ri
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    ri=$(row_item "$c")
+    trainee_ok "$ri" "$1" && trainee_public_why "$ri" names >/dev/null && { echo "$c"; return 0; }
+  done < <(jq -c 'select((.text // "") | test("#pts/[0-9]+"; "i"))' <<<"$2" 2>/dev/null)
+  return 0
+}
+
+# row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id
+# the slug, its words the task, and fill_day's cleanup and tier<N> tags.
+row_item() {
+  jq -c '(.text | sub("^- \\[.\\] "; "")) as $t | {slug: .key, project, title: $t, task: $t, mode: "",
+    tags: ([if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" "))}' <<<"$1"
+}
+
+# trainee_batch_start -- file and start one review of every waiting diff (trainee_waiting) once lanes.yaml
+# trainee `review_batch` of them wait (1 by default: each as it comes), or one waits while a trainee holds
+# its max_open rows, so no slot stalls on a short batch: state read each pass, no timer. No other is
+# filed while a batch item is open. Its brief is made from the waiting patches as it is filed
+# (trainee_batch_task); it runs on claude at the reviewer lane's model and needs an account with room.
+# Rc FLOOR_SHUT when none is due.
+trainee_batch_start() {
+  local waiting n want max full='' h open slug model
+  waiting=$(trainee_waiting); n=$(grep -c . <<<"$waiting" || true)
+  [ "$n" -gt 0 ] || return "$FLOOR_SHUT"
+  if agent-queue list --json --state active 2>/dev/null | jq -se 'any(.[]; (" " + (.tags // "") + " ") | contains(" trainee-batch "))' >/dev/null; then
+    say "trainee floor: $n diff(s) wait for the batch review already open"; return "$FLOOR_SHUT"
+  fi
+  want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
+  for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
+    [ "$max" -gt 0 ] && open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }
+  done
+  [ "$n" -ge "$want" ] || [ -n "$full" ] ||
+    { say "trainee floor: $n of review_batch $want diffs wait, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
+  model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
+  [ -n "$model" ] || { say "trainee floor: $n diff(s) wait, and lanes.yaml names no trainee reviewer"; return "$FLOOR_SHUT"; }
+  slug="trainee-batch-$(date +%Y%m%d-%H%M%S)"
+  if [ "$DRY" = 1 ]; then say "trainee floor: would file and start $slug, a review of $n diff(s)"; return "$FLOOR_SHUT"; fi
+  AGENT_QUEUE_START=0 agent-queue add --from trainee --project "$(head -n 1 <<<"$waiting" | jq -r .project)" --priority high \
+    --tags "trainee-review trainee-batch tier1" --slug "$slug" -- "$(trainee_batch_task "$slug" "$waiting")" >/dev/null &&
+    agent-queue set "$slug" "model=$model" >/dev/null || { say "trainee floor: could not file $slug"; return 1; }
+  say "trainee floor: $slug reviews $n diff(s)${full:+, as $full holds its max_open rows}"
+  BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$(agent-queue show "$slug" --json --points)" 1
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -3452,7 +3662,8 @@ start_items() {
       PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
       items=$(jq -c --arg p "$(jq -r '.project // ""' <<<"$PICKED")" 'select((.project // "") != $p)' <<<"$items")
     fi
-    if [ "$rc" -eq 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
+    # A trainee-floor start spends no trickle: its run is a free key's, in a sandbox, the human's window untouched.
+    if [ "$rc" -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
       left=${PRESENT_LEFT:-$(present_left)}
       [ "$DRY" = 1 ] || logline "present start: queue item $(jq -r .slug <<<"$PICKED") (DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR)"
       PRESENT_LEFT=$(( left - 1 ))
@@ -3464,14 +3675,14 @@ start_items() {
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
   # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}${PLAN_PASS:-0}" = 00 ]; then
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}" = 0000 ]; then
     why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
     [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
     settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
-  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}${PLAN_PASS:-0}" != 00 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
+  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 0000 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
@@ -3521,7 +3732,8 @@ pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 lfirst='' uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"
-  elif [ "${CANARY_PASS:-0}" = 1 ]; then waits="every canary item waits"; fi
+  elif [ "${CANARY_PASS:-0}" = 1 ]; then waits="every canary item waits"
+  elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_LINE=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$TARGET}
@@ -3996,6 +4208,11 @@ route() {
         | [group_by(.harness)[] | .[$n % length] | . + {fit: -1}] + $c' <<<"$cands"); then
     cands=$trn
   fi
+  # A trainee-floor start (trainee_floor_start) takes the floor's harness as a trainee, nothing else.
+  if [ "${TRAINEE_PASS:-0}" = 1 ]; then
+    cands=$(jq -c --arg h "${TRAINEE_HARNESS:-}" '[.[] | select(.fit == -1 and .harness == $h)]' <<<"$cands")
+    [ "$cands" != '[]' ] || { ROUTE_WHY="the trainee floor starts ${TRAINEE_HARNESS:-a trainee} as a trainee only, and it is none for this item"; return 1; }
+  fi
   tier=$(item_tier "$it")
   while read -r h m; do
     if [ "$h" = claude ]; then
@@ -4073,6 +4290,7 @@ start_item() {
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor=" on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1
+    elif [ "${BATCH_PASS:-0}" = 1 ]; then floor=" on the trainee floor: a batch review of the waiting trainee diffs"; keep=1
     elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif [ "${PLAN_PASS:-0}" = 1 ]; then floor=" on the human floor, past the pace target: a ready phase of a plan the human approved"; keep=1
@@ -4088,12 +4306,13 @@ start_item() {
   else
     if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
     elif [ -n "$(harness_sandbox "$harness")" ] && direct_why "$it" "$harness" "$ROUTE_MODEL" "$verdict" >/dev/null; then floor=" on $harness ($ROUTE_MODEL), a direct run (model-lane promoted it for the class) it lands on CI with no review"
-    elif [ -n "$(harness_sandbox "$harness")" ]; then floor=" on $harness ($ROUTE_MODEL), a trainee run (lanes.yaml trainee:) its review item lands or sends back"
+    elif [ -n "$(harness_sandbox "$harness")" ]; then floor=" on $harness ($ROUTE_MODEL), a trainee run (lanes.yaml trainee:) a batch review lands or sends back"
     else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
     # A start past the account hold leaves it standing, like a floor start.
     [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
     if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
+    if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL"
   fi
   rc=$?; exec 7>&-
@@ -4915,6 +5134,13 @@ cmd_run() {
   case "$crc" in 0 | "$FLOOR_SHUT") ;; *) return "$crc" ;; esac
   if [ "${STARTED:-0}" -gt "$cbefore" ]; then
     unset NEXT_QUEUED; room=$(( room - STARTED + cbefore )); [ "$room" -ge 0 ] || room=0
+  fi
+  # Each trainee with a free slot starts a row on its own floor past the target, queued or promoted
+  # from the board in the same step, and a due batch review starts (trainee_floor_start).
+  local trc tbefore=${STARTED:-0}; trainee_floor_start; trc=$?
+  case "$trc" in 0 | "$FLOOR_SHUT") ;; *) return "$trc" ;; esac
+  if [ "${STARTED:-0}" -gt "$tbefore" ]; then
+    unset NEXT_QUEUED; room=$(( room - STARTED + tbefore )); [ "$room" -ge 0 ] || room=0
   fi
   # The ready phase of each plan the human approved starts past the target the same way, one a plan
   # (plan_floor_start); with room, each start takes one of it.
