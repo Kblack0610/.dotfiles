@@ -29,8 +29,8 @@
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
-#   return <slug> --why <text> [--ask <id>]    send an item back to its board: closed cancelled with end_reason: returned, its row un-started,
-#       and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
+#   return <slug> --why <text> [--ask <id>] [--drop]    send an item back to its board: closed cancelled with end_reason: returned, its row un-started
+#       (--drop: dropped), and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
 #       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
@@ -47,6 +47,8 @@
 #   settle-ask <id>    fail each queued item the human answered that ask against (another option), its board row
 #       left open; one held on a cancelled ask stays queued and held, named on stderr and in queue-starved.
 #       agent-ask runs it on every cancel and human answer
+#   settle-dead    each queued item whose after: closed failed or cancelled: machine work returns with its chain,
+#       the human's is held on one ask (retry, replan, drop) that the next run carries out; fleet-dispatch reap runs it
 #   ask-holds [<id>]   `<slug><TAB><ask id><TAB><releasing options>` per active item held on an ask (that ask only, given one)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
@@ -1715,19 +1717,46 @@ cancel_close() {
 # cancel_cause: when it was itself a cascade, so the root cause is carried down a chain, else who closed
 # it and why. Empty when no after: slug closed dead.
 dead_cause() {
-  local s AST pf c by why
+  local root s st pf c by why
+  root="$(dead_root "$1")" || return 0
+  s="${root% *}" st="${root#* }"
+  pf="$(latest_done "$s")"
+  c="$(fm_get "$pf" cancel_cause)"
+  if [ -z "$c" ]; then
+    by="$(fm_get "$pf" cancelled_by)" why="$(fm_get "$pf" cancel_why)"
+    c="after $s closed $st${by:+ by $by}${why:+: $why}"
+  fi
+  printf '%s' "$c"
+}
+
+# dead_root <file> -> "<slug> <status>": the first slug in the item's after: that closed other than
+# ok, the one its dead hold names (hold_for). Fails when none did.
+dead_root() {
+  local s AST
   for s in $(fm_get "$1" after); do
     after_status "$s"
     case "$AST" in ok | "") continue ;; esac
-    pf="$(latest_done "$s")"
-    c="$(fm_get "$pf" cancel_cause)"
-    if [ -z "$c" ]; then
-      by="$(fm_get "$pf" cancelled_by)" why="$(fm_get "$pf" cancel_why)"
-      c="after $s closed $AST${by:+ by $by}${why:+: $why}"
-    fi
-    printf '%s' "$c"
+    printf '%s %s' "$s" "$AST"
     return 0
   done
+  return 1
+}
+
+# chain_of <slug> <file> -> "<slug><TAB><file>" for the item and every queued item after: it,
+# transitively, the item first: what a return takes with it. Only queued items wait on an item still
+# open, so only they follow.
+chain_of() {
+  local -a chain=("$1") files=("$2")
+  local i=0 s g
+  while [ "$i" -lt "${#chain[@]}" ]; do
+    s="${chain[i]}"; i=$((i + 1))
+    while IFS= read -r g; do
+      [ -n "$g" ] && waits_on "$g" "$s" || continue
+      case " ${chain[*]} " in *" $(fm_get "$g" slug) "*) continue ;; esac
+      chain+=("$(fm_get "$g" slug)") files+=("$g")
+    done < <(items_in "$AQ_DIR/queued")
+  done
+  for i in "${!chain[@]}"; do printf '%s\t%s\n' "${chain[i]}" "${files[i]}"; done
 }
 
 # return <slug> --why <text> -- send an item back to its board: it closes as cancelled with end_reason:
@@ -1736,15 +1765,16 @@ dead_cause() {
 # item returned. A plain cancel leaves those items dead (their
 # after: closed cancelled), and a cleanup that cancelled the dead ones one by one lost about 40 chains on
 # 2026-11-12 (ar-2299); a return takes the chain with it, so no item is left waiting on a closed one.
-# Only queued items wait on an item still open, so only they follow.
+# --drop closes each row undelivered instead (`notes ptask drop`), the human's drop of a chain.
 cmd_return() {
-  local usage="usage: agent-queue return <slug> --why <text> [--ask <id>]"
-  local slug="${1:?$usage}" why="" ask="" by f g s i=0 cause
+  local usage="usage: agent-queue return <slug> --why <text> [--ask <id>] [--drop]"
+  local slug="${1:?$usage}" why="" ask="" drop="" by f g s i cause
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
       --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
+      --drop) drop=1; shift ;;
       *) die "$usage" ;;
     esac
   done
@@ -1754,15 +1784,8 @@ cmd_return() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
-  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=()
-  while [ "$i" -lt "${#chain[@]}" ]; do
-    s="${chain[i]}"; i=$((i + 1))
-    while IFS= read -r g; do
-      [ -n "$g" ] && waits_on "$g" "$s" || continue
-      case " ${chain[*]} " in *" $(fm_get "$g" slug) "*) continue ;; esac
-      chain+=("$(fm_get "$g" slug)") files+=("$g")
-    done < <(items_in "$AQ_DIR/queued")
-  done
+  local -a chain=() files=() rows=() profs=() lanes=()
+  while IFS=$'\t' read -r s g; do chain+=("$s") files+=("$g"); done < <(chain_of "$slug" "$f")
   # A return takes the human's work off the queue as a cancel does, so the same guard holds every
   # item of the chain, all before the first closes: the human's own ask must name each of them.
   for i in "${!chain[@]}"; do cancel_guard "${files[i]}" "$ask"; done
@@ -1781,8 +1804,13 @@ cmd_return() {
   local rc=0
   for i in "${!chain[@]}"; do
     [ -n "${rows[i]}" ] || continue
-    unstart_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" ||
-      { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: $UNSTART_HINT" >&2; rc=1; }
+    if [ -n "$drop" ]; then
+      drop_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" "$why" ||
+        { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not dropped: $UNSTART_HINT" >&2; rc=1; }
+    else
+      unstart_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" ||
+        { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: $UNSTART_HINT" >&2; rc=1; }
+    fi
   done
   return "$rc"
 }
@@ -1827,7 +1855,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1839,6 +1867,8 @@ cmd_set() {
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
     [ "$k" != tags ] || check_tags "${kv#*=}"
     [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
+    # phases: the plan checklist numbers the item holds, as add --plan writes them (ar-2905).
+    [ "$k" != phases ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9]+( [0-9]+)*)?$ ]] || die "phases is plan checklist numbers such as 3 4, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
@@ -1864,6 +1894,7 @@ cmd_set() {
     case "$kv" in
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
       after=*) kv="after=$(word_list "${kv#*=}")" ;;
+      phases=*) kv="phases=$(word_list "${kv#*=}")" ;;
     esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
   done
@@ -1901,6 +1932,14 @@ unstart_row() {
   UNSTART_HINT="notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} unstart ${row#*:}"
   command -v notes >/dev/null &&
     notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" unstart "${row#*:}" >/dev/null 2>&1
+}
+# drop_row <row> <profile> <lane> <why> -- close that board row undelivered, as unstart_row un-starts it.
+drop_row() {
+  local row=$1 prof=$2 flag=()
+  case "$3" in '' | agent) flag=(--agent) ;; esac
+  UNSTART_HINT="notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} drop ${row#*:} --why <why>"
+  command -v notes >/dev/null &&
+    notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" drop "${row#*:}" --why "$4" >/dev/null 2>&1
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
@@ -2322,6 +2361,130 @@ cmd_settle_ask() {
   done < <(items_in "$AQ_DIR/queued")
 }
 
+# settle-dead -- no chain waits in silence on an item that closed other than ok. fleet-dispatch's reap
+# runs it every pass. Each queued item held dead (its after: names an item that closed failed or
+# cancelled, hold_for) is settled:
+#   - machine work goes back to its board with the items after it (return), each item's
+#     cancel_cause: naming the close, their rows un-started for dispatch to pick again;
+#   - the human's work (human_work) is theirs to decide: one ask (retry, replan, drop) holds it
+#     (`ask:<id>` in tags, `dead_ask:` naming it), and the pass after their answer carries it out.
+#     retry queues the closed item again under its slug, so the chain runs on once it lands (dead_retry);
+#     replan returns the chain to the board to be planned again; drop returns it and drops its rows.
+#     A cancelled ask, or an answer that names no option, returns the chain; the judge's answer
+#     decides nothing (ask_pending).
+# One line per item settled; exit 1 when one could not be. Why: a failed phase left every later one
+# held `closed failed, dead` and nothing released it; on 2026-11-17 three chains sat so (ar-2943 P5).
+cmd_settle_dead() {
+  local f line s r st rc=0
+  local -a dead=()
+  lock_read
+  while IFS= read -r f; do
+    line="$(dead_root "$f")" || continue
+    dead+=("$(fm_get "$f" slug) $line")
+  done < <(items_in "$AQ_DIR/queued")
+  unlock_read
+  for line in ${dead[@]+"${dead[@]}"}; do
+    read -r s r st <<<"$line"
+    # A subshell each: a die in a return or an add stops that item only.
+    (settle_dead_one "$s" "$r" "$st") || rc=1
+  done
+  return "$rc"
+}
+
+# settle_dead_one <slug> <root> <status> -- settle-dead for one item, read again since the scan.
+settle_dead_one() {
+  local slug=$1 root=$2 st=$3 f ask pend pick opt cause
+  f="$(find_item "$slug")"
+  [ -n "$f" ] && [ "$(state_of "$f")" = queued ] || return 0
+  cause="$(dead_cause "$f")"
+  ask="$(fm_get "$f" dead_ask)"
+  if [ -z "$ask" ]; then
+    if human_work "$(fm_get "$f" from)" "$(fm_get "$f" tags)"; then
+      dead_ask_post "$f" "$slug" "$root" "$st" "$cause"; return
+    fi
+    cmd_return "$slug" --why "$root closed $st, so the items after it went back to the board" >/dev/null || return 1
+    echo "returned $slug and the items after it: $cause"
+    return 0
+  fi
+  pend="$(ask_pending "$ask")"
+  case "$pend" in
+    "") ;;
+    cancelled | "no such ask")
+      cmd_return "$slug" --why "ask $ask on $root closing $st was $pend" >/dev/null || return 1
+      echo "returned $slug and the items after it: ask $ask was $pend"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  pick=""
+  for opt in retry replan drop; do [ -n "$(ask_pending "$ask=$opt")" ] || { pick=$opt; break; }; done
+  case "$pick" in
+    retry) dead_retry "$f" "$slug" "$root" "$ask" ;;
+    replan)
+      cmd_return "$slug" --why "the human asked to re-plan after $root closed $st" --ask "$ask" >/dev/null || return 1
+      echo "returned $slug and the items after it to be re-planned (ask $ask)" ;;
+    drop)
+      cmd_return "$slug" --why "the human dropped it after $root closed $st" --ask "$ask" --drop >/dev/null || return 1
+      echo "dropped $slug and the items after it, their rows with them (ask $ask)" ;;
+    *)
+      cmd_return "$slug" --why "the human's answer to ask $ask named no option" --ask "$ask" >/dev/null || return 1
+      echo "returned $slug and the items after it: ask $ask was answered in free text" ;;
+  esac
+}
+
+# dead_ask_post <file> <slug> <root> <status> <cause> -- the ask settle-dead holds the human's dead
+# item on. It names every item of the chain, so its answer guards their return (cancel_guard). It is
+# the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
+# session that has an ask of its own is not refused (one open question per session).
+dead_ask_post() {
+  local f=$1 slug=$2 root=$3 st=$4 cause=$5 chain plan rec why id tags
+  chain="$(chain_of "$slug" "$f" | cut -f1 | paste -sd' ' | sed 's/ /, /g')"
+  plan="$(fm_get "$f" plan)"
+  if [ "$st" = failed ]; then
+    rec=retry why="a failed run most often stopped on the way (a limit or a red), and the work is still wanted"
+  else
+    rec=replan why="someone stopped that step on purpose, so the steps after it may no longer fit"
+  fi
+  id="$(env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" post --project "$(fm_get "$f" project)" --task "$slug" \
+    --options "retry=queue that step again; the waiting steps run once it lands|replan=send the waiting steps back to the board as rows, to plan again|drop=drop the waiting steps and their board rows" \
+    --recommend "$rec" --why "$why" \
+    --context "These are queue items, steps of your work that run one after another: $root is the step that closed $st ($cause), and $chain wait on it${plan:+, steps of the plan $(basename "$plan")}. Nothing starts them until you answer." \
+    "A step of your work closed $st and the steps after it wait: retry it, re-plan them or drop them?" </dev/null)" && [ -n "$id" ] ||
+    { echo "agent-queue: $slug waits dead on $root, and its ask could not be posted" >&2; return 1; }
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue while its ask $id was posted"
+  tags="$(fm_get "$f" tags)"
+  header_set "$f" tags "${tags:+$tags }ask:$id"
+  header_set "$f" dead_ask "$id"
+  item_event item-set "$f" --why "dead_ask=$id: $root closed $st"
+  unlock
+  echo "asked $id about $slug: $root closed $st"
+}
+
+# dead_retry <file> <slug> <root> <ask> -- the human's retry: the closed item queued again under its
+# slug, its task, row, plan and phases, so the dead item's after: reads a live hold again; then the ask
+# comes off the dead item. A retry the cap holds is tried again on the next pass.
+dead_retry() {
+  local f=$1 slug=$2 root=$3 ask=$4 pf row tags out rc
+  if [ -z "$(find_item "$root")" ]; then
+    pf="$(latest_done "$root")"; [ -n "$pf" ] || die "$root has no finished item to queue again"
+    row="$(item_row "$pf")"
+    tags="$(fm_get "$pf" tags | tr ' ' '\n' | grep -vE '^(ask|hold|at|pr):' | paste -sd' ')"
+    out="$(fm_body "$pf" | AGENT_QUEUE_START=0 AQ_ITEM_PLAN="$(fm_get "$pf" plan)" AQ_ITEM_PHASES="$(fm_get "$pf" phases)" \
+      cmd_add_one --project "$(fm_get "$pf" project)" --slug "$root" --priority "$(fm_get "$pf" priority)" --from human \
+        ${row:+--row "${row#*:}"} ${tags:+--tags "$tags"} 2>&1)"; rc=$?
+    [ "$rc" -ne "$AQ_EX_HELD" ] || { echo "agent-queue: the retry of $root (ask $ask) is held by the queue cap; the next pass tries again" >&2; return 0; }
+    [ "$rc" -eq 0 ] || { echo "agent-queue: could not queue $root again (ask $ask): ${out##*$'\n'}" >&2; return 1; }
+  fi
+  lock
+  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue while $root was queued again"
+  tags="$(fm_get "$f" tags | tr ' ' '\n' | grep -vxF "ask:$ask" | paste -sd' ')"
+  if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi
+  header_del "$f" dead_ask
+  item_event item-set "$f" --why "retry: $root queued again (ask $ask)"
+  unlock
+  echo "queued $root again (ask $ask): $slug runs after it lands"
+}
+
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
@@ -2726,6 +2889,7 @@ case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   settle-ask) shift; cmd_settle_ask "$@" ;;
+  settle-dead) shift; cmd_settle_dead "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
