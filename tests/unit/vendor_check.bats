@@ -15,8 +15,8 @@ setup() {
   cat >"$HOME/bin/rbw" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
-  list) printf 'dev\tacme\n\tplain-key\n' ;;
-  get) shift; [ "$1" = --folder ] && shift 2; case "$1" in acme | plain-key) echo s3cret-value ;; *) exit 1 ;; esac ;;
+  list) printf 'dev\tacme\n\tplain-key\n\tmulti\n' ;;
+  get) shift; [ "$1" = --folder ] && shift 2; case "$1" in acme | plain-key) echo s3cret-value ;; multi) printf 's3cret\nline2\n' ;; *) exit 1 ;; esac ;;
   code) shift; [ "$1" = --folder ] && shift 2; [ "$1" = acme ] && echo 123456 || exit 1 ;;
 esac
 EOF
@@ -92,4 +92,78 @@ vendors() { printf '%s\n' "$@" >"$VENDORS_FILE"; }
   run "$VC"
   assert_equal "$status" 1
   assert_line "acme LOW probe=listed detail='rbw locked'"
+}
+
+# A local server: /auth is 200 only with the stub secret as a bearer, /500 is a 500, /redir 302s to /auth.
+serve() {
+  cat >"$HOME/srv.py" <<'PY'
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        ok = self.headers.get("Authorization") == "Bearer s3cret-value"
+        code = {"/auth": 200 if ok else 401, "/500": 500, "/redir": 302}.get(self.path, 404)
+        self.send_response(code)
+        if code == 302:
+            self.send_header("Location", "/auth")
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H)
+print(s.server_port, flush=True)
+s.serve_forever()
+PY
+  coproc SRV { exec python3 "$HOME/srv.py" 3>&-; }  # fd 3 closed, or bats waits on it
+  read -r PORT <&"${SRV[0]}"  # blocks until the server has bound its port
+  U="http://127.0.0.1:$PORT"
+}
+
+teardown() { [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null || true; }
+
+@test "http: the secret as a bearer is OK, a 401 is EXPIRED, a 5xx is LOW, a redirect is LOW and not followed" {
+  serve
+  vendors "good dev pays=free cred=rbw:plain-key probe=http url=$U/auth twofa=none" \
+    "anon dev pays=free cred=none probe=http url=$U/auth twofa=none" \
+    "down dev pays=free cred=rbw:plain-key probe=http url=$U/500 twofa=none" \
+    "moved dev pays=free cred=rbw:plain-key probe=http url=$U/redir twofa=none"
+  run "$VC"
+  assert_equal "$status" 2
+  assert_line 'good OK probe=http'
+  assert_line "anon EXPIRED probe=http detail='http 401'"
+  assert_line "down LOW probe=http detail='http 500'"
+  assert_line "moved LOW probe=http detail='http 302'"
+}
+
+@test "a secret no header can carry is LOW, and neither the secret nor a traceback is printed" {
+  serve
+  vendors "multi dev pays=free cred=rbw:multi probe=http url=$U/auth twofa=none" "after dev pays=free cred=none probe=listed twofa=none"
+  run "$VC"
+  assert_equal "$status" 1
+  assert_line "multi LOW probe=http detail='bad request'"
+  assert_line 'after OK probe=listed'
+  refute_output --partial s3cret
+  refute_output --partial Traceback
+}
+
+@test "sops: a key in the file is read through sops, a # in cred= is not a comment, a missing key is NO_CREDS, no decrypt is LOW" {
+  printf 'API_KEY: ENC[AES256_GCM,data:x]\nsops:\n  age: []\n' >"$HOME/s.yaml"
+  printf '#!/usr/bin/env bash\n[ -n "$SOPS_FAIL" ] && exit 128\n[ "$3" = %s ] && echo s3cret-value\n' "'[\"API_KEY\"]'" >"$HOME/bin/sops"
+  chmod +x "$HOME/bin/sops"
+  vendors "s dev pays=free cred=sops:~/s.yaml#API_KEY probe=cmd run='[ \"\$VENDOR_SECRET\" = s3cret-value ]' twofa=none # trailing" \
+    "m dev pays=free cred='sops:$HOME/s.yaml#OTHER' probe=cmd run=true twofa=none"
+  run "$VC"
+  assert_equal "$status" 2
+  assert_line 's OK probe=cmd'
+  assert_line "m NO_CREDS probe=cmd detail='not in sops'"
+  SOPS_FAIL=1 run "$VC" s
+  assert_equal "$status" 1
+  assert_line "s LOW probe=cmd detail='sops cannot decrypt'"
+}
+
+@test "an http url without a scheme, or an unknown option, exits 3" {
+  vendors 'x dev pays=free cred=none probe=http url=api.example.com/v1 twofa=none'
+  run "$VC"
+  assert_equal "$status" 3
+  vendors 'x dev pays=free cred=none probe=listed twofa=none'
+  run "$VC" --file
+  assert_equal "$status" 3
 }

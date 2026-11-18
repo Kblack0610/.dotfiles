@@ -14,7 +14,7 @@ cred:  rbw:[<folder>/]<entry>  an rbw entry (the secret is its password)
 probe: listed                  the cred exists (a console login has no read-only API)
        totp                    the rbw entry exists and yields a TOTP code
        http url=<url> [auth=bearer|token|raw|x-api-key]   2xx is OK, 401/403 EXPIRED
-       cmd run='<command>'     exit 0 is OK
+       cmd run='<command>'     exit 0 is OK, 124 (timeout) or 127 LOW, any other EXPIRED
 twofa: phone-google phone-steam phone-msauth mac-apple rbw-totp imap:<account> none unknown
 gap=<owner>                    a known gap with an owner (a queue slug): printed, not counted in the exit
 
@@ -24,9 +24,11 @@ LOW means the probe could not tell (network, 5xx, timeout, rbw locked). Exit 0 a
 EXPIRED or NO_CREDS, 3 a registry line it cannot parse.
 """
 import os
+import re
 import shlex
 import subprocess
 import sys
+import http.client
 import urllib.error
 import urllib.request
 
@@ -47,13 +49,26 @@ class Bad(Exception):
     pass
 
 
+def uncomment(line):
+    """The line before its comment: an unquoted # at a word start, so sops:<file>#<key> survives."""
+    quote = None
+    for i, c in enumerate(line):
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
 def parse(path):
     """[(lineno, fields)] for each vendor line; Bad names the first line it cannot read."""
     rows = []
     with open(path) as f:
         for n, line in enumerate(f, 1):
             try:
-                words = shlex.split(line, comments=True)
+                words = shlex.split(uncomment(line))
             except ValueError as e:
                 raise Bad("%s:%d: %s" % (path, n, e))
             if not words:
@@ -75,8 +90,8 @@ def parse(path):
                 raise Bad("%s:%d: twofa=%s is not one of %s|imap:<account>" % (path, n, row["twofa"], "|".join(TWOFA)))
             if row["probe"] not in PROBES:
                 raise Bad("%s:%d: probe=%s is not one of %s" % (path, n, row["probe"], "|".join(PROBES)))
-            if row["probe"] == "http" and "url" not in row:
-                raise Bad("%s:%d: probe=http needs url=" % (path, n))
+            if row["probe"] == "http" and not row.get("url", "").startswith(("https://", "http://")):
+                raise Bad("%s:%d: probe=http needs an http(s) url=" % (path, n))
             if row["probe"] == "http" and row.get("auth", "bearer") not in AUTH:
                 raise Bad("%s:%d: auth=%s is not one of %s" % (path, n, row["auth"], "|".join(AUTH)))
             if row["probe"] == "cmd" and not row.get("run"):
@@ -109,7 +124,7 @@ def rbw_listed():
     global _rbw
     if _rbw is None:
         code, out = run(["rbw", "list", "--fields", "folder,name"])
-        _rbw = {tuple(l.partition("\t")[::2]) for l in out.splitlines()} if code == 0 else False
+        _rbw = {tuple((l.split("\t") + [""])[:2]) for l in out.splitlines()} if code == 0 else False
     return _rbw if _rbw is not False else None
 
 
@@ -123,34 +138,60 @@ def rbw_args(ref):
     return (["--folder", folder] if folder else []) + [name]
 
 
+def cannot_tell(code, what):
+    """(LOW, detail) when a tool timed out or is missing, else None."""
+    if code in (124, 127):
+        return "LOW", "%s %s" % (what, "timeout" if code == 124 else "not installed")
+    return None
+
+
 def secret(cred):
-    """The cred's value, or None. Never printed."""
+    """(value, None), or (None, (state, detail)) when it cannot be read. The value is never printed."""
     kind, _, ref = cred.partition(":")
     if kind == "rbw":
         code, out = run(["rbw", "get"] + rbw_args(ref))
-    elif kind == "sops":
+        failed = ("NO_CREDS", "unreadable")
+    else:
         path, _, key = ref.partition("#")
         code, out = run(["sops", "-d", "--extract", '["%s"]' % key, os.path.expanduser(path)])
-    else:
-        return None
+        failed = ("LOW", "sops cannot decrypt")
     out = out.strip()
-    return out if code == 0 and out else None
+    if code == 0 and out:
+        return out, None
+    return None, cannot_tell(code, kind) or failed
 
 
 def present(cred):
-    """True, False, or None when rbw cannot answer."""
+    """True, False, or None when rbw cannot answer. A SOPS file keeps its key names in clear text."""
     kind, _, ref = cred.partition(":")
     if kind == "rbw":
         listed = rbw_listed()
         return None if listed is None else rbw_ref(ref) in listed
     if kind == "sops":
-        return secret(cred) is not None
+        path, _, key = ref.partition("#")
+        try:
+            with open(os.path.expanduser(path)) as f:
+                text = f.read()
+        except OSError:
+            return False
+        return bool(key) and re.search(r"^\s*[\"']?%s[\"']?\s*:" % re.escape(key), text, re.M) is not None
     return True
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is LOW, never followed: urllib would carry the auth header to the new host."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def probe(row):
     """(state, detail) for one vendor."""
     cred, kind = row["cred"], row["cred"].split(":", 1)[0]
+    value = None
     if kind in ("rbw", "sops"):
         have = present(cred)
         if have is None:
@@ -161,30 +202,25 @@ def probe(row):
         return "OK", ""
     if row["probe"] == "totp":
         code, out = run(["rbw", "code"] + rbw_args(cred.partition(":")[2]))
-        return ("OK", "") if code == 0 and out.strip() else ("NO_CREDS", "no TOTP seed")
+        if code == 0 and out.strip():
+            return "OK", ""
+        return cannot_tell(code, "rbw") or ("NO_CREDS", "no TOTP seed")
+    if kind in ("rbw", "sops"):
+        value, failed = secret(cred)
+        if failed:
+            return failed
     if row["probe"] == "cmd":
-        env = dict(os.environ)
-        if kind in ("rbw", "sops"):
-            value = secret(cred)
-            if value is None:
-                return "NO_CREDS", "unreadable"
-            env["VENDOR_SECRET"] = value
+        env = dict(os.environ, **({"VENDOR_SECRET": value} if value else {}))
         code, _ = run(["sh", "-c", row["run"]], env=env)
         if code == 0:
             return "OK", ""
-        if code in (124, 127):
-            return "LOW", "timeout" if code == 124 else "not installed"
-        return "EXPIRED", "exit %d" % code
-    # http
-    req = urllib.request.Request(row["url"], headers={"User-Agent": "vendor-check"})
-    if kind in ("rbw", "sops"):
-        value = secret(cred)
-        if value is None:
-            return "NO_CREDS", "unreadable"
-        header, prefix = AUTH[row.get("auth", "bearer")]
-        req.add_header(header, prefix + value)
+        return cannot_tell(code, "probe") or ("EXPIRED", "exit %d" % code)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        req = urllib.request.Request(row["url"], headers={"User-Agent": "vendor-check"})
+        if value:
+            header, prefix = AUTH[row.get("auth", "bearer")]
+            req.add_header(header, prefix + value)
+        with OPENER.open(req, timeout=TIMEOUT):
             return "OK", ""
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -192,6 +228,8 @@ def probe(row):
         return "LOW", "http %d" % e.code
     except (urllib.error.URLError, OSError):
         return "LOW", "unreachable"
+    except (ValueError, http.client.HTTPException):
+        return "LOW", "bad request"  # never the message: it can quote the header value
 
 
 def main(argv):
@@ -206,6 +244,9 @@ def main(argv):
         if argv[i] in ("-h", "--help"):
             print(__doc__.strip())
             return 0
+        if argv[i].startswith("-"):
+            print("vendor-check: unknown or incomplete option %s (vendor-check -h)" % argv[i], file=sys.stderr)
+            return 3
         names.append(argv[i])
         i += 1
     try:
