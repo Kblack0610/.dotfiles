@@ -79,6 +79,7 @@ unset _k _v
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
+: "${DISPATCH_CANARY_FLOOR:=3}"   # live canary items (tag `canary`) a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a night canary sat at position 222 of 606 queued while every night pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
@@ -853,12 +854,13 @@ pace_target() {
 
 # line_why <item json> -> why the item's project merge line holds it, or nothing: DISPATCH_LINE_MAX or
 # more of that project's sessions wait their landing turn (LINE_WAITS), so one more would only join the
-# line. An urgent or red item still starts: the human's urgent asks and a red's fix are never held here.
+# line. An urgent or red item still starts: the human's urgent asks and a red's fix are never held here,
+# and so does a canary, which opens no PR and so never joins the line.
 line_why() {
   [ "${DISPATCH_LINE_MAX:-0}" -gt 0 ] 2>/dev/null || return 0
   local w="${LINE_WAITS:-}"; [ -n "$w" ] || w='{}'
   jq -r --argjson w "$w" --argjson max "$DISPATCH_LINE_MAX" '
-    select(.priority != "urgent" and ((" " + (.tags // "") + " ") | contains(" red ") | not))
+    select(.priority != "urgent" and ((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary ")) | not))
     | ($w[.project // ""] // 0) as $n | select($n >= $max)
     | "merge line: \($n) \(.project) sessions wait their landing turn (DISPATCH_LINE_MAX=\($max))"' <<<"$1" 2>/dev/null
   return 0
@@ -874,15 +876,17 @@ floor_open() {
   [ $(( live + ${STARTED:-0} )) -lt "$DISPATCH_RUN_FLOOR" ]
 }
 
-# live_reds -> how many red items the runner started have a live session, for the red floor.
-live_reds() {
-  agent-queue list --json --state active 2>/dev/null | jq -r '
+# live_tagged <tag> -> the sessions of the items tagged <tag> the runner started that are live, one a
+# line: the red floor's count (live_reds) and the canary floor's.
+live_tagged() {
+  agent-queue list --json --state active 2>/dev/null | jq -r --arg t " $1 " '
     select(.state != "queued" and ((.origin // "") == "" or .origin == "run"))
-    | select((" " + (.tags // "") + " ") | contains(" red "))
+    | select((" " + (.tags // "") + " ") | contains($t))
     | (.host // "") as $h | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:]) \($h)"' 2>/dev/null |
     while read -r server sess host; do session_live "$sess" "$server" "$host" && echo "$sess"; done
   return 0
 }
+live_reds() { live_tagged red; }
 
 # watch_reds -> how many red items of a tripped watch (tags `red watch`, fleet-bench triage) are
 # running, or queued and not held: each one widens the red floor by one.
@@ -1850,8 +1854,10 @@ trainee_load() {
   TRAINEE_CONF=$(model-lane trainee 2>/dev/null) && jq -e 'type == "object"' <<<"$TRAINEE_CONF" >/dev/null 2>&1 || TRAINEE_CONF='{}'
 }
 
-# item_points <item json> -> the item's board points (#pts/N in its task), or nothing.
-item_points() { jq -r '[(.task // "") | match("#pts/([0-9]+)\\b"; "i").captures[0].string][0] // empty' <<<"$1"; }
+# item_points <item json> -> the item's points: its board row's now (`points`, which runnable joins
+# from the board), else the #pts/N its task was queued with, or nothing. The row is the one size store:
+# a row sized after it was queued kept its item off every trainee (2 of 606 queued tasks carry #pts).
+item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((.task // "") | match("#pts/([0-9]+)\\b"; "i").captures[0].string))' <<<"$1"; }
 
 # ladder_row_why <item json> <who> -> why no sandboxed ladder run (a trainee's or a direct one) takes
 # the item, rc 1, or nothing: it takes a tier-1 row whose kind opens a PR, not a plan, a canary, a verify
@@ -3274,6 +3280,34 @@ source_floor_start() {
   return "$FLOOR_SHUT"
 }
 
+# canary_items <item json lines> -> the canary items among them, one lane (agent, model, effort) in
+# turn, queue order within a lane: the claude lanes queue high and every other lane low, so in plain
+# queue order a week's go, nim and ocfree canaries waited behind every claude one.
+canary_items() {
+  jq -sc 'map(select((" " + (.tags // "") + " ") | contains(" canary ")))
+    | group_by([.agent // "", .model // "", .effort // ""]) | map(to_entries) | flatten | sort_by(.key) | .[].value' <<<"$1"
+}
+
+# canary_floor_start -- keep DISPATCH_CANARY_FLOOR canary items running past the pace target: a canary
+# is the eval every lane is scored by, queued as a night item, and night passes sit over the target,
+# so with no floor no week's set started after 11-14 (ar-2774). The gate still holds it (load,
+# fleet-assess, the weekly pace, agent-hold), and route still picks a source with room. A canary start
+# leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
+# Rc FLOOR_SHUT when nothing is due; the pass goes on as it would have either way. The queue it read is
+# NEXT_QUEUED, which cmd_run reuses while no canary started, so the floor adds no queue read to a pass.
+canary_floor_start() {
+  local slots items NO_ROUTE=()
+  [ "${DISPATCH_CANARY_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
+  NEXT_QUEUED=$(next_items --points)
+  items=$(canary_items "$NEXT_QUEUED")
+  [ -n "$items" ] || return "$FLOOR_SHUT"
+  slots=$(( DISPATCH_CANARY_FLOOR - $(live_tagged canary | grep -c . || true) ))
+  [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
+  [ "$slots" -gt 0 ] && [ -z "$(gate)" ] || return "$FLOOR_SHUT"
+  say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)"
+  CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
+}
+
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
 # gates are asked once: presence is none of them. The human's and the shepherd's items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
@@ -3353,14 +3387,14 @@ start_items() {
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
   # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ]; then
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}" = 0 ]; then
     why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
     [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
     settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
-  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
+  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}" = 1 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
@@ -3378,8 +3412,10 @@ TAKEN_JQ='(.waits | not)'
 
 # next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
 # one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
+# With --points each carries its board row's points, which a trainee reads (item_points): every caller
+# that feeds a start passes it, and a count does not, so it pays no board read.
 next_items() {
-  runnable 2>/dev/null | jq -c "select($TAKEN_JQ)" 2>/dev/null
+  runnable "$@" 2>/dev/null | jq -c "select($TAKEN_JQ)" 2>/dev/null
   return 0
 }
 
@@ -3407,7 +3443,8 @@ load_findings() {
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 lfirst='' uwait=0 held=() waits="every queue item waits" reserved=''
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
-  elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"; fi
+  elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"
+  elif [ "${CANARY_PASS:-0}" = 1 ]; then waits="every canary item waits"; fi
   PICKED='' PICK_WHY='' PICK_FULL=1 PLACE_HOST='' PICK_RESERVED='' PICK_LINE=''
   load_findings || { PICK_WHY="fleet-bench findings unreadable"; PICK_FULL=0; return 1; }
   free=${UNITS_FREE:-$TARGET}
@@ -3511,7 +3548,7 @@ preempt_items() {
   local it
   while IFS= read -r it; do
     [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && printf '%s\n' "$it"
-  done < <(next_items | jq -c --argjson max "$TARGET" '
+  done < <(next_items --points | jq -c --argjson max "$TARGET" '
     select(.priority == "urgent" and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
   return 0
 }
@@ -3953,7 +3990,8 @@ start_item() {
   if [ "$harness" = claude ]; then
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
-    if red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
+    if [ "${CANARY_PASS:-0}" = 1 ]; then floor=" on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1
+    elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif human_floor_open; then
       floor=" on the human floor, past the weekly pace: urgent from the human"
@@ -3971,6 +4009,7 @@ start_item() {
     # A start past the account hold leaves it standing, like a floor start.
     [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
     if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
+    if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL"
   fi
   rc=$?; exec 7>&-
@@ -4259,8 +4298,8 @@ cmd_headroom() {
     fi
 }
 
-# runnable -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
-# after:), one JSON object a line. While the human is here a board item starts only within the present
+# runnable [--points] -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
+# after:), one JSON object a line; --points joins each one's board row `points` (agent-queue list --points). While the human is here a board item starts only within the present
 # trickle (present_left), and a night item not at all: `waits` is true while they are here and it is
 # spent (always, for a night item, which runs with nobody to ask), and its t, the epoch it
 # became runnable, is when they left if it was queued before that; any other item's t is its queued epoch. Away with no minutes (`away -
@@ -4268,7 +4307,7 @@ cmd_headroom() {
 # read only when an item could wait on it. Fails when the queue is unreadable.
 runnable() {
   local q state='' mins=- _s here=true left=0
-  q=$(agent-queue list --json --state queued 2>/dev/null) || return 1
+  q=$(agent-queue list --json ${1:+"$1"} --state queued 2>/dev/null) || return 1
   [[ "$q" != *board:* ]] || read -r state mins _s < <(fleet-presence 2>/dev/null)
   [ "$state" != away ] || { here=false; [ "$mins" = - ] || left=$(( $(date +%s) - mins * 60 )); }
   local trickle=false; [ "$here" = false ] || [ "$(present_left)" -eq 0 ] || trickle=true
@@ -4739,7 +4778,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || cmd_reap
   HUMAN_PASS=0
   QUEUE_HELD='' LINE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= NIGHT_FILLED=0 PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
-  NO_ROUTE=()
+  NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
   [ "$DRY" = 1 ] || triage_pass
   # Night rows first, ahead of the run units, the queue's depth and the gates: they only promote, and
   # agent-queue holds a night item to its window. A dispatch hold stops even this. A judge that
@@ -4780,6 +4819,13 @@ cmd_run() {
     local before=${STARTED:-0} urc; PREEMPT_PARKED=0; start_items "$urgent" 1; urc=$?
     [ "$urc" = 0 ] && [ "${STARTED:-0}" -eq "$before" ] && [ "${PICK_FULL:-0}" = 1 ] && [ "$PREEMPT_PARKED" = 0 ] || return "$urc"
   fi
+  # Canaries start on their own floor past the target, before the queue order buries them
+  # (canary_floor_start). With room, a canary start takes one of it, so the pass starts no more than before.
+  local crc cbefore=${STARTED:-0}; canary_floor_start; crc=$?
+  case "$crc" in 0 | "$FLOOR_SHUT") ;; *) return "$crc" ;; esac
+  if [ "${STARTED:-0}" -gt "$cbefore" ]; then
+    unset NEXT_QUEUED; room=$(( room - STARTED + cbefore )); [ "$room" -ge 0 ] || room=0
+  fi
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
     [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
@@ -4789,7 +4835,7 @@ cmd_run() {
     # (red_floor_open, read again each start), caps what starts; the run units it lifts here.
     local reds queued='' slots=$(( DISPATCH_RED_FLOOR + ${RED_WATCH:-0} - ${RED_LIVE:-0} ))
     [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-    if [ "$slots" -gt 0 ] || [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] || [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null; then queued=$(next_items); fi
+    if [ "$slots" -gt 0 ] || [ "${DISPATCH_PROJECT_FLOOR:-0}" -gt 0 ] || [ "${DISPATCH_SOURCE_FLOOR:-0}" -gt 0 ] 2>/dev/null; then queued=${NEXT_QUEUED-$(next_items --points)}; fi
     if [ "$slots" -gt 0 ]; then reds=$(red_items "$queued"); fi
     if [ "$slots" -gt 0 ] && red_floor_due "$reds"; then
       UNITS_FREE=$(( slots * 2 )) red_floor_start "$reds" "$slots" "pace target: $full"; return
@@ -4813,7 +4859,7 @@ cmd_run() {
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
   # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup.
-  local items rc depth want cdepth rdepth only=''; items=$(next_items)
+  local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD$LINE_HELD" ]; then
@@ -4860,7 +4906,7 @@ cmd_run() {
   if [ "$DRY" = 1 ]; then [ $(( FILLED + NIGHT_FILLED )) -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
-  items=$(next_items)
+  items=$(next_items --points)
   if [ -z "$items" ]; then
     if [ "$FILLED" -gt 0 ] && human_here; then settle_board NOOP "queued $FILLED; the human is here and this hour's DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR start is used, so they start when they leave"
     else settle_board NOOP "no row qualifies this pass"; fi
