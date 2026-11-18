@@ -88,8 +88,9 @@ impl Cache {
             .and_then(|l| (*l).clone())
     }
 
-    /// After a write from this page, so its own refresh shows it.
-    fn clear(&self) {
+    /// After a write from this page or the board (a start queues an item), so its own refresh
+    /// shows it.
+    pub(crate) fn clear(&self) {
         self.all.clear();
         self.since.clear();
         self.stats.clear();
@@ -446,36 +447,66 @@ mod tests {
     /// The reads that run `agent-queue` (seconds apiece on a loaded machine) live only here, so a
     /// tab reads `Cache` and never waits on the CLI. `/api/board` once called
     /// `sheet_view::feed`, which runs `agent-queue list` and `stats` per request: 4 to 19 s.
-    #[test]
-    fn only_this_cache_runs_agent_queue_reads() {
-        let banned = [
-            "Queue::read(",
-            "sheet_view::feed(",
-            "hub_queue::list(",
-            "hub_queue::list_since(",
-            "hub_queue::stats(",
-            "queue::list(&",
-            "queue::stats(&",
-        ];
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
-        let mut found = Vec::new();
+    /// The hub-core calls that run `agent-queue list` or `stats`, under any `use` alias
+    /// (`hub_queue::list(` and `hub_core::queue::list(` both hold `queue::list(`).
+    const RUNS_AGENT_QUEUE: [&str; 7] = [
+        "Queue::read(",
+        "sheet_view::feed(",
+        "queue::list(",
+        "queue::list_since(",
+        "queue::stats(",
+        "queue_items(",
+        "actions::read(",
+    ];
+
+    fn runs_agent_queue(text: &str) -> Vec<&'static str> {
+        RUNS_AGENT_QUEUE
+            .into_iter()
+            .filter(|b| text.contains(b))
+            .collect()
+    }
+
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let path = e.unwrap().path();
-            if path.extension().is_none_or(|x| x != "rs") || path.ends_with("queue.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            for b in banned.iter().filter(|b| text.contains(*b)) {
-                found.push(format!("{}: {b}", path.display()));
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
             }
         }
+    }
+
+    #[test]
+    fn only_this_cache_runs_agent_queue_reads() {
+        let mut files = Vec::new();
+        rust_files(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut files,
+        );
+        assert!(files.len() > 10, "the scan found the sources: {files:?}");
+        let found: Vec<String> = files
+            .iter()
+            .filter(|p| !p.ends_with("src/queue.rs"))
+            .flat_map(|p| {
+                let text = std::fs::read_to_string(p).unwrap();
+                let hits = runs_agent_queue(&text);
+                hits.into_iter()
+                    .map(move |b| format!("{}: {b}", p.display()))
+            })
+            .collect();
         assert!(
             found.is_empty(),
             "read through queue::Cache instead: {found:?}"
         );
-        // Negative control: this file does run them, so the scan would see one.
-        let own = include_str!("queue.rs");
-        assert!(banned.iter().any(|b| own.contains(b)));
+        // Negative control: the two calls that once ran it per read are seen, aliased or not.
+        let old_board = "hub_core::sheet_view::feed(&System).map(|f| shown(&f, &q))";
+        assert_eq!(runs_agent_queue(old_board), ["sheet_view::feed("]);
+        assert_eq!(
+            runs_agent_queue("hub_core::actions::read(now - span)"),
+            ["actions::read("]
+        );
+        assert!(runs_agent_queue("sheet_view::feed_with(&System, &queue)").is_empty());
     }
 
     #[test]

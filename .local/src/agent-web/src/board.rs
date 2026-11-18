@@ -8,9 +8,9 @@
 //! notes' error and re-reads.
 //!
 //! The rows are `hub_core::table`'s: this applies the view keys and sends the summary beside
-//! them. Every read asks `notes` again (it answers in about 100 ms), so a write shows at once
-//! and nothing here needs a cache to clear. Each row's queue word comes from the kept queue read
-//! (`queue::Cache`), never a fresh `agent-queue` run: two of those took 4 to 19 s a request.
+//! them. Every read asks `notes` again (it answers in about 100 ms), so a write's row shows at
+//! once. Each row's queue word comes from the kept queue read (`queue::Cache`), never a fresh
+//! `agent-queue` run (two of those took 4 to 19 s a request), and a write clears that read.
 
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -185,7 +185,10 @@ pub fn audit_entry(
     Some(to_write(b).ok()?.audit_entry(actor, "web"))
 }
 
-pub async fn write(Json(b): Json<WriteBody>) -> ApiResult<Json<serde_json::Value>> {
+pub async fn write(
+    State(s): State<Shared>,
+    Json(b): Json<WriteBody>,
+) -> ApiResult<Json<serde_json::Value>> {
     let w = to_write(b).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
     // A malformed write is the page's fault (400); a refused one is the sheet's answer (409).
     tasks::argv(&w).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
@@ -193,7 +196,8 @@ pub async fn write(Json(b): Json<WriteBody>) -> ApiResult<Json<serde_json::Value
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::CONFLICT, e))?;
-    crate::epics::clear();
+    // A start, done or drop moves the queue too, so the re-read shows its word at once.
+    s.queue.clear();
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 
