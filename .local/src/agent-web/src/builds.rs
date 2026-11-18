@@ -1,17 +1,19 @@
 //! Infra's CI runs section, and Releases' Release runs: CI runs of the last 30 days from hub-core's
 //! `builds`, `scope=release` cutting them to the runs the graph tied to a release
 //! (`Scope::Release`). The list is filtered and sorted here by `hub_core::table`, so the page
-//! only draws. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`) because the table
+//! only draws, a page at a time. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`,
+//! `bpg`) because the table
 //! beside it on either tab keeps the plain ones. A new ledger line pushes the `builds` event; a
 //! run's log and its detail (jobs, steps, cost) are read when it is opened, priced with the rates
 //! the Infra tab's answer carries.
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, Scope, STALE_SECS};
 use hub_core::jobs::{self, now};
+use hub_core::layout;
 use hub_core::queue::Item;
 use hub_core::run_detail::Rates;
 use hub_core::session_actions::System;
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -30,17 +32,17 @@ pub struct Query {
     pub bs: String,
     pub bsort: String,
     pub bdir: String,
+    pub bpg: String,
     /// `release`: only the runs tied to a release (Releases' Release runs).
     pub scope: String,
 }
 
-/// The read with the view applied: the rows drawn, how many the cap left out, the controls.
+/// The read with the view applied: the page of rows drawn and the controls.
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
     stale_after: i64,
     rows: Vec<&'a Run>,
-    more: usize,
     /// The scope's counts, whatever the view: Runners' `failed 24h` is `recent_red`.
     counts: &'a builds::Counts,
     errors: &'a [String],
@@ -53,15 +55,13 @@ fn render(b: &Builds, q: &Query) -> String {
     let scope = Scope::named(&q.scope);
     let s = b.scoped(scope);
     let view = View::new::<Run>(&q.bq, &q.bs, &q.bsort, &q.bdir);
-    let (rows, mut table) = view.summary(&s.rows);
-    let (rows, more) = builds::cap(rows.into_iter().copied().collect());
-    // The links run beside the rows the page gets, and the cap dropped the rest.
-    table.links = hub_core::table::links(&rows);
+    let (mut rows, mut table) = view.summary(&s.rows);
+    let page = q.bpg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("runs"));
     let out = Shown {
         at: b.at,
         stale_after: STALE_SECS,
-        rows,
-        more,
+        rows: rows.into_iter().copied().collect(),
         counts: s.counts,
         errors: s.errors,
         look: b.needs_look(scope),
@@ -158,7 +158,7 @@ mod tests {
     fn the_plain_view_lists_every_run() {
         let v = body(Query::default());
         assert_eq!(v["rows"].as_array().unwrap().len(), 3);
-        assert_eq!(v["more"], 0);
+        assert!(v["table"].get("pager").is_none(), "one page sends no pager");
         assert_eq!(v["table"]["total"], 3);
         assert_eq!(v["stale_after"], STALE_SECS);
         assert_eq!(v["counts"]["red"], 1, "the counts ride whatever the view");
@@ -204,16 +204,33 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_leaves_the_rest_one_search_away() {
+    fn a_long_list_pages_at_the_runs_size_and_bpg_picks_the_page() {
+        let per = layout::page_rows("runs");
         let b = Builds {
-            rows: (0..builds::LIST_ROWS as u64 + 5)
-                .map(|i| run(i, "green"))
-                .collect(),
+            rows: (0..per as u64 + 5).map(|i| run(i, "green")).collect(),
             ..Default::default()
         };
-        let v: serde_json::Value = serde_json::from_str(&render(&b, &Query::default())).unwrap();
-        assert_eq!(v["rows"].as_array().unwrap().len(), builds::LIST_ROWS);
-        assert_eq!(v["more"], 5);
+        let page = |bpg: &str| -> serde_json::Value {
+            let q = Query {
+                bpg: bpg.into(),
+                ..Default::default()
+            };
+            serde_json::from_str(&render(&b, &q)).unwrap()
+        };
+        let v = page("");
+        assert_eq!(v["rows"].as_array().unwrap().len(), per);
+        assert_eq!(v["table"]["pager"]["page"], 1);
+        assert_eq!(v["table"]["pager"]["pages"], 2);
+        assert_eq!(
+            v["table"]["shown"],
+            per + 5,
+            "the summary counts every page"
+        );
+        let v = page("2");
+        assert_eq!(v["rows"].as_array().unwrap().len(), 5);
+        assert_eq!(v["rows"][0]["id"], per);
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        assert!(v.get("more").is_none());
     }
 
     #[test]

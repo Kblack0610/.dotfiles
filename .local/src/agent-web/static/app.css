@@ -350,7 +350,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }
-.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 0; }
+.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0; }
 .tpager .btn.sm { margin: 0; }
 .tpager .btn.on { border-color: var(--accent); color: var(--accent); }
 .tpager .btn:disabled { opacity: .4; cursor: default; }
