@@ -117,6 +117,8 @@ struct AppState {
     home: cache::EventCache<HomeParts, HOME_SECS>,
     /// Wakes the Tilecast push sender (`push::run`).
     push: push::Pusher,
+    /// `/api/watch` as served: the fleet state with its asks, and the shepherd's transitions.
+    watch: cache::EventCache<(Bytes, bool), WATCH_SECS>,
 }
 
 type Shared = Arc<AppState>;
@@ -131,6 +133,10 @@ const AGENTS_SECS: u64 = 15;
 const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
 /// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
 const HOME_SECS: u64 = 30;
+/// The Watch tab's sources: the fleet state and shepherd log (`classify`), and asks.
+const WATCH_KINDS: [&str; 2] = ["watch", "asks"];
+/// A session's status in the fleet state moves without an event too, so not kept past this.
+const WATCH_SECS: u64 = 15;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -158,6 +164,7 @@ async fn main() -> Result<()> {
         queue: queue::Cache::new(&events),
         agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
+        watch: cache::EventCache::named(events.subscribe(), &WATCH_KINDS, "watch"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -698,6 +705,7 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     if write && res.status().is_success() {
         s.agents.clear();
         s.home.clear();
+        s.watch.clear();
         projects::GATHERED.clear();
     }
     res
@@ -1396,17 +1404,36 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
 }
 
-async fn watch_board() -> ApiResult<Json<boards::Watch>> {
-    tokio::task::spawn_blocking(|| {
-        boards::watch(
-            &boards::fleet_state(),
-            &boards::shepherd_dir().join("watch.log"),
-            &actions::System,
-        )
-    })
-    .await
-    .map(Json)
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+async fn watch_board(State(s): State<Shared>) -> ApiResult<Response> {
+    let read = s
+        .watch
+        .get_if((), read_watch, |(_, keep)| *keep)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], read.0.clone()).into_response())
+}
+
+/// `/api/watch`'s body, and whether it may be kept: a failed `agent-ask list` is named in the
+/// state's `unreadable` and served, never kept. Blocking: the fleet state read runs it.
+fn read_watch() -> (Bytes, bool) {
+    let watch = boards::watch(
+        &boards::fleet_state(),
+        &boards::shepherd_dir().join("watch.log"),
+        &actions::System,
+    );
+    let asks_read = !watch.state["unreadable"]
+        .as_array()
+        .is_some_and(|u| u.iter().any(|s| s == "agent-ask"));
+    match serde_json::to_vec(&watch) {
+        Ok(b) => (Bytes::from(b), asks_read),
+        Err(e) => {
+            eprintln!("agent-web: watch: {e}");
+            (
+                Bytes::from_static(br#"{"state":null,"transitions":[]}"#),
+                false,
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1548,6 +1575,8 @@ async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
+        s.watch.get_if((), read_watch, |(_, keep)| *keep),
+        s.queue.recent(),
         home_read(&s),
         cards::read(&s),
         briefing,
@@ -1728,7 +1757,7 @@ async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.schedules.get(q).await,
+        s.schedules.get(&s.alerts, q).await,
     )
         .into_response()
 }
