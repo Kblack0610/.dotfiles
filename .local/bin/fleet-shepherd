@@ -921,21 +921,22 @@ shared_owner_name() {
     *) echo "queue item $1" ;;
   esac
 }
-# shared_board_owner <board:project:id>: what a filed board row is now, from $active and the board:
-# the item dispatch made of the row, else the row while it is open, else nothing (closed or
-# dropped). A board that cannot be read keeps the row.
+# shared_board_owner <board:project:id>: what a filed board row is now, from $active and $board
+# (shared_sample reads the board once): the item dispatch made of the row, else the row while it
+# is open, else nothing (closed or dropped). A board that could not be read keeps the row.
 shared_board_owner() {
-  local r="${1#board:}" item board
-  item="$(jq -r --arg r "$r" 'select(.row == $r) | .slug' <<<"$active" | head -1)"
+  local r="${1#board:}" item
+  item="$(jq -rn --arg r "$r" 'first(inputs | select(.row == $r) | .slug) // empty' <<<"$active")"
   [ -z "$item" ] || { echo "$item"; return; }
-  board="$(notes board --json 2>/dev/null)" || board=""
   [ -n "$board" ] || { echo "$1"; return; }
   jq -e --arg p "${r%%:*}" --arg k "${r#*:}" 'any(.rows[]?; .project == $p and .id == $k)' <<<"$board" >/dev/null && echo "$1"
 }
 shared_sample() {
-  local fact test reason cm active quarantine slug out keep rows now
+  local fact test reason cm active quarantine slug out keep rows now board=""
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
+  # One read of the board (every open row, every profile) a sample, only while a row owns a red.
+  ! grep -q $'\tboard:' "$SHARED_ITEMS" || board="$(notes board --json 2>/dev/null)" || board=""
   quarantine="$(shared_quarantine)"
   rows="$(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)" || return 0
   # Keep the mappings of the document's live facts whose item still owns the test. A queue that

@@ -107,7 +107,7 @@ if [ -s "$ROWF" ]; then
         echo "docs-cleanup: pass $SLUG is board row $rid on $rboard, $rstate, not filing another ($summary)"
         exit 0
     fi
-    rm -f "$ROWF"
+    [ "$DRY" = 1 ] || rm -f "$ROWF"
 fi
 
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
@@ -119,13 +119,13 @@ if [ "$DRY" = 1 ]; then
 fi
 # An automated filer: the add files a board row and exits 5 (QUEUE.md "Admission"); exit 0 is a
 # pulled run (AGENT_QUEUE_PULL), queued under $SLUG. High plus `cleanup` is where the queue orders
-# the fleet's own housekeeping (agent-queue ORDER); at low it never reached the front.
+# the fleet's own housekeeping (agent-queue ORDER); the board row keeps the priority, not the tag (ar-3121).
 out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task" 2>&1)"
 rc=$?
 printf '%s\n' "$out" >&2
 case "$rc" in
     0) report WORKED "queued $SLUG ($summary)" ;;
-    5) read -r rboard rid < <(sed -n 's/.*its board row \([^ ]*\) on \([^ ]*\) is left.*/\2 \1/p' <<<"$out" | head -1)
+    5) read -r rboard rid < <(sed -n 's/.*its board row \([^ ]*\) on \([^ ]*\) is left.*/\2 \1/p' <<<"$out" | sed -n 1p)
        [ -n "${rid:-}" ] || fail "the board took pass $SLUG but named no row: ${out##*$'\n'} ($summary)"
        printf '%s\t%s\t%s\n' "$rboard" "$rid" "$(date +%s)" > "$ROWF"
        report WORKED "filed $SLUG as board row $rid on $rboard ($summary)" ;;
