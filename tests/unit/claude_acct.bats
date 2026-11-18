@@ -2644,6 +2644,10 @@ STUB
   run --separate-stderr "$ACCT" token push far
   assert_failure 1
   [[ "$stderr" == *'far: alt failed'* ]]
+  [[ "$stderr" == *'main has no token in rbw'* ]]   # an account left out fails the push too
+  run --separate-stderr "$ACCT" token push -oProxyCommand=x
+  assert_failure 1
+  [[ "$stderr" == *'is not a host'* ]]
 }
 
 @test "token-prefix: a command substitution for an account that has a token, never the token" {

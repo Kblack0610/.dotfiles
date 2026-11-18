@@ -42,5 +42,4 @@ Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any 
 | Session still stops with a login error | The account has no entry (`claude-acct check tokens` names it) or the token expired; run `setup-token --renew`. |
 | `check tokens` exits 2 | rbw is missing or locked on this machine. |
 | `token push: <host>: <acct> failed` | ssh to the host failed, or its dotfiles are too old to read the copy: pull them there, re-run. |
-| `setup-token` paste box drawn thousands of columns wide | Fixed: it ran claude in a 4000-column pty. Pull the dotfiles. |
 | Account reads unread after `.credentials.json` was wiped | Expected when the usage endpoint refuses setup tokens; `/login` on that account restores the read. |

@@ -109,7 +109,7 @@ TOKEN_ENTRY="claude-oauth-"
 # A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
 # a 0600 copy here, written only by `claude-acct token push` from a machine whose rbw is unlocked.
 TOKEN_DIR="${CLAUDE_ACCT_TOKEN_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens}"
-TOKEN_LEN=108   # sk-ant-oat01- and 95 more, all four accounts' tokens (2026-11-17)
+TOKEN_LEN=108   # sk-ant-oat01- and 95 more; a shorter scrape is a wrapped line, so setup-token asks for a paste
 
 # What every account shares with the main one. Everything else (.credentials.json,
 # .claude.json, stats, other runtime dirs) stays per account. sessions/ is the machine's
@@ -546,22 +546,27 @@ cmd_token_push() {
     (($#)) || { echo "usage: claude-acct token push <host...>" >&2; return 2; }
     command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1 ||
         { echo "claude-acct token push: rbw is locked or missing here; rbw unlock, then re-run" >&2; return 2; }
-    local host n dir t fail=0 ok
+    local host n dir t sum fail=0 ok
     # the host's TOKEN_DIR, expanded there; on its own line so the headless-launch scan reads no `claude -p`
     local rdir='${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens'
-    local -a names=()
-    while IFS=$'\037' read -r n dir; do names+=("$n"); done < <(accounts)
+    local -a have=()
+    while IFS=$'\037' read -r n dir; do
+        if [[ "$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null)" == sk-ant-oat* ]]; then have+=("$n")
+        else echo "claude-acct token push: $n has no token in rbw: claude-acct setup-token $n" >&2; fail=1; fi
+    done < <(accounts)
     for host in "$@"; do
+        [[ "$host" == -* ]] && { echo "claude-acct token push: '$host' is not a host" >&2; fail=1; continue; }
         ok=()
-        for n in "${names[@]}"; do
+        for n in "${have[@]}"; do
             t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
-            [[ "$t" == sk-ant-oat* ]] || continue
+            sum=$(printf '%s' "$t" | cksum)
+            # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
+            # host's claude-acct is new enough to read a copy
             if printf '%s' "$t" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" \
-                "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\"" &&
-               ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
+                "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else
-                echo "claude-acct token push: $host: $n failed (ssh, or its claude-acct does not read the copy: pull its dotfiles)" >&2
+                echo "claude-acct token push: $host: $n failed (ssh, a short write, or its claude-acct does not read the copy: pull its dotfiles)" >&2
                 fail=1
             fi
         done
@@ -572,8 +577,8 @@ cmd_token_push() {
 }
 
 # token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
-# token now, else nothing: an account without one keeps its login. This reads rbw once to decide;
-# the pane's shell reads it again at launch.
+# token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
+# keeps its login. The pane's shell reads the token again at launch.
 cmd_token_prefix() {
     local name
     name=$(acct_name "${1:-}") || return 0
@@ -632,8 +637,7 @@ setup_one() {
     echo "   claude setup-token opens a browser: sign in as ${email:-that account}, approve, and the token prints."
     # claude runs on a scratch config dir: minting a token must not touch the account's login state.
     if command -v script >/dev/null 2>&1; then
-        # claude draws at the terminal's own width (a forced wide pty drew its paste box thousands of
-        # columns wide over the human's screen), so a token it wrapped is cut short in the capture:
+        # claude draws at the terminal's own width, so a token it wraps is cut short in the capture:
         # only a whole one (TOKEN_LEN) is taken, else the hidden paste below asks for it.
         script -qf -c "env CLAUDE_CONFIG_DIR=$(printf %q "$tmp/cfg") claude setup-token" "$pty" || true
         tok=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$pty" 2>/dev/null | tr -d '\r' |
