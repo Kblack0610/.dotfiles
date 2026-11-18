@@ -2226,3 +2226,222 @@ EOS
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
   [ ! -e "$ws" ]
 }
+
+# --- long-lived tokens (setup-token) ---------------------------------------------------
+# rbw is a stub over $SANDBOX/vault: one file per entry, the password on line 1, the notes after a
+# blank line. `rbw add|edit` runs $EDITOR on a temp file like the real one, and every call's argv
+# lands in vault/argv.log, so a test can prove the token is never an argument.
+
+TOK_MAIN=sk-ant-oat01-mainmainmainmain
+TOK_ALT=sk-ant-oat01-altaltaltalt
+
+rbw_stub() {
+  export SANDBOX
+  mkdir -p "$SANDBOX/vault"
+  cat > "$SANDBOX/bin/rbw" <<'STUB'
+#!/usr/bin/env bash
+V="$SANDBOX/vault"
+echo "$*" >> "$V/argv.log"
+case "$1" in
+  unlocked) [[ ! -e "$V/locked" ]] ;;
+  get)
+    if [[ "$2" == --raw ]]; then
+      [[ -f "$V/$3" ]] || exit 1
+      jq -n --arg n "$(sed '1,2d' "$V/$3")" '{notes: $n}'
+    else
+      [[ -f "$V/$2" ]] || exit 1
+      head -1 "$V/$2"
+    fi ;;
+  add|edit)
+    t=$(mktemp); "${VISUAL:-$EDITOR}" "$t"; cp "$t" "$V/$2"; rm -f "$t" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/rbw"
+}
+
+# vault_put <entry> <token> [notes]
+vault_put() {
+  mkdir -p "$SANDBOX/vault"
+  printf '%s\n\n%s\n' "$2" "${3:-}" > "$SANDBOX/vault/$1"
+}
+
+@test "token: prints the account's token, by name or by dir, and main for an empty arg" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token alt
+  assert_output "$TOK_ALT"
+  run "$ACCT" token "$ALT"
+  assert_output "$TOK_ALT"
+  run "$ACCT" token ''
+  assert_output "$TOK_MAIN"
+}
+
+@test "token: an account with no entry gets nothing and exit 1, silently" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ -z "$stderr" ]]
+}
+
+@test "token: a locked vault says so on stderr and prints no token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ "$stderr" == *'rbw is locked'* ]]
+}
+
+@test "token-prefix: a command substitution for an account that has a token, never the token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token-prefix "$ALT"
+  assert_success
+  assert_output --partial 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token '
+  refute_output --partial "$TOK_ALT"
+  run "$ACCT" token-prefix ''
+  assert_output ''
+}
+
+@test "run: the chosen account's token is exported, and a token inherited from a parent is dropped" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  usage main 90 90
+  usage alt 10 10
+  printf '#!/usr/bin/env bash\necho "tok=${CLAUDE_CODE_OAUTH_TOKEN:-none} dir=${CLAUDE_CONFIG_DIR:-main}"\n' > "$SANDBOX/bin/claude"
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run
+  assert_output --partial "tok=$TOK_ALT dir=$ALT"
+  # main has no token: the parent's must not carry over
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run --acct main
+  assert_output --partial 'tok=none dir=main'
+}
+
+@test "usage read: a missing login falls back to the setup token" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$SANDBOX/curl.args"\necho "{\\"five_hour\\":{\\"utilization\\":5},\\"seven_day\\":{\\"utilization\\":5}}"\n' > "$SANDBOX/bin/curl"
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
+  run "$ACCT" status --json
+  assert_success
+  grep -q "Authorization: Bearer $TOK_MAIN" "$SANDBOX/curl.args"
+}
+
+@test "check tokens: good, inside the warn window, expired, and unread when rbw is locked" {
+  rbw_stub
+  export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
+  vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-11-17'
+  run "$ACCT" check tokens
+  assert_success
+  assert_output '2 tokens good'
+  rm "$SANDBOX/vault/claude-oauth-alt"
+  run "$ACCT" check tokens
+  assert_success
+  assert_output 'no token yet: alt'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expires 2026-12-01, in 14d'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-11-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expired 2026-11-01'
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" check tokens
+  assert_failure 2
+}
+
+# A claude stub for setup-token: `setup-token` prints a token, `-p` answers ok. TOKEN_OUT empty
+# prints none, so the paste path runs.
+setup_stubs() {
+  rbw_stub
+  cat > "$SANDBOX/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  setup-token) [[ -n "${TOKEN_OUT:-}" ]] && printf 'Your token:\n\033[1m%s\033[0m\nStore it safely\n' "$TOKEN_OUT" ;;
+  -p) echo "ok"; echo "$CLAUDE_CODE_OAUTH_TOKEN" > "$SANDBOX/probe.token" ;;
+  *) echo "2.1.0 (Claude Code)" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/claude"
+  printf '#!/usr/bin/env bash\nprintf 403\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
+  printf '{"oauthAccount":{"emailAddress":"alt@example.com"}}\n' > "$ALT/.claude.json"
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+}
+
+@test "setup-token: names the email, verifies the token, stores it with its expiry, argv never carries it" {
+  command -v script >/dev/null || skip "no script(1)"
+  setup_stubs
+  TOKEN_OUT=$TOK_ALT run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'sign in as alt@example.com'
+  assert_output --partial 'verified'
+  assert_output --partial 'usage endpoint: rejected (HTTP 403)'
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+  grep -q '^email: alt@example.com' "$SANDBOX/vault/claude-oauth-alt"
+  grep -q "^expires: $(date -d '+365 days' +%F)" "$SANDBOX/vault/claude-oauth-alt"
+  [[ "$(cat "$SANDBOX/probe.token")" == "$TOK_ALT" ]]
+  ! grep -q "$TOK_ALT" "$SANDBOX/vault/argv.log"
+  # nothing of the token is left in the scratch dir
+  ! grep -rq "$TOK_ALT" "$TMPDIR" 2>/dev/null
+}
+
+@test "setup-token: a screen with no token falls back to a hidden paste" {
+  setup_stubs
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_success
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+}
+
+@test "setup-token: an account that has a token is skipped, --renew replaces it" {
+  setup_stubs
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-01-01'
+  run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'already has a token'
+  run "$ACCT" setup-token --renew alt <<< "sk-ant-oat01-newnewnewnew"
+  assert_success
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnew ]]
+}
+
+@test "setup-token: another account's token under this name is refused and nothing is stored" {
+  setup_stubs
+  vault_put claude-oauth-main "$TOK_MAIN"
+  run "$ACCT" setup-token alt <<< "$TOK_MAIN"
+  assert_failure
+  assert_output --partial "that is main's token"
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "setup-token: an API key in the environment stops it before any call" {
+  setup_stubs
+  ANTHROPIC_API_KEY=sk-ant-api03-x run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'would not bill the subscription'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+  [[ ! -e "$SANDBOX/probe.token" ]]
+}
+
+@test "setup-token: a token that runs no call is not stored" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) exit 1 ;; *) exit 0 ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "setup-token: a locked vault stops it up front" {
+  setup_stubs
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" setup-token
+  assert_failure
+  assert_output --partial 'rbw is locked'
+}
