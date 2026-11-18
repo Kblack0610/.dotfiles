@@ -296,7 +296,7 @@ real_epic_board() {
   stub agent-ask 'exit 0'
   codex_run codex   # its Codex run is live (codex_gone has its own test)
   export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gone.md 2>/dev/null)" ] || fail "an item whose claude exited stayed active"
@@ -311,7 +311,7 @@ real_epic_board() {
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-7:1\",\"status\":\"busy\",\"session_id\":\"c7\"}"'
   stub agent-ask 'exit 0'
   codex_run cxlive claudeitem   # a process that is not the launcher's would not be listed; the slug decides
-  cmd_reap >/dev/null
+  run cmd_reap
   [ -n "$(qitem running cxgone)" ] || fail "one reap is one witness, and it settled"
   grep -q "queue item cxgone's Codex run is not live" "$FLEET_DISPATCH_DIR/log.md" || fail "no miss logged: $(cat "$FLEET_DISPATCH_DIR/log.md")"
   echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$FLEET_DISPATCH_DIR/reap-miss/cxgone"
@@ -345,7 +345,7 @@ real_epic_board() {
   stub agent-panel 'echo "{\"target\":\"hub/dotfiles:2\",\"status\":\"idle\",\"session_id\":\"h3\"}"'
   stub agent-ask 'exit 0'
   export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hubgone.md 2>/dev/null)" ] || fail "a hub item with no live session stayed active"
@@ -354,7 +354,7 @@ real_epic_board() {
   stub agent-panel 'exit 0'
   started_item hubblind ''
   sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h9/' "$AGENT_QUEUE_DIR"/running/*-hubblind.md
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   [ -n "$(qitem running hubblind)" ] || fail "reaped on an empty panel"
 }
@@ -1750,4 +1750,99 @@ OUT
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   grep -q 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the parked partial'
+}
+
+# lost_host_item -- fix-crash runs on razer-laptop, which does not answer: its Claude session sid-a
+# last pushed feat/fix at abc123 and left a status note. DISPATCH_HOST_DEAD is 600s.
+lost_host_item() {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1'
+  remote_item fix-crash
+  sed -i 's/^session: .*/&\nsessions: sid-a/' "$(qitem running fix-crash)"
+  agent-queue set fix-crash branch=feat/fix@abc123 'note=patched the parser, tests next' >/dev/null
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  export DISPATCH_HOST_DEAD=600
+  stub store-sync-age 'exit 0'   # this machine reached the store: its own link is up
+  MISS="$FLEET_DISPATCH_DIR/host-miss/razer-laptop"
+}
+
+@test "reap re-queues the items of a host unanswered for DISPATCH_HOST_DEAD from their pushed branch, and the new brief says where the run was" {
+  lost_host_item
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "one miss re-queued the item"
+  [ -s "$MISS" ] || fail "no mark for the host that did not answer"
+  # The first miss was 700s ago and the last one a pass ago: unanswered on every reap since.
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  touch -d '-100 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .salvage, .lost] | join("|")' <<<"$it")" 'queued|feat/fix@abc123|razer-laptop sid-a'
+  [[ "$(jq -r .note <<<"$it")" == "session game-agent-1 lost with its host razer-laptop, unanswered for 600s; requeued from feat/fix@abc123; was: patched the parser, tests next" ]] || fail "note: $(jq -r .note <<<"$it")"
+  grep -q 'host razer-laptop lost, queue item fix-crash requeued from feat/fix@abc123' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the lost host'
+  run item_brief "$it"
+  assert_output --partial 'left its unfinished work on branch feat/fix at abc123 on origin'
+  assert_output --partial 'An earlier run of this item on razer-laptop was lost when that machine stopped answering: anything it had not pushed is gone with it. Its last note: patched the parser, tests next'
+}
+
+@test "reap: a host that answers between misses clears its mark, and a gap longer than DISPATCH_HOST_DEAD starts the count again" {
+  lost_host_item
+  run cmd_reap
+  [ -s "$MISS" ] || fail "no mark for the host that did not answer"
+  # It answers, its session alive: the mark goes.
+  rm "$NOTES_FIXTURE/ssh.rc"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  [ ! -e "$MISS" ] || fail "a host that answered kept its mark"
+  [ -n "$(qitem running fix-crash)" ] || fail "re-queued an item whose host answered"
+  # Unanswered again, but the last miss before this one is older than the window: no reap saw it
+  # down in between, so the count starts over instead of re-queueing.
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  echo $(( $(date +%s) - 2000 )) > "$MISS"
+  touch -d '-1000 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "a gap in the misses re-queued the item"
+  [ "$(cat "$MISS")" -gt $(( $(date +%s) - 60 )) ] || fail "the count did not start over"
+}
+
+@test "reap: an item on a lost host with an open PR is requeued without salvage, its brief continuing the PR" {
+  lost_host_item
+  agent-queue set fix-crash pr=o/game#12 >/dev/null
+  printf "OPEN -\n" > "$NOTES_FIXTURE/pr.state"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
+  run cmd_reap
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  run cmd_reap
+  assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .salvage // "-", .lost] | join("|")' <<<"$it")" 'queued|-|razer-laptop sid-a'
+  run item_brief "$it"
+  assert_output --partial 'already opened o/game#12'
+  refute_output --partial 'left its unfinished work on branch'
+}
+
+@test "reap: a review item on a lost host stays parked in review" {
+  lost_host_item
+  agent-queue move fix-crash review >/dev/null
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem review fix-crash)"
+  run cmd_reap
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  [ -n "$(qitem review fix-crash)" ] || fail "a parked review item was requeued for its lost host"
+}
+
+@test "reap counts no miss for a worker while this machine itself has not reached the store: the fault may be here" {
+  lost_host_item
+  stub store-sync-age 'exit 1'
+  mkdir -p "${MISS%/*}"; echo $(( $(date +%s) - 700 )) > "$MISS"; touch -d '-100 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  [ -n "$(qitem running fix-crash)" ] || fail "a dispatcher cut off re-queued a worker's item"
+  grep -q 'this machine has not synced the store in 30 minutes either' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the missing witness'
 }
