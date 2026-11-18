@@ -48,7 +48,7 @@ MD
   cat > "$PROJECT_MAP_FILE" <<EOF2
 {"paths": {"$plat": "fixture-platform", "$play": "fixture-playground"}, "trackers": {}}
 EOF2
-  printf '# departments: analytics\nanalytics\tfixture-platform:analytics/types.ts\tfile\talpha\tx\nanalytics\tfixture-platform:analytics/types.ts\tfile\tbeta\tx\nanalytics\tfixture-playground:docs/online.md\tfile\tplayground\tx\nanalytics\tperf-round\trunner\t*\tx\n' > "$DEPARTMENTS_TSV"
+  printf 'analytics\tfixture-platform:analytics/types.ts\tfile\talpha\tx\nanalytics\tfixture-platform:analytics/types.ts\tfile\tbeta\tx\nanalytics\tfixture-playground:docs/online.md\tfile\tplayground\tx\nanalytics\tperf-round\trunner\t*\tx\n' > "$DEPARTMENTS_TSV"
 }
 
 names() { jq -r '[.events[].name] | sort | join(",")' "$EVENT_CATALOGUE_DIR/$1.json"; }

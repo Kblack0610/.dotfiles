@@ -449,14 +449,38 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 }
 
 /// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
-/// human and the systems at a glance first, then a product's five departments
+/// human and the systems at a glance first, then the project's departments
 /// (`hub_core::departments`), then the work: its rows, its epics, the next stage's checklist,
 /// and what happened. Overview is the default; a section id opens the inner tab holding it.
-pub const PROJECT_PAGE: [Inner; 10] = [
+pub const PROJECT_PAGE: [Inner; 14] = [
     Inner {
         id: "overview",
         title: "Overview",
         sections: &["p-needs", "p-flight", "p-systems"],
+    },
+    Inner {
+        id: "product",
+        title: "Product",
+        sections: &["p-product-needs", "p-product-numbers", "p-product-pipes"],
+    },
+    Inner {
+        id: "engineering",
+        title: "Engineering",
+        sections: &[
+            "p-engineering-needs",
+            "p-engineering-numbers",
+            "p-engineering-pipes",
+        ],
+    },
+    Inner {
+        id: "ops",
+        title: "Ops",
+        sections: &["p-ops-needs", "p-ops-numbers", "p-ops-pipes"],
+    },
+    Inner {
+        id: "design",
+        title: "Design",
+        sections: &["p-design-needs", "p-design-numbers", "p-design-pipes"],
     },
     Inner {
         id: "analytics",
@@ -528,13 +552,32 @@ pub const PROJECT_WORK: &str = "rows";
 /// `#projects/<p>/build` still lands. Keep a name here for good once it has shipped.
 pub const PROJECT_RETIRED: &[(&str, &str)] = &[("build", "deliverables")];
 
-/// The inner tabs a project's page shows: all ten for a product, Overview and the work tabs
-/// for infra (`departments::is_product` over its project-map type).
-pub fn project_page(product: bool) -> Vec<Inner> {
-    let depts = crate::departments::DEPARTMENTS.map(|d| d.id);
+/// The department inner tabs of the project page: the ids between Overview and the work tabs.
+pub fn dept_tab_ids() -> impl Iterator<Item = &'static str> {
+    PROJECT_PAGE
+        .iter()
+        .skip(1)
+        .take_while(|i| i.id != PROJECT_WORK)
+        .map(|i| i.id)
+}
+
+/// The department tabs a project of project-map type `kind` has (`departments::applies`): all nine
+/// for a game or app, engineering and ops for infra, none for a project with no type.
+pub fn dept_tabs(kind: Option<&str>) -> Vec<&'static str> {
+    kind.map_or(vec![], |k| {
+        dept_tab_ids()
+            .filter(|id| crate::departments::applies(k, id))
+            .collect()
+    })
+}
+
+/// The inner tabs a project's page shows: Overview, the department tabs it has (`tabs`, from
+/// [`dept_tabs`]), then the work tabs.
+pub fn project_page<S: AsRef<str>>(tabs: &[S]) -> Vec<Inner> {
+    let all: Vec<&str> = dept_tab_ids().collect();
     PROJECT_PAGE
         .into_iter()
-        .filter(|i| product || !depts.contains(&i.id))
+        .filter(|i| !all.contains(&i.id) || tabs.iter().any(|t| t.as_ref() == i.id))
         .collect()
 }
 
@@ -960,18 +1003,35 @@ mod tests {
     }
 
     #[test]
-    fn a_product_page_has_the_department_tabs_and_build_lands_on_deliverables() {
+    fn a_project_page_has_the_department_tabs_its_type_gets_and_build_lands_on_deliverables() {
         let ids = |p: Vec<Inner>| p.iter().map(|i| i.id).collect::<Vec<_>>();
-        let depts = crate::departments::DEPARTMENTS;
+        let nine: Vec<&str> = [
+            "product",
+            "engineering",
+            "ops",
+            "design",
+            "analytics",
+            "marketing",
+            "legal",
+            "support",
+            "money",
+        ]
+        .to_vec();
+        assert_eq!(dept_tab_ids().collect::<Vec<_>>(), nine);
+        assert_eq!(dept_tabs(Some("app")), nine);
+        assert_eq!(dept_tabs(Some("game")), nine);
+        assert_eq!(dept_tabs(Some("infra")), ["engineering", "ops"]);
+        assert!(dept_tabs(None).is_empty());
+        let mut page = vec!["overview"];
+        page.extend(&nine);
+        page.extend(["rows", "deliverables", "stage", "activity"]);
+        assert_eq!(ids(project_page(&dept_tabs(Some("app")))), page);
         assert_eq!(
-            ids(project_page(true)),
+            ids(project_page(&dept_tabs(Some("infra")))),
             [
                 "overview",
-                "analytics",
-                "marketing",
-                "legal",
-                "support",
-                "money",
+                "engineering",
+                "ops",
                 "rows",
                 "deliverables",
                 "stage",
@@ -979,12 +1039,15 @@ mod tests {
             ]
         );
         assert_eq!(
-            ids(project_page(false)),
+            ids(project_page::<&str>(&[])),
             ["overview", "rows", "deliverables", "stage", "activity"]
         );
-        for d in depts {
-            let i = project_inner(d.id).unwrap();
-            assert_eq!(i.title, d.title);
+        // every department tab is a stages.md department, titled as it titles it
+        let doc = crate::stages::stages_md_departments();
+        assert_eq!(doc.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), nine);
+        for d in &doc {
+            let i = project_inner(&d.id).unwrap();
+            assert_eq!(i.title, d.title, "{}", d.id);
             for part in ["needs", "numbers", "pipes"] {
                 assert!(i.sections.contains(&format!("p-{}-{part}", d.id).as_str()));
             }
@@ -992,7 +1055,7 @@ mod tests {
         let first_work = PROJECT_PAGE.iter().position(|i| i.id == PROJECT_WORK);
         assert_eq!(
             first_work,
-            Some(depts.len() + 1),
+            Some(nine.len() + 1),
             "the work tabs follow the departments"
         );
         let at = |w: &str| project_inner(w).map(|i| i.id);

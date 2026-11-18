@@ -187,8 +187,9 @@ pub struct Card {
     pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
-    /// A game or app in project-map (`departments::is_product`): its page has department tabs.
-    pub product: bool,
+    /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
+    /// nine for a game or app, engineering and ops for infra, none for an untyped project.
+    pub dept_tabs: Vec<&'static str>,
 }
 
 impl Card {
@@ -207,9 +208,11 @@ impl Card {
             eta_days: eta_days(&s.progress),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
-            product: project_map::cached()
-                .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
-                .is_some_and(|k| crate::departments::is_product(&k)),
+            dept_tabs: crate::layout::dept_tabs(
+                project_map::cached()
+                    .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
+                    .as_deref(),
+            ),
             ..Card::default()
         }
     }

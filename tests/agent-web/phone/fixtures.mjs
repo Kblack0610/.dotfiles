@@ -118,11 +118,11 @@ const deliverables = {
   legend: "percent is the epic's rows by size (#size/s 1, m 3, l 8), then rows done/all",
 };
 
-// Coverage: hub_core::departments, every product's five department cells, worst first.
-const DEPTS = [["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]];
+// Coverage: hub_core::departments, every typed project's department cells, worst first.
+const DEPTS = [["product", "Product"], ["engineering", "Engineering"], ["ops", "Ops"], ["design", "Design"], ["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]];
 const CELLS = ["red", "amber", "off", "ok"];
 const coverage = {
-  table: { ...table(4, ["product", "type", "stage", ...DEPTS.map(([d]) => d)], ["all", "red", "amber", "off", "ok"], { type: ["game", "app"] }), legend: "red: a required department has a gap; amber: a gap before it is due; off: no source yet" },
+  table: { ...table(4, ["project", "type", "stage", ...DEPTS.map(([d]) => d)], ["all", "red", "amber", "off", "ok"], { type: ["game", "app"] }), legend: "red: a required department has a gap; amber: a gap before it is due; off: no source yet" },
   rows: rows(4, (i) => ({ key: `bnb/${PROJECTS[i + 1]}`, profile: "bnb", name: PROJECTS[i + 1], type: pick(["game", "app"], i), stage: pick(["dev", "alpha", "beta"], i), cells: Object.fromEntries(DEPTS.map(([d], j) => [d, pick(CELLS, i + j)])) })),
   head: "2 red  |  14 off", says: [], red: 2, amber: 4, off: 14, failing: 2, departments: DEPTS,
 };

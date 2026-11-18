@@ -177,6 +177,21 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
 }
 
+@test "--requirements --json carries the Departments table, and a reworded requirement keeps its dept" {
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -c '.departments' <<<"$output")" '[{"id":"product","title":"Product","question":"Is it the thing?","owns":"the brief"},{"id":"engineering","title":"Engineering","question":"Does it build?","owns":"the README"},{"id":"ops","title":"Ops","question":"Does it stay up?","owns":"the runbook"}]'
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A lab sheet") | .dept' <<<"$output")" product
+  # NEGATIVE CONTROL: rewording the requirement leaves its Dept cell, so the department stays.
+  sed -i 's/| A lab sheet |/| A reworded lab sheet |/' "$STAGES_DOC"
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A reworded lab sheet") | .dept' <<<"$output")" product
+  # The shipped doc carries the nine departments.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_equal "$(jq -r '[.departments[].id] | join(" ")' <<<"$output")" 'product engineering ops design analytics marketing legal support money'
+}
+
 # docs_tree: the game's docs: x.md, a data file that is not a doc, and an ignored doc.
 docs_tree() {
   mkdir -p "$REPO/Assets/Games/Shooter/docs"

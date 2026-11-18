@@ -1,6 +1,6 @@
-//! Projects' Coverage inner tab and a product page's five department tabs, both drawn from one
+//! Projects' Coverage inner tab and a project page's department tabs, both drawn from one
 //! `hub_core::departments` read with the same rows and words as agent-web's. Coverage: the head
-//! (`Coverage::head`), why a store was not read, then one row per product with each department's
+//! (`Coverage::head`), why a store was not read, then one row per typed project with each department's
 //! cell toned by its level, and the legend; the shared table keys work, Enter opens the
 //! product's page, Esc clears the view and then goes back to the list. A department tab: what
 //! needs the human (worst first), Marketing's outbound items, Legal's checklist, the numbers and
@@ -9,6 +9,7 @@
 
 use hub_core::departments::{Cell as DCell, Coverage, Dept, Product};
 use hub_core::reading;
+use hub_core::table::Row;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -20,10 +21,15 @@ use crate::laddertab::{count, dash, head, section, tone};
 use crate::projtab::{sec_head, wrapped, ProjView};
 use crate::tasktab::TaskView;
 
-const HEADER: [&str; 8] = [
-    "PRODUCT",
+/// `Product::COLUMNS`, upper-cased: the lead, type and stage, then one per stages.md department.
+const HEADER: [&str; 12] = [
+    "PROJECT",
     "TYPE",
     "STAGE",
+    "PRODUCT",
+    "ENGINEERING",
+    "OPS",
+    "DESIGN",
     "ANALYTICS",
     "MARKETING",
     "LEGAL",
@@ -77,10 +83,10 @@ fn row(r: &Product, p: Palette) -> Vec<Cell> {
         dash(&r.kind).into(),
         dash(&r.stage).into(),
     ];
-    for id in hub_core::departments::DEPARTMENTS.map(|d| d.id) {
+    for id in &Product::COLUMNS[3..] {
         out.push(match r.dept(id) {
             Some(d) => cell(d.cell.word(), cell_style(d.cell, p)),
-            None => "-".into(),
+            None => cell("off", p.dim()),
         });
     }
     out
@@ -118,13 +124,13 @@ pub fn page(
     }
     let rows: Vec<Vec<Cell>> = shown.iter().map(|r| row(r, p)).collect();
     let none = if c.products.is_empty() {
-        "No product (a game or app in project-map) is on the lab."
+        "No typed project (a game, app or infra in project-map) is on the lab."
     } else {
-        "No product matches."
+        "No project matches."
     };
     let t = Table {
         header: HEADER.to_vec(),
-        keep: vec![0, 5, 7, 2, 3, 4, 6, 1],
+        keep: vec![0, 9, 11, 2, 4, 5, 7, 8, 10, 3, 6, 1],
         cap: vec![(0, 20)],
         mark: pv.cv.mark::<Product>(),
         ..Default::default()
@@ -179,7 +185,7 @@ pub fn dept(c: Option<&Coverage>, key: &str, id: &str, p: Palette, w: usize) -> 
         ]),
         w,
     )];
-    out.extend(wrapped("  ", d.question, p.dim(), p, w));
+    out.extend(wrapped("  ", &d.question, p.dim(), p, w));
     out.push(Line::raw(""));
     needs(&mut out, d, p, w);
     if d.id == "marketing" {
@@ -381,14 +387,32 @@ fn pipes(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use hub_core::departments::{Check, Need, Number, Pipe, DEPARTMENTS, GAP, NOT_YET};
+    use hub_core::departments::{Check, Need, Number, Pipe, GAP, NOT_YET};
     use hub_core::outbound::Item;
+    use hub_core::stages::Department;
     use hub_core::vocab::Level;
 
-    fn row_of(id: &'static str, cell: DCell) -> Dept {
-        let d = DEPARTMENTS.iter().find(|d| d.id == id).unwrap();
+    /// The nine departments, as stages.md's Departments table gives them (titles and questions
+    /// here are stand-ins; the TUI draws whatever the read carries).
+    fn departments() -> Vec<Department> {
+        Product::COLUMNS[3..]
+            .iter()
+            .map(|id| {
+                let title = format!("{}{}", id[..1].to_uppercase(), &id[1..]);
+                Department {
+                    id: id.to_string(),
+                    question: format!("Is {title} in hand?"),
+                    title,
+                    owns: String::new(),
+                }
+            })
+            .collect()
+    }
+
+    fn row_of(id: &str, cell: DCell) -> Dept {
+        let d = departments().into_iter().find(|d| d.id == id).unwrap();
         Dept {
-            id,
+            id: d.id,
             title: d.title,
             question: d.question,
             cell,
@@ -492,9 +516,9 @@ pub(crate) mod tests {
             stage: "dev".into(),
             kind: "app".into(),
             stage_rank: Some(1),
-            depts: DEPARTMENTS
+            depts: departments()
                 .iter()
-                .map(|d| row_of(d.id, DCell::Off))
+                .map(|d| row_of(&d.id, DCell::Off))
                 .collect(),
         };
         Coverage {
@@ -502,6 +526,7 @@ pub(crate) mod tests {
             red: 1,
             amber: 1,
             off: 7,
+            departments: departments(),
             says: vec!["Not read: kb_project_number: no VictoriaMetrics".into()],
         }
     }
@@ -524,7 +549,7 @@ pub(crate) mod tests {
         );
         assert_eq!(l[0].spans[0].style, p.bad(), "a red cell reddens the head");
         assert_eq!(t[1], "Not read: kb_project_number: no VictoriaMetrics");
-        let header = t.iter().find(|s| s.starts_with("PRODUCT")).expect("header");
+        let header = t.iter().find(|s| s.starts_with("PROJECT")).expect("header");
         for h in [
             "STAGE",
             "ANALYTICS",
@@ -576,14 +601,17 @@ pub(crate) mod tests {
         let cards = [hub_core::projects::Card {
             profile: "bnb".into(),
             name: "demo".into(),
-            product: true,
+            dept_tabs: vec!["analytics", "legal"],
             ..Default::default()
         }];
         assert!(pv.ckey(&mut tv, KeyEvent::from(KeyCode::Char('j')), &cards, &c, 10));
         assert!(pv.ckey(&mut tv, KeyEvent::from(KeyCode::Enter), &cards, &c, 10));
         assert!(!pv.cfocus, "Enter leaves Coverage for the product");
         assert_eq!(tv.project, Some(("bnb".into(), "demo".into())));
-        assert_eq!((pv.inner, pv.product), ("overview", true));
+        assert_eq!(
+            (pv.inner, pv.tabs.clone()),
+            ("overview", vec!["analytics", "legal"])
+        );
         let mut pv = ProjView {
             cfocus: true,
             ..Default::default()
@@ -601,7 +629,7 @@ pub(crate) mod tests {
         let t = text(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         assert_eq!(t[0], "LEGAL  red  required from beta");
-        assert_eq!(t[1], "  Can it ship at its stage?");
+        assert_eq!(t[1], "  Is Legal in hand?");
         let at = |want: &str| {
             t.iter()
                 .position(|s| s.starts_with(want))
