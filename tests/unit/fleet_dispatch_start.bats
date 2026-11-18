@@ -781,7 +781,7 @@ trainee_start_ready() {
   harness_ready
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.projects = ["game"] | .harnesses.paid.config_dir = $d'
   harness_sandboxed paid
-  git init -q "$SANDBOX/repos/game"
+  trainee_repo "$SANDBOX/repos/game"
   sonnet_lane
   export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
   agent-queue add --project game --slug t-one --priority high --tags tier1 "Fix the menu title #pts/1" >/dev/null
@@ -808,7 +808,7 @@ trainee_start_ready() {
   assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one')"
 }
 
-@test "trainee-review: the diff is a patch and a review item pinned to the reviewer model, the worktree is put back; no diff, and trainee-reject, send the row back on claude" {
+@test "trainee-review: the diff is a patch beside its base that waits for a batch review, the worktree is put back; no diff, and trainee-reject, send the row back on claude" {
   trainee_start_ready
   agent-queue add --project game --slug t-empty --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
   for s in t-one t-empty; do agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; done
@@ -833,50 +833,56 @@ trainee_start_ready() {
   [ -z "$(agent-queue show review-t-empty --json 2>/dev/null)" ] || fail "a review item for no diff"
   run trainee_why "$(agent-queue show t-empty --json)"
   assert_failure; assert_output 'a ladder run took it once already (paid:glm)'
-  # A review that cannot be queued leaves the row running and the diff in the worktree as well as the patch.
+  # A row that cannot move to review stays running, the diff in the worktree as well as the patch.
   printf 'b\n' > "$w/menu.txt"; printf 'new\n' > "$w/title.txt"
   mkdir -p "$SANDBOX/aqfail"
-  printf '#!/usr/bin/env bash\n[ "$1 $2" != "add --from" ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
+  printf '#!/usr/bin/env bash\n[ "$1 $3" != "move review" ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
   chmod +x "$SANDBOX/aqfail/agent-queue"
   PATH="$SANDBOX/aqfail:$PATH" run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
-  assert_failure 1; assert_output --partial 'could not queue review-t-one; t-one stays running'
+  assert_failure 1; assert_output --partial 'could not move t-one to review; it stays running'
   assert_equal "$(cat "$w/menu.txt")" b
   assert_equal "$(jq -r .state <<<"$(agent-queue show t-one --json)")" running
-  # A diff, an edit and a new file: saved as a patch that applies on the base, the worktree put back.
+  # A diff, an edit and a new file: saved as a patch beside its base, the worktree put back, and no
+  # review item of its own: the row waits in review for the next batch review.
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_success
   patch="$HOME/.local/state/agentctl/dispatch/trainee/t-one.patch"
-  assert_output --partial "trainee-review: t-one's diff is $patch; review-t-one reviews it on opus"
+  assert_output --partial "trainee-review: t-one's diff is $patch; it waits for the next batch review"
   grep -q '^+++ b/title.txt' "$patch" || fail "the new file is not in the patch: $(cat "$patch")"
+  assert_equal "$(cat "${patch%.patch}.base")" "$base"
   assert_equal "$(git -C "$w" status --porcelain)" ''
   assert_equal "$(git -C "$w" rev-parse HEAD)" "$base"
   git -C "$w" apply --check "$patch" || fail "the patch does not apply on its base"
-  # The review item: pinned to claude on the reviewer's model, tier 1, its brief naming the patch and both verbs.
-  rf=$(qitem queued review-t-one)
-  [ -n "$rf" ] || fail "no review item queued"
-  assert_equal "$(qfield "$rf" model)" opus
-  assert_equal "$(qfield "$rf" from)" trainee
-  rv=$(agent-queue show review-t-one --json)
-  [[ " $(jq -r .tags <<<"$rv") " == *" trainee-review "* ]] || fail "no trainee-review tag: $rv"
-  run jq -r .task <<<"$rv"
+  [ -z "$(agent-queue show review-t-one --json 2>/dev/null)" ] || fail "a per-diff review item was queued"
+  it=$(agent-queue show t-one --json)
+  assert_equal "$(jq -r .state <<<"$it")" review
+  assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm left a diff; the next trainee batch review lands it or sends the row back'
+  run trainee_waiting
+  assert_equal "$(jq -r .slug <<<"$output")" t-one
+  # The batch brief: the patch, its base and both verbs, for each waiting row.
+  run trainee_batch_task trainee-batch-x "$(trainee_waiting)"
+  assert_output --partial 'This is agent-queue item trainee-batch-x.'
+  assert_output --partial '## Queue item t-one'
+  assert_output --partial "on base $base of"
   assert_output --partial "git apply --3way $patch"
   assert_output --partial "fleet-dispatch trainee-reject t-one --why"
   assert_output --partial "agent-land <N> --item t-one"
-  run trainee_why "$rv"
-  assert_failure; assert_output 'it is a canary, verify or review item'
-  it=$(agent-queue show t-one --json)
-  assert_equal "$(jq -r .state <<<"$it")" review
-  assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm left a diff; review-t-one lands it or sends the row back'
   # The review rejects it: the row goes back on claude and the patch goes.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one
   assert_failure 2
+  # Its why goes on the trainee's model-lane run, where score prints it per pair.
+  agent-queue set t-one lane_run=run-7 >/dev/null
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one --why "edits the wrong menu"
   assert_success
+  grep -qx 'model-lane outcome run-7 redo --why edits the wrong menu' "$NOTES_FIXTURE/calls.log" || fail "the reject filed no why on the run: $(cat "$NOTES_FIXTURE/calls.log" 2>/dev/null)"
   it=$(agent-queue show t-one --json)
   assert_equal "$(jq -r .state <<<"$it")" queued
   assert_equal "$(jq -r .note <<<"$it")" 'trainee paid:glm rejected: edits the wrong menu'
   assert_equal "$(jq -r .agent <<<"$it")" claude
-  [ ! -e "$patch" ] || fail "the rejected patch is still there"
+  [ ! -e "$patch" ] && [ ! -e "${patch%.patch}.base" ] || fail "the rejected patch or its base is still there"
+  run trainee_waiting
+  assert_output ''
   # A row no trainee ran is refused by both verbs.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject fix-menu --why x
   assert_failure 2; assert_output --partial 'trainee-reject: no trainee ran fix-menu'
