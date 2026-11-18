@@ -95,6 +95,8 @@ set -uo pipefail
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/tmux-pane.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh"   # leave_mode
 
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
@@ -1619,15 +1621,6 @@ await() {
         (( $(date +%s) >= end )) && { echo "claude-acct: timed out after ${MOVE_TIMEOUT}s waiting for $what" >&2; return 1; }
         sleep "$MOVE_POLL"
     done
-}
-
-# leave_mode <server> <pane> -- take the pane out of any tmux mode before keys are typed into
-# it; fails if it is still in one. Copy mode swallows typed keys, and the session picker
-# (choose-tree) acts on them: its x then y kill a session. `copy-mode -q` cancels every mode,
-# and does nothing to a pane in none.
-leave_mode() {
-    tmux -L "$1" copy-mode -q -t "$2" 2>/dev/null
-    [[ "$(tmux -L "$1" display-message -p -t "$2" '#{pane_in_mode}' 2>/dev/null)" != 1 ]]
 }
 
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
