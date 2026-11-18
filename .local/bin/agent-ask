@@ -501,15 +501,16 @@ cmd_post() {
   if [ -n "$blocker" ] && [ -z "$resume" ]; then
     local shared; shared="$(blocker_ask "$blocker")"
     if [ -n "$shared" ]; then
+      local sid_of; sid_of="$(basename "$shared" .md)"
       [ -z "$owner" ] || attach_session "$shared" "$owner"
       if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
         { render_ask "$shared"
-          echo "This blocker is already ask $(field "$shared" id); this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
+          echo "This blocker is already ask $sid_of; this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
         } >&2
       else
-        echo "agent-ask post: blocker $blocker is already ask $(field "$shared" id); this session waits on it too" >&2
+        echo "agent-ask post: blocker $blocker is already ask $sid_of; this session waits on it too" >&2
       fi
-      if [ "$wait" -eq 1 ]; then wait_answer "$shared"; else field "$shared" id; fi
+      if [ "$wait" -eq 1 ]; then wait_answer "$shared"; else printf '%s\n' "$sid_of"; fi
       return
     fi
   fi
@@ -658,14 +659,13 @@ blocker_key() {
 # blocker_ask <key>: the oldest pending ask on that blocker that can take another session: one with
 # no resume of its own command.
 blocker_ask() {
-  local f r
+  local f
   while IFS= read -r f; do
-    [ "$(field "$f" status)" = pending ] || continue
-    r="$(field "$f" resume)"
-    [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || continue
-    printf '%s\t%s\n' "$(date -d "$(field "$f" created)" +%s 2>/dev/null || echo 0)" "$f"
-  done < <(ask_files --all | xargs -r -d '\n' grep -lxF "blocker: $1" 2>/dev/null) |
-    sort -n | head -1 | cut -f2
+    load_ask "$f"
+    [ "${ASK[status]:-}" = pending ] || continue
+    [ -z "${ASK[resume]:-}" ] || [ "${ASK[resume]}" = "$REOPEN_RESUME" ] || continue
+    printf '%s\t%s\n' "${ASK[created]:-}" "$f"
+  done < <(grep -lxF "blocker: $1" "$ASKS_ROOT"/*/*.md 2>/dev/null) | sort | head -1 | cut -f2
 }
 
 # ask_sessions <file>: every session waiting on the ask, the asker first, one per line.
@@ -683,9 +683,9 @@ attach_session() {
 # detach_session <file> <sid>: the session no longer waits on the ask; when it was the asker, the
 # next session becomes it.
 detach_session() {
-  local tmp; tmp="$(mktemp)"
   (
-    command -v flock >/dev/null 2>&1 && flock 9
+    flock 9
+    local tmp; tmp="$(mktemp "$1.XXXXXX")"
     grep -vxF -e "claude_session: $2" -e "reopen: $2" "$1" > "$tmp" && mv "$tmp" "$1"
   ) 9>"$(dirname "$1")/.lock"
   queue_changed
@@ -1365,11 +1365,10 @@ cmd_reopen_on_answer() {
 # reopen_sessions <file>: the sessions the answer restarts, one per line: each `reopen:` line still
 # waiting on the ask, or the asker on an ask set before those lines were written.
 reopen_sessions() {
-  local sids; sids="$(ask_sessions "$1")"
   if grep -q '^reopen: ' "$1"; then
-    sed -n 's/^reopen: \(..*\)$/\1/p' "$1" | grep -xF -f <(printf '%s\n' "$sids")
+    sed -n 's/^reopen: \(..*\)$/\1/p' "$1"
   else
-    head -1 <<<"$sids"
+    ask_sessions "$1" | head -1
   fi
 }
 
