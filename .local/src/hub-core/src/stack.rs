@@ -330,9 +330,10 @@ pub struct Rule {
     pub source: String,
     pub number: String,
     pub confidence: String,
-    /// `ok`, `stale` (its anchor is gone from its source, or the source is not here), `moved`
-    /// (its measured number disagrees with its recorded confidence), `restates` (its bound is a
-    /// copy of the number its measure reads) or `dead` (its measure printed no number).
+    /// fleet-bench's one verdict: `ok`, `stale` (its anchor is gone from its source), `absent`
+    /// (the source is not on this machine), `dead` (its measure printed no number), `restates`
+    /// (its bound is a copy of the number its measure reads) or `moved` (its measured number
+    /// disagrees with its recorded confidence).
     pub state: String,
     pub today: String,
     pub revisit: String,
@@ -355,10 +356,7 @@ impl Row for Rule {
     const LEAD: &'static str = "rule";
     const GLANCE: &'static [&'static str] = &["kind", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
-        (
-            STALE,
-            "its anchor text is gone from its source file, or that file is not on this machine",
-        ),
+        (STALE, "its anchor text is gone from its source file"),
         (
             MOVED,
             "its measured number disagrees with its recorded confidence: a confident row past its bound, or a low one back inside it",
