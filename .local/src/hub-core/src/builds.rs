@@ -758,9 +758,17 @@ pub fn slots_of(runner: &str) -> &str {
 /// before `until`, from the job archive's text: what `hub ci hosts` prints. A GitHub-hosted job is
 /// no host's, so it is left out, and so is a job `verdict` does not count (cancelled, skipped).
 /// Hosted is told by the runner name GitHub gives every hosted runner, not by the labels: the
-/// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`.
-pub fn pass_by_runner(archive: &str, until: i64, last: usize) -> BTreeMap<String, Pass> {
-    let (records, _) = run_detail::archive(archive, |_| true);
+/// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`. A line that
+/// does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
+pub fn pass_by_runner(
+    archive: &str,
+    until: i64,
+    last: usize,
+) -> Result<BTreeMap<String, Pass>, String> {
+    let (records, bad) = run_detail::archive(archive, |_| true);
+    if bad > 0 {
+        return Err(format!("job archive lines that do not parse: {bad}"));
+    }
     // Each group's jobs as (completed, id, green), so a sort puts the newest last.
     let mut by: BTreeMap<&str, Vec<(i64, u64, bool)>> = BTreeMap::new();
     for j in records.values().flat_map(|r| &r.jobs) {
@@ -781,7 +789,8 @@ pub fn pass_by_runner(archive: &str, until: i64, last: usize) -> BTreeMap<String
             .or_default()
             .push((done, j.id, green));
     }
-    by.into_iter()
+    Ok(by
+        .into_iter()
         .map(|(group, mut jobs)| {
             jobs.sort_unstable();
             let mut pass = Pass::default();
@@ -790,7 +799,7 @@ pub fn pass_by_runner(archive: &str, until: i64, last: usize) -> BTreeMap<String
             }
             (group.to_string(), pass)
         })
-        .collect()
+        .collect())
 }
 
 /// The value at quantile `q` of sorted `v`, nearest rank.
@@ -1618,7 +1627,7 @@ mod tests {
             record(2, true, first),
         ]
         .join("\n");
-        let got = pass_by_runner(&text, NOW, 4);
+        let got = pass_by_runner(&text, NOW, 4).unwrap();
         assert_eq!(
             got.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -1644,6 +1653,13 @@ mod tests {
             "razer-laptop-unity-pool"
         );
         assert_eq!(slots_of("m1-playground-mac"), "m1-playground-mac");
+        // A broken line mid-archive fails the read; a torn last line is a write in progress.
+        let broken = format!("{text}\nnot json\n{}", record(3, true, vec![]));
+        assert_eq!(
+            pass_by_runner(&broken, NOW, 4).unwrap_err(),
+            "job archive lines that do not parse: 1"
+        );
+        assert!(pass_by_runner(&format!("{text}\n{{\"forge\""), NOW, 4).is_ok());
     }
 
     #[test]

@@ -360,7 +360,13 @@ fn ci_hosts(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let report = hub_core::builds::pass_by_runner(&text, until, last);
+    let report = match hub_core::builds::pass_by_runner(&text, until, last) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hub ci hosts: {}: {e}", paths.jobs.display());
+            return 1;
+        }
+    };
     println!("{}", serde_json::to_string(&report).unwrap_or_default());
     0
 }
