@@ -28,10 +28,11 @@ watch_interval_secs() {
 }
 
 # watch_severity <manifest> -> low|normal|high|urgent. Same default and mapping as
-# watch-companion-loop's notify: missing, `medium` or unknown reads as normal.
+# watch-companion-loop's notify: missing, `medium` or unknown reads as normal. A trailing
+# `# comment` is dropped, as the YAML parser watch-companion-loop loads manifests with drops it.
 watch_severity() {
   local s
-  s="$(awk '/^severity:/ { sub(/^severity:[[:space:]]*/, ""); gsub(/["'\'' ]/, ""); print; exit }' "$1" 2>/dev/null)"
+  s="$(awk '/^severity:/ { sub(/^severity:[[:space:]]*/, ""); sub(/[[:space:]]+#.*$/, ""); gsub(/["'\'' ]/, ""); print; exit }' "$1" 2>/dev/null)"
   case "$s" in low|normal|high|urgent) printf '%s' "$s" ;; *) printf normal ;; esac
 }
 

@@ -383,7 +383,7 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 # any other goes red (ar-2795: a low fyi watch held cc:overall_status red for months).
 @test "a watch carries its manifest severity and a numeric rank; missing or unknown is normal" {
   seed_watch low-one TRIP
-  printf 'severity: low\n' >> "$WATCH_DIR/low-one.yaml"
+  printf 'severity: low  # fyi\n' >> "$WATCH_DIR/low-one.yaml"
   seed_watch urgent-one TRIP
   printf 'severity: "urgent"\n' >> "$WATCH_DIR/urgent-one.yaml"
   seed_watch odd-one TRIP
