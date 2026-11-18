@@ -699,6 +699,10 @@ by_rows() {
   assert_equal "$(grep -c '"wind-down"' <<<"$output")" 1
   run "$SUBJECT" ran --nope
   assert_failure 2
+  for bad in "--days" "--days x" "-n" "-n 3x"; do
+    run "$SUBJECT" ran $bad
+    assert_failure 2
+  done
 }
 
 @test "worst --by: mean cost is over the sessions that have a cost, null when none does" {

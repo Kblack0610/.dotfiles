@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -227,7 +229,7 @@ fn tool_question(b: &Value) -> Question {
 
 /// What a session used, counted from its transcript: each skill it called and each model that
 /// answered, by name. A live session has no outcome row yet, so this is its only source.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Uses {
     pub skills: BTreeMap<String, u64>,
     pub models: BTreeMap<String, u64>,
@@ -237,6 +239,31 @@ pub struct Uses {
 /// line per content block, so a message id and a tool call id each count once. A line that is not
 /// JSON is skipped.
 pub fn uses(path: &Path) -> std::io::Result<Uses> {
+    let meta = std::fs::metadata(path)?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let mut kept = SCANNED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((was, u)) = kept.get(path) {
+        if *was == stamp {
+            return Ok(u.clone());
+        }
+    }
+    let u = scan(path)?;
+    if kept.len() >= SCANNED_MAX {
+        kept.clear();
+    }
+    kept.insert(path.to_path_buf(), (stamp, u.clone()));
+    Ok(u)
+}
+
+/// The counts of the transcripts scanned, kept while a file's length and mtime hold: a page that
+/// re-reads every few seconds does not stream an unchanged file again.
+static SCANNED: Mutex<BTreeMap<PathBuf, (Stamp, Uses)>> = Mutex::new(BTreeMap::new());
+
+/// A file as it was scanned: its length and mtime.
+type Stamp = (u64, Option<SystemTime>);
+const SCANNED_MAX: usize = 32;
+
+fn scan(path: &Path) -> std::io::Result<Uses> {
     const ASSISTANT: &[u8] = br#""type":"assistant""#;
     let mut out = Uses::default();
     let (mut messages, mut calls) = (HashSet::new(), HashSet::new());
@@ -473,6 +500,12 @@ mod tests {
             "a streamed message counts once, a synthetic one and a user line not at all"
         );
         assert!(uses(Path::new("/no/such/transcript.jsonl")).is_err());
+
+        // An unchanged file is not scanned again; a longer one is.
+        let p = write("uses-kept", &user(1));
+        assert!(uses(&p).unwrap().models.is_empty());
+        std::fs::write(&p, body).unwrap();
+        assert_eq!(uses(&p).unwrap().skills["shepherd"], 2);
     }
     #[test]
     fn a_tool_result_names_the_call_it_answers() {

@@ -425,16 +425,19 @@ fn spend_part(r: &SessionRow, budget: Option<&(String, f64)>) -> Part {
     Part::new("Spend", text).warn(over)
 }
 
-/// The transcript's counts, `Ok(None)` when the registry names no transcript for the session.
+/// The transcript's counts, `Ok(None)` when the registry names no transcript for the session or
+/// the file it names is gone (Claude Code purges old ones, which is not a fault).
 fn uses_of(registry: &Path, session: &str) -> Result<Option<Uses>, String> {
     if session.is_empty() {
         return Ok(None);
     }
-    match session_table::transcript(registry, session) {
-        None => Ok(None),
-        Some(path) => transcript::uses(&path)
-            .map(Some)
-            .map_err(|e| format!("{}: {e}", path.display())),
+    let Some(path) = session_table::transcript(registry, session) else {
+        return Ok(None);
+    };
+    match transcript::uses(&path) {
+        Ok(u) => Ok(Some(u)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
     }
 }
 
@@ -737,9 +740,25 @@ mod tests {
         assert_eq!(text(&p, "Skills"), "no transcript");
         assert!(p.errors.is_empty(), "{:?}", p.errors);
 
-        // A named transcript that is gone is an error, shown amber.
+        // A named transcript that was purged is no transcript, not an error.
         let gone = registry_of("gone", USES);
         std::fs::remove_file(gone.join("t.jsonl")).unwrap();
+        let p = read(
+            &tools(),
+            &no_ledger(),
+            SID,
+            std::slice::from_ref(&row),
+            &[],
+            &gone,
+        )
+        .unwrap();
+        assert_eq!(text(&p, "Skills"), "no transcript");
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+
+        // One that cannot be read is an error, shown amber.
+        let gone = registry_of("unreadable", USES);
+        std::fs::remove_file(gone.join("t.jsonl")).unwrap();
+        std::fs::create_dir(gone.join("t.jsonl")).unwrap();
         let p = read(&tools(), &no_ledger(), SID, &[row], &[], &gone).unwrap();
         assert_eq!(text(&p, "Skills"), "could not be read");
         assert!(p.parts.iter().any(|x| x.label == "Model" && x.warn));

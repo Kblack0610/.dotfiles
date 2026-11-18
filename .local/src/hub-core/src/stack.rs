@@ -833,8 +833,6 @@ fn read_skills(paths: &Paths, errors: &mut Vec<String>) -> Vec<Skill> {
     out
 }
 
-/// Each skill's newest sessions from the outcome rows (`agentctl-session-outcomes ran`), which
-/// the nightly run writes: a session still live has no row yet, so it is not listed.
 impl From<outcomes::Ran> for SkillRun {
     fn from(r: outcomes::Ran) -> SkillRun {
         SkillRun {
@@ -848,6 +846,8 @@ impl From<outcomes::Ran> for SkillRun {
     }
 }
 
+/// Each skill's newest sessions from the outcome rows (`agentctl-session-outcomes ran`), which
+/// the nightly run writes: a session still live has no row yet, so it is not listed.
 fn read_ran(runner: &dyn Runner, errors: &mut Vec<String>) -> BTreeMap<String, Vec<SkillRun>> {
     let by = outcomes::ran(runner, USE_DAYS, RAN_PER_SKILL).unwrap_or_else(|e| {
         errors.push(format!(

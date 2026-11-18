@@ -72,7 +72,12 @@ function stackList(title, part, cols, row, miss, none) {
 }
 
 // The skills' list names the window its calls column counts and the drift snapshot's day.
+// A link to one skill (`q=skill:=<name>`) opens that row once, so its backlinks show on arrival; a
+// click that shuts it keeps it shut until the query changes.
+let linkedQuery = null;
 function skillsBody(d) {
+  const q = new URLSearchParams(st.views.stack || "").get("q") || "";
+  if (q.startsWith("skill:=") && d.rows?.length === 1 && linkedQuery !== q) { linkedQuery = q; stk.sel = d.rows[0].name; }
   const days = d.use_days ? `calls over the newest ${d.use_days} day snapshots` : `calls ${NOT_READ}`;
   const drift = d.drift_day ? `drift as of ${d.drift_day}` : `drift ${NOT_READ}`;
   return `<div class="muted">${esc(days)}; ${esc(drift)}</div>` +
