@@ -89,6 +89,13 @@ install_tools() {
         $PACKAGES_DEV $PACKAGES_DEV_ARCH
 }
 
+# Override: what an agent session runs (fleet module)
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    install_package_list install_pacman_package arch \
+        $PACKAGES_FLEET $PACKAGES_FLEET_ARCH
+}
+
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
@@ -170,6 +177,11 @@ install_nvim() {
 # tmux 3.8 from .local/src/tmux/patched: its README says why and when this goes away.
 install_tmux_patched() {
     local dir="$HOME/.dotfiles/.local/src/tmux/patched" out="$HOME/.cache/tmux-pkg"
+    # Both the dev and fleet modules install tmux; the second asks and skips.
+    if [[ "$(pacman -Q tmux 2>/dev/null)" == "tmux 3.8-1.2" ]]; then
+        log_info "tmux 3.8-1.2 (patched) already installed"
+        return 0
+    fi
     mkdir -p "$out"
     (cd "$dir" && BUILDDIR="$out" PKGDEST="$out" SRCDEST="$out" makepkg -fs --noconfirm) &&
         sudo pacman -U --noconfirm "$out"/tmux-3.8-1.2-*.pkg.tar.zst
@@ -645,6 +657,12 @@ setup_profile() {
     echo "  3) terminal - TTY-only, no GUI (auto-login)"
     echo "  4) secure   - Manual login, prompts for Hyprland"
     echo "  5) headless - Server mode, SSH-only (auto-login)"
+    # --yes asks nothing, and skip is the default.
+    if [[ "${INSTALL_YES:-}" == 1 ]]; then
+        log_info "--yes: profile left as it is (run profile-switch <profile> to set one)"
+        return 0
+    fi
+
     echo "  6) Skip     - Don't set a profile now"
     echo ""
 
@@ -895,6 +913,12 @@ install_all() {
     step dev         install_tmux
     step dev         install_lazygit
     step dev         install_kitty
+
+    step fleet       install_fleet_packages
+    step fleet       install_tmux
+    step fleet       install_agent_harnesses
+    step fleet       install_rust
+    step fleet       build_fleet_tools
 
     step containers  install_kubernetes
     step containers  setup_kubernetes

@@ -64,6 +64,18 @@ Opt-in modules (`INSTALL_OPTIONAL_MODULES` in `packages.conf`: music, streaming,
 
 New optional thing? Put its packages in `packages.conf` as `PACKAGES_<NAME>[_<OS>]`, write an `install_<name>` function in the OS installer, add `step <name> install_<name>` to `install_all`, and add the name to `INSTALL_OPTIONAL_MODULES` if it should be opt-in.
 
+### Fleet node
+
+A machine that runs agent sessions, a native host or the fleet-agent image, is set up by one command:
+
+```bash
+fleet-node install      # install.sh --yes --only base,fleet,dotfiles: claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed dotfiles
+fleet-node signin       # what only you can do here, one line each (Claude accounts, gh, the private overlay, the store)
+fleet-node ready        # exit 0 once signin lists nothing; fleet-dispatch probes this over ssh
+```
+
+`--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Logins are never copied to a node; you sign each one in once.
+
 ## Keeping install files up to date
 
 These scripts are only as good as the package lists behind them. The golden rule:
