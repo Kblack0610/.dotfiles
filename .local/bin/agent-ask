@@ -677,7 +677,7 @@ blocker_ask() {
     [ "${ASK[status]:-}" = pending ] || continue
     [ -z "${ASK[resume]:-}" ] || [ "${ASK[resume]}" = "$REOPEN_RESUME" ] || continue
     printf '%s\t%s\n' "${ASK[created]:-}" "$f"
-  done < <(grep -lxF "blocker: $1" "$ASKS_ROOT"/*/*.md 2>/dev/null) | sort | head -1 | cut -f2
+  done < <(grep -lxF "blocker: $1" "$ASKS_ROOT"/*/*.md 2>/dev/null) | sort | awk -F'\t' 'NR == 1 { print $2 }'
 }
 
 # ask_sessions <file>: every session waiting on the ask, the asker first, one per line.
