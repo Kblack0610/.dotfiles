@@ -275,7 +275,7 @@ pub(crate) mod tests {
     /// per-pool counts' series.
     fn one_cap_each(i: &mut Infra) {
         let slots = i.get("runners").to_vec();
-        i.instant.insert("pool_slots", slots);
+        i.instant.insert("runner_caps", slots);
     }
 
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
@@ -618,7 +618,7 @@ pub(crate) mod tests {
     #[test]
     fn a_quiet_ci_is_one_green_line_and_no_empty_tables() {
         let mut i = fixture();
-        for q in ["runners", "pool_slots", "gates", "waiting", "local_failed"] {
+        for q in ["runners", "runner_caps", "gates", "waiting", "local_failed"] {
             i.instant.insert(q, vec![]);
         }
         let section = |failed, name| {

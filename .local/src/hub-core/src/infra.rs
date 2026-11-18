@@ -37,7 +37,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // The same runners once per cap they take, pool=<cap>: what cc:pool_slots counts, so
         // every per-pool count (a machine's pool cells, a pool's machines) reads this and agrees
         // with the Pools table. A Unity slot on a heavy host is in unity, light and heavy.
-        ("pool_slots", format!("{W} (github_runner_pool_slot)")),
+        ("runner_caps", format!("{W} (github_runner_pool_slot)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say

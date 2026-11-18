@@ -470,7 +470,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         }
     }
     // Per pool, a runner counts once per cap it takes, as cc:pool_slots counts it.
-    for s in infra.get("pool_slots") {
+    for s in infra.get("runner_caps") {
         let state = s.label("state");
         if !matches!(state, "running" | "idle") {
             continue;
@@ -620,7 +620,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         );
     }
     let mut hosts: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for s in infra.get("pool_slots") {
+    for s in infra.get("runner_caps") {
         hosts
             .entry(s.label("pool"))
             .or_default()
@@ -731,7 +731,7 @@ pub(crate) mod tests {
             slot.extend(caps.iter().map(|c| row("github_runner_pool_slot", c)));
         }
         i.instant.insert("runners", series(state));
-        i.instant.insert("pool_slots", series(slot));
+        i.instant.insert("runner_caps", series(slot));
     }
 
     /// The workstation as Prometheus names it, its runner and governor by its hostname, a cloud
