@@ -11,6 +11,7 @@
 .local/src/hub-core    .local/src/agent-web/static/infra.js
 .local/src/hub-core    .local/src/docs/stages.md
 .local/src/hub-core    tests/agent-web/tilecast-schema.sh
+.local/src/project-map .config/shared-hooks/project-name.sh
 .local/src/project-map tests/fixtures/project-names.json
 .local/src/project-map tests/fixtures/project-names.tsv
 .local/src/project-map tests/fixtures/project-visibility.json

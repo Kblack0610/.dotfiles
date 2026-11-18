@@ -448,6 +448,80 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -n "$(typed)" ]
 }
 
+# drafted <screen>: two checks over the same screen, as a draft left in a box meets them
+drafted() { local i; for i in 1 2; do STUB_PANE="$1" "$SH" check >/dev/null || true; done; }
+# boxed <text>: the idle prompt with that text typed after the glyph (escapes and all)
+boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
+
+@test "a close-now row held by the human's draft pages them on the second check, once a day, and closes once the box is empty" {
+  doc "[$(crow 1 DONE now)]"
+  draft="$(boxed 'then after the last part of phase four, queue the rest')"
+  # The first check that sees it pages no one: the human may be typing it now.
+  STUB_PANE="$draft" run checked
+  refute_output --partial 'lab/1:1'
+  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
+  run grep "your draft holds its close" "$HOME/pages"
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  grep -q 'close: lab/1:1 DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  [ -z "$(typed)" ]
+  run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
+  # The same draft on the next check pages nothing more.
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
+  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
+  # Cleared, the next check types the close as for any empty box.
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
+}
+
+@test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
+  doc "[$(crow 1 DONE now)]"
+  drafted "$(boxed $'\e[2mtry asking about the queue\e[22m')"
+  # The cursor cell over a ghost's first letter is inverse, the rest dim.
+  drafted "$(boxed $'\e[7mt\e[27m\e[2mry asking about the queue\e[22m')"
+  drafted $'text above\n─────────────\n  How is Claude doing this session?\n  1: Good  2: Bad\n─────────────\n'
+  drafted "$(boxed mine)"$'\n  esc to interrupt'
+  STUB_IN_MODE=1 drafted "$(boxed mine)"
+  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
+  run grep -q 'draft seen: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
+  # agent-notify refusing is not recorded: the next check tries again.
+  stub agent-notify 'exit 1'
+  drafted "$(boxed mine)"
+  run grep -q 'draft: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
+  stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  STUB_PANE="$(boxed mine)" "$SH" check >/dev/null || true
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  [ -z "$(typed)" ]
+}
+
+@test "a draft drawn in colour 2 or 7, the colon form, or under a style left open a line above still pages" {
+  for c in $'\e[38;5;2m' $'\e[38;5;7m' $'\e[38:5:2m' $'\e[48;2;7;2;2m'; do
+    : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+    doc "[$(crow 1 DONE now)]"
+    drafted "$(boxed "${c}mine"$'\e[39m')"
+    [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  done
+  : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+  drafted $'text above \e[2mdim tail\n\e[0m───────────── name ─\n\xe2\x9d\xaf\xc2\xa0mine\n─────────────\n  bypass permissions on'
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+}
+
+@test "a draft page and the escalation reminder for the same fact never silence each other" {
+  doc "[$(crow 1 DONE now)]"
+  drafted "$(boxed 'half a thought')"
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  # Later the pass nudged and escalated the same fact, and hours went by: the reminder still goes.
+  doc "[$(crow 1 DONE now '{"nudged":true, "escalated":true, "idle_min":400}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  "$SH" check >/dev/null || true
+  [ "$(grep -c 'lab/1:1: one decision closes it' "$HOME/pages")" = 1 ]
+  # And each stays recorded for today under its own key.
+  grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+  grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+}
+
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.

@@ -75,7 +75,7 @@ When the human gives the shepherd a task, plan it with them in the chat until th
 
 The fleet-wide list is in `fleet-lead`; these are this role's own.
 
-- Close, kill, or `/wind-down` a session yourself (`claude-acct move` is not a close: the same conversation carries on in the same pane). The shepherd asks; the session winds itself down with `/wind-down auto`, which refuses unless its close verdict is now (`fleet-sessions close --self`) or when its last message is an open question to the human.
+- Close, kill, or `/wind-down` a session yourself (`claude-acct move` is not a close: the same conversation carries on in the same pane). The shepherd asks: `close_sample` types `/wind-down auto`, which the session runs and refuses unless its close verdict is now (`fleet-sessions close --self`) or when its last message is an open question to the human.
 - Message a NEEDS, WORKING or CHAT session, send a close by message (`close_sample` types every close), or repeat a fact the ledger already holds. The exceptions are an `overdue:` line and `fleet-pace`'s line to a session whose search was killed.
 
 ## Related

@@ -142,7 +142,7 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # words naming the one decision that closes it, once per fact per day (remind_sample).
 # trader-real-money-plan sat 6h+ past its escalation with nobody told again (2026-11-06).
 : "${FLEET_SHEPHERD_REMIND_H:=4}"
-REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact>: today's reminders, once each
+REMINDED="$LEDGER/.remind"    # <date>\t<session id>\t<fact | draft seen: <fact> | draft: <fact>>: today's reminders and draft pages, once each
 BUDGETS="$LEDGER/.budget"     # <item>\t<budgets reached>\t<extended|parked|pending|left>: each checkpoint, once
 SHARED_ITEMS="$LEDGER/.shared"  # <fact>\t<item slug | row:<board row>>: what owns each shared red episode
 # The project a shared red's item is filed on: the test failures fleet-sessions reads are the
@@ -706,9 +706,10 @@ remind_sample() {
 # no send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
 # cancelling the human's copy mode, and reads the screen again after the claim, just before the
-# keys; any other screen waits for the next check. The close claim (mark --close) comes first, so
-# a session is typed one close for good; a send that fails after it reaches the human through the
-# row's escalation.
+# keys; any other screen waits for the next check, and a box holding the human's draft also pages
+# them (draft_page), unclaimed, so it closes once emptied. The close claim (mark --close) comes
+# first, so a session is typed one close for good; a send that fails after it reaches the human
+# through the row's escalation.
 # Its last step is the window (WINDOW, CLOSE_REFUSED_JQ): a session typed its close
 # FLEET_IDLE_CLOSE_MIN or more ago (the claim's mtime), quiet ever since, so its own /wind-down, or
 # its Stop hook deferring on a red, has had its turn, and still closable now at the same idle prompt, has its
@@ -747,7 +748,7 @@ close_sample() {
       fi
       continue
     fi
-    pane_takes_keys "$server" "$pane" || continue
+    pane_takes_keys "$server" "$pane" || { draft_page "$sid" "$target" "$pane" "$close" "$fact"; continue; }
     fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$server" "$pane"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
@@ -768,6 +769,56 @@ close_sample() {
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
+# draft_page <sid> <target> <pane> <close> <fact>: a close-now session that close_sample cannot
+# type into only because the human's unsent draft sits in its prompt pages the human, once per
+# fact per day. Nothing else would: close_sample only waits for the next check, a close-now row
+# hands a pass no line, and remind_sample waits for a nudged and escalated row. It pages on the
+# second check that sees the draft, so words being typed now page no one, and the page quotes
+# none of it: a draft can hold what the human never meant to send. The row is not claimed, so
+# the check after the box empties types the close as usual. Its ledger lines
+# are keyed "draft seen: <fact>" and "draft: <fact>" in $REMINDED, which never equal a
+# reminder's fact, so neither silences the other.
+draft_page() {
+  local server="${2%%/*}" today box
+  today="$(date +%F)"
+  touch "$REMINDED" 2>/dev/null || return 0
+  reminded "$today" "$1" "draft: $5" && return 0
+  [ "$(tmux -L "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 0
+  box="$(prompt_box "$(undim "$(tmux -L "$server" capture-pane -e -p -t "$3" 2>/dev/null)")" glyph)" || return 0
+  [ -n "$box" ] || return 0
+  if ! reminded "$today" "$1" "draft seen: $5"; then
+    printf '%s\t%s\t%s\n' "$today" "$1" "draft seen: $5" >> "$REMINDED"
+    return 0
+  fi
+  local why=" ($5)"; [ "$5" != - ] || why=""
+  agent-notify -p high -k decision -t "$2: your draft holds its close" -r "tmux:$2" \
+    "$2 can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
+  printf '%s\t%s\t%s\n' "$today" "$1" "draft: $5" >> "$REMINDED"
+  cmd_log "close: $2 $4: held by your unsent draft; paged" >/dev/null
+}
+
+# reminded <date> <sid> <key> -> exit 0 when $REMINDED holds that line.
+reminded() { awk -F'\t' -v d="$1" -v s="$2" -v k="$3" '$1 == d && $2 == s && $3 == k { f = 1 } END { exit !f }' "$REMINDED"; }
+
+# undim <screen captured with -e> -> the screen as plain text, less what was drawn dim (SGR 2)
+# or inverse (SGR 7): a ghost suggestion in an empty box is dim, and the cursor cell over its
+# first letter inverse, so neither is anyone's draft. Colour arguments (38/48/58 with ;5;n or
+# ;2;r;g;b, or the colon form) are skipped, so a colour index of 2 or 7 is not read as a style.
+# A style still open at a line's end keeps the newline.
+undim() {
+  perl -CSD -ne 'BEGIN { ($d, $v) = (0, 0) } chomp; my $o = "";
+    for my $p (split /(\e\[[0-9;:]*m)/) {
+      if ($p =~ /^\e\[([0-9;:]*)m$/) {
+        my @c = split /;/, ($1 eq "" ? "0" : $1);
+        while (@c) { my $raw = shift @c; my $c = $raw =~ s/:.*//sr;
+          if ($c eq "38" || $c eq "48" || $c eq "58") { next if $raw ne $c; my $k = shift(@c) // ""; splice(@c, 0, $k eq "2" ? 3 : $k eq "5" ? 1 : 0) }
+          elsif ($c eq "2") { $d = 1 } elsif ($c eq "7") { $v = 1 }
+          elsif ($c eq "22") { $d = 0 } elsif ($c eq "27") { $v = 0 }
+          elsif ($c eq "0" || $c eq "") { ($d, $v) = (0, 0) } }
+      } elsif (!$d && !$v) { $o .= $p } }
+    $o =~ s/\e\[[0-9;:?]*[A-Za-z]//g; print "$o\n"' <<<"$1"
+}
+
 # pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
 pane_takes_keys() {
   local screen
@@ -776,19 +827,26 @@ pane_takes_keys() {
   idle_prompt "$screen"
 }
 
-# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working: the
-# lines between the screen's last two rule lines (a run of ─, the top one may carry the session's
-# name) hold no more than the prompt glyph and blanks,
-# and the footer has no "esc to interrupt" (cut short on a narrow pane, so its head is matched).
+# idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working.
 # A draft, a ghost suggestion, a dialog or a screen it cannot read all fail, toward the pass.
-idle_prompt() {
+idle_prompt() { local box; box="$(prompt_box "$1")" && [ -z "$box" ]; }
+
+# prompt_box <screen> [glyph] -> the text in Claude's input box, blanks collapsed, less the prompt
+# glyph: the lines between the screen's last two rule lines (a run of box-drawing dashes, the top
+# one may carry the session's name). Exit 1 when there is no box or something is working: the
+# footer shows "esc to interrupt" (cut short on a narrow pane, so its head is matched). With
+# "glyph", also exit 1 unless the box opens on the prompt glyph, so a dialog or menu drawn
+# between rules is not read as typed text. The one box reader.
+prompt_box() {
   grep -qF 'esc to inter' <<<"$1" && return 1
-  awk -v nb=$'\xc2\xa0' '
+  awk -v nb=$'\xc2\xa0' -v glyph="${2:-}" '
     { l[NR] = $0 }
     /^───/ && /─ *$/ { r2 = r1; r1 = NR }
     END {
       if (!r2 || r1 - r2 < 2) exit 1
-      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, "", s); gsub(/[ \t]/, "", s); if (s != "") exit 1 }
+      if (glyph != "" && l[r2 + 1] !~ /^[ \t]*❯/) exit 1
+      for (i = r2 + 1; i < r1; i++) { s = l[i]; gsub(/❯/, "", s); gsub(nb, " ", s); out = out " " s }
+      gsub(/[ \t]+/, " ", out); sub(/^ /, "", out); sub(/ $/, "", out); print out
     }' <<<"$1"
 }
 
@@ -800,7 +858,7 @@ remind_decision() {
     LANDED:*) if [ "${4:--}" != - ]; then echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan"
               elif [ "${5:--}" != - ]; then echo "give $5 a ## Phases checklist, or close its window"
               else echo "close its window"; fi ;;
-    CHAT:*) echo "close the chat, or label it manual to keep it" ;;
+    CHAT:*) echo "close the chat, or label it chat (kept until quiet 24h) or manual to keep it" ;;
     *"green, not merged"*) echo "merge PR $pr or close it" ;;
     *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
     *"CI red"*) echo "have PR $pr fixed, or close it" ;;
@@ -965,9 +1023,10 @@ cmd_check() {
   # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
   cmd_holds 2>/dev/null && shared_sample
   # And so is closing a session (typing its close, or closing its window once it stayed quiet after
-  # one): one writer of its claim, and before the reminder, so a closed window is not paged.
+  # one): one writer of its claim, and before the reminder, so a closed window is not paged; its
+  # draft lines are today's, which remind_sample's prune to today keeps.
   cmd_holds 2>/dev/null && close_sample
-  # And so is a reminder: one writer of $REMINDED.
+  # And so is a reminder: one writer of $REMINDED (close_sample's draft lines aside).
   cmd_holds 2>/dev/null && remind_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
