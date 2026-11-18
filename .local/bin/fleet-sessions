@@ -1484,18 +1484,25 @@ activity_line() {
   echo "${status:--}"
 }
 
-# park_pane_gone <ledger> -> 0 when the ledger's tmux server answers and its pane is no longer in the
-# ledger's session. A park keeps its pane (held dead, or a shell), so a gone one means the server restarted:
-# pane ids restart with it, and the window may host a live claude now, so the row would read PARKED and the
-# pace line would send an unpark into it. A server that cannot be read, or a ledger with no pane or session,
-# decides nothing (a running server lists a pane, so an empty answer is no answer): the ledger stays.
+# park_pane_gone <ledger> -> 0 when the ledger's tmux server answers and its pane is gone, or sits in a
+# session created after the park. A park keeps its pane (held dead, or a shell), so neither can be the
+# parked pane: the server restarted, and pane ids restart with it, so the same id may be a live claude's
+# window, the row would read PARKED and the pace line would send an unpark into it. Not the session's
+# name: a renamed session keeps its pane. A server that cannot be read, or a ledger with no pane, decides
+# nothing (a running server lists a pane, so an empty answer is no answer): the ledger stays. The server's
+# panes are read once per pass, in PARK_PANES.
+declare -A PARK_PANES=()
 park_pane_gone() {
-  local srv pane sess rows
-  srv="$(sed -n 's/^server=//p;T;q' "$1")"; pane="$(sed -n 's/^pane=//p;T;q' "$1")"; sess="$(sed -n 's/^session=//p;T;q' "$1")"
-  [ -n "$srv" ] && [ -n "$pane" ] && [ -n "$sess" ] || return 1
-  rows="$(tmux -L "$srv" list-panes -a -F '#{pane_id} #{session_name}' 2>/dev/null)" || return 1
-  [ -n "$rows" ] || return 1
-  ! grep -qxF -- "$pane $sess" <<<"$rows"
+  local srv="" pane="" parked="" k v created
+  while IFS='=' read -r k v; do
+    case "$k" in server) srv="$v" ;; pane) pane="$v" ;; parked) parked="$v" ;; esac
+  done <"$1"
+  [ -n "$srv" ] && [ -n "$pane" ] || return 1
+  [ -n "${PARK_PANES[$srv]+x}" ] || PARK_PANES[$srv]="$(tmux -L "$srv" list-panes -a -F '#{pane_id} #{session_created}' 2>/dev/null)" || return 1
+  [ -n "${PARK_PANES[$srv]}" ] || return 1
+  created="$(awk -v p="$pane" '$1 == p { print $2; exit }' <<<"${PARK_PANES[$srv]}")"
+  [ -n "$created" ] || return 0
+  [[ "$parked" =~ ^[0-9]+$ && "$created" =~ ^[0-9]+$ ]] && [ "$created" -gt "$parked" ]
 }
 
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
@@ -1507,6 +1514,7 @@ park_pane_gone() {
 # has a pane id a tmux restart made unmatchable, so it dedupes on its session like a session ledger.
 parked_lines() {
   local f live panes
+  PARK_PANES=()
   live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
   panes="$(jq -r '.pane' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
