@@ -52,7 +52,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": []}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": [], \"agent_cpus\": \"\"}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
@@ -384,4 +384,25 @@ echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}"'
   assert_called "'agent-panel' 'send' '--pane' 'lab/%3' '--' 'a; b'"
   run "$REPO_ROOT/.local/bin/fleet-host-run" nobody true
   assert_failure 255
+}
+
+@test "fleet_cap_hosts: every host that sets agent_cpus, in any group, worker or not" {
+  cat >> "$FLEET_INVENTORY" <<'YAML'
+          agent_cpus: 1-7,9-15
+    desktops2:
+      hosts:
+        state:
+          agent_cpus: 2-15,18-31
+YAML
+  run fleet_cap_hosts
+  assert_success
+  assert_equal "$(jq -r '"\(.name) \(.agent_cpus)"' <<<"$output" | sort | paste -sd, -)" 'hp-victus 1-7,9-15,state 2-15,18-31'
+  run fleet_hosts
+  assert_equal "$(jq -r 'select(.name == "hp-victus") | .agent_cpus' <<<"$output")" 1-7,9-15
+}
+
+@test "fleet_cap_hosts: an inventory with no agent_cpus lists nothing" {
+  run fleet_cap_hosts
+  assert_success
+  assert_output ''
 }

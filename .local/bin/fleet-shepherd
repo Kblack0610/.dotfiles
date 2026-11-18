@@ -308,8 +308,14 @@ cmd_due() {
   # fleet-dispatch resumes its preempts (why=preempt) once their run units free.
   # Only load holds count: a resource hold (bad RAM until a memtest) or a desktop claim is not
   # about load, so a CLEAR machine is no reason to lift it (ar-2605).
-  local verdict holds parked owned
-  verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
+  local verdict holds parked owned assess
+  assess="$(fleet-assess 2>/dev/null)"
+  verdict="$(sed -n 's/^verdict: \([A-Z]*\).*/\1/p' <<<"$assess")"
+  # Every machine, not only this one: a host over its busy mark, or an agent host with a unit
+  # outside its CPU cap (home-config agent-host-budget), is a pace line of its own.
+  local over
+  over="$(grep -E '^fleet: OVER|^cap: .* NOT live' <<<"$assess" | sed 's/^/pace: /')"
+  [ -z "$over" ] || out+="${out:+$'\n'}$over"
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
   # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.

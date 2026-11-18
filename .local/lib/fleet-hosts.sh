@@ -185,8 +185,18 @@ for h in members.get(group, []):
         "repos": repos,
         "power": str(v.get("fleet_power", "")),
         "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
+        "agent_cpus": str(v.get("agent_cpus") or ""),
     }))
 PY
+}
+
+# fleet_cap_hosts -> one fleet_hosts-shaped line per inventory host, in any group, that sets
+# agent_cpus: the cpuset home-config's agent-host-budget role pins every tmux pane and agent lane
+# to. The workstation is one though it is no fleet worker. Read fresh, never from FLEET_HOSTS_JSON.
+fleet_cap_hosts() {
+  local inv
+  inv=$(fleet_inventory_text) && grep -qs '^[[:space:]]*agent_cpus:' <<<"$inv" || return 0
+  FLEET_HOSTS_GROUP=all _fh_parse "$inv" | jq -c 'select(.agent_cpus != "")'
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
