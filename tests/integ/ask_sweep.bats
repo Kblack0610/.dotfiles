@@ -121,6 +121,22 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
+
+@test "a plan fleet-dispatch reap filed gets no row, by its own name or its pointer stub's; one reap did not file gets its row" {
+  plan filed '1 day ago 1 hour ago' "$OPEN"
+  mkdir -p "$SANDBOX/elsewhere"; printf '# real\n\n%b\n' "$OPEN" > "$SANDBOX/elsewhere/real.md"; : > "$ASK_SWEEP_PLAN_CACHE/board/real.md"
+  plan unfiled '1 day ago 1 hour ago' "$OPEN"
+  printf 'Phase 2 of %s\n' "$SANDBOX/elsewhere/real.md" > "$ASK_SWEEP_PLANS/random-name.md"
+  touch -d '1 day ago 1 hour ago' "$ASK_SWEEP_PLANS/random-name.md"
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"; mkdir -p "$FLEET_DISPATCH_DIR"
+  printf '%s\n' "$SANDBOX/acct/plans/filed.md" "$SANDBOX/acct/plans/random-name.md" > "$FLEET_DISPATCH_DIR/plans-filed"
+  run "$SWEEP" run
+  assert_success
+  assert_not_called 'finish filed'
+  assert_not_called 'finish real'
+  assert_called 'ptask board --agent add --want ask chore(plan): finish unfiled'
+}
+
 @test "a plan with no checklist files no row and is only counted" {
   plan bare '1 day ago 1 hour ago' 'just text'
   plan landed '1 day ago 1 hour ago' '## Results\n\nshipped'
