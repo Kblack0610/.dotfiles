@@ -6,10 +6,31 @@
 # that trap (a KILL, or a TERM that reaches the bats main but not GNU parallel's jobs, which each
 # set their own process group) left the dir and its tests running (ar-1819). setsid puts bats and
 # every job parallel starts in one session, so the reap below reaches them all, along with any
-# background process a test left behind.
+# background process a test left behind. Two paths reap that session: this script's EXIT trap,
+# and, for a KILL that skips every trap, the session leader's parent-death TERM (--lead below).
 set -uo pipefail
 
-bats="$(dirname "$(readlink -f "$0")")/vendor/bats-core/bin/bats"
+self=$(readlink -f "$0")
+bats="$(dirname "$self")/vendor/bats-core/bin/bats"
+
+# --lead <wrapper pid> <bats args...>: the session leader, a child of the wrapper started with a
+# parent-death TERM, with TMPDIR the owned dir. A wrapper killed past its traps (a KILL from the
+# tool or hook that ran it) reaps nothing, and the session it started ran on for hours: a parallel
+# job's bats-exec-file waits forever for a semaphore slot once the bats main has removed its run
+# dir (ar-3253). The kernel TERMs this leader when the wrapper dies, however it dies, and the
+# leader then kills the rest of its session (-A spares itself) and removes the owned dir, as the
+# wrapper's reap would. It removes only a bats-run-* dir, so a hand run cannot delete a real TMPDIR.
+if [ "${1:-}" = --lead ]; then
+  case "${TMPDIR:-}" in */bats-run-*) ;; *) echo "run-bats.sh: --lead is internal" >&2; exit 2 ;; esac
+  lead_reap() { pkill -KILL -A -s $$; pidwait -A -s $$; rm -rf -- "$TMPDIR"; exit 143; }
+  trap lead_reap TERM HUP
+  [ "$PPID" = "$2" ] || lead_reap   # the wrapper died before the parent-death signal was set
+  shift 2
+  trap '' INT                       # the wrapper's Ctrl-C is for bats, which reports it
+  env --default-signal=INT "$bats" "$@" <&0 &
+  wait $!
+  exit
+fi
 
 # One suite at a time per machine (ar-3277): nine sessions each ran a --jobs 2 suite at once and
 # load reached 86 on 32 cores. A second run waits on the flock, an event and not a timer, naming
@@ -56,8 +77,9 @@ trap 'exit 143' TERM
 # bats resets BATS_RUN_TMPDIR from the environment and makes its run dir under TMPDIR, so TMPDIR
 # is the owned dir: the run dir, parallel's buffer files and a test's bare mktemp all land in it.
 # A background job of a non-interactive shell is not a process group leader, so setsid does not
-# fork and $! is the new session's id. Such a job also starts with stdin on /dev/null and SIGINT
-# ignored, past any trap: <&0 keeps stdin, and env restores SIGINT so the Ctrl-C handed on reaches it.
-TMPDIR="$own" setsid env --default-signal=INT "$bats" "$@" <&0 {slot_fd}>&- &
+# fork and $! is the new session's id, the leader's pid, whose parent is this script. Such a job
+# also starts with stdin on /dev/null and SIGINT ignored, past any trap: <&0 keeps stdin, and the
+# leader's env restores SIGINT for bats so the Ctrl-C handed on reaches it.
+TMPDIR="$own" setsid setpriv --pdeathsig TERM "$self" --lead $$ "$@" <&0 {slot_fd}>&- &
 sid=$!
 wait "$sid"

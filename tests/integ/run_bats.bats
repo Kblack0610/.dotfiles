@@ -95,6 +95,23 @@ no_leftovers() {
   no_leftovers
 }
 
+# The case that ran for hours (ar-3253): a KILL skips every trap of the wrapper, so its reap never
+# runs and only the session leader's parent-death TERM ends the run. The leader exits last, after
+# its reap, so the wait is on its pid alone (the session id, in SIDF): a pidwait over the whole
+# session failed at once on ubuntu-24.04 (procps 4.0.4) while the leader was still reaping. The
+# timeout only bounds a leader that never exits.
+@test "a wrapper killed with KILL still leaves no run dir and no process behind" {
+  mkfifo "$BATS_TEST_TMPDIR/up"
+  fixture slow "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); sleep 600"
+  inner "$BATS_TEST_TMPDIR/slow.bats" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+  wrapper=$!
+  timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
+  kill -KILL "$wrapper"
+  wait "$wrapper" || true
+  timeout 60 pidwait -F "$SIDF" || true
+  no_leftovers
+}
+
 @test "a finished run keeps bats' status and leaves no run dir and no process behind" {
   fixture failing "false"
   run inner "$BATS_TEST_TMPDIR/failing.bats"
