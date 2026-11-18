@@ -3322,9 +3322,8 @@ cmd_backfill_briefs() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
-# nothing when they are clean, or when this queue is not the store's). 8>&-: it forks off and waits on
-# the sync lock, so an inherited queue lock held every write behind a long sync (2026-11-18).
-[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 8>&- 2>/dev/null' EXIT
+# nothing when they are clean, or when this queue is not the store's).
+[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;

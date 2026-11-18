@@ -248,17 +248,20 @@ show() { git -C "$1" show "master:$2"; }
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
-@test "the write hook agent-queue starts holds no queue lock (fd 8)" {
-  # It forks off and waits on the sync lock: an inherited fd 8 held every queue write for 300s
-  # behind it (2026-11-18, agent-land's record refused while a long sync ran).
-  mkdir -p "$SANDBOX/bin" "$HOME/.agent/queue"
-  printf '#!/bin/sh\n[ -e /proc/$$/fd/8 ] && echo held >> "%s"; echo ran >> "%s"\n' "$SANDBOX/hook.log" "$SANDBOX/hook.log" > "$SANDBOX/bin/store-sync"
-  chmod +x "$SANDBOX/bin/store-sync"
-  export AGENT_STORE_DIR="$HOME/.agent"
-  AGENT_QUEUE_START=0 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" add 'probe the lock' --project p >/dev/null 2>&1 || true
-  run cat "$SANDBOX/hook.log"
-  assert_line ran
-  refute_line held
+@test "the background sync drops its caller's descriptors, so it holds no caller's lock" {
+  # The fork waits up to LOCK_WAIT_S on the sync lock: an inherited agent-queue fd 8 held every queue
+  # write behind it (2026-11-18, agent-land's record refused while a long sync ran).
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock"
+  flock 7
+  ( flock 8 && STORE_SYNC_FG=0 on a --now --bg ) 8>"$SANDBOX/caller.lock"
+  run flock -n "$SANDBOX/caller.lock" true
+  # Leave the fork nothing to push, so it exits once it has the lock.
+  git -C "$SANDBOX/a" checkout -q -- queue/item.md
+  exec 7>&-
+  assert_success
 }
 
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
