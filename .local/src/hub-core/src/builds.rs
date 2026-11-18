@@ -15,6 +15,7 @@
 //! | a run's PRs and release | joined on read by `release_graph`, from the PR store, the queue and `release-state` |
 //! | the usual run time  | computed on read from the same runs (`time`), nothing stored     |
 //! | the pass rate       | computed on read (`verdict`, `pass_by_repo`): the one CI pass rate |
+//! | a host's job pass   | computed on read from the job archive (`pass_by_runner`)         |
 //! | a run's jobs        | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl` (`run_detail`) |
 //! | the test quarantine | `$SCHEDULES_QUARANTINE`, else `quarantine.json` beside the ledger (`quarantine`) |
 //! | a run's logged tag  | `$SCHEDULES_RUN_TAGS`, else `run-tags.jsonl` beside the ledger (`schedules-sync run-tags`) |
@@ -543,7 +544,7 @@ fn synced(text: &str) -> Result<(i64, Vec<String>), String> {
     Ok((at, errors))
 }
 
-fn read_text(p: &Path) -> Result<String, String> {
+pub fn read_text(p: &Path) -> Result<String, String> {
     std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
@@ -693,10 +694,14 @@ pub struct Pass {
 impl Pass {
     fn add(&mut self, conclusion: Option<&str>) {
         if let Some(green) = verdict(conclusion) {
-            self.runs += 1;
-            self.green += usize::from(green);
-            self.pass = Some((self.green as f64 / self.runs as f64 * 1e4).round() / 1e4);
+            self.count(green);
         }
+    }
+
+    fn count(&mut self, green: bool) {
+        self.runs += 1;
+        self.green += usize::from(green);
+        self.pass = Some((self.green as f64 / self.runs as f64 * 1e4).round() / 1e4);
     }
 
     /// The share as a whole percent, 0 when no run counted.
@@ -737,6 +742,55 @@ pub fn pass_by_repo(
             .add(r.conclusion.as_deref());
     }
     out
+}
+
+/// A runner's slots as one group: its name less the slot number, so `aws-burst-1-unity-pool-3`
+/// and `-4` are `aws-burst-1-unity-pool`, and a host's Unity and light slots are judged apart.
+/// A name with no slot number (`mac-mini-mac`) is its own group.
+pub fn slots_of(runner: &str) -> &str {
+    runner
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .strip_suffix('-')
+        .unwrap_or(runner)
+}
+
+/// The pass rate (`verdict`) of each runner group's (`slots_of`) last `last` jobs that completed
+/// before `until`, from the job archive's text: what `hub ci hosts` prints. A GitHub-hosted job is
+/// no host's, so it is left out, and so is a job `verdict` does not count (cancelled, skipped).
+/// Hosted is told by the runner name GitHub gives every hosted runner, not by the labels: the
+/// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`.
+pub fn pass_by_runner(archive: &str, until: i64, last: usize) -> BTreeMap<String, Pass> {
+    let (records, _) = run_detail::archive(archive, |_| true);
+    // Each group's jobs as (completed, id, green), so a sort puts the newest last.
+    let mut by: BTreeMap<&str, Vec<(i64, u64, bool)>> = BTreeMap::new();
+    for j in records.values().flat_map(|r| &r.jobs) {
+        let Some(runner) = j
+            .runner_name
+            .as_deref()
+            .filter(|r| !r.is_empty() && !r.starts_with("GitHub Actions"))
+        else {
+            continue;
+        };
+        let Some(green) = verdict(j.conclusion.as_deref()) else {
+            continue;
+        };
+        let Some(done) = run_detail::ts(&j.completed_at).filter(|&t| t < until) else {
+            continue;
+        };
+        by.entry(slots_of(runner))
+            .or_default()
+            .push((done, j.id, green));
+    }
+    by.into_iter()
+        .map(|(group, mut jobs)| {
+            jobs.sort_unstable();
+            let mut pass = Pass::default();
+            for &(_, _, green) in jobs.iter().rev().take(last) {
+                pass.count(green);
+            }
+            (group.to_string(), pass)
+        })
+        .collect()
 }
 
 /// The value at quantile `q` of sorted `v`, nearest rank.
@@ -1523,6 +1577,73 @@ mod tests {
         // The startup failure counts as red but is not timed: 6 of the 7 have a time.
         assert_eq!(tests.runs, 6);
         assert_eq!(verdict(None), None);
+    }
+
+    #[test]
+    fn a_hosts_pass_is_its_slots_last_jobs_before_the_cut_counted_by_verdict() {
+        let at = |id: u64, runner: &str, conclusion: &str, done: i64| {
+            let mut j = job("shard", runner, done - 60, 60);
+            j["id"] = id.into();
+            j["conclusion"] = conclusion.into();
+            j
+        };
+        let pool = "aws-burst-1-unity-pool";
+        let mut first = vec![
+            // The oldest of five counted jobs falls out of the last 4: its red is not counted.
+            at(1, &format!("{pool}-1"), "failure", NOW - 900),
+            at(2, &format!("{pool}-2"), "success", NOW - 800),
+            at(3, &format!("{pool}-1"), "timed_out", NOW - 700),
+            at(4, &format!("{pool}-3"), "cancelled", NOW - 650),
+            at(5, &format!("{pool}-2"), "success", NOW - 600),
+            at(6, &format!("{pool}-1"), "success", NOW - 500),
+            // At the cut: the next day's.
+            at(7, &format!("{pool}-1"), "failure", NOW),
+            at(8, "aws-burst-1-light-1", "failure", NOW - 400),
+            at(9, "mac-mini-mac", "success", NOW - 400),
+            at(10, "GitHub Actions 1000004941", "failure", NOW - 400),
+            at(11, "", "failure", NOW - 400),
+        ];
+        // A pool job's labels name no self-hosted: it is still the host's.
+        let mut gate = at(12, "deskslim-2-unity-pool-1", "failure", NOW - 400);
+        gate["labels"] = serde_json::json!(["unity", "unity-gate"]);
+        first.push(gate);
+        // A run's last line is its record: the first write's red on job 13 is gone.
+        let text = [
+            record(
+                1,
+                false,
+                vec![at(13, "ms-a2-heavy-1", "failure", NOW - 300)],
+            ),
+            record(1, true, vec![at(13, "ms-a2-heavy-1", "success", NOW - 300)]),
+            record(2, true, first),
+        ]
+        .join("\n");
+        let got = pass_by_runner(&text, NOW, 4);
+        assert_eq!(
+            got.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "aws-burst-1-light",
+                pool,
+                "deskslim-2-unity-pool",
+                "mac-mini-mac",
+                "ms-a2-heavy"
+            ]
+        );
+        assert_eq!(
+            got[pool],
+            Pass {
+                runs: 4,
+                green: 3,
+                pass: Some(0.75)
+            }
+        );
+        assert_eq!(got["aws-burst-1-light"].pass, Some(0.0));
+        assert_eq!(got["ms-a2-heavy"].pass, Some(1.0));
+        assert_eq!(
+            slots_of("razer-laptop-unity-pool-12"),
+            "razer-laptop-unity-pool"
+        );
+        assert_eq!(slots_of("m1-playground-mac"), "m1-playground-mac");
     }
 
     #[test]

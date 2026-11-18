@@ -55,6 +55,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
+       hub ci hosts [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -81,6 +82,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           [WHEN, WHEN) (epoch seconds or RFC 3339; default the last 24h), on one branch with
           --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
           workflow. day-log reads it. Exits 1 when the ledger cannot be read
+  ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
+          aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
+          now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
+          green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -329,10 +334,43 @@ fn ci_pass(args: &[String]) -> i32 {
     0
 }
 
+/// `hub ci hosts`: the pass rate of each runner group's last jobs, from the job archive.
+fn ci_hosts(args: &[String]) -> i32 {
+    let (mut until, mut last) = (chrono::Utc::now().timestamp(), 50);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let v = it.next().unwrap_or_else(|| die(USAGE));
+        match a.as_str() {
+            "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--last" => {
+                last = v
+                    .parse()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .unwrap_or_else(|| die(USAGE))
+            }
+            _ => die(USAGE),
+        }
+    }
+    let paths = hub_core::builds::Paths::from_env();
+    let text = match hub_core::builds::read_text(&paths.jobs) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hub ci hosts: {e}");
+            return 1;
+        }
+    };
+    let report = hub_core::builds::pass_by_runner(&text, until, last);
+    println!("{}", serde_json::to_string(&report).unwrap_or_default());
+    0
+}
+
 /// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
 fn ci(args: Vec<String>) -> i32 {
-    if args.first().map(String::as_str) == Some("pass") {
-        return ci_pass(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("pass") => return ci_pass(&args[1..]),
+        Some("hosts") => return ci_hosts(&args[1..]),
+        _ => {}
     }
     enum Mode {
         Text,
