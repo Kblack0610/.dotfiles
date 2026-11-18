@@ -31,17 +31,22 @@ if [ -n "$NEPTUNE_URL" ]; then
   q="$NEPTUNE_URL/printer/objects/query?print_stats&virtual_sdcard&extruder&heater_bed"
   if ! body="$(curl -s -m "$PRINTER_TIMEOUT" "$q")" || [ -z "$body" ]; then
     add "$(dim 'Neptune off')" "Neptune: no answer at $NEPTUNE_URL (off or off Wi-Fi), so the slicer cannot send to it"
+  elif ! jq -e . <<< "$body" >/dev/null 2>&1; then
+    add "$(paint "$C_YEL" 'Neptune ?')" "Neptune: $NEPTUNE_URL answers, but not as Moonraker (wrong address?)"
+    class=warn
   elif ! jq -e '.result.status.print_stats' <<< "$body" >/dev/null 2>&1; then
-    why="$(jq -r '.error.message // "no printer state"' <<< "$body" 2>/dev/null || echo 'not Moonraker')"
+    why="$(jq -r '.error.message // "no printer state"' <<< "$body")"
     add "$(paint "$C_YEL" 'Neptune not ready')" "Neptune: Moonraker answers but Klipper is not ready: $(pango_esc "$why")"
     class=warn
   else
-    IFS=$'\t' read -r state file elapsed pct left temps < <(jq -r '.result.status as $s
+    # US, not tab: tab is IFS whitespace, so an empty field (an idle printer has no file) would
+    # collapse and shift the rest.
+    IFS=$'\x1f' read -r state file elapsed pct left temps < <(jq -r '.result.status as $s
       | ($s.virtual_sdcard.progress // 0) as $p | ($s.print_stats.print_duration // 0) as $d
-      | [$s.print_stats.state, ($s.print_stats.filename // ""), ($d | floor), ($p * 100 | floor),
+      | [$s.print_stats.state, ($s.print_stats.filename // ""), ($d | floor), ($p * 100 + 1e-6 | floor),
          (if $p > 0.01 then ($d / $p - $d | floor) else -1 end),
-         "nozzle \($s.extruder.temperature | round)/\($s.extruder.target | round)C, bed \($s.heater_bed.temperature | round)/\($s.heater_bed.target | round)C"]
-      | @tsv' <<< "$body")
+         "nozzle \($s.extruder.temperature // 0 | round)/\($s.extruder.target // 0 | round)C, bed \($s.heater_bed.temperature // 0 | round)/\($s.heater_bed.target // 0 | round)C"]
+      | map(tostring) | join("\u001f")' <<< "$body")
     tip="Neptune: $state"
     [ -n "$file" ] && tip+=$'\n'"$(pango_esc "$file")"
     case "$state" in
@@ -53,7 +58,7 @@ if [ -n "$NEPTUNE_URL" ]; then
           tip+=$'\n'"$pct%, $(hm "$elapsed") in"
           # The slicer's estimate beats file progress, which runs far off early in a print.
           est="$(curl -s -m "$PRINTER_TIMEOUT" -G "$NEPTUNE_URL/server/files/metadata" --data-urlencode "filename=$file" \
-            | jq -r '.result.estimated_time // empty | floor' 2>/dev/null)"
+            | jq -r '.result.estimated_time // 0 | select(. > 0) | floor' 2>/dev/null)"
           [ -n "$est" ] && left=$((est > elapsed ? est - elapsed : 0))
           [ "$left" -ge 0 ] && tip+=", about $(hm "$left") left"
         fi ;;
@@ -76,7 +81,7 @@ fi
 
 [ ${#parts[@]} -eq 0 ] && { emit "" "" ""; exit 0; }
 # Both off is one dim word, not two.
-if ! printf '%s\n' "${parts[@]}" | grep -qvF "$OFF_ALPHA"; then
+if [ ${#parts[@]} -gt 1 ] && ! printf '%s\n' "${parts[@]}" | grep -qvF "$OFF_ALPHA"; then
   parts=("$(dim 'printers off')")
 fi
 text="$(printf '%s  ' "${parts[@]}")"

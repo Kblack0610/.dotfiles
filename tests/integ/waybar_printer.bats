@@ -120,3 +120,40 @@ while True: s.accept()' "$FX/port" 3>&- &
   chip
   assert_equal "$TEXT" ""
 }
+
+@test "an idle printer with no file keeps its temperatures in place" {
+  neptune standby 0 0
+  jq '.result.status.print_stats.filename = ""' "$FX/query.json" > "$FX/q" && mv "$FX/q" "$FX/query.json"
+  chip
+  assert_equal "$TIP" "Neptune: standby
+nozzle 220/220C, bed 60/60C
+
+A1: no answer at 127.0.0.1:1"
+}
+
+@test "a zero slicer estimate falls back to file progress, and 57% reads 57" {
+  neptune printing 0.57 570
+  echo '{"result": {"estimated_time": 0}}' > "$FX/meta.json"
+  chip
+  assert_output --partial '57%, 0h09m in, about 0h07m left'
+}
+
+@test "a missing heater reads 0, not a crash" {
+  neptune printing 0.5 1800
+  jq 'del(.result.status.heater_bed)' "$FX/query.json" > "$FX/q" && mv "$FX/q" "$FX/query.json"
+  chip
+  assert_output --partial 'bed 0/0C'
+}
+
+@test "one printer configured and off keeps its own name" {
+  unset CC_A1_ADDR
+  CURL_FAIL=1 chip
+  assert_equal "$TEXT" "<span alpha='50%'>Neptune off</span>"
+}
+
+@test "an answer that is not JSON is a wrong address, not Klipper" {
+  echo '<html>502</html>' > "$FX/query.json"
+  chip
+  assert_equal "$CLASS" warn
+  assert_output --partial 'not as Moonraker'
+}
