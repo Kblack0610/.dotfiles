@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 # printer.sh: the waybar 3D printer chip. What these pin: the module is gated and in group/status
 # after custom/ci; a print reads its percent with the slicer's time left (Moonraker metadata, not
-# file progress); a print still at 0s reads heating; no answer reads dim `Neptune off`, and both
-# printers off fold into one dim `printers off`; Klipper not ready is amber; the A1 is on when its
-# port accepts; with no address set the chip is hidden. curl is a stub serving fixtures, and the
-# A1 port is a local listener.
+# file progress); a print still at 0s reads heat; no answer reads a dim icon; Klipper not ready is
+# amber; the A1 is bright when its port accepts, dim when not; with no address set the chip is hidden;
+# in every state the text fits 10 characters, so the chip cannot push the bar off a 1920px screen.
+# curl is a stub serving fixtures, and the A1 port is a local listener.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -56,7 +56,7 @@ chip() { run "$W/printer.sh"; assert_success; TEXT="$(jq -r .text <<< "$output")
   neptune printing 0.43 3600
   echo '{"result": {"estimated_time": 7200.4}}' > "$FX/meta.json"
   chip
-  assert_equal "$TEXT" "Neptune 43%  <span alpha='50%'>A1 off</span>"
+  assert_equal "$TEXT" "󰐫 43% <span alpha='50%'>A1</span>"
   assert_equal "$TIP" "Neptune: printing
 shell_0.4n_0.16mm_PLA.gcode
 43%, 1h00m in, about 1h00m left
@@ -74,23 +74,23 @@ A1: no answer at 127.0.0.1:1"
 @test "a print at 0s printed is still heating" {
   neptune printing 0 0
   chip
-  assert_equal "$TEXT" "Neptune heating  <span alpha='50%'>A1 off</span>"
+  assert_equal "$TEXT" "󰐫 heat <span alpha='50%'>A1</span>"
 }
 
 @test "paused is amber with its class, error is red, done is green" {
   neptune paused 0.2 600; chip
-  assert_equal "$TEXT" "<span color='#ffcc2f'>Neptune paused 20%</span>  <span alpha='50%'>A1 off</span>"
+  assert_equal "$TEXT" "<span color='#ffcc2f'>󰐫 20%</span> <span alpha='50%'>A1</span>"
   assert_equal "$CLASS" warn
   neptune error 0 0; chip
   assert_equal "$CLASS" critical
-  assert_output --partial 'Neptune error'
+  assert_output --partial '󰐫 err'
   neptune complete 1 7200; chip
-  assert_output --partial "<span color='#a6e34a'>Neptune done</span>"
+  assert_output --partial "<span color='#a6e34a'>󰐫 done</span>"
 }
 
-@test "no answer from either printer folds into one dim printers off" {
+@test "no answer from either printer dims both" {
   CURL_FAIL=1 chip
-  assert_equal "$TEXT" "<span alpha='50%'>printers off</span>"
+  assert_equal "$TEXT" "<span alpha='50%'>󰐫</span> <span alpha='50%'>A1</span>"
   assert_line --partial 'so the slicer cannot send to it'
 }
 
@@ -112,7 +112,7 @@ while True: s.accept()' "$FX/port" 3>&- &
   export CC_A1_ADDR="127.0.0.1:$port"
   neptune standby 0 0
   chip
-  assert_equal "$TEXT" "Neptune idle  A1 on"
+  assert_equal "$TEXT" "󰐫 A1"
 }
 
 @test "with no address set the chip is hidden" {
@@ -145,10 +145,10 @@ A1: no answer at 127.0.0.1:1"
   assert_output --partial 'bed 0/0C'
 }
 
-@test "one printer configured and off keeps its own name" {
+@test "one printer configured and off reads its dim icon alone" {
   unset CC_A1_ADDR
   CURL_FAIL=1 chip
-  assert_equal "$TEXT" "<span alpha='50%'>Neptune off</span>"
+  assert_equal "$TEXT" "<span alpha='50%'>󰐫</span>"
 }
 
 @test "an answer that is not JSON is a wrong address, not Klipper" {
@@ -156,4 +156,22 @@ A1: no answer at 127.0.0.1:1"
   chip
   assert_equal "$CLASS" warn
   assert_output --partial 'not as Moonraker'
+}
+
+@test "every state fits the bar: at most MAX_CHARS visible characters" {
+  # The status cluster already fills a 1920px bar; the first version of this chip read
+  # `Neptune 21%  A1 on` and pushed the right side over the workspaces (2026-11-17).
+  MAX_CHARS=10
+  echo '{"result": {"estimated_time": 7200}}' > "$FX/meta.json"
+  for st in "printing 1 3600" "printing 0 0" "paused 0.5 60" "error 0 0" "complete 1 60" "standby 0 0" notjson notready; do
+    case $st in
+      notjson) echo "<html>502</html>" > "$FX/query.json" ;;
+      notready) echo '{"error": {"message": "Klippy Host not connected"}}' > "$FX/query.json" ;;
+      # shellcheck disable=SC2086  # the state, progress and duration are three words on purpose
+      *) neptune $st ;;
+    esac
+    chip
+    vis="$(sed 's/<[^>]*>//g' <<< "$TEXT")"
+    (( ${#vis} <= MAX_CHARS )) || fail "$st reads '$vis', ${#vis} chars, over $MAX_CHARS"
+  done
 }

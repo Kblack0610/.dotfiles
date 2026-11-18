@@ -142,7 +142,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them
-- `printer.sh`       - `custom/printer`, the Neptune from Moonraker and the A1 on or off
+- `printer.sh`       - `custom/printer`, `<icon> 21% A1`: the icon is the Neptune (heat, err, done; ? wrong address, ! Klipper not ready), A1 dim when off, dim icon when unreachable
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf/keybindings.lua` - the `Super+Shift+M` / `Super+Shift+,` binds

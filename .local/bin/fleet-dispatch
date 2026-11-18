@@ -25,10 +25,10 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    the fleet home, rc 1 when no machine matches it; each fleet worker: placed or not, run units, load, and why it takes no session
-#   (run, reap, start, fill and promote do nothing off the fleet home: home_guard)
-#   fleet-dispatch record [--here]   keep each world's pane record, then (on the home) each fleet worker's; page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the home) on each fleet worker
+#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
+#   (run, reap, start, fill and promote do nothing on a machine that does not hold the fleet lease: lease_guard)
+#   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
+#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -117,6 +117,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
 : "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
+: "${DISPATCH_HOST_DEAD:=1800}"   # seconds a fleet worker with active items goes unanswered, on every reap in between, before reap reads it lost and re-queues its items elsewhere (host_lost). Provisional: two 15-minute passes, three misses in a row, where a reboot or container restart answers within one; low confidence; revisit on the first re-queue of a host that came back with its sessions alive
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped and holds no run unit
 : "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
@@ -728,6 +729,39 @@ reap_confirm() {
   return 1
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
+
+# host_lost <host> -- exit 0 when that fleet worker has gone unanswered (ssh 255) on every reap for
+# DISPATCH_HOST_DEAD seconds: a killed container or a dead box, whose sessions went with it, so its
+# items are re-dispatched (settle_item). Asked once a reap (REAP_HOST caches it). $DIR/host-miss/<host>
+# holds the first miss, and its mtime the last: a host that answers loses its mark, and a miss after a
+# gap longer than DISPATCH_HOST_DEAD with no reap asking (no item there) starts the count again.
+# An answer of any kind, even a failed command, is a live host, and a miss counts only while this
+# machine reaches the store's origin (store-sync-age): a dispatcher cut off reads every worker as down.
+declare -gA REAP_HOST=()
+host_lost() {
+  local h="$1" f="$DIR/host-miss/$1" now first last
+  if [ -z "${REAP_HOST[$h]+set}" ]; then
+    REAP_HOST[$h]=0
+    if fleet_host_run "$h" true >/dev/null 2>&1 || [ $? -ne 255 ]; then rm -f "$f"
+    elif ! store-sync-age >/dev/null 2>&1; then
+      # No witness of our own link: the store has not reached origin in 30 minutes (store-sync-age), so a
+      # worker that does not answer may be this machine cut off (2026-09-08: 21h of link loss): no miss is
+      # counted, and one past DISPATCH_HOST_DEAD after the last starts the run again.
+      logline "reap: fleet worker $h did not answer, and this machine has not synced the store in 30 minutes either: no miss counted"
+    else
+      now=$(date +%s)
+      first=$(cat "$f" 2>/dev/null) last=$(stat -c %Y "$f" 2>/dev/null) || last=0
+      if [ -z "$first" ] || [ $(( now - last )) -gt "$DISPATCH_HOST_DEAD" ]; then
+        mkdir -p "${f%/*}" && echo "$now" > "$f"
+        logline "reap: fleet worker $h did not answer; a reap ${DISPATCH_HOST_DEAD}s or more from now re-queues its items if it still has not"
+      else
+        touch "$f"
+        [ $(( now - first )) -lt "$DISPATCH_HOST_DEAD" ] || REAP_HOST[$h]=1
+      fi
+    fi
+  fi
+  [ "${REAP_HOST[$h]}" = 1 ]
+}
 
 # restoring <server> <tmux session> <session ids> -- exit 0 when a lost pane record (world_lost) still
 # holds a conversation in that tmux session, or one of those Claude sessions: restore has not reopened
@@ -2055,7 +2089,7 @@ resume_thread() {
 #                           repo) with `wt new`, claude on the item's brief there.
 #   --host NAME             with --item: open it on that fleet worker (fleet-hosts.sh) over ssh, not here.
 #                           Claude only, in a repo the worker lists (fleet_repos), unsandboxed; its
-#                           queue and ask writes go to the inventory's fleet_state_host (AGENT_STATE_HOST).
+#                           queue and ask writes go to the worker's own store clone, which store-sync pushes.
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
 #                           on the claude-reserve key (where a run pass routes a Sonnet-lane item, start_item).
@@ -2074,7 +2108,7 @@ resume_thread() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
   local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' state_env='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -2113,9 +2147,6 @@ cmd_start() {
     [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: a fleet worker cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
     fleet_hosts >/dev/null
     hjson=$(fleet_host "$host") || { say "start: $host is not in the fleet roster ($FLEET_HOSTS_GROUP)"; return 2; }
-    state_env=$(fleet_state_addr)
-    [ -n "$state_env" ] || { say "start: the roster names no fleet_state_host, so a session on $host could not write the queue"; return 2; }
-    state_env="AGENT_STATE_HOST=$(printf '%q' "$state_env") "
   fi
   # A new session goes where the manifests say; --server only puts a resume back where it was.
   [ -z "$server" ] || [ -n "$resume" ] || { say "start: --server is for --resume; the agent world comes from the manifests"; return 2; }
@@ -2236,7 +2267,7 @@ cmd_start() {
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(token_env "$acct")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(token_env "$acct")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
@@ -2386,8 +2417,13 @@ on_workers() {
   return "$rc"
 }
 
-# cmd_record [--here] -- every world a manifest declares, then, on the fleet home, each fleet
-# worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
+# fans_out -> rc 0 when this machine holds the fleet lease (`fleet-lease held`), so it asks every
+# other worker: the holder runs fleet-state.service, the one minute record, and no other machine
+# fans out, or each would ask every one.
+fans_out() { fleet-lease held >/dev/null 2>&1; }
+
+# cmd_record [--here] -- every world a manifest declares, then, on the lease holder (fans_out), each
+# fleet worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
 # most that old; a world's sockets give no event to await for a pane's cwd or id.
 cmd_record() {
   local f srv panel="$PANES/.panel" here=''
@@ -2402,7 +2438,7 @@ cmd_record() {
     record_world "${srv%.conf}" "$panel"
   done
   exec 8>&-
-  [ -n "$here" ] || ! fleet_is_home || on_workers --quiet record
+  [ -n "$here" ] || ! fans_out || on_workers --quiet record
 }
 
 
@@ -2455,7 +2491,7 @@ restore_world() {
 }
 
 # cmd_restore [--here] -- the one verb after a lost server or a reboot: this machine's lost servers,
-# then, on the fleet home, each fleet worker's on that worker (on_workers), unless --here. A record
+# then, on the lease holder (fans_out), each fleet worker's on that worker (on_workers), unless --here. A record
 # first, so a death the minute timer has not seen yet counts, and a server already restarted by
 # hand is not missed.
 cmd_restore() {
@@ -2476,7 +2512,7 @@ cmd_restore() {
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
   local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
-  if [ -z "$here" ] && fleet_is_home; then on_workers restore "${wargs[@]}" || rc=1; fi
+  if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
   return "$rc"
 }
 
@@ -2584,6 +2620,7 @@ item_brief() {
   echo
   ask_decisions "$tags"
   salvage_line "$it"
+  lost_line "$it"
   pr_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
@@ -2633,12 +2670,23 @@ plan_stage() {
   echo
 }
 
-# salvage_line <item json> -- an earlier run of the item pushed its unfinished work (agent-codex,
-# `salvage:`) and this start does not resume that run: the new session starts from that work.
+# salvage_line <item json> -- an earlier run of the item pushed its unfinished work (`salvage:`, from
+# agent-codex or, for a run lost with its host, settle_item) and this start does not resume that run:
+# the new session starts from that work.
 salvage_line() {
   local sv; sv=$(jq -r '.salvage // empty' <<<"$1")
   [ -n "$sv" ] || return 0
   echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it, not from the trunk (git fetch origin ${sv%@*} && git reset --keep ${sv##*@}, on this worktree's branch). If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
+}
+
+# lost_line <item json> -- an earlier run of the item was lost with its host (settle_item, `lost:`):
+# the new session hears where it ran and the status note that run left, the only account of how far it
+# got past its last push. Its work is on salvage_line's branch or pr_line's PR, or nowhere.
+lost_line() {
+  local lost note; lost=$(jq -r '.lost // empty' <<<"$1")
+  [ -n "$lost" ] || return 0
+  note=$(jq -r '.note // ""' <<<"$1"); [[ "$note" == *"; was: "* ]] && note=${note#*; was: } || note=''
+  echo "An earlier run of this item on ${lost%% *} was lost when that machine stopped answering: anything it had not pushed is gone with it.${note:+ Its last note: $note}"
 }
 
 # pr_line <item json> -- an earlier run of the item opened its PR and stopped (on an ask, the usage
@@ -2995,6 +3043,25 @@ settle_item() {
       note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; held until the human answers it"
       logline "reaped $2: session gone, queue item $1 held on ask ${ask%%=*}"
       echo "held queue item $1 (ask ${ask%%=*} pending, $2 ended)"
+      return 0
+    fi
+    # Its host is lost (host_lost, the third argument): the run went with the machine, so a running or
+    # waiting item with its work unfinished goes back to queued/, and the next pass starts it on a node
+    # that answers. `salvage:` takes the branch the run's Stop hook last pushed (`branch:`), unless a PR
+    # holds the work (pr_line), and `lost:` names the host and the run's Claude sessions: the new brief
+    # says where the run was (lost_line), and a session it names that wakes with its host is told to stop
+    # (10-git-workflow.sh). A review item is parked, not running: own_parked_pr owns its PR.
+    if [ -n "${3:-}" ] && { [ "$st" = running ] || [ "$st" = waiting ]; }; then
+      local br sids
+      agent-queue move "$1" queued --if "$st" >/dev/null || return 0
+      br=$(jq -r 'select((.pr // "") == "") | .branch // empty' <<<"$it")
+      sids=$(jq -r '.sessions // ""' <<<"$it")
+      agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null ||
+        logline "reaped $2: queue item $1 requeued, but lost: and salvage: did not record: its next brief starts from the trunk"
+      note_add "$1" "$it" "session $2 lost with its host $3, unanswered for ${DISPATCH_HOST_DEAD}s; requeued from ${br:-${pr:-the trunk}}"
+      dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "host $3 lost" --item "$1" --why "item was $st"
+      logline "reaped $2: host $3 lost, queue item $1 requeued from ${br:-${pr:-the trunk}}"
+      echo "requeued queue item $1 (its host $3 is lost)"
       return 0
     fi
   fi
@@ -3504,7 +3571,7 @@ probe_hosts() {
     HOST_POWER[$name]=$power
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
     # shellcheck disable=SC2016 # the worker's shell expands nothing here; the quotes are for cut
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && grep -qs state_forward "$(readlink -f "$(command -v agent-queue)")" && echo 1 || echo 0' 2>/dev/null); then
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0' 2>/dev/null); then
       HOST_PROBE[$name]=$(tr '\n' ' ' <<<"$out")
     else
       HOST_PROBE[$name]=unreachable
@@ -3523,7 +3590,7 @@ host_why() {
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   read -r load cores ready <<<"$p"
-  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or an agent-queue that does not forward"; return; }
+  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, or a store that is not a peer clone (store-sync join)"; return; }
   over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
   return 0
 }
@@ -3625,42 +3692,27 @@ demand_write() {
   if [ "$ok" = 1 ]; then say "demand $2"; else say "demand $2 unwritten: $(tail -n 1 <<<"$out")"; fi
 }
 
-# home_line -> which machine the roster's fleet home is, in words. Rc 0 when it is this machine, 1
-# when it is another, 2 when the roster cannot be read, or its fleet_state_host names no machine in
-# the inventory (fleet_is_home rc 3): then no machine matches it and every one stands down, and only
-# this says so.
-home_line() {
-  local a rc
-  fleet_is_home; rc=$?
-  a=$(fleet_state_addr)
-  case "$rc" in
-    0) if [ -n "$a" ]; then echo "the fleet home is $a: this machine ($FLEET_HOST)"
-       else echo "the roster names no fleet_state_host, so this machine ($FLEET_HOST) is the fleet home"; fi ;;
-    2) echo "the fleet roster cannot be read ($FLEET_ROSTER_ERR), so this machine ($FLEET_HOST) stands down"; return 2 ;;
-    3) echo "the inventory's fleet_state_host $a names no machine in the inventory, so no machine is the fleet home and every one stands down"; return 2 ;;
-    *) echo "the fleet home is $a, not this machine ($FLEET_HOST), which stands down"; return 1 ;;
-  esac
-}
-
-# home_guard <verb> -- rc 0 on the fleet home. Elsewhere <verb> does nothing, not even publish a
-# pass outcome, and says why, with home_line's rc: 1 off the home, 2 a fault to see.
-home_guard() {
+# lease_guard <verb> -- rc 0 on the machine that holds the fleet lease. A run pass goes through the
+# gate every singleton unit has (fleet-lease fleet-dispatch), which takes the lease when it is free;
+# a verb run by hand only reads it (fleet-lease held), so a hand start never moves the lease.
+# Elsewhere <verb> does nothing, not even publish a pass outcome, and says why, with fleet-lease's
+# rc: 1 another machine holds it, 2 this machine cannot tell (no remote answered, no holder known,
+# or its store is no peer clone).
+lease_guard() {
   local line rc
-  fleet_hosts >/dev/null   # once, so home_line's subshell reads it parsed
-  line=$(home_line) && return 0
+  if [ "$1" = run ]; then line=$(fleet-lease fleet-dispatch 2>&1); else line=$(fleet-lease held 2>&1); fi && return 0
   rc=$?
-  say "$1: $line"
+  say "$1: ${line#fleet-lease: }"
   return "$rc"
 }
 
-# cmd_hosts [--json] -- the fleet home (home_line), then each worker in the roster, as a pass would
-# read it now. Rc 1, said on stderr, when no machine is the home (home_line rc 2).
+# cmd_hosts [--json] -- who holds the fleet lease (fleet-lease status), then each worker in the
+# roster, as a pass would read it now.
 cmd_hosts() {
-  local h name rows=() home hrc=0
+  local h name rows=()
   fleet_roster_fetch
   fleet_hosts >/dev/null
-  home=$(home_line) || [ $? != 2 ] || hrc=1
-  if [ "$hrc" = 1 ]; then say "hosts: $home"; elif [ "${1:-}" != --json ]; then echo "$home"; fi
+  [ "${1:-}" = --json ] || fleet-lease status 2>&1
   probe_hosts "$(live_runs)"
   while IFS= read -r h; do
     [ -n "$h" ] || continue
@@ -3668,10 +3720,9 @@ cmd_hosts() {
     rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
   done < <(fleet_hosts)
-  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return "$hrc"; }
+  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
   else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)"'; fi
-  return "$hrc"
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
@@ -4329,8 +4380,8 @@ cmd_stats() {
 # stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
-  unset REAP_PANEL REAP_LOST
+  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
+  unset REAP_PANEL REAP_LOST; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -4345,23 +4396,24 @@ cmd_reap() {
     if [ -z "$sess$sids" ]; then settle_sessionless "$slug" "$started"; continue; fi
     # A tmux session gone is its own witness; a Claude missing from agent-panel needs a second reap
     # (reap_confirm), and until then the item is left as it is: its Claude is not read as live either.
-    # A fleet worker that does not answer says nothing, so its item stays as it is (fleet-liveness
-    # pages a session that stops moving), and a live one there is beyond this agent-panel's sight:
-    # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
+    # A fleet worker that does not answer says nothing on one reap, so its item stays as it is; one
+    # that has not answered for DISPATCH_HOST_DEAD (host_lost) is lost, its session with it, and its
+    # item is re-queued to a node that answers (settle_item). A live session on a worker is beyond this
+    # agent-panel's sight: its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
     # A session or conversation a lost pane record still holds is owed a reopen by restore, so its
     # absence is no witness, and clears any miss, until restore consumes the record (ar-2140). One
     # whose tmux session is back is read as usual.
-    gone='' live=0
+    gone='' lost='' live=0
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
     if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then reap_seen "$slug"; continue
     elif [ "$live" = 1 ]; then gone=1
-    elif [ -n "$host" ]; then continue
+    elif [ -n "$host" ]; then host_lost "$host" || continue; gone=1 lost=$host
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1
     else reap_seen "$slug"
     fi
     if [ -n "$gone" ]; then
-      settle_item "$slug" "${sess:-${sids##* }}"
+      settle_item "$slug" "${sess:-${sids##* }}" "$lost"
       settle_row "$slug"
       # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.
       [ "$(item_state "$slug")" != "done" ] || reap_seen "$slug"
@@ -4683,7 +4735,6 @@ cmd_run() {
   exec 9>"$DIR/.lock"
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
-  export AGENT_STATE_LOCAL=1   # this pass is the home's writer: its agent-queue calls skip the roster read
 
   [ "$DRY" = 1 ] || cmd_reap
   HUMAN_PASS=0
@@ -5137,11 +5188,11 @@ cmd_verdicts() {
 }
 
 main() {
-  # The store has one writer, the fleet home: elsewhere (the old workstation back from an outage, a
-  # machine whose roster cannot be read) the verbs that write it stand down before they read it.
+  # Dispatch is a singleton: on any machine but the fleet lease's holder the verbs that start and
+  # reap sessions stand down before they read anything.
   case "${1:-}" in
-    run) fleet_roster_fetch; home_guard "$1" || return $(($? == 2)) ;;   # an off-home pass is no fault, an unreadable roster is
-    reap | start | fill | promote) home_guard "$1" || return 1 ;;
+    run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
+    reap | start | fill | promote) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
     run)

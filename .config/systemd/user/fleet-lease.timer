@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew or take the fleet lease every minute
+
+# A lease lapses on a clock, so this samples: a holder that died has no event to await. Each
+# minute against the 300 s TTL gives the holder two tries to renew before the gate's last 60 s,
+# and moves a dead holder's persistent singletons within the TTL plus a minute.
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

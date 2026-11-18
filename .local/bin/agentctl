@@ -81,7 +81,7 @@ load_agent() {
         set -e
         # A conf without one of its keys must not inherit the caller's: Sentinel exports its
         # own AUTOSTART=yes, which made every KIND=call conf read as invalid.
-        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE PRIORITY SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX
+        unset NAME KIND COMMAND LANE DESCRIPTION EFFECT SKILL MODEL ROLE ROUTE PRIORITY SCHEDULE AUTOSTART ENABLED CRITICAL RANDOM_DELAY RESTART INBOX SCOPE
         # shellcheck disable=SC1090
         source "$conf"
         : "${NAME:?missing NAME}"
@@ -155,6 +155,13 @@ load_agent() {
             no|on-abnormal) ;;
             *) printf 'invalid RESTART=%s (no|on-abnormal)\n' "$RESTART" >&2; exit 1 ;;
         esac
+        # Where it runs: singleton on the one machine that holds the fleet lease, every-node on
+        # each machine (agentctl@.service's fleet-lease ExecCondition reads it from the conf).
+        : "${SCOPE:=singleton}"
+        case "$SCOPE" in
+            singleton|every-node) ;;
+            *) printf 'invalid SCOPE=%s (singleton|every-node)\n' "$SCOPE" >&2; exit 1 ;;
+        esac
         # SKILL is optional: the skill or command that owns the runner's job (its procedure,
         # or the docs describing it). Blank on purpose for a runner with no owner. It is an
         # owner link, not a prompt: a runner script reads it (`agentctl skill`) to name the skill
@@ -177,6 +184,7 @@ load_agent() {
         printf 'CRITICAL=%s\n' "$CRITICAL"
         printf 'RANDOM_DELAY=%s\n' "$RANDOM_DELAY"
         printf 'RESTART=%s\n' "$RESTART"
+        printf 'SCOPE=%s\n' "$SCOPE"
         printf 'INBOX=%s\n' "$INBOX"
         printf 'EFFECT=%s\n' "$EFFECT"
         printf 'ROLE=%s\n' "${ROLE:-}"
@@ -437,9 +445,19 @@ cmd_report() {
         stop)
             # systemd sets these for ExecStopPost only. Anything but `success` is a fault
             # worth a glyph, which is the distinction `inactive` alone can never make.
-            # exec-condition is the pause switch skipping this start: not a fault.
+            # exec-condition is a skip: the pause switch, or a singleton on a machine that does
+            # not hold the fleet lease (fleet-lease), which is no fault while another holds it.
             if [ "${SERVICE_RESULT:-}" = exec-condition ]; then
-                kvs+=(state=idle detail=paused)
+                local lease lrc
+                if [ -e "$PAUSE_FILE" ]; then kvs+=(state=idle detail=paused)
+                else
+                    lease=$(fleet-lease held 2>&1) && lrc=0 || lrc=$?
+                    case $lrc in
+                        1) kvs+=(state=idle "detail=${lease#fleet-lease: }") ;;
+                        2) kvs+=(state=error "detail=${lease#fleet-lease: }") ;;
+                        *) kvs+=(state=idle "detail=a start condition skipped it") ;;
+                    esac
+                fi
             elif [ -n "${SERVICE_RESULT:-}" ] && [ "${SERVICE_RESULT}" != success ]; then
                 kvs+=(state=error "detail=result=${SERVICE_RESULT} exit=${EXIT_STATUS:-?}")
             else
@@ -812,6 +830,15 @@ cmd_liveness() {
             rc=1
         fi
     fi
+    # A singleton lane runs only on the fleet lease's holder, so on any other machine its skipped
+    # fires and stopped units are the lease working. With no holder known, no machine may be
+    # running them: one fault says so. No fleet-lease (exit 127) checks every lane.
+    local held=1 lease lrc
+    lease=$(fleet-lease held 2>&1) && lrc=0 || lrc=$?
+    case $lrc in
+        1) held=0 ;;
+        2) held=0; printf 'fleet: %s\n' "${lease#fleet-lease: }"; rc=1 ;;
+    esac
     for n in $(list_agent_names); do
         # Read raw first: a switched-off conf is out of scope even when it would not load.
         [ "$(sed -n '/^ENABLED=/{s///p;q;}' "$CONFIG_DIR/$n.conf" | tr -d "\"' ")" = no ] && continue
@@ -823,6 +850,7 @@ cmd_liveness() {
         f=$(_outcome_file "$n")
         [ -n "$sched" ] || [ "$auto" = yes ] || [ -e "$f" ] || continue
         roster=$((roster + 1))
+        [ "$held" = 1 ] || [ "$(kv_get SCOPE <<<"$conf")" != singleton ] || continue
         # activating also covers the wait between restarts (SubState auto-restart): not running.
         running=0
         case "$(unit_state "$n")" in
