@@ -286,6 +286,75 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
 
+# The class mix (plan can-we-move-our-mellow-sphinx P3): fixture done items in and out of the window,
+# a held item, and the switch off as the negative control.
+mix_done() { # <day> <slug> <from> <task> [started]
+  local started='' type=''
+  mkdir -p "$AGENT_QUEUE_DIR/done/$1"
+  # The row type `add` stamps from `notes row parse`; a fixture spells it from the task.
+  [[ $4 != *:* ]] || type="type: ${4%%:*}"$'\n'
+  [ -z "${5:-}" ] || started="started: $1T00:30:00Z"$'\n'
+  printf 'slug: %s\nproject: game\npriority: high\nfrom: %s\nqueued: %sT00:00:00Z\n%s%sstatus: %s\nfinished: %sT01:00:00Z\n---\n%s\n' \
+    "$2" "$3" "$1" "$type" "$started" "$([ -n "${5:-}" ] && echo ok || echo cancelled)" "$1" "$4" > "$AGENT_QUEUE_DIR/done/$1/x-$2.md"
+}
+mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
+
+@test "the class mix: inside a bucket the class furthest under its share goes first; urgent stays ahead; a held item adds no count; started items in the window count, running ones too" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)" old="$(date -d '10 days ago' +%F)"
+  # In the window: 4 requested ran, and 1 feature is still running. Out of it, 3 bugs; never started, 10 research.
+  for i in 1 2 3 4; do mix_done "$today" "dr$i" human "do thing $i" 1; done
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: df1\nproject: game\npriority: high\nfrom: shepherd\ntype: feat\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\n---\nfeat: running\n' \
+    "$today" "$today" > "$AGENT_QUEUE_DIR/running/20261118-000000-df1.md"
+  for i in 1 2 3; do mix_done "$old" "db$i" shepherd "fix: old $i" 1; done
+  for i in $(seq 1 10); do mix_done "$today" "dz$i" shepherd "research: returned $i"; done
+  printf '%s\t%s\tgame\t%s\t1\n' "feat(ui): a feature" feat "a feature" "fix(game): a bug" fix "a bug" \
+    "fix(game): a held bug" fix "a held bug" "fix(game): another bug" fix "another bug" \
+    "research(game): a question" research "a question" "chore(game): c" chore c \
+    "chore(game): urgent cleanup" chore "urgent cleanup" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r1 "asked by the human"
+  "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
+  "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
+  "$AQ" add --project game --from shepherd --slug h1 --after r1 "fix(game): a held bug"
+  "$AQ" add --project game --from shepherd --slug b2 --tags cleanup "fix(game): another bug"
+  "$AQ" add --project game --from shepherd --slug c1 --tags cleanup "chore(game): c"
+  "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
+  "$AQ" add --project game --from shepherd --slug u1 --priority urgent --tags cleanup "chore(game): urgent cleanup"
+  # One add a second can share a queued time; each gets its own minute, in add order.
+  n=0; for s in r1 f1 b1 h1 b2 c1 z1 u1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  mix_classes false
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  # Off: the cleanup-tagged items head their priority (b2, c1), then queued time.
+  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+  mix_classes true
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  # Urgent u1 (a chore) heads its own bucket and carries cleanup to 1/10 into the next. There bug and
+  # research start at 0 (the old bugs and the unstarted research do not count): b1, then z1. Bug's held
+  # h1 ties feature (1/20, its running item) and wins on file order; it adds no count, so b2 goes next
+  # (a fix, so bug though fleet-dispatch tags it cleanup; counted, f1 would). Then f1, and requested
+  # and cleanup tie at 0.1: file order, r1 then c1.
+  assert_output $'u1\nb1\nz1\nh1\nb2\nf1\nr1\nc1'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = u1 ]
+  # A window that is not a whole number of days is no mix, never a failed listing.
+  jq '.window_days = "7 days"' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+}
+
+@test "classes.json: every kind it names is a kinds.json kind, every class has a share, and one is the default" {
+  c="$REPO_ROOT/.config/fleet-dispatch/classes.json"
+  run jq -r --slurpfile k "$REPO_ROOT/.config/fleet-dispatch/kinds.json" '.classes[].kinds[]? | select(. as $n | $k[0] | has($n) | not)' "$c"
+  assert_success
+  assert_output ''
+  run jq -e '(.classes | all(.share | type == "number")) and ([.classes[] | select(.default == true)] | length == 1) and (.on | type == "boolean")' "$c"
+  assert_success
+}
+
 @test "#prio ranks focus first, then high, then normal, then low" {
   "$AQ" add --project elsewhere --slug a-else "a"
   "$AQ" add --project app --slug b-app "b"
