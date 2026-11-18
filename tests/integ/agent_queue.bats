@@ -350,6 +350,54 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
 }
 
+@test "mix: each class's starts in the window against its share, runnable counts, and a class with runnable work and no start in starve_days is starved, mix on or off (plan P4)" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)" five="$(date -d '5 days ago' +%F)"
+  # Started in the window: 2 requested today, 1 bug 5 days ago, 1 feature running since today. Never started: 1 research.
+  mix_done "$today" dr1 human "do thing 1" 1
+  mix_done "$today" dr2 human "do thing 2" 1
+  mix_done "$five" db1 shepherd "fix: old bug" 1
+  mix_done "$today" dz1 shepherd "research: returned"
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: df1\nproject: game\npriority: high\nfrom: shepherd\ntype: feat\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\n---\nfeat: running\n' \
+    "$today" "$today" > "$AGENT_QUEUE_DIR/running/20261118-000000-df1.md"
+  printf '%s\t%s\tgame\t%s\t1\n' "feat(ui): a feature" feat "a feature" "fix(game): a bug" fix "a bug" \
+    "research(game): a question" research "a question" "chore(game): held" chore held > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r1 "asked by the human"
+  "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
+  "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
+  "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
+  "$AQ" add --project game --from shepherd --slug c1 --after r1 "chore(game): held"
+  mix_classes false
+  off="$("$AQ" list --json --state queued | jq -r .slug)"
+  run "$AQ" mix --json
+  assert_success
+  run jq -c '[.on, .starve_days, (.classes[] | [.name, .runnable, .started, .recent, .pct]), .starved]' <<<"$output"
+  # The held chore is no runnable cleanup, so cleanup is not starved; bug's only start is 5 days old.
+  assert_output '[false,3,["bug",1,1,0,25],["requested",1,2,2,50],["cleanup",0,0,0,0],["research",1,0,0,0],["feature",1,1,1,25],["bug","research"]]'
+  run "$AQ" mix
+  assert_success
+  assert_line 'mix (off): items started in 7d against each class share'
+  assert_line 'bug            20%        1    25%         1          0'
+  assert_line 'starved: bug, research (runnable, none started in 3d)'
+  # NEGATIVE CONTROL: a 7-day starve window counts the 5-day-old bug start, and research stays starved.
+  jq '.starve_days = 7 | .on = true' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
+  run bash -c "'$AQ' mix --json | jq -c '[.on, .starved]'"
+  assert_output '[true,["research"]]'
+  # A starve window longer than the window is refused by mix, but starve_days only steers the watch:
+  # the listing keeps the mix's order, which differs from the order with the mix off.
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  on="$output"
+  [ "$on" != "$off" ] || fail "the mix did not change the order, so the check below proves nothing"
+  jq '.starve_days = 10' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
+  run "$AQ" mix
+  assert_failure
+  assert_output --partial 'not whole days inside the window'
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  assert_output "$on"
+}
+
 @test "classes.json: every kind it names is a kinds.json kind, every class has a share, and one is the default" {
   c="$REPO_ROOT/.config/fleet-dispatch/classes.json"
   run jq -r --slurpfile k "$REPO_ROOT/.config/fleet-dispatch/kinds.json" '.classes[].kinds[]? | select(. as $n | $k[0] | has($n) | not)' "$c"

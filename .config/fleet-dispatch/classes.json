@@ -1,6 +1,7 @@
 {
   "on": false,
   "window_days": 7,
+  "starve_days": 3,
   "classes": [
     {"name": "bug", "share": 20, "tags": ["red"], "kinds": ["fix", "perf"]},
     {"name": "requested", "share": 40, "tags": ["requested"], "from": ["human"]},
