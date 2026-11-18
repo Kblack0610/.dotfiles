@@ -312,8 +312,8 @@ fn tag_verb(
 /// A move up the ladder runs the stage gate first and refuses when it blocks; a move down or
 /// sideways never does, since a project claiming less than it meets is no risk. A move up that
 /// lands then files the new stage's work: `project-stage-check <name> --file` opens the next
-/// stage's epic and a story per failing row, so the work arrives the moment the stage does. A
-/// hand edit of the tag skips both, and the nightly project-index pass files it.
+/// stage's epic and one row listing its failing rows, so the work arrives the moment the stage
+/// does. A hand edit of the tag skips both, and the nightly project-index pass files it.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     stage_via(p, log, name, value, STAGE_GATE_BIN)
 }
@@ -905,7 +905,12 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         if content.len() > AGENT_BOARD_BUDGET {
             // Only the closed rows the sweep rolls off count: a row inside the Done window is
             // what the board is meant to show, so the nightly sweep is the fix, never archive.
-            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let ctx = crate::project_tasks::sweep_ctx(
+                dir,
+                crate::agent_sheet::Lane::Agent,
+                &content,
+                false,
+            );
             let old = crate::project_sweep::old_done(&content, &ctx).len();
             let fix = if old > 0 {
                 format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")

@@ -144,7 +144,7 @@ else
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  queue+=$'\n'"board: $(d board_total) open rows: $(d board_agent) agent, $(d board_human) yours, $(d board_playtest) playtest checks"
+  queue+=$'\n'"board: $(d board_total) open rows: $(d board_agent) agent ($(d board_backlog) more on the backlog), $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then

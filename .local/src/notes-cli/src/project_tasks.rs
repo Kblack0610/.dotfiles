@@ -147,6 +147,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
+        board_max: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -199,6 +200,8 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
 /// field, so the write is optimistic concurrency without id stamps in the sheets: when the
 /// line was edited, ticked or removed since the UI read it, nothing matches, nothing is
 /// written, and the verb exits 1 so the UI refreshes. Words could hit a different row.
+/// The Backlog tier token is not an edit: the sweep after any write moves it on and off rows
+/// the UI never touched, so the line is compared without it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Pick {
     Words(String),
@@ -231,7 +234,11 @@ impl Pick {
         match self {
             Pick::Words(q) => is_match(line, q),
             Pick::Id(id) => md::is_open_task(line) && md::row_id(line).as_deref() == Some(id),
-            Pick::Exact(raw) => md::is_open_task(line) && line.trim_end() == raw,
+            Pick::Exact(raw) => {
+                md::is_open_task(line)
+                    && project_sweep::with_backlog(line.trim_end(), false)
+                        == project_sweep::with_backlog(raw, false)
+            }
         }
     }
 
@@ -2417,8 +2424,8 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
         return Ok(0);
     }
     if layout_only {
-        let (_, dir) = sheet_home(path);
-        let ctx = sweep_ctx(&dir, &content, false);
+        let (lane, dir) = sheet_home(path);
+        let ctx = sweep_ctx(&dir, lane, &content, false);
         let swept = project_sweep::sweep_sheet(&content, &ctx).map(|(c, _)| c);
         print!("{}", swept.as_deref().unwrap_or(&content));
         return Ok(0);
@@ -2613,7 +2620,7 @@ pub(crate) fn sweep_file(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ctx = sweep_ctx(&dir, content, pass != Pass::Write);
+    let ctx = sweep_ctx(&dir, lane, content, pass != Pass::Write);
     // The editor dates a box ticked in this edit, so a row already closed and undated in the
     // saved file (an old close from before `done:`) is no new tick.
     let saved = (pass == Pass::Editor).then(|| fs::read_to_string(sheet).unwrap_or_default());
@@ -2637,12 +2644,19 @@ pub(crate) fn sweep_file(
 }
 
 /// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
-/// shape and the open version, read from `content` itself so an editor buffer's unsaved
+/// shape (on the agent lane, its board budget) and the open version, read from `content` itself so an editor buffer's unsaved
 /// `Version:` bump counts (an agent board's comes from the human sheet).
-pub(crate) fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_sweep::Ctx {
+pub(crate) fn sweep_ctx(
+    dir: &Path,
+    lane: Lane,
+    content: &str,
+    rewrite: bool,
+) -> project_sweep::Ctx {
+    let shape = crate::config::sheet_shape();
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
-        shape: crate::config::sheet_shape(),
+        shape,
+        board_max: (lane == Lane::Agent).then_some(shape.agent_board_max),
         open: version_in(dir, content),
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
@@ -2916,8 +2930,11 @@ pub(crate) fn archive_blocks(
     let rows: Vec<String> = blocks
         .iter()
         .filter(|b| md::row_id(&b[0]).is_none_or(|id| !have.contains(&id)))
-        .flatten()
-        .cloned()
+        .flat_map(|b| {
+            // A closed row is in no tier, here as on the sheet: `reopen` brings it back clean.
+            let first = project_sweep::with_backlog(&b[0], false);
+            std::iter::once(first).chain(b[1..].iter().cloned())
+        })
         .collect();
     if !rows.is_empty() {
         md::write_atomic(&note, &append_done_rows(&prior, section, &rows))?;
@@ -3023,6 +3040,15 @@ mod tests {
         assert!(
             !pick.hits("- [ ] Second task #high and more"),
             "a longer row"
+        );
+        // The sweep moving a row in or out of the Backlog tier is not an edit.
+        assert!(pick.hits("- [ ] Second task #high <!-- tier:backlog -->"));
+        let tiered =
+            Pick::new("- [ ] Second task #high <!-- id:x-1 tier:backlog -->", true).unwrap();
+        assert!(tiered.hits("- [ ] Second task #high <!-- id:x-1 -->"));
+        assert!(
+            !tiered.hits("- [ ] Second task #high <!-- id:x-2 -->"),
+            "another marker"
         );
         // Words still match by contained, case-folded text.
         assert!(w("SECOND").hits("- [ ] Second task #high"));
@@ -3255,6 +3281,7 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
+            board_max: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
@@ -3971,7 +3998,9 @@ Version: v0.0.1
             "# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n- [ ] human row\n",
         )
         .unwrap();
-        fs::write(dir.join("agent/README.md"), BOARD).unwrap();
+        // A closed row archived with a tier token left on it goes into the note without one.
+        let board = BOARD.replace("<!-- pr:12 -->", "<!-- pr:12 tier:backlog -->");
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
         p.projects = Some(projects);
         p.project_index = Some(index);
         let log = Logger::new(root.join(".state/log"), false);
@@ -3980,7 +4009,7 @@ Version: v0.0.1
         archive(&p, &log, "demo", true, Lane::Agent).unwrap();
         assert_eq!(
             fs::read_to_string(dir.join("agent/README.md")).unwrap(),
-            BOARD
+            board
         );
 
         archive(&p, &log, "demo", false, Lane::Agent).unwrap();

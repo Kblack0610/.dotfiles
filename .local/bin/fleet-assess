@@ -7,6 +7,8 @@
 #   fleet-assess --load-probe    the same over the high mark alone, no hold read (agent-hold check's load gate)
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
+#   fleet-assess --fleet         every host's busy share and whether each agent host's CPU cap is live, over Prometheus and ssh
+#                                (so only on this flag); exit 1 on OVER or NOT live
 #   fleet-assess --textfile [DIR] write DIR/fleet_local.prom for node_exporter (the local gates; default: the collector's dir)
 #   fleet-assess --blocked       one tab-separated row per process stuck on I/O, nothing else
 #
@@ -37,9 +39,18 @@ set -uo pipefail
 : "${FLEET_GH_PROBE_REPO:=Kblack0610/.dotfiles}" # any repo the token reads: both buckets are per user
 : "${GH_CALLERS_WINDOW_S:=600}"  # gh_callers counts the call log over this many seconds
 : "${FLEET_GH_PROBE_TTL_S:=300}" # the actions/workflows reading is reused this long: fleet-dispatch asks every pass and each ask spent one of that bucket's calls (172 REST an hour, 2026-11-13)
+: "${FLEET_HOST_BUSY_MAX:=90}"  # a host whose CPU busy share (cc:host_cpu_busy_ratio) is at or over this % reads OVER:
+                                 # agent work is capped at 87.5% of each agent host and CI at less (home-config
+                                 # agent-host-budget, the human 2026-11-18), so a host past it has work outside its cap.
+                                 # Provisional: revisit if a capped host reads OVER with every unit inside its cap.
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
+_fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=../lib/prom-textfile.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+. "$_fa_lib/prom-textfile.sh"
+# shellcheck source=../lib/prom.sh
+. "$_fa_lib/prom.sh"
+# shellcheck source=../lib/fleet-hosts.sh
+. "$_fa_lib/fleet-hosts.sh"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -403,8 +414,88 @@ branch_merged() {
   base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
   git -C "$dir" rev-parse -q --verify "$2^{commit}" >/dev/null 2>&1 || return 0
   git -C "$dir" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 0
-  tree="$(git -C "$dir" merge-tree --write-tree "$base" "$2" 2>/dev/null | head -n 1)" || return 1
+  tree="$(git -C "$dir" merge-tree --write-tree "$base" "$2" 2>/dev/null | awk 'NR==1')" || return 1
   [ "$tree" = "$(git -C "$dir" rev-parse "$base^{tree}")" ]
+}
+
+# --- every machine: busy share and the agent CPU cap -----------------------------------
+# busy_rows -> "<host> <busy ratio>" per host node_exporter reports, from Prometheus, one per host
+# (max by host: two exporter series during a rollout are one host); rc 1 when it does not answer.
+busy_rows() {
+  prom_q 'max by (host) (cc:host_cpu_busy_ratio)' | jq -r '.data.result[] | "\(.metric.host) \(.value[1])"'
+}
+
+# busy_line < busy_rows -> one line: every host at or over FLEET_HOST_BUSY_MAX, else the three
+# busiest; rc 1 when one is over. Over, the hosts come first and the numbers in parentheses, so
+# the line up to " (" stays the same while the same hosts stay over (fleet-shepherd's due line).
+busy_line() {
+  sort -k2 -gr | awk -v max="$FLEET_HOST_BUSY_MAX" '
+    { p = $2 * 100; n++
+      if (n <= 3) top = top (n > 1 ? ", " : "") sprintf("%s %d%%", $1, p)
+      if (p >= max) { hosts = hosts (hosts ? ", " : "") $1; nums = nums (nums ? ", " : "") sprintf("%s %d%%", $1, p) } }
+    END {
+      if (!n) { print "fleet: busy share unreadable (Prometheus did not answer)"; exit 0 }
+      if (hosts) { printf "fleet: OVER %s%% busy: %s (%s; of %d hosts)\n", max, hosts, nums, n; exit 1 }
+      printf "fleet: no host over %s%% busy (%d hosts; busiest %s)\n", max, n, top }'
+}
+
+# The units the agent-host-budget role pins, as "<unit> <EffectiveCPUs>" lines: run here or on a
+# worker. EffectiveCPUs is the kernel's cpuset; AllowedCPUs is recorded even where the user
+# manager has no cpuset controller and nothing is pinned (razer-laptop, 2026-11-18). A user
+# manager it cannot reach (no user bus over ssh) exits 1, so the host reads unconfirmed.
+CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active "tmux-spawn-*.scope" app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
+
+# cap_units <cap host line> -> that host's CAP_PROBE lines; rc non-zero when it cannot be read.
+# This machine is the host named FLEET_HOST, or one the inventory reaches with ansible_connection local.
+cap_units() {
+  local name dest port is_local
+  IFS=$'\t' read -r name dest port is_local < <(jq -r '[.name, .dest, .port, (.local // false)] | @tsv' <<<"$1")
+  if [ "$name" = "$FLEET_HOST" ] || [ "$is_local" = true ]; then
+    bash -c "$CAP_PROBE"
+  else
+    _fh_ssh "$dest" -p "$port" -- bash -c "$CAP_PROBE"
+  fi
+}
+
+# cap_line <name> <agent_cpus> < cap_units -> one line: the cap is live on every unit, or which
+# units run outside it; rc 1 when any does. A unit is outside when it may use a CPU the cap does
+# not hold, or has no cpuset at all; one on a subset of the cap (a CPU offline) is inside.
+# systemd prints a set merged and space-separated ("2-15 18-31"), so both sides are CPU sets.
+cap_line() {
+  awk -v name="$1" -v want="$2" '
+    function set(spec, out,   parts, n, i, ab, c, k) {
+      n = split(spec, parts, /[ ,]+/); k = 0
+      for (i = 1; i <= n; i++) { if (parts[i] == "") continue
+        split(parts[i], ab, "-"); if (ab[2] == "") ab[2] = ab[1]
+        for (c = ab[1] + 0; c <= ab[2] + 0; c++) { out[c] = 1; k++ } }
+      return k }
+    BEGIN { set(want, W) }
+    NF == 0 { next }
+    { n++; u = $1; $1 = ""; delete G; outside = (set($0, G) == 0)
+      for (c in G) if (!(c in W)) outside = 1
+      if (outside) { bad++; out = out (bad > 1 ? ", " : "") u " on" ($0 ~ /[0-9]/ ? $0 : " no cpuset") } }
+    END {
+      if (bad) { printf "cap: %s NOT live: %d of %d units outside %s (%s)\n", name, bad, n, want, out; exit 1 }
+      if (!n) { printf "cap: %s %s set, no agent unit running\n", name, want; exit 0 }
+      printf "cap: %s %s live on %d of %d units\n", name, want, n, n }'
+}
+
+# fleet_lines -> the busy line, then one cap line per agent host; rc 1 when a host is over or a
+# unit sits outside its cap. Prometheus or a host that does not answer says so and fails
+# nothing: a laptop with its lid shut runs no agent work. ssh bounds a silent host (ConnectTimeout
+# and ServerAlive, FLEET_SSH_TIMEOUT).
+fleet_lines() {
+  local rc=0 h name cpus units
+  { busy_rows 2>/dev/null || true; } | busy_line || rc=1
+  while IFS= read -r h; do
+    IFS=$'\t' read -r name cpus < <(jq -r '[.name, .agent_cpus] | @tsv' <<<"$h")
+    if ! units="$(cap_units "$h" 2>/dev/null)"; then
+      echo "cap: $name $cpus unconfirmed (did not answer)"
+      continue
+    fi
+    cap_line "$name" "$cpus" <<<"$units" || rc=1
+  done < <(fleet_cap_hosts 2>/dev/null)
+  return "$rc"
 }
 
 # gate_line -> one line: slots busy and queued, the last GATE_WINDOW_SECS of results, and the
@@ -508,6 +599,10 @@ main() {
   fi
   if [ "${1:-}" = --github ]; then
     gh_budget
+    return
+  fi
+  if [ "${1:-}" = --fleet ]; then
+    fleet_lines
     return
   fi
   if [ "${1:-}" = --gate ]; then

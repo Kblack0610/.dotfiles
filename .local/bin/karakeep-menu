@@ -21,8 +21,8 @@ menu() {
     fi
 }
 
-key=$(rbw get karakeep_api_key 2>/dev/null | head -1) || { notify "rbw locked or karakeep_api_key missing"; exit 1; }
-base=$(rbw get --field uris karakeep_api_key 2>/dev/null | head -1)
+key=$(rbw get karakeep_api_key 2>/dev/null | awk 'NR==1') || { notify "rbw locked or karakeep_api_key missing"; exit 1; }
+base=$(rbw get --field uris karakeep_api_key 2>/dev/null | awk 'NR==1')
 [ -n "$key" ] && [ -n "$base" ] || { notify "rbw entry karakeep_api_key needs a password and a URI"; exit 1; }
 
 # One line per link bookmark: title | #tag #tag | url. The url stays last so the
