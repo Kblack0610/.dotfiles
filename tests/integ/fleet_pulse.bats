@@ -319,9 +319,15 @@ JSON
   assert_output --partial "linux-cachyos: up"
 }
 
+@test "an empty FLEET_STALE_AFTER falls back to the default instead of marking every host stale" {
+  FLEET_STALE_AFTER= STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_output --partial "linux-cachyos: up"
+}
+
 @test "the stale window has one default, in fleet-pulse-roster.sh, not one per bar" {
-  run grep -n 'FLEET_STALE_AFTER:-' "$MODULE" "$REPO_ROOT/.config/sketchybar/plugins/fleet.sh"
+  run grep -nE 'STALE_AFTER[:=-]+[0-9]' "$MODULE" "$REPO_ROOT/.config/sketchybar/plugins/fleet.sh"
   assert_failure
-  run grep -c 'FLEET_STALE_AFTER:=' "$REPO_ROOT/.local/lib/fleet-pulse-roster.sh"
+  run grep -cE '^FLEET_STALE_AFTER_DEFAULT=[0-9]+ ' "$REPO_ROOT/.local/lib/fleet-pulse-roster.sh"
   assert_output 1
 }

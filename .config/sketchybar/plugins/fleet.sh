@@ -37,7 +37,7 @@ fi
 # defined once per machine instead of hardcoded in each module.
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
-STALE_AFTER="$FLEET_STALE_AFTER"
+STALE_AFTER="${FLEET_STALE_AFTER:-$FLEET_STALE_AFTER_DEFAULT}"
 
 # Theme-INDEPENDENT semantic colors (0xAARRGGBB), same intent as meeting_watch.sh:
 # fleet health is an alert, not decoration, so it must not follow the pastel theme.
