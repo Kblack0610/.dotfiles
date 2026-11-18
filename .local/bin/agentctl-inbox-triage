@@ -294,12 +294,14 @@ homes_rule() {
 }
 
 # priority_rule: what makes a row urgent, high or low, the one rubric the route call files by and
-# the --priority pass tags by. Two rubrics would let the pass re-tag nearly every filed row.
+# the --priority pass tags by. Two rubrics would let the pass re-tag nearly every filed row. Epic
+# membership is not a reason for high: every row is filed under an epic, so it made most rows high
+# (72% of the queue on 2026-11-17, ar-2943).
 priority_rule() {
   cat <<'RULE'
 urgent: it breaks or blocks the person or production now.
-high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), it belongs to one of the open epics below (#of/<epic id>, or plainly part of one), or the person asked for it (#requested).
-low: everything else, including ideas, polish and cleanup nothing waits on.
+high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), or the person asked for it (#requested). Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
+low: everything else, including ideas, polish, cleanup and epic work nothing waits on.
 When unsure between two, pick the lower.
 RULE
 }
