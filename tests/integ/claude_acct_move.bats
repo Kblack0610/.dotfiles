@@ -998,7 +998,7 @@ trust_prompt() {
   "$ACCT" park a1 --server lab
   session lab a2 %6 110 111 idle ""
   "$ACCT" park a2 --server lab
-  sed "s/^WAKE_BATCH=.*/WAKE_BATCH=1/" "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  sed "s/^WAKE_BUDGET=.*/WAKE_BUDGET=1/" "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$ACCT" unpark --all
   assert_success
   assert_line --partial 'claude-acct: unparked a1 on alt'

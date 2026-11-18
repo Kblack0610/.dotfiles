@@ -15,9 +15,9 @@
 
 # shellcheck source=pace-conf.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pace-conf.sh"
-# WAKE_BATCH: wakes per settle window, fleet-pace's GO batch. WAKE_SETTLE_MIN: minutes a wake counts
+# WAKE_BUDGET: wakes per settle window, fleet-pace's GO batch. WAKE_SETTLE_MIN: minutes a wake counts
 # against it, its load not in the 1-minute average yet. Both are in pace.conf, with their why.
-WAKE_BATCH=$(pace_get WAKE_BATCH); WAKE_SETTLE_MIN=$(pace_get WAKE_SETTLE_MIN)
+WAKE_BUDGET=$(pace_get WAKE_BUDGET); WAKE_SETTLE_MIN=$(pace_get WAKE_SETTLE_MIN)
 WAKE_LEDGER="${WAKE_PACE_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/wake-pace/wakes}"
 
 # wake_window -> the ledger's lines inside the settle window
@@ -33,13 +33,13 @@ wake_recent() { wake_window | wc -l; }
 # else what the batch has left in the settle window. No fleet-assess (a Mac runner) leaves the batch.
 wake_room() {
   local n
-  # A number missing from pace.conf wakes nobody, never a default batch, and says so at each refusal.
-  [[ -n "$WAKE_BATCH" && -n "$WAKE_SETTLE_MIN" ]] || { echo "wake-pace: no wake: WAKE_BATCH or WAKE_SETTLE_MIN is not a number in $PACE_CONF" >&2; echo 0; return 0; }
+  # A number missing from pace.conf, or not whole, wakes nobody, never a default batch, and says so at each refusal.
+  [[ "$WAKE_BUDGET" =~ ^[0-9]+$ && "$WAKE_SETTLE_MIN" =~ ^[0-9]+$ ]] || { echo "wake-pace: no wake: WAKE_BUDGET or WAKE_SETTLE_MIN is not a whole number in $PACE_CONF" >&2; echo 0; return 0; }
   if command -v fleet-assess >/dev/null 2>&1 && ! fleet-assess --watch-probe >/dev/null 2>&1; then
     echo 0; return 0
   fi
   n=$(wake_recent)
-  echo $(( n >= WAKE_BATCH ? 0 : WAKE_BATCH - n ))
+  echo $(( n >= WAKE_BUDGET ? 0 : WAKE_BUDGET - n ))
 }
 
 # wake_take <who> <what> -- take one wake from the budget, rc 1 when it has none. The ledger keeps

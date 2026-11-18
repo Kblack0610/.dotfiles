@@ -44,8 +44,8 @@ setup() {
   run wake_take restore a; assert_success
 }
 
-@test "the batch is data: WAKE_BATCH in pace.conf moves it" {
-  sed 's/^WAKE_BATCH=.*/WAKE_BATCH=1/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+@test "the batch is data: WAKE_BUDGET in pace.conf moves it" {
+  sed 's/^WAKE_BUDGET=.*/WAKE_BUDGET=1/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh"
   run wake_take restore a; assert_success
   run wake_take restore b; assert_failure
@@ -57,7 +57,15 @@ setup() {
   assert_output --partial "WAKE_SETTLE_MIN is not set to a number in $BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh" 2>/dev/null
   run --separate-stderr wake_room; assert_output 0
-  [[ "$stderr" == *"not a number in $BATS_TEST_TMPDIR/pace.conf"* ]] || fail "$stderr"
+  [[ "$stderr" == *"not a whole number in $BATS_TEST_TMPDIR/pace.conf"* ]] || fail "$stderr"
   run wake_take restore c; assert_failure
   [ ! -s "$WAKE_PACE_LEDGER" ]
+}
+
+@test "a wake number that is not whole wakes nobody instead of breaking the arithmetic" {
+  sed 's/^WAKE_BUDGET=.*/WAKE_BUDGET=1.5/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh"
+  run --separate-stderr wake_room; assert_success; assert_output 0
+  [[ "$stderr" == *"WAKE_BUDGET or WAKE_SETTLE_MIN is not a whole number"* ]] || fail "$stderr"
+  run wake_take restore a; assert_failure
 }

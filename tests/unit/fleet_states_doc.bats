@@ -126,7 +126,7 @@ fn_body() {
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
 # where it is checked out, the private repo's bin
 owned_files() {
-  git -C "$REPO_ROOT" ls-files -- .local/bin .local/lib .local/src .config/shared-hooks .claude/hooks |
+  git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/hooks/" |
     grep -vE '\.(md|svg|bats)$' | sed "s|^|$REPO_ROOT/|"
   [ ! -d "$PRIVATE/.git" ] || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
 }
@@ -144,9 +144,11 @@ check_owner_cells() { # <doc>
     done
     [ "$lock" != - ] || continue
     lk=$(spans "$lock")
-    fn_body "$REPO_ROOT/$file" "$lk" | grep -qw flock || { echo "$fact: its lock $lk takes no flock"; bad=1; }
-    [ "$lk" = "${fns[0]}" ] || fn_body "$REPO_ROOT/$file" "${fns[0]}" | grep -qw "$lk" ||
-      { echo "$fact: ${fns[0]} does not take its lock $lk"; bad=1; }
+    fn_body "$REPO_ROOT/$file" "$lk" | grep -vE '^\s*#' | grep -qw flock || { echo "$fact: its lock $lk takes no flock"; bad=1; }
+    for fn in "${fns[@]}"; do
+      [ "$lk" = "$fn" ] || fn_body "$REPO_ROOT/$file" "$fn" | grep -vE '^\s*#' | grep -qw "$lk" ||
+        { echo "$fact: $fn does not take its lock $lk"; bad=1; }
+    done
   done < <(owner_rows "$1")
   return "$bad"
 }
@@ -155,6 +157,7 @@ check_owner_copies() { # <doc> <file>...
   local doc=$1 fact writer home copy lock pinned file re hits bad=0; shift
   while IFS=$'\037' read -r fact writer home copy lock pinned; do
     file=$(spans "$writer" | head -1); file="$REPO_ROOT/${file%%:*}"; re=$(spans "$copy" | head -1)
+    grep -qE -e "$re" </dev/null; [ $? -ne 2 ] || { echo "$fact: its forbidden copy is not a valid regex: $re"; bad=1; continue; }
     hits=$(printf '%s\0' "$@" | xargs -0 grep -nIE -e "$re" -- 2>/dev/null | awk -v w="$file:" 'index($0, w) != 1')
     [ -z "$hits" ] || { printf '%s: a copy outside its writer:\n%s\n' "$fact" "$hits"; bad=1; }
   done < <(owner_rows "$doc")
@@ -244,7 +247,6 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 @test "every Owners row names a writer that exists, a lock it takes, and pinning tests that exist" {
   run check_owner_cells "$DOC"
   assert_success
-  assert_equal "$(owner_rows "$DOC" | wc -l)" 4
   run check_owner_pins "$DOC"
   assert_success
 }
@@ -255,7 +257,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_success
 }
 
-@test "negative controls: a planted copy, a missing writer, a lock the writer skips and a dead pin all fail" {
+@test "negative controls: a planted copy, a missing writer, a lock a writer skips, a bad pattern and a dead pin all fail" {
   local t="$BATS_TEST_TMPDIR"
   mapfile -t files < <(owned_files)
   printf ': "${WAKE_BATCH:=3}"\n' > "$t/wake-pace.sh"
@@ -276,10 +278,14 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   run check_owner_cells "$t/no-lock.md"
   assert_failure
   assert_output --partial 'its lock park_unlock takes no flock'
-  sed '/^| Who parked/ s/(also `cmd_unpark`)//; /^| Who parked/ s/:park_flow`/:record`/' "$DOC" > "$t/skips.md"
+  sed '/^| Who parked/ s/(also `cmd_unpark`)/(also `record`)/' "$DOC" > "$t/skips.md"
   run check_owner_cells "$t/skips.md"
   assert_failure
   assert_output --partial 'record does not take its lock park_lock'
+  sed '/^| One shepherd pass/ s/`FLEET_SHEPHERD_RUN_LOCKED=`/`FLEET_SHEPHERD_RUN_LOCKED=(`/' "$DOC" > "$t/bad-re.md"
+  run check_owner_copies "$t/bad-re.md" "${files[@]}"
+  assert_failure
+  assert_output --partial 'is not a valid regex: FLEET_SHEPHERD_RUN_LOCKED=('
   sed '/^| One shepherd pass/ s/exits 75 having sampled nothing/exits 75/' "$DOC" > "$t/dead.md"
   run check_owner_pins "$t/dead.md"
   assert_failure

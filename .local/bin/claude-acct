@@ -2164,7 +2164,7 @@ cmd_unpark() {
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"
             ((${#owned[@]} == 0)) || printf 'claude-acct: unpark: left to its owner: %s\n' "${owned[@]}"
-            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BATCH per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
+            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BUDGET per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
             return "$rc" ;;
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
