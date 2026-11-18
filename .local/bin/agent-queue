@@ -34,7 +34,7 @@
 #       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
-#       exit 2 when more than one does, unless --newest, which takes the one whose item file changed last
+#       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
@@ -1726,10 +1726,12 @@ cmd_mine() {
       echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
       return 2
     fi
-    # --newest (a resume): the item updated last, since every header write rewrites its file.
-    files="$(jq -r --arg l "$slugs" '($l | split("\n")) as $w | .[] | select(.slug as $x | $w | index([$x])) | .file' <<<"$items")" ||
+    # --newest (a resume): a running item before a waiting or review one, whose header a PR poller
+    # may rewrite; among those, the one updated last, since every header write rewrites its file.
+    files="$(jq -r --arg l "$slugs" '[.[] | select(.slug as $x | $l | split("\n") | index([$x]))] |
+      (map(select(.state == "running")) | select(length > 0)) // . | .[].file' <<<"$items")" ||
       die "could not read the queue"
-    last="$(xargs -rd '\n' sh -c 'find "$@" -maxdepth 0 -printf "%T@\t%p\n"' find <<<"$files" | sort -n | tail -n 1 | cut -f2-)"
+    last="$(xargs -rd '\n' sh -c 'find "$@" -maxdepth 0 -printf "%T@\t%p\n"' find <<<"$files" | LC_ALL=C sort -n | tail -n 1 | cut -f2-)"
     slugs="$(jq -r --arg f "$last" 'first(.[] | select(.file == $f) | .slug) // empty' <<<"$items")"
     [ -n "$slugs" ] || die "could not read the queue"
   fi

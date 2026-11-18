@@ -1577,7 +1577,7 @@ OUT
   assert_output --partial 'no lost server on record'
 }
 
-@test "restore reopens a conversation that several queue items list, with the one updated last (ar-2676)" {
+@test "restore reopens a conversation that several queue items list, with the running one updated last (ar-2676)" {
   restore_setup
   G="$SANDBOX/repos/game"
   lost_pane working "$G" conv-two
@@ -1585,6 +1585,11 @@ OUT
   agent-queue add --project game --running --slug hub-new "hub new" >/dev/null
   agent-queue claim hub-new --sid conv-two >/dev/null
   touch -d '2 hours ago' "$(qitem running hub-old)"
+  # A review item written last (a PR poller) still loses to a running one.
+  agent-queue add --project game --running --slug hub-pr "hub pr" >/dev/null
+  agent-queue claim hub-pr --sid conv-two >/dev/null
+  agent-queue move hub-pr review >/dev/null
+  touch "$(qitem review hub-pr)"
   # The ambiguity mine reports to every other caller stays.
   run agent-queue mine --sid conv-two
   assert_failure 2

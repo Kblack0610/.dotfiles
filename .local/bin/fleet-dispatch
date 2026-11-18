@@ -2621,9 +2621,9 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session
-# (`agent-queue mine --sid --newest`, the one updated last when several do), so the item records
-# where it runs again. A claude conversation whose item is running gets RESTORE_PROMPT as its first message and carries on; any other comes back at
-# an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
+# (`agent-queue mine --sid --newest`: when several do, a running one, then the one updated last),
+# so the item records where it runs again. A claude conversation whose item is running gets
+# RESTORE_PROMPT as its first message and carries on; any other comes back at an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
 # back the declared sessions and windows first; a plain shell is listed, not reopened. Consumed only
 # when every reopen worked, so a rerun finishes, and only as read at the start, under record's lock:
 # a death world_lost adds to it meanwhile stays owed.

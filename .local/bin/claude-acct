@@ -1714,7 +1714,7 @@ record() {
     agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
     audit_append "${by:-${PWD##*/}}" "$action" "$1" ok "$2"
     [[ -n "${3:-}" ]] || return 0
-    [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" 2>/dev/null)
+    [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" --newest 2>/dev/null)
     chain_event dispatch "$3" "-" "$2" --item "$item" --why "$1" --by claude-acct
 }
 
@@ -2054,7 +2054,7 @@ unpark_ledger() {
     # Its item bills this account now; left as the gateway harness it would keep a max_live slot.
     if [[ "$from" == "$GATEWAY_FROM" ]]; then
         local item
-        item=$(agent-queue mine --sid "$sid" 2>/dev/null)
+        item=$(agent-queue mine --sid "$sid" --newest 2>/dev/null)
         [[ -z "$item" ]] || agent-queue set "$item" agent=claude "account=$name" >/dev/null 2>&1 ||
             echo "claude-acct: $item still reads as on the gateway: agent-queue set failed" >&2
     fi
