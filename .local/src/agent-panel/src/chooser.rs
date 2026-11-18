@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    account, asks, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort, tmux,
+    account, asks, dispatched, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort,
+    tmux,
 };
 
 /// One detected Claude agent, ready to render.
@@ -364,7 +365,8 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
 
     refresh_index();
     let map_file = map_file_path();
-    let rows = write_rows(agents, &map_file, saved_sort())?;
+    let view = dispatched::saved();
+    let rows = write_rows(view.filter(agents), &map_file, saved_sort())?;
     // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
     let rows_text = match query.filter(|q| !q.trim().is_empty()) {
         Some(q) => search::filter(
@@ -382,7 +384,7 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
-    let selected = fzf::run(&rows_text, &map_file, restore_line, query);
+    let selected = fzf::run(&rows_text, &map_file, restore_line, query, view.label());
     let _ = fs::remove_file(&map_file);
     let _ = fs::remove_file(search::notes_path(&map_file));
     let selected = selected?;
@@ -486,7 +488,8 @@ fn rows_text(rows: &[render::Row]) -> String {
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
 /// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
-/// the human (ctrl-y). `step` is a C-o or A-o press: it moves the saved sort first.
+/// the human (ctrl-y); the saved A-d view (`dispatched`) applies on top. `step` is a C-o or A-o
+/// press: it moves the saved sort first.
 ///
 /// `query` is the search box: the rows are filtered by it (`search::filter`), so a reload keeps
 /// what was typed.
@@ -503,7 +506,8 @@ pub fn run_rows(
             sort::save(&file, sort)?;
         }
     }
-    write_rows(only_asking(collect(), asking), map_file, sort)?;
+    let agents = dispatched::saved().filter(only_asking(collect(), asking));
+    write_rows(agents, map_file, sort)?;
     print_matches(&fs::read_to_string(search::notes_path(map_file))?, query);
     Ok(())
 }
@@ -596,9 +600,11 @@ pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
     }
     let notes = if step == 0 || saved != custom {
         // A grab: read every session once, drop gone ones from the order, and show them all
-        // in your order (this leaves the asking-only view).
+        // in your order (this leaves the asking-only view, but keeps the A-d one: a hidden
+        // row keeps its place in the order).
         let agents = collect();
         order.retain(|t| agents.iter().any(|a| &a.target == t));
+        let agents = dispatched::saved().filter(agents);
         sort::save_order(&order_file, &order)?;
         if saved != custom {
             if let Some(file) = sort::state_file() {

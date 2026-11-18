@@ -36,6 +36,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("C-o", "next sort"),
             ("A-o", "reverse the sort"),
             ("C-y", "only the sessions waiting on you, and back"),
+            ("A-d", "dispatched sessions: hide, only, all again"),
         ],
     ),
     (
@@ -131,7 +132,7 @@ mod tests {
             reverse: true,
         });
         for key in [
-            "S-Tab", "C-o", "A-o", "C-y", "C-n", "C-t", "C-l", "C-s", "A-n", "C-/",
+            "S-Tab", "C-o", "A-o", "C-y", "A-d", "C-n", "C-t", "C-l", "C-s", "A-n", "C-/",
         ] {
             assert!(page.contains(key), "{key} missing");
         }

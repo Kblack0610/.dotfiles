@@ -126,6 +126,13 @@ enum Cmd {
     },
     /// The shortcuts page (alt-? or F1 in the chooser): every key, the sorts, the row legend.
     Keys,
+    /// Internal alt-d callback: step the saved dispatched view (every session, hidden, only) and
+    /// print its border label (not meant to be run by hand).
+    #[command(hide = true)]
+    Dispatched {
+        #[arg(long)]
+        step: bool,
+    },
     /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
     #[command(hide = true)]
     Match {
@@ -222,6 +229,11 @@ fn main() -> anyhow::Result<()> {
             target,
         }) => chooser::run_move(key, &target, &map_file),
         Some(Cmd::Keys) => agent_panel::help::run(chooser::saved_sort()),
+        Some(Cmd::Dispatched { step: true }) => agent_panel::dispatched::run_step(),
+        Some(Cmd::Dispatched { step: false }) => {
+            println!("{}", agent_panel::dispatched::saved().label());
+            Ok(())
+        }
         Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
         Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
         Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),

@@ -45,6 +45,7 @@ In the chooser:
 
 - The shepherd sits in its own `shepherd` group above every project: the agent in the shepherd's window (`FLEET_SHEPHERD_SESSION`:`FLEET_SHEPHERD_WINDOW`, default `hub:shepherd`, where every pass runs), or any agent holding the live shepherd lease. A pass idle past its lease stays pinned.
 - `C-y` lists only the sessions waiting on you (a pending ask or a prompt), and again lists every session; the prompt reads `Asking only >` while it is on, and the label keys keep the view.
+- `A-d` steps the dispatched view: every session -> dispatched hidden -> dispatched only -> every session. A dispatched session is a window fleet-dispatch tagged `@dispatch` (the row's `dispatch` tag). The border label names the view, it is saved in `panels/agent-panel.dispatch` so the panel reopens in it, and it applies on top of `C-y` and a grab.
 - `C-s` goes to the shepherd pass running now, through `fleet-shepherd open` (the same as `Prefix o`).
 - Each row shows how long the session has been open (`45m`, ` 3h`, ` 2d`: since its claude process started, so a resume restarts it; blank on a parked row) before its target.
 - A row in a favourite tmux session (`Prefix+t f`, `tmux-tags fav`) carries `fav` in its orange tag column, beside the window tags (`Prefix+t`).
