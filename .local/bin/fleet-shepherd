@@ -751,7 +751,8 @@ remind_decision() {
   local pr="#$3"
   case "$1:$2" in
     DONE:*) echo "nothing is left; close its window" ;;
-    LANDED:*) echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan" ;;
+    LANDED:*) if [ "${4:--}" != - ]; then echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan"
+              else echo "give its plan a ## Phases checklist, or close its window"; fi ;;
     CHAT:*) echo "close the chat, or label it manual to keep it" ;;
     *"green, not merged"*) echo "merge PR $pr or close it" ;;
     *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
