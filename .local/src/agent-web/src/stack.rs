@@ -1,12 +1,12 @@
 //! The Stack tab: what the agent system is made of, from hub-core's `stack`. One read holds its
-//! four tables, each filtered and sorted here by `hub_core::table` under its own view keys, so the
+//! five tables, each filtered and sorted here by `hub_core::table` under its own view keys, so the
 //! page only draws.
 
 use std::sync::Arc;
 
 use hub_core::layout;
 use hub_core::session_actions::System;
-use hub_core::stack::{self, Agent, Hook, Rule, RuleFile, Skill, Stack};
+use hub_core::stack::{self, Agent, Flow, Hook, Rule, RuleFile, Skill, Stack};
 use hub_core::table::{self, Row, Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -16,11 +16,17 @@ use crate::cache::{off, ReadCache};
 /// changes by the PR, so tabs, reloads and each keystroke of a search share one read this long.
 const CACHE_SECS: u64 = 120;
 
-/// The view keys, as the page keeps them in its URL: Skills' bare, Agents' `g`-prefixed, Hooks'
-/// `k`-prefixed and Rules' `r`-prefixed (static/stack.js `STACK_TABLES`). `pg` is the page.
+/// The view keys, as the page keeps them in its URL: Skills' bare, Flows' `f`-prefixed, Agents'
+/// `g`-prefixed, Hooks' `k`-prefixed and Rules' `r`-prefixed (static/stack.js `STACK_TABLES`).
+/// `pg` is the page.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct Query {
+    pub fq: String,
+    pub fs: String,
+    pub fsort: String,
+    pub fdir: String,
+    pub fpg: String,
     pub q: String,
     pub s: String,
     pub sort: String,
@@ -65,6 +71,7 @@ struct Shown<'a> {
     /// Skills' rows and table at the top level, so the tab's first table reads like any other.
     rows: Vec<&'a Skill>,
     table: Summary,
+    flows: Part<'a, Flow>,
     agents: Part<'a, Agent>,
     hooks: Part<'a, Hook>,
     rules: Part<'a, Rule>,
@@ -90,6 +97,7 @@ fn render(s: &Stack, q: &Query) -> String {
         at: s.at,
         rows: skills.rows,
         table: skills.table,
+        flows: part(&s.flows, "flows", [&q.fq, &q.fs, &q.fsort, &q.fdir, &q.fpg]),
         agents: part(
             &s.agents,
             "agents",
@@ -116,6 +124,40 @@ impl Cache {
     /// The view `q` asks for, over the shared read and outside its lock.
     pub async fn get(&self, q: Query) -> String {
         self.read().await.map_or_else(failed, |s| render(&s, &q))
+    }
+
+    /// Flow `name`'s doc section, read from its file now so an edit shows on the next open, and
+    /// whether it has a picture. A name the table does not list is an error.
+    pub async fn flow(&self, name: String) -> Result<String, String> {
+        let f = self.find(&name).await?;
+        // Only a picture the route will serve, so the page never draws a broken image.
+        let picture = f
+            .svg
+            .as_ref()
+            .is_some_and(|p| p.is_file() && p.extension().is_some_and(|e| e == "svg"));
+        let text = off(move || stack::flow_section(&f)).await?;
+        let text = text.ok_or_else(|| format!("{name}: its doc section is gone"))?;
+        Ok(serde_json::json!({ "flow": name, "text": text, "picture": picture }).to_string())
+    }
+
+    /// Flow `name`'s picture, only the `.svg` its table row names: the route serves no other file.
+    pub async fn picture(&self, name: String) -> Result<Vec<u8>, String> {
+        let f = self.find(&name).await?;
+        let path = f
+            .svg
+            .filter(|p| p.extension().is_some_and(|x| x == "svg"))
+            .ok_or_else(|| format!("{name}: no svg picture"))?;
+        off(move || std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))).await?
+    }
+
+    async fn find(&self, name: &str) -> Result<Flow, String> {
+        self.read()
+            .await?
+            .flows
+            .iter()
+            .find(|f| f.flow == name)
+            .cloned()
+            .ok_or_else(|| format!("no flow {name}"))
     }
 
     /// The kept read the tab's views are cut from; `warm` fills it at start (3.6 to 6.7 s cold).

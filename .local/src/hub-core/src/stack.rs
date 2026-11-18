@@ -43,6 +43,12 @@ pub struct Paths {
     pub runners: PathBuf,
     /// The public repo's `.claude/rules`, the path-scoped rules.
     pub rule_files: PathBuf,
+    /// The fleet map, whose `## Flows` table names each flow's one definition.
+    pub architecture: PathBuf,
+    /// What `~/` means in that table.
+    pub home: PathBuf,
+    /// The checkouts a `Checked by` test path is read under, the first that has it.
+    pub repos: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -59,6 +65,9 @@ impl Paths {
             tokens: crate::boards::token_usage_dir(),
             runners: home.join(".config/agentctl/agents"),
             rule_files: home.join(".dotfiles/.claude/rules"),
+            architecture: home.join(".config/agentctl/ARCHITECTURE.md"),
+            repos: vec![home.join(".dotfiles"), home.join(".dotfiles-private")],
+            home,
         }
     }
 }
@@ -78,6 +87,7 @@ pub struct Stack {
     pub hooks: Vec<Hook>,
     pub rules: Vec<Rule>,
     pub rule_files: Vec<RuleFile>,
+    pub flows: Vec<Flow>,
     /// Each inner tab's count of rows that need a look, by inner id: the strip's pills.
     pub strip: BTreeMap<String, usize>,
     pub errors: Vec<String>,
@@ -365,6 +375,252 @@ pub struct RuleFile {
     pub paths: Vec<String>,
 }
 
+/// One flow of the fleet, a row of the `## Flows` table in ARCHITECTURE.md: the one doc section
+/// that defines it, its picture, and the test that fails when the code leaves that section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Flow {
+    pub flow: String,
+    pub question: String,
+    /// As the table writes it, `~/<path>#<anchor>`.
+    pub source: String,
+    /// `~/<path>.svg`, or empty.
+    pub picture: String,
+    /// Test paths under one of the repos, or empty when nothing checks it.
+    pub checked: Vec<String>,
+    /// `ok`, `unchecked` (no test holds the doc to the code) or `broken` (a path, heading or
+    /// test it names is gone).
+    pub state: String,
+    /// What is broken, one line each.
+    pub why: Vec<String>,
+    #[serde(skip)]
+    pub doc: PathBuf,
+    #[serde(skip)]
+    pub anchor: String,
+    #[serde(skip)]
+    pub svg: Option<PathBuf>,
+}
+
+pub const UNCHECKED: &str = "unchecked";
+pub const BROKEN: &str = "broken";
+
+impl Row for Flow {
+    const COLUMNS: &'static [&'static str] =
+        &["flow", "question", "source", "picture", "checked", "state"];
+    const STATES: &'static [&'static str] = &[ALL, UNCHECKED, BROKEN];
+    const FACETS: &'static [&'static str] = &["state"];
+    const LEAD: &'static str = "flow";
+    const GLANCE: &'static [&'static str] = &["checked", "state"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            UNCHECKED,
+            "no test fails when the code leaves the doc, so the doc may drift",
+        ),
+        (BROKEN, "a doc, heading, picture or test it names is gone"),
+    ];
+
+    fn val(&self, col: &str) -> Val {
+        match col {
+            "flow" => Val::Text(self.flow.clone()),
+            "question" => text(&self.question),
+            "source" => text(self.source.strip_prefix("~/").unwrap_or(&self.source)),
+            "picture" => text(self.picture.rsplit('/').next().unwrap_or_default()),
+            "checked" => text(
+                &self
+                    .checked
+                    .iter()
+                    .map(|t| t.rsplit('/').next().unwrap_or(t))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            "state" => text(&self.state),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        self.state == s
+    }
+
+    fn text(&self) -> String {
+        format!(
+            "{}\n{}\n{}\n{}",
+            self.flow,
+            self.question,
+            self.source,
+            self.checked.join(" ")
+        )
+        .to_lowercase()
+    }
+}
+
+/// A heading's GitHub anchor: lowercase, keep letters, digits, `-` and `_`, spaces to `-`.
+pub fn slug(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The markdown under the heading whose anchor is `anchor`, up to the next heading of the same
+/// or a higher level, `#` lines inside a fence not counted. Image lines are dropped: the picture
+/// is served on its own.
+pub fn section(md: &str, anchor: &str) -> Option<String> {
+    let mut fence = false;
+    let mut level = None;
+    let mut out = Vec::new();
+    for line in md.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+        }
+        let depth = t.chars().take_while(|c| *c == '#').count();
+        let heading = !fence && (1..=6).contains(&depth) && t[depth..].starts_with(' ');
+        match level {
+            None if heading && slug(t[depth..].trim()) == anchor => level = Some(depth),
+            None => continue,
+            Some(l) if heading && depth <= l => break,
+            Some(_) => {}
+        }
+        let image = !fence && t.starts_with("![") && t.trim_end().ends_with(')');
+        // An image line goes with the blank line after it, so no gap is left.
+        if image || (t.is_empty() && out.last().is_some_and(|l: &&str| l.trim().is_empty())) {
+            continue;
+        }
+        out.push(line);
+    }
+    level.map(|_| out.join("\n").trim().to_string())
+}
+
+/// The cells of one markdown table row, backticks dropped.
+fn cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    t.strip_prefix('|')
+        .and_then(|t| t.strip_suffix('|'))
+        .unwrap_or(t)
+        .split('|')
+        .map(|c| c.trim().replace('`', ""))
+        .collect()
+}
+
+fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
+    let Ok(md) = std::fs::read_to_string(&paths.architecture) else {
+        errors.push(format!("{} not read", paths.architecture.display()));
+        return Vec::new();
+    };
+    let Some(table) = section(&md, "flows") else {
+        errors.push(format!("{}: no ## Flows", paths.architecture.display()));
+        return Vec::new();
+    };
+    // The first table under the heading, and only it: a later table or subsection is prose.
+    let is_row = |l: &&str| l.trim_start().starts_with('|');
+    let mut rows = table.lines().skip_while(|l| !is_row(l)).take_while(is_row);
+    let head: Vec<String> = rows
+        .next()
+        .map(cells)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| c.to_lowercase())
+        .collect();
+    let col = |name: &str| head.iter().position(|h| h == name);
+    let (Some(fi), Some(qi), Some(di), Some(pi), Some(ci)) = (
+        col("flow"),
+        col("question"),
+        col("defined in"),
+        col("picture"),
+        col("checked by"),
+    ) else {
+        errors.push(format!(
+            "{}: the Flows table needs Flow, Question, Defined in, Picture and Checked by",
+            paths.architecture.display()
+        ));
+        return Vec::new();
+    };
+    let home = |p: &str| match p.strip_prefix("~/") {
+        Some(rest) => paths.home.join(rest),
+        None => PathBuf::from(p),
+    };
+    let blank = |c: &str| c.is_empty() || c == "-" || c.eq_ignore_ascii_case("none");
+    // Several flows share one doc, so each is read once per pass.
+    let mut docs: std::collections::HashMap<PathBuf, Option<String>> = Default::default();
+    rows.skip(1)
+        .map(cells)
+        .map(|mut c| {
+            let mut why = Vec::new();
+            // A short row is shown broken, never dropped: losing a flow silently is the drift this
+            // table exists to catch.
+            if c.len() < head.len() {
+                why.push(format!(
+                    "the row has {} cells, the header {}",
+                    c.len(),
+                    head.len()
+                ));
+                c.resize(head.len(), String::new());
+            }
+            let (file, anchor) = c[di].split_once('#').unwrap_or((&c[di], ""));
+            let doc = home(file);
+            let text = docs
+                .entry(doc.clone())
+                .or_insert_with(|| std::fs::read_to_string(&doc).ok());
+            match text {
+                None => why.push(format!("{file} is gone")),
+                Some(_) if anchor.is_empty() => why.push(format!("{file}: no #anchor")),
+                Some(text) if section(text, anchor).is_none() => {
+                    why.push(format!("{file}: no heading #{anchor}"))
+                }
+                Some(_) => {}
+            }
+            let picture = if blank(&c[pi]) {
+                String::new()
+            } else {
+                c[pi].clone()
+            };
+            let svg = (!picture.is_empty()).then(|| home(&picture));
+            if svg.as_ref().is_some_and(|p| !p.is_file()) {
+                why.push(format!("{picture} is gone"));
+            }
+            let checked: Vec<String> = if blank(&c[ci]) {
+                Vec::new()
+            } else {
+                c[ci].split(',').map(|t| t.trim().to_string()).collect()
+            };
+            for t in &checked {
+                if !paths.repos.iter().any(|r| r.join(t).is_file()) {
+                    why.push(format!("{t} is gone"));
+                }
+            }
+            let state = if !why.is_empty() {
+                BROKEN
+            } else if checked.is_empty() {
+                UNCHECKED
+            } else {
+                OK
+            };
+            Flow {
+                flow: c[fi].clone(),
+                question: c[qi].clone(),
+                source: c[di].clone(),
+                picture,
+                checked,
+                state: state.to_string(),
+                why,
+                doc,
+                anchor: anchor.to_string(),
+                svg,
+            }
+        })
+        .collect()
+}
+
+/// A flow's doc section, read now, for the page a row opens.
+pub fn flow_section(flow: &Flow) -> Option<String> {
+    section(&std::fs::read_to_string(&flow.doc).ok()?, &flow.anchor)
+}
+
 fn text(s: &str) -> Val {
     if s.is_empty() {
         Val::None
@@ -390,7 +646,12 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     let hooks = read_hooks(paths, &mut errors);
     let rules = read_rules(runner, &mut errors);
     let rule_files = read_rule_files(&paths.rule_files);
+    let flows = read_flows(paths, &mut errors);
     let strip = BTreeMap::from([
+        (
+            "flows".to_string(),
+            flows.iter().filter(|f| f.state != OK).count(),
+        ),
         (
             "skills".to_string(),
             skills.iter().filter(|s| s.drifts()).count(),
@@ -414,6 +675,7 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
         hooks,
         rules,
         rule_files,
+        flows,
         strip,
         errors,
     }
@@ -855,6 +1117,9 @@ mod tests {
             tokens: d.join("tokens"),
             runners: d.join("runners"),
             rule_files: d.join("rules"),
+            architecture: d.join("ARCHITECTURE.md"),
+            home: d.clone(),
+            repos: vec![d.join("pub"), d.join("priv")],
         };
         put(
             &p.skills.join("shepherd/SKILL.md"),
@@ -900,8 +1165,16 @@ mod tests {
             &p.rule_files.join("agent-runtime.md"),
             "---\npaths:\n  - \".local/bin/agentctl*\"\n---\n# rules\n",
         );
+        put(&p.architecture, ARCH);
+        put(&d.join("docs/states.md"), STATES_MD);
+        put(&d.join("docs/close.svg"), "<svg/>");
+        put(&d.join("priv/tests/states.bats"), "");
         p
     }
+
+    const ARCH: &str = "# map\n\n## Flows\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Close verdict | may it close? | `~/docs/states.md#close-verdict` | `~/docs/close.svg` | `tests/states.bats` |\n| Chain | what runs after what? | `~/docs/states.md#the-chain-a---b` | - | None |\n| Gone | ? | `~/docs/states.md#nope` | `~/docs/gone.svg` | `tests/gone.bats` |\n| Short | ? |\n\n### Notes\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Bogus | ? | - | - | - |\n\n## Instruments\n\n| a | b |\n";
+
+    const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
     const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","anchored":true,"moved":true,"dead":false},{"rule":"never force push","kind":"invariant","anchored":true,"moved":false,"dead":false},{"rule":"old","kind":"provisional","anchored":false,"moved":false,"dead":false}]"#;
 
@@ -941,6 +1214,89 @@ mod tests {
         assert_eq!(s.agents[0].name, "root-cause-analyst");
         assert_eq!(s.agents[0].tools, "Read, Grep, Bash");
         assert_eq!(s.rule_files[0].paths, [".local/bin/agentctl*"]);
+    }
+
+    #[test]
+    fn flows_are_the_architecture_table_each_checked_against_its_paths() {
+        let p = fixture("flows");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        let states: Vec<(&str, &str)> = s
+            .flows
+            .iter()
+            .map(|f| (f.flow.as_str(), f.state.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Close verdict", OK),
+                ("Chain", UNCHECKED),
+                ("Gone", BROKEN),
+                ("Short", BROKEN)
+            ],
+            "only the first table counts, a short row is broken not dropped"
+        );
+        assert_eq!(s.flows[3].why[0], "the row has 2 cells, the header 5");
+        assert_eq!(s.strip["flows"], 3, "unchecked and broken both count");
+        assert_eq!(
+            s.flows[2].why,
+            [
+                "~/docs/states.md: no heading #nope",
+                "~/docs/gone.svg is gone",
+                "tests/gone.bats is gone"
+            ]
+        );
+        let close = &s.flows[0];
+        assert_eq!(
+            close.checked,
+            ["tests/states.bats"],
+            "found under the second repo"
+        );
+        assert_eq!(
+            close.svg.as_deref(),
+            Some(p.home.join("docs/close.svg").as_path())
+        );
+        assert_eq!(
+            flow_section(close).unwrap(),
+            "## Close verdict\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.",
+            "a fenced # and a deeper heading stay in, the image line goes, the next ## ends it"
+        );
+        assert_eq!(
+            flow_section(&s.flows[1]).unwrap(),
+            "## The chain: `a` -> b\n\nA then B."
+        );
+        assert_eq!(
+            close.val("source"),
+            Val::Text("docs/states.md#close-verdict".into())
+        );
+        assert_eq!(close.val("picture"), Val::Text("close.svg".into()));
+        assert_eq!(s.flows[1].val("picture"), Val::None);
+    }
+
+    #[test]
+    fn no_flows_table_is_an_error_not_an_empty_list_that_reads_as_fine() {
+        let p = fixture("noflows");
+        put(&p.architecture, "# map\n\n## Instruments\n");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        assert!(s.flows.is_empty());
+        assert!(
+            s.errors.iter().any(|e| e.contains("no ## Flows")),
+            "{:?}",
+            s.errors
+        );
+    }
+
+    #[test]
+    fn slug_is_the_github_anchor() {
+        assert_eq!(
+            slug("The dispatcher: `fleet-dispatch`"),
+            "the-dispatcher-fleet-dispatch"
+        );
+        assert_eq!(
+            slug("The flow: inbox to ledger"),
+            "the-flow-inbox-to-ledger"
+        );
+        assert_eq!(slug("The chain: `a` -> b"), "the-chain-a---b");
     }
 
     #[test]
