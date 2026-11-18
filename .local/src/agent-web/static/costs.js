@@ -39,9 +39,10 @@ const COST_TABLES = {
   c: costTable("c", "costs-cons", (d) => d.consumers?.table, (d) => consumerRows(d.consumers)),
   s: costTable("s", "costs-sec", (d) => d.sections?.table, (d) => sectionRows(d.sections)),
 };
-// One section table: its bar flush on its rows, in the block whose prefix routes its events.
+// One section table: its bar flush on its rows and its pager under them, in the block whose
+// prefix routes its events.
 const costBlock = (pre, id, t, hint, rows) => {
-  const body = tblBodyFirst(t, rows);
+  const body = tblPaged(t, rows);
   return `<div data-tbl="${pre}">${tblBar(id, t, hint)}<div id="${id}-body">${body}</div></div>`;
 };
 
@@ -77,11 +78,10 @@ function costCell(r, key, d) {
 function costsBody(d) {
   const t = d.table, rows = d.rows || [];
   if (!rows.length) return `<div class="panel">${t.total ? "Nothing matches the query." : "Nothing spent in this window."}</div>`;
-  const shown = rows.slice(0, LOG_ROWS);
   // The table sends every Line column in one order; each cut draws its own (model before harness).
   const head = { ...t, columns: d.columns.map((k) => t.columns.find((c) => c.key === k)).filter(Boolean) };
   return `<div class="panel scroll"><table class="tbl">${tblHead(head, Object.fromEntries(d.columns.map((k) => [k, COST_COLS[k]])))}` +
-    shown.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table>${older(rows.length - shown.length)}</div>`;
+    rows.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table></div>`;
 }
 
 // The window and cut switches: each a link, so a view is a URL.
@@ -415,9 +415,8 @@ function langfuseSection(d) {
 // top of its rows, and the note says what the figures cannot.
 function sectionRows(b) {
   const cells = (r, cls) => `<tr${cls}>` + r.map((c, i) => `<td class="${i ? "n" : ""}">${esc(c)}</td>`).join("") + `</tr>`;
-  const shown = b.rows.slice(0, LOG_ROWS);
   return `<div class="panel scroll"><div><b>window</b> last ${b.days}d</div><table class="tbl">${tblHead(b.table, Object.fromEntries(b.columns.map((k, i) => [k, i ? [b.headers[i], "n"] : [b.headers[i]]])))}` +
-    cells(b.all, ' class="allrow"') + shown.map((r) => cells(r, "")).join("") + `</table>${older(b.rows.length - shown.length)}</div>`;
+    cells(b.all, ' class="allrow"') + b.rows.map((r) => cells(r, "")).join("") + `</table></div>`;
 }
 
 function costsSections(d) {
