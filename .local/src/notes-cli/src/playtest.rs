@@ -12,6 +12,12 @@
 //! Every write ends with the same kind of sweep a sheet gets ([`lay_out`]): within a game the
 //! open checks are grouped by the PR they came from under `### PR <n>`, newest first, and the
 //! ticked ones sit in `### Done` for the sheet's Done window, then roll into the version note.
+//!
+//! A playtest closes its checks: `pass` stamps each open check `pass:<id>`, the id of the
+//! human sheet row it files, and when that row closes done ([`close_played`], run by every
+//! human sheet sweep) the checks still open under that stamp close with `played:<id>` as
+//! proof. A dropped row was never played and closes nothing. Tester feedback rows are not
+//! checks: no pass stamps them and no play closes them.
 
 use crate::config::Profile;
 use crate::logging::Logger;
@@ -91,19 +97,22 @@ pub fn run(p: &Profile, log: &Logger, name: &str, op: Op) -> Result<i32> {
         Op::Drop { stamp, pick } => edit_in(log, &dir, &project, &pick, "dropped", |l| {
             Some(md::add_marker(&md::set_checkbox(l, 'x'), &stamp))
         }),
-        Op::Pass { build, game } => pass_in(p, log, name, &dir, &build, game.as_deref()),
+        Op::Pass { build, game } => pass_in(p, log, name, &dir, &project, &build, game.as_deref()),
     }
 }
 
 /// `pass`: one `check(playtest): play [<game> ]build <build>, N checks in playtest.md #high` row
-/// on the human sheet, N the open checks (of `game`, when given). The checks stay in
-/// playtest.md; the row is the one thing on the human's list that says a build waits to be
-/// played. The sheet's twin rule makes it idempotent: the same build again is exit 3.
+/// on the human sheet, N the open checks (of `game`, when given), each then stamped with that
+/// row's id so the row's close closes them ([`close_played`]). The checks stay in playtest.md;
+/// the row is the one thing on the human's list that says a build waits to be played. The
+/// sheet's twin rule makes it idempotent: the same build again is exit 3, files no second row
+/// and stamps only the checks the open row does not cover yet.
 fn pass_in(
     p: &Profile,
     log: &Logger,
     name: &str,
     dir: &Path,
+    project: &str,
     build: &str,
     game: Option<&str>,
 ) -> Result<i32> {
@@ -118,11 +127,7 @@ fn pass_in(
     let build = plain("--build", build)?;
     let game = game.map(|g| plain("--game", g)).transpose()?;
     let game = game.as_deref();
-    let content = fs::read_to_string(path(dir)).unwrap_or_default();
-    let n = open_rows(&content)
-        .iter()
-        .filter(|(_, g, _)| game.is_none_or(|w| g.eq_ignore_ascii_case(w)))
-        .count();
+    let n = covered(&fs::read_to_string(path(dir)).unwrap_or_default(), game).len();
     if n == 0 {
         println!(
             "no open playtest checks{} in {name}: nothing to play, no row filed",
@@ -132,9 +137,8 @@ fn pass_in(
     }
     let what = game.map_or(String::new(), |g| format!("{g} "));
     let s = if n == 1 { "" } else { "s" };
-    let text =
-        format!("check(playtest): play {what}build {build}, {n} check{s} in playtest.md #high");
-    project_tasks::add_via(
+    let text = format!("{PLAY}{what}build {build}, {n} check{s} in playtest.md #high");
+    let rc = project_tasks::add_via(
         p,
         log,
         name,
@@ -144,7 +148,182 @@ fn pass_in(
         None,
         crate::agent_sheet::Lane::Human,
         None,
-    )
+    )?;
+    // 0 filed it, 3 found it already open: either way the open row for this build is the one
+    // the checks are stamped with, so a re-run repairs a stamp a failed write left out.
+    if rc != 0 && rc != 3 {
+        return Ok(rc);
+    }
+    let head = md::task_key(&format!("- [ ] {PLAY}{what}build {build}, "));
+    let id = project_tasks::sheet_of(p, name, crate::agent_sheet::Lane::Human)?
+        .and_then(|s| fs::read_to_string(s).ok())
+        .and_then(|c| {
+            c.lines()
+                .find(|l| md::is_open_task(l) && md::task_key(l).starts_with(&head))
+                .and_then(md::row_id)
+        });
+    let Some(id) = id else {
+        eprintln!(
+            "(the row has no id, so its checks will not close with it: close each with \
+             `--playtest done`)"
+        );
+        return Ok(rc);
+    };
+    // Read again: the row's own sheet write may have closed checks an older play covered.
+    let content = fs::read_to_string(path(dir)).unwrap_or_default();
+    let stamped = stamp_pass(&content, &id, game);
+    if stamped != content {
+        write_swept(dir, project, &stamped)?;
+    }
+    Ok(rc)
+}
+
+/// The text every play-build row `pass` files starts with.
+const PLAY: &str = "check(playtest): play ";
+
+/// The marker key a check carries for each pass that covered it: `pass:<play row id>`.
+const PASS: &str = "pass:";
+
+/// A row `feedback-to-ptask` (playtest-bot) filed: one tester's point, ending
+/// `(playtest <session title>, <author>)`. It is the intake a fix comes from, not a check to
+/// play, so no pass covers it and no play closes it. The same test as `FEEDBACK_RE` in
+/// `.local/bin/playtest-feedback`, `\(playtest .+, .+\)$`: some `(playtest ` with text, a
+/// `, ` and text after it before the closing `)`.
+fn is_feedback(line: &str) -> bool {
+    const AT: &str = "(playtest ";
+    let t = md::task_text(line);
+    let Some(body) = t.strip_suffix(')') else {
+        return false;
+    };
+    body.match_indices(AT).any(|(i, _)| {
+        let rest = &body[i + AT.len()..];
+        rest.match_indices(", ")
+            .any(|(j, _)| j > 0 && j + 2 < rest.len())
+    })
+}
+
+/// The open checks a pass covers, as playtest.md line numbers (1-based): every open top-level
+/// row (of `game`, when given) that is not tester feedback.
+fn covered(content: &str, game: Option<&str>) -> Vec<usize> {
+    open_rows(content)
+        .into_iter()
+        .filter(|(_, g, l)| {
+            game.is_none_or(|w| g.eq_ignore_ascii_case(w))
+                && !l.starts_with(char::is_whitespace)
+                && !is_feedback(l)
+        })
+        .map(|(n, _, _)| n)
+        .collect()
+}
+
+/// `content` with each line `f` maps (1-based line number, text) to `Some` replaced.
+fn rewrite_lines(content: &str, f: impl Fn(usize, &str) -> Option<String>) -> String {
+    let lines: Vec<String> = content
+        .lines()
+        .enumerate()
+        .map(|(i, l)| f(i + 1, l).unwrap_or_else(|| l.to_string()))
+        .collect();
+    format!("{}\n", lines.join("\n"))
+}
+
+/// The play row ids a check's `pass:` tokens name.
+fn passes(line: &str) -> Vec<String> {
+    md::marker_of(line)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|t| t.strip_prefix(PASS).map(str::to_string))
+        .collect()
+}
+
+/// `content` with every check [`covered`] stamped `pass:<id>`, once.
+fn stamp_pass(content: &str, id: &str, game: Option<&str>) -> String {
+    let at = covered(content, game);
+    rewrite_lines(content, |n, l| {
+        (at.contains(&n) && !passes(l).iter().any(|p| p == id))
+            .then(|| md::add_marker(l, &format!("{PASS}{id}")))
+    })
+}
+
+/// The ids of the play-build rows on a human sheet that closed done: each one a build the
+/// human played. A dropped row was never played; an indented line is a step, never the row.
+fn played_ids(sheet: &str) -> Vec<String> {
+    sheet
+        .lines()
+        .filter(|l| !l.starts_with(char::is_whitespace))
+        .filter(|l| md::is_task(l) && md::is_checked(l) && !md::is_dropped(l))
+        .filter(|l| md::task_text(l).starts_with(PLAY))
+        .filter_map(md::row_id)
+        .collect()
+}
+
+/// Pure core of [`close_played`]: `content` with every open check a `played` id stamped ticked
+/// done on `today`, `played:<id>` its proof, and how many closed per id, in `played` order.
+fn close_in(content: &str, played: &[String], today: NaiveDate) -> (String, Vec<(String, usize)>) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut hits: Vec<(usize, &str)> = Vec::new();
+    for n in covered(content, None) {
+        let stamps = passes(lines[n - 1]);
+        if let Some(id) = played.iter().find(|id| stamps.contains(id)) {
+            hits.push((n, id));
+        }
+    }
+    let on = project_tasks::done_token(today);
+    let new = rewrite_lines(content, |n, l| {
+        let (_, id) = hits.iter().find(|(at, _)| *at == n)?;
+        let ticked = md::add_marker(&md::set_checkbox(l, 'x'), &on);
+        Some(md::add_marker(&ticked, &format!("played:{id}")))
+    });
+    let counts = played
+        .iter()
+        .map(|id| (id.clone(), hits.iter().filter(|(_, h)| h == id).count()))
+        .filter(|(_, c)| *c > 0)
+        .collect();
+    (new, counts)
+}
+
+/// Close the checks of every build `sheet`, a project's human sheet under `dir`, shows played:
+/// what a play-build row's close does, run by every sweep of that sheet (`ptask done`, the
+/// editor's save of a box ticked by hand, the nightly sweep). Writes playtest.md unless
+/// `dry_run`; returns the report lines, none when nothing closes. Idempotent: a closed check is
+/// no longer open, so the next sweep closes nothing.
+pub(crate) fn close_played(
+    dir: &Path,
+    project: &str,
+    sheet: &str,
+    dry_run: bool,
+) -> Result<Vec<String>> {
+    let played = played_ids(sheet);
+    let file = path(dir);
+    if played.is_empty() || !crate::config::managed_path(&file) {
+        return Ok(Vec::new());
+    }
+    // A play row stays in Done for days after its checks closed: skip the parse when no check
+    // carries any played id's stamp.
+    let Ok(content) = fs::read_to_string(&file) else {
+        return Ok(Vec::new());
+    };
+    if !played
+        .iter()
+        .any(|id| content.contains(&format!("{PASS}{id}")))
+    {
+        return Ok(Vec::new());
+    }
+    let (new, counts) = close_in(&content, &played, chrono::Local::now().date_naive());
+    if counts.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !dry_run {
+        write_swept(dir, project, &new)?;
+    }
+    Ok(counts
+        .into_iter()
+        .map(|(id, n)| {
+            format!(
+                "{n} playtest check(s) played in {id} -> closed in {}",
+                file.display()
+            )
+        })
+        .collect())
 }
 
 /// The head a new playtest.md starts with: the title and the one rule every row follows.
@@ -1031,6 +1210,118 @@ One row is one thing to play and check off.
             done_in(&log, &dir, "demo", &w("arena"), Some("pr:2"), None).unwrap(),
             1
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const PLAYED: &str = "# Playtest\n\n## G\n\
+                          - [ ] a <!-- pr:2 -->\n\
+                          - [ ] b\n\
+                          \x20 a note the human left under b\n\
+                          - [ ] bad throw (playtest Nov 21, sam)\n\n\
+                          ## H\n- [ ] c <!-- pr:3 -->\n";
+
+    #[test]
+    fn feedback_is_the_bot_ending_and_nothing_else() {
+        assert!(is_feedback("- [ ] ball clips (playtest Nov 21, sam)"));
+        assert!(is_feedback(
+            "- [ ] ball clips (playtest Nov 21, a, b) <!-- id:x-1 -->"
+        ));
+        assert!(!is_feedback("- [ ] ball clips (playtest Nov 21)"));
+        // As FEEDBACK_RE: text on both sides of the comma, any `(playtest ` occurrence.
+        assert!(!is_feedback("- [ ] x (playtest , sam)"));
+        assert!(!is_feedback("- [ ] x (playtest Nov 21, )"));
+        assert!(is_feedback("- [ ] a (playtest b) c (playtest Nov 21, sam)"));
+        assert!(!is_feedback("- [ ] arena: ball never clips <!-- pr:2 -->"));
+    }
+
+    #[test]
+    fn a_pass_stamps_its_checks_once_and_never_feedback() {
+        let once = stamp_pass(PLAYED, "dm-9", None);
+        assert!(once.contains("- [ ] a <!-- pr:2 pass:dm-9 -->\n"), "{once}");
+        assert!(once.contains("- [ ] b <!-- pass:dm-9 -->\n"), "{once}");
+        assert!(once.contains("- [ ] c <!-- pr:3 pass:dm-9 -->\n"), "{once}");
+        assert!(
+            once.contains("- [ ] bad throw (playtest Nov 21, sam)\n"),
+            "{once}"
+        );
+        assert_eq!(stamp_pass(&once, "dm-9", None), once, "idempotent");
+        // A second build stamps beside the first; a game pass stamps only its game.
+        let two = stamp_pass(&once, "dm-10", Some("h"));
+        assert!(
+            two.contains("- [ ] c <!-- pr:3 pass:dm-9 pass:dm-10 -->"),
+            "{two}"
+        );
+        assert!(two.contains("- [ ] a <!-- pr:2 pass:dm-9 -->\n"), "{two}");
+        assert_eq!(covered(PLAYED, None).len(), 3, "feedback is not a check");
+    }
+
+    #[test]
+    fn only_a_play_row_closed_done_is_a_played_build() {
+        let sheet = "## Tasks\n\
+                     - [ ] check(playtest): play build b3, 2 checks in playtest.md #high <!-- id:dm-3 -->\n\
+                     - [x] check(playtest): play build b1, 2 checks in playtest.md #high <!-- id:dm-1 done:2026-11-18 unverified: played -->\n\
+                     - [x] check(playtest): play build b2, 2 checks in playtest.md #high <!-- id:dm-2 done:2026-11-18 dropped: build broke -->\n\
+                     - [x] fix(ui): play the menu <!-- id:dm-4 done:2026-11-18 pr:9 -->\n\
+                     - [ ] fix(ui): parent <!-- id:dm-5 -->\n\
+                     \x20 - [x] check(playtest): play build b5, 1 check in playtest.md <!-- id:dm-6 -->\n";
+        assert_eq!(played_ids(sheet), ["dm-1"]);
+    }
+
+    #[test]
+    fn a_played_build_closes_its_checks_and_keeps_their_notes() {
+        let stamped = stamp_pass(&stamp_pass(PLAYED, "dm-1", Some("G")), "dm-2", Some("H"));
+        let (new, counts) = close_in(&stamped, &["dm-1".to_string()], day("2026-11-21"));
+        assert_eq!(counts, [("dm-1".to_string(), 2)]);
+        assert!(
+            new.contains("- [x] a <!-- pr:2 pass:dm-1 done:2026-11-21 played:dm-1 -->\n"),
+            "{new}"
+        );
+        assert!(
+            new.contains(
+                "- [x] b <!-- pass:dm-1 done:2026-11-21 played:dm-1 -->\n\
+                 \x20 a note the human left under b\n"
+            ),
+            "{new}"
+        );
+        assert!(
+            new.contains("- [ ] bad throw (playtest Nov 21, sam)\n"),
+            "{new}"
+        );
+        assert!(new.contains("- [ ] c <!-- pr:3 pass:dm-2 -->\n"), "{new}");
+        // NEGATIVE CONTROL: no played id, or one no check carries, closes nothing.
+        assert!(close_in(&stamped, &[], day("2026-11-21")).1.is_empty());
+        let (same, none) = close_in(&stamped, &["dm-7".to_string()], day("2026-11-21"));
+        assert!(none.is_empty());
+        assert_eq!(same, stamped);
+        // Idempotent: the closed checks are not open, so a second close finds none.
+        assert!(close_in(&new, &["dm-1".to_string()], day("2026-11-21"))
+            .1
+            .is_empty());
+    }
+
+    #[test]
+    fn close_played_writes_only_on_a_played_build() {
+        let (dir, _) = scratch("played");
+        let stamped = stamp_pass(PLAYED, "dm-1", None);
+        fs::write(path(&dir), &stamped).unwrap();
+        let open = "## Tasks\n- [ ] check(playtest): play build b1, 3 checks in playtest.md #high <!-- id:dm-1 -->\n";
+        // NEGATIVE CONTROL: the row still open writes nothing.
+        assert!(close_played(&dir, "demo", open, false).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), stamped);
+        let done = open.replace("- [ ]", "- [x]");
+        let dry = close_played(&dir, "demo", &done, true).unwrap();
+        assert_eq!(dry.len(), 1);
+        assert!(
+            dry[0].starts_with("3 playtest check(s) played in dm-1"),
+            "{dry:?}"
+        );
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), stamped, "dry run");
+        assert_eq!(close_played(&dir, "demo", &done, false).unwrap(), dry);
+        let got = fs::read_to_string(path(&dir)).unwrap();
+        assert_eq!(open_count(&dir), 1, "only the feedback stays open:\n{got}");
+        assert!(got.contains("### Done\n- [x] a"), "{got}");
+        assert!(close_played(&dir, "demo", &done, false).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(path(&dir)).unwrap(), got, "idempotent");
         let _ = fs::remove_dir_all(&dir);
     }
 

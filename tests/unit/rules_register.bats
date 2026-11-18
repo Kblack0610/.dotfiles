@@ -125,6 +125,21 @@ row() {
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+@test "rules --json: a .md source is a rule, a script or config a mechanism, and a row's own form wins" {
+  printf 'Never force push\n' > "$SANDBOX/hook.sh"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant", form: "rule"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .form]' <<<"$output")" '["rule","mechanism","rule"]'
+  run "$SUBJECT" rules
+  assert_line 'mechanisms=1'
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "invariant", form: "mechanims"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'form: rules.md: under ten: mechanims is neither rule nor mechanism'
+}
+
 @test "rules --check: a rule whose text left its source is stale" {
   row 'not in the file' high 'echo 3' 10
   run "$SUBJECT" rules --check
@@ -193,7 +208,8 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or ((.anchor // "") | length < 12)
       or (((.anchor // "") + (.measure // "")) | test("\n"))
       or (.kind == "invariant" and (.measure != null or .max != null or .min != null))
-      or (.kind == "invariant" and (.scenario // "") == "")) | .anchor' "$REAL"
+      or (.kind == "invariant" and (.scenario // "") == "")
+      or (.form != null and (.form | IN("rule", "mechanism") | not))) | .anchor' "$REAL"
   assert_output ''
 }
 
