@@ -3323,7 +3323,8 @@ cmd_backfill_briefs() {
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
 # nothing when they are clean, or when this queue is not the store's). 8>&-: the sync must not
-# inherit the queue lock, or every writer waits out its own lock wait (up to 300s) behind it.
+# inherit the queue lock (fd 8): it would keep .lock held for as long as it waits on its own sync
+# lock (store-sync LOCK_WAIT_S), and every queue writer timed out behind it (2026-11-18).
 [[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
