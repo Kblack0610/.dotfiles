@@ -2200,7 +2200,7 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'next phase: Phase 2: rollout; its item fix-wave-save is running here' ]
-  [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan), then close' ]
+  [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan --priority <p>), then close' ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {
@@ -4107,9 +4107,9 @@ verdict() {
   [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
   # One named step.
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
   # The timer: everything else closes once quiet 60 minutes.
   [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]

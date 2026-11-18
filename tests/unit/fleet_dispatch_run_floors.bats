@@ -353,6 +353,9 @@ full_fleet() {
   agent-queue add --project game --slug w2 --after r1 --tags 'red watch cause:d' "check(watch): w2 tripped" >/dev/null
   run watch_reds
   assert_output 1
+  agent-queue() { echo 'agent-queue: the queue is locked by another writer' >&2; return 1; }
+  run watch_reds
+  assert_output 0
 }
 
 @test "red floor: agent-hold and an account in its reserve still hold a red" {
@@ -908,7 +911,7 @@ full_fleet() {
 
 @test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {
   game_ready
-  worker '64.0 16 1'
+  worker '64.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run

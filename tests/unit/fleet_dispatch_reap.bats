@@ -1708,7 +1708,7 @@ OUT
 
 @test "reap leaves an item alone while its worker does not answer, and settles it once the worker says the session is gone" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run cmd_reap
@@ -1759,7 +1759,7 @@ OUT
 # last pushed feat/fix at abc123 and left a status note. DISPATCH_HOST_DEAD is 600s.
 lost_host_item() {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   sed -i 's/^session: .*/&\nsessions: sid-a/' "$(qitem running fix-crash)"
   agent-queue set fix-crash branch=feat/fix@abc123 'note=patched the parser, tests next' >/dev/null

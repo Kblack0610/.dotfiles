@@ -11,7 +11,7 @@ Work that can only run after a set time, a day of data or a night's log is not w
 Work blocked on another queue item (one that fixes its red, or a PR that must land first) is not waited on either: nothing wakes an idle session when that item lands, and reap keeps this item in `running/`. Check the blocker first (`agent-queue show <blocker>`): done ok means carry on now.
 
 - Record the open PR on this item: `agent-queue set <slug> pr=<owner>/<repo>#<N>`.
-- Queue the rest: `agent-queue add --project <p> --after <blocker> "<next step, naming the plan file, the PR and its branch>"`, and mark the phase `- [-] <name>: queue item <new slug>`. A blocker that closes failed never releases an `after:` hold, so the wind-down note names the blocker.
+- Queue the rest: `agent-queue add --project <p> --priority low --after <blocker> "<next step, naming the plan file, the PR and its branch>"`, and mark the phase `- [-] <name>: queue item <new slug>`. A blocker that closes failed never releases an `after:` hold, so the wind-down note names the blocker.
 - Wind down without `auto`, as `--pr-only` does: once the session is gone, reap parks this item in `review/` and closes it when the PR merges.
 
 ## Blocked mode

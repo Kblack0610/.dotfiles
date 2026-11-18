@@ -8,6 +8,12 @@ local home = noctalia.getenv("HOME") or ""
 local desk = home .. "/.local/bin/desk"
 local spec = nil
 local busy = false
+local hasDetail = false
+local published = nil
+local PANEL = "dotfiles/chips:detail"
+-- Off (config.toml `dropdown = false`) for a chip whose click acts, such as cycling the mic:
+-- it keeps its click and its plain tooltip.
+local dropdown = noctalia.getConfig("dropdown") ~= false
 
 -- A chip's class picks a palette role, so a theme switch recolours it. The classes are
 -- the ones the chip scripts print (pango.sh LEVEL_CLASS, timebox, audio_input).
@@ -37,10 +43,23 @@ local function show(line)
   local text = chip.text or ""
   barWidget.setVisible(text ~= "")
   barWidget.setText(text)
-  if (chip.tooltip or "") ~= "" then
-    barWidget.setTooltip(chip.tooltip)
+  -- Noctalia's tooltip is plain text, 280 px wide and three lines at most, so hover shows the
+  -- tooltip's first line and a click opens the whole of it in colour (detail.luau).
+  hasDetail = dropdown and type(chip.detail) == "table" and #chip.detail > 0
+  local tip = hasDetail and string.match(chip.tooltip, "[^\n]+") or chip.tooltip or ""
+  if tip ~= "" then
+    barWidget.setTooltip(tip)
   else
     barWidget.clearTooltip()
+  end
+  if hasDetail then
+    -- Published only when it changed, so an open panel is not rebuilt on every poll.
+    local detail = { lines = chip.detail, click = spec and spec.click or "" }
+    local key = noctalia.json.encode(detail)
+    if key ~= published then
+      published = key
+      noctalia.state.set("dotfiles.detail:" .. module, detail)
+    end
   end
   barWidget.setColor(ROLE[chip.class or ""] or "on_surface")
 end
@@ -91,8 +110,17 @@ function update()
   end
 end
 
+-- A chip with a dropdown opens it (its on-click is the panel's Open button); clicking the
+-- chip whose panel is open closes it, and another chip's click switches the panel to it.
+-- A chip with no tooltip runs its on-click, as on waybar.
 function onClick()
-  if spec ~= nil and spec.click ~= "" then
+  if hasDetail then
+    local shown = noctalia.state.get("dotfiles.detail.shown")
+    noctalia.state.set("dotfiles.detail.want", module)
+    if shown == nil or shown == module then
+      noctalia.togglePanel(PANEL)
+    end
+  elseif spec ~= nil and spec.click ~= "" then
     noctalia.runAsync(spec.click)
   end
 end
