@@ -346,7 +346,11 @@ fn human_at(text: &str) -> Option<u64> {
         .filter(|l| l.contains("\"timestamp\":\""))
         .find(|l| human_typed(l))
         .and_then(|l| serde_json::from_str::<Value>(l).ok())
-        .and_then(|v| v.get("timestamp").and_then(Value::as_str).and_then(iso_epoch))
+        .and_then(|v| {
+            v.get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(iso_epoch)
+        })
 }
 
 /// A typed prompt the human sent, not one our tooling typed with tmux send-keys.
@@ -2689,24 +2693,57 @@ mod tests {
     #[test]
     fn human_at_is_the_newest_prompt_the_human_typed_not_our_tooling() {
         let base = iso_epoch("2026-10-30T12:00:00Z").unwrap();
-        let typed = at(5, r#""type":"user","message":{"content":"keep going on the runners"}"#);
+        let typed = at(
+            5,
+            r#""type":"user","message":{"content":"keep going on the runners"}"#,
+        );
         let lines = [
             at(0, r#""type":"user","message":{"content":"start the plan"}"#),
             typed.clone(),
-            at(10, r#""type":"assistant","message":{"content":[{"type":"text","text":"done"}]}"#),
+            at(
+                10,
+                r#""type":"assistant","message":{"content":[{"type":"text","text":"done"}]}"#,
+            ),
             // Every sender our tooling types with, and the harness, after it: none is the human.
-            at(20, r#""type":"user","message":{"content":"<command-message>wind-down</command-message>\n<command-name>/wind-down</command-name>\n<command-args>auto</command-args>"}"#),
-            at(21, r#""type":"user","message":{"content":"<command-name>/wind-down</command-name>"}"#),
-            at(22, r#""type":"user","message":{"content":"fleet-dispatch restore reopened this session after its tmux server was lost"}"#),
-            at(23, r#""type":"user","message":{"content":"This session was parked by claude-acct"}"#),
-            at(24, r#""type":"user","message":{"content":"<task-notification> done"}"#),
-            at(25, r#""type":"user","isMeta":true,"message":{"content":"a reminder"}"#),
-            at(26, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"x"}]}"#),
+            at(
+                20,
+                r#""type":"user","message":{"content":"<command-message>wind-down</command-message>\n<command-name>/wind-down</command-name>\n<command-args>auto</command-args>"}"#,
+            ),
+            at(
+                21,
+                r#""type":"user","message":{"content":"<command-name>/wind-down</command-name>"}"#,
+            ),
+            at(
+                22,
+                r#""type":"user","message":{"content":"fleet-dispatch restore reopened this session after its tmux server was lost"}"#,
+            ),
+            at(
+                23,
+                r#""type":"user","message":{"content":"This session was parked by claude-acct"}"#,
+            ),
+            at(
+                24,
+                r#""type":"user","message":{"content":"<task-notification> done"}"#,
+            ),
+            at(
+                25,
+                r#""type":"user","isMeta":true,"message":{"content":"a reminder"}"#,
+            ),
+            at(
+                26,
+                r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"x"}]}"#,
+            ),
         ];
         assert_eq!(human_at(&lines.join("\n")), Some(base + 5 * 60));
         // Negative control: a typed slash command of the human's own does count.
-        let mine = at(30, r#""type":"user","message":{"content":"<command-name>/review</command-name>"}"#);
-        assert_eq!(human_at(&[lines.join("\n"), mine].join("\n")), Some(base + 30 * 60));
+        let mine = at(
+            30,
+            r#""type":"user","message":{"content":"<command-name>/review</command-name>"}"#,
+        );
+        assert_eq!(
+            human_at(&[lines.join("\n"), mine].join("\n")),
+            Some(base + 30 * 60)
+        );
         assert_eq!(human_at(&lines[2..].join("\n")), None);
     }
 
