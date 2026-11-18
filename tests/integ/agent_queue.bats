@@ -3280,7 +3280,7 @@ second line of the brief
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-held.md "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
 }
 
-@test "the cap never holds an urgent, red, --running, held-on-arrival, hand-started board or auto:epics verify add; dispatch's own board pull it holds" {
+@test "the cap never holds an urgent, red, --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --slug human "human"
@@ -3294,10 +3294,13 @@ second line of the brief
   "$AQ" add --project game --from auto:epics --tags verify --slug verify-e-1 "verify e" >/dev/null
   run "$AQ" add --project game --from board:game:gm-4 --slug gm-4 "feat(game): dispatch's fill"
   assert_failure 5
-  run "$AQ" add --project game --from canary --tags canary --slug canary "check(canary): x"
-  assert_failure 5
+  AGENT_QUEUE_PULL=dispatch "$AQ" add --project game --from canary --tags canary --slug canary "check(canary): x" >/dev/null
+  # Negative control: the same add without dispatch's pull is a filer's, and goes to the board.
+  run env -u AGENT_QUEUE_PULL "$AQ" add --project game --from canary --tags canary --slug canary-b "check(canary): y"
+  assert_failure
+  assert_output --partial "only the board fills the queue"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "broken,chained,dated,gm-3,mine,one,urgent,verify-e-1"
+  assert_output "broken,canary,chained,dated,gm-3,mine,one,urgent,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 3 ]
 }
 

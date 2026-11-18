@@ -332,7 +332,7 @@ finished_row_ok() {
 # one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD (docs: QUEUE.md "Admission").
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running,
 # urgent and `red`, an add that arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:), dispatch's
-# own pull (a board row, trainee or auto:epics verify; fleet-dispatch stops its fill at the cap,
+# own pull (a board row, trainee, canary or auto:epics verify; fleet-dispatch stops its fill at the cap,
 # queue_headroom), a --plan (an approved plan), cap 0.
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
@@ -1305,7 +1305,7 @@ cmd_add() {
   # (see admit); a queue item's session adding without --from is recorded as from the item.
   local capped=1 deferred=''
   for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
-  case "$from" in trainee | auto:epics) capped='' ;; esac
+  case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
   { [ -z "$running" ] && [ -z "$after" ] && [ -z "$deferred" ] && [ -z "${AQ_ADMITTED:-}" ] && ! admission_exempt "$priority" "$tags"; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
