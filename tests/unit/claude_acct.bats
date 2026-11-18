@@ -32,9 +32,9 @@ usage() {
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
 
-# creds <dir> <expiresAt-ms>
+# creds <dir> <expiresAt-ms> -- a login: an access token and the refresh token that renews it
 creds() {
-  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":%s}}\n' "$2" > "$1/.credentials.json"
+  printf '{"claudeAiOauth":{"accessToken":"tok","refreshToken":"r","expiresAt":%s}}\n' "$2" > "$1/.credentials.json"
 }
 
 @test "the account whose fuller window is lower wins when resets are unknown" {
@@ -131,6 +131,22 @@ creds() {
   run "$ACCT" pick
   assert_line "$ALT"
   assert_output --partial 'token expired'
+}
+
+@test "a signed-out account is never picked: no login, no refresh token, or one past its end" {
+  usage main 40 70
+  echo '{}' > "$ALT/.credentials.json"
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output ''
+  printf '{"claudeAiOauth":{"accessToken":"a","expiresAt":1000}}\n' > "$ALT/.credentials.json"
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+  printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1000,"refreshTokenExpiresAt":1000}}\n' > "$ALT/.credentials.json"
+  run --separate-stderr "$ACCT" pick
+  assert_output ''
+  run "$ACCT" status --json
+  [[ "$(jq -r '.[] | select(.name == "alt") | .state' <<< "$output")" == unread ]]
 }
 
 @test "an account that never logged in is skipped, not picked" {
@@ -2738,6 +2754,16 @@ STUB
   run "$ACCT" status --json
   assert_success
   [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == expired ]]
+}
+
+@test "usage read: a signed-out account whose setup token is refused reads unread, never expired" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  echo '{}' > "$HOME/.claude/.credentials.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
+  run "$ACCT" status --json
+  assert_success
+  [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == unread ]]
 }
 
 @test "setup-token: a call that exits 0 without answering is not a verified token" {

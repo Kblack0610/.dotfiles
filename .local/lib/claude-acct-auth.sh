@@ -57,6 +57,17 @@ auth_state() {
     ROWS=$(auth_rows)
 }
 
+# login_tsv <creds> -> "a_ok TAB r_ok TAB a_exp TAB r_exp" of a credentials file (epochs, 0 when
+# unset); exit 1 when it cannot be read. The one reader of a login: auth_rows and fetch's rank.
+login_tsv() {
+    jq -r '(.claudeAiOauth // {}) | [((.accessToken // "") != ""), ((.refreshToken // "") != ""),
+        ((.expiresAt // 0) / 1000 | floor), ((.refreshTokenExpiresAt // 0) / 1000 | floor)] | @tsv' "$1" 2>/dev/null
+}
+
+# refresh_live <r_ok> <r_exp> <now>: the refresh token is there and not past its end (0: no end
+# recorded). Without it a launch cannot refresh, so the account is signed out.
+refresh_live() { [[ "$1" == true ]] && (( $2 == 0 || $2 > $3 )); }
+
 # auth_rows -> one JSON object a line per Claude account: name, relogin (the command), logged_in,
 # why (empty when logged in), access_expires, refresh_expires, written (epochs, 0 when unknown),
 # working (busy sessions) and stuck (panes on Not logged in). Reads PANEL and STUCK.
@@ -67,11 +78,10 @@ auth_rows() {
         a_ok=false r_ok=false a_exp=0 r_exp=0 written=0 why=""
         if [[ ! -e "$creds" ]]; then
             why="no credentials file"
-        elif tsv=$(jq -r '(.claudeAiOauth // {}) | [((.accessToken // "") != ""), ((.refreshToken // "") != ""),
-                ((.expiresAt // 0) / 1000 | floor), ((.refreshTokenExpiresAt // 0) / 1000 | floor)] | @tsv' "$creds" 2>/dev/null); then
+        elif tsv=$(login_tsv "$creds"); then
             read -r a_ok r_ok a_exp r_exp <<< "$tsv"
             written=$(stat -c %Y "$creds" 2>/dev/null || echo 0)
-            if [[ "$r_ok" == true ]] && (( r_exp > 0 && r_exp <= now )); then r_ok=false; why="its login ended $(( (now - r_exp) / 3600 ))h ago"
+            if [[ "$r_ok" == true ]] && ! refresh_live "$r_ok" "$r_exp" "$now"; then r_ok=false; why="its login ended $(( (now - r_exp) / 3600 ))h ago"
             elif [[ "$r_ok" != true && "$a_ok" != true ]]; then why="the credentials file holds no login"
             elif [[ "$r_ok" != true ]]; then why="no refresh token"; fi
         else
