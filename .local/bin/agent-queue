@@ -674,13 +674,14 @@ gate_board_tag() {
 # dead (it can never clear: take it off the row, or settle what it names), and any other tag none.
 # after/<row-id> is clear once that row closed done (within AQ_GATE_DONE_DAYS), dead once it was
 # dropped or when no row has that id, pending while it is open or the board cannot be read. One board
-# read and one rbw list serve every tag. --all answers every gate tag on the board's open rows, and
+# read and one rbw list serve every tag; --all reads the open board, and the closed rows only once an
+# after/ names a row that is not open (about 0.15s more, 2026-11-18). --all answers every gate tag on the board's open rows, and
 # only those: fleet-dispatch's one call a pass (a board it cannot read fails it). --json: one {tag,
 # state, why, queue} line per tag, queue the hold tags it means (gate_queue_tag), which fleet-dispatch
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" brd=0 rsl="" t q st why id r rc=0 GQ HOLD HOLD_DEAD
+  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD
   local -a tags=()
   local -A RS=()
   while [ $# -gt 0 ]; do
@@ -693,8 +694,8 @@ cmd_gate() {
   done
   [ -n "$all" ] || [ "${#tags[@]}" -gt 0 ] || die "$usage"
   if [ -n "$all" ]; then
-    board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)" && [ -n "$board" ] || die "gate --all: notes board --json failed"
-    brd=1
+    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "gate --all: notes board --json failed"
+    brd=1 full=""
     mapfile -t -O "${#tags[@]}" tags < <(jq -r '[.rows[]? | select(.state == "open" or .state == "doing") | .tags[]?] | unique | .[]' <<<"$board")
   fi
   local -A LIST_MEMO=()
@@ -706,12 +707,17 @@ cmd_gate() {
       if [ "$brd" = 0 ]; then
         if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then brd=1; else brd=2; fi
       fi
-      # Every row's state in one jq pass, the first time an after/ asks.
-      if [ "$brd" = 1 ] && [ -z "$rsl" ]; then
-        rsl=1
-        while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '(.rows // [])[], (.done // [])[]
-          | select(.id != null) | "\(.id)\t\(if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end)"' <<<"$board")
-      fi
+      # Every row's state in one jq pass, the first time an after/ asks; and once more with the closed
+      # rows, the first time one names a row the open board lacks (--all).
+      for pass in open closed; do
+        if [ "$brd" = 1 ] && [ -z "$rsl" ]; then
+          rsl=1
+          while IFS=$'\t' read -r r st; do RS[$r]=$st; done < <(jq -r '(.rows // [])[], (.done // [])[]
+            | select(.id != null) | "\(.id)\t\(if .state == "done" then (if ((.marker // "") | test("(^| )dropped")) then "dropped" else "done" end) else "open" end)"' <<<"$board")
+        fi
+        [ "$brd" = 1 ] && [ -z "$full" ] && [ -z "${RS[$id]-}" ] || break
+        if board="$(notes board --json --done-days "$AQ_GATE_DONE_DAYS" 2>/dev/null)"; then full=1 rsl=""; else brd=2; fi
+      done
       case "${RS[$id]-}" in
         done) st=clear ;;
         dropped) st=dead why="after $id: that row was dropped, so it never closes done; take the tag off the row" ;;

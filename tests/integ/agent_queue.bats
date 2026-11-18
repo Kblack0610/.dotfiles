@@ -838,7 +838,7 @@ gate_rbw() {
   assert_line "clear    rbw/infra/x"
 }
 
-@test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from one read" {
+@test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from the open board" {
   gate_rbw
   jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
                  {id: "ar-9", state: "open", tags: ["after/ar-4"]}],
@@ -858,6 +858,16 @@ gate_rbw() {
   assert_failure 3
   [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 rbw/infra/x" ]
   [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  # Every after/ there names a row the open board lists, so no closed row is read.
+  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 0 ]
+  # One it lacks reads the closed rows, once however many tags name such a row.
+  jq '.rows += [{id: "ar-8", state: "open", tags: ["after/ar-404", "after/ar-405"]}]' "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [[ "$(st after/ar-405)" == "dead|after ar-405: no board row"* ]]
+  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 2 ]
   # Once ar-2 closes done, ar-1's gate clears.
   jq '.done += [.rows[1] | .state = "done" | .marker = "id:ar-2 done:2026-11-18"] | .rows |= map(select(.id != "ar-2"))' \
     "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"

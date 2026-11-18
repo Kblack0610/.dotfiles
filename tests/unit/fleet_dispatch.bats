@@ -252,6 +252,26 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output ''
 }
 
+@test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
+  echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  # at/0000 is past at any hour, so both rows' gates are clear.
+  row game human gh-1 "- [ ] feat(game): the human's row $T #at/0000 <!-- id:gh-1 -->"
+  row game agent ga-2 "- [ ] feat(game): the agent's row $T #at/0000 <!-- id:ga-2 -->"
+  run cmd_candidates
+  assert_equal "$(jq -r '"\(.lane) \(.key) \(.gated)"' <<<"$output" | sort | paste -sd,)" 'agent ga-2 true,human gh-1 null'
+  run unjudged_rows
+  assert_equal "$(jq -r .key <<<"$output")" gh-1
+  # A skip verdict does not hold committed work, but the area it names does.
+  verdict game agent ga-2 skip S 1 wilds
+  started_item other-work lab:game-agent-3 run wilds
+  run picks "$(all_open)" 2
+  assert_output ''
+  agent-queue move other-work done --status ok >/dev/null
+  run picks "$(all_open)" 2
+  assert_equal "$(jq -r '"\(.key) \(.area)"' <<<"$output")" 'ga-2 wilds'
+}
+
 @test "row gates: #ask/<id> holds until the human answers; the judge's answer never releases it, and the cleared ask goes onto the item" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): ship it $T #ask/a1 <!-- id:ga-1 -->"
