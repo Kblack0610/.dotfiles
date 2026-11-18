@@ -2288,7 +2288,8 @@ explain() {
 # CLOSE_JQ: a row -> its `pct` (phases ticked, of the checklist) and `close` {verdict, why}:
 # whether the session may close now, after one named step, or must stay (keep). The one
 # definition of when a session closes, one chain for every session, first match wins, as the
-# close flow of .local/src/docs/fleet-states.md: a session stays only while closing it would lose
+# close flow of .local/src/docs/fleet-states.md, each branch tagged `# step:<id>` with the Step of
+# its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays only while closing it would lose
 # something (its claude is elsewhere, the human labelled it manual, a prompt in its pane, a turn
 # under way, unlanded work) or until one named step (queue its next phases, close its item);
 # otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN, or FLEET_CHAT_CLOSE_H when labelled chat. A next phase is the queue's, not this
@@ -2309,21 +2310,21 @@ CLOSE_JQ='
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | (((.item.is // "") == "moved" and .dispatch != null) | not) as $phases_here
     | ($phases_here and ((.bucket == "LANDED" and .next_phase != null) or any($other[]; startswith("next phase:")))) as $next
-    | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
-      elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
-      elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
-      elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60
+    | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
+      elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"} # step:worker
+      elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
+      elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
         then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
-      elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
-      elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
-      elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
+      elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"} # step:plan-mode
+      elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"} # step:dialog
+      elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on")))) # step:working
         and ($me | not) then {verdict: "keep", why: "working"}
-      elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
-      elif $next and ($me or $quiet < $idle_close) then {verdict: "after", why: "queue the next phases (agent-queue add --plan --priority <p>), then close"}
-      elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
-      elif $held then {verdict: "keep", why: "work left here: \($held)"}
-      elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"}
-      else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its /wind-down queues them (close --self reads after)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
+      elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"} # step:unlanded
+      elif $next and ($me or $quiet < $idle_close) then {verdict: "after", why: "queue the next phases (agent-queue add --plan --priority <p>), then close"} # step:next-phase
+      elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"} # step:only-item
+      elif $held then {verdict: "keep", why: "work left here: \($held)"} # step:held
+      elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"} # step:quiet
+      else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its /wind-down queues them (close --self reads after)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end; # step:now
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
               else close_verdict($idle_close; $chat_close_h) end)'

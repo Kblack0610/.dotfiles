@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""close-flow-svg [--doc <fleet-states.md>] [--out <svg>|-]: draw the close flow from its one source.
+
+Reads the Step | Group | Facts | Verdict table under "## Close verdict" in fleet-states.md and
+writes fleet-close-flow.svg beside it (--out elsewhere, - for stdout): the chain top to bottom,
+first match wins, one box per step with its facts (parentheticals dropped, wrapped; the doc row
+keeps the full text) and its verdict, coloured keep, after or now, in one lane per group. House
+theme: the svg-diagram skill's process-flow style, on a transparent canvas, so every word sits on
+a filled shape and reads on a light or a dark page. tests/unit/fleet_states_doc.bats fails when
+the committed SVG differs from this output: change the table, rerun this, never edit the SVG.
+Exit: 0 written, 2 on a usage error or a table it cannot read.
+"""
+import os
+import re
+import sys
+
+HEADER = "| Step | Group | Facts | Verdict |"
+VERDICTS = ("keep", "after", "now")
+
+W, LANE_X, LANE_W = 880, 20, 840
+ID_X = 36
+BOX_X, BOX_W = 130, 430
+V_X, V_W = 600, 250
+LINE = 16
+PAD = 14
+FACT_CHARS, VERDICT_CHARS = 70, 42
+STEP_GAP, LANE_GAP, LANE_HEAD, LANE_FOOT = 24, 22, 36, 14
+
+STYLE = """      .lane { fill:#eef2f8; stroke:#2f4d7a; stroke-width:2; }
+      .lane-title { font-size:14px; font-weight:600; fill:#2f4d7a; text-anchor:start; }
+      .node { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .decision { fill:#eaf0fb; stroke:#4a72b8; stroke-width:1.5; }
+      .keep { fill:#e8f0fe; stroke:#4a72b8; stroke-width:1.5; }
+      .after { fill:#eef7ee; stroke:#2f7a3a; stroke-width:1.5; stroke-dasharray:5 4; }
+      .now { fill:#fffaf0; stroke:#b9791f; stroke-width:2; }
+      .label { font-size:14px; fill:#1a2233; text-anchor:middle; dominant-baseline:middle; }
+      .label.sm { font-size:12px; }
+      .label.strong { font-weight:600; }
+      .step { font-size:11.5px; fill:#33415c; dominant-baseline:middle; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .edge { fill:none; stroke:#667085; stroke-width:1.6; marker-end:url(#arrow); }
+      .elabel { font-size:11.5px; fill:#33415c; text-anchor:start; }"""
+
+
+def die(msg):
+    print(f"close-flow-svg: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def table(doc):
+    """The close table's rows as (step, group, facts, verdict), the group empty on a continuation."""
+    rows, on = [], False
+    with open(doc, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.startswith(HEADER):
+                on = True
+                continue
+            if not on:
+                continue
+            if line.startswith("|---"):
+                continue
+            if not line.startswith("|"):
+                break
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) != 4:
+                die(f"a close table row has {len(cells)} cells, not 4: {line[:60]}")
+            rows.append(tuple(cells))
+    if not rows:
+        die(f"no close table ({HEADER}) in {doc}")
+    return rows
+
+
+def plain(text):
+    """Cell text without backticks or parentheticals (nested ones too), spaces tidied."""
+    text = text.replace("`", "")
+    while True:
+        cut = re.sub(r"\s*\([^()]*\)", "", text)
+        if cut == text:
+            break
+        text = cut
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r" ([,;:])", r"\1", text)
+
+
+def wrap(text, width):
+    lines, cur = [], ""
+    for word in text.split():
+        if cur and len(cur) + 1 + len(word) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}" if cur else word
+    return lines + [cur] if cur else lines
+
+
+def esc(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def steps(rows):
+    """Groups in order, each (title, [step dicts])."""
+    groups = []
+    for step, group, facts, verdict in rows:
+        step = step.strip("`")
+        if not re.fullmatch(r"[a-z][a-z0-9-]*", step):
+            die(f"step id '{step}' is not kebab case")
+        short = plain(verdict).split(";")[0].strip()
+        word = re.split(r"[:\s]", short, maxsplit=1)[0]
+        if word not in VERDICTS:
+            die(f"step {step}: verdict '{word}' is not one of {', '.join(VERDICTS)}")
+        if group:
+            groups.append((plain(group), []))
+        elif not groups:
+            die(f"step {step}: the first row names no group")
+        groups[-1][1].append({
+            "id": step,
+            "verdict": word,
+            "facts": wrap(plain(facts), FACT_CHARS),
+            "vtext": wrap(word.upper() + short[len(word):], VERDICT_CHARS),
+        })
+    return groups
+
+
+def text_lines(out, cls, x, cy, lines):
+    first = cy - (len(lines) - 1) * LINE / 2
+    for i, line in enumerate(lines):
+        out.append(f'  <text class="{cls}" x="{x}" y="{first + i * LINE:g}">{esc(line)}</text>')
+
+
+def render(groups):
+    out = []
+    mid = BOX_X + BOX_W // 2
+    vmid = V_X + V_W // 2
+    last = groups[-1][1][-1]["id"]
+    y = 12
+    out.append(f'  <rect class="node" x="{BOX_X}" y="{y}" width="{BOX_W}" height="40" rx="20"/>')
+    text_lines(out, "label sm", mid, y + 20, ["each session row: the first step that matches decides"])
+    prev = y + 40
+    y = prev + LANE_GAP
+    from_start = True
+    for title, group in groups:
+        lane_top = y
+        body = []
+        y += LANE_HEAD
+        for s in group:
+            n = max(len(s["facts"]), len(s["vtext"]))
+            h = n * LINE + PAD
+            cy = y + h / 2
+            body.append(f'  <path class="edge" d="M{mid},{prev:g} V{y - 1:g}"/>')
+            if not from_start:
+                body.append(f'  <text class="elabel" x="{mid + 8}" y="{y - 8:g}">no</text>')
+            from_start = False
+            final = s["id"] == last
+            cls, rx = ("node", min(h / 2, 20)) if final else ("decision", 6)
+            body.append(f'  <text class="step" x="{ID_X}" y="{cy:g}">{esc(s["id"])}</text>')
+            body.append(f'  <rect class="{cls}" x="{BOX_X}" y="{y}" width="{BOX_W}" height="{h}" rx="{rx:g}"/>')
+            text_lines(body, "label sm", mid, cy, s["facts"])
+            body.append(f'  <path class="edge" d="M{BOX_X + BOX_W},{cy:g} H{V_X - 2}"/>')
+            if not final:
+                body.append(f'  <text class="elabel" x="{BOX_X + BOX_W + 9}" y="{cy - 6:g}">yes</text>')
+            body.append(f'  <rect class="{s["verdict"]}" x="{V_X}" y="{y}" width="{V_W}" height="{h}" rx="{min(h / 2, 20):g}"/>')
+            strong = "label sm strong" if s["verdict"] == "now" else "label sm"
+            text_lines(body, strong, vmid, cy, s["vtext"])
+            prev = y + h
+            y = prev + STEP_GAP
+        lane_h = prev + LANE_FOOT - lane_top
+        out.append(f'  <rect class="lane" x="{LANE_X}" y="{lane_top}" width="{LANE_W}" height="{lane_h:g}" rx="10"/>')
+        out.append(f'  <text class="lane-title" x="{LANE_X + 20}" y="{lane_top + 22}">{esc(title)}</text>')
+        out.extend(body)
+        y = prev + LANE_FOOT + LANE_GAP
+    # key: what each verdict colour means, on a filled band so it reads on any page
+    key_top = y - LANE_GAP + 10
+    out.append(f'  <rect class="lane" x="{LANE_X}" y="{key_top}" width="{LANE_W}" height="44" rx="10"/>')
+    keys = [("keep", "KEEP: stays open"), ("after", "AFTER: one named step, then close"), ("now", "NOW: the shepherd closes it")]
+    kx = LANE_X + 20
+    for cls, label in keys:
+        width = 64 + len(label) * 6
+        out.append(f'  <rect class="{cls}" x="{kx}" y="{key_top + 10}" width="{width}" height="24" rx="12"/>')
+        text_lines(out, "label sm", kx + width // 2, key_top + 22, [label])
+        kx += width + 20
+    height = key_top + 44 + 12
+    return height, out
+
+
+def main(argv):
+    here = os.path.dirname(os.path.realpath(__file__))
+    doc = os.path.join(here, "..", "src", "docs", "fleet-states.md")
+    out_path = None
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a in ("--doc", "--out") and args:
+            if a == "--doc":
+                doc = args.pop(0)
+            else:
+                out_path = args.pop(0)
+        else:
+            print(__doc__.strip(), file=sys.stderr)
+            sys.exit(2)
+    doc = os.path.normpath(doc)
+    if not os.path.isfile(doc):
+        die(f"no doc at {doc}")
+    height, body = render(steps(table(doc)))
+    svg = "\n".join([
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {height:g}" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">',
+        "  <!-- GENERATED by .local/bin/close-flow-svg from the Close verdict table (Step, Group, Facts, Verdict)",
+        "       in .local/src/docs/fleet-states.md. Do not edit: change the table row and its tagged CLOSE_JQ branch",
+        "       in .local/bin/fleet-sessions, then rerun close-flow-svg. tests/unit/fleet_states_doc.bats checks both. -->",
+        "  <defs>",
+        '    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#667085"/></marker>',
+        "    <style>",
+        STYLE,
+        "    </style>",
+        "  </defs>",
+        *body,
+        "</svg>",
+        "",
+    ])
+    if out_path == "-":
+        sys.stdout.write(svg)
+        return
+    out_path = out_path or os.path.join(os.path.dirname(doc), "fleet-close-flow.svg")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(svg)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
