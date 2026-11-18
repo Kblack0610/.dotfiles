@@ -24,8 +24,8 @@
 #   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
-#       work the human asked for (from: human, or a #requested row) cancels from a session or script only
-#       with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
+#       work the human asked for (from: human, or a #requested row) cancels, or returns with --drop, from a session
+#       or script only with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
@@ -1887,9 +1887,13 @@ cmd_return() {
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
   local -a chain=() files=() rows=() profs=() lanes=()
   while IFS=$'\t' read -r s g; do chain+=("$s") files+=("$g"); done < <(chain_of "$slug" "$f")
-  # A return takes the human's work off the queue as a cancel does, so the same guard holds every
-  # item of the chain, all before the first closes: the human's own ask must name each of them.
-  for i in "${!chain[@]}"; do cancel_guard "${files[i]}" "$ask"; done
+  # A plain return loses nothing (the row keeps the brief, the chain goes with it), so it is not held;
+  # --drop closes the human's rows undelivered, so the cancel guard holds every item of the chain,
+  # all before the first closes. A given --ask is checked either way, since the item records it.
+  # 2026-11-18: holding plain returns drew eight repeat asks to drain the queue under its cap.
+  if [ -n "$drop" ] || [ -n "$ask" ]; then
+    for i in "${!chain[@]}"; do cancel_guard "${files[i]}" "$ask"; done
+  fi
   why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")

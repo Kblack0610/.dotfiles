@@ -2106,12 +2106,21 @@ EOF2
   [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nd.md)" cancel_cause)" ]
 }
 
-@test "a session returns the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
+@test "a session returns the human's work with no ask, since a return loses nothing" {
+  "$AQ" add --project game --from shepherd --slug ga "a"
+  "$AQ" add --project game --slug gb --after ga "b"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "drain the queue under its cap"
+  assert_success
+  [ -z "$(item queued ga)" ] && [ -z "$(item queued gb)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gb.md)" end_reason)" = returned ]
+}
+
+@test "a session drops the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
   "$AQ" add --project game --slug gb --after ga "b"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --drop
   assert_failure; assert_output --partial "gb is work the human asked for"
   [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
   ask h1 answered a human "ga only"
