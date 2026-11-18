@@ -463,13 +463,13 @@ admission_log() {
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
 # Provisional: hand sessions add straight in only until the board path covers them.
 # hand_caller <from> <from_given> -> true for the human: no --from but `human`, and no queue item, or one
-# whose session the human opened (origin hand or resume). A finished or unknown item is an agent's.
+# whose session the human opened (`by` hand or resume, ORIGIN_BY). A finished or unknown item is an agent's.
 hand_caller() {
   [ -z "$2" ] || [ "$1" = human ] || return 1
   [ -n "${AGENT_QUEUE_ITEM:-}" ] || return 0
   local f; f="$(find_item "$AGENT_QUEUE_ITEM")"
   [ -n "$f" ] || return 1
-  case "$(fm_get "$f" origin)" in hand | resume) return 0 ;; esac
+  case "$(jq -rn --argjson m "$ORIGIN_BY" --arg o "$(fm_get "$f" origin)" '$m[$o] // $o')" in hand | resume) return 0 ;; esac
   return 1
 }
 # pull_ok <running> <from> <from_given> -> true when this add may go into the queue at all.
@@ -1020,6 +1020,11 @@ item_recs() {
 # the board row it was promoted from (`from: board:`), else no key: an item whose story row was never
 # filed writes `row:` empty, and "" as a row broke judge-eval (ar-1551). The one definition agent-land,
 # fleet-dispatch and judge-eval read, whatever the item's origin.
+# `by` is who started the item's session, the one answer every reader takes (fleet-states.md Owners):
+# dispatch (a dispatch run; redispatch is a retired value older items carry), resume (a restore), hand (a hand start
+# through fleet-dispatch, a scratch send, or a session's own --running record, origin self). An origin
+# this map does not name reads as written; an item with no origin has no `by`.
+ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand", "self": "hand"}'
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -1028,6 +1033,7 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
   | .priority //= "high"
+  | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
@@ -1701,6 +1707,9 @@ cmd_add() {
     [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
     printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
     [ -n "$running" ] && printf 'started: %s\n' "$now"
+    # A --running record is a session recording itself: origin self, `by` hand (ORIGIN_BY). With no
+    # origin, fleet-dispatch counted such a session as one of its own runs.
+    [ -n "$running" ] && printf 'origin: self\n'
     [ -n "$session" ] && printf 'session: %s\n' "$session"
     [ -n "$window" ] && printf 'window: %s\n' "$window"
     [ -n "$sid" ] && printf 'sessions: %s\naccount: %s\n' "$sid" "$(claude_account)"
@@ -2085,12 +2094,13 @@ cancel_close() {
   # A session on a fleet worker is closed there: here the same name is some other session.
   host="$(fm_get "$f" host)"
   # Close what the item owns: its window when it recorded one (a hand start), its session only
-  # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
+  # when fleet-dispatch made it (an `origin:` other than a --running record's self), else nothing.
+  # tmux-close spares world sessions.
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ] && [ -z "${AQ_RETURN_KEEP_SESSION-}" ]; then
     if [ -n "$window" ]; then
       close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
         echo "agent-queue: window $window was not open on $server" >&2
-    elif [ -n "$(fm_get "$f" origin)" ]; then
+    elif case "$(fm_get "$f" origin)" in "" | self) false ;; esac; then
       close_on "$host" -L "$server" session "$session" && echo "killed session $session" ||
         echo "agent-queue: session $session was not closed on $server" >&2
     else

@@ -1536,6 +1536,9 @@ def readonly_call(name, inp):
 
 
 def session_kind(path, entrypoint, prompt):
+    # The card's kind comes from its own transcript, not the queue item's `by` (agent-queue): a card is
+    # built once per transcript and cached by mtime, the item's `sessions:` id is written after the
+    # session starts, and subagent and runner sessions have no item at all.
     if "subagents" in path.parts:
         return "subagent"
     m = re.match(r"\s*<command-message>([\w:-]+)", prompt or "")

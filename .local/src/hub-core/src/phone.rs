@@ -146,22 +146,35 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     out
 }
 
-/// "14 late (worst 21h), next done 10:12", from the sessions still live.
+/// "14 overdue (longest phase open 21h), next done 10:12", from the sessions still live: overdue
+/// is fleet-sessions' verdict on each (`overdue`, the shepherd's rule), never a past ETA.
 fn etas(state: &Value, now: i64) -> Option<String> {
     let vocab = Vocab::from_state(state);
-    let etas: Vec<i64> = state["sessions"]
+    let live: Vec<&Value> = state["sessions"]
         .as_array()?
         .iter()
         .filter(|s| vocab.in_progress(s["bucket"].as_str().unwrap_or("")))
-        .filter_map(|s| s["eta_epoch"].as_i64())
         .collect();
-    let late: Vec<i64> = etas.iter().copied().filter(|e| *e < now).collect();
+    let late: Vec<i64> = live
+        .iter()
+        .filter(|s| s["overdue"].is_object())
+        .map(|s| s["overdue"]["age_min"].as_i64().unwrap_or(0))
+        .collect();
     let mut said = vec![];
-    if let Some(oldest) = late.iter().min() {
-        said.push(format!("{} late (worst {})", late.len(), age(now - oldest)));
+    if let Some(longest) = late.iter().max() {
+        said.push(format!(
+            "{} overdue (longest phase open {})",
+            late.len(),
+            age(longest * 60)
+        ));
     }
-    if let Some(next) = etas.iter().filter(|e| **e >= now).min() {
-        let at = chrono::DateTime::from_timestamp(*next, 0)?.with_timezone(&chrono::Local);
+    if let Some(next) = live
+        .iter()
+        .filter_map(|s| s["eta_epoch"].as_i64())
+        .filter(|e| *e >= now)
+        .min()
+    {
+        let at = chrono::DateTime::from_timestamp(next, 0)?.with_timezone(&chrono::Local);
         said.push(format!("next done {}", at.format("%H:%M")));
     }
     (!said.is_empty()).then(|| said.join(", "))
@@ -592,11 +605,13 @@ mod tests {
             "vocab": {"buckets": ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
                       "in_progress": ["WORKING", "NEEDS", "STALLED"]},
             "sessions": [
-                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200},
+                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200,
+                 "overdue": {"phase": "phase 2/4", "age_min": 125}},
                 {"target": "w/s3:1", "bucket": "NEEDS", "cwd": "/x/trader", "idle_min": 30,
                  "reason": "permission", "eta_epoch": NOW - 3600},
                 {"target": "w/s4:1", "bucket": "WORKING", "cwd": "/x/y", "eta_epoch": NOW + 600},
-                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000},
+                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000,
+                 "overdue": {"phase": "phase 1/1", "age_min": 9000}},
             ],
         })
     }
@@ -698,7 +713,7 @@ mod tests {
             agents,
             [
                 "Agents: 8 working, 1 stalled".to_string(),
-                format!("2 late (worst 2h), next done {next}"),
+                format!("1 overdue (longest phase open 2h), next done {next}"),
                 "Vitals: 1 of 2 off target: Flow".to_string(),
             ]
         );

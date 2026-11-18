@@ -87,14 +87,16 @@ Quiet is the smaller of `idle_min` and `age_min`, a null `age_min` reading 0, so
 
 Change a step's table row and its tagged branch in `CLOSE_JQ` together (a new step is a new row and a new `# step:<id>` branch, in chain order), then run `.local/bin/close-flow-svg` from the checkout to regenerate `fleet-close-flow.svg`; never edit the SVG. `tests/unit/fleet_states_doc.bats` checks that the table's Step ids, in order, are the `# step:` tags of the branches, that each row's verdict word (keep, after, now) is its branch's verdict, and that the committed SVG is the generator's output of the table. It cannot check a condition: a change to a branch's condition updates that row's Facts cell by hand. A PR that changes `CLOSE_JQ` also runs `fleet-close-diff origin/main .` and `fleet-close-diff --self origin/main .` from its worktree: each prints every live session whose verdict the change moves, read over the same state document, and the PR body explains each line; an unexplained line blocks the merge. A test pins each new step with a negative control that fails on `origin/main`. A change to the facts the flow reads (agent-panel, the collect) moves no verdict here: it shows in the facts themselves, before and after.
 
-## Schema (version 1)
+## Schema (version 2)
 
 ```
-schema            1; bumped when a field changes meaning or is removed
+schema            2; bumped when a field changes meaning or is removed (2: a session's `item.origin`
+                  went, `by` replaces it)
 generated_epoch   when the pass that wrote this started (epoch seconds)
 generated_at      the same, ISO 8601 UTC
 unreadable[]      sources this pass could not read ("agent-panel", "PR store (<repo>)", "agent-ask",
-                  "run ledger (<repo>)": `schedules-sync runs` failed or its sync is stale);
+                  "run ledger (<repo>)": `schedules-sync runs` failed or its sync is stale),
+                  "fleet-bench eta" (no `eta` and no `overdue` verdict this pass);
                   facts from them are missing, not false
 sessions[]        one object per live Claude session: the `fleet-sessions --json` row
 main[]            {repo, id, reason, escalated, owners[]}: a default branch whose latest CI run failed,
@@ -115,6 +117,10 @@ A session object carries `bucket`, `reason`, `fact` (bucket + reason + branch, m
 
 A session object carries `host`: null for a session on this machine, else the fleet worker it runs on (`fleet-hosts.sh`, the home-config inventory group `fleet_workers`). A worker's row has the target `<host>@<server>/<session>:<window>`, so no local session can match it, and no git or PR facts: its checkout is on the worker. A worker that does not answer over ssh drops its rows from the pass rather than reading them as gone. The same read is published as `worker-panel.json` beside state.json (`{at, ttl, rows, silent}`, `fleet_panel_publish`; `silent` names the workers it could not read), the one read of the workers' sessions each minute: agent-ask and agent-web look a worker's session up in it instead of asking over ssh, and ssh is only for acting on one. A snapshot past its ttl reads as stale, never as an empty answer, and a worker it names silent is asked live (agent-ask) or an error (agent-web), never read as having no sessions.
 
+A session object carries `by`, who started it: `dispatch` (fleet-dispatch's run or redispatch), `resume`, or `hand` (the human: a hand start, a scratch send, a session that recorded itself with `agent-queue add --running`, which writes `origin: self`, or one with no queue item); null for the shepherd's own pass. It is the item's `origin:` through agent-queue's `ORIGIN_BY`, the one map, which `agent-queue list --json` also puts on each item as `by` (fleet-dispatch's run slots and preemption, judge-eval and the done rows of hub Sessions read it there); no reader maps an origin itself.
+
+A session object carries `overdue`: null, or fleet-sessions' verdict on its open plan phase (`overdue_of`), `{phase, name, age_min, expected_min, limit_min, escalate_min, basis, plan_target}`. A phase is overdue once it has run twice its fleet-bench estimate and at least `FLEET_OVERDUE_MIN` (60) minutes. Not overdue: a finished plan; a phase whose holding queue items are all still queued (`phase_queued`: held by an `after:` or `at:` gate, so nothing works it yet, ar-528); a session in a landing wait (`wait_min`, ar-2525). The verdict sits on the session running the phase (`phase_runner`), or on the plan's own row when that runner has no row. No reader compares an ETA to a clock of its own. A runner job's overdue (hub Fleet, `fleet.rs`) is a different rule: one run against its usual length.
+
 Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
 ## Readers
@@ -125,6 +131,8 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
 | `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
 | agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
+| `fleet-shepherd due` (the overdue lines), hub Home Running (the Overdue chip and its ETA cell), agent-web `etaText` (every ETA it draws), the phone's agents line (`N overdue`) | `overdue` per session; `unreadable` naming `fleet-bench eta` |
+| hub Sessions (the BY column of a live row), hub `capacity` (runner slots), hub Fleet `who` | `by` per session |
 | tmux status line (`.local/src/tmux/claude-status.sh`) | `!N` is `questions.sh count`, the Prefix y panel's own number: every pending ask file (live or dead) plus every session with a dialog open, fleet-wide whatever session the bar is in. `~` working and the check mark idle count the current session's rows of `agent-panel list` by glyph. The same refresh copies each row's glyph onto its window as `@agent_glyph` (`project_glyphs`), which the window list draws before the window number: `!` red, `~` amber, the check green; two agents in one window show `!` over `~` over the check. It reads no pane text and not the document |
 | tmux fleet view (`.local/src/tmux/fleet.sh`, agents section) | agent-panel's glyph and `bucket` by `target`, the same join |
 | tmux window names | `bucket` and `labels` per session, copied each tick onto the session's window as `@fleet_stage` and `@fleet_labels` (`tmux_project`); `.tmux.conf`'s `@fleet_fmt` draws them |
@@ -148,6 +156,8 @@ A fix that deletes a copy adds its row in the same PR, so the copy cannot come b
 | The pace numbers: claude-acct's verdict, the auth wake, the bulk-wake budget | `.local/lib/pace-conf.sh:pace_get` | `.config/claude-acct/pace.conf` | `\{(PACE_SLACK_PCT\|RESERVE_PCT\|SESSION_RATE\|UNDERUSE_HOURS\|UNDERUSE_GAP_PCT\|TOKEN_WARN_DAYS\|AUTH_REFRESH_GRACE_MIN\|AUTH_WARN_DAYS\|WAKE_BATCH\|WAKE_BUDGET\|WAKE_LOAD_PCT\|WAKE_GAP_MIN\|WAKE_TRIES\|WAKE_SETTLE_MIN):[-=]\|pace\.conf[}"']` (a default beside the conf, or a second reader of it) | - | `the batch is data: WAKE_BUDGET in pace.conf moves it`, `a number missing from pace.conf wakes nobody and names the file, never a default batch` |
 | Who parked a session and why (`why=` is the owner: `park`, `preempt`, `budget`) | `.local/bin/claude-acct:park_flow` (also `cmd_unpark`) | `~/.agent/parked/<key>` | `["']resume=` (a second ledger writer) | `park_lock` | `a park or unpark of a session another one holds the lock for waits, then is refused and types nothing` |
 | One shepherd pass, a run or a check, at a time | `.local/bin/fleet-shepherd:run_locked` | `~/.agent/shepherd/.run.lock` | `FLEET_SHEPHERD_RUN_LOCKED=` (a pass that skips the lock) | `run_locked` | `a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing`, `a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass` |
+| Who started a session or item (`by`: dispatch, resume, hand) | `.local/bin/agent-queue:items_json` (also `hand_caller`) | the item's `origin:` through `ORIGIN_BY`, as `by` on `agent-queue list --json` and on each state.json session | `\["item"\]\["origin"\]\|extra\.get\("origin"\)\|\]\.get\("origin"\)\|started_by\(\|\.origin == "run"\|\(\.origin // ""\) == "\|case "\$origin" in\|\.origin . IN\(\|origin: \(if \.\[49\]` (a second map of origin values) | - | `a --running record says origin self, and each item's by is its origin through ORIGIN_BY`, `--write: a session says who started it (by, its item's origin) and carries its overdue verdict; an unread fleet-bench eta is named unreadable` |
+| Whether a session's open plan phase is overdue | `.local/bin/fleet-sessions:overdue_of` (also `write_state`) | state.json session `overdue` | `2 \* \.phase_min\|OVERDUE_MIN:=\|if e < n\|\*e < now\|late > 0\|overdue \?\? late` (a second overdue rule, or a past ETA read as overdue) | - | `overdue_of: a phase open twice its estimate and the floor is overdue, on the session running it; a queued phase or a landing wait is not (ar-528)`, `a WORKING phase open twice its estimate and the floor is overdue, with the exact ledger call` |
 
 ## Labels and stages on screen
 

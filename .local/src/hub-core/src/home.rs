@@ -362,7 +362,7 @@ pub struct Running {
     pub ci: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_url: Option<String>,
-    /// Its phase ETA is behind the state's clock.
+    /// fleet-sessions' overdue verdict is set on its session (`overdue`, the shepherd's rule).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub overdue: bool,
 }
@@ -637,7 +637,6 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .map(|a| a.iter().collect())
         .unwrap_or_default();
     let phases = boards::phases(state);
-    let now = state["generated_epoch"].as_i64();
     q.in_state(State::Running)
         .map(|i| {
             let target = i
@@ -659,10 +658,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                overdue: matches!(
-                    (phases.as_ref().and_then(|p| p.eta_epoch), now),
-                    (Some(e), Some(n)) if e < n
-                ),
+                overdue: live.is_some_and(|s| s["overdue"].is_object()),
                 phases,
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
@@ -1360,6 +1356,7 @@ mod tests {
         let mut st = state();
         let s = &mut st["sessions"][2];
         s["eta_epoch"] = json!(NOW - 60);
+        s["overdue"] = json!({"phase": "phase 3/4", "age_min": 90, "expected_min": 40});
         s["pr"] = json!("12");
         s["pr_state"] = json!("OPEN");
         s["ci"] = json!("FAIL");
@@ -1419,6 +1416,13 @@ mod tests {
         assert_eq!(
             (bare[0].epic.as_deref(), bare[0].row.as_deref()),
             (None, Some("tr-9"))
+        );
+        // Overdue is fleet-sessions' verdict, never a past ETA against a clock of Home's own.
+        let mut calm = st.clone();
+        calm["sessions"][2]["overdue"] = Value::Null;
+        assert!(
+            !running(&calm, &q, None)[0].overdue,
+            "a past ETA with no verdict is on time"
         );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")

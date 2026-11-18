@@ -18,10 +18,11 @@ Sources and what each one is trusted for:
                and which session merged them (the zero-merge share is over transcript context).
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
   queue        $AGENT_QUEUE_DIR/**/*.md. A session's origin (plan, or the item's `origin:` hand,
-               run, resume), item and #size/ tag. Joined by the item's `sessions:` ids, else by
-               its tmux `session:` name matching the worktree the session ran in while the item
-               ran (items older than `sessions:` carry only that). A session no item names is
-               a runner when headless, else interactive.
+               run, resume, self), item and #size/ tag: a spend category over the raw record,
+               finer than agent-queue's `by` (self is a session that recorded itself). Joined by
+               the item's `sessions:` ids, else by its tmux `session:` name matching the worktree
+               the session ran in while the item ran (items older than `sessions:` carry only
+               that). A session no item names is a runner when headless, else interactive.
   shepherd     $FLEET_SHEPHERD_DIR/passes.tsv and .pass: every fleet-shepherd pass id. A pass
                is an interactive cli session in ~/.dotfiles, so without this it reads as
                interactive; it gets origin shepherd.

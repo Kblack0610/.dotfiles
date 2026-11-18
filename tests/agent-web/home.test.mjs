@@ -257,7 +257,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const html = draw(home({
     running: [
       { slug: "ar-1", title: "Queue cards", project: "agent-runtime", target: "lab/dotfiles-agent-2:1", started: "2026-11-11T10:00:00Z",
-        phases: { done: 3, total: 4, next: "docs", eta_epoch: due }, overdue: true, row: "ar-1494", epic: "ar-1292",
+        phases: { done: 3, total: 4, next: "docs", eta_epoch: due, overdue: { phase: "phase 4/4", age_min: 125, expected_min: 40 } }, overdue: true, row: "ar-1494", epic: "ar-1292",
         pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
       { slug: "q-2", title: "No session yet", project: "trader" },
     ],
@@ -287,10 +287,14 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
-  // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
-  // not call overdue is drawn as an ETA, not late.
+  // fleet-sessions' verdict decides overdue, the one the Overdue chip counts by: a past ETA it did
+  // not call overdue is drawn as an ETA, not late, on every page that draws one (etaText).
   const calm = draw(home({ running: [{ slug: "ar-3", title: "t", project: "p", phases: { done: 1, total: 2, eta_epoch: due } }] }));
   assert.doesNotMatch(calm, /qlate/, calm);
+  ctx.input = { done: 1, total: 2, eta_epoch: due };
+  assert.doesNotMatch(vm.runInContext("etaText(input)", ctx), /qlate/, "no page clock of its own");
+  ctx.input.overdue = { phase: "phase 2/2", age_min: 90, expected_min: 40 };
+  assert.match(vm.runInContext("etaText(input)", ctx), /<span class="qlate" title="[^"]*phase 2\/2 open 2h, expected 40m">overdue 2h \(ETA /);
 });
 
 test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {
