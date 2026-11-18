@@ -1033,3 +1033,32 @@ full_fleet() {
   assert_output --partial 'started queue item ca1 on the canary floor'
   refute_output --partial 'started queue item cb1'
 }
+
+# 2026-11-18: the weekly retro filed 149 canaries at once, and the queue counts every one of them (ar-3029).
+@test "canary top-up: a pass queues the canaries the floor lacks as dispatch's pull; a met floor and a held dispatch ask for none" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=3
+  fleet_state 8
+  stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"pull=\$AGENT_QUEUE_PULL \$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 2 queued for 2026w47'"
+  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 2'
+  assert_output --partial 'canary top-up (floor 3, 1 queued, 2 wanted): canary: 2 queued for 2026w47'
+  # Negative controls: a floor met by queued items, a held dispatch and a dry run ask for nothing.
+  rm "$SANDBOX/bench.calls"
+  agent-queue add --project game --slug ca2 --priority high --tags canary "check(canary): b 2026w47" >/dev/null
+  agent-queue add --project game --slug ca3 --priority high --tags canary "check(canary): c 2026w47" >/dev/null
+  agent-queue add --project game --slug ca4 --priority high --tags canary "check(canary): d 2026w47" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a met floor asked: $(cat "$SANDBOX/bench.calls")"
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a held dispatch asked: $(cat "$SANDBOX/bench.calls")"
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a dry run asked: $(cat "$SANDBOX/bench.calls")"
+  # Positive control: the same pass with dispatch free and no dry run asks again.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 3'
+}
