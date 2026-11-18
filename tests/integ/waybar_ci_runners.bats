@@ -1,11 +1,10 @@
 #!/usr/bin/env bats
-# ci_runners.sh: the waybar CI chip. It lays out the cc:pool_* and cc:site_* rules and the
-# runner exporter's series, the same ones the hub board reads. What these pin: the bar's
-# busy/slots and queue are the board header's totals (pools plus local gates); its colour
-# is the ci domain status rule, never its own judgement; the hover counts local vs cloud,
-# names each cloud machine, and lists one row per machine instead of one per job; a missed
-# scrape and GitHub not answering read differently; and an unreadable Prometheus shows
-# `CI: prom down`, never the last numbers.
+# ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
+# hub-core computes for every CI surface. What these pin: the bar is the glance's busy/slots
+# (each slot once) and queue; its colour and class are the ci domain level, never its own
+# judgement; the hover is the board's head line, jobs by kind, one row per machine with what
+# its slots are doing and space last, the stopped cloud hosts on one line, down and long
+# runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -13,444 +12,144 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/ci_runners.sh"
-  export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR"
-  cat > "$SANDBOX/bin/curl" <<'STUB'
+  export FX="$BATS_TEST_TMPDIR" HUB="$BATS_TEST_TMPDIR/hub"
+  cat > "$HUB" <<'STUB'
 #!/usr/bin/env bash
-[ -n "${CURL_FAIL:-}" ] && exit 7
-printf '%s\n' "$*" >> "$FX/queries"
-case "$*" in
-  *cc:pool_*) cat "$FX/cc.json" ;;
-  *github_runner_state*) cat "$FX/runners.json" ;;
-  *github_runner_withheld*) cat "$FX/withheld.json" ;;
-  *ci_governor_lent*) cat "$FX/lent.json" ;;
-  *ci_governor_power_state*) cat "$FX/power.json" ;;
-  *node_uname_info*) cat "$FX/uname.json" ;;
-  *) exit 22 ;;
-esac
+[ "$*" = "ci --json" ] || exit 2
+[ -n "${HUB_FAIL:-}" ] && { echo "hub ci: cannot read http://prom.test <x>" >&2; exit 1; }
+cat "$FX/ci.json"
 STUB
-  chmod +x "$SANDBOX/bin/curl"
-  fixtures idle
+  chmod +x "$HUB"
+  glance '{}'
 }
 
-# fixtures [idle|offline|cloud-off]: unity 3/4 with 5 queued, light 0/2, workstation gates 2/4 q1
-# with 6 burst slots, hp-unity-3 withheld by the governor, aws-burst-1 in the cloud running
-# 2/2 (cloud-off: both offline), 3 jobs on GitHub's own runners. cc:site_* says local 5/9,
-# cloud 2/2 (NO_SITE=1 drops it).
-# Finished in 24h: unity 40 at 95%, light 10 at 60%, github-hosted (no slots) 50 at
-# 100%, the workstation gates 20 at 50%: 120 jobs, 104 passed, 87%. NO_DONE=1 drops them.
-# CI_STATUS is the ci domain status (pools warn by default; "none" drops the series), API_OK
-# the exporter's last call for runners, EXPORTER_UP its scrape ("none" drops it), RATE_LEFT
-# the token's emptiest bucket. POWER is the governor's power state for aws-burst-1 (stopped
-# under cloud-off, else running).
-fixtures() {
-  python3 - "$FX" "$1" <<'PY'
-import json, os, sys
-d, mode = sys.argv[1], sys.argv[2]
-status, api = os.environ.get("CI_STATUS", "1"), os.environ.get("API_OK", "1")
-up, rate_left = os.environ.get("EXPORTER_UP", "1"), os.environ.get("RATE_LEFT", "3000")
-no_done, no_site = os.environ.get("NO_DONE") == "1", os.environ.get("NO_SITE") == "1"
-def out(name, rows):
-    res = [{"metric": m, "value": [0, v]} for m, v in rows]
-    json.dump({"status": "success", "data": {"result": res}}, open(f"{d}/{name}.json", "w"))
-cc = []
-for pool, slots, busy, waiting, oldest in [("unity", "4", "3", "5", "18900"), ("light", "2", "0", "0", None)]:
-    cc += [({"__name__": "cc:pool_slots", "pool": pool}, slots), ({"__name__": "cc:pool_busy", "pool": pool}, busy),
-           ({"__name__": "cc:pool_waiting", "pool": pool}, waiting)]
-    if oldest:
-        cc.append(({"__name__": "cc:pool_oldest_wait_seconds", "pool": pool}, oldest))
-cc += [({"__name__": "cc:host_local_slots", "host": "workstation"}, "10"),
-       ({"__name__": "cc:host_local_open_slots", "host": "workstation"}, "4"),
-       ({"__name__": "cc:host_local_busy", "host": "workstation"}, "2"),
-       ({"__name__": "cc:host_local_queued", "host": "workstation"}, "1"),
-       ({"__name__": "api_ok", "src": "api"}, api), ({"__name__": "rate_left", "src": "rate"}, rate_left)]
-if up != "none":
-    cc.append(({"__name__": "exporter_up", "src": "up"}, up))
-if not no_site:
-    cc += [({"__name__": "cc:site_slots", "site": "local"}, "9"), ({"__name__": "cc:site_busy", "site": "local"}, "5"),
-           ({"__name__": "cc:site_slots", "site": "cloud"}, "2"), ({"__name__": "cc:site_busy", "site": "cloud"}, "2"),
-           ({"__name__": "cc:github_hosted_running"}, "3")]
-if not no_done:
-    for pre, key, k, done, ratio in [("cc:pool", "pool", "unity", "40", "0.95"), ("cc:pool", "pool", "light", "10", "0.6"),
-                                     ("cc:pool", "pool", "github-hosted", "50", "1"),
-                                     ("cc:host_local", "host", "workstation", "20", "0.5")]:
-        cc += [({"__name__": f"{pre}_done_24h", key: k}, done), ({"__name__": f"{pre}_pass_ratio_24h", key: k}, ratio)]
-G = 1073741824
-if os.environ.get("NO_SPACE") != "1":
-    for host, rule, gib in [("razer-laptop", "mem_used", 39), ("razer-laptop", "mem_total", 64),
-                            ("razer-laptop", "disk_avail", 190), ("workstation", "mem_used", 20),
-                            ("workstation", "mem_total", 128), ("workstation", "disk_avail", 4.5),
-                            ("hp-victus", "disk_avail", 50)]:
-        cc.append(({"__name__": f"cc:host_{rule}_bytes", "host": host}, str(int(gib * G))))
-if status != "none":
-    cc += [({"__name__": "cc:domain_status", "domain": "ci"}, status),
-           ({"__name__": "cc:component_status", "domain": "ci", "component": "pools"}, status),
-           ({"__name__": "cc:component_status", "domain": "ci", "component": "watches"}, "0")]
-out("cc", cc)
-def r(host, pool, state, name, val="0", site="local", **kw):
-    return ({"host": host, "pool": pool, "state": state, "name": name, "site": site, **kw}, val)
-aws = "offline" if mode == "cloud-off" else "running"
-runners = [
-    r("razer-laptop", "unity", "running", "razer-unity-1", "545", repo="playground", pr="1210",
-      workflow="Tests", job_name="PlayMode 4"),
-    r("razer-laptop", "unity", "running", "razer-unity-2", "4000", repo="playground", pr="1183",
-      workflow="Tests", job_name="PlayMode <2> & \"quoted\""),
-    r("razer-laptop", "light", "idle", "razer-light-1"),
-    r("hp-victus", "unity", "running", "hp-unity-1", "60", repo="playground", workflow="Release", job_name="Mac"),
-    r("hp-victus", "unity", "idle", "hp-unity-2"),
-    r("hp-victus", "unity", "idle", "hp-unity-3"),
-    r("hp-victus", "light", "offline" if mode == "offline" else "idle", "hp-light-1"),
-    r("aws-burst-1", "unity", aws, "aws-unity-1", "120", site="cloud", repo="playground", pr="1300",
-      workflow="Tests", job_name="EditMode"),
-    r("aws-burst-1", "unity", aws, "aws-unity-2", "30", site="cloud", repo="playground", pr="1301",
-      workflow="Tests", job_name="EditMode"),
-]
-out("runners", runners)
-out("withheld", [({"name": "hp-unity-3"}, "1")])
-# LENT names runners the governor says are lent to their pair; one not withheld stays a slot.
-out("lent", [({"name": n, "to": "tests"}, "1") for n in os.environ.get("LENT", "").split()])
-power = os.environ.get("POWER", "stopped" if mode == "cloud-off" else "running")
-# razer-laptop's node calls itself razer-node; two Pis share raspberrypi, so neither is aliased.
-out("uname", [({"host": h, "nodename": n}, "1") for h, n in [("razer-laptop", "razer-node"), ("hp-victus", "hp-victus"),
-                                                           ("pi-a", "raspberrypi"), ("pi-b", "raspberrypi")]])
-out("power", [({"host": "aws-burst-1", "state": power}, "1")] if power != "running" else [])
-PY
+# glance <jq patch>: a warn glance, 2/3 busy, 2 queued, 4 done at 75%, one stopped cloud
+# host, then the patch merged over it.
+glance() {
+  jq -n --argjson patch "$1" '{glance: ({
+    level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
+    feed: null, busy: 2, slots: 3, queued: 2, oldest: 900, done: 4, pass: 0.75,
+    kinds: [{kind: "unity", waiting: 2, oldest: 900, done: 2, pass: 0.5},
+            {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
+    machines: [{host: "workstation", busy: 2, slots: 2, doing: "1 gates, 1 unity, 1 held", space: "12/60G 1.5T free"},
+               {host: "mac-mini", busy: 0, slots: 1, doing: "1 free", space: "482G free"}],
+    off: ["aws-burst-1"], down: [], long: []} * $patch)}' > "$FX/ci.json"
 }
 
-tip() { jq -r .tooltip <<< "$output"; }
+bar()  { jq -r .text <<< "$output"; }
+tip()  { jq -r .tooltip <<< "$output"; }
+plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
-@test "the bar sums pools and local gates like the board header, queue in gold" {
+@test "the bar is busy of slots, each slot once, and the queue, coloured by the ci level" {
   run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 <span color='#ffcc2f'>q6</span>"
-}
-
-@test "pools and local gates list busy/slots, queue and oldest wait, longest queue first" {
-  run "$MODULE"
-  run tip
-  assert_line --index 5 --regexp "^unity +3/4 .*5</span> +5h15m +40  95%$"
-  assert_line --index 6 --regexp "^local:workstation +2/4 .*1</span> +- +20  <span color='#ef5734'>50%</span>$"
-}
-
-# The burst slots open only with room, so they are a legend line, never a +N in the cell.
-@test "a local row is busy of its open slots, and its burst slots are a legend line" {
-  run "$MODULE"
-  run tip
-  refute_output --partial "2/4+6"
-  assert_line --index 9 "local:workstation has 6 burst slots more, opened only while the CPU has room"
-}
-
-@test "a local row running burst slots reads busy of busy" {
-  python3 - "$FX/cc.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["__name__"] == "cc:host_local_busy":
-        r["value"][1] = "6"
-json.dump(d, open(sys.argv[1], "w"))
-PY
-  run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 9/12 <span color='#ffcc2f'>q6</span>"
-  run tip
-  assert_line --index 6 --regexp "^local:workstation +6/6 "
-}
-
-@test "a pool with finished jobs but no slots still gets a row, with no busy count" {
-  run "$MODULE"
-  run tip
-  assert_line --index 7 --regexp "^github-hosted +- +0 +- +50  100%$"
-  assert_line --index 8 --regexp "^light +0/2 +0 +- +10  <span color='#ef5734'>60%</span>$"
-}
-
-@test "finished jobs stay off the bar; the hover paints them by the pass rate over all of them" {
-  run "$MODULE"
-  refute_output --partial "120</span>"
-  run tip
-  assert_line --index 3 "finished 24h: 120, <span color='#ffcc2f'>87%</span> passed"
-}
-
-@test "under 70% passed the hover's finished line is red" {
-  python3 - "$FX/cc.json" <<'PY2'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["__name__"].endswith("pass_ratio_24h"):
-        r["value"][1] = "0.5"
-json.dump(d, open(sys.argv[1], "w"))
-PY2
-  run "$MODULE"
-  run tip
-  assert_line --index 3 "finished 24h: 120, <span color='#ef5734'>50%</span> passed"
-}
-
-# Negative control: with no finished series the count is -, never a 0 nobody measured.
-@test "no finished series reads none reported, never 0" {
-  NO_DONE=1 fixtures idle
-  run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 <span color='#ffcc2f'>q6</span>"
-  run tip
-  assert_line --index 3 "finished 24h: none reported"
-}
-
-@test "the colour and class are the ci domain status, and the hover names each component" {
-  run "$MODULE"
+  assert_equal "$(bar)" "<span color='#ffcc2f'>CI</span> 2/3 <span color='#ffcc2f'>q2</span>"
   assert_equal "$(jq -r .class <<< "$output")" warn
-  run tip
-  assert_line --index 1 "ci: pools <span color='#ffcc2f'>warn</span>, watches <span color='#a6e34a'>ok</span>"
 }
 
-@test "a red ci domain paints CI red and the class critical" {
-  CI_STATUS=2 fixtures idle
+@test "a green level leaves the label plain and an empty queue reads q0 plain" {
+  glance '{"level": "ok", "queued": 0, "busy": 0}'
   run "$MODULE"
-  assert_equal "$(jq -r .class <<< "$output")" critical
-  assert_output --partial "<span color='#ef5734'>CI</span>"
-}
-
-@test "a green ci domain leaves CI plain" {
-  CI_STATUS=0 fixtures idle
-  run "$MODULE"
+  assert_equal "$(bar)" "CI 0/3 q0"
   assert_equal "$(jq -r .class <<< "$output")" ok
-  assert_equal "$(jq -r .text <<< "$output")" "CI 5/10 <span color='#ffcc2f'>q6</span>"
 }
 
-# No status series is not a green light: the board prints NO DATA for it.
-@test "no ci status series says no data and is never ok" {
-  CI_STATUS=none fixtures idle
+@test "a red level is critical" {
+  glance '{"level": "red"}'
+  run "$MODULE"
+  assert_equal "$(jq -r .class <<< "$output")" critical
+  [[ "$(bar)" == "<span color='#ef5734'>CI</span>"* ]]
+}
+
+@test "no status series is no data, never green" {
+  glance '{"level": "nodata", "parts": []}'
   run "$MODULE"
   assert_equal "$(jq -r .class <<< "$output")" warn
-  run tip
-  assert_line --index 1 "ci: no data"
+  assert_equal "$(tip | sed -n 2p)" "ci: no data"
 }
 
-@test "running counts local and cloud, naming each cloud machine and GitHub's runners" {
+@test "the head line is the board's, the pass rate painted amber under 90%" {
   run "$MODULE"
-  run tip
-  assert_line --index 2 "running: local 5/9  cloud 5 (aws-burst-1 2/2, github-hosted 3)"
+  assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>  2/3 busy, 2 queued (oldest 15m), 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
+  glance '{"pass": 0.5}'
+  run "$MODULE"
+  [[ "$(tip | sed -n 1p)" == *"<span color='#ef5734'>50% passed</span>" ]]
+  glance '{"queued": 0, "pass": 0.95}'
+  run "$MODULE"
+  assert_equal "$(plain | sed -n 1p)" "CI runners  2/3 busy, 0 queued, 4 done 24h, 95% passed"
 }
 
-# A cloud machine is kept stopped when idle: it reads off, not 0/0, and not missing.
-@test "a cloud machine with no runner up reads off" {
-  fixtures cloud-off
+@test "the parts line paints each level, and a short feed says why in red" {
   run "$MODULE"
-  run tip
-  assert_line --index 2 "running: local 5/9  cloud 5 (aws-burst-1 off, github-hosted 3)"
-  refute_line --regexp "^aws-burst-1 +cloud"
+  assert_equal "$(tip | sed -n 2p)" "ci: pools <span color='#ffcc2f'>warn</span>, watches <span color='#a6e34a'>ok</span>"
+  glance '{"feed": "runner exporter missed its last scrape: runner rows may be missing"}'
+  run "$MODULE"
+  [[ "$(tip | sed -n 2p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-# The governor powered it off, so its offline runners are by design, not DOWN.
-@test "a cloud host the governor powered off is not listed under DOWN" {
-  fixtures cloud-off
+@test "jobs by kind: waiting, oldest, done and pass, no capacity column" {
   run "$MODULE"
+  run plain
+  assert_line --index 2 "KIND          WAITING OLDEST  DONE  PASS"
+  assert_line --index 3 "unity               2    15m     2  50%"
+  assert_line --index 4 "github-hosted       -      -     2  100%"
+  refute_output --partial "SLOTS"
+}
+
+@test "one row per machine: busy/slots, what its slots do, space last; no WHERE, no pool names" {
+  run "$MODULE"
+  run plain
+  assert_line "MACHINE        BUSY  DOING                     SPACE"
+  assert_line "workstation     2/2  1 gates, 1 unity, 1 held  12/60G 1.5T free"
+  assert_line "mac-mini        0/1  1 free                    482G free"
+  refute_output --partial "WHERE"
+  refute_output --partial "local:workstation"
+  refute_output --partial "other"
+}
+
+@test "stopped cloud hosts fold to one line and are never down" {
+  glance '{"off": ["aws-spot-1", "aws-spot-2"], "down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
+  run "$MODULE"
+  run plain
+  assert_line "cloud: 2 hosts off"
+  assert_line "DOWN:"
+  assert_line "  windows-media  1 offline"
+  refute_output --partial "aws-spot-1"
+}
+
+@test "nothing off or down draws neither line" {
+  glance '{"off": []}'
+  run "$MODULE"
+  run plain
+  refute_output --partial "cloud:"
   refute_output --partial "DOWN"
 }
 
-# Negative control: the same offline runners on a host the governor says is running are DOWN.
-@test "...but offline runners on a host the governor runs are DOWN" {
-  POWER=running fixtures cloud-off
+@test "long runs are one amber line with their time" {
+  glance '{"long": [{"what": "ms-a2 Multi game#2210", "ran": 8880}]}'
   run "$MODULE"
-  run tip
-  assert_output --partial "  aws-burst-1  2 offline"
+  [[ "$(tip)" == *"<span color='#ffcc2f'>long runs: ms-a2 Multi game#2210 2h28m</span></tt>" ]]
 }
 
-# Negative control: with no job on GitHub's runners the list does not name them.
-@test "no GitHub-hosted job running leaves github-hosted out" {
-  python3 - "$FX/cc.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["__name__"] == "cc:github_hosted_running":
-        r["value"][1] = "0"
-json.dump(d, open(sys.argv[1], "w"))
-PY
-  run "$MODULE"
-  run tip
-  assert_line --index 2 "running: local 5/9  cloud 2 (aws-burst-1 2/2)"
-}
-
-@test "no cc:site series says so instead of a 0/0 nobody measured" {
-  NO_SITE=1 fixtures idle
-  run "$MODULE"
-  run tip
-  assert_line --index 2 "running: no cc:site_* series (recording rules not loaded?)"
-}
-
-@test "one row per machine: where, busy/slots, space and per pool, busiest first" {
-  run "$MODULE"
-  run tip
-  assert_line --index 10 --regexp "^MACHINE +WHERE +BUSY +SPACE +POOLS$"
-  assert_line --index 11 --regexp "^aws-burst-1 +cloud +2/2  no data +unity 2/2$"
-  assert_line --index 12 --regexp "^razer-laptop +local +2/3  mem 39/64G, disk 190G free +light 0/1 unity 2/2$"
-  assert_line --index 13 --regexp "^workstation +local +2/4  mem 20/128G, disk 4.5G free +gates 2/4$"
-  assert_line --index 14 --regexp "^hp-victus +local +1/3  mem no data, disk 50G free +light 0/1 unity 1/2 unity withheld 0/1$"
-}
-
-# A runner's host label can be its node's hostname, while the cc:host_* rules use the host's
-# name: node_uname_info joins them, as hub-core's Infra::aliases does.
-@test "a runner named by its node's hostname reads its host's space" {
-  python3 - "$FX/runners.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["host"] == "razer-laptop":
-        r["metric"]["host"] = "razer-node"
-json.dump(d, open(sys.argv[1], "w"))
-PY
-  run "$MODULE"
-  run tip
-  assert_line --regexp "^razer-node +local +2/3  mem 39/64G, disk 190G free +light 0/1 unity 2/2$"
-}
-
-# Negative control for the alias: a nodename two hosts share names neither of them.
-@test "a nodename two hosts share is not aliased to either" {
-  python3 - "$FX/runners.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["host"] == "razer-laptop":
-        r["metric"]["host"] = "raspberrypi"
-json.dump(d, open(sys.argv[1], "w"))
-PY
-  run "$MODULE"
-  run tip
-  assert_line --regexp "^raspberrypi +local +2/3  no data +light 0/1 unity 2/2$"
-}
-
-# Negative control for the space cell: no cc:host_*_bytes series at all reads no data on
-# every row, never mem 0 or disk 0G free.
-@test "no host memory or disk series reads no data, never 0" {
-  NO_SPACE=1 fixtures idle
-  run "$MODULE"
-  run tip
-  assert_line --index 12 --regexp "^razer-laptop +local +2/3  no data  light 0/1 unity 2/2$"
-  refute_output --regexp "mem 0|disk 0"
-}
-
-# The per-job list is the board's CI tab now: the hover never names a job.
-@test "the hover lists no job lines" {
-  run "$MODULE"
-  run tip
-  refute_output --partial "PlayMode"
-  refute_output --partial "Release: Mac"
-}
-
-# A slot withheld because its pair is using its cores is normal work: it reads lent, and a
-# lent row for a runner that is not withheld (the governor a cycle behind) changes nothing.
-@test "a withheld runner the governor says is lent reads lent, not withheld" {
-  LENT="hp-unity-3 hp-unity-2" fixtures idle
-  run "$MODULE"
-  run tip
-  assert_line --index 14 --regexp "^hp-victus +local +1/3  mem no data, disk 50G free +light 0/1 unity 1/2 unity lent 0/1$"
-}
-
-# Negative control for the withheld count: a machine with none withheld never says so.
-@test "a machine with no withheld runner has no withheld count" {
-  run "$MODULE"
-  run tip
-  refute_line --regexp "^razer-laptop .*withheld"
-}
-
-@test "only jobs past an hour are listed under long runs, painted amber" {
-  run "$MODULE"
-  run tip
-  assert_output --partial "long runs: razer-unity-2 playground#1183 <span color='#ffcc2f'>1h06m</span>"
-  refute_output --partial "razer-unity-1 playground#1210"
-}
-
-@test "with no job past an hour there is no long runs line" {
-  python3 - "$FX/runners.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    r["value"][1] = "60" if r["metric"]["state"] == "running" else r["value"][1]
-json.dump(d, open(sys.argv[1], "w"))
-PY
-  run "$MODULE"
-  refute_output --partial "long runs"
-}
-
-@test "the output stays valid JSON" {
-  run "$MODULE"
-  jq -e . <<< "$output" > /dev/null
-}
-
-@test "an offline runner is counted under DOWN by machine and state" {
-  fixtures offline
-  run "$MODULE"
-  run tip
-  assert_output --partial "DOWN:</span>"
-  assert_output --partial "  hp-victus  1 offline"
-}
-
-# Negative control for the above: with every runner up, DOWN must not appear, or it would
-# be noise that is always there.
-@test "...and with every runner up there is no DOWN section" {
-  run "$MODULE"
-  refute_output --partial "DOWN"
-}
-
-@test "a missed exporter scrape says so, and does not blame GitHub" {
-  EXPORTER_UP=0 fixtures idle
-  run "$MODULE"
-  run tip
-  assert_output --partial "runner exporter missed its last scrape, runner rows may be missing"
-  refute_output --partial "GitHub not answering"
-}
-
-@test "no exporter up series reads as a missed scrape too" {
-  EXPORTER_UP=none fixtures idle
-  run "$MODULE"
-  run tip
-  assert_output --partial "runner exporter missed its last scrape"
-}
-
-@test "GitHub not answering the runner calls says so" {
-  API_OK=0 fixtures idle
-  run "$MODULE"
-  run tip
-  assert_output --partial "GitHub not answering the exporter, runner rows may be missing"
-  refute_output --partial "missed its last scrape"
-}
-
-@test "a spent rate limit says so, ahead of the vaguer GitHub line" {
-  API_OK=0 RATE_LEFT=0 fixtures idle
-  run "$MODULE"
-  run tip
-  assert_output --partial "GitHub rate limit spent, runner jobs and history unread until it resets"
-  refute_output --partial "GitHub not answering"
-}
-
-# Negative control: a healthy exporter adds neither line.
-@test "a healthy exporter adds no exporter line" {
-  run "$MODULE"
-  run tip
-  refute_output --partial "missed its last scrape"
-  refute_output --partial "GitHub not answering"
-  refute_output --partial "rate limit spent"
-}
-
-# One repo's run list failing must not doubt the runner rows: api_ok reads runner sources.
-@test "api_ok is read from the runner sources only" {
-  run "$MODULE"
-  run grep -c 'github_runner_exporter_api_ok{kind="runners"}' "$FX/queries"
-  assert_output 1
-}
-
-@test "Prometheus unreadable: CI: prom down in red and no numbers at all" {
-  CURL_FAIL=1 run "$MODULE"
+@test "a failed hub read is prom down, never the last numbers, and its reason is escaped" {
+  HUB_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ef5734'>CI: prom down</span>"
+  assert_equal "$(bar)" "<span color='#ef5734'>CI: prom down</span>"
   assert_equal "$(jq -r .class <<< "$output")" critical
-  refute_output --partial "5/16"
+  assert_equal "$(tip)" "CI runners: hub ci: cannot read http://prom.test &lt;x&gt;"
 }
 
-@test "an empty queue reads q0, plain" {
-  python3 - "$FX/cc.json" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-for r in d["data"]["result"]:
-    if r["metric"]["__name__"] in ("cc:pool_waiting", "cc:host_local_queued"):
-        r["value"][1] = "0"
-json.dump(d, open(sys.argv[1], "w"))
-PY
+@test "output that is not a glance is prom down" {
+  echo 'not json' > "$FX/ci.json"
   run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>CI</span> 5/10 q0"
+  assert_equal "$(bar)" "<span color='#ef5734'>CI: prom down</span>"
+  echo '{"local": []}' > "$FX/ci.json"
+  run "$MODULE"
+  assert_equal "$(jq -r .class <<< "$output")" critical
+}
+
+@test "a machine name is escaped for pango" {
+  glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "space": "-"}]}'
+  run "$MODULE"
+  [[ "$(tip)" == *"a&lt;b"* ]]
 }

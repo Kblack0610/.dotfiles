@@ -140,14 +140,15 @@ impl<'a> Board<'a> {
         let secs = |v: i64| dur(v as f64);
         let mut head = vec![
             Span::styled("CI RUNNERS", self.p.head()),
-            Span::raw(format!("  {}", ci.head(secs))),
+            Span::raw(format!("  {}", ci.glance.head(secs))),
         ];
         if let Some(n) = failed.filter(|n| *n > 0) {
             head.push(Span::styled(
                 format!("  failed 24h {n} (Runs, red)"),
                 self.p.bad(),
             ));
-        } else if failed.is_some() && ci.busy + ci.queued == 0 && ci.local.is_empty() {
+        } else if failed.is_some() && ci.glance.busy + ci.glance.queued == 0 && ci.local.is_empty()
+        {
             head.push(Span::styled(
                 "  green: nothing waiting or failed in 24h",
                 self.p.good(),
@@ -471,8 +472,7 @@ pub(crate) mod tests {
     /// The fixture with its CI join built, as `gather` leaves it.
     pub(crate) fn built(i: &Infra) -> Infra {
         let mut j = i.clone();
-        j.ci = hub_core::ci::build(&j);
-        (j.machines, j.pools) = hub_core::machines::build(&j);
+        j.derive();
         j
     }
 
@@ -557,7 +557,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting (oldest 2h28m)  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -605,10 +605,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(
-            ci.starts_with("CI RUNNERS  2 hosts, 4 slots, 3 busy, 4 waiting"),
-            "{ci}"
-        );
+        assert!(ci.starts_with("CI RUNNERS  3/4 busy, 4 queued"), "{ci}");
         assert!(has(&ci, "failed 24h 2"), "{ci}");
         // The queue and the local failures are their own sections, after the slots.
         assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
@@ -621,6 +618,10 @@ pub(crate) mod tests {
         for q in ["runners", "runner_caps", "gates", "waiting", "local_failed"] {
             i.instant.insert(q, vec![]);
         }
+        i.instant
+            .get_mut("cc")
+            .unwrap()
+            .retain(|s| s.label("__name__") != "cc:pool_waiting");
         let section = |failed, name| {
             infra(
                 &built(&i),
@@ -639,12 +640,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 waiting green: nothing waiting or failed in 24h",
+            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0 hosts, 0 slots, 0 busy, 0 waiting",
+            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
@@ -687,7 +688,7 @@ pub(crate) mod tests {
             has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 3"),
             "{m}"
         );
-        assert!(has(&m, "aws-burst-1 cloud no data 1/2"), "{m}");
+        assert!(has(&m, "aws-burst-1 no data 1/2"), "{m}");
         assert!(
             has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
             "{m}"
@@ -748,7 +749,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop local up 3/3 91% 31% 9.8/16 60% 84C - unity 3/3 unity withheld 0/1"
+                "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity, 1 held"
             ),
             "{out}"
         );
@@ -759,39 +760,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_machines_row_carries_where_busy_load_6h_cpu_and_busy_of_its_slots_per_pool() {
+    fn a_machines_row_carries_busy_load_6h_cpu_and_what_its_slots_are_doing() {
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = tab(&i, "machines", 200);
         assert_line(
             &out,
-            "MACHINE WHERE STATE BUSY CPU 6H LOAD MEM TEMP DISK POOLS RUNNING GOVERNOR POWER UP",
+            "MACHINE STATE BUSY CPU 6H LOAD MEM TEMP DISK DOING RUNNING GOVERNOR POWER UP",
         );
         assert!(
             has(
                 &out,
-                "razer-laptop local up 3/4 91% 31% 9.8/16 60% 84C - unity 3/4 PlayMode 4"
+                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free PlayMode 4"
             ),
             "{out}"
         );
         assert!(
-            has(&out, "aws-burst-1 cloud no data 1/2 - - - - - - unity 1/2"),
+            has(&out, "aws-burst-1 no data 1/2 - - - - - - 1 unity, 1 free"),
             "{out}"
         );
         // A host with one reading is up; its other columns read -, never 0.
-        assert_line(&out, "mac-mini local up - +1 off 3% - - - - - - - - - -");
+        assert_line(&out, "mac-mini up - +1 off 3% - - - - - - - - - -");
     }
 
     #[test]
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
         let out = tab(&fixture(), "pools", 160);
-        assert!(
-            out.starts_with("POOLS  all 3  waiting 2  busy 1  idle 2\n"),
-            "{out}"
-        );
-        assert_line(&out, "unity 4 3 - 3 2h28m 72 24% razer-laptop");
-        assert_line(&out, "light 2 0 - 1 1m 40 80% -");
-        assert_line(&out, "windows 1 0 - 0 - - - -");
+        assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
+        // No capacity per kind: every slot takes every kind.
+        assert_line(&out, "unity 3 2h28m 72 24%");
+        assert_line(&out, "light 1 1m 40 80%");
+        assert_line(&out, "windows 0 - - -");
         let order: Vec<&str> = out
             .lines()
             .skip(2)
@@ -823,7 +822,7 @@ pub(crate) mod tests {
     fn a_stuck_run_is_out_of_the_queue_and_its_oldest_wait() {
         // Its red row is the Alerts tab's (`alertstab` tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "4 waiting (oldest 2h28m)"), "{out}");
+        assert!(has(&out, "4 queued (oldest 2h28m)"), "{out}");
         assert!(!out.contains("RED NOW"), "{out}");
     }
 
@@ -899,18 +898,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn narrowing_the_machines_keeps_busy_cpu_pools_and_state_longest() {
+    fn narrowing_the_machines_keeps_busy_cpu_doing_and_state_longest() {
         let i = fixture();
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop local up 3/4 91% 31% 9.8/16 60% 84C - unity 3/4"
+            "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free"
         ));
-        assert_line(&row(60), "razer-laptop up 3/4 91% 9.8/16 unity 3/4");
-        assert_line(&row(50), "razer-laptop up 3/4 91% unity 3/4");
-        // At its narrowest the machine keeps its busy/slots, CPU and pools.
-        assert_line(&row(44), "razer-laptop 3/4 91% unity 3/4");
-        assert_line(&row(40), "razer-laptop 3/4 91% unity 3/4");
+        assert_line(&row(60), "razer-laptop up 3/4 91% 9.8/16 3 unity, 1 free");
+        assert_line(&row(50), "razer-laptop 3/4 91% 3 unity, 1 free");
+        // At its narrowest the machine keeps its busy/slots and what they are doing.
+        assert_line(&row(40), "razer-laptop 3/4 3 unity, 1 free");
     }
 
     #[test]
@@ -1011,19 +1009,20 @@ pub(crate) mod tests {
         let out = text(&i, 200);
         assert_line(
             &out,
-            "workstation - busy unity-local 36m - PlayMode (local) unity-core-playground#412",
+            "workstation - busy gates 36m - PlayMode (local) unity-core-playground#412",
         );
         // No repo label (an older fleet-assess): the branch stands in, and no PR is guessed.
         assert_line(
             &out,
-            "workstation - busy unity-local 45s - EditMode (local) fix/x",
+            "workstation - busy gates 45s - EditMode (local) fix/x",
         );
-        // Without published local slots the machine counts its gates and invents no capacity.
+        // Without published local slots each running gate is one busy slot, and no free one is
+        // invented.
         assert!(
-            has(&out, "workstation local no data - - - - - - - 2 gates"),
+            has(&out, "workstation no data 2/2 - - - - - - 2 gates"),
             "{out}"
         );
-        assert!(!tab(&built(&i), "pools", 160).contains("unity-local"));
+        assert!(!tab(&built(&i), "pools", 160).contains("gates"));
     }
 
     #[test]
@@ -1035,11 +1034,11 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation local no data 2/4 - - - - - - unity-local 2/4+6"
+                "workstation no data 2/4 - - - - - - 2 gates, 2 gates free"
             ),
             "{out}"
         );
-        assert_line(&out, "unity-local 4 2 - 1 - 14 50% workstation");
+        assert_line(&out, "gates 1 - 14 50%");
         assert!(has(&out, "waiting 5"));
     }
 
