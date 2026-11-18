@@ -65,7 +65,7 @@
 #                                again in BENCH_GUARD_SEEN sweeps (a guard row), and
 #                                retires earlier weeks' queued canaries and queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
-#   fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
+#   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
 #                                | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
@@ -4822,7 +4822,8 @@ cmd_flow() {
 
 # --- canary: a fixed eval set run weekly, so "the agents got better" reads apart from "the task
 # mix changed". A task is one merged PR as data in BENCH_CANARY_DIR/<id>.json: {id, project, pr,
-# base (the commit before it), merge, task (its row text), accept (the oracle's test names),
+# base (the commit before it), merge, task (its row text), pts (its size on the board's #pts/ scale,
+# scored by agentctl-inbox-triage's size_rule; a score row never copies it), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
 # merge, so a session can neither see nor edit what scores it. A score row in canary.jsonl is
 # {epoch, run, id, project, pr, session_id, harness, model, effort, pass, rc, config}; cost, minutes,
@@ -4846,8 +4847,9 @@ canary_tasks() {
   fi
   for f in "$@"; do
     jq -ce 'select((.id | strings) and (.project | strings) and (.base | strings) and (.merge | strings)
-                   and (.task | strings) and (.oracle.paths | arrays) and (.oracle.cmd | arrays))' "$f" 2>/dev/null ||
-      { say "canary: $f is not a task (id, project, base, merge, task, oracle.paths, oracle.cmd)"; return 2; }
+                   and (.task | strings) and (.pts | numbers and . >= 1 and . == floor)
+                   and (.oracle.paths | arrays) and (.oracle.cmd | arrays))' "$f" 2>/dev/null ||
+      { say "canary: $f is not a task (id, project, base, merge, task, pts, oracle.paths, oracle.cmd)"; return 2; }
   done
 }
 
@@ -5093,47 +5095,57 @@ canary_verify() {
   return "$bad"
 }
 
-# canary list [--by harness,model] [--json]: each task with its newest score, or with --by one row
-# per lane: runs, tasks covered, pass rate, and per run its minutes, turns, cost and tokens from the
-# session's outcome row (a plan login has tokens and no cost)
+# canary list [--by harness,model[,pts]] [--json]: each task with its newest score, or with --by one
+# row per lane (and with pts, per lane and task size): runs, tasks covered, pass rate, and per run its
+# minutes, turns, cost and tokens from the session's outcome row (a plan login has tokens and no cost)
 canary_list() {
   local tasks by="" json=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --by) by="${2:?canary list: --by needs harness,model}"; shift 2 ;;
       --json) json=1; shift ;;
-      *) say "usage: fleet-bench canary list [--by harness,model] [--json]"; return 2 ;;
+      *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json]"; return 2 ;;
     esac
   done
-  [ -z "$by" ] || [ "$by" = harness,model ] || { say "canary list: --by takes harness,model"; return 2; }
-  if [ -n "$by" ]; then canary_lanes "$json"; return; fi
+  case "$by" in
+    "") ;;
+    harness,model) canary_lanes "$json"; return ;;
+    harness,model,pts) canary_lanes "$json" pts; return ;;
+    *) say "canary list: --by takes harness,model or harness,model,pts"; return 2 ;;
+  esac
   tasks=$(canary_tasks) || return 2
   jq -nc --slurpfile k "$(kpi_canary)" --rawfile ts <(printf '%s' "$tasks") '
     $ts | split("\n") | map(select(length > 0) | fromjson) | map(. as $x
       | [$k[] | select(.id == $x.id)] as $rs | ($rs | max_by(.epoch)) as $l
-      | {id, project, pr, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
+      | {id, project, pr, pts, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
     if [ -n "$json" ]; then cat; else
-      jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)"'
+      jq -r '"\(.id)\t\(.pr // "-")\t\(.pts) pts\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)"'
     fi
 }
 
-# canary_lanes [json] -> one row per harness, model and effort over every score, joined to outcome rows.
-# same_tasks are the tasks a lane shares with the claude lane (canary_base, as the canary_ KPIs
-# read it): its pass rate and claude's over just those, each the mean of per-task pass rates so a
-# task claude re-ran every week weighs one, the like-for-like comparison; null on a claude row.
+# canary_lanes [json] [pts] -> one row per harness, model and effort over every score, joined to outcome
+# rows; with pts, one row per lane and task size, the size read from the task file by id (a score whose
+# task is gone has pts null). same_tasks are the tasks a lane shares with the claude lane (canary_base,
+# as the canary_ KPIs read it): its pass rate and claude's over just those, each the mean of per-task
+# pass rates so a task claude re-ran every week weighs one, the like-for-like comparison; null on a claude row.
 canary_lanes() {
-  jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest) "$JQ_LIB"'
+  local tasks=""
+  if [ "${2:-}" = pts ]; then tasks=$(canary_tasks) || return 2; fi
+  jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest) --rawfile ts <(printf '%s' "$tasks") \
+    --arg by "${2:-}" "$JQ_LIB"'
     def mean(f): map(f | numbers) | if length == 0 then null else add / length end;
     def passed: map(select(.pass == true)) | length;
     def per_task($i): map(select(.id == $i)) | passed / length;   # a task weighs one, however many weeks ran it
     ($o | INDEX(.session_id)) as $os
+    | ($ts | split("\n") | map(select(length > 0) | fromjson | {key: .id, value: .pts}) | from_entries) as $pts
     | [$k[] | select(canary_base)] as $base
     | ($base | map(.id) | unique) as $bt
-    | $k | group_by([.harness // "claude", .model // "", .effort // ""]) | map(
+    | $k | group_by([.harness // "claude", .model // "", .effort // ""] + (if $by == "pts" then [$pts[.id] // 0] else [] end)) | map(
         [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
         | any(.[]; canary_base) as $isbase
         | (map(.id) | unique | map(select(IN($bt[])))) as $st
-        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null), runs: length,
+        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null)}
+        + (if $by == "pts" then {pts: $pts[.[0].id]} else {} end) + {runs: length,
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),
            same_tasks: (if $isbase then null else ($st | length) end),
            pass_rate_same: (if $isbase then null else (. as $l | $st | map(. as $i | $l | per_task($i)) | mean(.) | if . then round2 else . end) end),
@@ -5144,7 +5156,7 @@ canary_lanes() {
            cost_per_run: ($rs | mean(.o.cost_usd) | if . then round1 else . end),
            tokens_per_run: ($rs | mean(.o.tokens_total) | if . then round else . end)}) | .[]' |
     if [ -n "$1" ]; then cat; else
-      jq -r '"\(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end)\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
+      jq -r '"\(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end)\(if has("pts") then "\t\(.pts // "-") pts" else "" end)\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
     fi
 }
 
@@ -5359,7 +5371,7 @@ cmd_canary() {
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
     matrix) shift; canary_matrix "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 
