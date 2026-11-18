@@ -81,7 +81,7 @@ unset _k _v
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
-: "${DISPATCH_CANARY_FLOOR:=3}"   # live canary items (tag `canary`) a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass at night ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
+: "${DISPATCH_CANARY_FLOOR:=3}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
 : "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
@@ -3457,22 +3457,43 @@ canary_items() {
     | group_by([.agent // "", .model // "", .effort // ""]) | map(to_entries) | flatten | sort_by(.key) | .[].value' <<<"$1"
 }
 
+# canary_top_up <live> -- hold DISPATCH_CANARY_FLOOR canary items queued or running, <live> of them running:
+# the ones missing are queued by `fleet-bench canary queue --max N` as dispatch's own pull
+# (AGENT_QUEUE_PULL=dispatch, so agent-queue takes them), one task a lane a round, so a week's set trickles
+# in as each one finishes instead of sitting in the queue whole (the cap and the queue age count every
+# queued item). Skipped while dispatch is held; a failure is said once, never the end of the pass.
+canary_top_up() {
+  local live=$1 have want out rc=0 note=''
+  agent-hold check dispatch >/dev/null 2>&1 || return 0
+  have=$(agent-queue list --json --state queued 2>/dev/null | jq -s '[.[] | select((" " + (.tags // "") + " ") | contains(" canary "))] | length') || have=
+  [[ "$have" =~ ^[0-9]+$ ]] || { say "canary top-up: the queue is unreadable, so none is queued"; return 0; }
+  want=$(( DISPATCH_CANARY_FLOOR - have - live ))
+  [ "$want" -gt 0 ] || return 0
+  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || note=", not every lane queued"
+  [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
+  [ -z "$out" ] || say "canary top-up (floor $DISPATCH_CANARY_FLOOR, $have queued, $want wanted$note): ${out//$'\n'/; }"
+}
+
 # canary_floor_start -- keep DISPATCH_CANARY_FLOOR canary items running past the pace target: a canary
 # is the eval every lane is scored by, queued as an item that runs over the target,
 # so with no floor no week's set started after 11-14 (ar-2774). The gate still holds it (load,
 # fleet-assess, the weekly pace, agent-hold), and route still picks a source with room. A canary start
 # leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
 # Rc FLOOR_SHUT when nothing is due; the pass goes on as it would have either way. The queue it read is
-# NEXT_QUEUED, which cmd_run reuses while no canary started, so the floor adds no queue read to a pass.
+# NEXT_QUEUED, which cmd_run reuses while no canary started. The top-up runs only while the gate is open.
 canary_floor_start() {
-  local slots items NO_ROUTE=()
+  local slots items live why NO_ROUTE=()
   [ "${DISPATCH_CANARY_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
+  live=$(live_tagged canary | grep -c . || true)
+  why=$(gate)
+  [ "$DRY" = 1 ] || [ -n "$why" ] || canary_top_up "$live"
   NEXT_QUEUED=$(next_items --points)
   items=$(canary_items "$NEXT_QUEUED")
   [ -n "$items" ] || return "$FLOOR_SHUT"
-  slots=$(( DISPATCH_CANARY_FLOOR - $(live_tagged canary | grep -c . || true) ))
+  slots=$(( DISPATCH_CANARY_FLOOR - live ))
   [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-  [ "$slots" -gt 0 ] && [ -z "$(gate)" ] || return "$FLOOR_SHUT"
+  [ "$slots" -gt 0 ] && [ -z "$why" ] || return "$FLOOR_SHUT"
   say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)"
   CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
@@ -4362,7 +4383,7 @@ held_state() {
 }
 
 # held_short <why> -> the pass's reason without what the Stopped line says elsewhere: the pass's
-# notes ahead of its gate (night and plan counts, a judge that could not judge), the item that
+# notes ahead of its gate (tier-3 and plan counts, a judge that could not judge), the item that
 # waits, the run-out forecast and the parentheses.
 held_short() {
   # A judge's reason can hold its own parentheses ("left-out row(s)") but never "; ". A "budget:"

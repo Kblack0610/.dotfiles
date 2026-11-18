@@ -5855,7 +5855,7 @@ STUB
 }
 
 # 2026-11-17: 22 week-46 codex canaries were still queued beside the week-47 set (ar-2774).
-@test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; retro runs it" {
+@test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; the top-up runs it, retro does not" {
   canary_fixture
   QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
   printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
@@ -5887,11 +5887,16 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary retire
   assert_success; assert_output ''
   [ ! -e "$QLOG" ] || fail "cancelled: $(cat "$QLOG")"
-  # Retro retires ahead of queueing the week's run.
+  # Retro neither retires nor queues a canary: the top-up does both, so an earlier week's item never holds a floor slot.
+  rm -f "$QLOG"
   jq -nc --arg o "$old" '{slug: "c-old", from: "canary", title: "check(canary): greet \($o)"}' > "$QLOG.list"
   run "$SUBJECT" retro
+  refute_output --partial 'canary:'
+  [ ! -s "$QLOG.slugs" ] || fail "retro queued: $(cat "$QLOG.slugs")"
+  [ ! -e "$QLOG" ] || fail "retro cancelled: $(cat "$QLOG")"
+  run env AGENT_QUEUE_PULL=dispatch "$SUBJECT" canary queue --max 1
   assert_output --partial "canary: retired 1 queued item(s) of an earlier week than $week"
-  assert_output --partial "canary: 1 queued, 0 already queued for $week"
+  assert_equal "$(cat "$QLOG")" "cancel c-old --why canary: superseded by the $week set"
   # An unreadable queue is said, never read as nothing to retire.
   BENCH_CANARY_QUEUE_CMD=false run "$SUBJECT" canary retire
   assert_failure
@@ -6005,7 +6010,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_output --partial 'fleet-bench canary start pub'
 }
 
-@test "canary lanes: retro queues each lane in canary-lanes whose source has room, and says why it skips one with no room or no source" {
+@test "canary lanes: queue --max tops up each lane in canary-lanes whose source has room, and says why it skips one with no room or no source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
@@ -6013,11 +6018,11 @@ cancel c-old-lane --why canary: superseded by the $week set"
   echo '{"harnesses":{"codex":{"source":"codex"},"opencode-go":{"source":"go"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
-  run "$SUBJECT" retro
+  run "$SUBJECT" canary queue --max 9
   assert_success
-  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week"
-  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
-  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol@high)"
+  assert_line "fleet-bench: canary: 1 queued for $week"
+  assert_line "fleet-bench: canary: 1 queued for $week (codex/sol)"
+  assert_line "fleet-bench: canary: 1 queued for $week (codex/sol@high)"
   assert_line "fleet-bench: canary: codex/sol@higher not queued, its slug is codex/sol@high's"
   assert_line "fleet-bench: canary: opencode-go/glm not queued, go: past its pace line"
   assert_line --partial "fleet-bench: canary: ghost/x not queued, ghost has no source"
@@ -6025,15 +6030,47 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_equal "$(jq -r .effort "$CQ/canary-greet-$week-codex-sol-hi.json")" high
   [ ! -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
   assert_equal "$(tr '\n' ' ' < "$SANDBOX/room.log")" 'codex codex go '
-  # no lanes file: retro queues the claude lane alone
+  # no lanes file: the top-up queues the claude lane alone
   rm "$BENCH_CANARY_LANES" "$CQ"/*.json
-  run "$SUBJECT" retro
+  run "$SUBJECT" canary queue --max 9
   assert_success
   refute_output --partial 'codex/sol'
   [ -f "$CQ/canary-greet-$week.json" ]
 }
 
-@test "canary lanes: a claude lane needs no source, is queued while a Claude account has room and skipped while none has" {
+@test "canary top-up: --max N queues at most N, one task a lane a round, so lanes run together; a rerun queues the rest and a full week queues nothing" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  jq '.id = "greet2" | .task = "fix(greet): say hello twice"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/greet2.json"
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'codex sol\n' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
+  printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
+  run "$SUBJECT" canary queue --max 2
+  assert_success
+  assert_line "fleet-bench: canary: 1 queued for $week"
+  assert_line "fleet-bench: canary: 1 queued for $week (codex/sol)"
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 2
+  # Negative control: the claude baseline lane alone would have taken both of the two.
+  [ ! -f "$CQ/canary-greet2-$week.json" ]
+  run "$SUBJECT" canary queue --max 9
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 4
+  run "$SUBJECT" canary queue --max 9
+  assert_success; assert_output ''
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 4
+  # A lane with --max stops at it; --max alone needs a whole number.
+  rm "$CQ"/*.json
+  run "$SUBJECT" canary queue --harness codex --model sol --max 1
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 1
+  run "$SUBJECT" canary queue --max 0
+  assert_failure 2
+  run "$SUBJECT" canary queue --max two
+  assert_failure 2
+}
+
+@test "canary lanes: a claude lane needs no source, is topped up while a Claude account has room and skipped while none has" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
@@ -6042,13 +6079,13 @@ cancel c-old-lane --why canary: superseded by the $week set"
   # Room for any account is asked with no --source; ROOM is what the stub says this run.
   printf '#!/usr/bin/env bash\necho "room $*" >> "%s"\n[ "$ROOM" = yes ] && { echo /home/u/.claude; exit 0; }\necho "every account is past its pace line" >&2; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
-  ROOM=no run "$SUBJECT" retro
+  ROOM=no run "$SUBJECT" canary queue --max 9
   assert_success
   assert_line "fleet-bench: canary: claude/haiku@max not queued, no Claude account has room: every account is past its pace line"
   [ ! -f "$CQ/canary-greet-$week-haiku-ma.json" ]
-  ROOM=yes run "$SUBJECT" retro
+  ROOM=yes run "$SUBJECT" canary queue --max 9
   assert_success
-  assert_line "fleet-bench: canary: 1 queued, 0 already queued for $week (claude/haiku@max)"
+  assert_line "fleet-bench: canary: 1 queued for $week (claude/haiku@max)"
   # The slug names the model alone, so the id keeps letters to tell tasks apart; the item pins all three.
   assert_equal "$(jq -c '[.agent, .model, .effort]' "$CQ/canary-greet-$week-haiku-ma.json")" '["claude","haiku","max"]'
   assert_equal "$(sort -u "$SANDBOX/room.log")" 'room '
