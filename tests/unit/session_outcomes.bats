@@ -1963,5 +1963,6 @@ link_fixture() {
   rm "$HOME/.config/forgejo/token"
   run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
     so_forgejo_auth git.example.test/o/r; echo "rc=$? $SO_FORGEJO_ERR"' _ "$SANDBOX/bin/rbw-none"
-  assert_output --partial 'rc=1 no token (forgejo-token: FORGEJO_TOKEN, ~/.config/forgejo/token, rbw forgejo_repo_admin), git.example.test/o/r unread'
+  assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
+  assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
 }

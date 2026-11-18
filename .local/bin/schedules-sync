@@ -351,15 +351,19 @@ FJ_TOKEN = []
 
 
 def fj_token():
-    """forgejo-token's answer (FORGEJO_TOKEN, a worker's token file, else the rbw entry), read once per pass; "" when none answers."""
+    """forgejo-token's answer (FORGEJO_TOKEN, a worker's token file, else the rbw entry), read once per pass;
+    "" when none answers, with forgejo-token's own reason in FJ_TOKEN[1]."""
     if not FJ_TOKEN:
         env = dict(os.environ, FORGEJO_TOKEN_RBW=RBW, FORGEJO_TOKEN_ENTRY=FORGEJO_ENTRY)
         try:
-            tok = subprocess.run([FORGEJO_TOKEN_BIN], capture_output=True, text=True, env=env,
-                                 timeout=GH_CALL_TIMEOUT_S).stdout.strip()
-        except (OSError, subprocess.TimeoutExpired):
-            tok = ""
-        FJ_TOKEN.append(tok)
+            p = subprocess.run([FORGEJO_TOKEN_BIN], capture_output=True, text=True, env=env,
+                               timeout=GH_CALL_TIMEOUT_S)
+            tok, why = p.stdout.strip(), p.stderr.strip()
+        except OSError as e:
+            tok, why = "", f"forgejo-token: {e}"
+        except subprocess.TimeoutExpired:
+            tok, why = "", f"forgejo-token: no answer in {GH_CALL_TIMEOUT_S}s"
+        FJ_TOKEN.extend([tok, why])
     return FJ_TOKEN[0]
 
 
@@ -378,7 +382,7 @@ def fj(host, path):
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, ~/.config/forgejo/token missing, rbw {FORGEJO_ENTRY} unread)"))
+    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
 
 
 def read_map():

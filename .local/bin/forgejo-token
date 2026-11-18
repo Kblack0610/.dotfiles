@@ -15,7 +15,7 @@ if [ -n "${FORGEJO_TOKEN:-}" ]; then
   printf '%s\n' "$FORGEJO_TOKEN"; exit 0
 fi
 if [ -s "$file" ]; then
-  tok=$(head -n1 "$file")
+  tok=$(head -n1 "$file" | tr -d '[:space:]')   # a CRLF or trailing space would ride into the header and 401
   [ -n "$tok" ] && { printf '%s\n' "$tok"; exit 0; }
 fi
 tok=$("${FORGEJO_TOKEN_RBW:-rbw}" get "$entry" 2>/dev/null) || tok=""

@@ -474,8 +474,15 @@ so_forgejo_auth() {
     *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
   esac
   if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$(FORGEJO_TOKEN_RBW="${SO_RBW:-rbw}" FORGEJO_TOKEN_ENTRY="$entry" "$SO_LIB/../bin/forgejo-token" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (forgejo-token: FORGEJO_TOKEN, ~/.config/forgejo/token, rbw $entry), $repo unread"; return 1; }
+    local bin="$SO_LIB/../bin/forgejo-token" why
+    [ -x "$bin" ] || { SO_FORGEJO_ERR="no token: $bin is missing, $repo unread"; return 1; }
+    # One call: on success forgejo-token prints only the token; on a failure only its reason, which
+    # names the sources, so they are listed in one place.
+    if why="$(FORGEJO_TOKEN_RBW="${SO_RBW:-rbw}" FORGEJO_TOKEN_ENTRY="$entry" "$bin" 2>&1)" && [ -n "$why" ]; then
+      SO_FORGEJO_TOKEN="$why"
+    else
+      SO_FORGEJO_ERR="${why#forgejo-token: }, $repo unread"; return 1
+    fi
   fi
 }
 

@@ -46,3 +46,9 @@ setup() {
   assert_output ''
   [[ "$stderr" == *"FORGEJO_TOKEN unset"* && "$stderr" == *".config/forgejo/token missing or empty"* && "$stderr" == *"rbw forgejo_repo_admin unread"* ]] || fail "stderr: $stderr"
 }
+
+@test "a token file with CRLF and trailing spaces gives the bare token" {
+  printf 'file-tok \r\n' > "$HOME/.config/forgejo/token"
+  run "$T"
+  assert_success; assert_output file-tok
+}
