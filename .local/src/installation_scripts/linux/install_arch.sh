@@ -510,6 +510,27 @@ setup_power_key() {
     log_info "Installed $dst and reloaded logind"
 }
 
+# Keep the kernel log of a crashed boot: a 2G journal (cachyos-settings caps it at 50M),
+# systemd-pstore so a panic's EFI record is saved at the next boot, and the systemd-journal
+# group so the fleet reads past boots without root (applies at the next login).
+setup_journal() {
+    log_section "Keeping crash logs: journal size, pstore, journal group"
+
+    local src="$HOME/.dotfiles/etc/systemd/journald.conf.d/50-journal-size.conf"
+    local dst="/etc/systemd/journald.conf.d/50-journal-size.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "journald drop-in not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    sudo systemctl restart systemd-journald
+    sudo systemctl enable systemd-pstore
+    sudo usermod -aG systemd-journal "$USER"
+    log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal"
+}
+
 # Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
@@ -893,6 +914,7 @@ install_all() {
 
     step keyd        setup_keyd
     step powerkey    setup_power_key
+    step journal     setup_journal
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 
