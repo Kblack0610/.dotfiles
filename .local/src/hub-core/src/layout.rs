@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 11] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -159,7 +159,7 @@ pub const TABS: [Tab; 11] = [
             },
             Inner {
                 id: "all",
-                title: "All rows",
+                title: "Board",
                 sections: &["board"],
             },
             Inner {
@@ -344,6 +344,39 @@ pub const TABS: [Tab; 11] = [
             },
         ],
     },
+    // What the agent system is made of: skills, subagents, hooks and rules, each read from the
+    // file or CLI that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill
+    // spend on Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh
+    // bar tab, so it has no digit and Tab reaches it (human, 2026-11-18).
+    Tab {
+        id: "stack",
+        group: "System",
+        title: "Stack",
+        question: "What is the agent system made of, and is each part wired?",
+        sections: &["skills", "agents", "hooks", "rules"],
+        inner: &[
+            Inner {
+                id: "skills",
+                title: "Skills",
+                sections: &["skills"],
+            },
+            Inner {
+                id: "agents",
+                title: "Agents",
+                sections: &["agents"],
+            },
+            Inner {
+                id: "hooks",
+                title: "Hooks",
+                sections: &["hooks"],
+            },
+            Inner {
+                id: "rules",
+                title: "Rules",
+                sections: &["rules"],
+            },
+        ],
+    },
 ];
 
 /// A folded Log section lists at most this many rows, then "+N older". agent-web's `LOG_ROWS`
@@ -399,7 +432,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
-    // agent-web's Board tab: Projects' All rows inner tab, its board section (2026-11-12).
+    // agent-web's Board tab: Projects' Board inner tab, its board section (2026-11-12).
     ("board", "projects"),
 ];
 
@@ -883,6 +916,11 @@ mod tests {
         assert_eq!(bar_digit("schedules"), Some(9));
         assert_eq!(bar_digit("costs"), Some(0));
         assert_eq!(bar_digit("alerts"), Some(7));
+        assert_eq!(
+            bar_digit("stack"),
+            None,
+            "the eleventh bar tab has no digit"
+        );
     }
 
     #[test]
@@ -902,7 +940,10 @@ mod tests {
                 ("Today", vec!["home", "daily", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
-                ("System", vec!["alerts", "infra", "schedules", "costs"]),
+                (
+                    "System",
+                    vec!["alerts", "infra", "schedules", "costs", "stack"]
+                ),
             ]
         );
         // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
@@ -956,7 +997,11 @@ mod tests {
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
         assert_eq!(section("outbox"), Some("outbox"));
-        assert_eq!(section("board"), Some("board"), "the Board tab is All rows");
+        assert_eq!(
+            section("board"),
+            Some("board"),
+            "the old Board tab is Projects' Board"
+        );
         assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
@@ -1087,7 +1132,7 @@ mod tests {
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
         assert_eq!(
             titles,
-            ["Projects", "All rows", "Deliverables", "Coverage", "Ladder"]
+            ["Projects", "Board", "Deliverables", "Coverage", "Ladder"]
         );
         assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");

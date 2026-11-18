@@ -37,7 +37,7 @@ function railHtml(r, picked, grafana) {
   const pts = r.nodes.map((n, i) => railNode(n, i === at) + (i === at ? railDetail(n) : "")).join("");
   const age = r.as_of ? `<span class="${r.stale ? "rstop" : ""}">as of ${esc(r.as_of)}${r.stale ? " (stale)" : ""}</span>`
     : r.stale ? `<span class="rstop">age unknown</span>` : r.reading ? "reading" : "";
-  const trouble = r.error ? `inbox, board: ${r.error}` : r.absent ? "inbox, board: no snapshot" : "";
+  const trouble = r.error ? `inbox, agent backlog: ${r.error}` : r.absent ? "inbox, agent backlog: no snapshot" : "";
   const graph = grafana ? ` <a class="glink" href="${esc(grafana)}/d/kb-agents-overview" target="_blank" rel="noopener">graph</a>` : "";
   return `<div class="flow"><div class="rail">${pts}</div>` +
     (trouble ? `<div class="rstop">${esc(trouble)}</div>` : "") +

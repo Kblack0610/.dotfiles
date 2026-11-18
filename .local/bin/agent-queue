@@ -33,7 +33,8 @@
 #       (--drop: dropped), and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
 #       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
-#   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
+#   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
+#       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
 #       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
@@ -233,16 +234,58 @@ unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
 # holder must not wait on a child that takes the lock again. A reader holds .lock only while it lists
 # and reads the files (snap_json), since a writer's wait is the sum of the reads already in.
 # A timeout exits LOCK_BUSY, not 1: nothing was written, so a caller that must record (agent-land)
-# can tell it from a refusal and take the lock again.
+# can tell it from a refusal and take the lock again. Each timeout appends one lock_miss line.
 LOCK_BUSY=75
 LOCK_WAIT="${AGENT_QUEUE_LOCK_WAIT:-10}"
+AQ_LOCK_MISS_LOG="$AQ_DIR/lock-miss.jsonl"
 take_lock() {
   [[ "$LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_LOCK_WAIT is whole seconds, not '$LOCK_WAIT'"
   local gate end=$((SECONDS + LOCK_WAIT))
   exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
-  flock -w "$LOCK_WAIT" "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 ||
-    { echo "agent-queue: the queue is locked by another writer" >&2; exit "$LOCK_BUSY"; }
+  flock -w "$LOCK_WAIT" "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 || {
+    exec {gate}>&- 8>&-
+    lock_miss "${1:-}"
+    echo "agent-queue: the queue is locked by another writer (who held it: $AQ_LOCK_MISS_LOG)" >&2
+    exit "$LOCK_BUSY"
+  }
   exec {gate}>&-
+}
+# lock_miss [-s]: one JSON line naming this taker, its caller, the kernel's locks on .gate and
+# .lock (holds or waits, READ or WRITE) and every process with either open: the holder, the
+# waiters, and any child a holder started, since fd 8 is inherited. Called with both fds closed,
+# so the line never lists the taker itself. Best effort: it never changes the exit. Why: 108
+# dispatch starts and two runners timed out on the lock with nothing naming the holder (ar-3025).
+# The log moves to .1 past 1 MB, so a timeout storm cannot grow it without bound.
+lock_miss() {
+  local f s line path pids p
+  [ ! -f "$AQ_LOCK_MISS_LOG" ] || [ "$(stat -c %s "$AQ_LOCK_MISS_LOG")" -lt 1048576 ] ||
+    mv -f "$AQ_LOCK_MISS_LOG" "$AQ_LOCK_MISS_LOG.1"
+  {
+    for f in .gate .lock; do
+      s=$(stat -c '%Hd %Ld %i' "$AQ_DIR/$f") || continue
+      # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
+      # shellcheck disable=SC2086 # s is three numbers, split on purpose
+      awk -v f="$f" -v id="$(printf '%02x:%02x:%s' $s)" '{ o = ($2 == "->") } $(6 + o) == id {
+        printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
+    done
+    # One fuser scan for both files: it prints "<path>: <pid>..." per file in use, the path on
+    # stderr and the pids on stdout, so the merged stream pairs them. Split at the last colon: the
+    # path may hold spaces, a pid never holds a colon.
+    fuser "$AQ_DIR/.gate" "$AQ_DIR/.lock" 2>&1 | while IFS= read -r line; do
+      path=${line%:*} pids=${line##*:} && f=${path##*/}
+      for p in $pids; do
+        p=${p%%[!0-9]*}
+        [ -n "$p" ] || continue
+        printf 'proc\t%s\t%s\t%s\n' "$f" "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-300)"
+      done
+    done
+  } 2>/dev/null | jq -Rnc --arg ts "$(date -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
+    --argjson wait "$LOCK_WAIT" --arg cmd "$(tr '\0' ' ' < /proc/$$/cmdline | cut -c1-300)" \
+    --arg caller "$(tr '\0' ' ' < /proc/$PPID/cmdline | cut -c1-300)" \
+    '[inputs | split("\t")] | {ts: $ts, mode: $mode, wait: $wait, cmd: $cmd, caller: $caller,
+      locks: map(select(.[0] == "lock") | .[1]),
+      procs: map(select(.[0] == "proc") | {file: .[1], pid: (.[2] | tonumber), cmd: .[3]})}' \
+    >> "$AQ_LOCK_MISS_LOG" 2>/dev/null || true
 }
 
 items_in() { # state-dir -> item files, oldest first
@@ -335,9 +378,10 @@ finished_row_ok() {
 # rank and its whole brief, and dispatch promotes it as the queue drains. A hold writes no item, logs
 # one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD (docs: QUEUE.md "Admission").
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running,
-# urgent and `red`, an add that arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:), dispatch's
-# own pull (a board row, trainee, canary or auto:epics verify; fleet-dispatch stops its fill at the cap,
-# queue_headroom), a --plan (an approved plan), cap 0.
+# an add that arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:), dispatch's trainee, canary
+# and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
+# plan), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
+# returns the last-ranked item that has a row to its board, so they go in without the queue growing.
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
 AQ_EX_HELD=5
@@ -354,10 +398,30 @@ admission_now() {
   printf '%s %s\n' "$runnable" "$AQ_CAP"
 }
 
-# admission_exempt <priority> <tags> -> true when the cap never holds the add: it is off, or the
-# item is urgent or `red`.
-admission_exempt() {
-  [ "$AQ_CAP" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]
+# make_room <priority> <tags> <slug> -> at the cap, an urgent or `red` add returns the last-ranked
+# runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
+# again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
+# an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
+# like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
+# refuse (already queued, finished ok) moves nothing, and a victim that starts meanwhile is not returned.
+make_room() {
+  local now r l victim
+  [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]; } || return 0
+  [ -z "$(find_item "$3")" ] || return 0
+  [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
+  now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
+  victim="$(collect queued | jq -r '
+    ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
+    | [.[] | select((.hold == null or (.hold | test("^at:[0-9]{2}:[0-9]{2}$"))) and .priority != "urgent" and (.row // "") != "")
+        | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
+        | select(.from != "human")
+        | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
+  [ -n "$victim" ] || return 0
+  # Returned once it is no longer active, its row un-started or not (cmd_return says which).
+  ( AQ_RETURN_QUEUED=1 cmd_return "$victim" --why "made room for $1 $3: the queue is at its cap of $l" ) >&2
+  [ -z "$(find_item "$victim")" ] || return 0
+  lock; admission_log "${from:-}" "${project:-}" "$victim" "returned for $3" "$r" "$l" returned; unlock
+  echo "agent-queue: returned $victim to its board row to make room for $1 $3 under the cap of $l" >&2
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
@@ -368,7 +432,7 @@ admission_since() { date -u -d "$AQ_HELD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
 # never blocks work on its own fault. The log keeps the window only, since a filer retries.
 admit() {
   local from=$1 priority=$2 tags=$3 project=$4 slug=$5 title=$6 now r l
-  ! admission_exempt "$priority" "$tags" || return 0
+  [ "$AQ_CAP" != 0 ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ && "$l" =~ ^[0-9]+$ ]] ||
     { echo "agent-queue: admission could not read the queue, so this add goes in unchecked" >&2; return 0; }
   [ "$r" -ge "$l" ] || return 0
@@ -412,24 +476,26 @@ board_only_say() {
 }
 
 # admission [--json] -> admission_now, the items the cap held and the adds sent to the board (the
-# board-only rule) in the last AQ_HELD_DAYS, each counted once however often its filer retried.
+# board-only rule) in the last AQ_HELD_DAYS, each counted once however often its filer retried, and
+# the items an urgent or red add returned to the board (make_room), so urgent inflation shows.
 cmd_admission() {
-  local json='' now r l since held=0 boarded=0
+  local json='' now r l since held=0 boarded=0 returned=0
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
   now="$(admission_now)" || die "the queue could not be read"
   read -r r l <<<"$now"
   since="$(admission_since)"
   if [ -s "$AQ_ADMISSION_LOG" ]; then
-    read -r held boarded < <(jq -rs --arg s "$since" '[.[] | select(.at >= $s)] as $w
-      | ([$w[] | select(.why != "board-only") | [.project, .slug]] | unique | length)
-      , ([$w[] | select(.why == "board-only") | [.project, .slug, .title]] | unique | length)' "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
+    read -r held boarded returned < <(jq -rs --arg s "$since" '[.[] | select(.at >= $s)] as $w
+      | ([$w[] | select(.why | IN("board-only", "returned") | not) | [.project, .slug]] | unique | length)
+      , ([$w[] | select(.why == "board-only") | [.project, .slug, .title]] | unique | length)
+      , ([$w[] | select(.why == "returned")] | length)' "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
   fi
   if [ -n "$json" ]; then
-    jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson b "${boarded:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
-      '{on: $on, runnable: $r, limit: $l, held_7d: $h, boarded_7d: $b, admits: (($on | not) or $r < $l)}'
+    jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson b "${boarded:-0}" --argjson x "${returned:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
+      '{on: $on, runnable: $r, limit: $l, held_7d: $h, boarded_7d: $b, returned_7d: $x, admits: (($on | not) or $r < $l)}'
   else
-    printf 'admission: %s, %s can start now against a cap of %s; %s adds held and %s sent to the board in %s days\n' \
-      "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "${boarded:-0}" "$AQ_HELD_DAYS"
+    printf 'admission: %s, %s can start now against a cap of %s; %s adds held, %s sent to the board and %s returned for urgent work in %s days\n' \
+      "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "${boarded:-0}" "${returned:-0}" "$AQ_HELD_DAYS"
   fi
 }
 
@@ -1350,8 +1416,9 @@ cmd_add() {
   for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
   case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
-  { [ -z "$running" ] && [ -z "$after" ] && [ -z "$deferred" ] && [ -z "${AQ_ADMITTED:-}" ] && ! admission_exempt "$priority" "$tags"; } || capped=''
+  { [ -z "$running" ] && [ -z "$after" ] && [ -z "$deferred" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
+  [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
@@ -1700,13 +1767,15 @@ cmd_show() {
 # earlier one is not this one's (2026-11-05 a land closed c1103's waiting item that way).
 # --sid asks of that Claude session alone, with no tmux fallback (the focus gate, from a hook).
 cmd_mine() {
-  local session='' sid only=0 slugs
-  case "${1:-}" in
-    --session) session="${2:?--session needs a value}" ;;
-    --sid) sid="${2:?--sid needs a value}" only=1 ;;
-    '') ;;
-    *) die "usage: agent-queue mine [--session s | --sid id]" ;;
-  esac
+  local session='' sid only=0 newest=0 slugs files last
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="${2:?--session needs a value}"; shift 2 ;;
+      --sid) sid="${2:?--sid needs a value}" only=1; shift 2 ;;
+      --newest) newest=1; shift ;;
+      *) die "usage: agent-queue mine [--session s | --sid id] [--newest]" ;;
+    esac
+  done
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
   # One read answers both asks, so they see the queue at one moment; none when neither is asked.
   local items=""
@@ -1723,8 +1792,18 @@ cmd_mine() {
   fi
   [ -n "$slugs" ] || return 1
   if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
-    echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
-    return 2
+    if [ "$newest" -eq 0 ]; then
+      echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
+      return 2
+    fi
+    # --newest (a resume): a running item before a waiting or review one, whose header a PR poller
+    # may rewrite; among those, the one updated last, since every header write rewrites its file.
+    files="$(jq -r --arg l "$slugs" '[.[] | select(.slug as $x | $l | split("\n") | index([$x]))] |
+      (map(select(.state == "running")) | select(length > 0)) // . | .[].file' <<<"$items")" ||
+      die "could not read the queue"
+    last="$(xargs -rd '\n' sh -c 'find "$@" -maxdepth 0 -printf "%T@\t%p\n"' find <<<"$files" | LC_ALL=C sort -n | tail -n 1 | cut -f2-)"
+    slugs="$(jq -r --arg f "$last" 'first(.[] | select(.file == $f) | .slug) // empty' <<<"$items")"
+    [ -n "$slugs" ] || die "could not read the queue"
   fi
   printf '%s\n' "$slugs"
 }
@@ -1888,6 +1967,7 @@ cmd_return() {
   by="$(cancel_who)"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  [ -z "${AQ_RETURN_QUEUED:-}" ] || [ "$(state_of "$f")" = queued ] || die "$slug is $(state_of "$f") now, not queued: not returned"
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
   local -a chain=() files=() rows=() profs=() lanes=()
   while IFS=$'\t' read -r s g; do chain+=("$s") files+=("$g"); done < <(chain_of "$slug" "$f")

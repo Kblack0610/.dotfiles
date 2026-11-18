@@ -2318,6 +2318,27 @@ sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
   assert_success
 }
 
+@test "check auth: an account whose sessions run on a setup token is not 'not refreshing' for its file's access token" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" $(((NOW - 90 * 60) * 1000))
+  session hub/%1 alt busy
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'alt not refreshing'
+  rbw_stub
+  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
+  touch "$SANDBOX/vault/locked"
+  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
+  run "$ACCT" check auth
+  assert_success
+  # the login itself ending still trips
+  login "$ALT" $(((NOW - 90 * 60) * 1000)) $(((NOW - 3600) * 1000))
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'alt signed out (its login ended'
+}
+
 @test "check expiry: a login ending within three days trips, naming the account; a month out is quiet" {
   export CLAUDE_ACCT_NOW=$NOW
   login "$HOME/.claude"

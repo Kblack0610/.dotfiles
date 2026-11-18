@@ -92,7 +92,7 @@ const queue = {
 const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
-const RAIL = [["inbox", "inbox", null], ["board", "board", { tab: "board", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
+const RAIL = [["inbox", "inbox", null], ["backlog", "agent backlog", { tab: "projects/all", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
 const flow = {
   grafana: home.grafana,
   line: {
@@ -323,6 +323,18 @@ const schedules = {
   summary: "7 scheduled: 2 failing, 2 stale, 0 never ran, 1 off, 0 no purpose, CI read 4m ago", at: NOW, errors: [],
 };
 
+// Stack: hub_core::stack, four tables in one read (agent-web src/stack.rs).
+const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
+const stack = {
+  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { skills: 18, hooks: 1, rules: 28 }, errors: [],
+  table: table(STACK_SKILLS, ["skill", "category", "repo", "calls", "runners", "drift"], ["all", "drift", "scoped", "runner"], { category: ["ops", "workstreams"], repo: ["public", "private"], drift: ["deadpath", "unused"] }),
+  rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
+  agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },
+  hooks: { table: table(STACK_HOOKS, ["harness", "event", "matcher", "script", "from"], ["all", "missing"], { harness: ["claude", "codex"], event: ["PreToolUse", "Stop"] }), rows: rows(STACK_HOOKS, (i) => ({ harness: pick(["claude", "codex"], i), event: pick(["PreToolUse", "Stop", "SessionStart"], i), matcher: i % 3 ? "Bash|Read|Edit|Write|MultiEdit" : "", script: `${pick(SLUGS, i)}.sh`, command: `~/.claude/hooks/${pick(SLUGS, i)}.sh`, from: "settings.json", found: i !== 3 })) },
+  rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["all", "stale", "moved", "dead"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
+  rule_files: [{ name: "agent-runtime.md", paths: [".local/bin/agentctl*", ".local/bin/fleet-*"] }, { name: "skill-corpus.md", paths: [".claude/skills/**"] }],
+};
+
 // Costs: hub_core::costs, the shape costs.test.mjs pins.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, ...o });
@@ -449,7 +461,7 @@ export const FIXTURES = {
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
-  "/api/fleet": fleet, "/api/schedules": schedules, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
+  "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
   "/api/pipelines": pipelines, "/api/tests": tests,
   ...Object.fromEntries(Object.entries(RUNNER_PAGES).map(([name, r]) => [`/api/fleet/runner?name=${name}`, r])),
 };
