@@ -710,8 +710,8 @@ remind_sample() {
 # a session is typed one close for good; a send that fails after it reaches the human through the
 # row's escalation.
 # Its last step is the window (WINDOW, CLOSE_REFUSED_JQ): a session typed its close
-# FLEET_IDLE_CLOSE_MIN or more ago (the claim's mtime), so its own /wind-down, or its Stop hook
-# deferring on a red, has had its turn, and still closable now at the same idle prompt, has its
+# FLEET_IDLE_CLOSE_MIN or more ago (the claim's mtime), quiet ever since, so its own /wind-down, or
+# its Stop hook deferring on a red, has had its turn, and still closable now at the same idle prompt, has its
 # window closed by wind-down.sh close: scrollback, window, worktree reap (which refuses a dirty or
 # unpushed tree), the teardown /wind-down schedules. A failed close (a protected window) is logged
 # once per session in $LEDGER/.close-failed and left to the escalation and its reminder.
@@ -721,12 +721,20 @@ close_sample() {
   local sid target pane close fact server cmd when now acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane close fact; do
+  while IFS=$'\t' read -r sid target pane close fact idle; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
     if [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
+      # Worked since the claim (quiet for less time than the claim's age: its wind-down stopped, or
+      # the human used it): the claim is spent, and the next check types one more close (ar-2947).
+      # Only a session quiet the whole time since its close was typed has its window closed.
+      if [ $(( ${idle:-0} * 60 )) -lt $((now - when)) ]; then
+        rm -f "$LEDGER/.closed/$sid" && acted=1
+        cmd_log "close: $target: worked after its close was typed; it gets one more ($fact)" >/dev/null
+        continue
+      fi
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
       pane_takes_keys "$server" "$pane" || continue
@@ -755,7 +763,8 @@ close_sample() {
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
-    | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " "))] | @tsv' "$STATE_FILE" 2>/dev/null)
+    | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
+       ((.idle_min // 0) | floor)] | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 

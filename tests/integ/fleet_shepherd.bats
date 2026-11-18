@@ -499,7 +499,7 @@ nudged_ago() {
 jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \$c | contains(\"--pane \(\$p) \") | not))" \
   "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.n" && mv "$FLEET_STATE_FILE.n" "$FLEET_STATE_FILE"'
   row1="$(crow 1 DONE now '{"nudged":true,"close_sent":true,"escalated":true,"idle_min":2000}')"
-  doc "[$row1, $(crow 2 CHAT now '{"nudged":true,"close_sent":true}')]"
+  doc "[$row1, $(crow 2 CHAT now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run closes
   assert_line 'close --server lab --pane %1 --sid 1'
@@ -526,14 +526,14 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
         $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'), $(crow 4 LANDED now '{"nudged":true,"close_sent":true,"next_phase":"P2"}'),
         $(crow 5 STALLED now '{"nudged":true,"close_sent":true,"blockers":["next phase: P3 of x.md"]}'),
         $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
-        $(crow 10 DONE now '{"nudged":true,"close_sent":true}')]"
+        $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   # The un-nudged row is typed into instead: close_sample owns the first nudge.
   run typed
   assert_line '-L lab send-keys -t %1 -l /wind-down auto'
   # A draft, a busy screen or copy mode holds the close too.
-  doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true}')]"
+  doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
   for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" ''; do
     STUB_PANE="$screen" "$SH" check >/dev/null || true
@@ -543,6 +543,31 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   # The same row at an idle prompt is closed: only the screen held it.
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
+}
+
+@test "check types one more close, not a window close, to a session that worked after its close was typed (ar-2947)" {
+  # Typed its close 3h ago, but quiet only 90m: it did something since (its wind-down was stopped).
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The claim is spent, and the document is refreshed so the next check reads close_sent false.
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  grep -q 'close: lab/1:1: worked after its close was typed; it gets one more (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  # The next check types it again, through the one claim.
+  doc "[$(crow 1 DONE now '{"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  grep -qx 'mark --close 1' "$HOME/sessions.calls"
+  # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":200}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
 }
 
 @test "check's re-page for a LANDED row with no next phase names no phase, and no plan when it has none" {
