@@ -54,6 +54,7 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
 #   admission [--json]    the runnable items, the cap an add is admitted under, and the adds held in 7 days
+#   mix [--json]          each class of service: share, runnable, started in its window, and the starved ones
 # Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
 # the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
 # wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
@@ -923,22 +924,65 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
     | del(.q))
   | .out;'
 
-# mix_json -> the class config plus `done`, each class's count of the items started in its window that
-# closed or are still running, waiting or in review (MIX_JQ's base), so a class that just started one is
-# not picked again as if it had not; null when AQ_CLASSES is not `on`, names no class list, or has a
-# window_days that is not a whole number of days. It reads without the lock: an item moves between
-# states by a rename and a write rewrites it by one, so a race miscounts one item at worst, and a second lock wait per listing would double
-# every list's wait under load (a held lock made each 10 s on 2026-11-18).
-mix_json() {
-  local cfg days FILES=()
-  cfg="$(jq -ce 'select(.on == true and (.classes | type) == "array" and (.classes | length) > 0
-    and (.window_days // 7 | type == "number" and . >= 1 and . == floor))' "$AQ_CLASSES" 2>/dev/null)" ||
-    { echo null; return 0; }
+# class_cfg [--mix] -> AQ_CLASSES on one line: a class list and a window_days of whole days (default 7).
+# Plain, it is the order's config and needs `on: true`; --mix (agent-queue mix) takes it on or off and
+# also needs a starve_days of whole days (default 3) inside the window. Only mix checks starve_days, so
+# a bad watch setting never turns the order off. Any other file fails, printing nothing.
+class_cfg() {
+  jq -ce --argjson mix "$([ "${1:-}" = --mix ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
+    select(($mix or .on == true) and (.classes | type) == "array" and (.classes | length) > 0 and (.window_days // 7 | days)
+      and (($mix | not) or ((.starve_days // 3 | days) and (.starve_days // 3) <= (.window_days // 7))))' \
+    "$AQ_CLASSES" 2>/dev/null
+}
+
+# class_started <cfg> -> {window: {<class>: n}, recent: {<class>: n}}: each class's started items that
+# closed in the last window_days or are still running, waiting or in review (the mix's count, so a
+# class that just started one is not picked again as if it had not), and of those the ones started in
+# the last starve_days. It reads without the lock: an item moves between states by a rename and a write
+# rewrites it by one, so a race miscounts one item at worst, and a second lock wait per listing would
+# double every list's wait under load (a held lock made each 10 s on 2026-11-18).
+class_started() {
+  local cfg=$1 days FILES=()
   days="$(jq -r '.window_days // 7' <<<"$cfg")"
-  # A started item counts from its start: done in the window, or still running, waiting or in review.
   list_files done --since "$(since_day "$((days - 1))")" running waiting review
-  items_json --rows "$CLASS_JQ $cfg"' as $cfg | $cfg + {done: ([.[] | select((.started // "") != "") | class_of($cfg.classes)]
-    | group_by(.) | map({(.[0]): length}) | add // {})}' "${FILES[@]}" 2>/dev/null || echo null
+  items_json --rows "$CLASS_JQ $cfg"' as $cfg | (now - ($cfg.starve_days // 3) * 86400) as $cut
+    | def count: group_by(.c) | map({(.[0].c): length}) | add // {};
+    [.[] | select((.started // "") != "")
+      | {c: class_of($cfg.classes), recent: ((.started | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $cut)}]
+    | {window: count, recent: (map(select(.recent)) | count)}' "${FILES[@]}"
+}
+
+# mix_json -> the class config plus `done`, class_started's window counts (MIX_JQ's base); null when
+# AQ_CLASSES is not `on` or class_cfg refuses it.
+mix_json() {
+  local cfg
+  cfg="$(class_cfg)" || { echo null; return 0; }
+  class_started "$cfg" 2>/dev/null | jq -c --argjson cfg "$cfg" '$cfg + {done: .window}' 2>/dev/null || echo null
+}
+
+# mix [--json] -> each class of service (AQ_CLASSES, on or off): its share, its runnable items (queued,
+# no hold: what admission counts), its items started in window_days (class_started, what the mix
+# balances on) and that as a percent of every class's, and `starved`, each class with runnable items
+# and none started in starve_days. fleet-bench pipeline shows it; `pipeline --check mix` trips on a starved class.
+cmd_mix() {
+  local json='' cfg q s out
+  case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, or a window_days or starve_days that is not whole days inside the window"
+  q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
+    | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
+  s="$(class_started "$cfg")" || die "the started items could not be read"
+  out="$(jq -nc --argjson cfg "$cfg" --argjson q "$q" --argjson s "$s" '([$s.window[]] | add // 0) as $total
+    | {on: ($cfg.on == true), window_days: ($cfg.window_days // 7), starve_days: ($cfg.starve_days // 3),
+       classes: [$cfg.classes[] | .name as $n
+         | {name: $n, share: (.share // 0), runnable: ($q[$n] // 0), started: ($s.window[$n] // 0), recent: ($s.recent[$n] // 0),
+            pct: (if $total > 0 then ($s.window[$n] // 0) * 100 / $total | round else null end)}]}
+    | .starved = [.classes[] | select(.runnable > 0 and .recent == 0) | .name]')"
+  [ -z "$json" ] || { printf '%s\n' "$out"; return 0; }
+  jq -r 'def r($w): tostring | " " * ($w - length) + .;
+    "mix (\(if .on then "on" else "off" end)): items started in \(.window_days)d against each class share",
+    "class        share  started    pct  runnable  started \(.starve_days)d",
+    (.classes[] | "\(.name + "          " | .[0:10]) \("\(.share)%" | r(7)) \(.started | r(8)) \(if .pct == null then "-" else "\(.pct)%" end | r(6)) \(.runnable | r(9)) \(.recent | r(10))"),
+    (if (.starved | length) > 0 then "starved: \(.starved | join(", ")) (runnable, none started in \(.starve_days)d)" else "starved: none" end)' <<<"$out"
 }
 
 # order_filter <states...> -> ORDER with each project's rank bound to $rank, from the `#prio` the human
@@ -2775,7 +2819,7 @@ cmd_backfill_briefs() {
 [[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission) v="$1"; shift; "cmd_$v" "$@" ;;
+  add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   settle-ask) shift; cmd_settle_ask "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
