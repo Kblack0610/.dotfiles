@@ -2001,6 +2001,7 @@ park_flow() {
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
     local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base item to name note b cmd got scope
+    local created parked
     what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
     session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
@@ -2033,6 +2034,15 @@ unpark_ledger() {
     fi
     tmux -L "$server" has-session -t "=$session" 2>/dev/null ||
         { refuse "its tmux session is gone from server $server; resume it by hand in $cwd with $base"; return; }
+    # A park keeps its pane, so a pane that is gone, or whose session was made after the park, is a
+    # server restart: pane ids restart with it, and resuming into that id would reach a live window
+    # (ar-2679; fleet-sessions park_pane_gone is the same test).
+    created=$(tmux -L "$server" display-message -p -t "$pane" '#{session_created}' 2>/dev/null) ||
+        { refuse "its pane $pane is gone from session $session since the server restarted; resume it by hand in $cwd with $base"; return; }
+    parked=$(ledger_get "$file" parked)
+    if [[ "$created" =~ ^[0-9]+$ && "$parked" =~ ^[0-9]+$ ]] && ((created > parked)); then
+        refuse "its tmux session was made after the park, so pane $pane is not the parked one; resume it by hand in $cwd with $base"; return
+    fi
     # A session ledger owns the session's panes; a window ledger only its own pane, since the
     # rest of a shared session runs other claudes.
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
