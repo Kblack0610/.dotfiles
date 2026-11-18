@@ -1,8 +1,7 @@
 //! A-d in the chooser: show every session, hide the ones fleet-dispatch started, or show only
-//! those. A dispatched session is a window fleet-dispatch tagged `@dispatch`, which the row reads
-//! as its `dispatch` tag (`tmux::pane_format`). The view is saved beside the sort
-//! (`panels/agent-panel.dispatch`) so the panel reopens in it, and the border label names it.
-//! Its one writer is `agent-panel dispatched --step`.
+//! those. A dispatched session is one fleet-dispatch tagged `@dispatch` (`tmux::Pane::dispatched`).
+//! The view is saved beside the sort (`panels/agent-panel.dispatch`) so the panel reopens in it,
+//! and the border label names it. Its one writer is `agent-panel dispatched`, the A-d callback.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,26 +16,32 @@ pub enum View {
     Only,
 }
 
-/// Every view in A-d order: the view, its word in the state file, and the border label.
-const VIEWS: [(View, &str, &str); 3] = [
-    (View::All, "all", ""),
-    (View::Hide, "hide", " dispatched hidden "),
-    (View::Only, "only", " dispatched only "),
-];
-
 impl View {
-    fn entry(self) -> (View, &'static str, &'static str) {
-        *VIEWS.iter().find(|v| v.0 == self).unwrap_or(&VIEWS[0])
-    }
-
+    /// A-d order: every session, dispatched hidden, dispatched only.
     pub fn next(self) -> View {
-        let i = VIEWS.iter().position(|v| v.0 == self).unwrap_or(0);
-        VIEWS[(i + 1) % VIEWS.len()].0
+        match self {
+            View::All => View::Hide,
+            View::Hide => View::Only,
+            View::Only => View::All,
+        }
     }
 
     /// The border label: empty when every session shows.
     pub fn label(self) -> &'static str {
-        self.entry().2
+        match self {
+            View::All => "",
+            View::Hide => " dispatched hidden ",
+            View::Only => " dispatched only ",
+        }
+    }
+
+    /// Its word in the state file.
+    fn word(self) -> &'static str {
+        match self {
+            View::All => "all",
+            View::Hide => "hide",
+            View::Only => "only",
+        }
     }
 
     pub fn filter(self, agents: Vec<Agent>) -> Vec<Agent> {
@@ -44,16 +49,11 @@ impl View {
             .into_iter()
             .filter(|a| match self {
                 View::All => true,
-                View::Hide => !is_dispatched(a),
-                View::Only => is_dispatched(a),
+                View::Hide => !a.dispatched,
+                View::Only => a.dispatched,
             })
             .collect()
     }
-}
-
-/// fleet-dispatch started it: its window carries `@dispatch`, the row's `dispatch` tag.
-pub fn is_dispatched(agent: &Agent) -> bool {
-    agent.tags.split_whitespace().any(|t| t == "dispatch")
 }
 
 pub fn state_file() -> Option<PathBuf> {
@@ -63,17 +63,21 @@ pub fn state_file() -> Option<PathBuf> {
 /// The saved view, every session when there is none or it does not parse.
 pub fn load(file: &Path) -> View {
     let text = fs::read_to_string(file).unwrap_or_default();
-    VIEWS
-        .iter()
-        .find(|v| v.1 == text.trim())
-        .map_or(View::All, |v| v.0)
+    [View::Hide, View::Only]
+        .into_iter()
+        .find(|v| v.word() == text.trim())
+        .unwrap_or_default()
 }
 
+/// Write by rename: a reload reading the file mid-save sees the old view or the new one.
 pub fn save(file: &Path, view: View) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(file, format!("{}\n", view.entry().1))
+    let mut tmp = file.as_os_str().to_owned();
+    tmp.push(".tmp");
+    fs::write(&tmp, format!("{}\n", view.word()))?;
+    fs::rename(&tmp, file)
 }
 
 /// The view the panel was last left in.
@@ -95,10 +99,10 @@ pub fn run_step() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    fn agent(target: &str, tags: &str) -> Agent {
+    fn agent(target: &str, dispatched: bool) -> Agent {
         Agent {
             target: target.into(),
-            tags: tags.into(),
+            dispatched,
             ..Agent::default()
         }
     }
@@ -109,9 +113,9 @@ mod tests {
         assert_eq!(View::Hide.next(), View::Only);
         assert_eq!(View::Only.next(), View::All);
         let agents = vec![
-            agent("hub/a:1", "fav dispatch"),
-            agent("hub/b:1", "fav"),
-            agent("hub/c:1", "dispatch"),
+            agent("hub/a:1", true),
+            agent("hub/b:1", false),
+            agent("hub/c:1", true),
         ];
         let targets = |v: View| -> Vec<String> {
             v.filter(agents.clone())
@@ -122,8 +126,6 @@ mod tests {
         assert_eq!(targets(View::All).len(), 3);
         assert_eq!(targets(View::Hide), ["hub/b:1"]);
         assert_eq!(targets(View::Only), ["hub/a:1", "hub/c:1"]);
-        // Negative control: a tag that only contains the word is not the dispatch tag.
-        assert!(!is_dispatched(&agent("hub/d:1", "dispatcher")));
     }
 
     #[test]

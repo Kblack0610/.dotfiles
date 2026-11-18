@@ -29,6 +29,8 @@ pub struct Agent {
     /// `list --json`, which fleet-sessions reads, or the copy would feed its own source.
     pub stage: String,
     pub labels: String,
+    /// fleet-dispatch started its session (`tmux::Pane::dispatched`); the A-d view reads it.
+    pub dispatched: bool,
     /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
     pub pane: String,
     pub session_id: String,
@@ -161,6 +163,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             tags: pane.tags.clone(),
             stage: pane.stage.clone(),
             labels: pane.labels.clone(),
+            dispatched: pane.dispatched,
             pane: format!("{}/{}", pane.server, pane.pane_id),
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
@@ -221,6 +224,7 @@ fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -
         tags: pane.tags.clone(),
         stage: pane.stage.clone(),
         labels: pane.labels.clone(),
+        dispatched: pane.dispatched,
         pane: format!("{}/{}", pane.server, pane.pane_id),
         session_id: rollout
             .as_deref()
@@ -365,8 +369,7 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
 
     refresh_index();
     let map_file = map_file_path();
-    let view = dispatched::saved();
-    let rows = write_rows(view.filter(agents), &map_file, saved_sort())?;
+    let rows = write_rows(agents, &map_file, saved_sort())?;
     // fzf runs --disabled (the panel matches, `search`), so a query typed up front is applied here.
     let rows_text = match query.filter(|q| !q.trim().is_empty()) {
         Some(q) => search::filter(
@@ -384,7 +387,13 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
-    let selected = fzf::run(&rows_text, &map_file, restore_line, query, view.label());
+    let selected = fzf::run(
+        &rows_text,
+        &map_file,
+        restore_line,
+        query,
+        dispatched::saved().label(),
+    );
     let _ = fs::remove_file(&map_file);
     let _ = fs::remove_file(search::notes_path(&map_file));
     let selected = selected?;
@@ -435,17 +444,14 @@ fn refresh_index() {
     }
 }
 
-/// Render the rows in `sort` and write the preview map file they need, and the search notes
-/// beside it (`search::notes`).
-fn write_rows(
-    mut agents: Vec<Agent>,
-    map_file: &Path,
-    sort: sort::Sort,
-) -> Result<Vec<render::Row>> {
+/// Render the rows in `sort`, in the saved A-d view (`dispatched`), and write the preview map file
+/// they need, and the search notes beside it (`search::notes`).
+fn write_rows(agents: Vec<Agent>, map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut agents = dispatched::saved().filter(agents);
     with_last_active(&mut agents);
     let agents = &agents[..];
     let (rows, map_lines) = render::build(agents, sort, now);
@@ -488,8 +494,8 @@ fn rows_text(rows: &[render::Row]) -> String {
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
 /// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
-/// the human (ctrl-y); the saved A-d view (`dispatched`) applies on top. `step` is a C-o or A-o
-/// press: it moves the saved sort first.
+/// the human (ctrl-y); `write_rows` applies the A-d view. `step` is a C-o or A-o press: it
+/// moves the saved sort first.
 ///
 /// `query` is the search box: the rows are filtered by it (`search::filter`), so a reload keeps
 /// what was typed.
@@ -506,8 +512,7 @@ pub fn run_rows(
             sort::save(&file, sort)?;
         }
     }
-    let agents = dispatched::saved().filter(only_asking(collect(), asking));
-    write_rows(agents, map_file, sort)?;
+    write_rows(only_asking(collect(), asking), map_file, sort)?;
     print_matches(&fs::read_to_string(search::notes_path(map_file))?, query);
     Ok(())
 }
@@ -604,7 +609,6 @@ pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
         // row keeps its place in the order).
         let agents = collect();
         order.retain(|t| agents.iter().any(|a| &a.target == t));
-        let agents = dispatched::saved().filter(agents);
         sort::save_order(&order_file, &order)?;
         if saved != custom {
             if let Some(file) = sort::state_file() {

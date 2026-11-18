@@ -115,7 +115,7 @@ fn args(
     );
     // A-d steps the saved view (every session, dispatched hidden, dispatched only) and names it
     // in the border label, before the reload that reads it.
-    let dispatched_bind = format!("alt-d:transform-border-label({exe} dispatched --step)+{reload}");
+    let dispatched_bind = format!("alt-d:transform-border-label({exe} dispatched)+{reload}");
     let manual_bind = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
     let labels_bind = format!(
         "ctrl-l:execute(sh -c 'printf \"labels for %s (+add -drop ^flip): \" \"$1\"; read -r ops; \
@@ -240,7 +240,7 @@ mod tests {
         // A-d steps the view first, then reloads in it, keeping the asking-only view.
         assert!(
             a.contains(&format!(
-                "alt-d:transform-border-label(/bin/ap dispatched --step)+reload({rows} {asking})"
+                "alt-d:transform-border-label(/bin/ap dispatched)+reload({rows} {asking})"
             )),
             "{a:?}"
         );
