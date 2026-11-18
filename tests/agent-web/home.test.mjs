@@ -360,7 +360,7 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
 // Cards as hub_core::cards serializes them: a link is its href.
 const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
   parts: [{ label: "Working", value: "2", level: "ok" }], first_head: "Where to look first", first: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
-const TABS = ["sessions", "board", "queue", "alerts", "infra", "costs", "releases", "schedules", "projects"];
+const TABS = ["sessions", "queue", "board", "alerts", "infra", "costs", "releases", "schedules", "projects"];
 const cards = () => TABS.map((t) => card(t));
 function drawCards(list, o = {}) {
   ctx.list = list;
