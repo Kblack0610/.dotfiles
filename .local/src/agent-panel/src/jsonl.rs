@@ -363,7 +363,7 @@ pub fn fleet_info(path: &Path) -> FleetInfo {
 }
 
 /// The newest timestamp of a prompt the human typed: a `typed_prompt` that is not one our own
-/// tooling types into the pane (`TOOLING`).
+/// tooling types into the pane (`fleet_typed`).
 fn human_at(text: &str) -> Option<u64> {
     text.lines()
         .rev()
@@ -377,32 +377,47 @@ fn human_at(text: &str) -> Option<u64> {
         })
 }
 
-/// A typed prompt the human sent, not one our tooling typed with tmux send-keys, nor the brief
-/// fleet-dispatch started the session with (`DISPATCH_BRIEF`).
+/// A typed prompt the human sent, not one our tooling typed into the pane (a resume is no typed
+/// prompt at all, a task is one but not the human's).
 fn human_typed(line: &str) -> bool {
-    typed_prompt(line).is_some_and(|p| {
-        !TOOLING.iter().any(|t| p.starts_with(t))
-            && !p.lines().any(|l| l.starts_with(DISPATCH_BRIEF))
+    typed_prompt(line).is_some_and(|p| !fleet_typed(&p))
+}
+
+/// The one table of prompts the fleet types as if the human had (the shepherd's close, a
+/// restore, a dispatch brief, an ask's answer, a park, move or wake resume). Read as typed, a
+/// dispatch brief held each dispatched session open for the human keep after its start
+/// (2026-11-17).
+const TYPED_PREFIXES: &str = include_str!("../../../../.config/agent-panel/typed-prefixes.conf");
+
+/// The table's `<kind> <text>` lines.
+fn typed_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
+    TYPED_PREFIXES
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(' '))
+        .map(|(kind, text)| (kind, text.trim()))
+}
+
+/// The kind (`task` or `resume`) of the first table line a line of `prompt`, leading whitespace
+/// aside, starts with, followed by whitespace or the end of the line. A brief opens with the
+/// entry skill the human types too ("/one-shot ..."), so any line counts, not just the first.
+/// `.local/lib/typed-prefixes.sh` and claude-recall's `fleet_typed` are the same rule, held to
+/// `tests/fixtures/typed-prompts.tsv`.
+fn typed_kind(prompt: &str) -> Option<&'static str> {
+    prompt.lines().map(str::trim_start).find_map(|line| {
+        typed_entries()
+            .find(|(_, text)| {
+                line.strip_prefix(text)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+            })
+            .map(|(kind, _)| kind)
     })
 }
 
-/// The line that starts a line of every brief fleet-dispatch starts or resumes a Claude session
-/// with (`item_brief`, `resume_brief`, `trainee_review_task`). A brief opens with the entry skill
-/// the human types too ("/one-shot ..."), so no prefix tells the two apart: read as typed, it held
-/// each dispatched session open for the human keep after its start (2026-11-17). Only a line that
-/// starts with it counts, so a human quoting a brief mid-sentence is still the human.
-/// fleet_dispatch.bats reads this constant and checks each brief still writes it.
-const DISPATCH_BRIEF: &str = "This is agent-queue item ";
-
-/// Prompts our tooling types into a pane as if the human had: the shepherd's close
-/// (`fleet-shepherd` `close_sample`), fleet-dispatch's restore (`RESTORE_PROMPT`) and an
-/// ask's answer (`agent-ask`, which also reads it as not the human). They never
-/// count as the human being here.
-const TOOLING: &[&str] = &[
-    "/wind-down",
-    "fleet-dispatch restore reopened",
-    "Answer to ask ",
-];
+fn fleet_typed(prompt: &str) -> bool {
+    typed_kind(prompt).is_some()
+}
 
 /// A gap between entries shorter than this is the session working; a longer one was a wait,
 /// and what was still running says for what.
@@ -1528,7 +1543,8 @@ fn typed_prompt(line: &str) -> Option<String> {
         return None;
     }
     let s = v.pointer("/message/content")?.as_str()?.trim();
-    if s.is_empty() || HARNESS.iter().any(|h| s.starts_with(h)) {
+    // A resume only says carry on: the turn it continues began at the prompt before it.
+    if s.is_empty() || HARNESS.iter().any(|h| s.starts_with(h)) || typed_kind(s) == Some("resume") {
         return None;
     }
     // A typed slash command is stored as tags; the human typed "/name args".
@@ -1540,9 +1556,9 @@ fn typed_prompt(line: &str) -> Option<String> {
     })
 }
 
-/// Text that reaches a session as a user turn but nobody typed: harness tags, and what our own
-/// tooling sends with tmux (claude-acct park/move). The prose ones are claude-recall's
-/// HARNESS_PREFIXES; a test keeps the two lists in step.
+/// Text the harness puts in a user turn that nobody typed: its tags and its prose. The prose ones
+/// are claude-recall's HARNESS_PREFIXES; a test keeps the two lists in step. What our own tooling
+/// types is a prompt, read by `fleet_typed`.
 const HARNESS: &[&str] = &[
     "<task-notification",
     "<system-reminder",
@@ -1553,9 +1569,6 @@ const HARNESS: &[&str] = &[
     "[Request interrupted",
     "Another Claude session sent",
     "Caveat:",
-    "This session was parked",
-    "This session was moved",
-    "Moved to the alt Claude account",
 ];
 
 fn tag<'a>(s: &'a str, name: &str) -> Option<&'a str> {
@@ -2872,5 +2885,38 @@ mod tests {
                 "claude-recall skips {p:?}; add it to HARNESS"
             );
         }
+    }
+
+    #[test]
+    fn fleet_typed_follows_the_shared_golden() {
+        let golden = include_str!("../../../../tests/fixtures/typed-prompts.tsv");
+        let mut n = 0;
+        for l in golden
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+        {
+            let (want, text) = l.split_once('\t').expect("fleet|human<TAB>prompt");
+            let text = text.replace("\\n", "\n");
+            assert_eq!(fleet_typed(&text), want == "fleet", "{text:?}");
+            n += 1;
+        }
+        assert!(n >= 10, "{n} cases");
+        // Every line of the table is a kind the readers know, with text after it.
+        for line in TYPED_PREFIXES
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        {
+            let (kind, text) = line.split_once(' ').unwrap_or((line, ""));
+            assert!(
+                matches!(kind, "task" | "resume") && !text.trim().is_empty(),
+                "typed-prefixes.conf: {line:?} is not `task|resume <text>`"
+            );
+        }
+        // A resume opens no turn; a task is a typed prompt that is not the human's.
+        let resume =
+            r#"{"type":"user","message":{"content":"This session was parked to save usage"}}"#;
+        let task = r#"{"type":"user","message":{"content":"Answer to ask AbC: yes"}}"#;
+        assert_eq!(typed_prompt(resume), None);
+        assert!(typed_prompt(task).is_some() && !human_typed(task));
     }
 }

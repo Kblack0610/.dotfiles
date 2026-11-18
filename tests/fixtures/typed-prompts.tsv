@@ -1,0 +1,21 @@
+# fleet|human<TAB>a prompt, \n for a newline. Whether .config/agent-panel/typed-prefixes.conf calls it
+# fleet-typed. Read by agent-panel's cargo test (jsonl::fleet_typed), tests/unit/typed_prefixes.bats
+# (typed-prefixes.sh and claude-recall fleet_typed), so the three matchers cannot diverge.
+fleet	/wind-down
+fleet	/wind-down auto
+fleet	 /wind-down\nauto
+human	/wind-downs
+human	/wind-down-later
+fleet	fleet-dispatch restore reopened this session after its tmux server was lost
+fleet	This is agent-queue item p. Your last run on it stopped at the plan's usage limit.
+fleet	/one-shot Phase 2 of the plan\n\nThis is agent-queue item plan-p2, and that item is its record.
+human	why does it say This is agent-queue item foo?
+human	/one-shot fix the chip
+fleet	Answer to ask bnLnIa: done at 16:30
+human	Answer to asks are slow
+fleet	This session was parked to save Claude usage, and it is now resumed on the max account.
+fleet	This session was moved from the Lazer gateway to max, because the gateway refused it on budget.
+fleet	You were signed out and are signed in again. Carry on with what you were doing.
+fleet	Moved to the alt Claude account
+human	yes, arm it
+human	the session was parked yesterday, why?
