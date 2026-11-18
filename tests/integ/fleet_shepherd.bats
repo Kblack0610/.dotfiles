@@ -2017,6 +2017,26 @@ gw_accts() {
   assert_output 'nudge STALLED: a f-a'
 }
 
+@test "a skip older than FLEET_SHEPHERD_SKIP_MAX_MIN comes back plain, with its old why, and pages nobody" {
+  doc "[$(row a STALLED false false)]"
+  "$SH" check >/dev/null
+  "$SH" skip 'unhandled: nudge STALLED: a f-a' 'regate once the pool fix lands'
+  # Negative control: a young skip still holds the line out.
+  run checked
+  assert_failure 1
+  # Past the cap (the 2026-11-18 %247 case: the blocker finished, the fact never changed), and handed
+  # long ago: it comes back as a fresh line, not as an owed one that pages high.
+  sed -i "s/\t[0-9]*$/\t$(( $(date +%s) - 241 * 60 ))/" "$FLEET_SHEPHERD_DIR/.skipped"
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
+  run checked
+  assert_output 'nudge STALLED: a f-a'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  run grep -c unhandled "$HOME/pages"
+  assert_output 0
+  run grep 'skip expired after 4h: nudge STALLED: a f-a (was: regate once the pool fix lands)' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_success
+}
+
 @test "an overdue line an hour older is still the same line, and skip needs a why" {
   phase s1 shell 40 100
   phases_doc
