@@ -215,6 +215,20 @@ pub fn answer(
     Ok(Answered::Sent)
 }
 
+/// `answer` in the pane at `target` (`<server>/<pane>`), holding its send lock from the first
+/// look through the typed answer's Enter, so no other send lands in the field it opens.
+/// `send::Busy` when another sender kept the pane past `send::LOCK_WAIT`.
+pub fn answer_in(target: &str, key: char, expect: &str, text: &str) -> Result<Answered> {
+    let _held = send::lock_pane(&send::lock_dir(), target, send::LOCK_WAIT)?;
+    answer(
+        &mut send::TmuxPane { target },
+        key,
+        expect,
+        text,
+        send::POLLS,
+    )
+}
+
 /// The screen changed from `before` within the polls.
 fn moved(pane: &mut impl Keys, before: &str, polls: u32) -> bool {
     for _ in 0..polls {

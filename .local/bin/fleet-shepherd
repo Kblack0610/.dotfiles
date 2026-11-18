@@ -714,7 +714,9 @@ remind_sample() {
 # /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
 # to a session in another permission mode is held for approval and expires unseen, and its mark
 # stopped this typing (2026-11-18: hub/dotfiles:4 and :8 left open overnight); the claude CLI has
-# no send, so typing is the one model-free way in, as claude-acct types /exit.
+# no send, so typing is the one model-free way in, as claude-acct types /exit. The typing is
+# agent-panel send's, which holds the pane's send lock: a pane another send holds (exit 75) is
+# typed nothing and its claim is given back for the next check.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
 # cancelling the human's copy mode, and reads the screen again after the claim, just before the
 # keys; any other screen waits for the next check, and a box holding the human's draft also pages
@@ -730,7 +732,7 @@ remind_sample() {
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact server cmd when now acted="" failed="$LEDGER/.close-failed"
+  local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane close fact idle; do
@@ -766,12 +768,16 @@ close_sample() {
       continue
     fi
     cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
-    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
-      acted=1
-      cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null
-    else
-      cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
-    fi
+    # --wait 0: a pane another send holds is not waited on, so the screen pane_takes_keys just read
+    # is the one typed into; nothing was typed, so the claim goes back and the next check types it.
+    rc=0; agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
+      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
+      75) rm -f "$LEDGER/.closed/$sid" && acted=1
+          cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
+      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
+    esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
