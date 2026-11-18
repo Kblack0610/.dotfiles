@@ -1461,7 +1461,7 @@ notes --profile bnb ptask game --agent run gm-9"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   [ -z "$(field "$(item queued later)" sessions)" ]
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
@@ -1494,7 +1494,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
   CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
   [ "$(field "$(item running hand)" account)" = .claude-bnb ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   f="$(item queued later)"
   [ -z "$(field "$f" account)" ]
   # fleet-dispatch start claims with --sid and sets the account it launched on itself
@@ -1833,7 +1833,7 @@ EOF2
   assert_success
   # queued by hand from the plan's copy in another directory: the file name matches
   "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
-  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --priority high
   assert_failure
   assert_output --partial "already queued: by-hand (nothing was added)"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
@@ -3205,13 +3205,13 @@ second line of the brief
 
 @test "a queue item's session adding without --from files item:<its slug>, held at the cap like any add" {
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_ITEM=parent
-  run "$AQ" add --project game --slug first "first follow-up"
+  run "$AQ" add --project game --priority low --slug first "first follow-up"
   assert_success
   [ "$(field "$(item queued first)" from)" = item:parent ]
-  run "$AQ" add --project game --slug second "second follow-up"
+  run "$AQ" add --project game --priority low --slug second "second follow-up"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
-  "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
+  "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
   "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
@@ -3339,4 +3339,26 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+@test "ar-2943: a session's add names its priority; an add by hand keeps the high default" {
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --slug s1 "bare from a session"
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --slug s2 "bare from a dispatched session"
+  assert_failure
+  plan_fixture
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --priority low --slug s3 "named by the session"
+  assert_success
+  [ "$(field "$(item queued s3)" priority)" = low ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --running --slug s4 "the session's own task"
+  assert_success
+  # negative control: the same bare add by hand, with no session around it, files high
+  run "$AQ" add --project game --slug s5 "bare by hand"
+  assert_success
+  [ "$(field "$(item queued s5)" priority)" = high ]
 }
