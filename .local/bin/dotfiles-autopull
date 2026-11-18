@@ -43,7 +43,6 @@ FETCH_SECS="${DOTFILES_AUTOPULL_FETCH_SECS:-60}"
 BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agent-web from clean takes minutes
 BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
-TIMER_DIR="$HOME/.config/systemd/user" # where `agentctl reload` writes agentctl-<name>.timer
 LOCK_SECS="${DOTFILES_AUTOPULL_LOCK_SECS:-1500}" # a --now pass waits this long for the one before it
 
 command -v git >/dev/null 2>&1 || exit 0
@@ -194,48 +193,22 @@ attach_runners() {
   done
 }
 
-# conf_word <conf> <key> -> the first word of the last <key>= line, quotes dropped, as `source` reads it
-conf_word() {
-  local v
-  v=$(sed -n "s/^$2=//p" "$1" | tail -n 1)
-  v=${v#[\"\']}
-  v=${v%%[ \"\'#]*}
-  printf '%s' "$v"
-}
-
-# attach_timers -> one line when it ran `agentctl reload`. A conf that lands is not armed until a
-# reload writes its timer, and nothing else in a landing runs one: mkt-drafts and store-sales merged
-# and never fired (2026-11-17). Reload rewrites every timer, so the timers lag the confs when an
-# enabled scheduled oneshot has no timer or a conf newer than it, or a timer has no such conf left.
-# Runs after attach_missing, which links a conf the pull added. Read as text, like attach_runners.
+# attach_timers -> one line when agentctl armed a lagging timer or failed to. A conf that lands is
+# not armed until `agentctl reload` writes its timer, and nothing else in a landing runs one:
+# mkt-drafts and store-sales merged and never fired (2026-11-17). `reload --if-stale` owns the rule
+# of which timer lags and is silent when none does. Runs after attach_missing, which links a conf
+# the pull added. Its whole report goes to the log.
 attach_timers() {
-  local conf name timer due="" out rc
-  command -v agentctl >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1 || return 0
-  for conf in "$CONF_DIR"/*.conf; do
-    [ -f "$conf" ] || continue
-    name=$(basename "$conf" .conf)
-    timer="$TIMER_DIR/agentctl-$name.timer"
-    if [ "$(conf_word "$conf" KIND)" = oneshot ] && [ -n "$(conf_word "$conf" SCHEDULE)" ] \
-      && [ "$(conf_word "$conf" ENABLED)" != no ]; then
-      [ -f "$timer" ] && [ ! "$conf" -nt "$timer" ] || due="$due $name"
-    elif [ -f "$timer" ]; then
-      due="$due $name"
-    fi
-  done
-  for timer in "$TIMER_DIR"/agentctl-*.timer; do
-    [ -f "$timer" ] || continue
-    name=${timer##*/agentctl-}
-    name=${name%.timer}
-    [ -f "$CONF_DIR/$name.conf" ] || due="$due $name"
-  done
-  [ -n "$due" ] || return 0
-  out=$(capped "$DEPLOY_SECS" agentctl reload 2>&1)
+  local out rc
+  command -v agentctl >/dev/null 2>&1 || return 0
+  out=$(capped "$DEPLOY_SECS" agentctl reload --if-stale 2>&1)
   rc=$?
+  [ "$rc" -ne 0 ] || [ -n "$out" ] || return 0
+  log_report "agentctl reload --if-stale" "$rc" "$out"
   if [ "$rc" -eq 0 ]; then
-    say "~: agentctl reload, the timers of$due lagged their confs"
+    say "~: $(printf '%s\n' "$out" | sed -n '1s/^agentctl: //p'), reloaded"
   else
-    log_report "agentctl reload" "$rc" "$out"
-    say "~: agentctl reload failed (exit $rc), the timers of$due lag their confs; report in ${LOG/#"$HOME"/\~}"
+    say "~: agentctl reload --if-stale failed (exit $rc), a timer may lag its conf; report in ${LOG/#"$HOME"/\~}"
   fi
 }
 

@@ -562,56 +562,38 @@ runner() {
   refute_line --partial 'on the new old'
 }
 
-# sched <name> <conf mtime> [<timer mtime>] [<line>...] -> a scheduled oneshot conf dated @<conf mtime>
-# with any extra lines, and agentctl's timer for it dated @<timer mtime> when one is given ("" for none)
-sched() {
-  local name="$1" at="$2" timer="${3:-}"
-  shift 2; shift || true
-  mkdir -p "$AGENTCTL_CONF_DIR" "$HOME/.config/systemd/user"
-  printf '%s\n' "NAME=$name" "KIND=oneshot" 'COMMAND=/bin/true' "SCHEDULE='*-*-* 02:30:00'" "$@" >"$AGENTCTL_CONF_DIR/$name.conf"
-  touch -d "@$at" "$AGENTCTL_CONF_DIR/$name.conf"
-  [ -z "$timer" ] || { : >"$HOME/.config/systemd/user/agentctl-$name.timer" && touch -d "@$timer" "$HOME/.config/systemd/user/agentctl-$name.timer"; }
+# reload_says <rc> <line>... -> the agentctl stub answers `reload --if-stale` with these lines and <rc>
+reload_says() {
+  local rc="$1"; shift
+  { printf '#!/bin/sh\nprintf "agentctl %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n'
+    printf 'echo %q\n' "$@"
+    printf 'exit %s\n' "$rc"; } >"$SANDBOX/bin/agentctl"
 }
 
-@test "a scheduled conf with no timer, or edited after its timer, runs one agentctl reload naming them" {
-  sched landed 1000
-  sched edited 3000 2000
-  sched current 1000 2000
+@test "a pass runs agentctl reload --if-stale and says the timers it armed, its report in the log" {
+  reload_says 0 'agentctl: timers lag their confs: landed edited' 'agentctl: loaded 3 agent(s)'
   run "$PULL" --now "$PUB"
   assert_success
-  assert_line '~: agentctl reload, the timers of edited landed lagged their confs'
-  assert_equal "$(grep -c '^agentctl reload' "$NOTES_FIXTURE/calls.log")" 1
+  assert_called 'agentctl reload --if-stale'
+  assert_line '~: timers lag their confs: landed edited, reloaded'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'loaded 3 agent(s)'
 }
 
-@test "a timer left for a switched-off conf, a persistent one, or a conf that is gone runs the reload" {
-  sched off 1000 2000 ENABLED=no
-  sched daemon 1000 2000 KIND=persistent
-  : >"$HOME/.config/systemd/user/agentctl-gone.timer"
+@test "negative control: a reload with no timer lagging adds no line" {
   run "$PULL" --now "$PUB"
   assert_success
-  assert_line '~: agentctl reload, the timers of daemon off gone lagged their confs'
-}
-
-@test "negative control: current timers, and unscheduled or switched-off confs with none, run no reload" {
-  sched current 1000 2000
-  sched quoted 1000 2000 "KIND='oneshot' # nightly"
-  sched off 1000 "" "ENABLED='no'"
-  sched daemon 1000 "" KIND=persistent
-  runner nightly oneshot 2000
-  run "$PULL" --now "$PUB"
-  assert_success
-  refute_line --partial 'agentctl reload'
-  assert_not_called 'agentctl reload'
+  assert_called 'agentctl reload --if-stale'
+  refute_line --partial 'reload'
 }
 
 @test "a failed reload is named on the line and logged, and the pull still succeeds" {
-  sched landed 1000
-  printf '#!/bin/sh\necho "agentctl: bad conf" >&2\nexit 3\n' >"$SANDBOX/bin/agentctl"
+  reload_says 3 'agentctl: bad conf'
   merge pub v2
   run "$PULL" --now "$PUB"
   assert_success
   assert_line --regexp '^~/\.dotfiles: fast-forwarded main '
-  assert_line --partial '~: agentctl reload failed (exit 3), the timers of landed lag their confs'
+  assert_line --partial '~: agentctl reload --if-stale failed (exit 3)'
   run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
   assert_output --partial 'agentctl: bad conf'
 }
