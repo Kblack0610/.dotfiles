@@ -228,7 +228,7 @@ refs() {  # refs root
 alias today='ensure_daily_note && nvim "$(notes path)"'
 alias kw="nvim ~/.notes/knowledge"
 # Standing backlogs (tidies done items into ## Done on open) + zettel quick-create
-alias fun='nvim "$(notes backlog fun)"'
+alias backlog='nvim "$(notes backlog)"'
 alias co='nvim "$(notes backlog carryover)"'
 alias zk='notes zettel new'
 alias ndoctor='notes doctor'
