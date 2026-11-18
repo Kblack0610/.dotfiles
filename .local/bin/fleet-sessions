@@ -144,7 +144,7 @@ BUCKET_FINISHED="DONE LANDED"
 BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 
 # session_bucket <status> <plan: 1 when status is waiting on an ExitPlanMode approval, else 0> <asks> <heavy 0|1> <idle_min> <git 0|1> \
-#                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|PENDING|NONE|-> <head_in_pr 0|1> \
+#                <dirty> <ahead> <pr#|-> <pr_state|-> <ci PASS|FAIL|NOSTART|PENDING|NONE|-> <head_in_pr 0|1> \
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
@@ -192,7 +192,7 @@ session_bucket() {
   if [ "${10}" = OPEN ] && [ "${16:--}" = yes ]; then
     case "${11}" in
       PASS) echo "STALLED PR #$9 conflicts with the default branch"; return ;;
-      FAIL|PENDING) ;;
+      FAIL|NOSTART|PENDING) ;;
       *) [ "$st" = idle ] && [ "$5" -ge "$FLEET_IDLE_MIN" ] \
            && { echo "STALLED PR #$9 conflicts with the default branch"; return; } ;;
     esac
@@ -450,6 +450,7 @@ bucket_facts() {
       [ "$wait_on" = - ] || { echo "WORKING PR #$pr waiting on $wait_on"; return; }
       case "$ci" in
         FAIL)    echo "STALLED PR #$pr CI red" ;;
+        NOSTART) echo "WORKING PR #$pr CI never started (its jobs ran no steps), waiting on billing" ;;
         PENDING) echo "WORKING PR #$pr CI running" ;;
         *)       echo "STALLED PR #$pr green, not merged" ;;
       esac ;;
@@ -978,23 +979,43 @@ gate_ci() {
   else echo "$ci"; fi
 }
 
-# gate_line_only <dir> <red job ids> -> true when each job failed only in FLEET_GATE_LINE_STEPS steps.
-# A finished job's steps never change, so each is one gh call kept in MAIN_CACHE; a cancelled job, a
-# check that is not a job (-) or one gh cannot read is a real red.
-gate_line_only() {
-  local d="$1" id file steps n
+# job_facts <dir> <job id> -> one line of JSON, {conclusion, steps: [{name, conclusion}]}, for an Actions job.
+# A finished job never changes, so it is one gh call kept in MAIN_CACHE; one read serves gate_line_only and
+# jobs_unstarted. Returns 1 (and marks the row blind) when gh cannot read it.
+job_facts() {
+  local d="$1" id="$2" file="$MAIN_CACHE/job_facts_$2" out
+  if [ ! -s "$file" ]; then
+    out="$(cd "$d" && gh api "repos/{owner}/{repo}/actions/jobs/$id" \
+      -q '{conclusion, steps: [(.steps // [])[] | {name, conclusion}]} | tojson' 2>/dev/null)" && [ -n "$out" ] \
+      || { unreadable "gh api actions/jobs/$id ($(basename "$d"))"; blind_row; return 1; }
+    mkdir -p "$MAIN_CACHE"
+    printf '%s\n' "$out" > "$file.$$" && mv "$file.$$" "$file"
+  fi
+  cat "$file"
+}
+
+# jobs_unstarted <dir> <red job ids> -> true when every red check is an Actions job that failed having run no
+# steps: it never started (an Actions billing or spending-limit block, a runner outage), so no code of the
+# PR's is red and a fix cannot exist (2026-11-16 private#945 read STALLED "CI red" with 0 steps on every
+# job). A check that is not a job (-), a cancelled job, a job with a step, or one gh cannot read is a real red.
+jobs_unstarted() {
+  local id
+  [ "${2:--}" != - ] || return 1
   for id in ${2//,/ }; do
     [ "$id" != - ] || return 1
-    file="$MAIN_CACHE/job_steps_$id"
-    if [ ! -s "$file" ]; then
-      steps="$(cd "$d" && gh api "repos/{owner}/{repo}/actions/jobs/$id" \
-        -q '[.steps[] | select((.conclusion // "skipped") | test("^(success|skipped)$") | not) | .name]
-            | if length == 0 then "-" else .[] end' 2>/dev/null)" && [ -n "$steps" ] \
-        || { unreadable "gh api actions/jobs/$id ($(basename "$d"))"; blind_row; return 1; }
-      mkdir -p "$MAIN_CACHE"
-      printf '%s\n' "$steps" > "$file.$$" && mv "$file.$$" "$file"
-    fi
-    while IFS= read -r n; do [[ "$n" =~ $FLEET_GATE_LINE_STEPS ]] || return 1; done < "$file"
+    job_facts "$1" "$id" | jq -e '.conclusion == "failure" and (.steps | length) == 0' >/dev/null || return 1
+  done
+}
+
+# gate_line_only <dir> <red job ids> -> true when each job failed only in FLEET_GATE_LINE_STEPS steps.
+# A cancelled job, a check that is not a job (-) or one gh cannot read is a real red.
+gate_line_only() {
+  local id steps n
+  for id in ${2//,/ }; do
+    [ "$id" != - ] || return 1
+    steps="$(job_facts "$1" "$id" | jq -r '[.steps[] | select((.conclusion // "skipped") | test("^(success|skipped)$") | not) | .name]
+            | if length == 0 then "-" else .[] end')" && [ -n "$steps" ] || return 1
+    while IFS= read -r n; do [[ "$n" =~ $FLEET_GATE_LINE_STEPS ]] || return 1; done <<<"$steps"
   done
 }
 
@@ -1028,6 +1049,19 @@ pr_made_here() {
 phases_name() {
   [ "$1" != - ] && [ -f "$1" ] \
     && sed -n '/^## Phases/,/^## /p' "$1" | grep -qE "(^|[^A-Za-z0-9_./-])#$2([^0-9]|$)"
+}
+
+# landed_named <"#N,#M" | -> <plan files...> -> the PRs of that list that a plan's ## Phases section names
+# (bare `#N`, as phases_name reads it), else -. Several plan files are one plan under other names (a copy,
+# a pointer's canonical): any of them counts.
+landed_named() {
+  local list="$1" f n out=""; shift
+  for n in ${list//,/ }; do
+    for f in "$@"; do
+      phases_name "$f" "${n#\#}" && { out="${out:+$out,}$n"; break; }
+    done
+  done
+  echo "${out:--}"
 }
 
 # re_quote <text> -> <text> with ERE metacharacters escaped.
@@ -1273,6 +1307,23 @@ ahead_files() {
   grep -c . <<<"$changed" || true
 }
 
+# submodule_pin <dir> -> the commit the superproject's default branch pins for <dir> (when <dir> is a
+# submodule and this clone has that commit), else nothing. A submodule's own default branch says nothing
+# about what landed: the pin may sit on a pin-merge commit another session owns, off master by design
+# (2026-11-16 unity-core-playground-agent-20 read STALLED "3 file(s) not on the default branch" with a
+# clean tree and HEAD the pin on origin/main).
+submodule_pin() {
+  local d="$1" sup top rel pin
+  sup="$(git -C "$d" rev-parse --show-superproject-working-tree 2>/dev/null)"
+  [ -n "$sup" ] || return 0
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)"
+  rel="${top#"$sup"/}"
+  fetch_once "$sup"
+  pin="$(git -C "$sup" ls-tree "$(default_base "$sup")" -- "$rel" 2>/dev/null | awk '$2 == "commit" { print $3; exit }')"
+  [ -n "$pin" ] && git -C "$d" cat-file -e "$pin^{commit}" 2>/dev/null && echo "$pin"
+  return 0
+}
+
 # fetch_once <dir>: with FLEET_FETCH=1 (tick sets it), fetch the canonical remote once per repo per pass,
 # so behind and conflicts are measured against the remote tip, not the last manual fetch.
 # Worktrees of one repo share its refs, so one fetch covers them all.
@@ -1366,7 +1417,7 @@ pr_holding_head() {
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
 # open job of the session's background shell, for gate_ci (- when it has none).
 git_facts() {
-  local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" branch dirty=0 paths ahead pahead pin base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   fetch_once "$d"
@@ -1375,6 +1426,12 @@ git_facts() {
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
   ahead="$(ahead_files "$d" "$base")"
+  # In a submodule, work is landed once it is on the default branch or pinned by the superproject's: unlanded only when neither.
+  pin="$(submodule_pin "$d")"
+  if [ -n "$pin" ] && [ "$ahead" -gt 0 ]; then
+    pahead="$(ahead_files "$d" "$pin")"
+    [ "$pahead" -lt "$ahead" ] && ahead="$pahead"
+  fi
   IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch")
   [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d")
   # The gate runs are on the PR's head branch, which a reused slot or a stacked branch does not share.
@@ -1382,6 +1439,7 @@ git_facts() {
   # the slot refusing it, and any other red is the PR's own (ar-1285).
   [ "${state:-}" = OPEN ] && [ -n "$FLEET_QUEUE_LABEL" ] && queued_in "$d" "$pr" && shell=queue
   [ "${state:-}" = OPEN ] && ci="$(gate_ci "$d" "$prb" "$oid" "$ci" "$red" "$shell")"
+  [ "${state:-}" = OPEN ] && [ "$ci" = FAIL ] && jobs_unstarted "$d" "$red" && ci=NOSTART
   if [ -n "${oid:-}" ]; then
     head="$(git -C "$d" rev-parse HEAD)"
     # HEAD is in the PR when it is the PR head or behind it; an unknown oid means the
@@ -1761,6 +1819,13 @@ collect() {
     local dsp=- n=0 e=0 prun=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
+    # With a phase open, a merged PR is a landed phase only when the plan names it: a side item's PR
+    # (2026-11-16 the chore #2118 of hub/dotfiles:1's own done item, named by no phase of its plan) is not
+    # the plan's, so the row never claims it (landed_named). A closed PR keeps its list: the PR that replaced
+    # it (a landing train's) is the one that closed it (ar-1324).
+    if [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ] && [ "$landed" != - ] && [ "$state" != CLOSED ]; then
+      landed="$(landed_named "$landed" "$planf" "$plist" "$(plan_pointer "$planf" | cut -f1)")"
+    fi
     if [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ]; then
       local qd
       # Items match by file name: a plan symlinked to its canonical name (plan mode wrote one, the
