@@ -796,7 +796,7 @@ app urgent: fleet, #urgent, alpha"
   done
   marked "$(resume_brief '{"slug": "s", "end_reason": "limit"}')"
   marked "$(resume_brief '{"slug": "s"}')"
-  marked "$(trainee_review_task '{"slug": "s", "task": "x"}' trn base /p key review-s)"
+  marked "$(trainee_batch_task trainee-batch-1 '{"slug": "s", "task": "x", "trainee": "trn"}')"
   # Negative control: the raw task alone is the human's words, unmarked.
   run marked "plain task"
   assert_failure

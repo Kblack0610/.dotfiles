@@ -210,7 +210,7 @@ bats_require_minimum_version 1.5.0
 @test "an item another start took between the pick and the launch is not FAILED, and the pass goes on" {
   two_items
   export DISPATCH_PER_PASS=2
-  stub model-lane '[ -n "$(ls "$AGENT_QUEUE_DIR/queued" | grep fix-game)" ] && agent-queue move fix-game running >/dev/null; echo "{}"'
+  stub model-lane '[ "$1" != trainee ] && [ -n "$(ls "$AGENT_QUEUE_DIR/queued" | grep fix-game)" ] && agent-queue move fix-game running >/dev/null; echo "{}"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'queue item fix-game was started by another start'
@@ -222,7 +222,7 @@ bats_require_minimum_version 1.5.0
 @test "a pass whose only item another start took publishes NOOP" {
   two_items
   agent-queue cancel fix-app >/dev/null
-  stub model-lane 'agent-queue move fix-game running >/dev/null; echo "{}"'
+  stub model-lane '[ "$1" = trainee ] || agent-queue move fix-game running >/dev/null; echo "{}"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'another start took the 1 queue item(s) this pass picked'
@@ -866,7 +866,7 @@ trainee_ready() {
     launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
     models: {glm: "litellm/go (glm)", kimi: "litellm/go (kimi)"}}'
   harness_sandboxed gotrain
-  git init -q "$SANDBOX/repos/game"
+  trainee_repo "$SANDBOX/repos/game"
   srcs go:ok:0.1 codex:ok:5
   export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"},{"harness":"gotrain","model":"kimi"}],"points":1,"max_open":1,"reviewer":"opus","reviewer_model":"opus"}'
 }
@@ -887,7 +887,7 @@ trainee_ready() {
   # One point at tier 1: the trainee takes it ahead of the verdict, on the Claude hold, and is stamped.
   agent-queue add --project game --slug t-one --priority urgent --tags tier1 "Fix the menu title #pts/1" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run \(lanes.yaml trainee:\) its review item lands or sends back while'
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run \(lanes.yaml trainee:\) a batch review lands or sends back while'
   f=$(qitem running t-one)
   [[ "$(qfield "$f" trainee)" =~ ^gotrain:(glm|kimi)$ ]] || fail "no trainee stamp: $(cat "$f")"
   assert_equal "$(qfield "$f" agent)" gotrain
@@ -1001,9 +1001,9 @@ trainee_ready() {
   agent-queue bump t3-fix urgent >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t3-fix on gotrain (glm), a trainee run'
-  run trainee_review_task "$(agent-queue show t3-fix --json)" gotrain:glm base p.patch '' review-t3-fix
+  run trainee_review_task "$(agent-queue show t3-fix --json)" gotrain:glm base p.patch ''
   assert_output --partial 'This row is tier 3: before landing, run /code-review high'
-  run trainee_review_task "$(agent-queue show t2-row --json)" gotrain:glm base p.patch '' review-t2-row
+  run trainee_review_task "$(agent-queue show t2-row --json)" gotrain:glm base p.patch ''
   refute_output --partial 'This row is tier 3'
 }
 
@@ -1198,4 +1198,130 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_success
   assert_output --partial 'started game-agent-1: game: asked'
   [ -n "$(qitem running asked)" ] && [ -n "$(qitem queued old-feat)" ] || fail "the pass did not start the starved class's item"
+}
+
+# 2026-11-18: the free keys (go, nim, ocfree) sat at 0% used while every pass ran over the pace
+# target: no trainee row started, so none was reviewed or promoted.
+@test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops at max_open; candidates [] is off" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Negative control first: no candidates, the floor says it is shut, and the full fleet starts nothing.
+  TRAINEE_LANE='{"candidates":[],"points":1,"max_open":1}' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: shut, lanes.yaml has no trainee: lane'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'opencode run'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor \(lanes.yaml trainee:, a free slot\)'
+  refute_output --partial 'started queue item p'
+  # Its one max_open row is held now: the next pass starts no trainee row and says why.
+  agent-queue add --project game --slug t-two --priority low --tags tier1 "Fix the menu label #pts/1" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: gotrain holds 1 ladder rows, its max_open in lanes.yaml'
+  refute_output --partial 'started queue item t-two'
+}
+
+@test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts" "$r/crate/src"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"; printf '#!/bin/sh\n' > "$r/crate/build.sh"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  local k
+  for k in rs:crate/src/main.rs crate:crate/build.sh gone:scripts/gone.sh word:'scripts/setup secretword' none:'the menu'; do
+    row game agent "tr-${k%%:*}" "- [ ] fix(menu): fix ${k#*:} #pts/1 #high $T <!-- id:tr-${k%%:*} -->"
+    verdict game agent "tr-${k%%:*}" dispatch
+  done
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok -->"
+  verdict game agent tr-ok dispatch
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  assert_output --regexp 'started queue item tr-ok on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
+  assert_equal "$(qfield "$(qitem running tr-ok)" from)" 'board:game:tr-ok'
+  for k in rs crate gone word none; do
+    [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
+  done
+  # Each refusal is the public check's own.
+  pub() { run trainee_public_why "{\"project\":\"game\",\"title\":\"fix $1\",\"task\":\"fix $1\"}" names; }
+  pub crate/src/main.rs; assert_failure; assert_output 'it names crate/src/main.rs, which is no shell, bats or markdown file outside a cargo or npm tree'
+  pub crate/build.sh; assert_failure; assert_output 'it names crate/build.sh, which is no shell, bats or markdown file outside a cargo or npm tree'
+  pub scripts/gone.sh; assert_failure; assert_output "it names scripts/gone.sh, which $r does not track"
+  pub 'scripts/setup secretword'; assert_failure; assert_output "its words match $r/.githooks/sensitive-tokens.txt"
+  pub 'the menu'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
+  pub scripts/setup; assert_success
+  # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
+  DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure
+  assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"
+}
+
+@test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {
+  trainee_ready
+  agent-queue add --project game --slug live-1 --agent gotrain "Fix the save label" >/dev/null
+  agent-queue move live-1 running >/dev/null
+  TRAINEE_CONF='{"max_open":5,"max_live":{"gotrain":1}}' run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain runs 1 items, its max_live in lanes.yaml'
+  TRAINEE_CONF='{"max_open":5,"max_live":{"gotrain":2}}' run ladder_open_why gotrain
+  assert_success
+  TRAINEE_CONF='{"max_open":5}' run ladder_open_why gotrain
+  assert_success
+}
+
+@test "trainee floor: a batch review of the waiting diffs starts at review_batch, or when a trainee holds max_open, and not before; one at a time" {
+  trainee_ready
+  acct "main:ok"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"reviewer":"opus","reviewer_model":"opus"'
+  for s in w-1 w-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
+    agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+    printf 'diff --git a/x b/x\n' > "$d/$s.patch"; echo base0 > "$d/$s.base"
+  done
+  # An approved row whose PR has not merged yet is no waiting diff: it would make 3 below.
+  agent-queue add --project game --slug w-pr --tags tier1 "Fix the w-pr label #pts/1" >/dev/null
+  agent-queue set w-pr agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-pr running >/dev/null; agent-queue move w-pr review >/dev/null
+  agent-queue set w-pr pr=o/r#7 >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-pr.patch"
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # Under review_batch, and no trainee at max_open (5): nothing is filed.
+  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":3}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: 2 of review_batch 3 diffs wait, and no trainee holds its max_open rows'
+  [ -z "$(batches)" ] || fail "a batch was filed under review_batch"
+  # At review_batch: one item, both rows in its brief, on the reviewer's model, started on the floor.
+  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":2}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 2 diff\(s\)'
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  it=$(agent-queue show "$b" --json)
+  assert_equal "$(jq -r .model <<<"$it")" opus
+  [[ " $(jq -r .tags <<<"$it") " == *" trainee-batch "* ]] || fail "no trainee-batch tag: $it"
+  run jq -r .task <<<"$it"
+  assert_output --partial '## Queue item w-1'
+  assert_output --partial '## Queue item w-2'
+  # While it is open no second batch is filed.
+  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: 2 diff(s) wait for the batch review already open'
+  # Short of review_batch, a trainee at max_open (its 2 rows in review) makes the batch due.
+  agent-queue move "$b" done --status ok >/dev/null
+  TRAINEE_LANE="$lane,\"max_open\":2,\"review_batch\":9}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'reviews 2 diff\(s\), as gotrain holds its max_open rows'
+  # A batch that cannot be filed (the queue refuses the add) is logged, and the pass goes on.
+  for b in $(batches); do agent-queue move "$b" done --status ok >/dev/null; done
+  mkdir -p "$SANDBOX/aqfail"
+  printf '#!/usr/bin/env bash\n[ "$1" != add ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
+  chmod +x "$SANDBOX/aqfail/agent-queue"
+  PATH="$SANDBOX/aqfail:$PATH" TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: the batch review did not file or start (rc 1); the trainee slots still fill'
 }

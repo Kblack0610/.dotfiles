@@ -1406,7 +1406,7 @@ notes --profile bnb ptask game --agent run gm-9"
 }
 
 @test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {
-  "$AQ" add --project game --from "board:game:ar-9" --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
+  "$AQ" add --project game --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
   f="$(item queued r)"
   head="$(sed '/^---$/q' "$f")"
   run "$AQ" retask r "expect 85.0" "(17 of 20)"
@@ -1428,6 +1428,11 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_failure; assert_output --partial "nothing active with slug r"
   run "$AQ" retask nowhere "x"
   assert_failure
+  # The row is the task's record: an item whose row is not on the board is refused, item untouched.
+  "$AQ" add --project game --from "board:game:ar-9" --slug gone "old words"
+  run "$AQ" retask gone "new words"
+  assert_failure; assert_output --partial "its board row ar-9 is not open on game, so nothing was rewritten"
+  [ "$(sed -n '/^---$/,$p' "$(item queued gone)" | sed 1d)" = "old words" ]
 }
 
 @test "a project rename moves the item's board origin with it, so agent-land closes the right row" {
@@ -2978,7 +2983,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- '--agent add -- feat(level): lv P1: one #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -2989,9 +2994,26 @@ notes --profile work ptask level run lv-8'
   echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "--agent add --detail $long -- fix(menu): word"
+  assert_output --partial "--agent add --detail=$long -- fix(menu): word"
   refute_output --partial '#of/'
   [ "${#long}" -gt 80 ]
+}
+
+@test "the story row holds the item's whole body as its brief, less a first line that is the row's own words" {
+  story_notes
+  "$AQ" add --project level --slug multi -- $'feat(menu): the title screen\ngoal: one record\n  - nested'
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial $'--agent add --detail=goal: one record\n  - nested -- feat(menu): the title screen #high'
+  # a --title that is not the body's first line keeps the body whole
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --slug titled --title "feat(menu): a short title" -- $'Phase 2 of the plan: do it\nthen land it'
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
+  # NEGATIVE CONTROL: a one-line task that is the row's words writes no brief
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --slug one "feat(menu): one line"
+  run grep -c -- '--detail' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "an open twin row is linked, and started only when no item has started it" {
@@ -3247,7 +3269,9 @@ second line of the brief
   assert_output --partial "held by admission, nothing was queued: 2 items can start now against a cap of 2 (human)"
   assert_output --partial "its board row lv-9 on level is left un-started"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-three.md 2>/dev/null)" ] || fail "a held add wrote an item"
-  assert_called "ptask level --agent add --detail brief: feat(menu): three --detail brief: second line of the brief --detail brief: - [ ] a step -- feat(menu): three #high"
+  # the brief is one value of several lines, less the row's own words; notes escapes the step
+  assert_called "ptask level --agent add --detail=second line of the brief"
+  assert_called "- [ ] a step -- feat(menu): three #high"
   run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   run jq -c '{from, slug, runnable, limit}' "$AGENT_QUEUE_DIR/admission.jsonl"
@@ -3272,7 +3296,7 @@ second line of the brief
   assert_output 0
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
-  assert_called "--detail brief: the real wording of the task"
+  assert_called "--detail=the real wording of the task -- "
 }
 
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
@@ -3379,9 +3403,8 @@ second line of the brief
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
 
-@test "return keeps a hand-written brief under its board row once, and keeps none for a board item or a one-line task" {
+@test "return only un-starts its board row: the row already holds the brief, so nothing is written to it" {
   story_notes
-  printf '{"rows":[{"project":"game","id":"gm-4","details":["brief: kept already"]}]}\n' > "$NOTES_FIXTURE/board.json"
   "$AQ" add --project game --slug ha "first line of the brief
 second line of the brief"
   "$AQ" set ha row=game:gm-1
@@ -3394,14 +3417,9 @@ already"
   "$AQ" set hd row=game:gm-4
   : > "$NOTES_FIXTURE/calls.log"
   for s in ha hb gm-3 hd; do "$AQ" return "$s" --why "back" >/dev/null; done
-  assert_called "ptask game --agent edit --detail brief: first line of the brief --detail brief: second line of the brief gm-1"
   run grep -c ' ptask game --agent edit ' "$NOTES_FIXTURE/calls.log"
-  assert_output 1
-  # the brief goes under the row before the row is un-started
-  run grep -n ' ptask game --agent \(edit\|unstart\) .*gm-1$' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 0 --partial " edit "
-  assert_line --index 1 --partial " unstart "
-  for r in gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
+  assert_output 0
+  for r in gm-1 gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
 }
 
 @test "a partial merge cannot close ok or release after items" {
@@ -3452,6 +3470,48 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+# The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
+# is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
+# and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
+# row line alone. The CI rust job builds notes and sets NOTES_BIN.
+@test "end to end: a returned item's brief comes back from its row on the next promote, and retask rewrites the row" {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  dir="$HOME/.notes/lab/projects/current/game"
+  mkdir -p "$dir" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
+  export PROJECT_MAP_FILE="$AGENT_QUEUE_PROJECT_MAP" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  unset NOTES_PROFILE
+  jq -n --arg r "$REPO" '{paths: {($r): "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
+  tail=$'goal: one record per task\n\n- a list\n  - nested\n\n```sh\n    echo hi\n```\n## Phases\n- [ ] P1 one'
+  run "$AQ" add --project game --slug title -- $'feat(menu): the title screen\n'"$tail"
+  assert_success
+  assert_line 'story gm-1 on the game agent board'
+  # the checklist in the brief is no row of its own
+  run notes --profile personal ptask game --agent list
+  refute_output --partial 'P1 one'
+
+  run "$AQ" return title --why "over the cap"
+  assert_success
+  raw="$(notes --profile personal ptask game --agent list | awk -F'\t' '$4 ~ /id:gm-1 / { print $4 }')"
+  [[ "$raw" == '- [ ] feat(menu): the title screen'* ]] || fail "row not back open: $raw"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile personal --agent --raw "$raw"
+  assert_success
+  assert_output --partial 'queued game: gm-1'
+  f="$(item queued gm-1)"
+  body="$(awk 'f { print } $0 == "---" { f = 1 }' "$f")"
+  [ "$(head -1 <<<"$body")" = "${raw#- \[ \] }" ] || fail "first line: $body"
+  [ "$(tail -n +2 <<<"$body")" = "$tail" ] || fail "the brief did not come back whole: $body"
+
+  run "$AQ" retask gm-1 $'feat(menu): the title screen\nnew brief'
+  assert_success
+  [ "$(notes board --json | jq -r '.rows[] | select(.id == "gm-1") | .details | join("\n")')" = "new brief" ] ||
+    fail "row not rewritten: $(cat "$dir/agent/README.md")"
+  [ "$(awk 'f { print } $0 == "---" { f = 1 }' "$f")" = $'feat(menu): the title screen\nnew brief' ]
 }
 
 @test "ar-2943: a session's add names its priority; an add by hand keeps the high default" {
