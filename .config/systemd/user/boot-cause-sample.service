@@ -1,0 +1,7 @@
+[Unit]
+Description=Save the power and load sample the next boot reads to name how this one ended
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/boot-cause sample
+TimeoutStartSec=20
