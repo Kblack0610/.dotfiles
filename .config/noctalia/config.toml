@@ -4,8 +4,8 @@
 # the dotfiles own: the bar's chips, the plugin that draws them, the palette, and leaving
 # notifications to desk's notify slot.
 
-# The waybar chips, each a dotfiles-chips widget naming its module in config.base, in
-# config.desktop's left-to-right order; Noctalia's own widgets stand in for waybar's
+# The waybar chips, each a dotfiles-chips widget naming its module in config.base, grouped by job
+# (waybar keeps config.desktop's order); Noctalia's own widgets stand in for waybar's
 # built-ins. Noctalia clips each side to half the bar, so the fleet and host pods stay in
 # start: with every chip in end, timebox through ci fell off a 1920 px screen, and with the
 # host pod in end it ran into the clock.
