@@ -426,19 +426,44 @@ test("a Fleet link to a moved section opens Costs at that section", () => {
 });
 
 // Where the tokens go: hub_core::tokens's sums, open until the reader folds it.
-const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
-const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokenRow = (name, chars, share, other = false, parts) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other, ...(parts ? { parts } : {}) });
+const bashParts = () => ["sed -n", "grep", "cat", "rg", "git show", "ls"].map((n, i) => tokenRow(n, 1000 - i, 0.1)).concat(tokenRow("Other", 5, 0.01, true));
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15,
+  tools: [tokenRow("Bash", 331000000, 0.823, false, bashParts()), tokenRow("Other (22)", 10000000, 0.026, true, [tokenRow("Edit", 9, 0.001, false, [tokenRow("code .rs", 8, 0.001)]), tokenRow("Write", 1, 0)])] });
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
-const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
+const tail = (t, opened = {}) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; f.tokOpen = opened; return ctx.tokensSection({ tokens: t }); };
 
 test("the tokens section starts open while fresh, with the week in its body", () => {
   const h = tail(tokens());
   assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens" open><summary><h2 class="sec">Where the tokens go<\/h2><\/summary><div class="panel scroll">/);
   assert.match(h, /7d: 18\.0B context, [^,]+, tool output carried 15%/);
   assert.match(h, /by tool/);
-  assert.match(h, /by Bash command/);
+  assert.doesNotMatch(h, /by Bash command/, "the commands table moved into the Bash row");
   assert.match(h, /82\.3%/);
   assert.match(h, /href="#costs\?by=tool&w=7d"/);
+});
+
+test("a tool row with parts opens to every one of them, and Other opens to each tool it holds", () => {
+  const shut = tail(tokens());
+  assert.match(shut, /<tr data-tokpart="Bash" class="tokpart"><td><span class="muted">\+<\/span> Bash<\/td>/);
+  assert.doesNotMatch(shut, /sed -n/, "closed, no parts drawn");
+  const h = tail(tokens(), { Bash: true });
+  assert.match(h, /data-tokpart="Bash" class="tokpart sel"><td><span class="muted">-<\/span> Bash/);
+  for (const n of ["sed -n", "grep", "cat", "rg", "git show", "ls"]) assert.match(h, new RegExp(`padding-left:1\\.5em">${n}<`), `${n} is named`);
+  assert.match(h, /padding-left:1\.5em">ls<\/td>.*background:var\(--c-other\)/, "past the four slots, a named row is grey");
+  // Keyed "Other", not its label: the count differs between windows and snapshots.
+  const nested = tail(tokens(), { Other: true, "Other/Edit": true });
+  assert.match(nested, /data-tokpart="Other\/Edit"/);
+  assert.match(nested, /padding-left:3em">code \.rs</);
+  assert.doesNotMatch(nested, /data-tokpart="Other\/Write"/, "nothing splits Write, so it does not open");
+});
+
+test("a snapshot from before the parts still draws its tool table, with nothing to open", () => {
+  const old = tokens();
+  old.week.tools = old.week.tools.map(({ parts, ...r }) => r);
+  const h = tail(old, { Bash: true });
+  assert.match(h, /<tr><td>Bash<\/td>/);
+  assert.doesNotMatch(h, /data-tokpart/);
 });
 
 test("a named row takes its chart slot and Other its grey", () => {
