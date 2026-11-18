@@ -12,6 +12,8 @@ cred:  rbw:[<folder>/]<entry>  an rbw entry (the secret is its password)
        cli:<tool>              the tool's own login; the probe runs it
        none
 probe: listed                  the cred exists (a console login has no read-only API)
+       login                   the rbw entry holds a whole console login: a password and an account
+                               name (its username, or an email in its notes). It never contacts the vendor
        totp                    the rbw entry exists and yields a TOTP code
        http url=<url> [auth=bearer|token|raw|x-api-key]   2xx is OK, 401/403 EXPIRED
        cmd run='<command>'     exit 0 is OK, 124 (timeout) or 127 LOW, any other EXPIRED
@@ -23,6 +25,7 @@ contract, and never a secret: values stay in this process or go to a child on st
 LOW means the probe could not tell (network, 5xx, timeout, rbw locked). Exit 0 all OK, 1 some LOW, 2 any
 EXPIRED or NO_CREDS, 3 a registry line it cannot parse.
 """
+import json
 import os
 import re
 import shlex
@@ -34,7 +37,7 @@ import urllib.request
 
 PAYS = ("free", "client", "self")
 TWOFA = ("phone-google", "phone-steam", "phone-msauth", "mac-apple", "rbw-totp", "none", "unknown")
-PROBES = ("listed", "totp", "http", "cmd")
+PROBES = ("listed", "login", "totp", "http", "cmd")
 AUTH = {
     "bearer": ("Authorization", "Bearer "),
     "token": ("Authorization", "token "),
@@ -99,8 +102,8 @@ def parse(path):
             kind = row["cred"].split(":", 1)[0]
             if kind not in ("rbw", "sops", "cli", "none"):
                 raise Bad("%s:%d: cred=%s is not rbw:|sops:|cli:|none" % (path, n, row["cred"]))
-            if row["probe"] == "totp" and kind != "rbw":
-                raise Bad("%s:%d: probe=totp needs an rbw cred" % (path, n))
+            if row["probe"] in ("totp", "login") and kind != "rbw":
+                raise Bad("%s:%d: probe=%s needs an rbw cred" % (path, n, row["probe"]))
             rows.append((n, row))
     return rows
 
@@ -188,6 +191,24 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
+def login(ref):
+    """(state, detail): does the rbw entry hold a password and an account name? Read once, in this process."""
+    code, out = run(["rbw", "get", "--raw"] + rbw_args(ref))
+    if code != 0:
+        return cannot_tell(code, "rbw") or ("NO_CREDS", "unreadable")
+    try:
+        entry = json.loads(out)
+        data = entry.get("data") or {}
+        password, username, notes = data.get("password"), data.get("username"), str(entry.get("notes") or "")
+    except (ValueError, AttributeError):
+        return "LOW", "rbw output unreadable"  # never the message: it can quote the entry
+    if not password:
+        return "NO_CREDS", "no password"
+    if not (username or "@" in notes):
+        return "NO_CREDS", "no account name"
+    return "OK", ""
+
+
 def probe(row):
     """(state, detail) for one vendor."""
     cred, kind = row["cred"], row["cred"].split(":", 1)[0]
@@ -205,6 +226,8 @@ def probe(row):
         if code == 0 and out.strip():
             return "OK", ""
         return cannot_tell(code, "rbw") or ("NO_CREDS", "no TOTP seed")
+    if row["probe"] == "login":
+        return login(cred.partition(":")[2])
     if kind in ("rbw", "sops"):
         value, failed = secret(cred)
         if failed:
