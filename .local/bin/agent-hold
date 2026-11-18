@@ -2,7 +2,11 @@
 # agent-hold - a fleet-wide pause on a shared resource, held as state instead of sent as
 # a message.
 #
-#   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
+#   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource] "<reason>"
+#                                   --kind: load (the default) is the fleet pacing itself, which
+#                                   the shepherd lifts once the machine reads CLEAR; resource is
+#                                   anything else (bad RAM, a maintenance pause), released by hand
+#                                   (the default for dispatch). A re-set writes the kind afresh
 #   agent-hold claim <resource> [--by name] [--class c] "<what>"   one session's exclusive
 #                                   use: fails while another session holds it, and the
 #                                   holder's own `check` passes (the agent machine's desktop:
@@ -15,7 +19,9 @@
 #   agent-hold release <resource>
 #   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
 #                                   when the caller's session has been granted
-#   agent-hold list                 resource<TAB>since<TAB>by<TAB>reason, one per hold
+#   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
+#                                   load|resource|claim keeps that kind (a hold with no kind line
+#                                   reads as the kind set would give it)
 #   agent-hold show <resource>      print the hold file
 #
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
@@ -66,6 +72,14 @@ oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +
 # field <file> <key> -> first value (text after "key: ")
 field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
+# default_kind <resource> -> the kind a set with no --kind gets: resource for dispatch, which
+# pauses a workflow and never load, so a hand `set dispatch` does not drop fleet-assess's trip
+# line (fleet-thermal paged high 36 times in 8 hours on one), load for the rest.
+default_kind() { if [ "$1" = dispatch ]; then printf resource; else printf load; fi; }
+
+# hold_kind <file> -> load, resource or claim; a hold set before kinds existed gets its default.
+hold_kind() { local k; k="$(field "$1" kind)"; printf '%s' "${k:-$(default_kind "${1##*/}")}"; }
+
 # A resource is one path segment. Anything else could escape HOLD_ROOT.
 valid_resource() {
   case "$1" in
@@ -100,16 +114,20 @@ set_field() {
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local roster="" by="" reason=""
+  local roster="" by="" reason="" kind=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --roster) roster="${2:-}"; shift 2 ;;
-      --by)     by="${2:-}"; shift 2 ;;
+      --roster|--by|--kind) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
+        case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; esac; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
       *)  reason="$*"; break ;;
     esac
   done
+  case "${kind:=$(default_kind "$resource")}" in
+    load|resource) ;;
+    *) echo "agent-hold set: --kind is load or resource, not '$kind'" >&2; exit 2 ;;
+  esac
   [ -n "$reason" ] || { echo "agent-hold set: say why (the reason is what every reader sees)" >&2; exit 2; }
   [ -n "$by" ] || by="$(default_by)"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
@@ -120,6 +138,7 @@ cmd_set() {
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
     printf 'resource: %s\n' "$resource"
+    printf 'kind: %s\n'     "$kind"
     printf 'since: %s\n'    "$(now_iso)"
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
@@ -324,10 +343,18 @@ cmd_check() {
 }
 
 cmd_list() {
+  local want=""
+  case "${1:-}" in
+    '') ;;
+    --kind) [ $# -eq 2 ] || { echo "agent-hold list: --kind takes one value" >&2; exit 2; }; want="$2"
+      case "$want" in load|resource|claim) ;; *) echo "agent-hold list: --kind is load, resource or claim, not '$want'" >&2; exit 2 ;; esac ;;
+    *) echo "agent-hold list: unknown argument $1" >&2; exit 2 ;;
+  esac
   [ -d "$HOLD_ROOT" ] || return 0
   local f g c
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
+    [ -z "$want" ] || [ "$(hold_kind "$f")" = "$want" ] || continue
     g="$(field "$f" granted)" c="$(field "$f" class)"
     printf '%s\t%s\t%s\t%s%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "${c:+[$c] }" "$(field "$f" reason)" "${g:+ (granted: $g)}"
   done
@@ -341,7 +368,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -351,7 +378,7 @@ case "$verb" in
   lower)   cmd_lower "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
-  list)    cmd_list ;;
+  list)    cmd_list "$@" ;;
   classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
   -h|--help|help) usage ;;

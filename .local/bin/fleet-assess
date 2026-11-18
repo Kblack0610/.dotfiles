@@ -30,7 +30,6 @@ set -uo pipefail
 # roots whose subtree sum alone never earns a row (comm of tmux's server is "tmux:")
 : "${FLEET_ROW_TREE_SKIP:=systemd init tmux: kthreadd}"
 : "${FLEET_ROW_CPU:=50}"         # a process at or above this %CPU gets a row
-: "${FLEET_NOT_LOAD_HOLDS:=dispatch mac-desktop deskslim-*-ram}"  # glob names of holds that pause work, the mac-mini desktop or another host's hardware, not this machine's load: no effect on the verdict
 : "${FLEET_BLOCKED_MIN_AGE:=300}" # a process this old (s) with a thread in D state gets a blocked row
 : "${FLEET_GH_LOW:=1000}"        # GitHub REST calls left under this, with over 20 min to the reset -> LOW
                                  # (2026-10-29 the fleet spent all 5,000 and every gh call failed 40 min)
@@ -40,7 +39,6 @@ set -uo pipefail
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
-HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -98,25 +96,13 @@ read_swap_used_gb() {
   awk '/^SwapTotal:/ { t = $2 } /^SwapFree:/ { f = $2 } END { printf "%.1f\n", (t - f) / 1048576 }' /proc/meminfo 2>/dev/null || echo 0
 }
 
-# A hold on a machine resource (unity, cpu) keeps the verdict at HOLD until CLEAR. A hold
-# that only pauses a workflow (dispatch), is the mac-mini desktop mutex (mac-desktop) or marks
-# another host's bad hardware (deskslim-1-ram) says nothing about this machine's load, so it
-# does not count: it would drop the trip line from 1.75x to 1x (fleet-thermal paged high 36
-# times in 8 hours on one dispatch hold), or read as a hold on a CLEAR machine, a `pace:` line
-# the shepherd could answer only by lifting it.
+# A load hold (unity, cpu: agent-hold's kind load) keeps the verdict at HOLD until CLEAR. A
+# resource hold (a dispatch pause, another host's bad RAM) or a desktop claim says nothing about
+# this machine's load, so it does not count: it would drop the trip line from 1.75x to 1x
+# (fleet-thermal paged high 36 times in 8 hours on one dispatch hold). The kind is agent-hold's
+# to say, so this asks it, the copy beside this script (the shepherd reads the same list).
 holds_set() {
-  local f pat pats
-  [ -d "$HOLD_ROOT" ] || return 1
-  read -ra pats <<<"$FLEET_NOT_LOAD_HOLDS"   # split, never expanded against the cwd
-  for f in "$HOLD_ROOT"/*; do
-    [ -e "$f" ] || continue
-    for pat in "${pats[@]}"; do
-      # shellcheck disable=SC2254
-      case "${f##*/}" in $pat) continue 2 ;; esac
-    done
-    return 0
-  done
-  return 1
+  [ -n "$("$(dirname "$(realpath "${BASH_SOURCE[0]}")")/agent-hold" list --kind load 2>/dev/null)" ]
 }
 
 # --- process rows -----------------------------------------------------------------------

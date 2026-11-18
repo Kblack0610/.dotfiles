@@ -4568,3 +4568,32 @@ cron_line() {   # <ts> <result text>
   cron_line 2026-11-16T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
   run live_cron "$t" "$start" "$now"; assert_output yes
 }
+
+# A session-only job a --resume carried over keeps firing: its "Running scheduled task" rows
+# (scheduled_task_fire, taskId = the job id) after the claude start prove it live (ar-2604: hub/dotfiles:1).
+fire_line() {   # <ts> <task id>
+  jq -nc --arg ts "$1" --arg id "$2" '{type: "system", subtype: "scheduled_task_fire", content: "Running scheduled task (Nov 16 9:36am)", timestamp: $ts, taskId: $id}'
+}
+
+@test "live_cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
+  local t="$BATS_TEST_TMPDIR/f.jsonl" now start
+  now="$(date -u -d 2026-11-17T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T17:18:00Z +%s)"
+  {
+    cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).'
+    fire_line 2026-11-16T10:36:32.100Z a6a8114f
+  } > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output ''
+  fire_line 2026-11-16T17:36:32.100Z a6a8114f >> "$t"
+  run live_cron "$t" "$start" "$now"; assert_output yes
+  # an unknown claude start still counts no session-only job, fired or not
+  run live_cron "$t" - "$now"; assert_output ''
+  # a fire of another id does not revive it, and a cancel after the fire ends it
+  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z ffffffff; } > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output ''
+  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f
+    cron_line 2026-11-16T18:00:00Z 'Cancelled job a6a8114f.'; } > "$t"
+  run live_cron "$t" "$start" "$now"; assert_output ''
+  # past the 7-day expiry of the job, fires or not
+  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
+  run live_cron "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; assert_output ''
+}

@@ -282,9 +282,11 @@ cmd_due() {
   # machine with no hold: nothing else ever resumes it. One the budget checkpoint parked is left
   # out, since that park pages the human and only they resume it, and so is one fleet-dispatch
   # preempted for an urgent item (ledger why=preempt): its own pass resumes it once units free.
+  # Only load holds count: a resource hold (bad RAM until a memtest) or a desktop claim is not
+  # about load, so a CLEAR machine is no reason to lift it (ar-2605).
   local verdict holds parked preempt
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
-  holds="$(agent-hold list 2>/dev/null | cut -f1 | paste -sd, -)"
+  holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
     out+="${out:+$'\n'}pace: hold $holds while the machine reads CLEAR"
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then

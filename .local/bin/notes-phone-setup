@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # notes-phone-setup: one-command Termux provisioning for ~/.notes on a phone.
 #
-# Installs the runtime, wires the real git sync engine (git-sync-notes.sh),
+# Installs the runtime, wires the real git sync engine (store-sync --store notes),
 # clones ~/.notes, drops the home-screen shortcut (~/.shortcuts/notes -> the
 # notes-mobile launcher), and sets up boot + hourly background sync. No private
 # repo needed: everything here ships in the public dotfiles.
@@ -49,14 +49,16 @@ pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev
 #    ("cannot execute: required file not found").
 say "Installing notes-mobile + notes-sync + notes-mirror-shared..."
 mkdir -p "$BIN"
+# wrap <name> <script> [<fixed arg>...]: the fixed args are plain words, written as they are.
 wrap() {
-    rm -f "$BIN/$1"
-    printf '#!%s/bin/bash\nexec %s/bin/bash "%s" "$@"\n' "$PREFIX" "$PREFIX" "$2" > "$BIN/$1"
-    chmod +x "$BIN/$1"
+    local name="$1" script="$2"; shift 2
+    rm -f "$BIN/$name"
+    printf '#!%s/bin/bash\nexec %s/bin/bash "%s" %s"$@"\n' "$PREFIX" "$PREFIX" "$script" "${*:+$* }" > "$BIN/$name"
+    chmod +x "$BIN/$name"
 }
 wrap notes-mobile "$DOTFILES/.local/bin/notes-mobile"
 wrap notes-mirror-shared "$DOTFILES/.local/bin/notes-mirror-shared"
-wrap notes-sync "$DOTFILES/.local/src/git/git-sync-notes.sh"
+wrap notes-sync "$DOTFILES/.local/bin/store-sync" --store notes
 
 # 2b. Shared storage for home-screen widgets. On Android 11+ termux-setup-storage
 #     opens the "All files access" page; the person turns it on and comes back.

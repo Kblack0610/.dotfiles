@@ -248,3 +248,52 @@ roster_lists() {
   assert_output ''
   assert_equal "$stderr" "fleet-hosts: $HC has no main or master tracking a remote, so the fleet roster reads as empty"
 }
+
+@test "a worker's panel rows carry the worker and a host@ target; a gap (3) still prints, a down worker (255) prints none" {
+  printf '%s\n' '{"target":"lab/dotfiles:1","pane":"lab/%3","session_id":"s1"}' 'not json' > "$NOTES_FIXTURE/ssh.out"
+  run fleet_host_panel hp-victus
+  assert_success
+  assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env agent-panel list --json  <<none'
+  echo 3 > "$NOTES_FIXTURE/ssh.rc"
+  run fleet_host_panel hp-victus
+  assert_failure 3
+  assert_output --partial '"host":"hp-victus"'
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run fleet_host_panel hp-victus
+  assert_failure 255
+  assert_output ''
+}
+
+@test "a session's worker row is the first worker listing it; this machine is never asked, and a down worker is skipped" {
+  export FLEET_HOST=razer-laptop
+  # hp-victus lists s1; razer-laptop (this machine) would too, but is never asked.
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
+case "$*" in *192.0.2.30*) [ -f "$NOTES_FIXTURE/hp.down" ] && exit 255; echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}" ;; *) echo "{\"target\":\"lab/r:1\",\"session_id\":\"s1\"}" ;; esac'
+  run fleet_panel_row s1
+  assert_success
+  assert_output '{"target":"hp-victus@lab/d:1","pane":"lab/%9","session_id":"s1","host":"hp-victus"}'
+  assert_not_called '192.0.2.26'
+  run fleet_panel_row s2
+  assert_success
+  assert_output ''
+  touch "$NOTES_FIXTURE/hp.down"
+  run fleet_panel_row s1
+  assert_success
+  assert_output ''
+  run fleet_panel_row ''
+  assert_output ''
+}
+
+@test "fleet-host-run runs one command on a worker through the one ssh path and exits with its code" {
+  run "$REPO_ROOT/.local/bin/fleet-host-run" hp-victus
+  assert_failure 2
+  assert_output --partial 'usage: fleet-host-run'
+  echo hi > "$NOTES_FIXTURE/ssh.out"
+  run "$REPO_ROOT/.local/bin/fleet-host-run" hp-victus agent-panel send --pane 'lab/%3' -- 'a; b'
+  assert_success
+  assert_output hi
+  assert_called 'agent-panel send --pane lab/%3 -- a\;\ b'
+  run "$REPO_ROOT/.local/bin/fleet-host-run" nobody true
+  assert_failure 255
+}

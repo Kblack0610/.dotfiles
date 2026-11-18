@@ -58,6 +58,37 @@ sandbox_worlds() {
   echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
 }
 
+# sandbox_fleet_roster -- a roster with this machine (FLEET_HOST=state) and one worker it never
+# places or probes, for a verb that asks every other machine (record, restore, an ask's live
+# session). ssh is a stub that logs the call and does not answer (255), so none leaves the sandbox.
+sandbox_fleet_roster() {
+  export FLEET_HOST=state FLEET_INVENTORY="$SANDBOX/inventory.yml"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n' > "$FLEET_INVENTORY"
+  printf '#!/usr/bin/env bash\necho "ssh $*" >> "$NOTES_FIXTURE/calls.log"\nexit 255\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  unset FLEET_HOSTS_JSON
+}
+
+# sandbox_fleet_worker <name> -- sandbox_fleet_roster plus a worker <name> at 192.0.2.40, and an ssh
+# stub that logs each call to calls.log and runs it as that worker would: the stubs there read and
+# log to $SANDBOX/<name>/, its own fixture. Every other worker in the roster does not answer (255),
+# and neither does this one while $SANDBOX/<name>/down exists: empty for every call, or holding a
+# word for only the calls that carry it.
+sandbox_fleet_worker() {
+  sandbox_fleet_roster
+  printf '        %s:\n          ansible_host: 192.0.2.40\n' "$1" >> "$FLEET_INVENTORY"
+  mkdir -p "$SANDBOX/$1"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"'
+    echo '[[ " $* " == *" 192.0.2.40 "* ]] || exit 255'
+    printf 'down=%q/down; fix=%q\n' "$SANDBOX/$1" "$SANDBOX/$1"
+    echo '[ ! -f "$down" ] || { w=$(cat "$down"); [ -n "$w" ] && [[ "$*" != *"$w"* ]]; } || exit 255'
+    echo 'NOTES_FIXTURE=$fix eval "${@: -1}"'
+  } > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+}
+
 sandbox_init() {
   local fixture="${1:-basic}"
 

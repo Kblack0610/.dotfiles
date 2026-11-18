@@ -151,7 +151,7 @@ Flags: `--force` (overwrite existing files), `--primary-url`, `--backup-url`. Au
 
 ### `notes-sync`
 
-Thin wrapper that `exec`s `~/.local/src/git/git-sync-notes.sh`. Pulls from origin, commits local changes, pushes to both remotes. Called on a timer - rarely needs to be invoked manually, but safe to run anytime.
+Runs `store-sync --store notes`, the engine `~/.agent` also syncs through: commits local changes, merges origin (never a rebase), pushes origin, then backup. A conflict keeps the local commits and pages once. Called on every trigger and a timer; safe to run anytime.
 
 ### `notes-termux-bootstrap`
 
@@ -184,4 +184,4 @@ not profile-aware; never prefer it when the binary exists.
 - Profile config: `~/.config/notes/config.toml` (-> `~/.dotfiles/.config/notes/config.toml`).
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
 - Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`, `journal-refs-archive.{service,timer}`.
-- Core sync logic: `~/.local/src/git/git-sync-notes.sh` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`).
+- Core sync logic: `~/.local/bin/store-sync --store notes` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`, "The sync engine").

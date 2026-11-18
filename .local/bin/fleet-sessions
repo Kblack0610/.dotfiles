@@ -391,7 +391,9 @@ api_error_stop() {
 # scheduled (CronCreate, "Scheduled recurring job <id>") is still live, else nothing: no CronDelete
 # ("Cancelled job <id>") answered it, it was made after this claude started when its result says
 # "Session-only" (such a job dies with its process, so an earlier run of a resumed session left none;
-# with no known start it counts as none; a durable job outlives the process) and under 7 days ago (Claude
+# with no known start it counts as none; a durable job outlives the process) or a "Running scheduled
+# task" row (scheduled_task_fire, taskId = the job id) follows this claude's start (a job that fires after
+# a --resume was carried over it: hub/dotfiles:1, ar-2604), and under 7 days ago (Claude
 # Code expires a recurring job then). Any such job counts, not only one naming the plan: closing the
 # session ends its crons, so it is not finished. A one-shot is not in-place work. The transcript is the
 # only record: a session-only job is never written to disk and no event names it. Only the lines naming a
@@ -399,14 +401,18 @@ api_error_stop() {
 live_cron() {
   [ -s "${1:-}" ] || return 0
   local since="${2:--}"; [[ "$since" =~ ^[0-9]+$ ]] || since=9999999999
-  { grep -a -E 'Scheduled recurring job|Cancelled job' "$1" 2>/dev/null || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
+  { grep -a -E 'Scheduled recurring job|Cancelled job|scheduled_task_fire' "$1" 2>/dev/null || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
     def text: if type == "array" then map(.text? // "") | join(" ") else tostring end;
-    reduce (inputs | fromjson? | select(.type == "user") | .timestamp as $ts | (.message.content | if type == "array" then .[] else empty end)
-        | select(.type == "tool_result") | {ts: (($ts // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0), c: (.content | text)}) as $e
-      ({}; if ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {ts: $e.ts, durable: ($e.c | test("Session-only") | not)}
+    def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0;
+    def results: select(.type == "user") | .timestamp as $ts | (.message.content | if type == "array" then .[] else empty end)
+        | select(.type == "tool_result") | {ts: ($ts | epoch), c: (.content | text)};
+    def fires: select(.type == "system" and .subtype == "scheduled_task_fire") | {ts: (.timestamp | epoch), fire: .taskId};
+    reduce (inputs | fromjson? | (results, fires)) as $e
+      ({}; if $e.fire then (if has($e.fire) then .[$e.fire].fired = $e.ts else . end)
+           elif ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {ts: $e.ts, fired: 0, durable: ($e.c | test("Session-only") | not)}
            elif ($e.c | test("^Cancelled job [0-9a-f]+")) then del(.[$e.c | capture("^Cancelled job (?<i>[0-9a-f]+)").i])
            else . end)
-    | if any(.[]; (.durable or .ts >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null
+    | if any(.[]; (.durable or .ts >= $since or .fired >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -1509,7 +1515,7 @@ remote_panel_lines() {
   while IFS= read -r name; do
     # Exit 3 is a read with a gap (agent-panel README): keep its rows, and name it so tick does
     # not log the sessions it missed as gone.
-    rc=0; out="$(fleet_host_run "$name" agent-panel list --json 2>/dev/null)" || rc=$?
+    rc=0; out="$(fleet_host_panel "$name")" || rc=$?
     [ "$rc" -eq 3 ] && { unreadable "agent-panel@$name"; echo + >> "$CACHE/blind"; }
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
       # ssh exits 255 when the host does not answer; any other code is agent-panel's own failure.
@@ -1517,7 +1523,7 @@ remote_panel_lines() {
       jq -cn --arg h "$name" --arg w "$why" '{host: $h, why: $w}' >> "$CACHE/silent"
       continue
     fi
-    jq -c --arg h "$name" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
+    [ -z "$out" ] || printf '%s\n' "$out"
   done < <(fleet_hosts | jq -r .name)
   return 0
 }

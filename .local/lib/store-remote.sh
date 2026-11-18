@@ -5,8 +5,10 @@
 # ssh each one takes, and a git call that cannot hang. store-sync (master) and fleet-lease (the
 # lease branch) share it, so both reach origin and backup the same way.
 
-CONF="${STORE_SYNC_CONF:-$HOME/.config/agentctl/store.env}"
-SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}"
+# The agent store's conf and key, unless the sourcing script set its own first (store-sync
+# --store notes sets CONF empty on purpose, so a set-but-empty value is kept too).
+CONF="${CONF-${STORE_SYNC_CONF:-$HOME/.config/agentctl/store.env}}"
+SSH_KEY="${SSH_KEY-${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}}"
 CONNECT_TIMEOUT_S=10
 
 # ssh for one remote: the store's deploy key, when this machine has one, only for origin; backup
