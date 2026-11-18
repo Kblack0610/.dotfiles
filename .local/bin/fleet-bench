@@ -1032,7 +1032,7 @@ cmd_scorecard() {
     echo
     echo "## KPIs"
     echo
-    echo "Human sessions by when session-outcomes last saw them; (now) is a count taken at this run. Thresholds: $KPI_THRESHOLDS. \`fleet-bench retro\` files a board row for each one past it."
+    echo "Human sessions by when session-outcomes last saw them; (now) is a count taken at this run. Thresholds: $KPI_THRESHOLDS. \`fleet-bench improve\` names one past it at a time; retro files none."
     echo
     kpi_table "$kpis"
     echo
