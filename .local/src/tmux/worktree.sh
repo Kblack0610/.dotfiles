@@ -288,21 +288,41 @@ wt_landed() {
   wt_pr_merged_at_head "$1"
 }
 
-# wt_fetch_pruned <main>... -- fetch every remote of each repo with --prune, once per run, and
-# add each that fetched cleanly to WT_PRUNED_REPOS (exported, so the $(...) subshells the
-# reap policy runs in see it). A repo whose fetch fails stays off the list, so its trees are
-# judged without the remote-branch rule: offline only ever keeps a tree.
+# wt_fetch_pruned <main>... -- fetch every remote of each repo with --prune, at most once per run:
+# each repo tried goes on WT_FETCHED_REPOS, each that fetched cleanly on WT_PRUNED_REPOS (both
+# exported, so the $(...) subshells the reap policy runs in see them). A repo whose fetch fails
+# stays off the second list, so its trees are judged without the remote-branch rule: offline only
+# ever keeps a tree, and the fetch is not retried for every tree of that repo.
 wt_fetch_pruned() {
   local main
   for main in "$@"; do
-    printf '%s\n' "${WT_PRUNED_REPOS-}" | grep -qxF "$main" && continue
+    printf '%s\n' "${WT_FETCHED_REPOS-}" | grep -qxF "$main" && continue
+    WT_FETCHED_REPOS="${WT_FETCHED_REPOS:+$WT_FETCHED_REPOS$'\n'}$main"
     if timeout "${WT_FETCH_TIMEOUT:-120}" git -C "$main" fetch --all --prune --quiet >/dev/null 2>&1; then
       WT_PRUNED_REPOS="${WT_PRUNED_REPOS:+$WT_PRUNED_REPOS$'\n'}$main"
     else
       panel_warn "fetch --prune failed in $main; its pushed-branch trees stay held this run"
     fi
   done
-  export WT_PRUNED_REPOS
+  export WT_FETCHED_REPOS WT_PRUNED_REPOS
+}
+
+# wt_work_reason_fetched <path> -- wt_work_reason, asked again after a pruned fetch of its repo when
+# the first answer kept the work (rc 1) and that repo was not tried this run, so only a tree the
+# remote-branch rule could still clear waits on the network. `reap` and `done` judge through this;
+# gc fetches every repo up front, and the picker never fetches.
+wt_work_reason_fetched() {
+  local reason rc main
+  reason=$(wt_work_reason "$1")
+  rc=$?
+  if [ "$rc" -eq 1 ] && main=$(wt_main_repo "$1" 2>/dev/null) &&
+    ! printf '%s\n' "${WT_FETCHED_REPOS-}" | grep -qxF "$main"; then
+    wt_fetch_pruned "$main"
+    reason=$(wt_work_reason "$1")
+    rc=$?
+  fi
+  [ -z "$reason" ] || printf '%s\n' "$reason"
+  return "$rc"
 }
 
 # wt_pr_merged_at_head <path> -- true when GitHub has a MERGED PR whose head is this HEAD.
@@ -597,10 +617,12 @@ wt_work_reason() {
 
 # wt_reap_reason <path> -- print why <path> may NOT be reaped; nothing, and rc 0, when it may.
 # The ONE place the reap policy lives, so the picker's glyph, `reap` and `gc` can never
-# disagree about what is safe.
+# disagree about what is safe. --fetch judges the work through wt_work_reason_fetched (reap);
+# the picker and `new` ask without it, so they never wait on the network.
 wt_reap_reason() {
-  local reason
-  reason=$(wt_work_reason "$1") || {
+  local reason work=wt_work_reason
+  [ "${2:-}" != --fetch ] || work=wt_work_reason_fetched
+  reason=$("$work" "$1") || {
     printf '%s\n' "$reason"
     return 1
   }
@@ -1227,12 +1249,7 @@ cmd_reap() {
   [ "${1:-}" = --after-kill ] && settle=1 && shift
   path="$(realpath "${1:-$PWD}" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
   [ "$settle" -eq 0 ] || wt_settle "$path"
-  # The same pruned fetch gc does, so the remote-branch rule in wt_landed applies here too.
-  if [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null); then
-    wt_fetch_pruned "$main"
-  fi
-
-  if reason=$(wt_reap_reason "$path"); then
+  if reason=$(wt_reap_reason "$path" --fetch); then
     :
   else
     panel_fail "kept $(basename "$path"): $reason" || return 1
@@ -1433,7 +1450,7 @@ cmd_done() {
 
   # Ask about the WORK, not the session -- the session is the thing we are about to kill, so
   # wt_reap_reason would refuse every time by design.
-  reason=$(wt_work_reason "$path") || panel_die "kept $name: $reason"
+  reason=$(wt_work_reason_fetched "$path") || panel_die "kept $name: $reason"
 
   # The kill below is by session name, and a session can hold more than the window `done` was
   # run from: a second window running claude would die with it, mid-turn. Refused here, while
@@ -1558,21 +1575,20 @@ cmd_gc() {
   fi
 
   # One pruned fetch per repo before any tree is judged, so wt_landed's remote-branch rule
-  # reads the servers' branches as they are now.
-  local -a fetch_mains=()
+  # reads the servers' branches as they are now. Never through a symlink: gc skips those, so it
+  # does not fetch in the repo one points into.
   local main
   for path in "${candidates[@]}"; do
-    [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null) || continue
-    [[ " ${fetch_mains[*]-} " == *" $main "* ]] || fetch_mains+=("$main")
+    [ ! -L "$path" ] && [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null) || continue
+    wt_fetch_pruned "$main"
   done
-  [ "${#fetch_mains[@]}" -eq 0 ] || wt_fetch_pruned "${fetch_mains[@]}"
 
   # Each tree gets one state (wt_state) and one action. HELD is the tree nobody will come back
   # for: kept for its work (dirty, unlanded) by an owner that is gone, so gc names it every
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
   # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
   # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
-  local reaped=0 skipped=0 line state action hue reason ends out states='' w by='' main
+  local reaped=0 skipped=0 line state action hue reason ends out states='' w by=''
   local -a mains=()
   for path in "${candidates[@]}"; do
     line=$(wt_state "$path")

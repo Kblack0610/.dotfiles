@@ -1281,12 +1281,44 @@ done_session_setup() {
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
   git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
   git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b feat2 origin/main
+  git -C "$WT_ROOT/repo-agent-2" commit --quiet --allow-empty -m work2
+  git -C "$WT_ROOT/repo-agent-2" push --quiet origin feat2
   git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
   run cmd_gc --tsv
   assert_success
-  assert_output --partial 'fetch --prune failed'
   assert_line --regexp $'^held\tkept\trepo-agent-1\t'
-  [ -d "$WT_ROOT/repo-agent-1" ]
+  assert_line --regexp $'^held\tkept\trepo-agent-2\t'
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ]
+  # Tried once for the repo, not again for each of its trees.
+  assert_equal "$(grep -c 'fetch --prune failed' <<<"$output")" 1
+}
+
+@test "reap and done judge a pushed-only tree after their own pruned fetch" {
+  # Outside gc nothing fetched first, so the work check fetches when it would otherwise keep it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  run wt_work_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  run wt_work_reason_fetched "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "reap of a merged tree never waits on a fetch" {
+  # Landed by the cheap checks, so the fetch is never paid; an unreachable origin proves it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b merged origin/main
+  git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  refute_output --partial 'fetch --prune failed'
 }
 
 @test "gc never judges a tree through a symlink, even one pointing at a reapable worktree" {
