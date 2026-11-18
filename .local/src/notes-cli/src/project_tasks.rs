@@ -2131,12 +2131,12 @@ fn start_as(
         match (running, is_running(l)) {
             (true, false) => Some(md::add_marker(&row, &format!("run:{today}"))),
             (false, true) => Some(md::remove_marker_token(&row, "run:")),
-            _ => (!is_started(l)).then_some(row),
+            _ => (!md::is_in_progress(l)).then_some(row),
         }
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
         let row = started(&line, Some(&id));
-        if !is_started(&line) && md::row_id(&row).as_deref() == Some(id.as_str()) {
+        if !md::is_in_progress(&line) && md::row_id(&row).as_deref() == Some(id.as_str()) {
             note_ids(&dir, &[row])?;
             println!("  id:{id}");
         }
@@ -2148,23 +2148,19 @@ fn start_as(
 /// (`[/]` -> `[ ]`). A row not started is left as it is (exit 0, "not started").
 pub fn unstart(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
     Ok(edit(p, log, name, pick, "unstarted", None, lane, |l| {
-        is_started(l).then(|| md::remove_marker_token(&md::set_checkbox(l, ' '), "run:"))
+        md::is_in_progress(l).then(|| md::remove_marker_token(&md::set_checkbox(l, ' '), "run:"))
     })?
     .0)
 }
 
-fn is_started(line: &str) -> bool {
-    line.trim_start().starts_with("- [/]")
-}
-
-/// A started row whose queue item is running: `[/]` with a `run:` token.
 /// `line` ticked closed. A closed row runs nothing, so its `run:` token goes with the checkbox.
 fn closed(line: &str) -> String {
     md::set_checkbox(&md::remove_marker_token(line, "run:"), 'x')
 }
 
+/// A started row whose queue item is running: `[/]` with a `run:` token.
 pub(crate) fn is_running(line: &str) -> bool {
-    is_started(line) && md::marker_token(line, "run:").is_some()
+    md::is_in_progress(line) && md::marker_token(line, "run:").is_some()
 }
 
 /// One row through `start`: `[/]`, stamped with `id` when it carries none.
@@ -3525,7 +3521,7 @@ Version: v1.2.0
         )
         .unwrap();
         assert!(out.contains("- [/] first task"));
-        assert!(is_started("- [/] a") && !is_started("- [ ] a"));
+        assert!(md::is_in_progress("- [/] a") && !md::is_in_progress("- [ ] a"));
     }
 
     // The join between a queue item and its row: the first start gives the row its id, and

@@ -651,7 +651,7 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css, sketchybar's colors.sh and dunst's dunstrc.d/50-theme.conf are NOT tracked -- they are the render of
+# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css and noctalia's palettes/dotfiles.json are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
@@ -665,7 +665,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,hyprland"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland"
         return 0
     fi
 
@@ -676,7 +676,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,hyprland
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland
 }
 
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The

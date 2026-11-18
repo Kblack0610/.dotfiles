@@ -616,6 +616,13 @@ function catchUp(read) {
 
 // Returns the sessions read the event started, if any, which a catch-up waits on.
 function dispatch(ev) {
+  // A server cache landed a refresh behind the answer it gave (cache.rs): the open view reads
+  // again and gets the fresh answer from memory. The sidebar is its own cache.
+  if (ev.kind === "ready") {
+    if (ev.of === "agents") return refreshAgents();
+    if (TABS[st.tab]) TABS[st.tab].onEvent({ kind: "resync" });
+    return null;
+  }
   let read = null;
   if (ev.kind === "sessions" || ev.kind === "resync") {
     read = refreshAgents();
@@ -681,6 +688,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query, r.page);
+  document.querySelector("form.kb-foot")?.addEventListener("submit", () => keptDrop());
   $("live-off").addEventListener("click", (e) => {
     if (e.target.id !== "live-retry") return;
     conn.retrying = true;

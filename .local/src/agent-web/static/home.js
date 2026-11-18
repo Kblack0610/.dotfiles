@@ -12,17 +12,30 @@ const HOME_REFRESH_MS = 60e3;
 // `open` holds the Needs you rows opened under the table, by needKey; `all` lifts its cap.
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
-// `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }).
-const hst = { data: null, err: null, cards: null, cardsErr: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {}, want: null, gone: null, scroll: null };
+// `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }). `kept`: when the Home answer
+// on screen was read and which parts ("home", "cards", "night") are still what this browser
+// kept (`seedHome`); while it is set, Home says so and takes no clicks.
+const hst = { kept: null, data: null, err: null, cards: null, cardsErr: null, open: new Set(), prop: { open: null, busy: null, err: null }, night: null, nightErr: null, fix: {}, close: {}, want: null, gone: null, scroll: null };
+
+// A kept part's read answered: it is no longer kept. A kept part whose read failed goes, so the
+// error stands alone rather than over an answer from another visit.
+function landed(part, ok) {
+  const k = hst.kept;
+  if (!k || !k.left.has(part)) return;
+  k.left.delete(part);
+  if (!ok && part === "cards") hst.cards = null;
+  if (!ok && part === "night") hst.night = null;
+  if (!k.left.size) hst.kept = null;
+}
 
 const refreshNight = async () => {
   try {
-    const n = await api("/api/briefing");
-    if (n.error) { hst.nightErr = n.error; return; }
+    const n = await apiKept("/api/briefing");
+    if (n.error) { hst.nightErr = n.error; landed("night", false); return; }
     // A new window offers every fix again; the last good read stays up under a failed one.
     if (hst.night && hst.night.since !== n.since) hst.fix = {};
-    hst.night = n; hst.nightErr = null;
-  } catch (e) { hst.nightErr = e.message; }
+    hst.night = n; hst.nightErr = null; landed("night", true);
+  } catch (e) { hst.nightErr = e.message; landed("night", false); }
 };
 
 // Every Home read takes a number when it starts. The Proposals fields of an answer apply only
@@ -50,8 +63,29 @@ const propT = tblTab({
   head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
-const refreshHome = coalesce(async () => {
+// /api/home as the URL's three table views ask for it.
+const homePath = () => {
   const view = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)])).toString();
+  return "/api/home" + (view ? "?" + view : "");
+};
+
+// Before Home's first read lands, what this browser kept of it (ui.js `kept`) draws at once,
+// marked with its age and inert until each part's read replaces it. Cards and the briefing are
+// drawn from it only with the list, so nothing kept is ever on screen unmarked.
+function seedHome() {
+  if (hst.data) return;
+  const d = kept(homePath());
+  if (!d) return;
+  hst.data = d.v;
+  const k = { at: d.at, left: new Set(["home"]) };
+  const c = kept("/api/home/cards"), n = kept("/api/briefing");
+  if (c && !hst.cards) { hst.cards = c.v; k.left.add("cards"); k.at = Math.min(k.at, c.at); }
+  if (n && !hst.night) { hst.night = n.v; k.left.add("night"); k.at = Math.min(k.at, n.at); }
+  hst.kept = k;
+}
+
+const refreshHome = coalesce(async () => {
+  const path = homePath();
   const seq = ++homeSeq;
   // Only a read that started after a page's link set `want` may say the ask is gone.
   const want = hst.want;
@@ -59,9 +93,9 @@ const refreshHome = coalesce(async () => {
   const night = refreshNight().then(() => { if (st.tab === "home") renderHome(); });
   const cards = refreshCards().then(() => { if (st.tab === "home") renderHome(); });
   try {
-    const d = await api("/api/home" + (view ? "?" + view : ""));
+    const d = await apiKept(path);
     if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
-    hst.data = d; hst.err = null;
+    hst.data = d; hst.err = null; landed("home", true);
     // A row that left the list closes, so a returning id never comes back open or holds the cap.
     const keys = new Set((d.needs || []).map(needKey));
     for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
@@ -75,7 +109,7 @@ const refreshHome = coalesce(async () => {
 // The status grid (/api/home/cards, hub_core::cards) reads eight tabs, so it is its own read:
 // Needs you draws without it, and the last good grid stays up under a failed read.
 const refreshCards = async () => {
-  try { hst.cards = await api("/api/home/cards"); hst.cardsErr = null; } catch (e) { hst.cardsErr = e.message; }
+  try { hst.cards = await apiKept("/api/home/cards"); hst.cardsErr = null; landed("cards", true); } catch (e) { hst.cardsErr = e.message; landed("cards", false); }
 };
 
 // A search keystroke or a sort changes only the Proposals section, so it asks for that alone:
@@ -311,8 +345,10 @@ async function queueFix(name) {
 
 function drawHome() {
   const el = $("home"), h = hst.data;
+  el.inert = !!hst.kept;
   if (!h) { paint(el, hst.err ? `<div class="err">${esc(hst.err)}</div>` : '<div class="empty">Reading...</div>', askst.open); return; }
-  const errs = [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
+  const errs = (hst.kept ? `<div class="cline muted">Showing Home as read ${keptAge(hst.kept.at)}${hst.err ? "" : ", reading it now"}.</div>` : "") +
+    [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
   const rt = h.running_table;
   const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
   const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
@@ -408,6 +444,6 @@ function takeAskArg() {
 }
 const pollHome = poll("home", refreshHome, HOME_REFRESH_MS);
 TABS.home = {
-  show() { takeAskArg(); renderHome(); pollHome(); },
+  show() { takeAskArg(); seedHome(); renderHome(); pollHome(); },
   onEvent(ev) { if (st.tab === "home" && ["watch", "queue", "asks", "proposals", "resync"].includes(ev.kind)) refreshHome(); },
 };

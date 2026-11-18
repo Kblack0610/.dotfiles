@@ -16,6 +16,7 @@ dispatch|Queue: queue, dispatch, shepherd|custom/dispatch
 fleet|Fleet health|custom/fleet
 load|CPU and load (fleet on hover)|custom/load
 ci|CI runners|custom/ci
+printer|3D printers|custom/printer
 mode|Machine mode|custom/machine-mode
 timebox|Timebox|custom/timebox
 storage|Disk usage|custom/storage

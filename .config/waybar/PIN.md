@@ -5,8 +5,8 @@ games) because it lives on Hyprland's `overlay` layer. It gives an at-a-glance v
 of the local machine fleet, AI agents, and timebox, plus one-tap action buttons -
 without leaving whatever is fullscreen.
 
-It is separate from the main bar (which runs as the `waybar.service` systemd user
-unit). The pin is toggle-on-demand and never autostarts.
+It is separate from the main bar (the `waybar.service` systemd user unit, which
+`desk.service` starts at login: docs/desk.md). The pin is toggle-on-demand and never autostarts.
 
 The pin covers the window under it. To see the full main bar over a fullscreen window
 without covering anything, press `Ctrl+Alt+Shift+B` (`hypr/scripts/fullscreen-bar.sh`):
@@ -142,6 +142,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them
+- `printer.sh`       - `custom/printer`, the Neptune from Moonraker and the A1 on or off
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf/keybindings.lua` - the `Super+Shift+M` / `Super+Shift+,` binds

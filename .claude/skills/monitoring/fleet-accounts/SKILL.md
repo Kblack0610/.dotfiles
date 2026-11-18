@@ -38,7 +38,13 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 - Time. Pace is a share of the week, so a held account comes back under pace as the week goes by, or when its week resets (`RESETS`). Usually that is the only honest fix.
 - The run floor. `DISPATCH_RUN_FLOOR` (conf: 15; script default 0) keeps that many run sessions going: while live run sessions plus starts this pass are under it, an account whose only reason is `pace` may start, and the idle gate does not hold. It does not lift load, a `fleet-assess` HOLD, the reserve, the 5 hour window, committed burn or `agent-hold`; an account with room is taken before one past its pace. If the floor is already met (`fleet-dispatch headroom` prints it), a pace refusal is expected. Red items have a floor of their own, `DISPATCH_RED_FLOOR` (2), which also lifts load and a `fleet-assess` HOLD (fleet-dispatch skill, "A pass"); an urgent `from: human` item has a human floor that lifts the pace reason alone.
 - A hand start (`cl`, `claude-acct pick`) is told which account is closest and is never refused. The human's own work is not gated by pace.
-- Another account: `claude-acct status` shows who has room. Adding an account is a human login step, not an agent task.
+- Another account: `claude-acct status` shows who has room. Adding an account is a human login step, not an agent task. Keeping its login alive is `claude-acct setup-token` (a human step too, once a year; `claude-acct check tokens` shows expiry); a session then runs on the account's rbw token, so a wiped `.credentials.json` does not stop it (`docs/operations/claude-acct-tokens.md`).
+
+## Signed out
+
+- `claude-acct auth` (or `--json`) is the login table per account: logged in (a refresh token is present), when the access token and the login end, when the credentials file was last written (a login or a refresh), sessions at work, and sessions stopped on "Not logged in". `claude-acct textfile` publishes the same as `claude_account_*` and `claude_fleet_*` series.
+- The `claude-acct-auth` Sentinel watch (`claude-acct check auth`, 5m, urgent) names each signed-out account and its re-login command; `claude-acct-expiry` (`check expiry`, 1h, high) warns `AUTH_WARN_DAYS` before a login ends. A re-login is the human's: `cl --acct <name>`, then `/login`. Never edit or restore a credentials file.
+- `claude-acct wake` (the `claude-acct-wake` timer, 2m) types one line into each idle pane stopped on "Not logged in" whose account is signed in again: `WAKE_BATCH` at a time, one under load, `WAKE_GAP_MIN` apart, `WAKE_TRIES` times, after which `check auth` names the pane. `--dry-run` lists them. Numbers are in `pace.conf`.
 
 ## Runner caps
 
@@ -51,4 +57,4 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 - Do not raise the slack or reserve in `.config/claude-acct/pace.conf`, or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a conf PR.
 - Do not refuse or block `cl`, a hand start or a running session on pace, and do not add a deny or a blanket model downgrade.
 - Do not hand-edit account token files or `budget-raise` files. Use `claude-acct` and `agentctl budget`.
-- Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one.
+- Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one. The one probe call is `setup-token`'s verify, which the human runs.

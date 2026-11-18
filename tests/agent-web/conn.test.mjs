@@ -129,3 +129,15 @@ test("setTab takes the last tab's mark off and marks the new one once its reads 
   await land();
   assert.equal(parts.main.dataset.drawn, "costs");
 });
+
+test("a cache that landed re-reads only the open tab, the sidebar's re-reads the sidebar; negative control: a closed tab reads nothing", async () => {
+  vm.runInContext('globalThis.heardBy = []; TABS.home = { show() {}, onEvent(ev) { heardBy.push(["home", ev.kind]); } }; TABS.queue = { show() {}, onEvent(ev) { heardBy.push(["queue", ev.kind]); } }; st.tab = "home"', ctx);
+  const es = streams.at(-1);
+  es.onmessage({ data: JSON.stringify({ kind: "ready", of: "queue" }) });
+  assert.equal(vm.runInContext("JSON.stringify(heardBy)", ctx), '[["home","resync"]]', "the open tab reads again, the closed one does not");
+  agentsRead = null;
+  es.onmessage({ data: JSON.stringify({ kind: "ready", of: "agents" }) });
+  assert.ok(agentsRead, "the sidebar reads again");
+  assert.equal(vm.runInContext("heardBy.length", ctx), 1, "and no tab does");
+  await land();
+});

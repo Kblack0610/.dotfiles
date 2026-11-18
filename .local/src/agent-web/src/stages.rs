@@ -17,7 +17,7 @@ use crate::cache::{off, ReadCache};
 
 /// A strip click and the two tables' reads share one run of `project-stage-check --requirements`.
 const CACHE_SECS: u64 = 10;
-static READ: ReadCache<Ladder, CACHE_SECS> = ReadCache::new();
+static READ: ReadCache<Ladder, CACHE_SECS> = ReadCache::named("stages");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -124,9 +124,9 @@ pub async fn get_requirements(Query(q): Query<ReqQuery>) -> Json<serde_json::Val
     Json(requirements(&*current().await, &q))
 }
 
-/// Drop the kept read, so the page's refetch after a new stages.json sees it.
-pub async fn forget() {
-    READ.clear().await;
+/// A new stages.json: the kept read is answered once more and refreshed behind it.
+pub fn outdate() {
+    READ.outdate();
 }
 
 #[cfg(test)]

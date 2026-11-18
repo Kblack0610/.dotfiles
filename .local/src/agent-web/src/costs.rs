@@ -21,7 +21,7 @@ use crate::{bad, ApiResult};
 
 const COSTS_SECS: u64 = 120;
 
-static LAST: ReadCache<Costs, COSTS_SECS> = ReadCache::new();
+static LAST: ReadCache<Costs, COSTS_SECS> = ReadCache::named("costs");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -50,9 +50,9 @@ pub struct CostsQuery {
     pub cdir: String,
 }
 
-/// Drop the kept read, so the refresh a new token snapshot asks for reads it.
-pub async fn forget() {
-    LAST.clear().await;
+/// A new token snapshot: the kept read is answered once more and refreshed behind it.
+pub fn outdate() {
+    LAST.outdate();
 }
 
 /// A read that found no spend (no live file, no nightly day) and hit an error is not kept: the
