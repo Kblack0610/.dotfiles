@@ -63,40 +63,22 @@ struct Inner<T, K> {
 }
 
 /// The last read, kept for `TTL_SECS` and for the key it was read for (`()` when a module has
-/// one read). The TTL is a type parameter so a module's cache is `Default` and can be a static.
+/// one read). The TTL is a type parameter so a module's cache can be a static.
 pub struct ReadCache<T, const TTL_SECS: u64, K = ()> {
-    name: Option<&'static str>,
+    /// What its `ready` event and its `refresh slow` line call it: the read, never its type.
+    name: &'static str,
     /// Bumped by `outdate`, outside the lock, so the watcher never waits on a read.
     outdated: AtomicU64,
     inner: OnceLock<Arc<Inner<T, K>>>,
 }
 
-impl<T, const TTL_SECS: u64, K> Default for ReadCache<T, TTL_SECS, K> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<T, const TTL_SECS: u64, K> ReadCache<T, TTL_SECS, K> {
-    pub const fn new() -> Self {
+    pub const fn new(name: &'static str) -> Self {
         Self {
-            name: None,
+            name,
             outdated: AtomicU64::new(0),
             inner: OnceLock::new(),
         }
-    }
-
-    /// A cache whose `ready` event names `name`.
-    pub const fn named(name: &'static str) -> Self {
-        Self {
-            name: Some(name),
-            outdated: AtomicU64::new(0),
-            inner: OnceLock::new(),
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        self.name.unwrap_or_else(std::any::type_name::<T>)
     }
 
     fn inner(&self) -> Arc<Inner<T, K>> {
@@ -162,7 +144,7 @@ where
                 let i = inner.clone();
                 tokio::spawn(refresh(
                     i,
-                    self.name(),
+                    self.name,
                     key,
                     now_as_of,
                     now_cleared,
@@ -282,28 +264,15 @@ where
     T: Send + Sync + 'static,
     K: PartialEq + Send + Sync + 'static,
 {
-    pub fn new(events: broadcast::Receiver<String>, kinds: &'static [&'static str]) -> Self {
-        Self::with(events, kinds, ReadCache::new())
-    }
-
-    /// As `new`, its `ready` event naming `name`.
-    pub fn named(
+    pub fn new(
         events: broadcast::Receiver<String>,
         kinds: &'static [&'static str],
         name: &'static str,
     ) -> Self {
-        Self::with(events, kinds, ReadCache::named(name))
-    }
-
-    fn with(
-        events: broadcast::Receiver<String>,
-        kinds: &'static [&'static str],
-        last: ReadCache<T, TTL_SECS, K>,
-    ) -> Self {
         Self {
             events: std::sync::Mutex::new(events),
             kinds,
-            last,
+            last: ReadCache::new(name),
         }
     }
 
@@ -378,7 +347,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_read_waits_and_is_shared_per_key_and_a_failure_is_not_kept() {
-        let c: ReadCache<u32, 60, &str> = ReadCache::new();
+        let c: ReadCache<u32, 60, &str> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get("a", count(&reads, 1)).await.unwrap(), 1);
         assert_eq!(
@@ -402,7 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_clear_makes_the_next_read_wait_for_a_fresh_answer() {
-        let c: ReadCache<u32, 60> = ReadCache::new();
+        let c: ReadCache<u32, 60> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         c.clear();
@@ -415,7 +384,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_stale_read_is_answered_at_once_and_refreshed_once_behind() {
-        let c: Arc<ReadCache<u32, 60>> = Arc::new(ReadCache::new());
+        let c: Arc<ReadCache<u32, 60>> = Arc::new(ReadCache::new("test"));
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         tokio::time::advance(Duration::from_secs(61)).await;
@@ -449,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_outdate_refreshes_behind_and_a_clear_during_it_wins() {
-        let c: ReadCache<u32, 60> = ReadCache::new();
+        let c: ReadCache<u32, 60> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         c.outdate();
@@ -483,7 +452,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_first_read_a_write_cleared_in_flight_is_not_kept() {
-        let c: Arc<ReadCache<u32, 60>> = Arc::new(ReadCache::new());
+        let c: Arc<ReadCache<u32, 60>> = Arc::new(ReadCache::new("test"));
         let reads = counter();
         let gate = Arc::new(Notify::new());
         let g = gate.clone();
@@ -515,7 +484,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refresh_that_panics_does_not_stop_the_next_one() {
-        let c: ReadCache<u32, 60> = ReadCache::new();
+        let c: ReadCache<u32, 60> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         c.outdate();
@@ -532,7 +501,7 @@ mod tests {
     }
     #[tokio::test]
     async fn a_refresh_that_fails_keeps_the_stale_answer() {
-        let c: ReadCache<u32, 60> = ReadCache::new();
+        let c: ReadCache<u32, 60> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
         c.outdate();
@@ -549,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsettled_answer_is_shown_and_read_again() {
-        let c: ReadCache<u32, 60> = ReadCache::new();
+        let c: ReadCache<u32, 60> = ReadCache::new("test");
         let reads = counter();
         assert_eq!(*c.get_if((), count(&reads, 6), |_| false).await.unwrap(), 6);
         assert_eq!(*c.get((), count(&reads, 7)).await.unwrap(), 6);
@@ -582,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn a_landed_refresh_is_announced_by_name() {
         let mut rx = announced();
-        let c: ReadCache<u32, 60> = ReadCache::named("announce-test");
+        let c: ReadCache<u32, 60> = ReadCache::new("announce-test");
         let reads = counter();
         c.get((), count(&reads, 1)).await.unwrap();
         c.outdate();
@@ -595,7 +564,7 @@ mod tests {
     async fn an_event_cache_goes_stale_on_its_kind_and_not_otherwise() {
         let mut rx = announced();
         let (tx, _) = broadcast::channel(8);
-        let c: EventCache<u32, 60> = EventCache::named(tx.subscribe(), &["queue"], "event-test");
+        let c: EventCache<u32, 60> = EventCache::new(tx.subscribe(), &["queue"], "event-test");
         assert_eq!(*c.get((), || 1).await.unwrap(), 1);
         tx.send(r#"{"kind":"transcript"}"#.into()).unwrap();
         tx.send(r#"{"kind":"ready","of":"queue"}"#.into()).unwrap();

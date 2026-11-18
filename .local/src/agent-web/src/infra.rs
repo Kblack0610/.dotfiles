@@ -37,8 +37,13 @@ pub type ViewQuery = HashMap<String, String>;
 
 /// The last answer beside its JSON less the CI lists, made once per fill; kept as a failed
 /// gather is, inside the answer. A panic in the gather is shown, not kept.
-#[derive(Default)]
 pub struct Cache(ReadCache<(Infra, Map<String, Value>), CACHE_SECS>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(ReadCache::new("infra"))
+    }
+}
 
 /// One table's rows under its view, and the controls that drew them.
 fn shown<R: Row + Serialize>(rows: &[R], q: &ViewQuery, pre: &str) -> Value {
@@ -124,8 +129,13 @@ impl Cache {
 /// history is three week-long range queries (a machine's recent jobs also a pass over the jobs
 /// archive), so a reload or the page's own refresh inside `CACHE_SECS` is served the last read.
 /// The app keeps one per kind of page, so opening a pool does not drop the machine read.
-#[derive(Default)]
 pub struct Pages(ReadCache<String, CACHE_SECS, String>);
+
+impl Pages {
+    pub const fn new(name: &'static str) -> Self {
+        Self(ReadCache::new(name))
+    }
+}
 
 /// The page, its lists sent once: as tables with their rows and links (`shown`, in their own
 /// order), not also as the page's own fields.

@@ -49,8 +49,13 @@ struct CiLine {
     level: Level,
 }
 
-#[derive(Default)]
 pub struct Cache(ReadCache<Jobs, CACHE_SECS>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(ReadCache::new("jobs"))
+    }
+}
 
 /// The read `q` names, owning its options, so a cache can run it behind a stale answer.
 fn collect(

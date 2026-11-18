@@ -41,7 +41,7 @@ pub struct Cache(EventCache<Gathered, READ_FOR_SECS>);
 
 impl Cache {
     pub fn new(events: broadcast::Receiver<String>) -> Self {
-        Cache(EventCache::new(events, &KINDS))
+        Cache(EventCache::new(events, &KINDS, "worklog"))
     }
 }
 
