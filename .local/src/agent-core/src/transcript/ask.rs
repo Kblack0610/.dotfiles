@@ -6,13 +6,13 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::read::{clip, own_turn, read, str_of, tool_input};
+use super::read::{clip, own_turn, read, read_tail, str_of, tool_input};
 
 /// The transcript at `path` ends on the session asking the human something: `asks_human`.
 /// The Stop check (`stop-post.d/88-ask-filed.sh`) reads it through `agent-panel asks-human`
 /// to make the session file that ask.
 pub fn asks_human_at(path: &Path) -> bool {
-    asks_human(&read(path))
+    asks_human(&read_turn_end(path))
 }
 
 /// The session ended its turn by asking the human something in its own conversation: it has an
@@ -37,7 +37,7 @@ pub struct Question {
 /// `open_question` over the transcript at `path`. hub-core's NEEDS rows and agent-web's cards
 /// read it for a waiting session.
 pub fn open_question_at(path: &Path) -> Option<Question> {
-    open_question(&read(path))
+    open_question(&read_turn_end(path))
 }
 
 /// The session's open question: the last main-thread entry is the assistant's (no prompt or
@@ -93,7 +93,7 @@ fn open_question(text: &str) -> Option<Question> {
 /// The dialog the session's turn ended on and still waits in: the open AskUserQuestion or
 /// ExitPlanMode call's name and input (the questions with their options, or the plan text).
 pub fn open_dialog_at(path: &Path) -> Option<(String, Value)> {
-    open_dialog(&read(path))
+    open_dialog(&read_turn_end(path))
 }
 
 fn open_dialog(text: &str) -> Option<(String, Value)> {
@@ -111,23 +111,43 @@ fn open_dialog(text: &str) -> Option<(String, Value)> {
 /// The last content block of the last main-thread entry, when that entry is the assistant's
 /// own turn (no prompt or tool result after it).
 fn last_turn_block(text: &str) -> Option<Value> {
-    // The human's side: a typed prompt or a tool result, not a reminder or a subagent's.
+    last_main_entry(text)
+        .filter(own_turn)?
+        .pointer("/message/content")?
+        .as_array()?
+        .last()
+        .cloned()
+}
+
+/// The last main-thread entry: the session's own turn, or the human's side of it (a typed
+/// prompt or a tool result, not a reminder or a subagent's).
+fn last_main_entry(text: &str) -> Option<Value> {
     let answer = |v: &Value| {
         v.get("type").and_then(Value::as_str) == Some("user")
             && v.get("isMeta").and_then(Value::as_bool) != Some(true)
             && v.get("isSidechain").and_then(Value::as_bool) != Some(true)
     };
-    let last = text
-        .lines()
+    text.lines()
         .rev()
         .filter(|l| l.contains("\"type\":\"assistant\"") || l.contains("\"type\":\"user\""))
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .find(|v| own_turn(v) || answer(v))
-        .filter(own_turn)?;
-    last.pointer("/message/content")?
-        .as_array()?
-        .last()
-        .cloned()
+}
+
+/// How much of a transcript's end the open-question readers take first. Transcripts grow to
+/// tens of MB and hub-core and agent-web read every waiting session on each refresh.
+const TURN_TAIL: u64 = 1024 * 1024;
+
+/// Enough of the transcript at `path` to decide its open question: its last `TURN_TAIL` bytes
+/// when they hold a main-thread entry, else the whole file, so the verdict is the whole
+/// file's either way.
+fn read_turn_end(path: &Path) -> String {
+    let tail = read_tail(path, TURN_TAIL);
+    if last_main_entry(&tail).is_some() {
+        tail
+    } else {
+        read(path)
+    }
 }
 
 /// Closing questions that are manners, not asks: a session that ends every turn this way is not
@@ -302,7 +322,7 @@ pub(super) const HUMAN_TOOLS: [&str; 2] = ["AskUserQuestion", "ExitPlanMode"];
 
 /// The plan text of the open ExitPlanMode call, when the turn ended on one.
 pub fn open_plan_at(path: &Path) -> Option<String> {
-    open_plan(&read(path))
+    open_plan(&read_turn_end(path))
 }
 
 fn open_plan(text: &str) -> Option<String> {
@@ -394,6 +414,30 @@ mod tests {
 
     const ASK: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which key?","options":[{"label":"mint-key"},{"label":"stay-off"}]}]}}]}}"#;
     const ANSWERED: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"mint-key"}]}}"#;
+
+    #[test]
+    fn the_readers_take_the_tail_and_the_whole_file_when_the_tail_has_no_turn() {
+        // A subagent line is no main-thread entry, so 1.2 MB of them after the dialog push it
+        // out of the tail and the whole file decides; a prompt after them decides from the tail.
+        let side = format!(
+            r#"{{"type":"user","isSidechain":true,"message":{{"content":"{}"}}}}"#,
+            "x".repeat(1000)
+        );
+        let mut lines = vec![ASK];
+        lines.extend(std::iter::repeat_n(side.as_str(), 1200));
+        let p = tmpfile("turn-tail", &lines);
+        assert_eq!(open_question_at(&p).map(|q| q.kind), Some("choice"));
+        assert_eq!(
+            open_dialog_at(&p).map(|(n, _)| n),
+            Some("AskUserQuestion".into())
+        );
+        lines.push(r#"{"type":"user","message":{"content":"go"}}"#);
+        let p = tmpfile("turn-tail", &lines);
+        let tail = read_turn_end(&p);
+        assert!(tail.len() < read(&p).len() && tail.starts_with('{'));
+        assert_eq!(open_question_at(&p), None);
+        fs::remove_file(&p).ok();
+    }
 
     #[test]
     fn the_open_question_reads_the_open_dialog() {

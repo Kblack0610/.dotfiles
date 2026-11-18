@@ -1,6 +1,7 @@
 //! Reading a transcript: its whole text, its tail, and the entry helpers every rule shares.
 
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde_json::Value;
@@ -38,6 +39,26 @@ pub(super) fn turns(text: &str) -> Vec<Value> {
 /// Whole transcript text. Empty on any read error.
 pub(super) fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
+}
+
+/// The transcript's last `bytes`, from the first whole line in them. Empty on any read error.
+pub(super) fn read_tail(path: &Path, bytes: u64) -> String {
+    let Ok(mut f) = File::open(path) else {
+        return String::new();
+    };
+    let start = f.metadata().map_or(0, |m| m.len()).saturating_sub(bytes);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(start)).is_err() || f.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    if start > 0 {
+        let cut = buf
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(buf.len(), |i| i + 1);
+        buf.drain(..cut);
+    }
+    String::from_utf8(buf).unwrap_or_default()
 }
 
 /// An entry the session wrote itself: a main-thread assistant turn, not a subagent's.
