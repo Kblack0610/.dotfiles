@@ -8,10 +8,11 @@
 //! notes' error and re-reads.
 //!
 //! The rows are `hub_core::table`'s: this applies the view keys and sends the summary beside
-//! them. Every read asks `notes` again (it answers in tens of milliseconds), so a write shows
-//! at once and nothing here needs a cache to clear.
+//! them. Every read asks `notes` again (it answers in about 100 ms), so a write shows at once
+//! and nothing here needs a cache to clear. Each row's queue word comes from the kept queue read
+//! (`queue::Cache`), never a fresh `agent-queue` run: two of those took 4 to 19 s a request.
 
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::session_actions::System;
@@ -20,7 +21,7 @@ use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{bad, ApiResult};
+use crate::{bad, ApiResult, Shared};
 
 /// Whose rows (`scope=<profile>/<project>`, blank for every project) and the table view over
 /// them (`q`, `s`, `sort`, `dir`, as hub_core::table reads them).
@@ -63,12 +64,19 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
     })
 }
 
-pub async fn feed(Query(q): Query<BoardQuery>) -> ApiResult<Json<Value>> {
+fn scope_ok(q: &BoardQuery) -> ApiResult<()> {
     if !q.scope.is_empty() && !q.scope.contains('/') {
         let why = format!("scope is <profile>/<project>, not {}", q.scope);
         return Err(bad(StatusCode::BAD_REQUEST, why));
     }
-    tokio::task::spawn_blocking(move || hub_core::sheet_view::feed(&System).map(|f| shown(&f, &q)))
+    Ok(())
+}
+
+pub async fn feed(State(s): State<Shared>, Query(q): Query<BoardQuery>) -> ApiResult<Json<Value>> {
+    scope_ok(&q)?;
+    let queue = s.queue.queue().await;
+    let read = move || hub_core::sheet_view::feed_with(&System, &queue).map(|f| shown(&f, &q));
+    tokio::task::spawn_blocking(read)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map(Json)
@@ -237,13 +245,14 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn a_scope_with_no_profile_is_refused_not_widened_to_every_project() {
-        let q = BoardQuery {
-            scope: "garden".into(),
+    #[test]
+    fn a_scope_with_no_profile_is_refused_not_widened_to_every_project() {
+        let q = |scope: &str| BoardQuery {
+            scope: scope.into(),
             ..Default::default()
         };
-        assert!(feed(Query(q)).await.is_err());
+        assert!(scope_ok(&q("garden")).is_err());
+        assert!(scope_ok(&q("bnb/demo")).is_ok() && scope_ok(&q("")).is_ok());
     }
 
     #[test]

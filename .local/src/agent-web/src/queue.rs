@@ -443,6 +443,41 @@ fn project_names(map: &str, machine: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// The reads that run `agent-queue` (seconds apiece on a loaded machine) live only here, so a
+    /// tab reads `Cache` and never waits on the CLI. `/api/board` once called
+    /// `sheet_view::feed`, which runs `agent-queue list` and `stats` per request: 4 to 19 s.
+    #[test]
+    fn only_this_cache_runs_agent_queue_reads() {
+        let banned = [
+            "Queue::read(",
+            "sheet_view::feed(",
+            "hub_queue::list(",
+            "hub_queue::list_since(",
+            "hub_queue::stats(",
+            "queue::list(&",
+            "queue::stats(&",
+        ];
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut found = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.extension().is_none_or(|x| x != "rs") || path.ends_with("queue.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for b in banned.iter().filter(|b| text.contains(*b)) {
+                found.push(format!("{}: {b}", path.display()));
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "read through queue::Cache instead: {found:?}"
+        );
+        // Negative control: this file does run them, so the scan would see one.
+        let own = include_str!("queue.rs");
+        assert!(banned.iter().any(|b| own.contains(b)));
+    }
+
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
         let items = hub_queue::parse(concat!(
