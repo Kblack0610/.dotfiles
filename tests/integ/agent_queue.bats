@@ -3347,7 +3347,7 @@ second line of the brief
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans --priority low
   assert_failure 5
   assert_output --partial "only the board fills the queue"
-  assert_called "ptask level --agent add --detail brief: Run the open phases of the approved plan $SANDBOX/orphan.md in order"
+  assert_called "ptask level --agent add --detail=Run the open phases of the approved plan $SANDBOX/orphan.md in order"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*orphan* 2>/dev/null)" ] || fail "a filer's plan queued a phase"
   # The human's approved plan still queues its phases.
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --priority low
