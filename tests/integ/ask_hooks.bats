@@ -181,8 +181,8 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
   "$AGENT_ASK" answer "$a" 'yes; ship' 2>/dev/null
-  # As the home's delivery unit runs it (AGENT_STATE_LOCAL): no state_forward, so nothing else loads the roster.
-  AGENT_STATE_LOCAL=1 AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  # As the lease holder's delivery unit runs it.
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
   assert_success
   grep -qF "agent-panel send --pane lab/%1 Answer to ask $a: yes; ship" "$SANDBOX/hp/calls.log" || fail "not typed on hp: $(cat "$SANDBOX/hp/calls.log")"
   ! grep -q '^agent-panel send' "$NOTES_FIXTURE/calls.log" || fail 'typed into a pane here'
