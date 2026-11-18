@@ -44,17 +44,25 @@ load 'fleet_dispatch/common'
   assert_not_called 'claude-acct unpark'
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
+@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+  # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
+  unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
+  # game has no board here: agent-queue files nothing and fails, so the plan is not marked filed
   run reconcile_plans
   assert_success
-  run agent-queue list --json --state queued
-  assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
-  assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
-  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
-  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
-  grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
+  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  grep -q 'filed orphan.md on the board' "$FLEET_DISPATCH_DIR/log.md"
+  run reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
+  grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
