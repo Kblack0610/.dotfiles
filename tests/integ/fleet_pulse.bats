@@ -240,12 +240,13 @@ JSON
   assert_output --partial "pi4-worker4: DOWN"
 }
 
-@test "a failed or non-JSON roster fetch keeps the last good roster" {
+@test "a failed, non-JSON or empty roster fetch keeps the last good roster" {
   # gp-mac is on the roster fetched first; the later roster would drop it.
   STUB_DISPLAY="gp-mac=gp" run "$MODULE"
   assert_success
-  for mode in down html; do
-    STUB_ROSTER="linux-cachyos" STUB_DISPLAY="" STUB_ROSTER_MODE=$mode run "$MODULE"
+  for mode in down html empty; do
+    roster="linux-cachyos"; [ "$mode" = empty ] && roster=""
+    STUB_ROSTER="$roster" STUB_DISPLAY="" STUB_ROSTER_MODE=$mode run "$MODULE"
     assert_success
     refute_output --partial "reporting hosts only"
     assert_output --partial "gp-mac: up"
@@ -275,6 +276,20 @@ JSON
   assert_output --partial "pi4-worker4: DOWN"
   # The first run fetched, the stale cache made the second fetch, and the failure held off the third.
   assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 2
+}
+
+@test "a failed first fetch waits a TTL too, with no roster cached yet" {
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  assert_success
+  assert_output --partial "reporting hosts only"
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 1
+}
+
+@test "a GATUS_BASE with a trailing slash still fetches /roster" {
+  GATUS_BASE="http://stub/" run "$MODULE"
+  refute_output --partial "reporting hosts only"
+  assert_equal "$(grep -c '^http://stub/roster$' "$CURL_LOG")" 1
 }
 
 @test "an unreachable API says so instead of drawing a fleet that is not there" {

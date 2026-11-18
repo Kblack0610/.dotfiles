@@ -21,9 +21,18 @@
 # The roster comes from $GATUS_BASE/roster, rendered from the home-config inventory;
 # the fetch and its cache are shared with waybar (fleet-pulse-roster.sh). Found through
 # the checkout, not ~/.local/lib, which stow links file by file until the next restow.
-here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# macOS has no readlink -f before 12.3, so the file's own symlink is followed by hand.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    link="$(readlink "$src")"
+    case "$link" in /*) src="$link" ;; *) src="$(dirname "$src")/$link" ;; esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
 # shellcheck source=../../../.local/lib/fleet-pulse-roster.sh
-. "$here/../../../.local/lib/fleet-pulse-roster.sh"
+if ! . "$here/../../../.local/lib/fleet-pulse-roster.sh"; then
+    sketchybar --set "$NAME" icon.color=0xfff38ba8 label="lib?"
+    exit 0
+fi
 # Same machine-local config the pusher and waybar read, so the fleet endpoint is
 # defined once per machine instead of hardcoded in each module.
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"

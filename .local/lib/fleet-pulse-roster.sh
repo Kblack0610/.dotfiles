@@ -8,8 +8,8 @@
 # $GATUS_BASE/roster, so a machine joins every bar with one inventory edit and no machine keeps a
 # copy. Fetched over HTTP, not read from a checkout, because a work laptop has no home-config.
 #
-# fleet_pulse_roster_load <gatus_base> fetches it at most once per FLEET_ROSTER_TTL_MIN, keeps the
-# last good copy in the cache for when the fetch fails, and sets:
+# fleet_pulse_roster_load <gatus_base> fetches it at most once per FLEET_ROSTER_TTL_MIN, failed or not,
+# keeps the last good copy in the cache for when a fetch fails or serves an empty roster, and sets:
 #   FLEET_PULSE_ROSTER    names counted for health, space-separated
 #   FLEET_PULSE_DISPLAY   bar tokens (<name>=<label>, ~<name>=<label>, @<group>=<label>)
 # It returns 1, with both empty, when no roster was ever fetched.
@@ -17,18 +17,19 @@
 : "${FLEET_ROSTER_TTL_MIN:=10}"   # minutes a fetched roster is used before it is fetched again
 
 fleet_pulse_roster_load() {
-    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-pulse" cache tmp
+    local dir="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-pulse" cache failed tmp
     cache="$dir/roster.json"
-    if [ -z "$(find "$cache" -mmin "-$FLEET_ROSTER_TTL_MIN" 2>/dev/null)" ]; then
+    failed="$dir/roster.failed"   # its mtime is the last failed fetch, so a failure waits a TTL too
+    if [ -z "$(find "$cache" "$failed" -mmin "-$FLEET_ROSTER_TTL_MIN" 2>/dev/null)" ]; then
         mkdir -p "$dir"
         tmp="$cache.$$"
-        if curl -fsS -m 4 "$1/roster" > "$tmp" 2>/dev/null &&
-            jq -e '.roster | type == "array"' "$tmp" > /dev/null 2>&1; then
+        if curl -fsS -m 4 "${1%/}/roster" > "$tmp" 2>/dev/null &&
+            jq -e '.roster | type == "array" and length > 0' "$tmp" > /dev/null 2>&1; then
             mv -f "$tmp" "$cache"
+            rm -f "$failed"
         else
             rm -f "$tmp"
-            # Keep the last good copy, and wait a TTL before trying again rather than every run.
-            [ -f "$cache" ] && touch "$cache"
+            touch "$failed"
         fi
     fi
     FLEET_PULSE_ROSTER="" FLEET_PULSE_DISPLAY=""
