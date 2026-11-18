@@ -27,7 +27,7 @@ run: a job's updated_at is no end, since Forgejo's midnight transfer_lingering_l
 it a day or more after the job stopped. A run whose waiting job Forgejo cancelled unrun (its
 abandoned-job cron, a day on) has the conclusion `abandoned`, which no run time counts. Its
 API is https://<host>/api/v1, the host in the project map's `forges.forgejo` (never here), with the token
-FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`, sent in curl's stdin config, never argv; with
+from forgejo-token (FORGEJO_TOKEN, a worker's ~/.config/forgejo/token, else `rbw get forgejo_repo_admin`), sent in curl's stdin config, never argv; with
 neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
@@ -219,6 +219,7 @@ STEP_KEYS = ("number", "name", "conclusion", "started_at", "completed_at")
 CURL = os.environ.get("SCHEDULES_CURL", "curl")
 RBW = os.environ.get("SCHEDULES_RBW", "rbw")
 FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
+FORGEJO_TOKEN_BIN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "forgejo-token")
 FJ_PAGE = 50  # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50
 FJ_DONE = ("success", "failure", "cancelled", "skipped")
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
@@ -350,16 +351,19 @@ FJ_TOKEN = []
 
 
 def fj_token():
-    """FORGEJO_TOKEN, else the rbw entry, read once per pass; "" when neither answers."""
+    """forgejo-token's answer (FORGEJO_TOKEN, a worker's token file, else the rbw entry), read once per pass;
+    "" when none answers, with forgejo-token's own reason in FJ_TOKEN[1]."""
     if not FJ_TOKEN:
-        tok = os.environ.get("FORGEJO_TOKEN", "")
-        if not tok:
-            try:
-                tok = subprocess.run([RBW, "get", FORGEJO_ENTRY], capture_output=True, text=True,
-                                     timeout=GH_CALL_TIMEOUT_S).stdout.strip()
-            except (OSError, subprocess.TimeoutExpired):
-                tok = ""
-        FJ_TOKEN.append(tok)
+        env = dict(os.environ, FORGEJO_TOKEN_RBW=RBW, FORGEJO_TOKEN_ENTRY=FORGEJO_ENTRY)
+        try:
+            p = subprocess.run([FORGEJO_TOKEN_BIN], capture_output=True, text=True, env=env,
+                               timeout=GH_CALL_TIMEOUT_S)
+            tok, why = p.stdout.strip(), p.stderr.strip()
+        except OSError as e:
+            tok, why = "", f"forgejo-token: {e}"
+        except subprocess.TimeoutExpired:
+            tok, why = "", f"forgejo-token: no answer in {GH_CALL_TIMEOUT_S}s"
+        FJ_TOKEN.extend([tok, why])
     return FJ_TOKEN[0]
 
 
@@ -378,7 +382,7 @@ def fj(host, path):
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, rbw {FORGEJO_ENTRY} unread)"))
+    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
 
 
 def read_map():
