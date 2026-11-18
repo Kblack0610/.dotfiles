@@ -1319,7 +1319,7 @@ trainee_start_ready() {
 
 @test "start --host refuses what a worker cannot run" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  worker '2.0 16 1 50' true '[]' '[codex]'
   run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
   assert_failure 2
   assert_output --partial 'starts a queued --item'
@@ -1329,11 +1329,18 @@ trainee_start_ready() {
   assert_output --partial 'nope is not in the fleet roster'
   assert_not_called 'wt new'
   # A harness the worker does not list in fleet_harnesses; claude needs no listing.
-  harness_ready
+  harness_ready; HARNESSES=$DISPATCH_HARNESSES
   agent-queue set x agent=paid model=glm >/dev/null
   run cmd_start --host razer-laptop --item x --harness paid --model glm
   assert_failure 2
   assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
+  assert_not_called 'wt new'
+  # A codex item that resumes a thread this machine's ~/.codex holds, though the worker lists codex.
+  agent-queue add --project game --slug cx "cx" >/dev/null
+  codex_ran cx 019a-thread
+  run cmd_start --host razer-laptop --item cx
+  assert_failure 2
+  assert_output --partial 'cx resumes its last codex thread, which is on this machine; start it here, without --host'
   assert_not_called 'wt new'
 }
 
@@ -1342,7 +1349,8 @@ trainee_start_ready() {
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
   harness_sandboxed paid
   stub agent-codex 'exit 0'
-  stub codex '[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
+  stub codex '[ ! -e "$NOTES_FIXTURE/codex.hang" ] || exit 124   # what timeout gives a login check that hangs
+[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
   assert_success
   assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
@@ -1351,6 +1359,9 @@ trainee_start_ready() {
   touch "$NOTES_FIXTURE/codex.login"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
   assert_output codex
+  touch "$NOTES_FIXTURE/codex.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output 'codex: codex login status did not answer in 10s'
   rm "$SANDBOX/paid.key"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
   assert_output "paid: its key file $SANDBOX/paid.key is not readable"

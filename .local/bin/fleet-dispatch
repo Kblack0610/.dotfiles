@@ -30,6 +30,7 @@
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
+#   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
@@ -1758,7 +1759,10 @@ harness_ready_why() {
   jq -e --arg h "$h" '.harnesses | has($h)' "$HARNESSES" >/dev/null 2>&1 || { echo "$HARNESSES has no $h"; return 1; }
   if [ "$(harness_launcher "$h")" = codex ]; then
     command -v codex >/dev/null 2>&1 && command -v agent-codex >/dev/null 2>&1 || { echo "codex or agent-codex is not on PATH"; return 1; }
-    codex login status >/dev/null 2>&1 || { echo "codex is not logged in here (codex login, as the human)"; return 1; }
+    # Bounded: it runs inside every pass's ssh probe, and a login check that hangs would stall the probe.
+    local rc=0; timeout 10 codex login status >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 124 ] || { echo "codex login status did not answer in 10s"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "codex is not logged in here (codex login, as the human)"; return 1; }
     return 0
   fi
   [ "$(harness_launcher "$h")" = opencode ] && [ -n "$(jq -r --arg h "$h" '.harnesses[$h].config_dir // empty' "$HARNESSES")" ] ||
@@ -2281,6 +2285,17 @@ cmd_trainee_patch() {
   head -n 1 "$TRAINEE_DIR/$1.base" && cat "$TRAINEE_DIR/$1.patch"
 }
 
+# cmd_item_end <harness> <session id>... -- why the run of that harness that claimed those ids ended,
+# from this machine's record of it (item_end); nothing when none is found. A dispatcher runs it on the
+# worker a run was placed on (item_end).
+cmd_item_end() {
+  local agent=${1:-} id
+  [[ "$agent" =~ ^[a-z0-9-]+$ ]] || { say "item-end: no harness"; return 2; }
+  shift
+  for id in "$@"; do [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "item-end: $id is not a session id"; return 2; }; done
+  item_end "$(jq -nc --arg a "$agent" --arg s "$*" '{agent: $a, sessions: $s}')"
+}
+
 # trainee_review_task <item json> <trainee> <base> <patch> <task key> -> one row's part of a batch
 # review's brief (trainee_batch_task).
 trainee_review_task() {
@@ -2435,7 +2450,7 @@ resume_thread() {
 #   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
 #                           repo) with `wt new`, claude on the item's brief there.
 #   --host NAME             with --item: open it on that fleet worker (fleet-hosts.sh) over ssh, not here.
-#                           Claude only, in a repo the worker lists (fleet_repos), unsandboxed; its
+#                           Claude, or a harness the worker lists (fleet_harnesses) and reads ready, in a repo it lists (fleet_repos); refused while DISPATCH_SANDBOX_PROFILE is set; its
 #                           queue and ask writes go to the worker's own store clone, which store-sync pushes.
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
@@ -2607,7 +2622,7 @@ cmd_start() {
       { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
     # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
     [ -z "$host" ] || [ -z "$(resume_thread "$it" "$harness")" ] ||
-      { say "start: $item resumes its last $harness thread, which is on this machine; start it here"; return 2; }
+      { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
@@ -3378,12 +3393,20 @@ unstart_orphans() {
 # rollout (codex-rollout.jq) or an opencode session (opencode-session.jq), the one classifier for each.
 # Nothing for an item on another launcher, or one whose record cannot be found: no evidence is not a
 # reason, and such an end rates as before. The item's `sessions:` hold the ids its run claimed; the
-# launcher's timeout tells a timeout from a cut.
+# launcher's timeout tells a timeout from a cut. A run on a fleet worker (`host:`) left its record in
+# the worker's ~/.codex or opencode.db, so the worker classifies it (cmd_item_end); a worker that does
+# not answer, or an older one without item-end, gives nothing.
 item_end() {
-  local agent f launcher t
-  agent=$(jq -r '.agent // "claude"' <<<"$1")
+  local agent f launcher t host
+  IFS=$'\t' read -r agent host < <(jq -r '[.agent // "claude", .host // ""] | @tsv' <<<"$1")
   launcher=$(harness_launcher "$agent")
   case "$launcher" in codex | opencode) ;; *) return 0 ;; esac
+  if [ -n "$host" ]; then
+    # shellcheck disable=SC2046  # the ids, one word each (cmd_item_end checks them)
+    fleet_host_run "$host" fleet-dispatch item-end "$agent" $(jq -r '.sessions // ""' <<<"$1") 2>/dev/null |
+      head -n 1 | grep -E '^[a-z_-]+$'
+    return 0
+  fi
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
   if [ "$launcher" = opencode ]; then item_oc_end "$1" "${t:-0}"; return; fi
   read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
@@ -6082,6 +6105,7 @@ main() {
     harness-ready) shift; cmd_harness_ready "$@" ;;
     harness-prep) shift; harness_prep "$@" ;;
     trainee-patch) shift; cmd_trainee_patch "$@" ;;
+    item-end) shift; cmd_item_end "$@" ;;
     -h | --help) sed -n '2,40p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
