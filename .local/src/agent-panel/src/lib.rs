@@ -2,6 +2,7 @@
 //! card). Every session fact it shows comes from `agent_core`, the layer hub-core and agent-web
 //! read too, so the panel only renders.
 
+pub mod callbacks;
 pub mod card;
 pub mod chooser;
 pub mod dispatched;
