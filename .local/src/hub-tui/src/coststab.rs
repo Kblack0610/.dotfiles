@@ -272,7 +272,7 @@ impl CostsView {
             KeyCode::Char('x') => {
                 let (by, window, open) = (self.by, self.window, self.sections_open);
                 let (history_open, inner) = (self.history_open, self.inner);
-                let (tokens, langfuse) = (self.tokens, self.langfuse);
+                let (tokens, langfuse) = (std::mem::take(&mut self.tokens), self.langfuse);
                 *self = CostsView {
                     by,
                     window,
@@ -293,7 +293,7 @@ impl CostsView {
     }
 
     /// The folds' keys: `K` folds or opens Consumers (None when there is no Consumers data), `u` where the tokens go, `U`
-    /// switches its window, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
+    /// switches its window, `i` opens its next tool's rows, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
     /// Some carries the section to scroll to (a fold that opened), or None for one that shut.
     pub fn fold(
         &mut self,
@@ -384,6 +384,12 @@ impl CostsView {
                 self.reveal("tokens");
                 self.tokens.day = !self.tokens.day;
                 Some(None)
+            }
+            KeyCode::Char('i') => {
+                let moved = self.reveal("tokens");
+                self.tokens.open = Some(true);
+                self.tokens.part = self.tokens.next_part(self.tokens.split(t));
+                Some(moved.then_some("tokens"))
             }
             KeyCode::Char('l') => {
                 let moved = self.reveal("langfuse");
@@ -499,7 +505,7 @@ impl CostsView {
                 }
                 "totals" => self.totals(&b, p, now, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
-                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w)),
+                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), &self.tokens, p, now, w)),
                 "langfuse" => {
                     out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
                     if b.tokens.is_some() {
