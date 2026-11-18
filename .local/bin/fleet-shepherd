@@ -310,6 +310,15 @@ cmd_due() {
   # about load, so a CLEAR machine is no reason to lift it (ar-2605).
   local verdict holds parked owned
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
+  # Every machine, not only this one: a host over its busy mark, or an agent host with a unit
+  # outside its CPU cap (home-config agent-host-budget), is a pace line of its own, cut to the
+  # hosts so the line stays the same while they do (a skip matches its text); the numbers and
+  # units are in `fleet-assess --fleet`, which the pace check reads.
+  local fleet
+  if ! fleet="$(fleet-assess --fleet 2>/dev/null)"; then
+    fleet="$(sed -nE 's/^(fleet: OVER [^(]*[^ (]) \(.*/pace: \1/p; s/^(cap: [^ ]+ NOT live).*/pace: \1/p' <<<"$fleet")"
+    [ -z "$fleet" ] || out+="${out:+$'\n'}$fleet"
+  fi
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
   # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
@@ -971,7 +980,7 @@ shared_sample() {
     [ -n "$fact" ] || continue
     awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
     cm="${test%%(*}"; cm="$(awk -F. '{ print (NF > 1 ? $(NF - 1) "." : "") $NF }' <<<"$cm")"
-    slug="$(shared_owners "$test" | head -1)"
+    slug="$(shared_owners "$test" | awk 'NR==1')"
     if [ -z "$slug" ]; then
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \

@@ -179,7 +179,7 @@ sync_one() {
       CONFLICT_FILES=""
       return 2
     elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
-      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | head -n 5 | tr '\n' ' ')
+      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | awk 'NR<=5' | tr '\n' ' ')
       g merge --abort >/dev/null 2>&1
       # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
       [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"

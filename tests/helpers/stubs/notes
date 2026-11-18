@@ -47,7 +47,7 @@ case "${1:-}" in
       # Bare `notes config` prints the resolved profile as `profile <name>`. Mirrors the real
       # resolution order closely enough for tests: $NOTES_PROFILE wins, else the first
       # configured profile.
-      p="${NOTES_PROFILE:-$(emit profiles | head -1)}"
+      p="${NOTES_PROFILE:-$(emit profiles | awk 'NR==1')}"
       [ -n "$p" ] && printf 'profile     %s\n' "$p"
     fi
     ;;
