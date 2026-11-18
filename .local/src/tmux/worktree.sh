@@ -33,6 +33,11 @@
 #   reap [<path>]     remove one worktree, but ONLY when it is clean, landed (merged or
 #                     pushed) and has no live tmux session. Refuses with the reason
 #                     otherwise. There is no --force.
+#   revive <path> [--branch <b>]
+#                     put a reaped worktree back at <path> (directly under $WT_ROOT), on <b>
+#                     when it is still here or on origin, else on a new branch off the trunk,
+#                     so a conversation that ran there can `claude --resume` (agent-ask reopen).
+#                     Refuses a path or session name another tree holds now.
 #   gc [<repo>] [-n] [--tsv]
 #                     reap every eligible worktree and NAME the ones it kept, one state word
 #                     per tree (README: "Worktree states"). With no repo, everything under
@@ -1260,6 +1265,73 @@ cmd_reap() {
   printf 'reaped %s\n' "$name"
 }
 
+# wt_repo_of_name <basename> -- the main repo whose worktrees are named `<repo>-...` with this
+# basename, the longest repo name winning (`dotfiles-private-agent-1` is not dotfiles'). A reaped
+# tree leaves git nothing to ask, so the name is all there is to go on.
+wt_repo_of_name() {
+  local main repo best='' len=0
+  while IFS= read -r main; do
+    [ -n "$main" ] || continue
+    repo=$(wt_repo_name "$main")
+    case "$1" in "$repo"-?*) [ "${#repo}" -le "$len" ] || { best="$main" len=${#repo}; } ;; esac
+  done < <(wt_scan_repos)
+  [ -n "$best" ] && printf '%s\n' "$best"
+}
+
+# cmd_revive <path> [--branch <b>] -- put a reaped worktree back at <path>, for a conversation
+# that has to resume there: `claude --resume` finds a session by the directory it ran in, and a
+# session that closed over its own ask had its clean tree reaped by wind-down (agent-ask reopen).
+# On <b> when that branch is still here or on origin, else on a new branch off the trunk, as
+# `new` cuts one; held like any tree `new` makes. Under `new`'s lock, so a cut cannot take the
+# slot mid-add. A tree already at <path> on <b> is left as it is; anything else there, or a
+# live session under the name, is another session's slot now, and is refused.
+cmd_revive() {
+  local path='' branch='' name main repo n def base lock
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --branch) branch="${2:-}"; shift 2 || panel_die "--branch needs a value" ;;
+    *) path="$1"; shift ;;
+    esac
+  done
+  [ -n "$path" ] || panel_die "usage: wt revive <path> [--branch <b>]"
+  name="${path##*/}"
+  [ "$branch" != HEAD ] || branch=''
+  # A tree still there is kept unless it is on another branch: then `new` re-cut the slot.
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    wt_is_linked "$path" && { [ -z "$branch" ] || [ "$(wt_branch_of "$path")" = "$branch" ]; } ||
+      panel_die "$name is taken: another tree is there now"
+    printf 'kept %s\n' "$name"
+    return 0
+  fi
+  [ "${path%/*}" = "$WT_ROOT" ] || panel_die "not a worktree path: $path is not directly under $WT_ROOT"
+  ! wt_session_exists "$name" || panel_die "$name is taken: a live session holds the name"
+  main=$(wt_repo_of_name "$name") || panel_die "no repo cuts worktrees named like $name"
+  repo=$(wt_repo_name "$main")
+  lock="$WT_LOCK_DIR/new-$repo.lock"
+  wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
+  # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
+  trap "rm -f $(printf '%q' "$lock")" EXIT
+  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; reviving off the local refs"
+  # A hold that outlived its directory (`rm -rf` past wt_hold) would make git refuse the add.
+  { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
+  def=$(wt_default_branch "$main") || panel_die "cannot resolve the default branch of $main"
+  [ "$branch" != "$def" ] || branch=''
+  mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
+  if [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
+    git -C "$main" worktree add --quiet "$path" "$branch" >&2 || panel_die "git worktree add failed: $path"
+  elif [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git -C "$main" worktree add --quiet "$path" -b "$branch" "origin/$branch" >&2 || panel_die "git worktree add failed: $path"
+  else
+    base=$(wt_base_ref "$main" "$def") || panel_die "no $def in $main to branch from"
+    n="${name#"$repo"-}"
+    branch=$(wt_branch_name "$main" "${n#agent-}")
+    git -C "$main" worktree add --quiet "$path" -b "$branch" "$base" >&2 || panel_die "git worktree add failed: $path"
+  fi
+  wt_heal_submodule_urls "$path"
+  wt_hold "$path"
+  printf 'revived %s on %s\n' "$name" "$branch"
+}
+
 # wt_other_claude <session> -- print "<window index> <pane id>" for each Claude agent in <session>
 # other than the pane `done` was run from ($TMUX_PANE, on the caller's own server), nothing when
 # there is none; rc 2 when agent-panel cannot say. `done` kills the whole session by name, so a
@@ -1594,6 +1666,10 @@ done)
 reap)
   shift
   cmd_reap "$@"
+  ;;
+revive)
+  shift
+  cmd_revive "$@"
   ;;
 gc)
   shift

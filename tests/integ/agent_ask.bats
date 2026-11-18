@@ -1088,6 +1088,57 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_output --partial 'answered, not pending'
 }
 
+@test "reopen-on-answer: a worktree reaped at the close is put back on its branch before the reopen" {
+  # ucp-11 ask AB1Dru: wind-down reaped the clean tree, so the answer found the cwd gone and
+  # filed a board row; claude --resume finds a conversation only in the directory it ran in.
+  local id taken main wt
+  sandbox_worlds
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  export WT_ROOT="$SANDBOX/worktrees" WT_PROJECT_MAP="$SANDBOX/map.json"
+  : >"$NOTES_FIXTURE/tmux.no-session"
+  main="$SANDBOX/demo" wt="$WT_ROOT/demo-agent-3"
+  git init --quiet --bare -b main "$SANDBOX/origin.git"
+  git init --quiet -b main "$main"
+  git -C "$main" commit --quiet --allow-empty -m seed
+  git -C "$main" remote add origin "$SANDBOX/origin.git"
+  git -C "$main" push --quiet -u origin main
+  printf '{"paths":{"%s":"demo"}}\n' "$main" >"$WT_PROJECT_MAP"
+  # The session's branch survives only on origin: reap took the local one.
+  git -C "$main" worktree add --quiet "$wt" -b agent-3-x
+  git -C "$wt" commit --quiet --allow-empty -m work
+  git -C "$wt" push --quiet -u origin agent-3-x
+  git -C "$main" worktree remove "$wt"
+  git -C "$main" branch --quiet -D agent-3-x
+  mkdir -p "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"main"}\n{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"agent-3-x"}\n' \
+    "$wt" "$wt" >"$HOME/.claude/projects/p/sid-7.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  # The repo's wt, never the stowed copy.
+  printf '#!/bin/sh\nexec "%s/.local/src/tmux/worktree.sh" "$@"\n' "$REPO_ROOT" >"$SANDBOX/bin/wt"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/wt"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'ship it?')"
+  "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_equal "$(git -C "$wt" branch --show-current)" agent-3-x
+  assert_called "fleet-dispatch start --project demo --server lab --session demo-agent-3 --window ask-$id --cwd $wt --resume sid-7 --prompt Answer to ask $id: go"
+  assert_not_called 'chore(ask)'
+  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer
+  # gets the board row instead.
+  git -C "$wt" switch --quiet -c agent-3-other main
+  : >"$NOTES_FIXTURE/calls.log"
+  taken="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$taken" 2>/dev/null
+  "$AGENT_ASK" answer "$taken" yes >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$taken"
+  assert_failure
+  assert_output --partial 'demo-agent-3 is taken'
+  assert_not_called 'fleet-dispatch start'
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-7'
+}
+
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
   local id
   sandbox_worlds
