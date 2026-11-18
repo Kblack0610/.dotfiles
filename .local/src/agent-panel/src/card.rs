@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use agent_core::agent::{collect, Agent};
 use agent_core::dialog::{answer, parse, Answered, Dialog, Kind};
-use agent_core::{jsonl, send, tmux};
+use agent_core::{send, tmux, transcript};
 
 /// The live Claude at a `<server>/<session>:<window>` target: a Codex row has no Claude dialog.
 fn agent(target: &str) -> Result<Agent> {
@@ -29,7 +29,7 @@ pub fn run_card(target: &str, options: bool) -> Result<()> {
         return Ok(());
     }
     let color = std::env::var("AGENT_ASK_COLOR").is_ok_and(|v| v == "1");
-    let plan = Plan::of(&d, a.jsonl.as_deref().and_then(jsonl::open_plan_at));
+    let plan = Plan::of(&d, a.jsonl.as_deref().and_then(transcript::open_plan_at));
     print!(
         "{}",
         card(
@@ -54,7 +54,7 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// The plan for `d`, given the open plan its transcript holds (`jsonl::open_plan_at`).
+    /// The plan for `d`, given the open plan its transcript holds (`transcript::open_plan_at`).
     pub fn of(d: &Dialog, text: Option<String>) -> Plan {
         match (d.kind, text) {
             (Kind::Question, _) => Plan::None,

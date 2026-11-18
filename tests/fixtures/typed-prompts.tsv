@@ -1,5 +1,5 @@
 # fleet|human<TAB>a prompt, \n for a newline. Whether .config/agent-panel/typed-prefixes.conf calls it
-# fleet-typed. Read by agent-panel's cargo test (jsonl::fleet_typed), tests/unit/typed_prefixes.bats
+# fleet-typed. Read by agent-core's cargo test (transcript::prompt::fleet_typed), tests/unit/typed_prefixes.bats
 # (typed-prefixes.sh and claude-recall fleet_typed), so the three matchers cannot diverge.
 fleet	/wind-down
 fleet	/wind-down auto

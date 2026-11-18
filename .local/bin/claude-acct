@@ -91,8 +91,8 @@
 # (setup-token) also gets it as CLAUDE_CODE_OAUTH_TOKEN, so a wiped .credentials.json stops no
 # session; otherwise Claude refreshes the account's login itself when a session starts in that dir.
 # Only setup-token writes a credential, and only into rbw. docs/operations/claude-acct-tokens.md.
-# Usage comes from the endpoint behind /usage, which rate-limits per token, so each
-# answer is cached for CLAUDE_ACCT_TTL seconds.
+# Usage comes from the rate-limit headers of one 1-token call on the account's setup token (fetch),
+# so each answer is cached for CLAUDE_ACCT_TTL seconds.
 
 set -uo pipefail
 
@@ -112,7 +112,10 @@ HARNESSES="${CLAUDE_ACCT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/h
 CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
 MAIN_DIR="$HOME/.claude"
-USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"   # refuses a setup token; setup-token records that
+MESSAGES_URL="https://api.anthropic.com/v1/messages"
+# fetch's 1-token call: its answer's headers carry the plan's windows
+USAGE_PROBE='{"model":"claude-haiku-5-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}'
 # rbw entry per account: the token is the password, the notes carry email, minted, expires.
 TOKEN_ENTRY="claude-oauth-"
 # A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
@@ -200,47 +203,51 @@ rows_in() {
 # for one source reads that source and its parent, not every account's token and every key's gateway.
 usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]]; }
 
-# fetch <name> <dir> -> usage JSON on stdout
-#   exit 0 = fresh data, 2 = token expired (a launch refreshes it), 1 = signed out or fetch failed
+# fetch <name> -> usage JSON on stdout, in the usage endpoint's shape; exit 0 = fresh data, 1 = unread.
+# Read with the account's setup token. The usage endpoint refuses that token (403, the rbw entry's
+# usage_endpoint note), but every call on it answers with the plan's windows in its
+# anthropic-ratelimit-unified-* headers, so one 1-token call reads them. The call must look like
+# Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
+# A call refused at the limit still carries them, so only the headers are read.
 fetch() {
-    local name="$1" dir="$2" cache="$CACHE/$1.json"
+    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    local creds="${dir:-$MAIN_DIR}/.credentials.json" token='' rc=1 now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
-    local a_ok r_ok a_exp r_exp
-    # Expired (rank 0, the best) only when a launch can refresh it (refresh_live). A signed-out
-    # account reads unread, which pick skips: on 2026-11-17 a `{}` credentials file read expired
-    # and sent runner calls to an account that answered "Not logged in" (ar-1447).
-    if [[ -f "$creds" ]] && IFS=$'\t' read -r a_ok r_ok a_exp r_exp < <(login_tsv "$creds"); then
-        if [[ "$a_ok" == true ]] && (( a_exp > now )); then
-            token=$(jq -r '.claudeAiOauth.accessToken' "$creds" 2>/dev/null); rc=0
-        elif refresh_live "$r_ok" "$r_exp" "$now"; then rc=2; fi
-    fi
-    # No usable login: the account's setup token, if the endpoint takes one (it may not: a setup
-    # token carries only the inference scope, and a refusal reads as unread, as it always did).
-    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed".
-    local via_setup=0
-    if [[ -z "$token" ]]; then token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1; fi
-    [[ -n "$token" ]] || return "$rc"
-
-    local ver tmp
+    token=$(acct_token "$name" 2>/dev/null) || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
-    if curl -fsS -m 5 "$USAGE_URL" \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        -H "User-Agent: claude-code/${ver:-2}" > "$tmp" 2>/dev/null \
-        && jq -e '.five_hour or .seven_day' "$tmp" >/dev/null 2>&1; then
+    # The header goes in on stdin (-K -): argv is readable by every process on the machine.
+    hdrs=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        curl -sS -m 10 -K - -D - -o /dev/null "$MESSAGES_URL" \
+            -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-cli/${ver:-2} (external, cli)" -H "x-app: cli" \
+            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null)
+    if ratelimit_usage <<<"$hdrs" > "$tmp"; then
         mv "$tmp" "$cache"
         cat "$cache"
         return 0
     fi
     rm -f "$tmp"
-    (( via_setup )) && return "$rc"
+    # say why, so a refused probe (no headers) and a dead network do not read alike
+    printf "claude-acct: %s usage read failed: %s\n" "$name" "$(head -n 1 <<<"$hdrs" | tr -d "\r" | grep . || echo "no answer")" >&2
     return 1
+}
+
+# ratelimit_usage < response headers -> {five_hour, seven_day, reached}: each window's utilization
+# (a fraction in the header, a percent here) and resets_at (ISO), null when its header is absent;
+# reached when the plan refuses calls now. Exits non-zero (jq -e) with no weekly window.
+ratelimit_usage() {
+    tr -d '\r' | jq -Rnce '
+        [inputs | capture("^anthropic-ratelimit-unified-(?<k>[^:]+):\\s*(?<v>.*)$"; "i")
+         | {key: (.k | ascii_downcase), value: .v}] | from_entries as $h
+        | def win($w): if $h["\($w)-utilization"] == null then null
+              else {utilization: ($h["\($w)-utilization"] | tonumber * 1000 | round / 10),
+                    resets_at: ($h["\($w)-reset"] | if . == null then null else tonumber | todate end)} end;
+        {five_hour: win("5h"), seven_day: win("7d"), reached: ($h.status == "rejected")}
+        | select(.seven_day != null)'
 }
 
 # --- source readers -------------------------------------------------------------------
@@ -429,9 +436,7 @@ scores() {
         select(.state != "unread") |
         def p: if . == null then "-" else "\(floor)%" end;
         [.rank, ([.five_hour // 0, .week_used // 0] | max), .name, .dir,
-         # An idle account token expires; launching it is what refreshes it.
-         (if .state == "expired" then "token expired, refreshes on launch"
-          else "5h \(.five_hour | p), 7d \(.week_used | p)" end)]
+         "5h \(.five_hour | p), 7d \(.week_used | p)"]
         | map(tostring) | join("\u001f")'
 }
 
@@ -850,7 +855,7 @@ session_rate() {
 }
 
 # usage_json [nospend] -> one JSON object per Claude account; with USAGE_SOURCES=1 (all_json) also
-# one per source, in the same shape. state: ok, expired (idle, refreshes on launch) or unread.
+# one per source, in the same shape. state: ok or unread.
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
@@ -864,15 +869,11 @@ usage_json() {
     lives=$(live_of)
     while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _; do
         case "$kind" in
-            claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
+            claude) json=$(fetch "$name"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
             *) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$(session_rate "${1:-}" "$name") ;;
         esac
-        case $rc in
-            0) state=ok ;;
-            2) state=expired; json='{}' ;;
-            *) state=unread; json='{}' ;;
-        esac
+        if (( rc == 0 )); then state=ok; else state=unread; json='{}'; fi
         used=$(jq -r '.seven_day.utilization // empty' <<< "$json")
         resets=$(jq -r '.seven_day.resets_at // empty' <<< "$json")
         resets=$([[ -n "$resets" ]] && date -d "$resets" +%s 2>/dev/null)
@@ -927,8 +928,7 @@ usage_json() {
             def rank:
                 (.week_used // 0) as $u
                 | sustain as $carry
-                | (if .state == "expired" then 0
-                   elif $u >= 100 then 1e9
+                | (if $u >= 100 then 1e9
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
                    else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
@@ -939,8 +939,7 @@ usage_json() {
             # rest of the window), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
-            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. An expired token is
-            # idle and launching it refreshes it, so it has room. over_points is the points past the
+            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. over_points is the points past the
             # line after slack; headroom_points the same, signed (for a budget: points left before the
             # reserve) and null with no window.
             def room($slack; $reserve):
@@ -950,7 +949,7 @@ usage_json() {
                       if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
                       if .paced and $u != null and $u > $g + $slack then "pace" else empty end,
                       if $f >= 100 - $reserve then "five_hour" else empty end,
-                      if .paced and .state != "expired" and sustain <= .burn then "committed" else empty end,
+                      if .paced and sustain <= .burn then "committed" else empty end,
                       if .max_live != null and .live >= .max_live then "max_live" else empty end]
                    end) as $no
                 | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
@@ -1059,8 +1058,7 @@ cmd_status() {
         [[ -n "$line" ]] || continue
         state=$(jq -r .state <<< "$line")
         if [[ "$state" != ok ]]; then
-            [[ "$state" == expired ]] && state="token expired" || state="fetch failed"
-            printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
+            printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
         printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
