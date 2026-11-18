@@ -85,10 +85,25 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
+  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env 'printf' '%s\\n' 'a b' 'it'\\''s'  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
+}
+
+@test "a worker whose login shell is zsh, sh or bash reads every argument back literally, a leading = included" {
+  # razer-laptop's login shell is zsh, where a bare =word is the path of a command: printf %q left
+  # `has-session -t =<name>` bare, it exited 1 there, and reap read every session on it as gone.
+  # This ssh runs the command line it was handed in $LOGIN_SH, as sshd does in the login shell.
+  printf '#!/usr/bin/env bash\nexec "$LOGIN_SH" -c "${*: -1}"\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  local sh
+  for sh in zsh bash sh; do
+    command -v "$sh" >/dev/null || continue
+    LOGIN_SH=$sh run fleet_host_run hp-victus printf '[%s]' '=dotfiles-agent-19' "it's" '~/x' '*' 'a b' '$HOME'
+    assert_success
+    assert_output "[=dotfiles-agent-19][it's][~/x][*][a b][\$HOME]"
+  done
 }
 
 @test "a host's own vars win over a group's, even one listed after it; that group's other vars still apply" {
@@ -112,7 +127,7 @@ EOF
   "$q" move fix-menu running >/dev/null
   run "$q" cancel fix-menu
   assert_success
-  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env tmux-close -L lab session agent-1'
+  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env '\''tmux-close'\'' '\''-L'\'' '\''lab'\'' '\''session'\'' '\''agent-1'\'''
   assert_not_called 'here -L'
   # negative control: the same item with no host closes here.
   "$q" add --project game --slug fix-hud "Fix the hud" >/dev/null
@@ -193,7 +208,7 @@ EOF
   WT_NEW_CMD='claude --model opus' run "$REPO_ROOT/.local/src/tmux/worktree.sh" new --host hp-victus --server lab --detach -c /abs/game
   assert_success
   assert_output 'game-agent-3'
-  assert_called 'exec env WT_NEW_CMD=claude\ --model\ opus wt new --detach -c /abs/game --server lab  <<none'
+  assert_called "exec env 'WT_NEW_CMD=claude --model opus' 'wt' 'new' '--detach' '-c' '/abs/game' '--server' 'lab'  <<none"
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run "$REPO_ROOT/.local/src/tmux/worktree.sh" new --host hp-victus -c /abs/game
   assert_failure
@@ -261,7 +276,7 @@ roster_lists() {
   run fleet_host_panel hp-victus
   assert_success
   assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
-  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env agent-panel list --json  <<none'
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env '\''agent-panel'\'' '\''list'\'' '\''--json'\''  <<none'
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 3
@@ -366,7 +381,7 @@ echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}"'
   run "$REPO_ROOT/.local/bin/fleet-host-run" hp-victus agent-panel send --pane 'lab/%3' -- 'a; b'
   assert_success
   assert_output hi
-  assert_called 'agent-panel send --pane lab/%3 -- a\;\ b'
+  assert_called "'agent-panel' 'send' '--pane' 'lab/%3' '--' 'a; b'"
   run "$REPO_ROOT/.local/bin/fleet-host-run" nobody true
   assert_failure 255
 }
