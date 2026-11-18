@@ -77,14 +77,28 @@ function coreStrip(cores) {
 // the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
 // no data is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
 // their disks.
+const GIB = 1024 ** 3;
+// A reading as the slots table says it, as hub_core::machine_page::used_of does: 0, 2.8, 140.
+const short = (v) => (v === 0 ? "0" : v < 100 ? v.toFixed(1) : Math.round(v).toString());
+// `2.8/3`, `11.2/14G`; `2.8` with no limit; no data with no reading.
+const usedOf = (used, max, scale, unit) => (used == null ? NO_DATA : max == null ? `${short(used / scale)}${unit}` : `${short(used / scale)}/${Math.round(max / scale)}${unit}`);
+// `39 of 64G`, or no data unless both are read.
+const gbOf = (used, total) => (used == null || total == null ? NO_DATA : `${Math.round(used / GIB)} of ${Math.round(total / GIB)}G`);
+
 function diskCell(m) {
   const free = m.disk;
   if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">${NO_DATA}</td>`;
-  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
+  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
 const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
-const cpuTitle = (m) => m.runner_cores.map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
+// Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
+function cpuTitle(m) {
+  const mem = Object.fromEntries(m.runner_mem);
+  const names = [...m.runner_cores.map(([n]) => n), ...m.runner_mem.map(([n]) => n).filter((n) => !m.runner_cores.some(([c]) => c === n))];
+  const cores = Object.fromEntries(m.runner_cores);
+  return names.map((n) => `${n}: ${cores[n] == null ? NO_DATA : cores[n].toFixed(1)} cores, mem ${usedOf(mem[n], null, GIB, "G")}`).join("\n");
+}
 const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
 const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
@@ -122,11 +136,11 @@ const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   where: (m) => td("muted", esc(m.where)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
-  mem: (m) => td("m", `${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}`),
+  mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
   temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
   disk: diskCell,
   pools: (m) => td("muted wrap", esc(m.pools.join("  ")) || "-"),
@@ -352,21 +366,26 @@ function infraPageHtml() {
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return h + o.p.body(d);
 }
-// Each pool one slot colour on the whole page (share bar and chart), by name.
+// Each pool one slot colour on the history chart, by name.
 function poolColors(d) {
-  const names = new Set(d.share.filter((s) => s.what !== "idle" && s.what !== "other").map((s) => s.what));
+  const names = new Set();
   if (d.history) d.history.hours.forEach((x) => Object.keys(x.pools).forEach((p) => names.add(p)));
   return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// Each pool its colour, other the muted one, idle the empty track.
-function shareBar(d, colors) {
-  if (!d.share.length) return `<div class="muted">No core reading: no runner and no CPU series.</div>`;
-  const color = (s) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : colors[s.what]);
-  const bar = d.share.map((s) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
-  const words = d.share.map((s) => `${tblLink(s.link, s.what)} ${s.cores.toFixed(1)}`).join(", ");
-  return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
-}
+// The slots table (hub_core::machine_page::SlotUse): each runner, then the cores no runner uses.
+// A reading a runner has no series for says no data, never 0.
+const SLOTUSE_COLS = { slot: ["slot"], takes: ["takes"], now: ["now"], job: ["job"], cores: ["cores", "n"], mem: ["mem", "n"], disk: ["disk", "n"] };
+const readCell = (t) => td(`n${t === NO_DATA ? " muted" : ""}`, esc(t));
+const SLOTUSE_CELLS = {
+  slot: (r) => td(r.runner ? "" : "muted", esc(r.slot)),
+  takes: (r) => td("wrap", r.takes.map((p) => tblLink("#infra/pools/" + encodeURIComponent(p), p)).join(" ")),
+  now: (r) => td(r.now === "off" ? "warn" : "", esc(r.now)),
+  job: (r) => td("wrap", r.runner ? esc(r.job || "-") : ""),
+  cores: (r) => readCell(r.runner ? usedOf(r.cores, r.cores_max, 1, "") : r.cores == null ? "" : short(r.cores)),
+  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : ""),
+  disk: (r) => (r.runner ? `<td class="n${r.disk == null ? " muted" : ""}"${r.disk_age != null ? ` title="read ${esc(secs(r.disk_age))} ago"` : ""}>${r.disk == null ? NO_DATA : bytes(r.disk)}</td>` : td("n", "")),
+};
 
 // An hourly chart's column label: the weekday at midnight, else none.
 const dayTick = (at) => { const d = new Date(at * 1e3); return d.getHours() === 0 ? d.toLocaleDateString([], { weekday: "short" }) : ""; };
@@ -506,7 +525,9 @@ function machineBody(d) {
   let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
   const hot = d.tables.devices.rows.some((r) => r.hottest >= HOT_C);
   h += secHead("", "Sensors", d.tables.devices.rows.length, hot ? "warn" : "", "h3") + (!d.live ? `<div class="empty">${NOT_READ}.</div>` : unread(d.live, "sensors") || pageTable(d.tables.devices, DEVICE_COLS, DEVICE_CELLS, "Its node exporter publishes no hwmon reading."));
-  h += secHead("", "Share", null, "", "h3") + shareBar(d, colors);
+  const slots = d.tables.slots;
+  const runners = slots.rows.filter((r) => r.runner);
+  h += secHead("", "Slots", runners.length ? `${runners.filter((r) => r.now === "busy").length} of ${runners.length} busy` : null, "", "h3") + pageTable(slots, SLOTUSE_COLS, SLOTUSE_CELLS, "No runner and no core reading.");
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   if (d.live) h += liveBody(d);

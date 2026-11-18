@@ -32,7 +32,7 @@ pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|regi
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
-        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
+        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
         // The same runners once per cap they take, pool=<cap>: what cc:pool_slots counts, so
         // every per-pool count (a machine's pool cells, a pool's machines) reads this and agrees
@@ -53,8 +53,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("gates", "cc:host_local_gate".into()),
         // Each core's busy share, keyed by host and cpu, so it stays out of `cc` (keyed by host).
         ("cores", "cc:host_core_busy_ratio".into()),
-        // Cores each CI runner's job uses, and a pinned slot's CPUs, keyed by host and runner.
-        ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
+        // What each CI runner uses: its cores busy and allowed, its memory and its limit, its
+        // disk and that reading's age, keyed by host and runner.
+        ("runner_use", r#"{__name__=~"cc:runner_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
@@ -100,7 +101,7 @@ pub const OPTIONAL: &[&str] = &[
     "exporter_up",
     "rate_left",
     "cores",
-    "runner_cores",
+    "runner_use",
     "withheld",
     "lent",
     "power",
@@ -270,6 +271,16 @@ impl Infra {
     /// One query's series, or none.
     pub fn get(&self, name: &str) -> &[Series] {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// One per-runner rule (`cc:runner_mem_bytes`), by the runner's name; a runner with no
+    /// series is absent, which a page says as no data.
+    pub fn runner_use(&self, rule: &str) -> HashMap<&str, f64> {
+        self.get("runner_use")
+            .iter()
+            .filter(|s| s.label("__name__") == rule)
+            .filter_map(|s| Some((s.label("runner"), s.value?)))
+            .collect()
     }
 
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
@@ -495,7 +506,7 @@ mod tests {
                 "exporter_up",
                 "rate_left",
                 "cores",
-                "runner_cores",
+                "runner_use",
                 "withheld",
                 "lent",
                 "power",
