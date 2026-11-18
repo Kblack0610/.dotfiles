@@ -804,6 +804,7 @@ fn feed_row(
                 && !md::is_version_tag(t)
                 && !md::is_created_tag(t)
                 && !md::is_done_tag(t)
+                && !md::is_backlog_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")

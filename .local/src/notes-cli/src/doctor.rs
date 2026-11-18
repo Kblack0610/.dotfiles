@@ -94,7 +94,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     dir_check(&mut r, "daily", &p.daily, false);
     dir_check(&mut r, "refs", &p.refs, true);
     dir_check(&mut r, "continuous", &p.continuous, true);
-    file_check(&mut r, "fun backlog", &p.fun);
+    file_check(&mut r, "backlog", &p.backlog);
     // The schedule, not its pre-merge `scheduled.md` ancestor: that file was folded into
     // `schedule.md` and renamed aside, so checking it reported a healthy vault as broken.
     file_check(&mut r, "schedule", &p.schedule);
