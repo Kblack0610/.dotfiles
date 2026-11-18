@@ -116,6 +116,15 @@ plan_phase_list() {
 PLAN_LEDGER_DAYS=30
 PLAN_QUIET_MIN=60   # a session restored after a reboot is back well inside this
 
+# plans_approved -> the newest ledger line of each plan approved within PLAN_LEDGER_DAYS: the plans
+# fleet-dispatch reap files (plans_orphaned) and ask-sweep therefore leaves alone.
+plans_approved() {
+  local ledger="${PLAN_LEDGER:-$HOME/.agent/plans/approved.jsonl}"
+  [ -s "$ledger" ] || return 0
+  jq -sc --argjson since "$(( $(date +%s) - PLAN_LEDGER_DAYS * 86400 ))" \
+    'map(select(.epoch >= $since)) | group_by(.plan) | map(max_by(.epoch))[]' "$ledger"
+}
+
 # plans_orphaned -> one ledger line for each approved plan, its newest approval, that still has an
 # open phase while no active queue item names it and its session is neither running nor recently
 # written to. Fails when the sessions or the queue cannot be read: a blind pass acts on nothing.
@@ -133,10 +142,8 @@ plans_orphaned() {
     plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
     t=$(find "$HOME"/.claude*/projects -maxdepth 2 -name "$sid.jsonl" -mmin "-$PLAN_QUIET_MIN" -print -quit 2>/dev/null)
     [ -n "$t" ] || printf '%s\n' "$line"
-  done < <(jq -sc --arg live "$live" --slurpfile items "$items" \
-    --argjson since "$(( $(date +%s) - PLAN_LEDGER_DAYS * 86400 ))" "$PLAN_ITEMS_JQ"'
+  done < <(plans_approved | jq -c --arg live "$live" --slurpfile items "$items" "$PLAN_ITEMS_JQ"'
     ($live | split("\n")) as $live
-    | map(select(.epoch >= $since)) | group_by(.plan) | map(max_by(.epoch))[]
-    | . as $l | select(($live | index($l.session) | not) and ($items | any(.[]; names_plan($l.plan)) | not))' "$ledger")
+    | . as $l | select(($live | index($l.session) | not) and ($items | any(.[]; names_plan($l.plan)) | not))')
   rm -f "$items"
 }

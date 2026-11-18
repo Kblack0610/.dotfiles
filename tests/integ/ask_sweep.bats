@@ -121,6 +121,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
+@test "an approved plan is fleet-dispatch reap's to file: the sweep files no row for it, and one approved past the window gets its row" {
+  plan approved '1 day ago 1 hour ago' "$OPEN"
+  plan lapsed '1 day ago 1 hour ago' "$OPEN"
+  export PLAN_LEDGER="$SANDBOX/approved.jsonl"
+  jq -cn --arg p "$SANDBOX/acct/plans/approved.md" --argjson e "$(date +%s)" '{plan: $p, session: "s1", epoch: $e}' > "$PLAN_LEDGER"
+  jq -cn --arg p "$SANDBOX/acct/plans/lapsed.md" --argjson e "$(( $(date +%s) - 31 * 86400 ))" '{plan: $p, session: "s2", epoch: $e}' >> "$PLAN_LEDGER"
+  run "$SWEEP" run
+  assert_success
+  assert_not_called 'finish approved'
+  assert_called 'ptask board --agent add --want ask chore(plan): finish lapsed'
+}
+
 @test "a plan with no checklist files no row and is only counted" {
   plan bare '1 day ago 1 hour ago' 'just text'
   plan landed '1 day ago 1 hour ago' '## Results\n\nshipped'

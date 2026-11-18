@@ -229,7 +229,8 @@ tag_pane() {
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
 # manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
 # close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
-# being where the question waits; a LANDED or STALLED row not yet closable gets its bucket nudge once; a
+# being where the question waits; a STALLED row not yet closable gets its bucket nudge once (a LANDED one
+# closes on the quiet timer, and fleet-dispatch reap files its open phases); a
 # NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
@@ -269,7 +270,7 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          if ($ask | not) and (.bucket | IN("LANDED","STALLED"))
+          if ($ask | not) and .bucket == "STALLED"
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
@@ -661,17 +662,17 @@ budget_page() { agent-notify -p high -t "$1" -r "file:$LEDGER/log.md" "$2" >/dev
 # decision that closes it. Once per fact per day: $REMINDED keeps only today's lines. NEEDS is left
 # out: its ask already waits in the human's NEEDS YOU list.
 remind_sample() {
-  local today now min sid target bucket fact reason pr next plan at when decision
+  local today now min sid target bucket fact reason pr at when decision
   today="$(date +%F)" now="$(date +%s)" min=$((FLEET_SHEPHERD_REMIND_H * 60))
   touch "$REMINDED" 2>/dev/null || return 0
   awk -F'\t' -v d="$today" '$1 == d' "$REMINDED" > "$REMINDED.tmp" && mv "$REMINDED.tmp" "$REMINDED"
-  while IFS=$'\t' read -r sid target bucket fact reason pr next plan; do
+  while IFS=$'\t' read -r sid target bucket fact reason pr; do
     case "$sid" in ''|*/*|.|..) continue ;; esac
     awk -F'\t' -v s="$sid" -v f="$fact" '$2 == s && $3 == f { found = 1 } END { exit !found }' "$REMINDED" && continue
     at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
     when="$(date -d "$at" +%s 2>/dev/null)" || continue
     [ $((now - when)) -ge $((min * 60)) ] || continue
-    decision="$(remind_decision "$bucket" "$reason" "$pr" "$next" "$plan")"
+    decision="$(remind_decision "$bucket" "$reason" "$pr")"
     # A page agent-notify refused is not recorded, so the next check tries it again. An undelivered
     # one it queues (ntfy down) exits 0 and is flushed by Sentinel.
     agent-notify -p high -k decision -t "$target: one decision closes it" -r "tmux:$target" \
@@ -681,8 +682,7 @@ remind_sample() {
   done < <(jq -r --argjson min "$min" '(.sessions // [])[]
     | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
         and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
-    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-"), (.next_phase // "-"),
-       (.plan_file // "-" | sub(".*/"; ""))]
+    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-")]
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -748,14 +748,12 @@ idle_prompt() {
     }' <<<"$1"
 }
 
-# remind_decision <bucket> <reason> <pr> <next phase> <plan> -> the one decision, in plain words.
+# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words.
 remind_decision() {
   local pr="#$3"
   case "$1:$2" in
     DONE:*) echo "nothing is left; close its window" ;;
-    LANDED:*) if [ "${4:--}" != - ]; then echo "decide phase '$4' of $5: queue it, hold it on an ask, or defer it with - [-] in the plan"
-              elif [ "${5:--}" != - ]; then echo "give $5 a ## Phases checklist, or close its window"
-              else echo "close its window"; fi ;;
+    LANDED:*) echo "close its window; fleet-dispatch files its open phases" ;;
     CHAT:*) echo "close the chat, or label it chat (kept until quiet 24h) or manual to keep it" ;;
     *"green, not merged"*) echo "merge PR $pr or close it" ;;
     *"nightly red"*) echo "say who fixes the nightly red, or that it is not this PR's" ;;
@@ -1248,9 +1246,9 @@ lane_cols() {
   model="$(head -n 1 "$LEDGER/.lane-$id" 2>/dev/null)"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
   while IFS= read -r k; do
-    [[ "$k" =~ ^nudge\ (LANDED|STALLED):\ ([^ ]+) ]] || continue
+    [[ "$k" =~ ^nudge\ STALLED:\ ([^ ]+) ]] || continue
     grep -qxF -- "$k" <<<"$now_keys" && continue
-    nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
+    nudges=$((nudges + 1)); t="${BASH_REMATCH[1]}"
     awk -v t="$t" '$1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"$now_keys" &&
       survived=$((survived + 1))
   done < <(tail -n +2 "$LEDGER/.lane-$id" 2>/dev/null)
