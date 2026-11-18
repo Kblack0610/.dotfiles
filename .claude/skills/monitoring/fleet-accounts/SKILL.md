@@ -40,6 +40,12 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 - A hand start (`cl`, `claude-acct pick`) is told which account is closest and is never refused. The human's own work is not gated by pace.
 - Another account: `claude-acct status` shows who has room. Adding an account is a human login step, not an agent task.
 
+## Signed out
+
+- `claude-acct auth` (or `--json`) is the login table per account: logged in (a refresh token is present), when the access token and the login end, when the credentials file was last written (a login or a refresh), sessions at work, and sessions stopped on "Not logged in". `claude-acct textfile` publishes the same as `claude_account_*` and `claude_fleet_*` series.
+- The `claude-acct-auth` Sentinel watch (`claude-acct check auth`, 5m, urgent) names each signed-out account and its re-login command; `claude-acct-expiry` (`check expiry`, 1h, high) warns `AUTH_WARN_DAYS` before a login ends. A re-login is the human's: `cl --acct <name>`, then `/login`. Never edit or restore a credentials file.
+- `claude-acct wake` (the `claude-acct-wake` timer, 2m) types one line into each idle pane stopped on "Not logged in" whose account is signed in again: `WAKE_BATCH` at a time, one under load, `WAKE_GAP_MIN` apart, `WAKE_TRIES` times, after which `check auth` names the pane. `--dry-run` lists them. Numbers are in `pace.conf`.
+
 ## Runner caps
 
 - `agentctl budget` lists each named runner's spend against its caps for today.
