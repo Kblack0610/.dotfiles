@@ -63,7 +63,6 @@ struct Shown<'a> {
     runners: usize,
     drift_day: &'a str,
     use_days: usize,
-    use_window: usize,
     strip: &'a std::collections::BTreeMap<String, usize>,
     errors: &'a [String],
 }
@@ -89,7 +88,6 @@ fn render(s: &Stack, q: &Query) -> String {
         runners: s.runners,
         drift_day: &s.drift_day,
         use_days: s.use_days,
-        use_window: stack::USE_DAYS,
         strip: &s.strip,
         errors: &s.errors,
     };
@@ -107,8 +105,8 @@ impl Cache {
         self.read().await.map_or_else(failed, |s| render(&s, &q))
     }
 
-    /// The shared read: the tab's and Home's Stack card's.
-    pub async fn read(&self) -> Result<Arc<Stack>, String> {
+    /// The kept read the tab's views are cut from.
+    async fn read(&self) -> Result<Arc<Stack>, String> {
         let read = off(|| stack::read(&stack::Paths::from_env(), &System, hub_core::jobs::now()));
         self.0.get((), read).await
     }
@@ -153,10 +151,17 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1, "the skills search");
         assert_eq!(v["rows"][0]["name"], "shepherd");
-        assert_eq!(v["hooks"]["rows"].as_array().unwrap().len(), 1, "the hooks state");
+        assert_eq!(
+            v["hooks"]["rows"].as_array().unwrap().len(),
+            1,
+            "the hooks state"
+        );
         assert_eq!(v["hooks"]["rows"][0]["script"], "gone.sh");
         assert_eq!(v["hooks"]["table"]["total"], 2);
-        assert_eq!(v["table"]["total"], 2, "a hooks view does not filter the skills");
+        assert_eq!(
+            v["table"]["total"], 2,
+            "a hooks view does not filter the skills"
+        );
     }
 
     #[test]

@@ -143,7 +143,7 @@ impl StackView {
         match k.code {
             KeyCode::Char('J') if self.open => self.down += 1,
             KeyCode::Char('K') if self.open => self.down = self.down.saturating_sub(1),
-            KeyCode::Enter => self.open = !self.open,
+            KeyCode::Enter if n > 0 || self.open => self.open = !self.open,
             KeyCode::Esc if self.open => self.open = false,
             KeyCode::Esc if !self.table().is_default() => self.table().clear(),
             _ if self.table().moves(k, n, page) => {}
@@ -163,8 +163,16 @@ impl StackView {
 
     /// The open table's status lines: what was read, the view's chips, and what could not be
     /// read; then its fitted table, the selection marked.
-    pub fn page(&mut self, s: &Stack, p: Palette, w: usize) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let mut status: Vec<Line<'static>> = head(s).into_iter().map(|l| Line::styled(l, p.dim())).collect();
+    pub fn page(
+        &mut self,
+        s: &Stack,
+        p: Palette,
+        w: usize,
+    ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+        let mut status: Vec<Line<'static>> = head(s)
+            .into_iter()
+            .map(|l| Line::styled(l, p.dim()))
+            .collect();
         let (spans, table) = match self.on() {
             "agents" => (
                 counted(&self.agents, &s.agents, p),
@@ -185,7 +193,10 @@ impl StackView {
         };
         status.push(Line::from(spans));
         if !s.errors.is_empty() {
-            status.push(Line::styled(format!("unread: {}", s.errors.join("; ")), p.warn()));
+            status.push(Line::styled(
+                format!("unread: {}", s.errors.join("; ")),
+                p.warn(),
+            ));
         }
         (status, table)
     }
@@ -255,7 +266,14 @@ fn head(s: &Stack) -> [String; 2] {
         format!("drift as of {}", s.drift_day)
     };
     [
-        format!("{drift}; calls over the last {} days", s.use_days),
+        if s.use_days == 0 {
+            format!("{drift}; calls {}", hub_core::reading::NOT_READ)
+        } else {
+            format!(
+                "{drift}; calls over the newest {} day snapshots",
+                s.use_days
+            )
+        },
         format!(
             "{} runners: {} > Runners",
             s.runners,
@@ -308,7 +326,11 @@ fn fitted<R: Row>(
 }
 
 fn text(s: &str) -> Cell {
-    if s.is_empty() { "-".into() } else { s.to_string().into() }
+    if s.is_empty() {
+        "-".into()
+    } else {
+        s.to_string().into()
+    }
 }
 
 fn skill_row(r: &Skill, p: Palette) -> Vec<Cell> {
@@ -319,14 +341,22 @@ fn skill_row(r: &Skill, p: Palette) -> Vec<Cell> {
         cell(r.repo.clone(), p.dim()),
         r.calls.map_or("-".into(), |n| n.to_string()).into(),
         text(&r.runners.join(", ")),
-        if drift.is_empty() { "-".into() } else { cell(drift, p.warn()) },
+        if drift.is_empty() {
+            "-".into()
+        } else {
+            cell(drift, p.warn())
+        },
     ]
 }
 
 fn agent_row(r: &Agent, p: Palette) -> Vec<Cell> {
     vec![
         r.name.clone().into(),
-        if r.model.is_empty() { cell("inherit", p.dim()) } else { r.model.clone().into() },
+        if r.model.is_empty() {
+            cell("inherit", p.dim())
+        } else {
+            r.model.clone().into()
+        },
         cell(r.tools.clone(), p.dim()),
         cell(r.repo.clone(), p.dim()),
     ]
@@ -336,8 +366,19 @@ fn hook_row(r: &Hook, p: Palette) -> Vec<Cell> {
     vec![
         cell(r.harness.clone(), p.dim()),
         r.event.clone().into(),
-        cell(if r.matcher.is_empty() { "*".into() } else { r.matcher.clone() }, p.dim()),
-        if r.found { r.script.clone().into() } else { cell(format!("{} (missing)", r.script), p.bad()) },
+        cell(
+            if r.matcher.is_empty() {
+                "*".into()
+            } else {
+                r.matcher.clone()
+            },
+            p.dim(),
+        ),
+        if r.found {
+            r.script.clone().into()
+        } else {
+            cell(format!("{} (missing)", r.script), p.bad())
+        },
         cell(r.from.clone(), p.dim()),
     ]
 }
@@ -374,7 +415,11 @@ mod tests {
             assert_eq!(fit.head.to_vec(), caps(cols));
             let mut keep = fit.keep.to_vec();
             keep.sort_unstable();
-            assert_eq!(keep, (0..cols.len()).collect::<Vec<_>>(), "keep names each column once");
+            assert_eq!(
+                keep,
+                (0..cols.len()).collect::<Vec<_>>(),
+                "keep names each column once"
+            );
         }
     }
 
@@ -387,7 +432,10 @@ mod tests {
         assert!(!v.skills.view.is_default(), "f stepped the skills chip");
         assert!(v.key(key(KeyCode::Right), None, 10));
         assert_eq!(v.on(), "agents");
-        assert!(v.agents.view.is_default(), "another table's view is its own");
+        assert!(
+            v.agents.view.is_default(),
+            "another table's view is its own"
+        );
         assert!(v.key(key(KeyCode::Left), None, 10));
         assert!(v.key(key(KeyCode::Left), None, 10));
         assert_eq!(v.on(), "rules", "Left wraps");
@@ -409,7 +457,11 @@ mod tests {
             ..Default::default()
         };
         let (_, table) = v.page(&s, Palette::default(), 80);
-        let all: String = table.iter().flat_map(|l| l.spans.iter()).map(|s| s.content.to_string()).collect();
+        let all: String = table
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(all.contains("gone.sh (missing)"), "{all}");
     }
 }

@@ -74,7 +74,7 @@ function stackList(tb, title, part, cols, row, miss, none) {
 
 // The skills' list names the window its calls column counts and the drift snapshot's day.
 function skillsBody(d) {
-  const days = d.use_days ? `calls over the last ${d.use_days} of ${d.use_window} days` : `calls ${NOT_READ}`;
+  const days = d.use_days ? `calls over the newest ${d.use_days} day snapshots` : `calls ${NOT_READ}`;
   const drift = d.drift_day ? `drift as of ${d.drift_day}` : `drift ${NOT_READ}`;
   return `<div class="muted">${esc(days)}; ${esc(drift)}</div>` +
     stackList(stk, "Skills", d, SKILL_COLS, skillRow, "No skills match.", "No skills are installed.");

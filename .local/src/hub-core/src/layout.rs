@@ -916,7 +916,11 @@ mod tests {
         assert_eq!(bar_digit("schedules"), Some(9));
         assert_eq!(bar_digit("costs"), Some(0));
         assert_eq!(bar_digit("alerts"), Some(7));
-        assert_eq!(bar_digit("stack"), None, "the eleventh bar tab has no digit");
+        assert_eq!(
+            bar_digit("stack"),
+            None,
+            "the eleventh bar tab has no digit"
+        );
     }
 
     #[test]
@@ -936,7 +940,10 @@ mod tests {
                 ("Today", vec!["home", "daily", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
-                ("System", vec!["alerts", "infra", "schedules", "costs", "stack"]),
+                (
+                    "System",
+                    vec!["alerts", "infra", "schedules", "costs", "stack"]
+                ),
             ]
         );
         // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,

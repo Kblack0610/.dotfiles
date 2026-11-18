@@ -5244,7 +5244,9 @@ impl App {
         };
         let (status, table) = self.stv.page(s, self.p, w);
         lines.extend(status);
-        let h = (list.height as usize).saturating_sub(lines.len() + 1).max(1);
+        let h = (list.height as usize)
+            .saturating_sub(lines.len() + 1)
+            .max(1);
         self.page = h;
         lines.extend(self.stv.table().window(table, h));
         f.render_widget(Paragraph::new(lines), list);

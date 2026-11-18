@@ -121,8 +121,14 @@ impl Row for Skill {
     const LEAD: &'static str = "skill";
     const GLANCE: &'static [&'static str] = &["category", "calls", "drift"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
-        (DRIFT, "the nightly skill-drift snapshot names a finding"),
-        (SCOPED, "has paths: so it is listed only once a session touches a match"),
+        (
+            DRIFT,
+            "the nightly skill-drift snapshot names a broken part; unused is shown, not counted",
+        ),
+        (
+            SCOPED,
+            "has paths: so it is listed only once a session touches a match",
+        ),
         (RUN, "an agentctl runner's conf names it as its SKILL"),
     ];
 
@@ -148,7 +154,7 @@ impl Row for Skill {
 
     fn in_state(&self, s: &str) -> bool {
         match s {
-            DRIFT => !self.drift.is_empty(),
+            DRIFT => self.drifts(),
             SCOPED => !self.paths.is_empty(),
             RUN => !self.runners.is_empty(),
             _ => true,
@@ -168,6 +174,11 @@ impl Row for Skill {
 }
 
 impl Skill {
+    /// Whether a finding names a broken part: an unused skill is a fact, not a fault.
+    pub fn drifts(&self) -> bool {
+        self.drift.iter().any(|f| f.kind != "unused")
+    }
+
     /// Its finding kinds, each once, in the snapshot's order.
     pub fn drift_words(&self) -> Vec<String> {
         let mut w: Vec<String> = vec![];
@@ -201,7 +212,11 @@ impl Row for Agent {
     fn val(&self, col: &str) -> Val {
         match col {
             "agent" => Val::Text(self.name.clone()),
-            "model" => text(if self.model.is_empty() { "inherit" } else { &self.model }),
+            "model" => text(if self.model.is_empty() {
+                "inherit"
+            } else {
+                &self.model
+            }),
             "tools" => text(&self.tools),
             "repo" => text(&self.repo),
             _ => Val::None,
@@ -242,14 +257,20 @@ impl Row for Hook {
     const FACETS: &'static [&'static str] = &["harness", "event", "from"];
     const LEAD: &'static str = "script";
     const GLANCE: &'static [&'static str] = &["event", "matcher"];
-    const LEGEND: &'static [(&'static str, &'static str)] =
-        &[(MISSING, "the script it names is not on disk, so the hook cannot run")];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        MISSING,
+        "the script it names is not on disk, so the hook cannot run",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "harness" => text(&self.harness),
             "event" => text(&self.event),
-            "matcher" => text(if self.matcher.is_empty() { "*" } else { &self.matcher }),
+            "matcher" => text(if self.matcher.is_empty() {
+                "*"
+            } else {
+                &self.matcher
+            }),
             "script" => Val::Text(self.script.clone()),
             "from" => text(&self.from),
             _ => Val::None,
@@ -258,6 +279,7 @@ impl Row for Hook {
 
     fn vals(&self, col: &str) -> Vec<Val> {
         match col {
+            "matcher" if self.matcher.is_empty() => vec![text("*")],
             "matcher" => self.matcher.split('|').map(text).collect(),
             _ => vec![self.val(col)],
         }
@@ -304,7 +326,10 @@ impl Row for Rule {
     const GLANCE: &'static [&'static str] = &["kind", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (STALE, "its anchor text is gone from its source file"),
-        (MOVED, "its measured number left the bound it was recorded at"),
+        (
+            MOVED,
+            "its measured number left the bound it was recorded at",
+        ),
         (DEAD, "it names a thing that no longer exists"),
     ];
 
@@ -325,7 +350,11 @@ impl Row for Rule {
     }
 
     fn text(&self) -> String {
-        format!("{}\n{}\n{}\n{}", self.rule, self.source, self.today, self.why).to_lowercase()
+        format!(
+            "{}\n{}\n{}\n{}",
+            self.rule, self.source, self.today, self.why
+        )
+        .to_lowercase()
     }
 }
 
@@ -362,9 +391,18 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     let rules = read_rules(runner, &mut errors);
     let rule_files = read_rule_files(&paths.rule_files);
     let strip = BTreeMap::from([
-        ("skills".to_string(), skills.iter().filter(|s| !s.drift.is_empty()).count()),
-        ("hooks".to_string(), hooks.iter().filter(|h| !h.found).count()),
-        ("rules".to_string(), rules.iter().filter(|r| r.state != OK).count()),
+        (
+            "skills".to_string(),
+            skills.iter().filter(|s| s.drifts()).count(),
+        ),
+        (
+            "hooks".to_string(),
+            hooks.iter().filter(|h| !h.found).count(),
+        ),
+        (
+            "rules".to_string(),
+            rules.iter().filter(|r| r.state != OK).count(),
+        ),
     ]);
     Stack {
         at: now,
@@ -402,7 +440,7 @@ pub fn frontmatter(md: &str) -> BTreeMap<String, String> {
         let Some((k, v)) = line.trim().split_once(':') else {
             continue;
         };
-        if k.starts_with("- ") {
+        if k.starts_with("- ") || line.trim_start().starts_with("- ") {
             continue;
         }
         let key = match (&parent, indented) {
@@ -419,7 +457,9 @@ pub fn frontmatter(md: &str) -> BTreeMap<String, String> {
         while i < body.len() {
             let n = body[i];
             let nd = n.len() - n.trim_start().len();
-            if !n.trim().is_empty() && nd <= depth {
+            // A list may sit at its key's own indent (`paths:` then `- "a/**"`).
+            let item = nd == depth && n.trim_start().starts_with("- ");
+            if !n.trim().is_empty() && nd <= depth && !item {
                 break;
             }
             more.push(n.trim());
@@ -427,7 +467,11 @@ pub fn frontmatter(md: &str) -> BTreeMap<String, String> {
         }
         let value = if matches!(v, ">" | ">-" | "|" | "|-") {
             let sep = if v.starts_with('|') { "\n" } else { " " };
-            more.iter().filter(|l| !l.is_empty()).copied().collect::<Vec<_>>().join(sep)
+            more.iter()
+                .filter(|l| !l.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(sep)
         } else if v.is_empty() && more.iter().any(|l| l.starts_with("- ")) {
             more.iter()
                 .filter_map(|l| l.strip_prefix("- "))
@@ -523,7 +567,10 @@ fn read_agents(paths: &Paths, errors: &mut Vec<String>) -> Vec<Agent> {
             Some(Agent {
                 name: fm.get("name").cloned().unwrap_or(stem),
                 model: fm.get("model").cloned().unwrap_or_default(),
-                tools: fm.get("tools").map(|t| list(t).join(", ")).unwrap_or_default(),
+                tools: fm
+                    .get("tools")
+                    .map(|t| list(t).join(", "))
+                    .unwrap_or_default(),
                 repo: repo_of(&p, &paths.private),
                 description: fm.get("description").cloned().unwrap_or_default(),
             })
@@ -535,10 +582,7 @@ fn read_agents(paths: &Paths, errors: &mut Vec<String>) -> Vec<Agent> {
 
 /// The newest drift snapshot's findings by skill, and its day. `skill-drift --json` exits 1 when
 /// it finds anything, so the runner keeps the file either way.
-fn read_drift(
-    dir: &Path,
-    errors: &mut Vec<String>,
-) -> (String, BTreeMap<String, Vec<Finding>>) {
+fn read_drift(dir: &Path, errors: &mut Vec<String>) -> (String, BTreeMap<String, Vec<Finding>>) {
     let mut days: Vec<String> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(Result::ok)
@@ -550,9 +594,15 @@ fn read_drift(
     days.sort();
     let Some((day, v)) = days.iter().rev().find_map(|d| {
         let t = std::fs::read_to_string(dir.join(d).join("skills.json")).ok()?;
-        Some((d.clone(), serde_json::from_str::<serde_json::Value>(&t).ok()?))
+        Some((
+            d.clone(),
+            serde_json::from_str::<serde_json::Value>(&t).ok()?,
+        ))
     }) else {
-        errors.push(format!("skill drift: {NOT_READ}: no skills.json under {}", dir.display()));
+        errors.push(format!(
+            "skill drift: {NOT_READ}: no skills.json under {}",
+            dir.display()
+        ));
         return (String::new(), BTreeMap::new());
     };
     let mut by: BTreeMap<String, Vec<Finding>> = BTreeMap::new();
@@ -602,7 +652,10 @@ fn runner_skills(dir: &Path) -> BTreeMap<String, Vec<String>> {
         let Ok(t) = std::fs::read_to_string(&p) else {
             continue;
         };
-        let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let name = p
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
         for l in t.lines() {
             if let Some(v) = l.trim().strip_prefix("SKILL=") {
                 let v = unquote(v);
@@ -615,24 +668,27 @@ fn runner_skills(dir: &Path) -> BTreeMap<String, Vec<String>> {
     by
 }
 
-/// The script a hook command runs: the first word naming a `.sh` or `.py` file, with `~` and
-/// `$HOME` filled in, and whether it is on disk. A command naming no script counts as found.
+/// The script a hook command runs: the first word naming a `.sh` or `.py` file, quotes dropped and
+/// `~`, `$HOME` and `${HOME}` filled in, and whether it is on disk. A command naming no script, or
+/// one under another variable or a relative path the harness resolves, counts as found.
 fn script_of(command: &str, home: &Path) -> (String, bool) {
     let word = command
         .split_whitespace()
+        .map(|w| w.trim_matches(|c| c == '"' || c == '\''))
         .find(|w| w.ends_with(".sh") || w.ends_with(".py"));
     let Some(w) = word else {
         return (command.to_string(), true);
     };
-    let path = if let Some(r) = w.strip_prefix("~/").or_else(|| w.strip_prefix("$HOME/")) {
-        home.join(r)
-    } else {
-        PathBuf::from(w)
-    };
+    let home_rel = ["~/", "$HOME/", "${HOME}/"]
+        .iter()
+        .find_map(|p| w.strip_prefix(p));
+    let path = home_rel.map_or_else(|| PathBuf::from(w), |r| home.join(r));
     let name = path
         .file_name()
         .map_or(w.to_string(), |n| n.to_string_lossy().to_string());
-    (name, path.is_file())
+    // Only a path that names its own place can be checked from here.
+    let checkable = home_rel.is_some() || path.is_absolute();
+    (name, !checkable || path.is_file())
 }
 
 /// A harness's `hooks` object: event -> [{matcher, hooks: [{command}]}].
@@ -684,7 +740,10 @@ fn read_hooks(paths: &Paths, errors: &mut Vec<String>) -> Vec<Hook> {
             .unwrap_or_default();
         files.sort();
         for f in files.into_iter().filter(|f| f.is_file()) {
-            let name = f.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             out.push(Hook {
                 harness: "claude".into(),
                 event: "Stop".into(),
@@ -701,9 +760,9 @@ fn read_hooks(paths: &Paths, errors: &mut Vec<String>) -> Vec<Hook> {
 
 fn read_rules(runner: &dyn Runner, errors: &mut Vec<String>) -> Vec<Rule> {
     let argv = ["fleet-bench", "rules", "--json"].map(String::from);
-    let parsed = runner
-        .run(&argv)
-        .and_then(|o| serde_json::from_str::<Vec<serde_json::Value>>(&o).map_err(|e| e.to_string()));
+    let parsed = runner.run(&argv).and_then(|o| {
+        serde_json::from_str::<Vec<serde_json::Value>>(&o).map_err(|e| e.to_string())
+    });
     let rows = match parsed {
         Ok(r) => r,
         Err(e) => {
@@ -832,7 +891,10 @@ mod tests {
             &p.tokens.join("2026-11-18.json"),
             r#"{"by_skill":[{"skill":"shepherd","spans":2,"sessions":2}]}"#,
         );
-        put(&p.runners.join("fleet-shepherd.conf"), "NAME=x\nSKILL='shepherd'\n");
+        put(
+            &p.runners.join("fleet-shepherd.conf"),
+            "NAME=x\nSKILL='shepherd'\n",
+        );
         put(&p.runners.join("dream.conf"), "NAME=dream\n");
         put(
             &p.rule_files.join("agent-runtime.md"),
@@ -849,18 +911,29 @@ mod tests {
         let s = read(&p, &Fixed(Ok(RULES.into())), 100);
         assert!(s.errors.is_empty(), "{:?}", s.errors);
         let names: Vec<&str> = s.skills.iter().map(|k| k.name.as_str()).collect();
-        assert_eq!(names, ["bare", "hz-build", "shepherd"], "a dir with no frontmatter keeps its name");
+        assert_eq!(
+            names,
+            ["bare", "hz-build", "shepherd"],
+            "a dir with no frontmatter keeps its name"
+        );
         let sh = s.skills.iter().find(|k| k.name == "shepherd").unwrap();
         assert_eq!(sh.description, "Move every session through its plan.");
         assert_eq!(sh.category, "monitoring");
         assert_eq!(sh.calls, Some(5), "spans summed across the day snapshots");
         assert_eq!(sh.runners, ["fleet-shepherd"]);
-        assert_eq!(sh.drift_words(), ["deadpath"], "the newest snapshot only, each kind once");
+        assert_eq!(
+            sh.drift_words(),
+            ["deadpath"],
+            "the newest snapshot only, each kind once"
+        );
         assert_eq!(sh.drift.len(), 2);
         let hz = s.skills.iter().find(|k| k.name == "hz-build").unwrap();
         assert_eq!(hz.paths, ["**/*.unity", "Packages/**"]);
         assert_eq!(hz.description, "Build a Quest app");
-        assert!(hz.drift.is_empty(), "an older snapshot's findings are not today's");
+        assert!(
+            hz.drift.is_empty(),
+            "an older snapshot's findings are not today's"
+        );
         assert_eq!(hz.calls, Some(0));
         assert_eq!(s.drift_day, "2026-11-18");
         assert_eq!(s.use_days, 2);
@@ -874,15 +947,26 @@ mod tests {
     fn a_hook_whose_script_is_gone_is_missing() {
         let p = fixture("hooks");
         let s = read(&p, &Fixed(Ok("[]".into())), 0);
-        let poll = s.hooks.iter().find(|h| h.script == "block-poll.py").unwrap();
+        let poll = s
+            .hooks
+            .iter()
+            .find(|h| h.script == "block-poll.py")
+            .unwrap();
         assert!(!poll.found);
         assert!(poll.in_state(MISSING));
         let echo = s.hooks.iter().find(|h| h.command == "echo hi").unwrap();
         assert!(echo.found, "a command naming no script is not missing");
         let post = s.hooks.iter().find(|h| h.from == "stop-post.d").unwrap();
-        assert_eq!((post.event.as_str(), post.script.as_str()), ("Stop", "88-ask-filed.sh"));
+        assert_eq!(
+            (post.event.as_str(), post.script.as_str()),
+            ("Stop", "88-ask-filed.sh")
+        );
         assert_eq!(s.strip["hooks"], 1);
-        assert_eq!(poll.vals("matcher").len(), 2, "each matcher alternative is a filter value");
+        assert_eq!(
+            poll.vals("matcher").len(),
+            2,
+            "each matcher alternative is a filter value"
+        );
     }
 
     #[test]
@@ -900,9 +984,15 @@ mod tests {
         std::fs::remove_dir_all(&p.drift).unwrap();
         std::fs::remove_dir_all(&p.tokens).unwrap();
         let s = read(&p, &Fixed(Err("not found".into())), 0);
-        assert!(s.errors.iter().any(|e| e.starts_with("skill drift: not read")));
+        assert!(s
+            .errors
+            .iter()
+            .any(|e| e.starts_with("skill drift: not read")));
         assert!(s.errors.iter().any(|e| e.starts_with("rules: not read")));
-        assert!(s.skills.iter().all(|k| k.calls.is_none()), "no snapshot is no data, not zero");
+        assert!(
+            s.skills.iter().all(|k| k.calls.is_none()),
+            "no snapshot is no data, not zero"
+        );
         // Negative control: the same tree with the skill gone counts one fewer.
         std::fs::remove_dir_all(p.skills.join("shepherd")).unwrap();
         assert_eq!(read(&p, &Fixed(Ok("[]".into())), 0).skills.len(), 2);
@@ -919,5 +1009,58 @@ mod tests {
         assert_eq!(fm["z"], "q");
         assert!(!fm.contains_key("body"));
         assert!(frontmatter("no fm\n").is_empty());
+        let flush = frontmatter("---\npaths:\n- \"Assets/**\"\n- b\nname: x\n---\n");
+        assert_eq!(
+            list(&flush["paths"]),
+            ["Assets/**", "b"],
+            "a list at its key's own indent"
+        );
+        assert_eq!(flush["name"], "x");
+    }
+
+    #[test]
+    fn a_hook_script_is_judged_only_where_its_path_names_its_place() {
+        let home = tmp("script");
+        std::fs::write(home.join("here.sh"), "").unwrap();
+        assert_eq!(
+            script_of("bash \"$HOME/here.sh\" x", &home),
+            ("here.sh".into(), true)
+        );
+        assert_eq!(
+            script_of("${HOME}/gone.sh", &home),
+            ("gone.sh".into(), false)
+        );
+        assert_eq!(script_of("'~/gone.py'", &home), ("gone.py".into(), false));
+        assert!(
+            script_of("$CLAUDE_PROJECT_DIR/x.sh", &home).1,
+            "another variable is not judged"
+        );
+        assert!(
+            script_of("hooks/x.sh", &home).1,
+            "a relative path is not judged"
+        );
+    }
+
+    #[test]
+    fn an_empty_matcher_filters_as_the_star_it_shows() {
+        let h = Hook::default();
+        assert_eq!(h.vals("matcher"), [h.val("matcher")]);
+        assert_eq!(h.val("matcher"), text("*"));
+    }
+
+    #[test]
+    fn an_unused_skill_is_shown_but_not_counted_as_drift() {
+        let f = |kind: &str| Finding {
+            kind: kind.into(),
+            ..Default::default()
+        };
+        let mut s = Skill {
+            drift: vec![f("unused")],
+            ..Default::default()
+        };
+        assert!(!s.drifts());
+        assert_eq!(s.drift_words(), ["unused"]);
+        s.drift.push(f("deadpath"));
+        assert!(s.drifts());
     }
 }
