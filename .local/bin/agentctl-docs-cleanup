@@ -99,7 +99,7 @@ if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-# An automated filer: a queue already a day of drain deep holds the pass (agent-queue exit 5), and
+# An automated filer: a queue already at its cap holds the pass (agent-queue exit 5), and
 # tomorrow's run counts again; held since HELD_SINCE for STARVED_DAYS is starved too. High plus `cleanup` is where the queue orders the fleet's own
 # housekeeping (agent-queue ORDER); at low it never reached the front.
 agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags "night cleanup" "$task"

@@ -4542,7 +4542,7 @@ cmd_reap() {
 # `night` items: a plan's phases carry no tier, so unattended they stop at an open PR. Once only: a
 # plan the queue has held before is its items' to finish, or a failing phase would re-queue every
 # pass. One still open after that shows in plans_unqueued. `- [-]` is how a human drops a phase.
-# They are an automated filer's (`from: auto:plans`), so a queue a day of drain deep holds them
+# They are an automated filer's (`from: auto:plans`), so a queue at its cap holds them
 # (agent-queue admit), and the next pass tries again. They queue at low priority: no one is driving a
 # plan its session left, so its phases rank below every high and urgent item.
 reconcile_plans() {
