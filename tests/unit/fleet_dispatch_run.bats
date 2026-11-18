@@ -867,6 +867,20 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+@test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
+  worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
+  # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"; eval "set -- ${*: -1}"; "$@"'
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"; exit 2'
+  stub claude 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'did not answer over ssh'
+  assert_output --partial 'ocfree: no answer from its fleet-dispatch harness-ready'
+  assert_output --partial 'Bad_Name: not a harness name'
+  assert_called 'fleet-dispatch harness-ready ocfree'
+}
+
 @test "negative control: a harness's max_tier keeps a tier-2 item off it, pinned or routed; a tier-1 item and a tier-3 canary run on it" {
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"

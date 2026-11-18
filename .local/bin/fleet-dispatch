@@ -28,7 +28,7 @@
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
-#   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir" (start --host asks it on the worker)
+#   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
 #   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
@@ -1776,7 +1776,7 @@ cmd_harness_ready() {
   done
 }
 
-# harness_prep <harness> <session id> <cwd> -> "<config>\t<run dir>" for a sandboxed opencode run: makes
+# harness_prep <harness> <session id> <cwd> -> "<config>\t<run dir>\t<config_dir>" for a sandboxed opencode run: makes
 # its config_dir and run dir and writes the srt settings (run dir/srt-<id>.json) from the lane sandbox,
 # with the item's repo as the cwd; rc 1, said, when it cannot. Run where the run will run: here, or on a
 # fleet worker (cmd_start --host, over fleet_host_run), so every path and srt's own package are that
@@ -1797,7 +1797,7 @@ harness_prep() {
     cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load &&
       sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
     { say "start: lane sandbox '$sbx' cannot be applied to $h; nothing started"; return 1; }
-  printf '%s\t%s\n' "$cfg" "$run"
+  printf '%s\t%s\t%s\n' "$cfg" "$run" "$cdir"
 }
 
 # gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
@@ -1878,7 +1878,7 @@ gateway_launch() {
         [ -n "$cdir" ] || { say "start: $harness names lane sandbox '$sbx' but no config_dir to keep its runs in; nothing started"; return 2; }
         if [ -n "${host:-}" ]; then prep=$(fleet_host_run "$host" fleet-dispatch harness-prep "$harness" "$sid" "$cwd")
         else prep=$(harness_prep "$harness" "$sid" "$cwd"); fi &&
-          IFS=$'\t' read -r cfg run <<<"$prep" && [ -n "$run" ] ||
+          IFS=$'\t' read -r cfg run cdir <<<"$prep" && [ -n "$cdir" ] ||
           { say "start: lane sandbox '$sbx' cannot be applied to $harness${host:+ on $host}; nothing started"; return 1; }
         cid=$(jq -r .canary <<<"$it")
         # jail: the cleared env, and the run's tmp for srt's sockets (TMPDIR) and for the child, which srt
@@ -2260,7 +2260,7 @@ trainee_fetch() {
   mkdir -p "$TRAINEE_DIR" || return 1
   tmp="$TRAINEE_DIR/$slug.fetch.$$"
   fleet_host_run "$host" fleet-dispatch trainee-patch "$slug" >"$tmp" 2>/dev/null && [ -s "$tmp" ] &&
-    head -n 1 "$tmp" >"$TRAINEE_DIR/$slug.base" && tail -n +2 "$tmp" >"$tmp.patch" &&
+    tail -n +2 "$tmp" >"$tmp.patch" && [ -s "$tmp.patch" ] && head -n 1 "$tmp" >"$TRAINEE_DIR/$slug.base" &&
     mv -f "$tmp.patch" "$TRAINEE_DIR/$slug.patch" || { rm -f "$tmp" "$tmp.patch"; return 1; }
   rm -f "$tmp"
   logline "trainee: fetched $slug's patch from $host"
@@ -4219,17 +4219,17 @@ unpark_preempted() {
 HOST_RUNS=''
 declare -gA HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=()   # -g: global when a test sources this inside a function
 probe_hosts() {
-  local name place max power listed out h ready why answers
+  local name place max power listed bad out h ready why answers
   HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
-  while IFS='|' read -r name place max power listed; do
+  while IFS='|' read -r name place max power listed bad; do
     [ "$place" = true ] || continue
     HOST_POWER[$name]=$power
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null; }' _ $listed 2>/dev/null); then
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
       HOST_PROBE[$name]=$(sed '/^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
-      ready='' why='' answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
+      ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
       for h in $listed; do
         case $answers in
           *$'\n'"$h"$'\n'*) ready+="${ready:+ }$h" ;;
@@ -4242,7 +4242,7 @@ probe_hosts() {
       HOST_PROBE[$name]=unreachable
     fi
   # '|', not a tab: IFS collapses a run of tabs, so an empty power would shift listed into it.
-  done < <(fleet_hosts | jq -r '[.name, .place, .max_live, (.power // ""), ((.harnesses // []) | map(select(test("^[a-z0-9][a-z0-9-]*$"))) | join(" "))] | map(tostring) | join("|")')
+  done < <(fleet_hosts | jq -r '(.harnesses // [] | map(tostring)) as $h | [.name, .place, .max_live, (.power // ""), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$"))) | join(" ")), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$") | not) | gsub("[|\n]"; "?")) | join(", "))] | map(tostring) | join("|")')
 }
 
 # host_runs <name> <harness> -- that worker lists the harness in fleet_harnesses and its probe found it

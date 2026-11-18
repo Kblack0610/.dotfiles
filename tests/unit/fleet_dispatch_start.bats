@@ -1327,13 +1327,14 @@ trainee_start_ready() {
   run cmd_start --host nope --item x
   assert_failure 2
   assert_output --partial 'nope is not in the fleet roster'
+  assert_not_called 'wt new'
   # A harness the worker does not list in fleet_harnesses; claude needs no listing.
   harness_ready
   agent-queue set x agent=paid model=glm >/dev/null
   run cmd_start --host razer-laptop --item x --harness paid --model glm
   assert_failure 2
   assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
-    assert_not_called 'wt new'
+  assert_not_called 'wt new'
 }
 
 @test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
