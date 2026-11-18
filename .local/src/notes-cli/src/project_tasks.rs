@@ -2511,7 +2511,10 @@ pub(crate) const SHEET_DONE_ROWS: &str = "Sheet done rows";
 /// `editor` (the save hook's buffer), roll the old closed rows into the version note, and
 /// sweep the rest into sections. `None` when nothing would change. Writes the note only, and
 /// only when not `dry_run`; the caller writes the sheet, so a failure between the two leaves
-/// rows in both, never neither.
+/// rows in both, never neither. On a human sheet it also closes the playtest checks of every
+/// play-build row closed done ([`crate::playtest::close_played`], which writes playtest.md);
+/// a failure there is reported and retried by the next sweep, never a reason to refuse the
+/// sheet's own write.
 pub(crate) fn sweep_file(
     sheet: &Path,
     content: &str,
@@ -2533,7 +2536,15 @@ pub(crate) fn sweep_file(
     let mut t = tidy(&dir, &name, lane, content, &ctx, saved.as_deref(), dry_run)?;
     // A play-build row ticked done in this content closes the playtest checks it covered.
     let played = match lane {
-        Lane::Human => crate::playtest::close_played(&dir, &name, content, dry_run)?,
+        Lane::Human => {
+            crate::playtest::close_played(&dir, &name, content, dry_run).unwrap_or_else(|e| {
+                eprintln!(
+                    "{}: played checks not closed: {e:#}",
+                    crate::playtest::path(&dir).display()
+                );
+                Vec::new()
+            })
+        }
         Lane::Agent => Vec::new(),
     };
     let closed = !played.is_empty();

@@ -867,6 +867,12 @@ fn closing_a_play_build_row_closes_the_checks_its_pass_covered() {
         .to_string();
     let laid = fs::read_to_string(&file).unwrap();
     assert_eq!(laid.matches(&format!("pass:{id}")).count(), 2, "{laid}");
+    // The same build again is a twin: no second row, but a check added since gets the stamp.
+    ok(&pt(&["add", "lobby: leave: the pad frees"]));
+    assert_eq!(pt(&["pass", "--build", "b1"]).status.code(), Some(3));
+    assert_eq!(h.sheet().matches("play build b1").count(), 1);
+    let laid = fs::read_to_string(&file).unwrap();
+    assert_eq!(laid.matches(&format!("pass:{id}")).count(), 3, "{laid}");
     // A pass for one game stamps only that game's checks.
     ok(&pt(&["pass", "--build", "b2", "--game", "Arena"]));
 
@@ -881,7 +887,7 @@ fn closing_a_play_build_row_closes_the_checks_its_pass_covered() {
     ]));
     assert_eq!(
         fs::read_to_string(&file).unwrap().matches("- [ ]").count(),
-        3
+        4
     );
 
     // The play row closing done is the event: its checks close with it, the feedback stays.
@@ -894,7 +900,7 @@ fn closing_a_play_build_row_closes_the_checks_its_pass_covered() {
         "played Nov 21",
     ]));
     let laid = fs::read_to_string(&file).unwrap();
-    assert_eq!(laid.matches(&format!("played:{id}")).count(), 2, "{laid}");
+    assert_eq!(laid.matches(&format!("played:{id}")).count(), 3, "{laid}");
     assert!(
         laid.contains("- [ ] ball clips the wall (playtest Nov 21, sam)"),
         "{laid}"
