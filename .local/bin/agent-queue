@@ -233,16 +233,46 @@ unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
 # holder must not wait on a child that takes the lock again. A reader holds .lock only while it lists
 # and reads the files (snap_json), since a writer's wait is the sum of the reads already in.
 # A timeout exits LOCK_BUSY, not 1: nothing was written, so a caller that must record (agent-land)
-# can tell it from a refusal and take the lock again.
+# can tell it from a refusal and take the lock again. Each timeout appends one lock_miss line.
 LOCK_BUSY=75
 LOCK_WAIT="${AGENT_QUEUE_LOCK_WAIT:-10}"
+AQ_LOCK_MISS_LOG="$AQ_DIR/lock-miss.jsonl"
 take_lock() {
   [[ "$LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_LOCK_WAIT is whole seconds, not '$LOCK_WAIT'"
   local gate end=$((SECONDS + LOCK_WAIT))
   exec {gate}> "$AQ_DIR/.gate" 8> "$AQ_DIR/.lock" || die "cannot open the queue lock in $AQ_DIR"
-  flock -w "$LOCK_WAIT" "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 ||
-    { echo "agent-queue: the queue is locked by another writer" >&2; exit "$LOCK_BUSY"; }
+  flock -w "$LOCK_WAIT" "$gate" && flock "$@" -w "$((end - SECONDS > 1 ? end - SECONDS : 1))" 8 || {
+    exec {gate}>&- 8>&-
+    lock_miss "${1:-}"
+    echo "agent-queue: the queue is locked by another writer (who held it: $AQ_LOCK_MISS_LOG)" >&2
+    exit "$LOCK_BUSY"
+  }
   exec {gate}>&-
+}
+# lock_miss [-s]: one JSON line naming this taker, its caller, the kernel's locks on .gate and
+# .lock (holds or waits, READ or WRITE) and every process with either open: the holder, the
+# waiters, and any child a holder started, since fd 8 is inherited. Called with both fds closed,
+# so the line never lists the taker itself. Best effort: it never changes the exit. Why: 108
+# dispatch starts and two runners timed out on the lock with nothing naming the holder (ar-3025).
+lock_miss() {
+  local f id p
+  {
+    for f in .gate .lock; do
+      # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
+      id=$(printf '%02x:%02x:%s' $(stat -c '%Hd %Ld %i' "$AQ_DIR/$f")) || continue
+      awk -v f="$f" -v id="$id" '{ o = ($2 == "->") } $(6 + o) == id {
+        printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
+      for p in $(fuser "$AQ_DIR/$f" 2>/dev/null); do
+        printf 'proc\t%s\t%s\t%s\n' "$f" "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-300)"
+      done
+    done
+  } 2>/dev/null | jq -Rnc --arg ts "$(date -Is)" --arg mode "$([ "$1" = -s ] && echo shared || echo exclusive)" \
+    --argjson wait "$LOCK_WAIT" --arg cmd "$(tr '\0' ' ' < /proc/$$/cmdline | cut -c1-300)" \
+    --arg caller "$(tr '\0' ' ' < /proc/$PPID/cmdline | cut -c1-300)" \
+    '[inputs | split("\t")] | {ts: $ts, mode: $mode, wait: $wait, cmd: $cmd, caller: $caller,
+      locks: map(select(.[0] == "lock") | .[1]),
+      procs: map(select(.[0] == "proc") | {file: .[1], pid: (.[2] | tonumber), cmd: .[3]})}' \
+    >> "$AQ_LOCK_MISS_LOG" 2>/dev/null || true
 }
 
 items_in() { # state-dir -> item files, oldest first
