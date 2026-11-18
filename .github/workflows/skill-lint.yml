@@ -21,7 +21,11 @@ on:
         type: boolean
         default: false
       runs-on:
-        description: "runner label; the private repo passes self-hosted, since GitHub bills hosted minutes there"
+        description: >-
+          one runner label, or a JSON label list such as a Unity repo's LINUX_RUNNER_LIGHT
+          (light plus fresh-workspace): this job's sparse checkout, left in a warm Unity
+          workspace, breaks every later job there. The private repo passes self-hosted, since
+          GitHub bills hosted minutes there.
         type: string
         default: ubuntu-24.04
 
@@ -31,7 +35,7 @@ permissions:
 jobs:
   skills:
     name: skill lint
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ startsWith(inputs.runs-on, '[') && fromJSON(inputs.runs-on) || inputs.runs-on }}
     timeout-minutes: 5
     steps:
       # All history, for the ratchet's merge base, but no old file contents, and only the
