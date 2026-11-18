@@ -1930,7 +1930,7 @@ trainee_review_task() {
   local slug
   slug=$(jq -r .slug <<<"$1")
   cat <<EOF
-Review the diff a trainee left for queue item $slug, then land it or send the row back.
+This is agent-queue item $6. This is agent-queue item $6. Review the diff a trainee left for queue item $slug, then land it or send the row back.
 
 The trainee $2 ran this row in a sandbox, on base $3, and could not commit. Its whole change is the patch $4.
 
@@ -2663,9 +2663,9 @@ resume_brief() {
   local slug sv mode end tags
   IFS=$'\x1f' read -r slug sv mode end tags < <(jq -r '[.slug, .salvage // "", .mode // "", .end_reason // "", .tags // ""] | join("\u001f")' <<<"$1")
   if [ "$end" = limit ]; then
-    echo "Your last run on queue item $slug stopped at the plan's usage limit, and the plan has room again."
+    echo "This is agent-queue item $slug. Your last run on it stopped at the plan's usage limit, and the plan has room again."
   else
-    echo "Your last run on queue item $slug stopped before the item closed, and this run takes it up."
+    echo "This is agent-queue item $slug. Your last run on it stopped before the item closed, and this run takes it up."
   fi
   ask_decisions " $tags "
   [ "$mode" != plan ] || echo "If the human approved your plan, build it now. If they asked for changes, revise the plan and post it for approval again, the same way."
