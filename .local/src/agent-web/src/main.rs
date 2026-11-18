@@ -43,6 +43,7 @@ mod reqlog;
 mod schedules;
 mod sessions;
 mod shepherd;
+mod stack;
 mod stages;
 mod suites;
 mod widget;
@@ -108,6 +109,7 @@ struct AppState {
     actions: feed::Cache,
     work: worklog::Cache,
     schedules: schedules::Cache,
+    stack: stack::Cache,
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
@@ -173,6 +175,7 @@ async fn main() -> Result<()> {
         apps: infra::Pages::new("app-page"),
         jobs: jobs::Cache::default(),
         schedules: schedules::Cache::default(),
+        stack: stack::Cache::default(),
         session_table: sessions::Cache::default(),
         briefing: briefing::Cache::default(),
         push: push::Pusher::default(),
@@ -216,6 +219,7 @@ async fn main() -> Result<()> {
         .route("/api/jobs", get(jobs_list))
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
+        .route("/api/stack", get(stack_list))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/releases/app", get(releases_app))
@@ -1758,6 +1762,14 @@ async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Quer
     (
         [(header::CONTENT_TYPE, "application/json")],
         s.schedules.get(&s.alerts, q).await,
+    )
+        .into_response()
+}
+
+async fn stack_list(State(s): State<Shared>, Query(q): Query<stack::Query>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        s.stack.get(q).await,
     )
         .into_response()
 }

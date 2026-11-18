@@ -176,6 +176,9 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
+# shellcheck source=../src/tmux/panel-palette.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -342,13 +345,13 @@ judge_line() {
 }
 
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
-# (post) and the questions panel (card). Colour only on a terminal
-# or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
+# (post) and the questions panel (card). Colour only on a terminal or with AGENT_ASK_COLOR=1,
+# from the panels' palette; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""
   load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
-    b=$'\e[1m' d=$'\e[2m' c=$'\e[36m' g=$'\e[32m' r=$'\e[31m' x=$'\e[0m'
+    b="$C_BOLD" d="$C_DIM" c="$C_INP" g="$C_SEL" r="$C_ERR" x="$C_OFF"
   fi
   local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
@@ -1613,7 +1616,7 @@ render_story() {
   local f="$1" d="" x="" sid src tele
   load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
-    d=$'\e[2m' x=$'\e[0m'
+    d="$C_DIM" x="$C_OFF"
   fi
   local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
