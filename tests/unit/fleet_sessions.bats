@@ -42,6 +42,11 @@ case "$1" in
 esac
 SS
   chmod +x "$SCHEDULES_SYNC"
+  # The repo's agent-queue, run by its path so its libs resolve: every pass reads the queue, a runner
+  # has none on PATH, and a read that fails is unreadable (ar-2839). A test may overwrite this file.
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
@@ -1837,8 +1842,6 @@ queue_item() {
 
 @test "a session working a queue item carries the item as dispatch; others carry null" {
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
 
@@ -1859,8 +1862,6 @@ queue_item() {
 
 @test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   local row
   row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"th-1\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"codex\",\"harness\":\"codex\"}"
   # agent-panel lists a Codex run only when asked, as the real one does
@@ -1880,8 +1881,6 @@ queue_item() {
 
 @test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .item <<<"$output")" = null ]
   # dispatched: its tmux session, a board row
@@ -1909,8 +1908,6 @@ clean_fixture() {
   landed_fixture
   panel "$SANDBOX/wt"
   rm "$LEDGER_DIR/prs.tsv"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
 }
 
 @test "end to end: a failed agent-queue read is unreadable and keeps the rows' last cells, never 'no items' (ar-2839)" {
@@ -2045,8 +2042,7 @@ research_item() {
   # 2026-11-06: hub/dotfiles:7 queued its next phase behind its own ask, as the LANDED nudge says,
   # and wind-down auto refused it because that ask still read as the session's (ar-764).
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue" ASK_ROOT="$HOME/.agent/asks"
+  export ASK_ROOT="$HOME/.agent/asks"
   mkdir -p "$ASK_ROOT/apociseum" "$HOME/.agent/queue/queued"
   printf 'id: Ob1\nstatus: pending\nsession: s1\nclaude_session: sid-9\n' > "$ASK_ROOT/apociseum/Ob1.md"
   queue_item running lab:s1
@@ -2086,8 +2082,6 @@ research_item() {
 
 @test "end to end: a landed session whose next phases are other queue items is DONE once its own item is done; that item is not a next phase" {
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   # its own item names the plan: still LANDED, told to queue the rest
   queue_item running lab:s1
   printf 'plan: %s\n' "$SANDBOX/plan.md" > "$SANDBOX/hdr"
@@ -2116,8 +2110,6 @@ research_item() {
   # 2026-11-04 agent-2 read DONE mid-phase 3 because phases 4 and on were queue items.
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   # phase_item <phases>: phase 3 (or what <phases> names) queued from the plan
   phase_item() {
@@ -2143,8 +2135,6 @@ research_item() {
 @test "end to end: phase_runner names the session running the item that holds the open phase, and nothing else (ar-1497)" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued" "$HOME/.agent/queue/running"
   # phase_item <dir> <phases> <session line>: an item holding those phases of the plan
   phase_item() {
@@ -2173,8 +2163,6 @@ research_item() {
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   ln -s plan.md "$SANDBOX/alias.md"
   panel "$SANDBOX/wt" "$SANDBOX/alias.md"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
     "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
@@ -2195,8 +2183,6 @@ research_item() {
   landed_fixture
   phases_plan 'Coordinator: d4e8f86f-7eb9-4aba-ab31-65ffb6089a82' '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
   panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
     "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
@@ -2241,8 +2227,6 @@ research_item() {
   # 4 landed as their own items in other sessions; the row read LANDED, queue the next phases.
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#880)'
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   queue_item running lab:s1
   printf 'origin: run\n' > "$SANDBOX/hdr"
   sed -i "/^session:/r $SANDBOX/hdr" "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
@@ -3756,8 +3740,6 @@ job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | spl
   # item, but the transcript named only #2166, so the session read STALLED closed without merging.
   landed_fixture
   panel "$SANDBOX/wt"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   local oid d="$HOME/.agent/queue/done/$(date +%F)"
   oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
   printf 'feat/x\t2166\tCLOSED\tFAIL\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
@@ -4379,8 +4361,6 @@ JSONL
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
   stub() { printf '# stub\n\n%s\n\n## Phases\n\n- [ ] rollout\n' "$1" > "$SANDBOX/stub.md"; }
   panel "$SANDBOX/wt" "$SANDBOX/stub.md"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
     "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
@@ -4445,8 +4425,6 @@ JSONL
   # no phases:) held all six open phases, and two shepherds told the plan's session to close.
   landed_fixture
   phases_plan '- [x] Provision (#875)' '- [ ] Tailnet: VM joined' '- [ ] Seed: rsync the data'
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   # task_item <slug> <task>: an item queued by hand, its task naming the plan's file, no phases:
   task_item() {
@@ -4481,8 +4459,6 @@ JSONL
   # 2026-11-15 03:28Z: the bug-report item ar-2449 quoted session 81b68e13's plan path and named no
   # phase, so it held P3, and close --self told the coordinator "plan finished, nothing open".
   landed_fixture
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   report() {
     printf 'slug: report\nproject: agent-runtime\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
@@ -4587,8 +4563,6 @@ SH
   copy() { { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; } > "$SANDBOX/quirky-donut.md"; }
   copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
   panel "$SANDBOX/wt" "$SANDBOX/quirky-donut.md"
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
   mkdir -p "$HOME/.agent/queue/queued"
   item() { printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: %s\n---\nphase of the plan\n' \
     "$1" "$2" "$3" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"; }
