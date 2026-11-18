@@ -853,6 +853,13 @@ prs_key() {
   printf '%s\n' "$CACHE/${slug}_$(canonical_remote "$1")"
 }
 
+# no_pr_host <dir> - rc 0 when the origin is on no PR host: neither github.com nor a listed Forgejo host.
+no_pr_host() {
+  local h
+  h="$(origin_host "$1")" || return 1
+  [ -n "$h" ] && [[ "$h" != github.com* ]] && [[ " $(so_forgejo_hosts) " != *" $h "* ]]
+}
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
 # from the PR store (`schedules-sync prs --checks`, unreadable once 30 minutes stale): ci is the run ledger's
 # reading of the head commit, red the job archive's failed job ids (- for none it has yet). The repo is
@@ -862,7 +869,9 @@ prs_key() {
 # whose files master rewrote after the merge read "no PR" (ar-2587).
 # One the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass), as
 # has a mirror-only clone of a Forgejo-canonical repo; any other GitHub repo it does not list is
-# unreadable (`schedules-sync repos` is the list).
+# unreadable (`schedules-sync repos` is the list). So has a repo whose origin is on no PR host at all
+# (~/.agent, a store on a bare git endpoint plus a GitHub backup): neither github.com nor a listed Forgejo
+# host, so close --self no longer held every session that wrote a lesson at "after" (ar-3283).
 prs_for() {
   local dir="$1" key repo out rc=0
   key="$(prs_key "$dir")" || return 0
@@ -880,7 +889,7 @@ prs_for() {
       # The open PRs waiting their landing turn (queued_in), one number a line.
       [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
           <<<"$out" > "$key.queued" 2>/dev/null || { : > "$key.queued"; unreadable "PR store labels ($repo)"; }
-    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir"; }; then : > "$key"
+    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir" || no_pr_host "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
   [ ! -f "$key.failed" ] || blind_row
