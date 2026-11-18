@@ -108,7 +108,7 @@ record() { # <id>: the record's path, or die
 
 # The fixed set of verbs, as the command each one runs: apply runs it and the surfaces show it.
 # mem0 is no command: apply posts .arg itself (mem0_post), so the key never reaches an argv.
-AP_ARGV='def argv: if .verb == "queue" then ["agent-queue", "add", "--project", .project, "--", .arg]
+AP_ARGV='def argv: if .verb == "queue" then ["agent-queue", "add", "--project", .project, "--priority", "high", "--", .arg]
   elif .verb == "row" then ["notes", "ptask", .project, "--agent", "add", .arg]
   elif .verb == "none" then [] else null end;'
 AP_DOES="$AP_ARGV"'def does: if .verb == "mem0" then "post to mem0, verbatim: " + .arg
