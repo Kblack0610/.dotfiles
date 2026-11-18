@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 956" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1012" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
   <!-- The fleet-sessions close flow (CLOSE_JQ), one chain and one quiet timer for every session, first match wins.
        Source of truth: .local/src/docs/fleet-states.md, Close verdict. Keep the two in step. -->
   <defs>
@@ -23,10 +23,10 @@
   <text class="lane-title" x="40" y="264" style="text-anchor:start">B. The human holds it</text>
   <rect class="lane" x="20" y="352" width="840" height="104" rx="10"/>
   <text class="lane-title" x="40" y="374" style="text-anchor:start">C. It is working</text>
-  <rect class="lane" x="20" y="462" width="840" height="216" rx="10"/>
+  <rect class="lane" x="20" y="462" width="840" height="272" rx="10"/>
   <text class="lane-title" x="40" y="484" style="text-anchor:start">D. Work left here</text>
-  <rect class="lane" x="20" y="684" width="840" height="160" rx="10"/>
-  <text class="lane-title" x="40" y="706" style="text-anchor:start">E. The timer</text>
+  <rect class="lane" x="20" y="740" width="840" height="160" rx="10"/>
+  <text class="lane-title" x="40" y="762" style="text-anchor:start">E. The timer</text>
   <path class="edge" d="M285,56 V109"/>
   <rect class="decision" x="50" y="110" width="470" height="40" rx="6"/>
   <text class="label sm" x="285" y="130">parked: its claude is gone?</text>
@@ -82,23 +82,31 @@
   <text class="elabel" x="554" y="622">yes</text>
   <rect class="node" x="590" y="608" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
   <text class="label sm" x="705" y="628">AFTER: close the item</text>
-  <path class="edge" d="M285,648 V717"/>
-  <text class="elabel" x="300" y="712" style="text-anchor:start">no</text>
-  <rect class="decision" x="50" y="718" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="738">quiet under 60 min (FLEET_IDLE_CLOSE_MIN)? not asked by --self</text>
-  <path class="edge" d="M520,738 H588"/>
-  <text class="elabel" x="554" y="732">yes</text>
-  <rect class="node" x="590" y="718" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
-  <text class="label sm" x="705" y="738">AFTER: wait it out</text>
-  <path class="edge" d="M285,758 V773"/>
+  <path class="edge" d="M285,648 V663"/>
+  <text class="elabel" x="300" y="658" style="text-anchor:start">no</text>
+  <rect class="decision" x="50" y="664" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="684">its queue item still running here, or a nightly red it owns?</text>
+  <path class="edge" d="M520,684 H588"/>
+  <text class="elabel" x="554" y="678">yes</text>
+  <rect class="node" x="590" y="664" width="230" height="40" rx="20"/>
+  <text class="label sm" x="705" y="684">KEEP: work left here</text>
+  <path class="edge" d="M285,704 V773"/>
   <text class="elabel" x="300" y="768" style="text-anchor:start">no</text>
-  <rect class="node" x="50" y="774" width="470" height="40" rx="20"/>
-  <text class="label sm" x="285" y="794">anything else: done, a chat, stalled with nothing to land, its own ask</text>
+  <rect class="decision" x="50" y="774" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="794">quiet under 60 min (FLEET_IDLE_CLOSE_MIN)? not asked by --self</text>
   <path class="edge" d="M520,794 H588"/>
-  <rect class="node" x="590" y="774" width="230" height="40" rx="20" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="705" y="794" style="fill:#b9791f;font-weight:600">CLOSE NOW</text>
-  <path class="edge" d="M820,794 H840 V876" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
-  <rect class="node" x="270" y="878" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="565" y="897">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
-  <text class="label sm" x="565" y="917">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
+  <text class="elabel" x="554" y="788">yes</text>
+  <rect class="node" x="590" y="774" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
+  <text class="label sm" x="705" y="794">AFTER: wait it out</text>
+  <path class="edge" d="M285,814 V829"/>
+  <text class="elabel" x="300" y="824" style="text-anchor:start">no</text>
+  <rect class="node" x="50" y="830" width="470" height="40" rx="20"/>
+  <text class="label sm" x="285" y="850">anything else: done, a chat, stalled with nothing to land, its own ask</text>
+  <path class="edge" d="M520,850 H588"/>
+  <rect class="node" x="590" y="830" width="230" height="40" rx="20" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
+  <text class="label sm" x="705" y="850" style="fill:#b9791f;font-weight:600">CLOSE NOW</text>
+  <path class="edge" d="M820,850 H840 V932" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
+  <rect class="node" x="270" y="934" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
+  <text class="label sm" x="565" y="953">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
+  <text class="label sm" x="565" y="973">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
 </svg>

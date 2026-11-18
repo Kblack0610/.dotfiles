@@ -455,7 +455,7 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
 
 @test "check types nothing for a manual, nudged, keep or after row, a row another writer marked, or a session off the lease" {
   doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"nudged":true}'), $(crow 3 DONE keep),
-        $(crow 4 CHAT after), $(crow 5 LANDED now), $(crow 6 NEEDS after '{"own_asks":1}')]"
+        $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
   # mark exits 1 when the fact was already nudged: the pass got there first.
@@ -2260,4 +2260,15 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   run grep 'escalate NEEDS' "$HOME/pages"
   assert_output --partial '-r tmux:hub/demo:2 unhandled'
   assert_output --partial 'escalate NEEDS: hub/demo:2 [%7]'
+}
+
+@test "a LANDED or STALLED row whose close verdict is now gets the close nudge, not its bucket nudge" {
+  # The one quiet timer closes a stalled session with nothing to land; it is typed /wind-down auto,
+  # not told to fix a state the close flow already reads as closable.
+  doc "[$(row a STALLED false false '[]' now), $(row b LANDED false false '[]' now), $(row c STALLED false false)]"
+  run "$SH" due
+  assert_success
+  assert_line 'nudge DONE: a f-a'
+  assert_line 'nudge DONE: b f-b'
+  assert_line 'nudge STALLED: c f-c'
 }

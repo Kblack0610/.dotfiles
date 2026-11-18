@@ -2195,6 +2195,7 @@ CLOSE_JQ='
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
     | ($other | map(select(test("dirty file|not on the default branch|^PR #[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
+    | ($other | map(select(test("is running here$|^nightly red after PR")))[0]) as $held
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | (((.item.is // "") == "moved" and .dispatch != null) | not) as $phases_here
@@ -2209,6 +2210,7 @@ CLOSE_JQ='
       elif $phases_here and ((.bucket == "LANDED" and .next_phase != null) or any($other[]; startswith("next phase:")))
         then {verdict: "after", why: "queue the next phases (agent-queue add --plan), then close"}
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
+      elif $held then {verdict: "keep", why: "work left here: \($held)"}
       elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"}
       else {verdict: "now", why: (if (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)

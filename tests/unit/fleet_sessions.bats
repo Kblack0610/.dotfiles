@@ -4067,6 +4067,10 @@ verdict() {
   # Unlanded work.
   [ "$(verdict '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["commits after merged PR #7"]}')" = "keep: land it: commits after merged PR #7" ]
+  # A queue item still running here, or a nightly red it owns, is work left here: closing would requeue
+  # the item or drop the red's owner.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
   # One named step.
   [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.

@@ -77,6 +77,7 @@ There is one chain, for every session whoever started it, and one timer. A sessi
 | D. Work left here | a blocker names unlanded work (dirty, not on the default branch, an open PR, commits after a merged PR) | keep: land it |
 | | LANDED with a next phase, or a `next phase:` blocker, unless the window was dispatched for an item that moved on (that phase is the queue's) | after: queue the next phases, then close |
 | | its only blockers (open asks aside) are its own queue items still open with every plan phase ticked or held by another item (a `--partial` landing never finalized; an item holds the phases its `phases:` names, else the one its task names (`Phase <N> of` or `Phase <name> of`), else all of them; one whose task names the session, by its id's first 8 characters or its target, is a report about it and holds none, ar-2452) | after: close its item (`agent-land` its last PR without `--partial`, or `agent-queue move <slug> done`); never now, since the reap would requeue a partial item |
+| | its own queue item still running here, or a nightly red after its merged PR (closing would requeue the item or drop the red's owner) | keep: work left here |
 | E. The timer | quiet under `FLEET_IDLE_CLOSE_MIN`; not asked by `--self` | after: quiet Nm of 60m |
 | | anything else: DONE, CHAT, STALLED with nothing to land, an open ask of its own | now; `/wind-down auto` sets each own ask to reopen it (`agent-ask reopen-on-answer`), so the answer carries on without the window |
 
