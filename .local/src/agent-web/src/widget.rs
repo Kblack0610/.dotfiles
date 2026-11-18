@@ -58,8 +58,9 @@ fn user_agent(headers: &HeaderMap) -> String {
 }
 
 /// The client's address as the tunnel gives it: Cloudflare's `CF-Connecting-IP`, else the first
-/// `X-Forwarded-For` entry (a LAN hit through the ingress), else "-". Capped at `IP_MAX`, since
-/// both are the client's to write when the request did not come through Cloudflare.
+/// `X-Forwarded-For` entry, else "-". A LAN hit through the ingress gets Traefik's service load
+/// balancer pod (10.42.x) for every client, and a direct one on the port gets "-". Capped at
+/// `IP_MAX`, since both are the client's to write when the request did not come through Cloudflare.
 fn client_ip(headers: &HeaderMap) -> String {
     let first = |name: &str| {
         let v = headers.get(name)?.to_str().ok()?.split(',').next()?.trim();
