@@ -1431,7 +1431,8 @@ activity_line() {
 # parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
 # is stale: the live row wins. A window ledger is one claude of a shared session (hub/dotfiles),
 # whose other windows stay live; it is stale only when a claude lives in its own pane, since the
-# window index its target recorded renumbers.
+# window index its target recorded renumbers. A legacy session:window_index ledger (before #2116)
+# has a pane id a tmux restart made unmatchable, so it dedupes on its session like a session ledger.
 parked_lines() {
   local f live panes
   live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
@@ -1441,7 +1442,7 @@ parked_lines() {
     jq -cn --rawfile l "$f" --arg live "$live" --arg panes "$panes" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
-      | (if ($key | contains(":")) then ["\($p.server)/\($p.pane)", ($panes | split("\n"))]
+      | (if ($key | contains(":%")) then ["\($p.server)/\($p.pane)", ($panes | split("\n"))]
          else [($t | sub(":[^:]*$"; "")), ($live | split("\n") | map(sub(":[^:]*$"; "")))] end) as [$me, $all]
       | select($all | index($me) | not)
       | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
@@ -1553,7 +1554,11 @@ collect() {
   off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
-  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
+  # A failed read (agent-queue exits 1 with nothing when its lock stays busy past LOCK_WAIT) is not
+  # "no items": every row reads its item through item_of, so each row is blind (ar-2839).
+  local qblind=
+  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)" \
+    || { unreadable agent-queue; qblind=1; }
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
   # The few items of a doc+ask kind that filed their report and ask (handoff_of): read once, not per row.
   qhand=""
@@ -1660,6 +1665,7 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
+    [ -z "$qblind" ] || blind_row
     local hask hdoc
     IFS=$'\t' read -r hask hdoc < <(handoff_of "$qhand" "$item")
     if [ -n "${hask:-}" ]; then
@@ -2250,6 +2256,12 @@ close_self() {
   local row
   row="$(awk -F'\t' -v s="$CLOSE_SELF" '$3 == s {print; exit}' <<<"$1")"
   [ -n "$row" ] || { echo "fleet-sessions: no live session $CLOSE_SELF" >&2; return 2; }
+  # A row a failed source fed is not this session's state (a lock-busy agent-queue read hides its
+  # running item, ar-2839), so it waits for a good read, as tick keeps its cells (keep_blind).
+  if [ -n "${CACHE:-}" ] && grep -qxF -e "$CLOSE_SELF" -e '*' "$CACHE/blind" 2>/dev/null; then
+    echo "after: this pass could not read $(sort -u "$CACHE/unreadable" 2>/dev/null | paste -sd, -); ask again once it reads"
+    return 1
+  fi
   row="$(json_rows <<<"$row")"
   jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$row"
   [ "$(jq -r .close.verdict <<<"$row")" = now ]
