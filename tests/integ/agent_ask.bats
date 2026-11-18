@@ -363,7 +363,7 @@ SH
   local opts='go=run it now|later=run it later' a
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go/later"],"raw":"- [ ] held #ask/%s/go/later <!-- id:dm-1 -->"}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go/later"],"tags_cased":["ask/%s/go/later"]}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
   AQ="$AGENT_ASK_QUEUE_CMD" legacy two "tags: ask:$a=go" --project demo "second" >/dev/null
   run "$AGENT_ASK" card "$a"
   assert_output --partial 'answer releases: dm-1 (on go or later)'

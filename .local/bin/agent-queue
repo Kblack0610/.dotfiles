@@ -620,10 +620,10 @@ hold_for() {
 # has no colon (notes md.rs tag_span), so each board form is a queue hold with / for its punctuation:
 # gate_queue_tag and gate_board_tag translate, and hold_for stays the one evaluator.
 
-# ROW_TAGS_JQ: a board row's hashtags as written, from its raw line before the marker. `notes board
-# --json` lower-cases .tags for grouping, but a gate's value is data: an ask id (kxL6vp) or an rbw
-# name keeps its case, and read lower-cased every #ask/ gate named no ask (2026-11-18).
-ROW_TAGS_JQ='def row_tags: (.raw // "") | split("<!--")[0] | [scan("(?:^|\\s)#([A-Za-z0-9_./-]*[A-Za-z0-9_])") | .[0]];'
+# ROW_TAGS_JQ: a board row's tags as written (notes board --json .tags_cased). .tags is lower-cased
+# for grouping, but a gate's value is data: an ask id (kxL6vp) or an rbw name keeps its case, and read
+# lower-cased every #ask/ gate named no ask (2026-11-18). A notes build from before tags_cased gives .tags.
+ROW_TAGS_JQ='def row_tags: .tags_cased // .tags // [];'
 
 # gate_queue_tag <board tag> -> sets GQ to the queue tags that gate means (space-separated); returns 1
 # when it is no gate. after/ has none: cmd_gate reads the board for it. An ask/<id> naming no option,

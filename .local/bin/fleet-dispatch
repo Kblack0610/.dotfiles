@@ -521,8 +521,7 @@ load_gates() {
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
   while IFS=$'\x1f' read -r t s w q; do
     [ -n "$t" ] && GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q
-  # Keyed lower-case, as load_extras reads a row's .tags; .queue keeps the case (an ask id), for promote.
-  done < <(jq -r '"\(.tag | ascii_downcase)\u001f\(.state)\u001f\(.why)\u001f\(.queue)"' <<<"$out")
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)"' <<<"$out")
 }
 
 # gate_wait <gate tags> -> why the row may not start yet, one clause a gate that is not clear;
@@ -562,7 +561,8 @@ load_extras() {
     for g in $t; do
       [ -z "${GATE_ST[$g]+x}" ] || GAT["$p"$'\t'"$l"$'\t'"$i"]+="${GAT["$p"$'\t'"$l"$'\t'"$i"]:+ }$g"
     done
-  done < <(jq -r '.rows[]? | select(.id != null and (.tags // [] | length) > 0) | "\(.project)\t\(.lane)\t\(.id)\t\(.tags | join(" "))"' <<<"$board")
+  # tags_cased: a gate's value keeps its case (an ask id), as agent-queue gate --all keys it.
+  done < <(jq -r '.rows[]? | select(.id != null) | (.tags_cased // .tags // []) as $t | select($t | length > 0) | "\(.project)\t\(.lane)\t\(.id)\t\($t | join(" "))"' <<<"$board")
 }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
@@ -4797,7 +4797,7 @@ dead_holds() {
       [ "${GATE_ST[$g]:-}" = dead ] || continue
       printf '%s (%s, #%s: %s)\n' "$i" "$p" "$g" "${GATE_WHY[$g]}"
     done
-  done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags // []) | join(" "))"' <<<"$board")
+  done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags_cased // .tags // []) | join(" "))"' <<<"$board")
   return 0
 }
 
