@@ -248,6 +248,19 @@ show() { git -C "$1" show "master:$2"; }
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
+@test "the write hook agent-queue starts holds no queue lock (fd 8)" {
+  # It forks off and waits on the sync lock: an inherited fd 8 held every queue write for 300s
+  # behind it (2026-11-18, agent-land's record refused while a long sync ran).
+  mkdir -p "$SANDBOX/bin" "$HOME/.agent/queue"
+  printf '#!/bin/sh\n[ -e /proc/$$/fd/8 ] && echo held >> "%s"; echo ran >> "%s"\n' "$SANDBOX/hook.log" "$SANDBOX/hook.log" > "$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/store-sync"
+  export AGENT_STORE_DIR="$HOME/.agent"
+  AGENT_QUEUE_START=0 PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" add 'probe the lock' --project p >/dev/null 2>&1 || true
+  run cat "$SANDBOX/hook.log"
+  assert_line ran
+  refute_line held
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
