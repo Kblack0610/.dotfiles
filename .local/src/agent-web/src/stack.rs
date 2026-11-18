@@ -118,8 +118,8 @@ impl Cache {
         self.read().await.map_or_else(failed, |s| render(&s, &q))
     }
 
-    /// The kept read the tab's views are cut from.
-    async fn read(&self) -> Result<Arc<Stack>, String> {
+    /// The kept read the tab's views are cut from; `warm` fills it at start (3.6 to 6.7 s cold).
+    pub async fn read(&self) -> Result<Arc<Stack>, String> {
         let read = off(|| stack::read(&stack::Paths::from_env(), &System, hub_core::jobs::now()));
         self.0.get((), read).await
     }
