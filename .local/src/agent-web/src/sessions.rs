@@ -132,6 +132,7 @@ impl Cache {
                 &id,
                 &table.rows,
                 &table.state,
+                &session_table::registry(),
             )
         });
         self.page.get_if(key, read, Option::is_some).await

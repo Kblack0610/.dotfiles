@@ -1,0 +1,13 @@
+[Unit]
+Description=Every minute, save AC, battery, UPS, load and temperature for boot-cause
+
+[Timer]
+# A steady cadence on purpose: a power cut or a freeze emits no event to wait on, so the last
+# sample before the journal stops is the only record of the state the host died in. One small
+# write a minute, the last ten samples kept.
+OnBootSec=30s
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

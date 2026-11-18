@@ -2272,6 +2272,7 @@ EOS
   local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
   export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  mkdir -p "$HOME/.local/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"
   # no collector on this machine: skipped, nothing written, status 0
   run "$ACCT" textfile
   assert_success
@@ -2282,6 +2283,40 @@ EOS
   run cat "$k3s/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
   [ ! -e "$ws" ]
+}
+
+@test "textfile: with no dir only the fleet-lease holder publishes; another machine removes its copy, one that cannot tell keeps it" {
+  # a fleet worker's copy read every source unread and, merged by account, blanked every Burn row
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  export PROM_TEXTFILE_DIR="$SANDBOX/tf"
+  mkdir -p "$PROM_TEXTFILE_DIR" "$HOME/.local/bin"
+  # the check runs ~/.local/bin/fleet-lease, as the units do, never a PATH lookup: a fleet
+  # worker's systemd PATH has no ~/.local/bin, and its 127 kept the copy that blanked the rows
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"; }
+  echo 'old 1' > "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  lease 2
+  run "$ACCT" textfile
+  assert_success
+  assert_output --partial 'fleet-lease cannot tell who holds the lease (exit 2)'
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_output 'old 1'
+  lease 1
+  run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
+  # an explicit dir is not the collector's, so it publishes on any machine
+  mkdir -p "$SANDBOX/own"
+  run "$ACCT" textfile "$SANDBOX/own"
+  assert_success
+  [ -s "$SANDBOX/own/claude_acct.prom" ]
+  lease 0
+  run "$ACCT" textfile
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
 }
 
 # --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------

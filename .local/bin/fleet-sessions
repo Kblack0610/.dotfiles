@@ -1868,6 +1868,9 @@ collect() {
       # phases were queued under the other) matches either.
       # A pointer stub ("Phase N of <plan>.md") reads through to that plan: its open phases are the
       # canonical plan's phase N on, and the items name the canonical file (2026-11-14).
+      # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
+      # once a run.
+      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
@@ -1892,7 +1895,7 @@ collect() {
               | ([$holders[] | select(holds($open[0]) and .ses != null) | .ses][0] // "-") as $run
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run
-                else $free[0].name + "\t" + $run end' <<<"$qjson" 2>/dev/null)" ||
+                else $free[0].name + "\t" + $run end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated")" 2>/dev/null)" ||
         { unreadable "plan phases of $plist"; blind_row; }
       [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; }
     fi

@@ -39,22 +39,25 @@ pub fn split(target: &str) -> Option<(&str, &str)> {
     ok.then_some((host, local))
 }
 
+/// The snapshot's document when it parses and is within the ttl it carries; Err (why) otherwise.
+/// The one freshness rule for the session list (`rows_in`) and for screen and typing (`live_in`).
+fn fresh(snapshot: &str, now: u64) -> Result<serde_json::Value, String> {
+    let doc: serde_json::Value = serde_json::from_str(snapshot)
+        .map_err(|e| format!("the worker snapshot is unreadable: {e}"))?;
+    let age = now.saturating_sub(doc["at"].as_u64().unwrap_or(0));
+    if age > doc["ttl"].as_u64().unwrap_or(0) {
+        return Err(format!(
+            "the worker snapshot is {age}s old; the minute record has not refreshed it"
+        ));
+    }
+    Ok(doc)
+}
+
 /// The row of `target` in the worker-panel snapshot's text, as the live agent it names. Err (why)
 /// when the snapshot is unreadable or older than the ttl it carries, when the target's worker is one
 /// the minute record could not read (its sessions are unknown, not gone), or when the row has no pane.
 pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, String> {
-    let doc: serde_json::Value = serde_json::from_str(snapshot)
-        .map_err(|e| format!("the worker snapshot is unreadable: {e}"))?;
-    let (at, ttl) = (
-        doc["at"].as_u64().unwrap_or(0),
-        doc["ttl"].as_u64().unwrap_or(0),
-    );
-    if now.saturating_sub(at) > ttl {
-        return Err(format!(
-            "the worker snapshot is {}s old; the minute record has not refreshed it",
-            now.saturating_sub(at)
-        ));
-    }
+    let doc = fresh(snapshot, now)?;
     let host = split(target).map_or("", |(h, _)| h);
     let row = doc["rows"]
         .as_array()
@@ -78,6 +81,22 @@ pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, S
         host: Some(host.to_string()),
         pane: pane.to_string(),
     }))
+}
+
+/// Every worker row in the snapshot's text that names a live pane, for the session list. Empty when
+/// the snapshot is unreadable or past its ttl: the sessions table already says which worker went
+/// unread (hub-core `session_table`), so a stale row is never offered as live here.
+pub fn rows_in(snapshot: &str, now: u64) -> Vec<serde_json::Value> {
+    let Ok(doc) = fresh(snapshot, now) else {
+        return Vec::new();
+    };
+    doc["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["pane"].is_string() && r["target"].as_str().and_then(split).is_some())
+        .cloned()
+        .collect()
 }
 
 /// The live agent at a worker's target, from the snapshot file: no ssh.
@@ -194,6 +213,25 @@ mod tests {
     const SNAP: &str = r#"{"at":1000,"ttl":180,"rows":[
         {"target":"hp@lab/s1:1","pane":"lab/%3","host":"hp"},
         {"target":"hp@lab/s1:2","pane":"lab/%7","host":"hp"}]}"#;
+
+    #[test]
+    fn the_session_list_takes_every_fresh_worker_row_with_a_pane() {
+        let rows = rows_in(SNAP, 1100);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["target"], "hp@lab/s1:2");
+        let no_pane = r#"{"at":1000,"ttl":180,"rows":[{"target":"hp@lab/s1:1","host":"hp"},
+            {"target":"lab/s1:1","pane":"lab/%3"}]}"#;
+        assert!(
+            rows_in(no_pane, 1100).is_empty(),
+            "no pane, or not a worker's target"
+        );
+    }
+
+    #[test]
+    fn a_stale_or_unreadable_snapshot_lists_no_worker_session() {
+        assert!(rows_in(SNAP, 1181).is_empty());
+        assert!(rows_in("not json", 1000).is_empty());
+    }
 
     #[test]
     fn only_a_listed_target_gives_a_live_agent_on_its_worker() {

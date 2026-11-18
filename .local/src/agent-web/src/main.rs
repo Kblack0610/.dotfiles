@@ -942,6 +942,43 @@ struct AgentOut {
     /// what the page's new-output dot compares with when it was last opened (sessions.js).
     #[serde(skip_serializing_if = "Option::is_none")]
     wrote: Option<u64>,
+    /// The fleet worker it runs on, None when it runs here. A worker's session is read and typed
+    /// into through `fleet-host-run` (remote.rs); its transcript and session actions stay there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+}
+
+/// A worker's agent-panel row (the worker-panel snapshot) as a sidebar agent. No session action
+/// reaches a worker yet, so it offers none.
+fn worker_agent(r: &serde_json::Value) -> AgentOut {
+    let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
+    let target = s("target");
+    AgentOut {
+        short: target
+            .split_once('/')
+            .map_or(target.clone(), |(_, t)| t.to_string()),
+        project: s("project"),
+        repo: String::new(),
+        status: s("status"),
+        summary: s("summary"),
+        // The UI keys seen-state on this, so a row with no id is keyed by its target, never "".
+        session: Some(s("session_id"))
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| target.clone()),
+        tags: String::new(),
+        account: s("account"),
+        attached: r["attached"].as_bool().unwrap_or(false),
+        parked: r["parked"].as_bool().unwrap_or(false),
+        plan: s("plan"),
+        phases: None,
+        ask: r["ask"].as_str().map(str::to_string),
+        actions: Vec::new(),
+        items: Vec::new(),
+        question: None,
+        wrote: None,
+        host: Some(s("host")).filter(|h| !h.is_empty()),
+        target,
+    }
 }
 
 async fn collect() -> Vec<agent::Agent> {
@@ -1047,10 +1084,22 @@ fn read_agents() -> Bytes {
                 summary: a.summary,
                 session: a.session_id,
                 tags: a.tags,
+                host: None,
             })
+            .chain(worker_agents().iter().map(worker_agent))
             .collect()
     };
     serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
+}
+
+/// The live rows of the worker-panel snapshot, as `remote::find` trusts them.
+fn worker_agents() -> Vec<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::read_to_string(boards::worker_panel())
+        .map(|t| remote::rows_in(&t, now))
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -1956,6 +2005,27 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
+
+    #[test]
+    fn a_worker_row_is_a_sidebar_agent_on_its_host_with_no_actions() {
+        let r = serde_json::json!({"target": "razer-laptop@lab/dotfiles-agent-1:1",
+            "host": "razer-laptop", "pane": "lab/%4", "status": "busy", "summary": "fix it",
+            "session_id": "abc", "project": "dotfiles", "account": "bnb"});
+        let a = worker_agent(&r);
+        assert_eq!(a.host.as_deref(), Some("razer-laptop"));
+        assert_eq!(a.target, "razer-laptop@lab/dotfiles-agent-1:1");
+        assert_eq!(a.short, "dotfiles-agent-1:1");
+        assert_eq!((a.status.as_str(), a.session.as_str()), ("busy", "abc"));
+        assert!(a.actions.is_empty(), "no session action reaches a worker");
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(j["host"], "razer-laptop");
+        let no_id = serde_json::json!({"target": "razer-laptop@lab/s:2", "host": "razer-laptop"});
+        assert_eq!(
+            worker_agent(&no_id).session,
+            "razer-laptop@lab/s:2",
+            "a row with no session id is keyed by its target, never an empty id"
+        );
+    }
 
     /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
     /// costs, schedules, alerts and the session table).

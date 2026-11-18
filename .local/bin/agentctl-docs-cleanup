@@ -5,16 +5,17 @@
 #
 # Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
 # skills, skill-drift --docs over the global docs, skill-drift --dups --check over every home that
-# restates an instruction, the size of every lessons file, its correction chains), and when there is drift and no docs-cleanup item is already open it adds ONE agent-queue item that runs the
-# docs-cleanup skill on that baseline. fleet-dispatch starts the item, so an unattended pass starts
-# only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
+# restates an instruction, the size of every lessons file, its correction chains), and when there is drift and no pass is already open it files ONE pass that runs the
+# docs-cleanup skill on that baseline. Only the board fills the queue (QUEUE.md "Admission"), so the
+# pass is a board row (agent-queue exit 5) that fleet-dispatch promotes and starts, so an unattended
+# pass starts only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
 #
 # It replaced the weekly propose-only skill-refine runner: six reports (2026-09-28 to 11-02) while
 # skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
 #
-# Verdict: WORKED when it queued a pass, NOOP when there was no drift, a pass is still open or the
-# queue's admission held it, FAILED when a count could not be taken or the open pass has sat queued
-# or held by admission past DOCS_CLEANUP_STARVED_DAYS without starting.
+# Verdict: WORKED when it filed a pass, NOOP when there was no drift or a pass is still open, FAILED
+# when a count could not be taken or the open pass has sat unstarted (on the board, or queued) past
+# DOCS_CLEANUP_STARVED_DAYS.
 set -uo pipefail
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-docs-cleanup: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
@@ -91,6 +92,23 @@ case "$state" in
         echo "docs-cleanup: pass $SLUG still $state, not queuing another ($summary)"
         exit 0 ;;
 esac
+# The board row the last add filed (ROWF: "<board>\t<id>\t<filed epoch>") is the open pass while
+# the board lists it: open is not started yet, starved past STARVED_DAYS; doing is an item working
+# it. A row the board no longer lists closed or was dropped, so tonight files the next one.
+ROWF="$INBOX/row"
+if [ -s "$ROWF" ]; then
+    IFS=$'\t' read -r rboard rid filed_s < "$ROWF"
+    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || fail "could not read the board for pass row $rid on $rboard ($summary)"
+    rstate="$(jq -r --arg p "$rboard" --arg k "$rid" 'first(.rows[]? | select(.project == $p and .id == $k) | .state) // empty' <<<"$board")"
+    if [ -n "$rstate" ]; then
+        [ "$rstate" != open ] || [ $(( $(date +%s) - filed_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+            || fail "pass $SLUG starved: board row $rid on $rboard filed $(date -d "@$filed_s" +%F), never started ($summary)"
+        report NOOP "pass $SLUG is board row $rid on $rboard, $rstate ($summary)"
+        echo "docs-cleanup: pass $SLUG is board row $rid on $rboard, $rstate, not filing another ($summary)"
+        exit 0
+    fi
+    [ "$DRY" = 1 ] || rm -f "$ROWF"
+fi
 
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
 skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
@@ -99,21 +117,17 @@ if [ "$DRY" = 1 ]; then
     echo "docs-cleanup: would queue: $task"
     exit 0
 fi
-# An automated filer: a queue already at its cap holds the pass (agent-queue exit 5), and
-# tomorrow's run counts again; held since HELD_SINCE for STARVED_DAYS is starved too. High plus `cleanup` is where the queue orders the fleet's own
-# housekeeping (agent-queue ORDER); at low it never reached the front.
-agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task"
+# An automated filer: the add files a board row and exits 5 (QUEUE.md "Admission"); exit 0 is a
+# pulled run (AGENT_QUEUE_PULL), queued under $SLUG. High plus `cleanup` is where the queue orders
+# the fleet's own housekeeping (agent-queue ORDER); the board row keeps the priority, not the tag.
+out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task" 2>&1)"
 rc=$?
-HELD_SINCE="$INBOX/held-since"
-if [ "$rc" -eq 5 ]; then
-    [ -s "$HELD_SINCE" ] || date +%s > "$HELD_SINCE"
-    held_s="$(cat "$HELD_SINCE")"
-    [ $(( $(date +%s) - held_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
-        || fail "pass $SLUG starved: held by queue admission since $(date -d "@$held_s" +%F), never queued ($summary)"
-    report NOOP "pass held by queue admission ($summary)"
-    echo "docs-cleanup: the queue held the pass (admission), not queued ($summary)"
-    exit 0
-fi
-[ "$rc" -eq 0 ] || fail "could not queue the pass ($summary)"
-rm -f "$HELD_SINCE"
-report WORKED "queued $SLUG ($summary)"
+printf '%s\n' "$out" >&2
+case "$rc" in
+    0) report WORKED "queued $SLUG ($summary)" ;;
+    5) read -r rboard rid < <(sed -n '/.*its board row \([^ ]*\) on \([^ :]*\)[ :].*/{s//\2 \1/p;q;}' <<<"$out")
+       [ -n "${rid:-}" ] || fail "the board took pass $SLUG but named no row: ${out##*$'\n'} ($summary)"
+       printf '%s\t%s\t%s\n' "$rboard" "$rid" "$(date +%s)" > "$ROWF"
+       report WORKED "filed $SLUG as board row $rid on $rboard ($summary)" ;;
+    *) fail "could not file the pass ($summary)" ;;
+esac

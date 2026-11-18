@@ -48,7 +48,7 @@
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
 #                                2 with no SessionStart row in startup_stale_h or a start with no ready
 #                                time (the claude-startup watch)
-#   fleet-bench pipeline [--json | --check cap|age|mix]
+#   fleet-bench pipeline [--json | --check cap|age|mix|held]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
 #                                dwell, the bottleneck step and the record's drift from the queue folders,
 #                                the admission cap and each class of service against its share;
@@ -2122,11 +2122,12 @@ pipeline_json() {
        steps: $rows}'
 }
 
-# pipeline_check <cap|age|mix> -- one line and exit 1 when the queue's flow is off: runnable items over
-# the admission cap (the adds it exempts, urgent, red, board pulls, plans and released holds, can
+# pipeline_check <cap|age|mix|held> -- one line and exit 1 when the queue's flow is off: runnable items over
+# the admission cap (the adds it exempts, urgent, red, board pulls and plans, can
 # carry it past), the queued step's age p90 past its bound (an empty step passes), or, while the mix
-# is on, a class of service starved (agent-queue mix; off, nothing balances the classes). Exit 2 when
-# its source cannot be read. Each is one Sentinel watch (queue-over-cap, queue-age, queue-class-starved,
+# is on, a class of service starved (agent-queue mix; off, nothing balances the classes), or a queued item with a pending gate (hold_for, past a desk turn),
+# which belongs on its board row (QUEUE.md "Admission"). Exit 2 when
+# its source cannot be read. cap, age and mix are each one Sentinel watch (queue-over-cap, queue-age, queue-class-starved,
 # in ~/.agent/watches), so one that stays red masks no other.
 pipeline_check() {
   local out
@@ -2138,12 +2139,15 @@ pipeline_check() {
              then "queued age p90 \(.age_p90_min)m is past its bound of \(.bound)m" else "" end') ;;
     mix) out=$($BENCH_MIX_CMD 2>/dev/null | jq -er 'select(.starved | arrays) | .starve_days as $d | .on as $on
            | .starved | if length > 0 and $on then "starved: \(join(", ")) (runnable, none started in \($d)d)" else "" end') ;;
-    *) say "usage: fleet-bench pipeline --check cap|age|mix"; return 2 ;;
+    held) out=$($BENCH_ITEMS_CMD 2>/dev/null) && out=$(jq -sr '[.[] | select(.state == "queued" and (.hold // "") != ""
+           and (.hold | test("^hold:[^ ]+ \\((behind |desk:auth waits)") | not)) | "\(.slug) (\(.hold))"]
+           | if length == 0 then "" else "\(length) queued with a pending gate, which belongs on its board row: \(.[:5] | join(", "))" end' <<<"$out") ;;
+    *) say "usage: fleet-bench pipeline --check cap|age|mix|held"; return 2 ;;
   esac || { say "pipeline --check $1: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 
-# pipeline [--json | --check cap|age|mix] -- pipeline_json with the admission cap and the class mix
+# pipeline [--json | --check cap|age|mix|held] -- pipeline_json with the admission cap and the class mix
 # (agent-queue mix), or a table of it with the bottleneck, the steps taking in more than they let out
 # over 24h, the drift, the cap and each class's starts against its share; --check is pipeline_check.
 cmd_pipeline() {
@@ -2151,7 +2155,7 @@ cmd_pipeline() {
   case "${1:-}" in
     ""|--json) ;;
     --check) pipeline_check "${2:-}"; return ;;
-    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix]"; return 2 ;;
+    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix|held]"; return 2 ;;
   esac
   json=$(pipeline_json "$(now)") || return 1
   adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
