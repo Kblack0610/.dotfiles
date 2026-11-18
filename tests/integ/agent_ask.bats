@@ -467,7 +467,8 @@ SH
   done
   # Negative controls: a yes with a question, a negation or words of its own (an answer to some
   # other part of the ask), and a bare yes to an ask that recommends nothing, all cancel as before.
-  for msg in "yes?" "yes but wait" "ok added the login please try" "yes i have two ryzen 9s" "thanks" "no"; do
+  for msg in "yes?" "yes but wait" "ok added the login please try" "yes i have two ryzen 9s" "thanks" "no" \
+             "continue" "yes kill it" "user ok" "yés"; do
     id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
     "$AGENT_ASK" settle-session sid-1 answered "$msg" >/dev/null
     run "$AGENT_ASK" show "$id"
@@ -483,6 +484,19 @@ SH
   "$AGENT_ASK" settle-session sid-1 answered "ok b" >/dev/null
   run "$AGENT_ASK" show "$id"
   assert_line 'answer: b'
+  # A yes answers only the one question on screen: with two pending asks, or an ask another
+  # session shares, it settles none to its recommend.
+  local x y
+  x="$(CLAUDE_CODE_SESSION_ID=sid-4 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  y="$(CLAUDE_CODE_SESSION_ID=sid-5 "$AGENT_ASK" post --project other --options "$opts" --recommend a 'rotate it?')"
+  sed -i 's/^claude_session: .*/claude_session: sid-4/' "$HOME/.agent/asks/other/$y.md"
+  "$AGENT_ASK" settle-session sid-4 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
+  run "$AGENT_ASK" show "$y"; assert_line 'answer: '
+  x="$(CLAUDE_CODE_SESSION_ID=sid-6 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  printf 'claude_session: sid-7\n' >> "$HOME/.agent/asks/demo/$x.md"
+  "$AGENT_ASK" settle-session sid-6 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
 }
 
 # 2026-11-07: "ok thanks, can you wind down" cancelled KZhaE0, and upwork-p2..p5 queued behind it
