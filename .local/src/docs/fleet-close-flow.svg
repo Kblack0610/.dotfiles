@@ -45,7 +45,7 @@
   <path class="edge" d="M285,206 V275"/>
   <text class="elabel" x="300" y="270" style="text-anchor:start">no</text>
   <rect class="decision" x="50" y="276" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="296">manual label, plan mode, or a dialog in its pane?</text>
+  <text class="label sm" x="285" y="296">manual label or chat under 24h, plan mode, or a dialog in its pane?</text>
   <path class="edge" d="M520,296 H588"/>
   <text class="elabel" x="554" y="290">yes</text>
   <rect class="node" x="590" y="276" width="230" height="40" rx="20"/>
