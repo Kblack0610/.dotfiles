@@ -466,7 +466,7 @@ so_forgejo_repo() {
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
-# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
+# SO_FORGEJO_TOKEN (once per process, from forgejo-token) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
 so_forgejo_auth() {
   local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
   case " $(so_forgejo_hosts) " in
@@ -474,8 +474,8 @@ so_forgejo_auth() {
     *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
   esac
   if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+    SO_FORGEJO_TOKEN="$(FORGEJO_TOKEN_RBW="${SO_RBW:-rbw}" FORGEJO_TOKEN_ENTRY="$entry" "$SO_LIB/../bin/forgejo-token" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
+    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (forgejo-token: FORGEJO_TOKEN, ~/.config/forgejo/token, rbw $entry), $repo unread"; return 1; }
   fi
 }
 
