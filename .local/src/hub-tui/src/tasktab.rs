@@ -1,9 +1,9 @@
 //! The rows under the Projects tab (projtab.rs): one project's rows, or every project's (the
 //! All entry), as `notes board --json` prints them, read through `hub_core::sheet_view::feed`,
 //! the same feed and writes as agent-web's Projects tab. They are one table on `DataTable`, in
-//! the sheet's order: each section (Epics, Now, Next up, Backlog, then Done, newest first)
-//! named on its first row, with a WHEN column (`Row::when`: the queue state and forecast day,
-//! or a closed row's day and PR); a closed row is read-only. The text wraps so a row shows
+//! the sheet's order: each section (Epics, Now, Next up, Board, Backlog, then Done, newest
+//! first) named on its first row, with a WHEN column (`Row::when`: the queue state and
+//! forecast day, or a closed row's day and PR); a closed row is read-only. The text wraps so a row shows
 //! whole; All names each profile's open Focus count, whose rows are the Daily tab's
 //! (focustab.rs).
 //!
