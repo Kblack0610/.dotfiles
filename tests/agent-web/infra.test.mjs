@@ -234,8 +234,8 @@ const machinePage = (o = {}) => ({
   host: "aws-burst-1", at: 1700000000, head: "aws-burst-1, cloud, stopped", errors: [],
   parts: [{ label: "Now", text: "no reading: the governor has it stopped", link: null, warn: true },
     { label: "Grafana", text: "its fleet board", link: "https://g.example/d/kb-fleet?var-host=aws-burst-1", warn: false }],
-  machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, share: [], running: [], history: null,
-  live: null, tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables() }, ...o,
+  machine: { power: { host: "aws-burst-1", state: "stopped" } }, cores: null, running: [], history: null,
+  live: null, tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables() }, ...o,
 });
 // The tables a machine page's live part rides in (hub_core::host_now), empty unless given.
 const liveTables = (o = {}) => ({ devices: tbl([], ["device"]), pods: tbl([], ["pod"]), containers: tbl([], ["name"]), processes: tbl([], ["name"]), ...o });
@@ -257,7 +257,7 @@ test("a machine page with no reading says why, in amber, and holds the governor'
   assert.match(h, /<span class="pgv capwarn">no reading: the governor has it stopped<\/span>/);
   assert.match(h, /href="https:\/\/g\.example\/d\/kb-fleet\?var-host=aws-burst-1" target="_blank"/);
   assert.match(h, /data-cloud="aws-burst-1:on" data-hours="2">On 2h</);
-  assert.match(h, /No core reading/);
+  assert.match(h, /No runner and no core reading\./);
   assert.match(h, /Nothing firing names it\./);
 });
 
@@ -266,16 +266,27 @@ test("the Machines table's power cell has no buttons: they are the machine page'
   assert.doesNotMatch(h, /data-cloud|7 days/);
 });
 
-test("a machine page draws its share, its 7 days and its recent jobs with their links", () => {
+test("a machine page draws its slots, its 7 days and its recent jobs with their links", () => {
   const hours = [{ at: 1700000000, cpu: 0.5, pools: { unity: 6 }, seen: 1 }, { at: 1700003600, cpu: null, pools: {}, seen: 0 }];
   const recent = tbl([{ run_id: 7, repo: "o/r", job: "Tests", runner: "ws-1", conclusion: "failure", started: 1700000000, took: 600, url: "https://gh/j/7" }], ["started", "job", "conclusion", "took"]);
   recent.table.links = [{ started: "#infra/ci/7", job: "https://gh/j/7" }];
+  const G = 1024 ** 3;
+  const slot = (o) => ({ takes: [], now: "", job: "", cores: null, cores_max: null, mem: null, mem_max: null, disk: null, disk_age: null, runner: true, ...o });
+  const slots = tbl([
+    slot({ slot: "ws-unity-1", takes: ["unity", "light"], now: "busy", job: "o/r / Tests", cores: 2.8, cores_max: 3, mem: 11.2 * G, mem_max: 14 * G, disk: 58 * G, disk_age: 600 }),
+    slot({ slot: "ws-unity-2", now: "idle" }),
+    slot({ slot: "idle", cores: 12, runner: false }),
+  ], ["slot", "takes", "now", "job", "cores", "mem", "disk"]);
   const d = machinePage({ cores: 24, head: "workstation, local, up", machine: {},
-    share: [{ what: "unity", cores: 6, link: "#infra/pools/unity" }, { what: "other", cores: 6, link: null }, { what: "idle", cores: 12, link: null }],
     history: { step: 120, readings: 1, hours, down: [], power: null },
-    tables: { down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no data" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
+    tables: { slots, down: tbl([{ from: 1700003600, to: 1700007200, open: true, why: "no data" }], ["from", "to", "took", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
   const h = drawPage("machines/workstation", d);
-  assert.match(h, /<a class="tl" href="#infra\/pools\/unity">unity<\/a> 6\.0, other 6\.0, idle 12\.0 <span class="muted">of 24 cores/);
+  assert.match(h, /Slots <span class="n">1 of 2 busy<\/span>/);
+  assert.match(h, /<a class="tl" href="#infra\/pools\/unity">unity<\/a> <a class="tl" href="#infra\/pools\/light">light<\/a>/);
+  assert.match(h, /<td class="n">2\.8\/3<\/td><td class="n">11\.2\/14G<\/td><td class="n" title="read 10m ago">58G<\/td>/);
+  // The negative control: a slot with no series says no data, never 0.
+  assert.match(h, /ws-unity-2<\/td>[\s\S]*?(<td class="n muted">no data<\/td>){3}/);
+  assert.match(h, /<td class="muted">idle<\/td>[\s\S]*?<td class="n">12\.0<\/td><td class="n"><\/td>/);
   assert.doesNotMatch(h, /data-cloud/, "no power, no buttons");
   assert.match(h, /data-tip="[^"]*no data"/, "an hour with no sample says so");
   assert.match(h, /<td class="warn">now<\/td>/, "an open stretch lasts now");
@@ -292,7 +303,7 @@ test("a machine page draws its sensors hot in amber, its pods, containers, proce
   const hours = [{ at: 1700000000, cpu: 0.5, pools: {}, seen: 1, temp: 97 }, { at: 1700003600, cpu: null, pools: {}, seen: 0, temp: null }];
   const d = machinePage({ machine: {}, history: { step: 120, readings: 1, hours, down: [], power: null },
     live: { services: ["nfs-server", "tailscaled"], processes_total: 612, inventory: true, unread: {} },
-    tables: { down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes }) } });
+    tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes }) } });
   const h = drawPage("machines/workstation", d);
   assert.match(h, /<h3 class="sec warn">Sensors <span class="n">2<\/span>/, "a sensor at 85C or more makes the heading amber");
   assert.match(h, /<td class="n warn">96C<\/td>/);
@@ -387,16 +398,14 @@ test("each page reads its own API, a read that lands after another page opened i
   }
 });
 
-test("a pool has one colour in the share bar and the 7-day chart", () => {
+test("a pool has one colour in the 7-day chart, set by its history", () => {
   const hours = [{ at: 1700000000, cpu: 0.9, pools: { alpha: 2, unity: 6 }, seen: 1 }];
   const d = machinePage({ cores: 24, machine: {},
-    share: [{ what: "unity", cores: 6, link: null }, { what: "alpha", cores: 2, link: null }, { what: "idle", cores: 16, link: null }],
     history: { step: 120, readings: 1, hours, down: [], power: null } });
   const colors = run(`poolColors(${JSON.stringify(d)})`);
   assert.deepEqual(Object.keys(colors), ["alpha", "unity"]);
+  assert.notEqual(colors.alpha, colors.unity);
   const h = drawPage("machines/workstation", d);
-  const bar = h.match(/title="unity: 6\.0 cores"/) && h.match(/<i style="flex:6\.00;background:([^"]+)"/)[1];
-  assert.equal(bar, colors.unity, "the share bar's unity is the chart's unity");
   assert.match(h, new RegExp(`<span class="chip sm" style="--c:${colors.unity.replace(/[()]/g, "\\$&")}">unity</span>`));
 });
 
