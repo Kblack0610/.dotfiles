@@ -236,6 +236,22 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output 1
 }
 
+@test "row gates: a gate's value keeps its case: #rbw/infra/Key waits on Key, not key, and its item holds rbw:infra/Key" {
+  # notes lower-cases .tags; read from there, every #ask/<id> gate named no ask (2026-11-18).
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  printf 'infra\tkey\n' > "$NOTES_FIXTURE/rbw.list"
+  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/Key <!-- id:ga-1 -->"
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on rbw infra/Key (not in rbw yet)'
+  printf 'infra\tKey\n' > "$NOTES_FIXTURE/rbw.list"
+  GATES_LOADED=''; load_gates
+  DRY=0 JUDGE_RC='' fill_day 2
+  [[ " $(item_tags ga-1) " == *" rbw:infra/Key "* ]]
+  run grep -c 'ptask game --agent tag --remove rbw/infra/Key ga-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
 @test "row gates: #after/<row-id> holds the row until that row closes done" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): the map first <!-- id:ga-1 -->"

@@ -186,7 +186,9 @@ case "${args[0]}" in
         p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
         jq -Rn --arg p "$p" --arg l "$lane" '
           inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
-            tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
+            # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
+            tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
+            tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi ;;
