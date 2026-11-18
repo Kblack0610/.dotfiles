@@ -96,12 +96,13 @@ pub struct Row {
     /// `review`), set by `queue_states`.
     pub queue: Option<String>,
     /// The agent row is on the backlog tier (`tier:backlog`): past its project's board budget, so
-    /// no Board count holds it, and `open_rows` lists it after its section's board rows.
+    /// no Board count holds it, and its `section` is `backlog`, after the board's `board` rows.
     pub backlog: bool,
 }
 
-/// The sections in sheet order, then a row in none (a playtest check).
-pub const SECTIONS: [&str; 5] = ["epics", "now", "next", "backlog", "done"];
+/// The sections in sheet order, then a row in none (a playtest check). `board` is the agent
+/// board's rows inside its budget; the human sheet has none.
+pub const SECTIONS: [&str; 6] = ["epics", "now", "next", "board", "backlog", "done"];
 
 /// A section's place in [`SECTIONS`]; past the end for a row in none.
 pub fn section_order(section: Option<&str>) -> usize {
@@ -116,6 +117,7 @@ pub fn section_title(section: Option<&str>) -> &'static str {
         Some("epics") => "EPICS",
         Some("now") => "NOW",
         Some("next") => "NEXT UP",
+        Some("board") => "BOARD",
         Some("backlog") => "BACKLOG",
         Some("done") => "DONE",
         _ => "PLAYTEST",
@@ -409,7 +411,7 @@ impl Feed {
             .iter()
             .filter(|r| r.state != "done" && in_scope(r, scope))
             .collect();
-        rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.backlog, r.rank));
+        rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.rank));
         rows
     }
 
@@ -947,14 +949,19 @@ mod tests {
         assert_eq!(all, ["wire the bar #size/m", "water", "ship", "tidy"]);
         assert_eq!(f.open_rows(Some(("bnb", "garden"))).len(), 1);
         assert!(f.open_rows(Some(("personal", "garden"))).is_empty());
-        // A backlog-tier row follows its section's board rows, whatever its rank.
-        f.rows
-            .iter_mut()
-            .find(|r| r.text == "water")
-            .unwrap()
-            .backlog = true;
+        // On the agent board a backlog-tier row is in Backlog, after Board, whatever its rank.
+        for (text, section) in [("water", "backlog"), ("tidy", "board")] {
+            let r = f.rows.iter_mut().find(|r| r.text == text).unwrap();
+            r.section = Some(section.into());
+            r.rank = 0;
+        }
         let all: Vec<&str> = f.open_rows(None).iter().map(|r| r.text.as_str()).collect();
-        assert_eq!(all, ["wire the bar #size/m", "ship", "water", "tidy"]);
+        assert_eq!(all, ["wire the bar #size/m", "ship", "tidy", "water"]);
+        let labels = section_labels(&f.open_rows(None), false);
+        assert_eq!(
+            labels,
+            ["NOW (1)", "NEXT UP (1)", "BOARD (1)", "BACKLOG (1)"]
+        );
         // The tiers line: the whole feed's from totals, a project's from its entry, else none.
         assert_eq!(f.agent_tiers(None), None, "no totals, no line");
         f.totals = Some(Totals {
