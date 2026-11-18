@@ -25,8 +25,8 @@
 # else the highest of the stage after the declared one and the stages open `epic(stage):` rows
 # name; with no open epic for it, `epic(stage): <stage> to standard` is filed on the human sheet
 # first. A gap whose row on either sheet, matched by title or from line, was closed or dropped by
-# hand is never filed again. Each open agent row of a row that now PASSes is closed with the check
-# as proof.
+# hand is never filed again, unless it was dropped as a dup of another row for that gap. Each
+# open agent row of a row that now PASSes is closed with the check as proof.
 # Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout gets
 # the check's own --json (`stage` is the target) plus filed_open and filed_closed: the gaps the
 # agent sheet holds open (a rollup line or a row of its own) and the agent rows of its rows closed.
@@ -186,10 +186,12 @@ sheet_rows() {
 
 # twins <title> <key>: the rows of $have that hold one check row: its title, or a from line
 # naming its stage or system and check (`key`), which a row the triager reworded keeps. A rollup
-# row, and a row folded into one (`dup:` a rollup id, from $ROLLUP_IDS), is never a twin.
+# row is never a twin, nor a row closed as `dup:` of a rollup (from $ROLLUP_IDS) or of another
+# twin: that row holds the gap now, so a twin merged into an open one leaves the gap open.
 twins() {
   awk -F'\t' -v t="$1" -v k="$2" -v r=" $ROLLUP_IDS " '
-    ($2 == t || $9 == k) && !index(r, " " $4 " ") && !($6 ~ /^dup:/ && index(r, " " substr($6, 5) " "))' <<<"$have"
+    ($2 == t || $9 == k) && !index(r, " " $4 " ") { n++; row[n] = $0; to[n] = ($6 ~ /^dup:/ ? substr($6, 5) : ""); w = w " " $4 " " }
+    END { for (i = 1; i <= n; i++) if (to[i] == "" || !index(r w, " " to[i] " ")) print row[i] }' <<<"$have"
 }
 
 # brief_of <id>: the detail lines under the agent-sheet row with this id, their indent and
