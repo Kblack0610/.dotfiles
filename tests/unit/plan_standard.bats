@@ -136,6 +136,29 @@ prompt() { # prompt <project> <mode>
   assert_output --partial 'cannot be n/a in a plan with ## Phases'
 }
 
+# phases <n> -> a ## Phases section with n open lines and one ticked one.
+phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] p%s\n' "$i"; done; }
+
+@test "a multi-phase plan that runs in one session is denied" {
+  run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 2)"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial '2 open phases run as a chain'
+  assert_output --partial 'never \"Run with /one-shot, one phase after another in this session\"'
+  run gate untyped "$(base; printf '\nAll of this is harness work, run attended in a single session.\n'; phases 3)"
+  assert_output --partial '3 open phases run as a chain'
+}
+
+@test "one open phase, or session words that run nothing, pass the chain check" {
+  run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 1)"
+  assert_output ''
+  run gate untyped "$(base; printf '\nAnswers given in this session: none.\nP1 was built in this session.\n'; phases 2)"
+  assert_output ''
+  run gate untyped "$(base; printf '\nThe old text said "Run phases back to back in this session".\n'; phases 2)"
+  assert_output ''
+  run gate untyped "$(base; printf '\n```\nrun it all in this session\n```\n'; phases 2)"
+  assert_output ''
+}
+
 @test "each label is required" {
   run gate untyped "$(base | sed '/^Rejected:/d')"
   assert_output --partial '## Approach has no Rejected: line'
@@ -173,6 +196,7 @@ prompt() { # prompt <project> <mode>
   assert_output --partial 'additionalContext'
   assert_output --partial '## Target'
   assert_output --partial 'Depth:'
+  assert_output --partial 'Chain:'
   refute_output --partial '## Playtest'
 }
 

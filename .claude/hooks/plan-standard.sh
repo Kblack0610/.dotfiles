@@ -47,7 +47,7 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
-  rules=$(grep -E '^(Scaling|Depth): ' "$DOC")
+  rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -114,6 +114,17 @@ while IFS=$'\t' read -r name must; do
     fi
   done < <(grep -oE '`[A-Z][a-z]+:`' <<<"$must" | tr -d '`')
 done < <(rows)
+
+# The doc's Chain: rule. Only a sentence that runs or does the work in one session counts,
+# read outside code, quotes and backticks, so "answers given in this session" or a quoted old
+# rule passes, and so does a plan with one open phase.
+open=$(body Phases | grep -c '^[[:space:]]*- \[ \]')
+if [ "$open" -gt 1 ]; then
+  one=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | sed -E 's/"[^"]*"//g; s/`[^`]*`//g' \
+    | grep -m1 -oiE '(^|[^[:alpha:]])(run|runs|running|do|does|doing|take|takes|taking|work|works|working)[^[:alpha:]][^.]*[^[:alpha:]](in|within) (this|one|a single|the same) session([^[:alpha:]]|$)' \
+    | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
+  [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0
 reason="plan-standard: ${#gaps[@]} gap(s) for $label. Fix the plan file and call ExitPlanMode again."
