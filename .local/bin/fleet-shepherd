@@ -738,20 +738,30 @@ close_sample() {
 # close_refused_sample: each row CLOSE_REFUSED_JQ names is closed without a model: wind-down.sh
 # close saves its scrollback, closes its window and reaps its worktree (reap refuses a dirty or
 # unpushed tree), the teardown /wind-down would have run. Only an idle, empty prompt in no tmux mode
-# is closed, as close_sample types only into one; a draft or a busy pane stays for the escalation.
+# is closed, as close_sample types only into one; a draft, a busy pane or a protected window stays
+# for the escalation and its reminder.
 # A row with phases left is left out: its own /wind-down queues them, and a teardown would drop them.
 close_refused_sample() {
-  local sid target pane fact server closed=""
+  local sid target pane fact server at when closed="" now failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
+  now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane fact; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    # A full quiet window since the nudge (the ledger's at:), so the session's own /wind-down, or
+    # its Stop hook deferring on a red, has had its turn. One failure per fact is enough: a
+    # protected window fails every check, and the escalation already carries it.
+    at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
+    when="$(date -d "$at" +%s 2>/dev/null)" || continue
+    [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
+    grep -qxF "$sid"$'\t'"$fact" "$failed" 2>/dev/null && continue
     pane_takes_keys "$server" "$pane" || continue
     if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
       closed=1
       cmd_log "close: $target: closed its window, still quiet after its nudge ($fact)" >/dev/null
     else
+      printf '%s\t%s\n' "$sid" "$fact" >> "$failed"
       cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
     fi
   done < <(jq -r "$CLOSE_REFUSED_JQ"'(.sessions // [])[] | select(close_refused)

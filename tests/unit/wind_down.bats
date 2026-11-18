@@ -563,3 +563,22 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
   [ ! -e "$NOTES_FIXTURE/calls.log" ] || ! grep -q 'run-shell' "$NOTES_FIXTURE/calls.log"
   [ -z "$(ls -A "$SPIN_DIR" 2>/dev/null)" ]
 }
+
+@test "close of a protected window or one already gone fails and leaves no fired marker" {
+  # fire returns 0 on these no-op paths; the shepherd must not log them as closed, and restore
+  # must not skip a conversation whose window is still open.
+  sid=0b0e8a52-1111-4222-8333-444455556666
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\necho pinned\nexit 0\n' > "$HOME/.local/bin/tmux-tags"
+  chmod +x "$HOME/.local/bin/tmux-tags"
+  STUB_WINDOW_ID='@7' wd close --server lab --pane %31 --sid "$sid"
+  assert_failure 1
+  [ ! -e "$SPIN_DIR/$sid.fired" ]
+  rm "$HOME/.local/bin/tmux-tags" "$NOTES_FIXTURE/tmux.window_ids"
+  STUB_WINDOW_ID='@7' wd close --server lab --pane %31 --sid "$sid"
+  assert_failure 1
+  [ ! -e "$SPIN_DIR/$sid.fired" ]
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}

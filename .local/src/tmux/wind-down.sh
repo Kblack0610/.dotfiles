@@ -173,7 +173,14 @@ cmd_close() {
   [ -n "$server" ] && TM=(tmux -L "$server")
   mkdir -p "$SPIN_DIR"
   write_sentinel "$sentinel" window "$pane" "$sid" "${TM[@]}" || return 1
+  # fire returns 0 on its no-op paths too (a protected window, one already gone), so success is
+  # the close it scheduled; anything else drops the .fired marker, or restore would skip a live session.
+  WD_SCHEDULED=''
   cmd_fire "$sentinel"
+  [ -n "$WD_SCHEDULED" ] && return 0
+  rm -f "$sentinel"
+  echo "wind-down close: nothing scheduled for $pane" >&2
+  return 1
 }
 
 cmd_fire() {
@@ -292,6 +299,7 @@ cmd_fire() {
   # `-c /`: the job would start in this hook's cwd, the worktree, and hold it against the reap.
   "${TM[@]}" run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
   local sched_rc=$?
+  [ "$sched_rc" = 0 ] && WD_SCHEDULED=1   # read by cmd_close
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
 }

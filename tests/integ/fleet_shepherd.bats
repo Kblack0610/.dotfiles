@@ -475,10 +475,12 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
 }
 
 closes() { cat "$HOME/wind-down.calls" 2>/dev/null; }
+# nudged_ago <hours> <sid>...: the shepherd ledger's nudge time for each session
+nudged_ago() { local h="$1" s; shift; for s in "$@"; do printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d "$h hours ago")" > "$FLEET_SHEPHERD_DIR/$s"; done; }
 
 @test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
   # Escalated hours ago: without the close, remind_sample would page "close its window".
-  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '30 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  nudged_ago 30 1 2
   # The refresh drops a closed session's row, as the real collect does once its window is gone.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
 [ "$1" = --write ] && [ -s "$HOME/wind-down.calls" ] || exit 0
@@ -495,18 +497,24 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -z "$(typed)" ]
   # Closed before the reminder runs, so the human is not paged to close it.
   [ -z "$(grep 'one decision closes it' "$HOME/pages")" ]
-  # Negative control: a close that fails is logged, and the escalation pages the human as before.
+  # Negative control: a close that fails (a protected window) is logged once per fact, and the
+  # escalation pages the human as before.
   : > "$HOME/wind-down.calls"; doc "[$row1]"
   STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  grep -q 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
   grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
 }
 
-@test "check closes no window for a row not yet nudged, manual, holding its own ask, with phases left, not now, or a pane that is not an idle prompt" {
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, with phases left, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 3 4 5 6 7 8 9
+  nudged_ago 0 10
   doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"labels":["manual"]}'),
         $(crow 3 NEEDS now '{"nudged":true,"own_asks":1}'), $(crow 4 LANDED now '{"nudged":true,"next_phase":"P2"}'),
         $(crow 5 STALLED now '{"nudged":true,"blockers":["next phase: P3 of x.md"]}'),
-        $(crow 6 DONE after '{"nudged":true}'), $(crow 7 DONE keep '{"nudged":true}'), $(crow 8 WORKING now '{"nudged":true}')]"
+        $(crow 6 DONE after '{"nudged":true}'), $(crow 7 DONE keep '{"nudged":true}'), $(crow 8 WORKING now '{"nudged":true}'),
+        $(crow 10 DONE now '{"nudged":true}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   # The un-nudged row is typed into instead: close_sample owns the first nudge.
