@@ -3633,12 +3633,21 @@ pipeline_flow_fixture() {
   run "$SUBJECT" pipeline --check age
   assert_failure 1
   assert_output 'queued age p90 120m is past its bound of 60m'
+  # an empty queued step has no p90: nothing waits too long, so it passes, never "unreadable"
+  items_stub "$R" "$V" "$W"
+  run "$SUBJECT" pipeline --check age
+  assert_success
+  assert_output ''
+  # starved while the mix is off shows in the view, but nothing balances the classes, so no trip
   jq -c '.starved = ["bug", "research"]' "$MIX" > "$MIX.new" && mv "$MIX.new" "$MIX"
+  run "$SUBJECT" pipeline --check mix
+  assert_success
+  run "$SUBJECT" pipeline
+  assert_line 'starved: bug, research, runnable and none started in 3d'
+  jq -c '.on = true' "$MIX" > "$MIX.new" && mv "$MIX.new" "$MIX"
   run "$SUBJECT" pipeline --check mix
   assert_failure 1
   assert_output 'starved: bug, research (runnable, none started in 3d)'
-  run "$SUBJECT" pipeline
-  assert_line 'starved: bug, research, runnable and none started in 3d'
   export BENCH_ADMISSION_CMD=false BENCH_MIX_CMD=false
   run "$SUBJECT" pipeline --check cap
   assert_failure 2

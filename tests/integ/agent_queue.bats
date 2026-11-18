@@ -380,14 +380,18 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   jq '.starve_days = 7 | .on = true' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
   run bash -c "'$AQ' mix --json | jq -c '[.on, .starved]'"
   assert_output '[true,["research"]]'
-  # A starve window longer than the window is refused by mix, and the listing goes on with no mix.
+  # A starve window longer than the window is refused by mix, but starve_days only steers the watch:
+  # the listing keeps the mix's order, which differs from the order with the mix off.
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  on="$output"
+  [ "$on" != "$off" ] || fail "the mix did not change the order, so the check below proves nothing"
   jq '.starve_days = 10' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
   run "$AQ" mix
   assert_failure
   assert_output --partial 'not whole days inside the window'
   run bash -c "'$AQ' list --json --state queued | jq -r .slug"
   assert_success
-  assert_output "$off"
+  assert_output "$on"
 }
 
 @test "classes.json: every kind it names is a kinds.json kind, every class has a share, and one is the default" {

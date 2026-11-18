@@ -53,7 +53,7 @@
 #                                dwell, the bottleneck step and the record's drift from the queue folders,
 #                                the admission cap and each class of service against its share;
 #                                --check exits 1 on runnable over the cap, queued age p90 past its
-#                                bound or a starved class, 2 when its source cannot be read (one
+#                                bound or a starved class while the mix is on, 2 when its source cannot be read (one
 #                                Sentinel watch each)
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--compare C] [--json]
 #                                each windowed KPI over N days before a change landed against N after,
@@ -2123,18 +2123,21 @@ pipeline_json() {
 }
 
 # pipeline_check <cap|age|mix> -- one line and exit 1 when the queue's flow is off: runnable items over
-# the admission cap (an add got past it), the queued step's age p90 past its bound, or a class of
-# service starved (agent-queue mix). Exit 2 when its source cannot be read. Each is one Sentinel
-# watch (queue-over-cap, queue-age, queue-class-starved), so one that stays red masks no other.
+# the admission cap (the adds it exempts, urgent, red, board pulls, plans and released holds, can
+# carry it past), the queued step's age p90 past its bound (an empty step passes), or, while the mix
+# is on, a class of service starved (agent-queue mix; off, nothing balances the classes). Exit 2 when
+# its source cannot be read. Each is one Sentinel watch (queue-over-cap, queue-age, queue-class-starved,
+# in ~/.agent/watches), so one that stays red masks no other.
 pipeline_check() {
   local out
   case "$1" in
     cap) out=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er 'select(.runnable | numbers)
            | if .on and .runnable > .limit then "runnable \(.runnable) is over the cap of \(.limit)" else "" end') ;;
-    age) out=$(pipeline_json "$(now)" | jq -er '.steps[] | select(.step == "queued" and (.age_p90_min | numbers) and (.bound | numbers))
-           | if .age_p90_min > .bound then "queued age p90 \(.age_p90_min)m is past its bound of \(.bound)m" else "" end') ;;
-    mix) out=$($BENCH_MIX_CMD 2>/dev/null | jq -er 'select(.starved | arrays) | .starve_days as $d
-           | .starved | if length > 0 then "starved: \(join(", ")) (runnable, none started in \($d)d)" else "" end') ;;
+    age) out=$(pipeline_json "$(now)" | jq -er '.steps[] | select(.step == "queued")
+           | if (.age_p90_min | type) == "number" and (.bound | type) == "number" and .age_p90_min > .bound
+             then "queued age p90 \(.age_p90_min)m is past its bound of \(.bound)m" else "" end') ;;
+    mix) out=$($BENCH_MIX_CMD 2>/dev/null | jq -er 'select(.starved | arrays) | .starve_days as $d | .on as $on
+           | .starved | if length > 0 and $on then "starved: \(join(", ")) (runnable, none started in \($d)d)" else "" end') ;;
     *) say "usage: fleet-bench pipeline --check cap|age|mix"; return 2 ;;
   esac || { say "pipeline --check $1: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }

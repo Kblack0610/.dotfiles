@@ -888,13 +888,14 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
     | del(.q))
   | .out;'
 
-# class_cfg [--off] -> AQ_CLASSES on one line: a class list, and a window_days and starve_days of whole
-# days (default 7 and 3), starve_days no longer than the window; without --off only while `on: true`.
-# Any other file fails, printing nothing.
+# class_cfg [--mix] -> AQ_CLASSES on one line: a class list and a window_days of whole days (default 7).
+# Plain, it is the order's config and needs `on: true`; --mix (agent-queue mix) takes it on or off and
+# also needs a starve_days of whole days (default 3) inside the window. Only mix checks starve_days, so
+# a bad watch setting never turns the order off. Any other file fails, printing nothing.
 class_cfg() {
-  jq -ce --argjson off "$([ "${1:-}" = --off ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
-    select(($off or .on == true) and (.classes | type) == "array" and (.classes | length) > 0
-      and (.window_days // 7 | days) and (.starve_days // 3 | days) and (.starve_days // 3) <= (.window_days // 7))' \
+  jq -ce --argjson mix "$([ "${1:-}" = --mix ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
+    select(($mix or .on == true) and (.classes | type) == "array" and (.classes | length) > 0 and (.window_days // 7 | days)
+      and (($mix | not) or ((.starve_days // 3 | days) and (.starve_days // 3) <= (.window_days // 7))))' \
     "$AQ_CLASSES" 2>/dev/null
 }
 
@@ -908,7 +909,7 @@ class_started() {
   local cfg=$1 days FILES=()
   days="$(jq -r '.window_days // 7' <<<"$cfg")"
   list_files done --since "$(since_day "$((days - 1))")" running waiting review
-  items_json --rows "$CLASS_JQ $cfg"' as $cfg | ('"$(date +%s)"' - ($cfg.starve_days // 3) * 86400) as $cut
+  items_json --rows "$CLASS_JQ $cfg"' as $cfg | (now - ($cfg.starve_days // 3) * 86400) as $cut
     | def count: group_by(.c) | map({(.[0].c): length}) | add // {};
     [.[] | select((.started // "") != "")
       | {c: class_of($cfg.classes), recent: ((.started | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $cut)}]
@@ -930,7 +931,7 @@ mix_json() {
 cmd_mix() {
   local json='' cfg q s out
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
-  cfg="$(class_cfg --off)" || die "$AQ_CLASSES has no class list, or a window_days or starve_days that is not whole days inside the window"
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, or a window_days or starve_days that is not whole days inside the window"
   q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
     | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
   s="$(class_started "$cfg")" || die "the started items could not be read"
