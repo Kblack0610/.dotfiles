@@ -1189,6 +1189,7 @@ pub fn board(
             .collect(),
         links: vec![],
         legend: None,
+        pager: None,
     };
     let consumers = consumers(c, Keys::default());
     Board {
