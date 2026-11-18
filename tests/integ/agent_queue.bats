@@ -794,6 +794,137 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_output 0
 }
 
+# A fake rbw for the gate tests: unlocked, list prints rbw.list, every call logged. Never the real one.
+gate_rbw() {
+  printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\ncase "$1" in unlocked) ;; list) cat "%s/rbw.list" ;; *) exit 9 ;; esac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  printf 'infra\tx\n' > "$SANDBOX/rbw.list"
+}
+
+# queue-held-to-board (ar-3121): a row waits on its gate on the board, so gate is the queue's own
+# hold_for read through each board form, plus the row lookup for after/.
+@test "gate answers each board form clear, pending or dead in hold_for's words, one rbw list for every rbw tag" {
+  gate_rbw
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask a1 pending
+  ask a2 answered 'a' judge
+  ask a3 answered 'b, sure' human
+  mkdir -p "$HOME/.cache/agent-queue/pr" && echo MERGED > "$HOME/.cache/agent-queue/pr/o_r_7"
+  run "$AQ" gate --json '#rbw/infra/x' rbw/infra/y rbw/other/z at/1100 at/1300 at/2599 at/2026-01-02/0900 \
+    ask/a1/a ask/a2/a ask/a3 ask/a3/a pr/o/r/7 size/s
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)|\(.queue)"' <<<"$output"; }
+  [ "$(st rbw/infra/x)" = "clear||rbw:infra/x" ]
+  [ "$(st rbw/infra/y)" = "pending|rbw infra/y (not in rbw yet)|rbw:infra/y" ]
+  [ "$(st at/1100)" = "clear||at:11:00" ]
+  [ "$(st at/1300)" = "pending|at 13:00|at:13:00" ]
+  [[ "$(st at/2599)" == dead"|"*"a time tag is at:HH:MM"* ]]
+  [ "$(st at/2026-01-02/0900)" = "clear||at:2026-01-02T09:00" ]
+  [[ "$(st ask/a1/a)" == "pending|ask a1=a (pending)|ask:a1=a" ]]
+  # A judge's answer is not the human's: it never releases the gate.
+  [[ "$(st ask/a2/a)" == dead"|"*"answered by judge"* ]]
+  # No option named on an ask that offers some: every option releases it.
+  [ "$(st ask/a3)" = "clear||ask:a3=a+b" ]
+  [[ "$(st ask/a3/a)" == dead"|"*"answered b"* ]]
+  [ "$(st pr/o/r/7)" = "clear||pr:o/r#7" ]
+  [ "$(st size/s)" = "none||" ]
+  # Three rbw tags, one list.
+  [ "$(grep -c '^rbw list' "$SANDBOX/rbw.calls")" = 1 ]
+  run "$AQ" gate rbw/infra/x at/1100 size/s
+  assert_success
+  assert_line "clear    rbw/infra/x"
+}
+
+@test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from one read" {
+  gate_rbw
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
+                 {id: "ar-9", state: "open", tags: ["after/ar-4"]}],
+          done: [{id: "ar-3", state: "done", marker: "id:ar-3 done:2026-11-01", tags: ["rbw/infra/gone"]},
+                 {id: "ar-4", state: "done", marker: "id:ar-4 done:2026-11-01 dropped: a duplicate"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-404
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
+  [ "$(st after/ar-2)" = "pending|after ar-2 (open)" ]
+  [ "$(st after/ar-3)" = "clear|" ]
+  [[ "$(st after/ar-4)" == "dead|after ar-4: that row was dropped"* ]]
+  [[ "$(st after/ar-404)" == "dead|after ar-404: no board row"* ]]
+  [ "$(grep -c '^notes board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  # The open rows' gates only, no other tag and no closed row's, from one board read.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 rbw/infra/x" ]
+  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  # Once ar-2 closes done, ar-1's gate clears.
+  jq '.done += [.rows[1] | .state = "done" | .marker = "id:ar-2 done:2026-11-18"] | .rows |= map(select(.id != "ar-2"))' \
+    "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate after/ar-2
+  assert_success
+  # A board that cannot be read fails --all, so no pass reads its rows as ungated, and holds an after/.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  run "$AQ" gate --json --all
+  assert_failure 1
+  run "$AQ" gate after/ar-2
+  assert_failure 3
+  assert_output --partial "notes board --json failed"
+}
+
+@test "return writes what the item still waits on onto its row as gate tags before un-starting it" {
+  gate_rbw
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  printf 'id: a1\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/a1.md"
+  "$AQ" add --project game --running --from shepherd --slug up "upstream" >/dev/null
+  "$AQ" set up row=game:gm-9 >/dev/null
+  "$AQ" add --project game --from shepherd --slug gt --after up --tags "rbw:infra/y at:11:00 at:13:00 ask:a1=a" "gated" >/dev/null
+  "$AQ" set gt row=game:gm-7 >/dev/null
+  "$AQ" add --project game --from shepherd --slug gf --after gt "follower" >/dev/null
+  "$AQ" set gf row=game:gm-8 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return gt --why "back to the board"
+  assert_success
+  # The met at:11:00 stays behind; the live after: names its row; the follower waits on the returned row.
+  assert_called "ptask game --agent tag --add after/gm-9 --add rbw/infra/y --add at/1300 --add ask/a1/a gm-7"
+  assert_called "ptask game --agent tag --add after/gm-7 gm-8"
+  # The gates go on while the row is still started.
+  [ "$(grep -n 'tag --add after/gm-9' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" -lt "$(grep -n 'unstart gm-7' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" ]
+  # An after: on an item with no row has no board form: the return is refused and nothing closes.
+  "$AQ" add --project game --running --from shepherd --slug norow "no row" >/dev/null
+  "$AQ" add --project game --from shepherd --slug behind --after norow "behind" >/dev/null
+  "$AQ" set behind row=game:gm-6 >/dev/null
+  run "$AQ" return behind --why "back"
+  assert_failure
+  assert_output --partial "cannot return behind: it waits on norow, which has no board row"
+  [ -n "$(item queued behind)" ]
+  # Returning norow takes behind with it: norow closes here, so behind's row waits on nothing.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return norow --why "back"
+  assert_success
+  assert_called "ptask game --agent unstart gm-6"
+  [ -z "$(grep "tag .*gm-6" "$NOTES_FIXTURE/calls.log")" ]
+  # --drop closes the rows, so it writes no gate.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project game --from shepherd --slug dg --tags "rbw:infra/y" "dropped" >/dev/null
+  "$AQ" set dg row=game:gm-5 >/dev/null
+  run "$AQ" return dg --why "not wanted" --drop
+  assert_success
+  refute grep -q ' tag ' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "return leaves a row started, exit 1, when it did not take its gates" {
+  gate_rbw
+  "$AQ" add --project game --from shepherd --slug gx --tags "rbw:infra/y" "x" >/dev/null
+  "$AQ" set gx row=game:gm-4 >/dev/null
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\ncase "$*" in *" tag "*) exit 1 ;; esac\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" return gx --why "back"
+  assert_failure
+  assert_output --partial "did not take its gates, so it stays started: notes ptask game --agent tag --add rbw/infra/y gm-4"
+  refute grep -q 'unstart gm-4' "$NOTES_FIXTURE/calls.log"
+}
+
 @test "requeue --hold puts a started item back behind the resource, keeps its tags, and is not a model redo (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
@@ -3673,7 +3804,9 @@ a"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
 
-@test "return only un-starts its board row: the row already holds the brief, so nothing is written to it" {
+# The only write a return makes to a row besides the un-start is the gate tags of an item still held
+# (see "return writes what the item still waits on"); these items wait on nothing.
+@test "return writes no brief to its board row: the row already holds it, and an item with no hold adds no tag" {
   story_notes
   "$AQ" add --project game --slug ha "first line of the brief
 second line of the brief"
@@ -3687,7 +3820,7 @@ already"
   "$AQ" set hd row=game:gm-4
   : > "$NOTES_FIXTURE/calls.log"
   for s in ha hb gm-3 hd; do "$AQ" return "$s" --why "back" >/dev/null; done
-  run grep -c ' ptask game --agent edit ' "$NOTES_FIXTURE/calls.log"
+  run grep -cE ' ptask game --agent (edit|tag) ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   for r in gm-1 gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
 }

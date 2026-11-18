@@ -190,6 +190,111 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | length' <<<"$output")" 0
 }
 
+# --- row gates (queue-held-to-board, ar-3121): a row waits on the board, not in the queue ----------
+
+# gate_rbw -- rbw lists what rbw.list holds (nothing until a test writes it); each call is logged.
+gate_rbw() {
+  stub rbw-fake 'echo "rbw $*" >> "$NOTES_FIXTURE/rbw.calls"; case "$1" in unlocked) ;; list) cat "$NOTES_FIXTURE/rbw.list" 2>/dev/null || true ;; *) exit 9 ;; esac'
+  export AGENT_QUEUE_RBW=rbw-fake
+}
+# gate_ask <id> <status> [answered_by] -- an ask with no options, as agent-ask files it.
+gate_ask() {
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: %s\nstatus: %s\nanswer: go\nanswered_by: %s\nquestion: q?\n' "$1" "$2" "${3:-}" > "$HOME/.agent/asks/game/$1.md"
+}
+# item_tags <slug> -> the queue item's tags: line
+item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
+
+@test "row gates: a #rbw/ row waits on the board while rbw lacks it, the human's Start too; once listed it is promoted unjudged, the gate on its item and off its row" {
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/x <!-- id:ga-1 -->"
+  run cmd_candidates
+  assert_success
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on rbw infra/x (not in rbw yet)'
+  run cmd_promote --project game --agent --raw "- [ ] fix(game): wire the keys $T #rbw/infra/x <!-- id:ga-1 -->"
+  assert_failure
+  assert_output --partial 'skip game: ga-1 waits on rbw infra/x (not in rbw yet)'
+  run grep -c 'ptask game --agent --exact start' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+
+  printf 'infra\tx\n' > "$NOTES_FIXTURE/rbw.list"
+  rm -f "$NOTES_FIXTURE/rbw.calls"
+  GATES_LOADED=''; load_gates   # as cmd_run does, once a pass
+  DRY=0 JUDGE_RC='' fill_day 2
+  # Committed work: no judge call and no verdict, yet it is queued.
+  run grep -c 'judge called' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [[ " $(item_tags ga-1) " == *" rbw:infra/x "* ]]
+  run grep -c 'ptask game --agent tag --remove rbw/infra/x ga-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  assert_equal "$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")" "- [/] fix(game): wire the keys $T <!-- id:ga-1 -->"
+  # One rbw list for the whole pass, however many reads of the board it made.
+  run grep -c '^rbw list' "$NOTES_FIXTURE/rbw.calls"
+  assert_output 1
+}
+
+@test "row gates: #after/<row-id> holds the row until that row closes done" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #after/ga-1 <!-- id:ga-2 -->"
+  run cmd_candidates
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | join("; ")' <<<"$output")" 'waits on after ga-1 (open)'
+  notes ptask game --agent done ga-1
+  run cmd_candidates
+  assert_equal "$(jq -r '"\(.key) \(.gated) \(.gates)"' <<<"$output")" 'ga-2 true after/ga-1'
+  # A gated row is never judged.
+  run unjudged_rows
+  assert_output ''
+}
+
+@test "row gates: #ask/<id> holds until the human answers; the judge's answer never releases it, and the cleared ask goes onto the item" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] feat(game): ship it $T #ask/a1 <!-- id:ga-1 -->"
+  gate_ask a1 pending
+  run cmd_candidates
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on ask a1 (pending)'
+  gate_ask a1 answered judge
+  run cmd_candidates
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" \
+    'gate #ask/a1 never clears: ask:a1: that ask can never release it (answered by judge, not the human); post a new one with agent-ask post --kind approval, which the judge never answers'
+  gate_ask a1 answered human
+  DRY=0 JUDGE_RC='' fill_day 2
+  [[ " $(item_tags ga-1) " == *" ask:a1 "* ]]
+}
+
+@test "row gates: negative control: with DISPATCH_ROW_GATES=0 a gate tag is a tag like any other, and the row's verdict promotes it" {
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/x <!-- id:ga-1 -->"
+  verdict game agent ga-1 dispatch
+  DRY=0 JUDGE_RC='' fill_day 2
+  [ -z "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
+  rm -f "$NOTES_FIXTURE/rbw.calls"
+  DISPATCH_ROW_GATES=0 GATES_LOADED='' DRY=0 JUDGE_RC='' fill_day 2
+  [ -n "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
+  [[ " $(item_tags ga-1) " != *" rbw:"* ]]
+  [ ! -e "$NOTES_FIXTURE/rbw.calls" ]
+}
+
+@test "row gates: a gate read that fails starts no board row, and says so" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] fix(game): plain $T <!-- id:ga-1 -->"
+  verdict game agent ga-1 dispatch
+  stub agent-queue 'exit 1'
+  run all_open
+  assert_output --partial 'agent-queue gate --all failed (exit 1), so no board row starts this pass'
+  refute_output --partial '"key"'
+}
+
 @test "plan_skips: tags agent rows skipped as undefined and never planned, then kicks inbox-plan" {
   plan_fixture
   plan_skips
