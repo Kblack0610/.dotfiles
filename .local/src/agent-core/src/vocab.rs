@@ -28,17 +28,21 @@ fn names(v: &Value) -> Vec<String> {
 
 /// fleet-sessions' state document: `$FLEET_STATE_FILE`, else `fleet/state.json` under the state home.
 pub fn fleet_state_file() -> PathBuf {
-    let set = |k: &str| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    set("FLEET_STATE_FILE").unwrap_or_else(|| {
-        set("XDG_STATE_HOME")
-            .or_else(|| set("HOME").map(|h| h.join(".local/state")))
-            .unwrap_or_default()
-            .join("fleet/state.json")
-    })
+    env_path("FLEET_STATE_FILE").unwrap_or_else(|| state_home().join("fleet/state.json"))
+}
+
+/// The state home: `$XDG_STATE_HOME`, else `~/.local/state`.
+pub fn state_home() -> PathBuf {
+    env_path("XDG_STATE_HOME")
+        .or_else(|| env_path("HOME").map(|h| h.join(".local/state")))
+        .unwrap_or_default()
+}
+
+/// A path from the environment variable `k`, None when it is unset or empty.
+pub fn env_path(k: &str) -> Option<PathBuf> {
+    std::env::var_os(k)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 impl Vocab {
