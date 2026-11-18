@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # project-stage-check - does a project meet its stage, and its systems' criteria?
 #
-#   project-stage-check <name> [--stage <stage>] [--json]
+#   project-stage-check <name> [--stage <stage>] [--by-dept | --json]
 #   project-stage-check <name> --systems [--system <id>] [--json]   (alias: project-system-check)
 #   project-stage-check <name> [--stage <stage> | --systems [--system <id>]] --file [--json]
 #   project-stage-check <name> --list [--json]
@@ -9,7 +9,8 @@
 #
 # Stage mode runs the Requirements rows of stages.md for <stage> (default: the stage its sheet
 # declares) and every stage below, for `base` and the project's type. One PASS, FAIL, HUMAN or
-# TODO line per row, then a `gate:` line. Exit 0 when nothing blocks, 1 when a FAIL blocks (from
+# TODO line per row, then a `gate:` line; --by-dept groups those lines under each department of
+# stages.md's Departments table, with its met/total. Exit 0 when nothing blocks, 1 when a FAIL blocks (from
 # stages.md's `Enforced from:` date; before it the gate only reports), 2 on usage or an unknown
 # project. --json prints the counts, the gate and each row instead, with the same exit. Callers:
 # `notes projects --stage <name> --set <stage>` (refuses on 1), project-map-doctor.
@@ -32,13 +33,14 @@
 # --requirements prints every Requirements row of stages.md, for no project: stage, applies, the
 # check's kind (`predicate` runs, `human` is signed off, `not-yet` has no check), the requirement,
 # and the skills its text names in backticks that exist under ~/.claude/skills (--json: the
-# `Enforced from:` date and an array of {stage, applies, requirement, check, kind, skills}).
+# `Enforced from:` date and an array of {stage, applies, requirement, check, kind, skills, dept}).
+# A Requirements row whose Dept is not a Departments id exits 2, in every mode.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
 
 usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
 
-NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS=""
+NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS="" BY_DEPT=""
 [ "$(basename "$0")" = project-system-check ] && SYSTEMS=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,6 +51,7 @@ while [ $# -gt 0 ]; do
     --file) FILE=1; shift ;;
     --list) LIST=1; shift ;;
     --requirements) REQS=1; shift ;;
+    --by-dept) BY_DEPT=1; shift ;;
     -h|--help) usage 0 ;;
     -*) echo "project-stage-check: unknown flag $1" >&2; usage ;;
     *) [ -z "$NAME" ] || usage; NAME="$1"; shift ;;
@@ -58,6 +61,7 @@ done
 [ -z "$REQS" ] || [ -z "$NAME$TARGET$SYSTEMS$FILE$LIST" ] || { echo "project-stage-check: --requirements takes no project, only --json" >&2; usage; }
 [ -z "$SYSTEMS" ] || [ -z "$TARGET" ] || { echo "project-stage-check: --stage and --systems do not mix" >&2; usage; }
 [ -z "$LIST" ] || [ -z "$FILE$TARGET$ONLY" ] || { echo "project-stage-check: --list takes only --json" >&2; usage; }
+[ -z "$BY_DEPT" ] || [ -z "$JSON$SYSTEMS$ONLY$FILE$LIST$REQS" ] || { echo "project-stage-check: --by-dept is a stage-mode view and takes only --stage" >&2; usage; }
 
 # rows <doc> <section>: the cells of each row of the table under `## <section>`, tab-separated.
 # A row starts with a lowercase id, so the header and the `---` line never match. `\|` is a
@@ -83,17 +87,29 @@ kind_of() {
   esac
 }
 
+# DEPTS: the Departments ids of stages.md, in order; known_dept <dept> <req> exits 2 on any other.
+DEPTS=""
+known_dept() {
+  [ -n "$DEPTS" ] || DEPTS="$(rows "$STAGES_DOC" Departments | cut -f1 | tr '\n' ' ')"
+  case " $DEPTS " in
+    *" $1 "*) [ -n "$1" ] && return 0 ;;
+  esac
+  echo "project-stage-check: the Requirements row \"$2\" names Dept \"$1\", not one of the Departments in $STAGES_DOC: $DEPTS" >&2
+  exit 2
+}
+
 # requirements: the --requirements mode, the Requirements rows for no project.
 requirements() {
   local stage app req check skills s out=""
   local dir="${SKILLS_DIR:-$HOME/.claude/skills}"
   # The unit separator, not tab: tab is IFS whitespace, so an empty cell would shift the rest.
-  while IFS=$'\037' read -r stage app req check _; do
+  while IFS=$'\037' read -r stage app req check dept _; do
+    known_dept "$dept" "$req"
     skills=""
     while IFS= read -r s; do
       [ -n "$s" ] && [ -f "$dir/$s/SKILL.md" ] && case " $skills " in *" $s "*) ;; *) skills="${skills:+$skills }$s" ;; esac
     done < <(grep -o '`[a-z][a-z0-9-]*`' <<<"$req" | tr -d '`')
-    out+="$stage"$'\t'"$app"$'\t'"$(kind_of "$check")"$'\t'"$skills"$'\t'"$req"$'\t'"$check"$'\n'
+    out+="$stage"$'\t'"$app"$'\t'"$(kind_of "$check")"$'\t'"$skills"$'\t'"$req"$'\t'"$check"$'\t'"$dept"$'\n'
   done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
   [ -n "$out" ] || { echo "project-stage-check: no Requirements rows in $STAGES_DOC" >&2; exit 2; }
   if [ -n "$JSON" ]; then
@@ -101,7 +117,7 @@ requirements() {
       {enforced_from: (if $from == "" then null else $from end),
        requirements: [split("\n")[] | select(length > 0) | split("\t")
          | {stage: .[0], applies: (.[1] | split(", ")), kind: .[2],
-            skills: (.[3] | split(" ") | map(select(length > 0))), requirement: .[4], check: .[5]}]}'
+            skills: (.[3] | split(" ") | map(select(length > 0))), requirement: .[4], check: .[5], dept: .[6]}]}'
   else
     printf '%s' "$out" | awk -F'\t' '{ printf "%-5s %-10s %-9s %s%s\n", $1, $2, $3, $5, ($4 == "" ? "" : " (by " $4 ")") }'
   fi
@@ -327,6 +343,13 @@ REPO="${REPO/#\~/$HOME}"
 # README, docs and CHANGELOG there; the predicates run from that root.
 sub="$(project_field "$NAME" path)"
 ROOT="${REPO:+$REPO${sub:+/$sub}}"
+# DOC_REF: the tree the doc helpers read, the remote default branch as last fetched, since a clone can be
+# weeks behind it. A repo with no origin has no other copy, so it reads its working tree.
+DOC_REF="" DOC_SUB="$sub"
+if [ -z "$LIST" ] && [ -n "$REPO" ] && [ -d "$REPO" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  DOC_REF="$(git -C "$REPO" rev-parse --verify -q refs/remotes/origin/HEAD)" \
+    || echo "project-stage-check: $REPO has an origin but no origin/HEAD, so docs are read from its working tree (git -C $REPO remote set-head origin -a)" >&2
+fi
 [ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }
 if [ -n "$FILE" ] && [ -n "$JSON" ]; then
@@ -345,6 +368,37 @@ applies() {
 # With no project folder, predicates run from an empty dir, never the repo root or lab.
 EMPTY="$(mktemp -d)"; trap 'rmdir "$EMPTY"' EXIT
 CHECK_DIR="$ROOT"; [ -d "$CHECK_DIR" ] || CHECK_DIR="$EMPTY"
+
+# The doc helpers a predicate calls (stages.md, "Requirements"), each relative to ROOT.
+doc_path() { printf '%s%s' "${DOC_SUB:+$DOC_SUB/}" "$1"; }
+doc() {
+  local p
+  for p; do
+    if [ -n "$DOC_REF" ]; then git -C "$REPO" cat-file -e "$DOC_REF:$(doc_path "$p")" 2>/dev/null || return 1
+    else [ -f "$p" ] || return 1; fi
+  done
+}
+doc_text() {
+  if [ -n "$DOC_REF" ]; then git -C "$REPO" show "$DOC_REF:$(doc_path "$1")"; else cat -- "$1"; fi
+}
+doc_files() {
+  if [ -n "$DOC_REF" ]; then
+    git -C "$REPO" ls-tree -r --name-only --full-tree "$DOC_REF" -- ${DOC_SUB:+"$DOC_SUB"} | sed "s#^${DOC_SUB:+$DOC_SUB/}##"
+  else
+    git ls-files --cached --others --exclude-standard 2>/dev/null || find . -type f -not -path './.git/*' -printf '%P\n'
+  fi
+}
+doc_grep() {
+  local pat="$1" p ps=()
+  shift
+  if [ -n "$DOC_REF" ]; then
+    # A pathspec `*` crosses `/`, so `<dir>/*.md` is every doc under it, as --include is below.
+    for p; do case "$p" in *.md) ps+=("$(doc_path "$p")") ;; *) ps+=("$(doc_path "$p")/*.md") ;; esac; done
+    git -C "$REPO" grep -qiE -e "$pat" "$DOC_REF" -- "${ps[@]}"
+  else
+    grep -rqiE --include='*.md' -e "$pat" -- "$@"
+  fi
+}
 
 # judge <check>: PASS, FAIL, HUMAN or TODO for one Check cell.
 judge() {
@@ -472,14 +526,26 @@ enforced_from="$(sed -n '/^Enforced from: *\([0-9-]*\).*/{s//\1/p;q;}' "$STAGES_
 today="${STAGE_GATE_TODAY:-$(date +%F)}"
 
 fails=0 res=""
-while IFS=$'\t' read -r stage app req check; do
+# The unit separator, not tab: tab is IFS whitespace, so an empty cell would shift the rest.
+while IFS=$'\037' read -r stage app req check dept _; do
+  known_dept "$dept" "$req"
   lab_stage_at_least "$TARGET" "$stage" || continue
   applies "$app" || continue
   r="$(judge "$check")"
-  res+="$stage"$'\t'"$r"$'\t'"$req"$'\t'"$check"$'\n'
-  [ -n "$JSON" ] || line "$r" "$stage" "$req" "$check"
+  res+="$stage"$'\t'"$r"$'\t'"$req"$'\t'"$check"$'\t'"$dept"$'\n'
+  [ -n "$JSON$BY_DEPT" ] || line "$r" "$stage" "$req" "$check"
   [ "$r" != FAIL ] || fails=$((fails + 1))
-done < <(rows "$STAGES_DOC" Requirements)
+done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
+
+if [ -n "$BY_DEPT" ]; then
+  while IFS=$'\t' read -r id title _; do
+    grep -q $'\t'"$id"'$' <<<"$res" || continue
+    printf '%s\n' "$(awk -F'\t' -v d="$id" -v t="$title" '$5 == d { n++; if ($2 == "PASS") m++ } END { printf "%s: %d/%d met", t, m, n }' <<<"$res")"
+    while IFS=$'\037' read -r stage r req check d; do
+      [ "$d" != "$id" ] || printf '  %s\n' "$(line "$r" "$stage" "$req" "$check")"
+    done < <(tr '\t' '\037' <<<"$res")
+  done < <(rows "$STAGES_DOC" Departments)
+fi
 
 blocks=""
 [ "$fails" -gt 0 ] && [ -n "$enforced_from" ] && [[ ! "$today" < "$enforced_from" ]] && blocks=1
@@ -487,7 +553,7 @@ blocks=""
 if [ -n "$JSON" ]; then
   printf '%s' "$res" | jq -R -s --arg name "$NAME" --arg type "$TYPE" --arg stage "$TARGET" \
       --arg from "$enforced_from" --arg blocks "$blocks" '
-    [split("\n")[] | select(length > 0) | split("\t") | {stage: .[0], result: .[1], requirement: .[2], check: .[3]}] as $r
+    [split("\n")[] | select(length > 0) | split("\t") | {stage: .[0], result: .[1], requirement: .[2], check: .[3], dept: .[4]}] as $r
     | {project: $name, type: (if $type == "" then null else $type end), stage: $stage,
        met: ($r | map(select(.result == "PASS")) | length), total: ($r | length),
        fail: ($r | map(select(.result == "FAIL")) | length),

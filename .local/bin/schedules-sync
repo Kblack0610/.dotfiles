@@ -53,9 +53,10 @@ neither, a public repo still reads.
                           Exit 1 when a repo's PRs last synced over 30 minutes ago (with all,
                           the others still print and stderr names it), 3 when the list does not
                           sync the repo
-  schedules-sync sync-prs <repo>...
+  schedules-sync sync-prs [--wait] <repo>...
                           refresh those repos' PR stores now: agent-land runs it after a merge, so
-                          a reader never waits a pass to see it
+                          a reader never waits a pass to see it. A pass holding the store is an
+                          error at once, or with --wait (fleet-bench review) is waited out
   schedules-sync jobs <repo> [--run ID] [--since T]
                           the job archive's records of one GitHub repo, a JSON array in
                           created_at order, one object per run attempt: forge, repo, run_id,
@@ -883,9 +884,12 @@ def prs(argv, t):
 
 
 def sync_prs_cmd(argv, t):
-    """`sync-prs <repo>...`: refresh those repos' PR stores now (agent-land, after a merge)."""
+    """`sync-prs [--wait] <repo>...`: refresh those repos' PR stores now (agent-land, after a merge,
+    never waits on a pass; fleet-bench review waits, since its boot catch-up races the first pass)."""
+    wait = bool(argv) and argv[0] == "--wait"
+    argv = argv[1:] if wait else argv
     if not argv:
-        return 2, "sync-prs <owner/repo|host/owner/repo>..."
+        return 2, "sync-prs [--wait] <owner/repo|host/owner/repo>..."
     try:
         listed = {pr_name(f, r, h).lower(): ("github" if f == PRS_ONLY else f, r, h)
                   for f, r, _, h in read_repos() if has_prs(f, r)}
@@ -894,7 +898,7 @@ def sync_prs_cmd(argv, t):
     missing = [a for a in argv if a.lower() not in listed]
     if missing:
         return 3, f"{', '.join(missing)} not in the repo list (schedules-sync repos)"
-    errs = [e for e in (sync_prs(*listed[a.lower()], t, wait=False) for a in argv) if e]
+    errs = [e for e in (sync_prs(*listed[a.lower()], t, wait=wait) for a in argv) if e]
     return (1, "; ".join(errs)) if errs else (0, "")
 
 

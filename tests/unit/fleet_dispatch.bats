@@ -776,6 +776,32 @@ app urgent: fleet, #urgent, alpha"
   assert_output --partial 'Run agent-land in the foreground'
 }
 
+@test "every brief that starts or resumes a Claude session has a line agent-panel reads as not the human" {
+  # agent-panel's human_at skips a prompt with a line that starts with DISPATCH_BRIEF; a brief
+  # without it reads as the human typing and holds the session open for the human keep.
+  local m b
+  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-panel/src/jsonl.rs")
+  [ -n "$m" ]
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  project game beta "$SANDBOX/repos/game"
+  marked() { [[ $'\n'"$1" == *$'\n'"$m"* ]] || { echo "no line starts with '$m' in: $1"; return 1; }; }
+  for b in \
+    '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task"}' \
+    '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task", "tags": "night"}' \
+    '{"slug": "s", "mode": "oneshot", "project": "game", "title": "x", "task": "x", "pr": "o/r#1", "fix_tries": "1 abc"}' \
+    '{"slug": "s", "mode": "oneshot", "project": "game", "title": "x", "task": "x", "pr": "o/r#1", "pr_owner": "land", "land_tries": "1 abc"}' \
+    '{"slug": "r", "mode": "oneshot", "project": "game", "title": "research(game): which", "task": "research(game): which", "type": "research", "row": "game:ar-9", "lane": "agent"}' \
+    '{"slug": "rel", "mode": "oneshot", "project": "game", "title": "ship the games", "task": "ship the games", "type": "release"}'; do
+    marked "$(item_brief "$b")"
+  done
+  marked "$(resume_brief '{"slug": "s", "end_reason": "limit"}')"
+  marked "$(resume_brief '{"slug": "s"}')"
+  marked "$(trainee_review_task '{"slug": "s", "task": "x"}' trn base /p key review-s)"
+  # Negative control: the raw task alone is the human's words, unmarked.
+  run marked "plain task"
+  assert_failure
+}
+
 @test "item_brief: a doc+ask kind ends on a doc in the lab docs and an ask recorded on the item, never a PR" {
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"

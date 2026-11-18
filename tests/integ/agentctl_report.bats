@@ -159,6 +159,21 @@ field() { awk -F= -v k="$1" '$1 == k { sub(/^[^=]*=/, ""); print; exit }' "$STAT
   assert_output --partial 'exit=2'
 }
 
+@test "--lifecycle stop on a skipped start says whether the pause or the fleet lease skipped it" {
+  FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT='fleet-lease: b holds the fleet lease until 10:00 (on origin)' SERVICE_RESULT=exec-condition run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
+  assert_equal "$(field state)" 'idle'
+  assert_equal "$(field detail)" 'b holds the fleet lease until 10:00 (on origin)'
+  # No machine known to hold the lease is a fault: maybe no machine runs the lane.
+  FLEET_LEASE_STUB_RC=2 FLEET_LEASE_STUB_OUT='fleet-lease: no machine is known to hold the fleet lease: fleet-lease status' SERVICE_RESULT=exec-condition run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
+  assert_equal "$(field state)" 'error'
+  # The lease held here: some other start condition skipped it.
+  SERVICE_RESULT=exec-condition run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
+  assert_equal "$(field detail)" 'a start condition skipped it'
+  : > "$AGENTCTL_STATE_DIR/PAUSED"
+  SERVICE_RESULT=exec-condition run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
+  assert_equal "$(field detail)" 'paused'
+}
+
 @test "--lifecycle stop preserves what the runner last said it was doing" {
   "$AGENTCTL_BIN" report --name alpha project=bnb-platform item='shipped PR #12'
   SERVICE_RESULT=success run "$AGENTCTL_BIN" report --name alpha --lifecycle stop

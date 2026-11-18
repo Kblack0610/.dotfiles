@@ -95,6 +95,9 @@ b() { "$AU" budget --json | jq -c "$1 | walk(if type == \"number\" then . + 0 el
   run b '[(.lines[] | select(.name == "codex" or .name == "lazer") | [.status, .spent, .projected]), .partial]'
   assert_success
   assert_output '[["unpriced",null,null],["over",228,228],["codex"]]'
+  # an unknown fee still carries the plan's list-price work
+  run b '.lines[] | select(.name == "codex") | .list_usd'
+  assert_output '20'
   run b '.lines[] | select(.name == "lazer") | .note'
   assert_output '"past its $50 cap; its budget window resets 2026-11-20, not on the 1st"'
 }
