@@ -1,7 +1,7 @@
 //! The callbacks the open chooser runs through `agent-panel <verb>`, wired in `fzf::args`:
 //! `rows` (reload), `match` (change), `move` (the S-Tab grab), `preview` and `new-agent`
-//! (ctrl-n). Each reads the map and notes files the last `write_rows` left, so a key press reads
-//! no session it does not need.
+//! (ctrl-n). `write_rows` writes the map and notes files they share: `rows` and a grab rewrite
+//! them, while `match`, a held step and `preview` read them and no session.
 
 use std::fs;
 use std::path::Path;
