@@ -89,7 +89,7 @@ k.submap("pinbar", function()
     exits(nil)
 end)
 
--- Every way out clears the letters from the chips.
+-- Each of its own ways out (a key, Escape, q) clears the letters from the chips.
 k.submap("pinbar-panels", function()
     local off = dsp.exec_cmd(BIN .. "desk panel letters off")
     for _, p in ipairs(PANELS) do

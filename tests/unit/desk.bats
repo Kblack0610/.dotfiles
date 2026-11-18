@@ -425,7 +425,7 @@ noctalia msg plugin dotfiles/chips:chip all letters off"
   [ ! -e "$FX/calls.log" ]
 }
 
-@test "every Super+A b key is used once, and each chip it opens is on the noctalia bar with a dropdown" {
+@test "every Super+A b key is used once, and its chips are exactly the noctalia chips with a dropdown" {
   load '../helpers/hypr'
   local leaves
   leaves="$(hypr_dump registry | jq -r '.[] | select(.submap == "pinbar-panels" and (.arg | test("desk panel")))
@@ -438,8 +438,9 @@ import sys, tomllib
 w = tomllib.load(open(sys.argv[1], "rb"))["widget"]
 chips = {v["module"] for v in w.values() if v.get("module") and v.get("dropdown", True)}
 want = {l.split()[1] for l in sys.argv[2].splitlines() if l.split()[1].startswith("custom/")}
-print(*sorted(want - chips), sep="\n")
-sys.exit(1 if want - chips else 0)
+bad = ["no chip: " + m for m in sorted(want - chips)] + ["no key: " + m for m in sorted(chips - want)]
+print(*bad, sep="\n")
+sys.exit(1 if bad else 0)
 ' "$REPO_ROOT/.config/noctalia/config.toml" "$leaves"
   assert_success
 }
