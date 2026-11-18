@@ -92,7 +92,7 @@ const queue = {
 const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
-const RAIL = [["inbox", "inbox", null], ["board", "board", { tab: "board", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
+const RAIL = [["inbox", "inbox", null], ["backlog", "agent backlog", { tab: "projects/all", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
 const flow = {
   grafana: home.grafana,
   line: {

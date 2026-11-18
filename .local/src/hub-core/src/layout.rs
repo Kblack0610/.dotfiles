@@ -159,7 +159,7 @@ pub const TABS: [Tab; 12] = [
             },
             Inner {
                 id: "all",
-                title: "All rows",
+                title: "Board",
                 sections: &["board"],
             },
             Inner {
@@ -438,7 +438,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
-    // agent-web's Board tab: Projects' All rows inner tab, its board section (2026-11-12).
+    // agent-web's Board tab: Projects' Board inner tab, its board section (2026-11-12).
     ("board", "projects"),
 ];
 
@@ -1003,7 +1003,11 @@ mod tests {
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
         assert_eq!(section("outbox"), Some("outbox"));
-        assert_eq!(section("board"), Some("board"), "the Board tab is All rows");
+        assert_eq!(
+            section("board"),
+            Some("board"),
+            "the old Board tab is Projects' Board"
+        );
         assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
@@ -1134,7 +1138,7 @@ mod tests {
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
         assert_eq!(
             titles,
-            ["Projects", "All rows", "Deliverables", "Coverage", "Ladder"]
+            ["Projects", "Board", "Deliverables", "Coverage", "Ladder"]
         );
         assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");

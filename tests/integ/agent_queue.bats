@@ -3475,13 +3475,71 @@ second line of the brief
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-held.md "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
 }
 
-@test "the cap never holds an urgent, red, --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
+@test "at the cap an urgent or red add returns the last-ranked item that has a row, never the human's, urgent work or a chain head; with none it is held" {
+  # The human, 2026-11-18: urgent must not skip the cap; it pushes out something less critical.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --tags '#requested' --slug req "asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug head "chain head" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --after head --slug tail "chain tail" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  for s in a req head b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=5
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for urgent u1 under the cap of 5"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" end_reason)" = returned ]
+  assert_called "ptask game --agent unstart gm-b"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags red --slug r1 "red one"
+  assert_success
+  assert_output --partial "returned a to its board row"
+  # Negative controls: what is left is the human's, #requested, a chain head and urgent or red work.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u2 "urgent two"
+  assert_failure 5
+  assert_output --partial "held by admission, nothing was queued: 5 items can start now against a cap of 5"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "h,head,r1,req,tail,u1"
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .returned_7d]' <<<"$output")" '[1,2]'
+  run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "b
+a"
+}
+
+@test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
+  "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --tags at:23:59 --slug n "tonight" >/dev/null
+  "$AQ" set n row=game:gm-n >/dev/null
+  export AGENT_QUEUE_CAP=2
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned n to its board row"
+  AGENT_QUEUE_CAP=0 "$AQ" add --project game --from shepherd --priority low --slug c "c" >/dev/null
+  "$AQ" set c row=game:gm-c >/dev/null
+  # A retry of a queued urgent add dies on the duplicate and returns nothing first.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure
+  assert_output --partial "already in the queue: u1"
+  refute_output --partial "returned c"
+  "$AQ" move c running >/dev/null
+  AQ_RETURN_QUEUED=1 run "$AQ" return c --why "make room"
+  assert_failure
+  assert_output --partial "c is running now, not queued: not returned"
+  run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "n"
+}
+
+@test "the cap never holds a --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --slug human "human"
   assert_failure 5
-  "$AQ" add --project game --tags red --slug broken "broken" >/dev/null
-  "$AQ" add --project game --priority urgent --slug urgent "urgent" >/dev/null
+  # Urgent and red are held too when nothing can be returned: "one" is the human's.
+  run "$AQ" add --project game --tags red --slug broken "broken"
+  assert_failure 5
+  run "$AQ" add --project game --priority urgent --slug urgent "urgent"
+  assert_failure 5
   "$AQ" add --project game --running --session s1 --slug mine "mine" >/dev/null
   "$AQ" add --project game --after one --slug chained "chained" >/dev/null
   "$AQ" add --project game --tags at:2099-01-01T09:00 --slug dated "dated" >/dev/null
@@ -3495,8 +3553,8 @@ second line of the brief
   assert_failure
   assert_output --partial "only the board fills the queue"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "broken,canary,chained,dated,gm-3,mine,one,urgent,verify-e-1"
-  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 3 ]
+  assert_output "canary,chained,dated,gm-3,mine,one,verify-e-1"
+  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {
@@ -3576,10 +3634,12 @@ second line of the brief
   assert_output --partial "against a cap of 1 (item:parent)"
   "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
-  "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
+  # Urgent is capped too (2026-11-18): with nothing to return it is held, from the item.
+  run "$AQ" add --project game --slug now --priority urgent "urgent for the human"
+  assert_failure 5
+  assert_output --partial "against a cap of 1 (item:parent)"
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
   [ "$(field "$(item queued dated)" from)" = human ]
-  [ "$(field "$(item queued now)" from)" = human ]
   [ "$(field "$(item running own)" from)" = human ]
 }
 
@@ -3680,6 +3740,37 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+# ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and
+# 108 dispatch starts failed with no holder on record.
+@test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
+  "$AQ" add --project game "one item" >/dev/null
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  # 9>&-: the taker is not the holder's child here, so it must not inherit the holder's fd.
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 9>&-
+  assert_failure 75
+  assert_output --partial "lock-miss.jsonl"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  assert_failure 75
+  flock -u 9
+  exec 9>&-
+  log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  [ "$(wc -l < "$log")" = 2 ]
+  run jq -r --argjson me "$BASHPID" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
+    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
+  assert_line --index 0 "exclusive true true true true"
+  assert_line --index 1 "shared true true true true"
+  # Past 1 MB the log moves to .1 and starts again.
+  head -c 1048576 /dev/zero > "$log"
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  assert_failure 75
+  [ "$(stat -c %s "$log.1")" = 1048576 ]
+  [ "$(wc -l < "$log")" = 1 ]
 }
 
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body

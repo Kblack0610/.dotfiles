@@ -60,6 +60,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "rows": rows,
         "focus": f.focus,
         "errors": f.errors,
+        "totals": f.totals,
         "table": table,
     })
 }

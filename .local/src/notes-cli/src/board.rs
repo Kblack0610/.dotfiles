@@ -579,7 +579,7 @@ pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
 /// `raw` is the line itself, which a UI hands back to `notes ptask --exact` to act on it.
 /// `version` is the sheet's version (`None` for a playtest check, which has none) and `game`
 /// the playtest heading (`None` on a sheet row).
-#[derive(Debug, serde::Serialize, PartialEq)]
+#[derive(Clone, Debug, serde::Serialize, PartialEq)]
 struct FeedRow {
     profile: String,
     /// None for a Focus row: the daily cockpit belongs to the profile, not a project.
@@ -662,9 +662,40 @@ struct FeedProject {
     automation: bool,
 }
 
+/// The board's one count: every open row (open or doing) on the human, agent and playtest
+/// sheets of every profile, never a Focus or closed row. Every surface that says "Board" shows
+/// `open` (the hub and agent-web through hub-core, waybar's `B` through fleet-dispatch), so
+/// none counts for itself.
+#[derive(Debug, Default, serde::Serialize, PartialEq)]
+struct Totals {
+    open: usize,
+    doing: usize,
+    human: usize,
+    agent: usize,
+    playtest: usize,
+}
+
+impl Totals {
+    fn of(rows: &[FeedRow]) -> Totals {
+        let mut t = Totals::default();
+        for r in rows.iter().filter(|r| r.state != "done") {
+            match r.lane {
+                "human" => t.human += 1,
+                "agent" => t.agent += 1,
+                "playtest" => t.playtest += 1,
+                _ => continue,
+            }
+            t.open += 1;
+            t.doing += usize::from(r.state == "doing");
+        }
+        t
+    }
+}
+
 #[derive(serde::Serialize)]
 struct Feed {
     today: String,
+    totals: Totals,
     projects: Vec<FeedProject>,
     rows: Vec<FeedRow>,
     /// Closed rows, newest first: each sheet's `### Done`, and with `--done-days N` the rows
@@ -963,6 +994,7 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     let today = Local::now().date_naive();
     let mut feed = Feed {
         today: today.format("%Y-%m-%d").to_string(),
+        totals: Totals::default(),
         projects: Vec::new(),
         rows: Vec::new(),
         done: Vec::new(),
@@ -993,6 +1025,7 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     // Newest close first across every project; equal days keep feed order.
     feed.done
         .sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
+    feed.totals = Totals::of(&feed.rows);
     println!("{}", serde_json::to_string(&feed)?);
     Ok(0)
 }
@@ -1332,6 +1365,22 @@ mod tests {
             "the later row and the closed row are not on the board"
         );
         assert_eq!(proj.version.as_deref(), Some("v0.3.0"));
+        let mut with_focus = rows.clone();
+        with_focus.push(FeedRow {
+            lane: "focus",
+            ..rows[0].clone()
+        });
+        assert_eq!(
+            Totals::of(&with_focus),
+            Totals {
+                open: 4,
+                doing: 1,
+                human: 2,
+                agent: 1,
+                playtest: 1
+            },
+            "the board's count: every open row of the three sheets, never a Focus or closed row"
+        );
         let lanes: Vec<&str> = rows.iter().map(|r| r.lane).collect();
         assert_eq!(lanes, ["human", "human", "agent", "playtest"]);
 
