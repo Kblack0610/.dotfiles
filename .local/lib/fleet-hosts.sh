@@ -330,17 +330,20 @@ fleet_panel_row() {
 }
 
 # _fh_ssh <dest> [ssh options...] -- <command> [args...] -- the one ssh call both paths share.
+# FLEET_SSH_TTY=1 is an interactive call (tmx goto <host>@<server>, a tmux attach on the worker):
+# a tty, and the terminal's stdin.
 _fh_ssh() {
-  local dest="$1" opts=() n=-n
+  local dest="$1" opts=() n=-n tty=-T
   shift
   while [ $# -gt 0 ] && [ "$1" != -- ]; do opts+=("$1"); shift; done
   shift
   [ "${FLEET_SSH_STDIN:-0}" != 1 ] || n=''
+  [ "${FLEET_SSH_TTY:-0}" != 1 ] || { n=''; tty=-t; }
   # -T: a forwarded call never wants a tty; a `RequestTTY yes` in ssh_config otherwise puts a
   # "Pseudo-terminal will not be allocated" line into every call's output.
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
   # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
-  ssh $n -T -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
+  ssh $n $tty -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
     'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
 }
 

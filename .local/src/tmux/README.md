@@ -100,6 +100,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
+| `tmx goto <host>@<server>/<session>[:<window>]` | attach to a fleet session on another machine: a `fleet-sessions` or agent-panel row target, over the one ssh path in `.local/lib/fleet-hosts.sh`. Inside tmux this client detaches and the ssh attach takes its terminal, so the worker's tmux never nests in a pane. A host not in the fleet roster is refused before anything dials |
 | `tmx client` | `<server> <client>` of the terminal you typed in last, for `display-popup -c` from outside tmux |
 | `tmx popup <cmd>` | run `<cmd>` in a popup on that terminal and focus it (what the Super+A agents keys use) |
 

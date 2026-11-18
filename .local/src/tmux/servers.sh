@@ -37,6 +37,7 @@
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
 #        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
+#        - goto <host>@<server>/<session>[:<window>]  (a fleet worker's session, over ssh)
 #        · land <name> <last|root|session[:window]> · back · mark
 #        · reload
 
@@ -518,6 +519,14 @@ cmd_client() {
 cmd_land() {
   local target="${1:?land needs a server name}" mode="${2:-last}" want=""
 
+  # A fleet worker's server (cmd_goto): attach to it over ssh, in this terminal.
+  if [[ "$target" == *@* ]]; then
+    case "$mode" in last|root) die "$target is a fleet worker's server: land on it names a session" ;; esac
+    _fleet_lib || die "cannot read fleet-hosts.sh"
+    FLEET_SSH_TTY=1 fleet_host_run "${target%%@*}" tmux -L "${target#*@}" attach -t "=$mode"
+    return
+  fi
+
   # An explicit session is passed through so ensure wakes it if it is on demand
   # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
   case "$mode" in
@@ -655,9 +664,50 @@ cmd_root() {
 #
 # Deliberately NOT a `land` call. land is the FAR side of the hop and never looks at
 # $TMUX, so calling it from inside a live client skips the detach entirely (see _enter).
+#
+# A server on another machine is <host>@<server>, the way fleet-sessions and agent-panel name
+# a fleet worker's rows (<host>@<server>/<session>:<window>, fleet-hosts.sh fleet_host_panel):
+# `goto <host>@<server> <session>[:<window>]`, or the row's target as one word. It hops like
+# a local world: inside tmux this client detaches and `land` runs the ssh attach in its
+# terminal, so the worker's tmux is never nested inside a pane here.
 cmd_goto() {
-  local sess="${2:?goto needs a session name}"
-  _enter "$(_declared_world "${1:?goto needs a server name}" "$sess")" "$sess"
+  local world="${1:?goto needs a server name}" sess="${2:-}"
+  if [[ "$world" == *@* ]]; then
+    if [ -z "$sess" ] && [[ "$world" == */* ]]; then sess="${world#*/}"; world="${world%%/*}"; fi
+    _remote_ok "$world" "$sess" || return 0
+    _enter "$world" "$sess"
+    return
+  fi
+  sess="${2:?goto needs a session name}"
+  _enter "$(_declared_world "$world" "$sess")" "$sess"
+}
+
+# _fleet_lib -- source fleet-hosts.sh, the fleet roster and its one ssh path. Only a remote
+# target needs it, so no other verb pays for it.
+_fleet_lib() {
+  declare -F fleet_host_run >/dev/null && return 0
+  # shellcheck source=../../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-${SELF%/*}/../../lib/fleet-hosts.sh}"
+}
+
+# _remote_ok <host>@<server> <session> -- rc 0 when the server and session are named and
+# <host> is in the fleet roster. Else say why the way cmd_hop does (a message inside tmux, an
+# error outside) and return 1, before anything detaches or dials.
+_remote_ok() {
+  local host="${1%%@*}" srv="${1#*@}" why=""
+  if [ -z "$host" ] || [ -z "$srv" ] || [ -z "$2" ]; then
+    why="goto $1 needs <host>@<server>/<session>[:<window>]"
+  elif ! _fleet_lib; then
+    why="cannot read fleet-hosts.sh"
+  else
+    fleet_hosts >/dev/null
+    fleet_host "$host" >/dev/null ||
+      why="$host is not a fleet worker ($FLEET_HOSTS_GROUP in home-config's inventory)${FLEET_ROSTER_ERR:+: $FLEET_ROSTER_ERR}"
+  fi
+  [ -n "$why" ] || return 0
+  [ -n "${TMUX:-}" ] || die "$why"
+  tmux display-message "tmx: $why"
+  return 1
 }
 
 # How old the fleet state may be before Prefix+P stops trusting it. fleet-state.service
@@ -995,7 +1045,7 @@ main() {
     tree-enter)   shift; _tree_enter "${1:-}" ;;
     tree-fold)    shift; _tree_fold "${1:-}" ;;
     reload)       cmd_reload ;;
-    -h|--help)    sed -n '2,40p' "$SELF" ;;
+    -h|--help)    sed -n '2,/^$/p' "$SELF" ;;   # the header comment, to its first blank line
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac
 }
