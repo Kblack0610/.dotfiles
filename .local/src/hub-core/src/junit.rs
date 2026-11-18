@@ -35,10 +35,6 @@ use crate::table::{Row, Summary, Val, View};
 pub const PICK_RUNS: usize = 30;
 /// The most of a failure's text kept per test.
 pub const MESSAGE_BYTES: usize = 4000;
-/// The cap on the suites a surface draws at once.
-pub const LIST_ROWS: usize = 100;
-/// The cap on the tests of one opened suite.
-pub const CASE_ROWS: usize = 300;
 /// The lines of an NUnit stack trace kept under its failure's message.
 pub const STACK_LINES: usize = 8;
 
@@ -366,12 +362,6 @@ pub fn fold<'a>(view: &View, rows: Vec<&'a Suite>, t: &Totals) -> (Vec<&'a Suite
     (vec![], Some(format!("All green: {}", t.says())))
 }
 
-/// The first `LIST_ROWS` of `rows`, and how many were left out.
-pub fn cap(rows: Vec<&Suite>) -> (Vec<&Suite>, usize) {
-    let more = rows.len().saturating_sub(LIST_ROWS);
-    (rows.into_iter().take(LIST_ROWS).collect(), more)
-}
-
 /// A run's results as read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Loaded {
@@ -407,14 +397,9 @@ impl Loaded {
     }
 
     /// The tests of one suite the view keeps, worst first and then in the report's order unless
-    /// it sorts, capped at `CASE_ROWS`; the summary counts every test, and the last value the
-    /// ones the cap left out.
-    pub fn cases(
-        &self,
-        tier: &str,
-        suite: &str,
-        view: &View,
-    ) -> Option<(Vec<&Case>, Summary, usize)> {
+    /// it sorts, with the summary over every one and its links in that order; a surface pages
+    /// them (`table::page`).
+    pub fn cases(&self, tier: &str, suite: &str, view: &View) -> Option<(Vec<&Case>, Summary)> {
         let s = self
             .suites
             .iter()
@@ -423,8 +408,8 @@ impl Loaded {
         if view.sort.is_empty() {
             cases.sort_by_key(|c| rank_of(&c.result));
         }
-        let more = crate::table::cap(&mut cases, &mut table, CASE_ROWS);
-        Some((cases, table, more))
+        table.links = crate::table::links(&cases);
+        Some((cases, table))
     }
 }
 
@@ -1259,7 +1244,7 @@ at line nine
             t.says(),
             "4 tests in 2 suites: 1 failed, 2 quarantined, 0 skipped, 1 passed"
         );
-        let (cases, _, _) = q.cases("playmode", "B", &View::default()).unwrap();
+        let (cases, _) = q.cases("playmode", "B", &View::default()).unwrap();
         assert_eq!(cases[0].result, "failed");
         // a quarantined-only run does not fold to "All green"
         let only: Vec<Suite> = vec![a.clone()];
@@ -1321,35 +1306,36 @@ at line nine
     }
 
     #[test]
-    fn a_suites_result_tiles_count_every_test_past_the_cap() {
-        let mut results = vec!["failed"; CASE_ROWS + 10];
-        results.extend(["passed"; 5]);
+    fn a_suites_tests_come_whole_worst_first_with_tiles_counting_every_one() {
+        let mut results = vec!["passed"; 5];
+        results.extend(["failed"; 310]);
         let mut s = suite("unit", "big.bats", &results);
-        s.cases[3].message = "Timed out waiting".into();
-        s.cases[CASE_ROWS + 12].fullname = "Ns.Big.Slow".into();
+        s.cases[8].message = "Timed out waiting".into();
+        s.cases[312].fullname = "Ns.Big.Slow".into();
         let got = Loaded {
             suites: vec![s],
             ..Default::default()
         };
         let all = View::new::<Case>("", "", "", "");
-        let (cases, t, more) = got.cases("unit", "big.bats", &all).unwrap();
+        let (cases, t) = got.cases("unit", "big.bats", &all).unwrap();
+        assert_eq!((cases.len(), t.total, t.shown), (315, 315, 315));
         assert_eq!(
-            (cases.len(), more, t.total, t.shown),
-            (CASE_ROWS, 15, 315, 315)
+            (cases[0].result.as_str(), cases[314].result.as_str()),
+            ("failed", "passed")
         );
         let n = |name: &str| t.states.iter().find(|c| c.name == name).map(|c| c.n);
-        assert_eq!((n("failed"), n("passed")), (Some(CASE_ROWS + 10), Some(5)));
+        assert_eq!((n("failed"), n("passed")), (Some(310), Some(5)));
         let passed = View::new::<Case>("", "passed", "", "");
-        let (cases, _, more) = got.cases("unit", "big.bats", &passed).unwrap();
-        assert_eq!((cases.len(), more), (5, 0));
+        let (cases, _) = got.cases("unit", "big.bats", &passed).unwrap();
+        assert_eq!(cases.len(), 5);
         // a word finds a test by its failure's text or its full name
         let by = |q: &str| {
             got.cases("unit", "big.bats", &View::new::<Case>(q, "", "", ""))
                 .unwrap()
                 .0
         };
-        assert_eq!(by("timed out")[0].name, "t3");
-        assert_eq!(by("ns.big")[0].name, format!("t{}", CASE_ROWS + 12));
+        assert_eq!(by("timed out")[0].name, "t8");
+        assert_eq!(by("ns.big")[0].name, "t312");
     }
 
     #[test]
@@ -1487,8 +1473,8 @@ at line nine
             vec![("ui", "u.bats"), ("unit", "a.bats"), ("unit", "z.bats")]
         );
         assert!(got.errors.is_empty() && got.note.is_none());
-        let (cases, _, more) = got.cases("unit", "a.bats", &View::default()).unwrap();
-        assert_eq!((cases.len(), more), (1, 0));
+        let (cases, _) = got.cases("unit", "a.bats", &View::default()).unwrap();
+        assert_eq!(cases.len(), 1);
         assert!(got.cases("unit", "nope.bats", &View::default()).is_none());
         let _ = std::fs::remove_dir_all(&cache);
     }

@@ -57,7 +57,7 @@ const red = {
   conclusion: "failure", prs: [12], url: "https://github.com/o/binks/actions/runs/77", owner: "agent-3", state: "red", level: "bad", started: NOW() - 300, took: 125, release: null,
 };
 const bdata = (o = {}) => ({
-  at: NOW() - 60, stale_after: 1800, rows: [red], more: 0, errors: [],
+  at: NOW() - 60, stale_after: 1800, rows: [red], errors: [],
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 1, states: [{ name: "all", n: 2 }, { name: "red", n: 1 }], columns: ["started", "state", "repo", "workflow", "branch", "took", "owner", "release", "forge", "event", "title"].map(bcol), facets: [] },
   ...o,
 });
@@ -101,6 +101,15 @@ test("a run with no owning session draws a dash, and an empty ledger says so", (
 test("a ledger that is not being refreshed is amber", () => {
   showBuilds(bdata({ at: NOW() - 7200 }));
   assert.match(runs.innerHTML, /<h2 class="sec warn" id="sec-runs">Runs <span class="n">1 of 2<\/span><\/h2><div class="cline warn">ledger older than 30m<\/div>/);
+});
+
+test("the runs draw the page they are sent with its pager, and one page draws none", () => {
+  showBuilds(bdata({ table: { ...bdata().table, total: 250, shown: 250, pager: { page: 2, pages: 3, per: 100 } } }));
+  const b = runs.innerHTML;
+  assert.match(b, /<div id="bld-body">.*<td class="bad">red<\/td>.*<nav class="tpager".*rows 101-200 of 250<\/span><\/nav><\/div><\/div>/s);
+  assert.doesNotMatch(b, /not shown/);
+  showBuilds();
+  assert.doesNotMatch(runs.innerHTML, /tpager/, "negative control: one page");
 });
 
 test("the runs draw only while Infra is the open tab", () => {
@@ -221,25 +230,25 @@ const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "mai
 const tdata = (o = {}) => ({
   at: NOW() - 60, stale_after: 1800, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], run: pickRun(9),
   summary: "main abc1234: 5 tests in 2 suites: 1 failed, 1 skipped, 3 passed", totals: { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 },
-  rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], more: 0, fold: null, note: null, errors: [],
+  rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], fold: null, note: null, errors: [],
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "quarantined", n: 0 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"].map(tcol), facets: [] },
   ...o,
 });
 const held = (o) => ({ test: "P.Yard.Each(\"a\")", repo: "unity-core-playground", row: "db-265", owner: "db-265 fix(yard): x", ends: "2026-11-20", days_left: 8, left: "8d", level: "ok", nightly: "failing", ...o });
 const qdata = (o = {}) => ({
   lanes: [{ repo: "unity-core-playground", says: "unity-core-playground: 2 quarantined over 2 owner rows, 1 ended; nightly 11-12: 8 known red, 1 now pass", level: "bad", url: "https://github.com/o/play/actions/runs/43215863750" }],
-  rows: [held({ test: "P.Gone", row: "ucp-1", ends: "2026-11-10", days_left: -2, left: "ended", level: "bad" }), held({ nightly: "now passing" })], more: 0, error: null,
+  rows: [held({ test: "P.Gone", row: "ucp-1", ends: "2026-11-10", days_left: -2, left: "ended", level: "bad" }), held({ nightly: "now passing" })], error: null,
   table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "ended", n: 1 }, { name: "ending", n: 0 }, { name: "held", n: 1 }], columns: ["test", "repo", "row", "ends", "left", "nightly"].map(tcol), facets: [],
     links: [{ repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=ucp-1" }, { repo: "#projects?q=unity-core-playground", row: "#projects/all?q=id:=db-265" }] },
   ...o,
 });
 const showTests = (d = tdata()) => { run("st.tab = 'infra'; st.arg = 'tests'; st.views.infra = ''"); Object.assign(run("tst"), { data: d, err: null, sel: null }); Object.assign(run("cas"), { run: null, tier: "", suite: "", key: null, data: null, err: null }); run("tst.render()"); };
 // An opened suite's tests as /api/tests/cases sends them: the summary counts every test of the
-// suite (`n`, result -> count), the rows only what the cap kept.
-const cdata = (rows, n, more = 0) => {
+// suite (`n`, result -> count), the rows only the page it sent, placed by `pager` when it pages.
+const cdata = (rows, n, pager) => {
   const states = ["failed", "quarantined", "skipped", "passed"].map((name) => ({ name, n: n[name] || 0, tone: name === "failed" && n.failed ? "bad" : null }));
   const total = states.reduce((a, c) => a + c.n, 0);
-  return { more, cases: rows, table: { q: "", state: "", sort: "", dir: "desc", total, shown: total, states: [{ name: "all", n: total }, ...states], columns: ["result", "name", "time"].map(tcol), facets: [] } };
+  return { cases: rows, table: { q: "", state: "", sort: "", dir: "desc", total, shown: total, states: [{ name: "all", n: total }, ...states], columns: ["result", "name", "time"].map(tcol), facets: [], ...(pager ? { pager } : {}) } };
 };
 // A click on a tile of the opened suite's tests.
 const caseTile = (ts) => ({ dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "c" } } : sel === "[data-ts]" ? { dataset: { ts } } : null) });
@@ -287,6 +296,17 @@ test("the Quarantine table lists each held test under each lane's line with its 
   assert.doesNotMatch(tests_.innerHTML, /sec-quarantine/);
 });
 
+test("the suites and the Quarantine each draw the page they are sent under their own pager", () => {
+  const pager = { page: 1, pages: 2, per: 100 };
+  showTests(tdata({ table: { ...tdata().table, total: 150, shown: 150, pager }, quarantine: qdata({ table: { ...qdata().table, total: 120, shown: 120, pager } }) }));
+  const b = tests_.innerHTML, q = b.indexOf('id="sec-quarantine"');
+  assert.match(b.slice(0, q), /<div id="tst-body">.*<nav class="tpager".*rows 1-100 of 150<\/span><\/nav><\/div><\/div>/s, "the suites' pager inside their data-tbl");
+  assert.match(b.slice(q), /<nav class="tpager".*rows 1-100 of 120<\/span><\/nav>/s);
+  assert.doesNotMatch(b, /not shown/);
+  showTests(tdata({ quarantine: qdata() }));
+  assert.doesNotMatch(tests_.innerHTML, /tpager/, "negative control: one page each");
+});
+
 test("a Quarantine chip re-reads the tests under the q keys, and the suites' keys ride along", async () => {
   showTests(tdata({ quarantine: qdata() }));
   run("st.views.infra = 'tq=tier%3Aui&trun=8'");
@@ -326,8 +346,8 @@ test("a run with no artifacts says why, and no run at all names the declared wor
 
 test("opening a suite reads its tests then, failed first with result tiles counted over every test, and again closes it", async () => {
   showTests();
-  // 310 failed in all, past the server's cap: the tile says the server's count, not the rows'.
-  cases = cdata([{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }], { failed: 310, skipped: 1, passed: 1 }, 15);
+  // 310 failed in all, page 1 of 4 sent: the tile says the server's count, not the rows'.
+  cases = cdata([{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }], { failed: 310, skipped: 1, passed: 1 }, { page: 1, pages: 4, per: 100 });
   asked.length = 0;
   fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
   await settled();
@@ -336,8 +356,15 @@ test("opening a suite reads its tests then, failed first with result tiles count
   assert.match(b, /<span class="bad">failed<\/span> fails here <span class="muted">0.20s<\/span><pre class="joblog">line 2: \[ 1 -gt 2 \] failed<\/pre>/);
   assert.match(b, /<button class="tile t-bad" data-ts="failed"><span class="tl">FAILED<\/span><span class="tv">310<\/span><\/button>/);
   assert.match(b, /<input id="cas-q" data-tsearch/);
-  assert.match(b, /15 more not shown/);
+  assert.match(b, /<div data-tbl="c">.*<nav class="tpager".*rows 1-100 of 312<\/span><\/nav>/s, "the cases' own pager, under their block");
+  assert.doesNotMatch(b, /not shown/);
   assert.doesNotMatch(b, /data-cres|class="seg fseg"/, "no result chips beside the tiles");
+  // A page pick is the cases' `cpg`, read again for the same suite.
+  const pg = { dataset: { tpg: "2" } };
+  asked.length = 0;
+  fire(tests_, "click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "c" } } : sel === "[data-tpg]" ? pg : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/tests/cases?cpg=2&run=9&tier=unit&suite=a.bats"]);
   // A tile is a view key the server applies (`cs`), read again for the same suite.
   cases = cdata([{ name: "skipped one", result: "skipped", time: 0, message: "not on CI" }], { failed: 310, skipped: 1, passed: 1 });
   cases.table.state = "skipped";
@@ -360,7 +387,7 @@ test("opening a suite reads its tests then, failed first with result tiles count
 
 test("an opened suite is let go when the table is read for another run", async () => {
   showTests();
-  run("tst.sel = 'unit|a.bats'; Object.assign(cas, { run: 9, tier: 'unit', suite: 'a.bats', key: '9|unit|a.bats', data: { cases: [], more: 0 } })");
+  run("tst.sel = 'unit|a.bats'; Object.assign(cas, { run: 9, tier: 'unit', suite: 'a.bats', key: '9|unit|a.bats', data: { cases: [] } })");
   tests = tdata({ run: pickRun(8, { state: "green" }) });
   await run("tst.refresh()");
   assert.equal(run("tst.sel"), null);

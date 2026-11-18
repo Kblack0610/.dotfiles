@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use hub_core::boards;
 use hub_core::capacity::{self, Capacity};
+use hub_core::layout;
 use hub_core::session_actions::{self as actions, System};
 use hub_core::session_page::{self, SessionPage};
 use hub_core::session_table::{self, SessionRow};
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,15 +21,6 @@ const CACHE_SECS: u64 = 15;
 /// minute at most.
 const CAPACITY_SECS: u64 = 60;
 
-/// How many table rows the page draws before its "+N more" button; the chips still count every
-/// row and the search and filters reach them all, as Queue's `TABLE_OPEN_ROWS` does. Holds the
-/// Sessions inner tab under three screens at 1400x900 (tests/agent-web/phone/render.mjs reads this
-/// line). Live data, 2026-11-12, 342 rows: at the page's old 200 the inner tab was 16,114 px, about
-/// 72 px a row; with the lanes shut, 25 rows measured 2,723 px and 20 measured 2,180. Revisit
-/// when the space above the table or the row height changes. Web only: the hub TUI keeps every row
-/// and draws only the window it shows.
-pub const TABLE_OPEN_ROWS: usize = 20;
-
 /// The table view, the same keys the page keeps in its URL.
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -37,6 +29,10 @@ pub struct TableQuery {
     pub s: String,
     pub sort: String,
     pub dir: String,
+    pub pg: String,
+    /// The open session (its target or session id): with no `pg`, the page that holds it, so the
+    /// split view's list shows the row it marks.
+    pub sel: String,
 }
 
 /// Every row, the state document under it and what could not be read.
@@ -55,10 +51,8 @@ struct Shown<'a> {
     buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
-    /// What the shown rows cost (`session_table::spend`), for the overview row.
+    /// What the view's rows cost over every page (`session_table::spend`), for the overview row.
     spend_usd: f64,
-    /// How many rows the page draws before "+N more" (`TABLE_OPEN_ROWS`).
-    open_rows: usize,
 }
 
 pub struct Cache {
@@ -78,16 +72,25 @@ impl Default for Cache {
     }
 }
 
+/// One page of the rows the view keeps (`layout`'s `sessions` size); the spend is the whole view's.
 fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, table) = view.summary(&r.rows);
+    let (mut rows, mut table) = view.summary(&r.rows);
+    let spend_usd = session_table::spend(rows.iter().copied());
+    let per = layout::page_rows("sessions/sessions");
+    let page = q.pg.parse().unwrap_or_else(|_| {
+        let at = rows.iter().position(|r| {
+            !q.sel.is_empty() && (r.key == q.sel || r.target == q.sel || r.session_id == q.sel)
+        });
+        at.map_or(1, |at| at / per + 1)
+    });
+    table::page(&mut rows, &mut table, page, per);
     let out = Shown {
-        spend_usd: session_table::spend(rows.iter().copied()),
+        spend_usd,
         rows,
         buckets: &r.buckets,
         errors: &r.errors,
         table,
-        open_rows: TABLE_OPEN_ROWS,
     };
     serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
 }
@@ -181,10 +184,46 @@ mod tests {
         assert_eq!(v["errors"][0], "session outcomes: exit 1");
         assert_eq!(v["table"]["state"], "done today");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(
-            v["open_rows"], TABLE_OPEN_ROWS,
-            "the page's cap is the server's"
-        );
+        assert!(v["table"].get("pager").is_none(), "one page is unpaged");
+    }
+
+    #[test]
+    fn the_table_pages_at_its_layout_size_and_the_spend_is_every_pages() {
+        let per = layout::page_rows("sessions/sessions");
+        let r = Read {
+            rows: (0..per + 3)
+                .map(|i| SessionRow {
+                    key: format!("k{i}"),
+                    cost_usd: Some(1.0),
+                    ..SessionRow::default()
+                })
+                .collect(),
+            ..Read::default()
+        };
+        let q = TableQuery {
+            pg: "2".into(),
+            ..TableQuery::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&render(&r, &q)).unwrap();
+        assert_eq!(v["rows"].as_array().unwrap().len(), 3);
+        assert_eq!(v["rows"][0]["key"], format!("k{per}"));
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        assert_eq!(v["table"]["shown"], per + 3);
+        assert_eq!(v["spend_usd"], (per + 3) as f64);
+        let sel = |sel: &str, pg: &str| TableQuery {
+            sel: sel.into(),
+            pg: pg.into(),
+            ..TableQuery::default()
+        };
+        let page = |q: &TableQuery| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(&render(&r, q)).unwrap()["table"]["pager"]
+                ["page"]
+                .clone()
+        };
+        let tail = format!("k{}", per + 1);
+        assert_eq!(page(&sel(&tail, "")), 2, "the open session's page");
+        assert_eq!(page(&sel(&tail, "1")), 1, "a page asked for wins");
+        assert_eq!(page(&sel("gone", "")), 1);
     }
 
     #[test]

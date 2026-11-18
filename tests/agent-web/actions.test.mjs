@@ -132,14 +132,18 @@ test("the view already read does not reopen a section the human folded", async (
   assert.equal(parts["sec-actions"].open, false);
 });
 
-test("the rows stop at the fold cap until +N older is pressed", () => {
+test("the server's page is drawn whole under its pager, and a page pick asks for that page", async () => {
   fresh();
   const many = Array.from({ length: run("LOG_ROWS") + 3 }, (_, i) => act(i));
-  ast.data = { ...data, actions: many };
+  ast.data = { ...data, actions: many, table: { ...table, shown: many.length + 7, pager: { page: 1, pages: 2, per: many.length } } };
   run("ast.render()");
-  assert.match(box.innerHTML, /data-all="1">\+3 older/);
-  click({ all: "1" });
-  assert.doesNotMatch(box.innerHTML, /data-all/);
+  assert.match(box.innerHTML, new RegExp(`agent-${many.length - 1} `), "every row the server sent");
+  assert.match(box.innerHTML, /class="tpager"/);
+  assert.doesNotMatch(box.innerHTML, /data-all|>\+\d+ older/);
+  click({ tpg: "2" });
+  await settle();
+  assert.equal(run("st.views.log"), "pg=2");
+  assert.match(asked.at(-1), /^\/api\/actions\?pg=2&hours=24$/);
 });
 
 test("a refresh keeps the search box the human is typing in", () => {

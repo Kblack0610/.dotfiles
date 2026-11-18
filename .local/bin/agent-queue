@@ -44,6 +44,7 @@
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
 #       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
+#       move <slug> running of a queued item is refused while its hold is pending (after:, a tag gate), as add --running --after is
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
 #   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
@@ -1593,9 +1594,17 @@ cmd_add() {
   # The queue holds only work that can start: an add still waiting on a gate (an after: item not done ok,
   # or a hold tag not clear, hold_for) is filed as its board row carrying the gate (#after/<row-id>,
   # #rbw/..., gate_board_tag) and queues nothing; dispatch promotes the row once `gate` reads it clear
-  # (QUEUE.md "Admission"). A --running record is already started, so it waits on nothing, and dispatch's
-  # pull of a board row (promote) judged that row's gates clear the moment before, so none is read twice.
+  # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
+  # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
+  # (promote) judged that row's gates clear the moment before, so none is read twice.
   local GATES='' AFTER_ITEMS=''
+  if [ -n "$running" ] && [ -n "$after" ]; then
+    local HOLD HOLD_DEAD
+    check_after "$after" "$slug"
+    hold_for "$after" ""
+    [ -z "$HOLD_DEAD" ] || die "$slug cannot start --running: $HOLD"
+    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start --running: add it without --running, and it starts once that clears"
+  fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
     add_gates "$slug" "$after" "$tags"; after="$AFTER_ITEMS"
   fi
@@ -2630,6 +2639,17 @@ cmd_move() {
         die "$slug waits on $HOLD and could not go back to its board row: agent-queue return $slug --why <why>"
       return 0
     fi
+  fi
+  # A start waits on what holds it, as the queue does: a queued item whose after: is live or dead, or
+  # whose tag gate is not clear, is not started by hand ahead of it (ar-3260). A waiting or review item
+  # already started, so its move back to running is a resume and reads no gate. Nor does a queued item
+  # that records a session: fleet-dispatch start set it after the launch, and judged the hold before it,
+  # so a gh or rbw blip read here would leave that live session on an item still queued.
+  if [ "$to" = running ] && [ "$from" = queued ] && [ -z "$(fm_get "$f" session)" ]; then
+    local HOLD HOLD_DEAD
+    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
+    [ -z "$HOLD_DEAD" ] || die "$slug cannot start: $HOLD"
+    [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start: dispatch starts it once that clears, or clear it first (agent-queue set $slug after= or tags= without it)"
   fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
