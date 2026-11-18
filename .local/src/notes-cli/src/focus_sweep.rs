@@ -298,6 +298,17 @@ after
     }
 
     #[test]
+    fn golden_indented_scaffold_is_a_rows_note_like_the_nvim_buffer_sweep() {
+        // An indented `---` or `### Low` is a row's note, not scaffold: the CLI trimmed it and
+        // stripped it where the nvim save kept it. The input and expected text are shared files
+        // that tests/integ/notes_save_sweep.bats ("a save keeps an indented ---") runs through
+        // the real plugin, so either side drifting fails its own test.
+        let note = include_str!("../tests/fixtures/focus-sweep/indented-scaffold.in.md");
+        let expected = include_str!("../tests/fixtures/focus-sweep/indented-scaffold.out.md");
+        assert_eq!(sweep_content(note).unwrap(), expected);
+    }
+
+    #[test]
     fn golden_tag_grammar_matches_the_nvim_buffer_sweep() {
         // `#high-priority` is no priority, a glued or code-spanned `#urgent` is no tag, and
         // `#HIGH.` is high. tests/integ/notes_save_sweep.bats ("a save reads a priority tag by

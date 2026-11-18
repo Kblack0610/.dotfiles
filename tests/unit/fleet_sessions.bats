@@ -2315,6 +2315,36 @@ research_item() {
   [ "$(jq -sr 'map("\(.target) \(.bucket)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED,lab/s9:3 PARKED' ]
 }
 
+@test "end to end: a park whose pane is gone, or sits in a session made after the park, is no PARKED row; an unreadable server decides nothing (ar-2679)" {
+  # 2026-11-17: dotfiles-agent-2/4/6/16/17:1 and home-config-agent-10:1 ledgers outlived a lab restart (panes
+  # %1156-%1325 gone), so the pace line told the shepherd to unpark a second claude into a live window.
+  landed_fixture
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/parked"
+  now=$(date +%s)
+  printf '%s\n' session=s2 server=lab target=lab/s2:3 pane=%9 direct=1 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( now - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s2:3"
+  # the tmux stub lists the lab server's panes from this fixture, "<pane id> <session_created>" per line, and nothing without it
+  rm -f "$NOTES_FIXTURE/tmux.panes"
+  panes="$NOTES_FIXTURE/tmux.panes.lab"
+  # the server answers nothing: nothing says the pane is gone, so the park stays
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # its pane is still there, in a session made before the park; a rename of that session changes nothing
+  printf '%s\n' "%1 $now" "%9 $(( now - 7200 ))" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # the server restarted: the pane id is gone ...
+  printf '%s\n' "%1 $now" "%2 $now" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
+  # ... or recycled by a session made after the park
+  printf '%s\n' "%9 $(( now - 60 ))" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
+}
+
 @test "end to end: the plan's checklist decides DONE, LANDED with next_phase, or null phases" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

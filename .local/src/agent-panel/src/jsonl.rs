@@ -981,17 +981,24 @@ pub fn context_window(model: &str) -> Option<u64> {
 /// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
 /// and one a later prompt names (a pasted screen, a shepherd nudge) are not its plan. Why: a
 /// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
+/// A session whose last plan-mode entry is an exit with `planExists: false` left plan mode
+/// without writing the file, so the plan-mode path is not its plan (a reminder while it drafts
+/// carries the same flag and still is). Why: a chat that only toggled out of plan mode read
+/// STALLED "its plan file is missing" and was told to restore it (2026-11-18, ar-3088).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     const REATTACHED: &str = "\"type\":\"plan_file_reference\"";
     let plans = crate::session::home().join(".claude/plans");
-    if let Some(i) = text.rfind(KEY) {
+    let line_of = |at: usize| {
+        let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
+        &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
+    };
+    let unwritten_exit = |line: &str| {
+        line.contains("\"type\":\"plan_mode_exit\"") && line.contains("\"planExists\":false")
+    };
+    if let Some(i) = text.rfind(KEY).filter(|&i| !unwritten_exit(line_of(i))) {
         // A compaction re-attaches the plan-mode file (a plan_file_reference attachment): that
         // is not the session choosing it again, so landings count from the last real entry.
-        let line_of = |at: usize| {
-            let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
-            &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
-        };
         let chosen = text
             .rmatch_indices(KEY)
             .map(|(at, _)| at)
@@ -2438,6 +2445,23 @@ mod tests {
         fs::remove_file(&p).ok();
         let none = fleet_info(Path::new("/no/such/file.jsonl"));
         assert_eq!((none.context_tokens, none.plan_file.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn plan_file_ignores_a_plan_mode_exit_that_never_wrote_one() {
+        let exit = r#"{"type":"attachment","attachment":{"type":"plan_mode_exit","planFilePath":"/h/.claude/plans/never.md","planExists":false}}"#;
+        let p = tmpfile("neverplan", &[exit, exit]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+        let written = r#"{"type":"attachment","attachment":{"type":"plan_mode_exit","planFilePath":"/h/.claude/plans/real.md","planExists":true}}"#;
+        let p = tmpfile("realplan", &[exit, written]);
+        assert_eq!(fleet_info(&p).plan_file, "/h/.claude/plans/real.md");
+        fs::remove_file(&p).ok();
+        // Still drafting: plan mode's reminder carries planExists false, and it is the plan.
+        let drafting = r#"{"type":"attachment","attachment":{"type":"plan_mode","reminderType":"full","planFilePath":"/h/.claude/plans/draft.md","planExists":false}}"#;
+        let p = tmpfile("draftplan", &[drafting]);
+        assert_eq!(fleet_info(&p).plan_file, "/h/.claude/plans/draft.md");
+        fs::remove_file(&p).ok();
     }
 
     #[test]
