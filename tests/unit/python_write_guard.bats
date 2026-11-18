@@ -7,6 +7,8 @@ setup() {
   HOOK="$BATS_TEST_DIRNAME/../../.claude/hooks/python-write-guard.py"
   # Not scratch, and need not exist: the hook decides from the command alone.
   R=/srv/python-write-guard-fake
+  # A ~ path must not resolve under TMPDIR, where the suite's throwaway HOME sits: the hook reads that as scratch.
+  export HOME=/srv/python-write-guard-home
 }
 
 # decision <command> [permission mode]: allow, or the deny reason. The hook prints nothing to allow.
