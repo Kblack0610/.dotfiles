@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # push.sh: which gatus key a host pushes.
 #
-# THE BUG: the name defaulted to linux-cachyos on every Linux host, so the fleet home
+# THE BUG: the name defaulted to linux-cachyos on every Linux host, so the laptop
 # (razer-laptop) and any other box pushed as the workstation. Gatus kept one green dot
 # for all of them, and the workstation read alive while it was off.
 
