@@ -210,8 +210,9 @@ startup_mark board
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
 WORK_TEXT=""
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
-  # One second on the queue lock, not its 10: `show` queues behind writers, and a dispatched
-  # start under load spent about 10 s here (48 of 300 starts, 2026-11-18, ar-2756). A miss
+  # A 1 s wait on the queue lock (about 2 s worst case: the gate and the lock each get it),
+  # not 10: `show` queues behind writers, and a dispatched start under load spent about
+  # 10 s here (48 of 300 starts, 2026-11-17, ar-2756). A miss
   # leaves WORK_TEXT to the branch, and the first prompt adds the matched lessons.
   WORK_TEXT=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
     sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)

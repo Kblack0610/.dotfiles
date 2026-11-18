@@ -51,11 +51,12 @@ start() { echo '{"source":"startup","session_id":"sid-1"}' | bash "$DEPLOY/sessi
   [ ! -e "$SANDBOX/calls.log" ] || fail "the hook called: $(cat "$SANDBOX/calls.log")"
 }
 
-@test "the queue read waits one second on the queue lock, not ten (ar-2756)" {
-  printf '#!/usr/bin/env bash\necho "${AGENT_QUEUE_LOCK_WAIT-unset}" > "%s/wait.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/agent-queue"
+@test "the queue read waits 1s on the queue lock, not ten, and a lock timeout (exit 75) still answers (ar-2756)" {
+  printf '#!/usr/bin/env bash\necho "${AGENT_QUEUE_LOCK_WAIT-unset}" > "%s/wait.log"\nexit 75\n' "$SANDBOX" > "$SANDBOX/bin/agent-queue"
   chmod +x "$SANDBOX/bin/agent-queue"
   AGENT_QUEUE_ITEM=some-item run start
   assert_success
+  assert_output --partial 'Session Preflight: repo'
   assert_equal "$(cat "$SANDBOX/wait.log")" 1
 }
 
