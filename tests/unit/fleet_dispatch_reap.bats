@@ -72,7 +72,7 @@ load 'fleet_dispatch/common'
   stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
-  grep -q 'filed orphan.md on the board' "$FLEET_DISPATCH_DIR/log.md"
+  grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"
   run reconcile_plans
   assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
   grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"

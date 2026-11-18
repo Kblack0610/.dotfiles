@@ -5074,8 +5074,9 @@ cmd_reap() {
 # reconcile_plans -- file an approved plan its session left behind on the board: one low row whose
 # session runs the open phases (agent-queue add --plan from a filer; only the board fills the queue),
 # and dispatch pulls it like any row. Once only: a plan the queue has held, or one filed here before
-# (PLANS_FILED), is not filed again, or every pass would add a row. One still open after that shows in
-# plans_unqueued. `- [-]` is how a human drops a phase.
+# (PLANS_FILED), is not filed again, or every pass would add a row. ask-sweep reads PLANS_FILED too,
+# so it asks the human about no plan filed here. One still open after that shows in plans_unqueued.
+# `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
@@ -5088,10 +5089,10 @@ reconcile_plans() {
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "$plan" <<<"$held" && continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority low --from auto:plans 2>&1); rc=$?
-    if [ "$rc" -eq "$AQ_EX_HELD" ]; then
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
-      logline "filed $(basename "$plan") on the board to run its open phases: its session is gone"
-    elif [ "$rc" -ne 0 ]; then
+      logline "filed $(basename "$plan") to run its open phases: its session is gone"
+    else
       say "could not file the phases of $plan: $out"
     fi
   done <<<"$orphans"

@@ -248,6 +248,22 @@ show() { git -C "$1" show "master:$2"; }
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
 }
 
+@test "the background sync drops its caller's descriptors, so it holds no caller's lock" {
+  # The fork waits up to LOCK_WAIT_S on the sync lock: an inherited agent-queue fd 8 held every queue
+  # write behind it (2026-11-18, agent-land's record refused while a long sync ran).
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock"
+  flock 7
+  ( flock 8 && STORE_SYNC_FG=0 on a --now --bg ) 8>"$SANDBOX/caller.lock"
+  run flock -n "$SANDBOX/caller.lock" true
+  # Leave the fork nothing to push, so it exits once it has the lock.
+  git -C "$SANDBOX/a" checkout -q -- queue/item.md
+  exec 7>&-
+  assert_success
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
