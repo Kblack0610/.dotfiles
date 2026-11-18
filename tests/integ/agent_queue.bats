@@ -3475,13 +3475,48 @@ second line of the brief
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-held.md "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
 }
 
-@test "the cap never holds an urgent, red, --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
+@test "at the cap an urgent or red add returns the last-ranked item that has a row, never the human's, urgent work or a chain head; with none it is held" {
+  # The human, 2026-11-18: urgent must not skip the cap; it pushes out something less critical.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --tags '#requested' --slug req "asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug head "chain head" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --after head --slug tail "chain tail" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  for s in a req head b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=5
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for urgent u1 under the cap of 5"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" end_reason)" = returned ]
+  assert_called "ptask game --agent unstart gm-b"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags red --slug r1 "red one"
+  assert_success
+  assert_output --partial "returned a to its board row"
+  # Negative controls: what is left is the human's, #requested, a chain head and urgent or red work.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u2 "urgent two"
+  assert_failure 5
+  assert_output --partial "held by admission, nothing was queued: 5 items can start now against a cap of 5"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "h,head,r1,req,tail,u1"
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .returned_7d]' <<<"$output")" '[1,2]'
+  run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "b
+a"
+}
+
+@test "the cap never holds a --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --slug human "human"
   assert_failure 5
-  "$AQ" add --project game --tags red --slug broken "broken" >/dev/null
-  "$AQ" add --project game --priority urgent --slug urgent "urgent" >/dev/null
+  # Urgent and red are held too when nothing can be returned: "one" is the human's.
+  run "$AQ" add --project game --tags red --slug broken "broken"
+  assert_failure 5
+  run "$AQ" add --project game --priority urgent --slug urgent "urgent"
+  assert_failure 5
   "$AQ" add --project game --running --session s1 --slug mine "mine" >/dev/null
   "$AQ" add --project game --after one --slug chained "chained" >/dev/null
   "$AQ" add --project game --tags at:2099-01-01T09:00 --slug dated "dated" >/dev/null
@@ -3495,8 +3530,8 @@ second line of the brief
   assert_failure
   assert_output --partial "only the board fills the queue"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "broken,canary,chained,dated,gm-3,mine,one,urgent,verify-e-1"
-  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 3 ]
+  assert_output "canary,chained,dated,gm-3,mine,one,verify-e-1"
+  [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {
@@ -3576,10 +3611,12 @@ second line of the brief
   assert_output --partial "against a cap of 1 (item:parent)"
   "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
-  "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
+  # Urgent is capped too (2026-11-18): with nothing to return it is held, from the item.
+  run "$AQ" add --project game --slug now --priority urgent "urgent for the human"
+  assert_failure 5
+  assert_output --partial "against a cap of 1 (item:parent)"
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
   [ "$(field "$(item queued dated)" from)" = human ]
-  [ "$(field "$(item queued now)" from)" = human ]
   [ "$(field "$(item running own)" from)" = human ]
 }
 
