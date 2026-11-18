@@ -278,6 +278,9 @@ cmd_due() {
           "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\""
         elif (.nudged | not) and ((.owners // []) | length) > 0 and ($item | startswith("row:")) then
           "nudge SHARED: \(.test) is quarantined on main under board row \($item[4:]); tell \(.owners | join(",")): do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark \(.id) \"\(.fact)\""
+        elif (.nudged | not) and ((.owners // []) | length) > 0 and ($item | startswith("board:")) then
+          ($item[6:] | split(":")) as $b
+          | "nudge SHARED: \(.test) is owned by board row \($b[1]) on \($b[0]), which dispatch starts; tell \(.owners | join(",")): do not gate again on it, merge main once it lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         elif (.nudged | not) and ((.owners // []) | length) > 0 then
           "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         else empty end )
@@ -879,10 +882,12 @@ shared_items() {
 
 # shared_sample: one owner holds each shared red episode (ar-623); who counts as an owner is the
 # SHARED row of .local/src/docs/fleet-states.md (ar-2448, ar-2523). An owner that stops being one
-# is dropped and the fact matched again; with no owner, one item is filed per test. A failed add,
-# or one whose slug is taken by an item that does not own the test, files nothing, so the row
-# stays a `shared red:` line the pass escalates; a queue that reads empty or a document that
-# cannot be read changes nothing.
+# is dropped and the fact matched again; with no owner, one is filed per test. Only the board fills
+# the queue (QUEUE.md "Admission"), so the add leaves a board row, which owns the test while it is
+# open and hands it to the item dispatch makes of it (shared_board_owner). A failed add, or one
+# whose slug is taken by an item that does not own the test, files nothing, so the row stays a
+# `shared red:` line the pass escalates; a queue that reads empty or a document that cannot be
+# read changes nothing.
 # SHARED_OWNER_JQ: the active items as inputs, $t the test without its parameters, $q main's
 # unexpired quarantine entries, $full the test as it failed; each owning item's slug out, then
 # row:<row> per quarantine row. A quarantine entry with no parameters covers every case.
@@ -910,10 +915,25 @@ shared_owners() {
 }
 # shared_owner_name <owner>: an owner as a reader names it.
 shared_owner_name() {
-  case "$1" in row:*) echo "board row ${1#row:} (quarantined on main)" ;; *) echo "queue item $1" ;; esac
+  case "$1" in
+    row:*) echo "board row ${1#row:} (quarantined on main)" ;;
+    board:*) local r="${1#board:}"; echo "board row ${r#*:} on ${r%%:*}" ;;
+    *) echo "queue item $1" ;;
+  esac
+}
+# shared_board_owner <board:project:id>: what a filed board row is now, from $active and the board:
+# the item dispatch made of the row, else the row while it is open, else nothing (closed or
+# dropped). A board that cannot be read keeps the row.
+shared_board_owner() {
+  local r="${1#board:}" item board
+  item="$(jq -r --arg r "$r" 'select(.row == $r) | .slug' <<<"$active" | head -1)"
+  [ -z "$item" ] || { echo "$item"; return; }
+  board="$(notes board --json 2>/dev/null)" || board=""
+  [ -n "$board" ] || { echo "$1"; return; }
+  jq -e --arg p "${r%%:*}" --arg k "${r#*:}" 'any(.rows[]?; .project == $p and .id == $k)' <<<"$board" >/dev/null && echo "$1"
 }
 shared_sample() {
-  local fact test reason cm active quarantine slug out keep rows
+  local fact test reason cm active quarantine slug out keep rows now
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
   quarantine="$(shared_quarantine)"
@@ -923,8 +943,13 @@ shared_sample() {
   [ -n "$active" ] && keep="$(while IFS=$'\t' read -r fact test reason; do
       slug="$(awk -F'\t' -v f="$fact" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
       [ -n "$fact" ] && [ -n "$slug" ] || continue
-      if shared_owners "$test" | grep -qxF -- "$slug"; then
+      now="$slug"
+      case "$slug" in board:*) now="$(shared_board_owner "$slug")" ;; esac
+      if [ -n "$now" ] && [ "$now" = "$slug" ] && [ "${slug#board:}" != "$slug" ]; then
         printf '%s\t%s\n' "$fact" "$slug"
+      elif [ -n "$now" ] && shared_owners "$test" | grep -qxF -- "$now"; then
+        [ "$now" = "$slug" ] || cmd_log "shared red: $test is owned by queue item $now, started from $(shared_owner_name "$slug")" >/dev/null
+        printf '%s\t%s\n' "$fact" "$now"
       else
         cmd_log "shared red: $test is no longer owned by $(shared_owner_name "$slug"): it landed, is low, does not name the test, or its quarantine ended" >/dev/null
       fi
@@ -940,6 +965,8 @@ shared_sample() {
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
       slug="$(sed -n '/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
+      # the board-only add (agent-queue overflow_row): its row owns the test until dispatch starts it
+      [ -n "$slug" ] || slug="$(sed -n '/.*its board row \([^ ]*\) on \([^ ]*\) is left.*/{s//board:\2:\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
         slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"

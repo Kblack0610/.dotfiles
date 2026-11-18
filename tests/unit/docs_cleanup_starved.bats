@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # agentctl-docs-cleanup queues its pass where the queue lets it start (high, tagged cleanup), and a
 # pass that sat queued past DOCS_CLEANUP_STARVED_DAYS is a failure, not another quiet NOOP night.
-# A pass held by admission past that long is starved the same way. agent-queue and skill-drift are stubs; the stub queue records what it was asked to add.
+# A pass the add filed as a board row (exit 5, QUEUE.md "Admission") and left unstarted that long is starved the same way. agent-queue, notes and skill-drift are stubs; the stub queue records what it was asked to add.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -17,9 +17,15 @@ setup() {
 #!/usr/bin/env bash
 case "$1" in
   show) echo "${ITEM_JSON:-{\}}" ;;
-  add) printf '%s\n' "$@" > "$ADD_LOG"; exit "${ADD_RC:-0}" ;;
+  add) printf '%s\n' "$@" > "$ADD_LOG"
+       if [ "${ADD_RC:-0}" = 5 ]; then
+         echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
+         echo "agent-queue: its board row ${ROW_ID:-ar-9} on agent-runtime is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+       fi
+       exit "${ADD_RC:-0}" ;;
 esac
 STUB
+  printf '#!/usr/bin/env bash\n[ "$1 $2" = "board --json" ] && cat "$HOME/board.json"\n' > "$BIN/notes"
   cat > "$BIN/skill-drift" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -79,15 +85,36 @@ STUB
   assert_output --partial 'starved: queued since'
 }
 
-@test "admission holding the add: the first night is a NOOP, past the limit a failure, a queued pass clears it" {
+@test "a board-only add files the pass as a board row, which is the open pass until the board drops it (P1, #2419)" {
+  printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"open"}]}\n' > "$HOME/board.json"
   ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
   assert_success
-  assert_output --partial 'held the pass (admission)'
-  date -d '3 days ago' +%s > "$AGENTCTL_INBOX/held-since"
+  refute_output --partial 'held'
+  run cut -f1,2 "$AGENTCTL_INBOX/row"
+  assert_output "$(printf 'agent-runtime\tar-9')"
+  rm "$ADD_LOG"
   ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
-  assert_failure 1
-  assert_output --partial 'held by queue admission since'
+  assert_success
+  assert_output --partial 'is board row ar-9 on agent-runtime, open, not filing another'
+  assert [ ! -e "$ADD_LOG" ]
+  printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"doing"}]}\n' > "$HOME/board.json"
+  printf 'agent-runtime\tar-9\t%s\n' "$(date -d '9 days ago' +%s)" > "$AGENTCTL_INBOX/row"
   run "$BIN/agentctl-docs-cleanup"
   assert_success
-  assert [ ! -e "$AGENTCTL_INBOX/held-since" ]
+  assert_output --partial 'ar-9 on agent-runtime, doing'
+}
+
+@test "a board row left unstarted past the limit is starved; one the board dropped files the next pass" {
+  printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"open"}]}\n' > "$HOME/board.json"
+  mkdir -p "$AGENTCTL_INBOX"
+  printf 'agent-runtime\tar-9\t%s\n' "$(date -d '3 days ago' +%s)" > "$AGENTCTL_INBOX/row"
+  run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial 'starved: board row ar-9 on agent-runtime filed'
+  printf '{"rows":[]}\n' > "$HOME/board.json"
+  ADD_RC=5 ROW_ID=ar-10 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert [ -e "$ADD_LOG" ]
+  run cut -f2 "$AGENTCTL_INBOX/row"
+  assert_output ar-10
 }
