@@ -186,16 +186,19 @@ prom_lines() {
 if [ "$MODE" = publish ]; then
   # The runner's outcome: under agentctl a pass that declares none reads STALLED. An unread slug is
   # in the file (sentry_issues_up 0), so one bad slug is not a failed pass; a pass that published
-  # nothing or read no slug at all is.
-  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc")
-  why=""
-  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  # nothing or read no slug at all is. prom_textfile skips a machine with no collector silently,
+  # but this runner's only product is that file, so there a run under agentctl is FAILED.
+  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc") || n=""
+  why="" verdict=FAILED
+  if ! prom_textfile_target >/dev/null; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! [[ "$n" =~ ^[0-9]+$ && "$unread" =~ ^[0-9]+$ ]]; then why="could not count the projects in its own report"
   elif ! prom_textfile sentry_issues.prom prom_lines "$doc"; then
     why="could not write sentry_issues.prom"
     echo "sentry-issues: $why" >&2
-  elif [ "${unread:-0}" = "${n:-0}" ]; then why="no Sentry project could be read (${n:-0} slugs)"
+  elif [ "$n" = 0 ]; then verdict=NOOP why="no Sentry project is visible on this machine"
+  elif [ "$unread" = "$n" ]; then why="no Sentry project could be read ($n slugs)"
+  else verdict=WORKED why="$n slugs, $unread unread"
   fi
-  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
-  else proof_runner_outcome WORKED "$n slugs, $unread unread"; fi
+  proof_runner_outcome "$verdict" "$why"
 fi
 printf '%s\n' "$doc"

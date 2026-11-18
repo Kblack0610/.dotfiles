@@ -143,7 +143,24 @@ LAST='<https://sentry.io/x>; rel="previous"; results="true"; cursor="0:0:1", <ht
   assert_success
   # negative control: outside agentctl nothing is declared
   AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$SI" publish
+  assert_success
+  [ -s "$PROM_TEXTFILE_DIR/sentry_issues.prom" ]
   [ ! -e "$SANDBOX/bstate" ]
+}
+
+@test "under agentctl a machine with no Sentry project visible is NOOP, and a die is one FAILED, declared once" {
+  printf '%s\n' '{"sentry_org": "testorg", "trackers": {"apociseum": {"type": "game"}}}' > "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SI" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/sentry-issues/last-outcome")" NOOP
+  # A die inside the slugs subshell leaves the outcome to its caller's die.
+  PROJECT_MAP_FILE="$SANDBOX/gone.json" AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/dstate" run "$SI" publish
+  assert_failure
+  assert_equal "$(cat "$SANDBOX/dstate/sentry-issues/last-outcome")" FAILED
+  run grep -c 'outcome=' "$SANDBOX/dstate/sentry-issues/activity.log"
+  assert_output 1
+  run grep -F 'could not read the Sentry projects' "$SANDBOX/dstate/sentry-issues/activity.log"
+  assert_success
 }
 
 @test "more than the page bound is that slug's error, never a short count" {
