@@ -123,6 +123,24 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line 'status: cancelled'
 }
 
+@test "a restore, a dispatch brief or a resume the fleet typed leaves the session's asks pending" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=merge it|b=close it' "merge #12?")"
+  # Taken as the human, each names none of the options and would cancel the ask.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item x: merge it once CI is green."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/one-shot close it\n\nThis is agent-queue item x, and that item is its only record."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"This session was parked to save Claude usage, and it is now resumed on the alt account."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"You were signed out and are signed in again. Carry on with what you were doing."}'
+  # With no table to tell, nothing settles: losing an ask is the worse side.
+  TYPED_PREFIXES="$SANDBOX/none.conf" bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"b"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # Negative control: the human naming an option answers it.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"a"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
+}
+
 @test "a prompt a /loop or cron fired before is not the human answering, in either form" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "dispatch is starting nothing; lift the gate?")"
