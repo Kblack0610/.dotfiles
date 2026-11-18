@@ -1701,14 +1701,33 @@ pub fn brief_details(lines: &[&str], i: usize) -> Vec<String> {
             let rest = &d[lead.min(strip)..];
             // A line indented with a tab alone, which the writers never produce, loses it as
             // before; a tab after the step is the brief's own (a Makefile recipe) and stays.
-            if lead == 0 {
+            unescape_task(if lead == 0 {
                 rest.trim_start_matches('\t')
             } else {
                 rest
-            }
-            .to_string()
+            })
         })
         .collect()
+}
+
+/// A brief line that reads as a task row (`- [ ] P1 one`, a plan's checklist) written as
+/// `- \[ ] P1 one`, so the sheet's parser never takes it for a row of its own: written by
+/// [`brief_lines`], read back by [`brief_details`] as it went in. Markdown shows both alike.
+fn escape_task(line: &str) -> String {
+    if is_task(line) {
+        let at = line.len() - line.trim_start().len() + 2;
+        format!("{}\\{}", &line[..at], &line[at..])
+    } else {
+        line.to_string()
+    }
+}
+
+fn unescape_task(line: &str) -> String {
+    let at = line.len() - line.trim_start().len();
+    match line[at..].strip_prefix("- \\[") {
+        Some(rest) if is_task(&format!("- [{rest}")) => format!("{}- [{rest}", &line[..at]),
+        _ => line.to_string(),
+    }
 }
 
 /// `text` with the indent its non-blank lines share taken off, so a block typed under a row
@@ -1783,14 +1802,63 @@ where
     let indent = &row[..row.len() - row.trim_start().len()];
     let at = brief_end(&lines, idx);
     let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
-    for (k, d) in detail_lines(indent, details).into_iter().enumerate() {
+    for (k, d) in brief_lines(indent, details).into_iter().enumerate() {
         out.insert(at + k, d);
     }
+    Some(rejoin(content, out))
+}
+
+/// [`detail_lines`] for a row's brief on a sheet: a line that would read as a task row is
+/// escaped ([`escape_task`]), so a brief holding a checklist adds no rows. The inbox writers
+/// keep [`detail_lines`], whose nested asks are rows on purpose.
+pub fn brief_lines(indent: &str, details: &[String]) -> Vec<String> {
+    let step = indent.len() + 2;
+    detail_lines(indent, details)
+        .into_iter()
+        .map(|l| {
+            if l.is_empty() {
+                l
+            } else {
+                format!("{}{}", &l[..step], escape_task(&l[step..]))
+            }
+        })
+        .collect()
+}
+
+/// Replace the brief of the first row in `## heading` that `pred` accepts with `details`: its
+/// own detail lines go and the new ones follow the row line, while its child rows, each with
+/// its own block, stay in order after them. None when the heading is absent or nothing matched.
+pub fn replace_brief<P>(content: &str, heading: &str, pred: P, details: &[String]) -> Option<String>
+where
+    P: Fn(&str) -> bool,
+{
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
+    let row = lines[idx];
+    let indent = &row[..row.len() - row.trim_start().len()];
+    let end = brief_end(&lines, idx);
+    let mut out: Vec<String> = lines[..=idx].iter().map(|s| (*s).to_string()).collect();
+    out.extend(brief_lines(indent, details));
+    let mut j = idx + 1;
+    while j < end {
+        if is_task(lines[j]) {
+            let child_end = brief_end(&lines, j).min(end);
+            out.extend(lines[j..child_end].iter().map(|s| (*s).to_string()));
+            j = child_end;
+        } else {
+            j += 1;
+        }
+    }
+    out.extend(lines[end..].iter().map(|s| (*s).to_string()));
+    Some(rejoin(content, out))
+}
+
+fn rejoin(content: &str, out: Vec<String>) -> String {
     let mut joined = out.join("\n");
     if content.ends_with('\n') && !joined.ends_with('\n') {
         joined.push('\n');
     }
-    Some(joined)
+    joined
 }
 
 #[cfg(test)]
@@ -3009,6 +3077,35 @@ after
         let lines = ["- intro", "", "  - [ ] ask one", "  - [ ] ask two"];
         assert_eq!(row_block_end(&lines, 0), 1);
         assert_eq!(brief_end(&lines, 0), 4);
+    }
+
+    // A brief holding a checklist adds no rows: its task-looking lines are escaped on the
+    // sheet and read back as written; a replace keeps the row's real children.
+    #[test]
+    fn a_brief_checklist_is_no_row_and_a_replace_keeps_the_children() {
+        let brief = "## Phases\n- [ ] P1 one\n  - [x] nested\nplain";
+        let c = "## Tasks\n- [ ] a #high\n- [ ] b\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a "), &[brief.into()]).unwrap();
+        let tasks: Vec<&str> = out.lines().filter(|l| is_task(l)).collect();
+        assert_eq!(tasks, ["- [ ] a #high", "- [ ] b"], "{out}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(brief_details(&lines, 1).join("\n"), brief, "{out}");
+        let c = "## Tasks\n- [ ] e\n  old one\n  - [ ] child\n    its detail\n  old two\n- [ ] f\n  keep\n";
+        let out = replace_brief(
+            c,
+            "Tasks",
+            |l| l.contains(" e"),
+            &["new\n\n- [ ] step".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "## Tasks\n- [ ] e\n  new\n\n  - \\[ ] step\n  - [ ] child\n    its detail\n- [ ] f\n  keep\n"
+        );
+        assert_eq!(
+            replace_brief(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
+            None
+        );
     }
 
     #[test]

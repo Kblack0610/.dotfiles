@@ -273,8 +273,11 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for a typed line"
   [ "$(tasks | grep -c '^- \[ \] chore')" = 1 ] || fail "$(tasks)"
+  # the steps are the row's brief: stored escaped, so none is a row of its own
   run tasks
-  assert_output --partial '  - [ ] step two'
+  assert_output --partial '  - \[ ] step two'
+  run notes board --json
+  [ "$(jq '[.rows[] | select(.text | test("step (one|two)"))] | length' <<<"$output")" = 0 ] || fail "a step is a board row: $output"
 }
 
 @test "the lane rule names the projects an untagged agent worker takes, and only with such a worker" {

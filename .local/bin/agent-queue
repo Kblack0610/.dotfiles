@@ -38,7 +38,7 @@
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
-#   retask <slug> [task...]    replace a queued item's task (the brief its session gets), from args or stdin
+#   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back in the queue, held on that agent-hold or ask
@@ -1055,26 +1055,28 @@ project_board() {
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
-# brief_args <task> [<row-text>] -> sets BRIEF_ARGS to one `--detail "brief: <line>"` pair per non-blank line of the
-# task, markers off (an unclosed one cut at its opener). A task that is one line of 80 characters or less
-# sets none when its board row already says it: <row-text>, when given, is that row's text.
-# The `brief:` prefix keeps a line that starts `- [ ]` from reading as a child row.
-BRIEF_ARGS=()
-brief_args() {
-  local l clean
-  BRIEF_ARGS=()
-  clean="$(sed -E 's/<!--[^>]*-->//g; s/<!--.*$//; s/^.*-->//' <<<"$1")"
-  [ "$(grep -c '[^[:space:]]' <<<"$clean")" -gt 1 ] || [ "${#clean}" -gt 80 ] || { [ -n "${2:-}" ] && [ "$clean" != "$2" ]; } || return 0
-  while IFS= read -r l; do [ -z "${l//[[:space:]]/}" ] || BRIEF_ARGS+=(--detail "brief: $l"); done <<<"$clean"
+# bare_words < text -> each line without markers or #tags: a row's words, as the board compares them.
+bare_words() { sed -E 's/<!--[^>]*-->//g; s/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//'; }
+
+# row_brief <row words> <body> -> the brief a row holds for the task <body>: the body whole, markers
+# off (an unclosed one cut at its opener), less its first line when that line is the row's own
+# words, so a one-line task adds no brief and a long title the row was cut from stays whole. The
+# row is the task's one record (QUEUE.md); notes stores a brief line shaped like a task escaped, so
+# a checklist in it is never a child row.
+row_brief() {
+  local body first rest
+  body="$(sed -E 's/<!--[^>]*-->//g; s/<!--.*$//; s/^.*-->//' <<<"$2")"
+  first="$(head -1 <<<"$body")" rest="$(tail -n +2 <<<"$body")"
+  if [ "$(bare_words <<<"$first")" = "$(bare_words <<<"$1")" ]; then printf '%s' "$rest"; else printf '%s' "$body"; fi
 }
 
 # overflow_row <project> <title> <priority> <epic> <want> <task> -- an add over the cap leaves its board
-# row un-started, ranked as filed (`#requested` first) with the whole task under it as `brief:` lines,
+# row un-started, ranked as filed (`#requested` first) with the whole task under it as its brief,
 # and says so on stderr. A project with no board to file on gets the command to run by hand: the
 # caller still holds the task, and nothing was written.
 overflow_row() {
   local kept board prof id
-  kept="$(file_story "$1" "$2" "$3" "$4" "$5" keep "$6")"
+  kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep)"
   if [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
     echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
@@ -1083,7 +1085,7 @@ overflow_row() {
   fi
 }
 
-# file_story <project> <title> <priority> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
+# file_story <project> <title> <priority> <epic> <want> <body> [<keep>] -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
@@ -1092,12 +1094,12 @@ overflow_row() {
 # machine load the item runs at was no estimate, so the nightly `agentctl-inbox-triage --backlog --size`
 # scores the row. The row is started, so dispatch never promotes it a second time. An open
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
-# code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
+# code files nothing, and a failed write never stops the add. The row is the task: the item's
+# <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
-# <keep> non-empty files the row un-started (an add over the cap, see overflow_row), and <brief> is the
-# whole task, kept under the row as `brief:` detail lines when it says more than the row does.
+# <keep> non-empty files the row un-started (an add over the cap, see overflow_row).
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=() keep="${6:-}" brief="${7:-}"
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() keep="${7:-}"
   [ -z "${5:-}" ] || want=(--want "$5")
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -1105,14 +1107,14 @@ file_story() {
   command -v notes >/dev/null || { echo "agent-queue: no story row filed: no notes on PATH" >&2; return 0; }
   [ "${4%-*}" = "$code" ] && of=" #of/$4"
   # The row's words: no markers or #tags of the task's own. The board refuses untyped text, so the
-  # row is `notes`'s typed form of them, cut to the board's 80; past that the whole line is its detail.
-  text="$(sed -E 's/<!--[^>]*-->//g; s/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$text")"
+  # row is `notes`'s typed form of them, cut to the board's 80.
+  text="$(bare_words <<<"$text")"
   [ -n "$text" ] || return 0
   row="$(notes --profile "$lab" ptask "$project" --agent propose -- "$text" 2>&1)" ||
     { echo "agent-queue: no story row filed on $project: ${row##*$'\n'}" >&2; return 0; }
-  [ -z "$brief" ] || brief_args "$brief" "$text"
-  if [ "${#BRIEF_ARGS[@]}" -gt 0 ]; then detail=("${BRIEF_ARGS[@]}")
-  elif [ "${#text}" -gt 80 ]; then detail=(--detail "$text"); fi
+  # `--detail=`: a brief that opens with a dash is its value, not a flag.
+  brief="$(row_brief "$row" "${6:-}")"
+  [ -z "$brief" ] || detail=("--detail=$brief")
   out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
@@ -1316,7 +1318,7 @@ cmd_add() {
            project="$named_project"
            echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
          fi
-         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want")"
+         [ -n "$story" ] || story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text")"
        fi ;;
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
@@ -1727,8 +1729,9 @@ dead_cause() {
 }
 
 # return <slug> --why <text> -- send an item back to its board: it closes as cancelled with end_reason:
-# returned, its board row is un-started, and every queued item after: it goes back too, transitively,
-# each with cancel_cause: naming the item returned. A plain cancel leaves those items dead (their
+# returned, its board row is un-started (the row holds the brief, so nothing goes with the item),
+# and every queued item after: it goes back too, transitively, each with cancel_cause: naming the
+# item returned. A plain cancel leaves those items dead (their
 # after: closed cancelled), and a cleanup that cancelled the dead ones one by one lost about 40 chains on
 # 2026-11-12 (ar-2299); a return takes the chain with it, so no item is left waiting on a closed one.
 # Only queued items wait on an item still open, so only they follow.
@@ -1749,7 +1752,7 @@ cmd_return() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
-  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=() briefs=()
+  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=()
   while [ "$i" -lt "${#chain[@]}" ]; do
     s="${chain[i]}"; i=$((i + 1))
     while IFS= read -r g; do
@@ -1764,8 +1767,6 @@ cmd_return() {
   why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
-    # A board item's task is made from its row, so only another origin has a brief to keep.
-    case "$(fm_get "${files[i]}" from)" in board:*) briefs+=("") ;; *) briefs+=("$(fm_body "${files[i]}")") ;; esac
   done
   for i in "${!chain[@]}"; do
     # The root keeps the cause it was already dead by, if any; each follower names the item returned.
@@ -1778,7 +1779,6 @@ cmd_return() {
   local rc=0
   for i in "${!chain[@]}"; do
     [ -n "${rows[i]}" ] || continue
-    keep_brief "${rows[i]}" "${profs[i]}" "${lanes[i]}" "${briefs[i]}"
     unstart_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" ||
       { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: $UNSTART_HINT" >&2; rc=1; }
   done
@@ -1890,21 +1890,6 @@ repoint_row() {
   case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
 }
 
-# keep_brief <row> <profile> <lane> <task> -- before a return un-starts the row, put the item's task
-# under it as `brief:` lines: the row alone is the one-line title, and a hand-written or plan brief
-# was lost with the item. A row that already carries a brief is left as it is, so a row returned
-# again does not grow a copy each time. A failed write warns and the return goes on.
-keep_brief() {
-  local row=$1 prof=$2 flag=()
-  case "$3" in '' | agent) flag=(--agent) ;; esac
-  brief_args "$4"
-  [ "${#BRIEF_ARGS[@]}" -gt 0 ] && command -v notes >/dev/null || return 0
-  notes ${prof:+--profile "$prof"} board --json 2>/dev/null | jq -e --arg p "${row%%:*}" --arg i "${row#*:}" \
-    'any(.rows[]?; .project == $p and .id == $i and any(.details[]?; startswith("brief:")))' >/dev/null 2>&1 && return 0
-  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" edit "${BRIEF_ARGS[@]}" "${row#*:}" >/dev/null 2>&1 ||
-    echo "agent-queue: the brief of ${row#*:} on ${row%%:*} was not kept on its row" >&2
-}
-
 # unstart_row <row> <profile> <lane> -- un-start that board row through notes, the rows' one writer
 # (the agent lane's flag and the profile as mark_row gives them). Fails when notes does, with the
 # command to run by hand in UNSTART_HINT. The caller has let the queue lock go.
@@ -1920,14 +1905,34 @@ unstart_row() {
 # for a task that holds a wrong fact, since the task is what its session is briefed with. A started
 # item is refused: its session already has the brief, so tell the session instead. The header stays
 # as filed (its row, title and holds); `set type= area=` when the correction changes the item's kind.
+# The row is the task's record, so its brief is rewritten first (row_brief, `notes ptask edit
+# --brief`), and the item's body is then the snapshot of the new task; a row that cannot be
+# rewritten leaves both as they were.
 cmd_retask() {
-  local slug="${1:?usage: agent-queue retask <slug> [task...]}" f text tmp was
+  local slug="${1:?usage: agent-queue retask <slug> [task...]}" f text tmp was row prof flag=() words out
   shift
   if [ $# -gt 0 ]; then text="$*"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   [ "$(state_of "$f")" = queued ] || die "$slug is $(state_of "$f"): its session already has the brief; tell the session"
+  row="$(item_row "$f")"
+  if [ -n "$row" ]; then
+    prof="$(fm_get "$f" profile)"
+    case "$(fm_get "$f" lane)" in '' | agent) flag=(--agent) ;; esac
+    # notes writes the row and may call agent-queue: the lock goes first, as in close_row_on_item.
+    unlock
+    command -v notes >/dev/null || die "$slug: no notes on PATH to rewrite its board row ${row#*:}"
+    words="$(notes board --json 2>/dev/null | jq -r --arg p "${row%%:*}" --arg k "${row#*:}" \
+      'first(.rows[]? | select(.project == $p and .id == $k) | .text) // empty')"
+    [ -n "$words" ] || die "$slug: its board row ${row#*:} is not open on ${row%%:*}, so nothing was rewritten"
+    out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" edit "${row#*:}" "--brief=$(row_brief "$words" "$text")" 2>&1)" ||
+      die "$slug: its board row ${row#*:} on ${row%%:*} was not rewritten, so neither was the item: ${out##*$'\n'}"
+    lock
+    f="$(find_item "$slug")"
+    [ -n "$f" ] && [ "$(state_of "$f")" = queued ] ||
+      die "$slug started while its row was rewritten: row ${row#*:} has the new brief, its session the old; tell the session"
+  fi
   was="$(fm_body "$f" | head -1)"
   tmp="$(mktemp "$(dirname "$f")/.retask.XXXXXX")" || die "cannot write in $(dirname "$f")"
   { awk '{ print } $0 == "---" { exit }' "$f"; printf '%s\n' "$text"; } > "$tmp" && mv -- "$tmp" "$f"
