@@ -4344,6 +4344,11 @@ STUB
   out_row game '{session_id: "s1", account: "claude-bnb", updated_epoch: ($t - 3600), tokens_total: 100}'
   out_row game '{session_id: "s2", account: "claude", updated_epoch: ($t - 3600), tokens_total: 300}'
   out_row game '{session_id: "s3", account: "claude", updated_epoch: ($t - 3600), tokens_total: 100}'
+  # Codex sessions priced from the harnesses.json table by agentctl-session-outcomes, one unpriced;
+  # s6 is a Claude row with no account.
+  out_row game '{session_id: "s4", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: 3.5, cost_src: "price"}'
+  out_row game '{session_id: "s5", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: null}'
+  out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
   stub_prom 'case "$*" in
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
@@ -4351,7 +4356,7 @@ STUB
 esac'
 }
 
-@test "sources: points, dollars and landed PRs per source; an item lands by account, account:, session or harness source, and the rest are counted unattributed" {
+@test "sources: points, dollars and landed PRs per source; an item lands by account, account:, session or harness source, and the rest are counted unattributed by why" {
   sources_fixture
   {
     echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
@@ -4361,18 +4366,26 @@ esac'
     echo '{"slug":"e","agent":"codex","status":"failed"}'
     echo '{"slug":"f","status":"ok","pr":"o/r#5"}'
     echo '{"slug":"g","agent":"claude-cloud","status":"ok","pr":"o/r#6"}'
+    echo '{"slug":"h","agent":"claude-cloud","account":"main","status":"ok","pr":"o/r#7"}'
+    echo '{"slug":"i","status":"ok","pr":"o/r#8","sessions":"live-1"}'
+    echo '{"slug":"j","status":"ok","pr":"o/r#9","sessions":"s6"}'
+    echo '{"slug":"k","account":"claude-old","status":"ok","pr":"o/r#10"}'
   } > "$ITEMS"
   run "$SUBJECT" sources --json
   assert_success
-  assert_equal "$(jq -c '[.read.points, .read.usd, .unattributed, has("sessions")]' <<<"$output")" '[true,true,2,false]'
-  # alt has no login email, so its dollars are unknown, not $0; the lazer pool counts its key reserve's PR
+  assert_equal "$(jq -c '[.read.points, .read.usd, .unattributed, .unattributed_why, has("sessions")]' <<<"$output")" \
+    '[true,true,5,{"no_account":1,"no_outcome":1,"no_session":2,"unknown_account":1},false]'
+  # alt has no login email, so its dollars are unknown, not $0; the lazer pool counts its key reserve's PR;
+  # codex's are its priced sessions' cost_usd (the unpriced one adds nothing, never $0); claude-cloud has no
+  # source, so h lands on its account
   assert_equal "$(jq -c '[.sources[] | [.name, .points, .usd, .usd_src, .landed, .usd_per_point, .prs_per_point, .points_per_pr]]' <<<"$output")" \
-    '[["main",10,50,"list",1,5,0.1,10],["bnb",4,30,"list",2,7.5,0.5,2],["codex",null,null,null,0,null,null,null],["alt",null,null,"list",0,null,null,null],["lazer",2,20,"gateway",1,10,0.5,2],["reserve",5,10,"gateway",1,2,0.2,5]]'
+    '[["main",10,50,"list",2,5,0.2,5],["bnb",4,30,"list",2,7.5,0.5,2],["codex",null,3.5,"list",0,null,null,null],["alt",null,null,"list",0,null,null,null],["lazer",2,20,"gateway",1,10,0.5,2],["reserve",5,10,"gateway",1,2,0.2,5]]'
   run "$SUBJECT" sources
   assert_success
   assert_line '| bnb | claude | 20% | 4 | $30 list | 2 | $7.5 | 0.5 | 2 | - |'
+  assert_line '| codex | codex | 5% | - | $3.5 list | 0 | - | - | - | - |'
   assert_line '| reserve | litellm-key | 50% | 5 | $10 gateway | 1 | $2 | 0.2 | 5 | lazer |'
-  assert_line --partial '- landed on no source: 2'
+  assert_line "- landed on no source: 5 (1 whose sessions' outcome rows name no account, 1 whose sessions have no outcome row yet (a hand session's lands when it ends), 2 name no session, 1 whose account is no source's)"
   run "$SUBJECT" sources --bogus
   assert_failure 2
 }
