@@ -895,8 +895,13 @@ live_reds() { live_tagged red; }
 # watch_reds -> how many red items of a tripped watch (tags `red watch`, fleet-bench triage) are
 # running, or queued and not held: each one widens the red floor by one.
 watch_reds() {
-  agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
-    | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null || echo 0
+  # One count, 0 when the queue cannot be read: under pipefail a locked queue failed the pipe after jq
+  # had printed 0 for the empty input, so `|| echo 0` made it "0\n0" and every pass died in the red
+  # floor's arithmetic (2026-11-18 00:51 to 01:36, nothing started).
+  local n
+  n=$(agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
+    | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null) || n=0
+  echo "${n:-0}"
 }
 
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
