@@ -533,6 +533,18 @@ fj_run() {
   assert_output '[["o/fj",4]]'
 }
 
+@test "forgejo: a fleet worker's token file answers when rbw does not (a worker has none)" {
+  fj_list o/fj
+  touch "$FJD/locked"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'stdin: header = "Authorization: token worker-tok"' "$FJD/calls"
+  refute_output 0
+}
+
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
   fj_list o/fj
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"

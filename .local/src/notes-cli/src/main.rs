@@ -611,7 +611,8 @@ enum PtaskCmd {
         all: bool,
     },
     /// Add a task to the open version, or aim it at a later release with --to. Exit 3 and
-    /// write nothing when an open row with the same text is already on the sheet
+    /// write nothing when an open row on the sheet has the same text, nearly the same text,
+    /// or lands the same PR
     Add {
         /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
@@ -800,6 +801,19 @@ enum PtaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`), by the
+    /// scoring a near-duplicate is refused by. Reads only. The triager's shortlist of the rows
+    /// a line may repeat
+    Similar {
+        /// How many rows at most
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// One JSON array of `{id, percent, text}` instead
+        #[arg(long)]
+        json: bool,
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        text: Vec<String>,
+    },
     /// Take the first inbox line matching the query off `## Inbox` and onto the board as
     /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
     /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
@@ -811,6 +825,9 @@ enum PtaskCmd {
         /// It duplicates this open row (its id): its words join that row as a detail line
         #[arg(long, value_name = "ID", conflicts_with_all = ["rows", "to", "detail"])]
         dup: Option<String>,
+        /// It asks for no row: the line leaves the inbox, recorded as `dropped` with `--why`
+        #[arg(long, conflicts_with_all = ["rows", "dup", "to", "detail", "want"])]
+        skip: bool,
         /// File it on this project's board instead (any profile)
         #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
@@ -884,8 +901,12 @@ enum OutboxCmd {
         raw: Vec<String>,
     },
     /// Take the line that is RAW byte for byte out of the outbox, filing nothing, because the
-    /// person said it needs no row (the sweep's write path for a "drop" answer)
+    /// person said it needs no row (the sweep's write path for a "drop" answer), or the triager
+    /// skipped a session's follow-up
     Drop {
+        /// Why it was dropped, kept on its `dropped` event
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -1252,6 +1273,7 @@ fn main() -> Result<()> {
                 | Some(
                     PtaskCmd::List { .. }
                     | PtaskCmd::Inbox { .. }
+                    | PtaskCmd::Similar { .. }
                     | PtaskCmd::Propose { .. }
                     | PtaskCmd::Redate { dry_run: true, .. },
                 ) => None,
@@ -1342,9 +1364,13 @@ fn main() -> Result<()> {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
                 }
+                Some(PtaskCmd::Similar { top, json, text }) => {
+                    project_tasks::similar_rows(&prof, &name, &text.join(" "), top, json, lane)?
+                }
                 Some(PtaskCmd::File {
                     rows,
                     dup,
+                    skip,
                     project,
                     lane: to_lane,
                     to,
@@ -1364,6 +1390,7 @@ fn main() -> Result<()> {
                         want: want.as_deref().map(projects::want_channel).transpose()?,
                         why,
                         how: match dup {
+                            _ if skip => project_tasks::How::Skip,
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {
                                 texts: rows,
@@ -1468,7 +1495,9 @@ fn main() -> Result<()> {
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
                 outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
-            Some(OutboxCmd::Drop { raw }) => outbox::drop_line(&prof, &log, &raw.join(" "))?,
+            Some(OutboxCmd::Drop { why, raw }) => {
+                outbox::drop_line(&prof, &log, &raw.join(" "), why.as_deref())?
+            }
         },
         Cmd::Log {
             steps: true, json, ..
