@@ -3685,6 +3685,14 @@ already"
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
   assert_line --index 1 "shared true true true true"
+  # Past 1 MB the log moves to .1 and starts again.
+  head -c 1048576 /dev/zero > "$log"
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  assert_failure 75
+  [ "$(stat -c %s "$log.1")" = 1048576 ]
+  [ "$(wc -l < "$log")" = 1 ]
 }
 
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body

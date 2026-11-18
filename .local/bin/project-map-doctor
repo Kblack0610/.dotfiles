@@ -678,7 +678,7 @@ fi
 # agentctl-session-outcomes on the first session with a PR there (tilecast, 2026-11-18). Read from
 # the feed as schedules-sync last cached it, so a list merged but not yet deployed still fails.
 sync_json="$(dirname "${SCHEDULES_RUNS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/ci/runs.jsonl}")/sync.json"
-fj_mapped="$(jq -r '(.trackers // {})[] | objects | .forgejo // empty | ascii_downcase' "$MAP_FILE" 2>/dev/null | sort -u)"
+fj_mapped="$(jq -r '(.trackers // {})[] | objects | .forgejo | strings | ascii_downcase' "$MAP_FILE" 2>/dev/null | sort -u)"
 if [ -z "$fj_mapped" ]; then
   skip "the map names no Forgejo repo; no exporter list to check"
 elif ! fj_fed="$(jq -er '.exporter.forgejo_repos | arrays | .[] | ascii_downcase' "$sync_json" 2>/dev/null)"; then

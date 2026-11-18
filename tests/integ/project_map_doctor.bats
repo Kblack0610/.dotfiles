@@ -678,8 +678,9 @@ JSON
 # NEGATIVE CONTROL: before it, a slug the feed lacked surfaced only as session-outcomes' nightly
 # STALLED (tilecast, 2026-11-18).
 fj_feed() {
-  mkdir -p "$HOME/.local/state/ci"
-  jq -n --argjson r "$1" '{exporter: {forgejo_repos: $r}}' > "$HOME/.local/state/ci/sync.json"
+  export SCHEDULES_RUNS_LEDGER="$HOME/ci/runs.jsonl"
+  mkdir -p "$HOME/ci"
+  jq -n --argjson r "$1" '{exporter: {forgejo_repos: $r}}' > "$HOME/ci/sync.json"
   write_map <<'JSON'
 { "trackers": { "infra": { "forgejo": "o/Infra" }, "game": { "forgejo": "o/game" }, "web": { "github": "o/web" } } }
 JSON
@@ -697,7 +698,7 @@ JSON
 
 @test "forgejo feed: no synced feed is a SKIP, never a PASS" {
   fj_feed '[]'
-  rm "$HOME/.local/state/ci/sync.json"
+  rm "$HOME/ci/sync.json"
   run "$DOCTOR" "$MAP"
   assert_output --partial "SKIP  no exporter feed with forgejo_repos"
   refute_output --partial "Forgejo repos the map names"

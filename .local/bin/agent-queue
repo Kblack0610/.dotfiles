@@ -254,15 +254,27 @@ take_lock() {
 # waiters, and any child a holder started, since fd 8 is inherited. Called with both fds closed,
 # so the line never lists the taker itself. Best effort: it never changes the exit. Why: 108
 # dispatch starts and two runners timed out on the lock with nothing naming the holder (ar-3025).
+# The log moves to .1 past 1 MB, so a timeout storm cannot grow it without bound.
 lock_miss() {
-  local f id p
+  local f s line path pids p
+  [ ! -f "$AQ_LOCK_MISS_LOG" ] || [ "$(stat -c %s "$AQ_LOCK_MISS_LOG")" -lt 1048576 ] ||
+    mv -f "$AQ_LOCK_MISS_LOG" "$AQ_LOCK_MISS_LOG.1"
   {
     for f in .gate .lock; do
+      s=$(stat -c '%Hd %Ld %i' "$AQ_DIR/$f") || continue
       # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
-      id=$(printf '%02x:%02x:%s' $(stat -c '%Hd %Ld %i' "$AQ_DIR/$f")) || continue
-      awk -v f="$f" -v id="$id" '{ o = ($2 == "->") } $(6 + o) == id {
+      # shellcheck disable=SC2086 # s is three numbers, split on purpose
+      awk -v f="$f" -v id="$(printf '%02x:%02x:%s' $s)" '{ o = ($2 == "->") } $(6 + o) == id {
         printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
-      for p in $(fuser "$AQ_DIR/$f" 2>/dev/null); do
+    done
+    # One fuser scan for both files: it prints "<path>: <pid>..." per file in use, the path on
+    # stderr and the pids on stdout, so the merged stream pairs them. Split at the last colon: the
+    # path may hold spaces, a pid never holds a colon.
+    fuser "$AQ_DIR/.gate" "$AQ_DIR/.lock" 2>&1 | while IFS= read -r line; do
+      path=${line%:*} pids=${line##*:} && f=${path##*/}
+      for p in $pids; do
+        p=${p%%[!0-9]*}
+        [ -n "$p" ] || continue
         printf 'proc\t%s\t%s\t%s\n' "$f" "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" | cut -c1-300)"
       done
     done
