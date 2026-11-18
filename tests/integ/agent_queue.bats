@@ -2819,7 +2819,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- '--agent add -- feat(level): lv P1: one #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
