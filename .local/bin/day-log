@@ -232,7 +232,7 @@ day_prom() {
 rollup_prom() {
   jq -r --slurpfile week "$2" "$PROM_JQ"'
     def quantiles($l): [$l + {quantile: "0.5"}, .p50], [$l + {quantile: "0.9"}, .p90];
-    (.ci.repos // {} | to_entries) as $ci | .agents as $a | .work as $w
+    (.ci.repos // {} | to_entries) as $ci | (.ci.hosts // {} | to_entries) as $hosts | .agents as $a | .work as $w
     | gauge("agent_ci_pass_rate"; "Green over green plus red runs on the last finished day, by repo and workflow (hub ci pass).";
         $ci[] | .key as $r | (.value.workflows // {} | to_entries[]) | select(.value.pass != null) | [{repo: $r, workflow: .key}, .value.pass]),
       gauge("agent_ci_main_red"; "Red runs on the base branch on the last finished day, by repo (hub ci pass --branch).";
@@ -247,6 +247,11 @@ rollup_prom() {
         $ci[] | [{repo: .key}, .value.cost.regates.branches_regated]),
       gauge("agent_ci_quarantine_open"; "Tests in quarantine at the end of the last finished day, by repo (ci-cost).";
         $ci[] | [{repo: .key}, .value.cost.quarantine.open]),
+      # slots, not host: the scrape adds host="workstation" to every textfile series.
+      gauge("agent_ci_host_pass_rate"; "Green over green plus red of the last 50 jobs on one slot group of a host, at the end of the last finished day (hub ci hosts).";
+        $hosts[] | [{slots: .key}, .value.pass]),
+      gauge("agent_ci_host_jobs"; "Jobs counted in agent_ci_host_pass_rate, at most 50 (hub ci hosts).";
+        $hosts[] | [{slots: .key}, .value.runs]),
       gauge("agent_usage_sessions"; "Sessions on the last finished day, by kind (agent-usage).";
         ($a.by_kind // {} | to_entries[]) | [{kind: .key}, .value.sessions]),
       gauge("agent_usage_account_sessions"; "Sessions on the last finished day, by account (agent-usage).";
