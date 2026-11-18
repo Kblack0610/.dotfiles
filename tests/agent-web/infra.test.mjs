@@ -399,3 +399,14 @@ test("a pool has one colour in the share bar and the 7-day chart", () => {
   assert.equal(bar, colors.unity, "the share bar's unity is the chart's unity");
   assert.match(h, new RegExp(`<span class="chip sm" style="--c:${colors.unity.replace(/[()]/g, "\\$&")}">unity</span>`));
 });
+
+test("CI BUSY counts each runner once from cc:site_*, never the per-cap pool sums (ar-2900)", () => {
+  // A heavy host's Unity runner is in unity, light and heavy: the pools sum to 3/3 for one runner.
+  const cc = {
+    "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 },
+    "cc:site_slots": { local: 2 }, "cc:site_busy": { local: 1 },
+  };
+  const h = run(`kpis(${JSON.stringify(cc)})`);
+  assert.match(h, /CI BUSY[\s\S]*?1\/2/);
+  assert.doesNotMatch(h, /CI BUSY[\s\S]*?3\/3/);
+});

@@ -100,7 +100,7 @@ impl Queued {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Ci {
     pub hosts: u32,
-    /// Slots as `cc:pool_slots` counts them: a running runner, or an idle one not withheld; a
+    /// Slots once per runner, as `cc:site_slots` counts them: a running runner, or an idle one not withheld; a
     /// local gate counts as a slot and as busy.
     pub slots: u32,
     pub busy: u32,
@@ -537,7 +537,7 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct PoolMatch {
     pub pool: String,
-    /// Runners running or idle and not withheld, as `cc:pool_slots` counts them.
+    /// Runners running or idle and not withheld, each once.
     pub slots: u32,
     pub busy: u32,
     /// Runners in any state: no slot because they are down reads differently from no runner
