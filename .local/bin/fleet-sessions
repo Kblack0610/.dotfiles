@@ -75,6 +75,11 @@ set -uo pipefail
 # asked for one static timer in place of the human and coordinator keeps; revisit if a window closes
 # while the human is mid-way through it).
 : "${FLEET_IDLE_CLOSE_MIN:=60}"
+# A session the human labelled `chat` (fleet-sessions label <who> +chat) is their conversation and
+# stays until quiet this many hours, then closes like any other (provisional, 2026-11-18: the human
+# asked for 24h on a chat and 60m on everything else, hand-opened sessions included; revisit if a
+# chat closes while the human still means to come back to it, or chats pile up overnight).
+: "${FLEET_CHAT_CLOSE_H:=24}"
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -2286,14 +2291,14 @@ explain() {
 # close flow of .local/src/docs/fleet-states.md: a session stays only while closing it would lose
 # something (its claude is elsewhere, the human labelled it manual, a prompt in its pane, a turn
 # under way, unlanded work) or until one named step (queue its next phases, close its item);
-# otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN. A next phase is the queue's, not this
+# otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN, or FLEET_CHAT_CLOSE_H when labelled chat. A next phase is the queue's, not this
 # window's, when the window was dispatched for an item that has moved on.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
 # quiet steps: the shepherd's nudge came after the quiet time, and the session is always mid-turn.
 CLOSE_JQ='
-  def close_verdict($idle_close):
+  def close_verdict($idle_close; $chat_close_h):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
     | ([.idle_min // 0, .age_min // 0] | min) as $quiet
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
@@ -2307,6 +2312,8 @@ CLOSE_JQ='
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
       elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
+      elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60
+        then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
       elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
       elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
@@ -2319,7 +2326,7 @@ CLOSE_JQ='
       else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its /wind-down queues them (close --self reads after)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
-              else close_verdict($idle_close) end)'
+              else close_verdict($idle_close; $chat_close_h) end)'
 
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
@@ -2370,7 +2377,7 @@ close_self() {
 json_rows() {
   local closed
   closed="$(find "$CLOSED" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | jq -Rn '[inputs | {(.): true}] | add // {}')"
-  jq -cR --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson closed "$closed" \
+  jq -cR --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson chat_close_h "$FLEET_CHAT_CLOSE_H" --argjson closed "$closed" \
     ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       close_sent: ($closed[.[2]] // false),
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),

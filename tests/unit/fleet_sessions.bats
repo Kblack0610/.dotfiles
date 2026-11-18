@@ -4142,7 +4142,7 @@ main_change() {
 # fleet-states.md). base is a lab session, finished, quiet 90 minutes against a 60 minute timer,
 # nothing open. SELF names the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson idle_close 60 --arg self "${SELF:-}" \
+  jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
       blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
@@ -4195,6 +4195,19 @@ verdict() {
   [ "$(verdict '{human_ago_min: 5, on_screen: true}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{manual_mode: true}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "DONE", blockers: ["coordinating its plan while its phases run as items: p2"]}')" = "now: quiet 90m, nothing to land" ]
+}
+
+@test "close verdict: a session labelled chat stays until quiet FLEET_CHAT_CLOSE_H, then closes like any other (2026-11-18)" {
+  [ "$(verdict '{bucket: "CHAT", labels: ["chat"]}')" = "keep: chat: quiet 90m of 24h" ]
+  [ "$(verdict '{labels: ["chat"], idle_min: 1439, age_min: 2000}')" = "keep: chat: quiet 1439m of 24h" ]
+  [ "$(verdict '{bucket: "CHAT", labels: ["chat"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
+  # Past the chat timer every other keep still holds it.
+  [ "$(verdict '{labels: ["chat"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
+  # Asked by itself (the typed /wind-down auto, mid-turn and quiet 0), it reads past the timer, as every quiet step does.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0, labels: ["chat"]}')" = "now: quiet 0m, nothing to land" ]
+  # Negative control: the same rows with no label, or another label, close on the 60-minute timer.
+  [ "$(verdict '{bucket: "CHAT"}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "CHAT", labels: ["chatty"]}')" = "now: quiet 90m, nothing to land" ]
 }
 
 @test "close verdict: one chain whoever started the session" {
@@ -4262,11 +4275,11 @@ verdict() {
 }
 
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
   run json_rows < <(age_row 45)
   assert_success

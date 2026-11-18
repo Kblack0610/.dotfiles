@@ -8,7 +8,7 @@ setup() {
   load '../vendor/bats-assert/load'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   DIFF="$REPO_ROOT/.local/bin/fleet-close-diff"
-  unset FLEET_IDLE_CLOSE_MIN
+  unset FLEET_IDLE_CLOSE_MIN FLEET_CHAT_CLOSE_H
   export FLEET_STATE_FILE="$BATS_TEST_TMPDIR/state.json"
   jq -n '{sessions: [
     {session_id: "s1", target: "lab/a:1", bucket: "DONE", idle_min: 5, age_min: 500},
@@ -77,4 +77,24 @@ version() {
   assert_failure 1
   assert_output $'lab/a:1\tDONE\tafter -> now\tquiet 5m of 60m -> quiet 90m, nothing to land'
   refute_output --partial 'lab/b:1'
+}
+
+@test "fleet-close-diff: a version whose CLOSE_JQ names the chat threshold reads its own FLEET_CHAT_CLOSE_H" {
+  unset FLEET_CHAT_CLOSE_H
+  local chat='.close = (if .idle_min < $chat_close_h * 60 then {verdict: "keep", why: "quiet"} else {verdict: "now", why: "done"} end)'
+  version "$BATS_TEST_TMPDIR/a" "$KEEP"
+  version "$BATS_TEST_TMPDIR/b" "$chat"
+  printf '%s\n' ': "${FLEET_CHAT_CLOSE_H:=1}"' >>"$BATS_TEST_TMPDIR/b/.local/bin/fleet-sessions"
+  # s1 (quiet 5m) keeps in both; s2 (quiet 90m) is past b's one hour.
+  run --separate-stderr "$DIFF" "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+  assert_success
+  # The environment's value overrides it: at 2h, s2 keeps under b.
+  FLEET_CHAT_CLOSE_H=2 run --separate-stderr "$DIFF" "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
+  assert_failure 1
+  assert_output $'lab/b:1\tDONE\tnow -> keep\tdone -> quiet'
+  # Negative control: a version that names it with no default is a read error, not a guess.
+  version "$BATS_TEST_TMPDIR/c" "$chat"
+  run --separate-stderr "$DIFF" "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/c"
+  assert_failure 2
+  [[ "$stderr" == *"no FLEET_CHAT_CLOSE_H default"* ]]
 }

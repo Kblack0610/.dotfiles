@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-close-diff [--self] <rev-a> <rev-b|path>: every live session whose close verdict differs
-# between two versions of the close flow (fleet-sessions CLOSE_JQ and its FLEET_IDLE_CLOSE_MIN
-# default), read over the same facts: the fleet state document's sessions.
+# between two versions of the close flow (fleet-sessions CLOSE_JQ and its FLEET_IDLE_CLOSE_MIN and
+# FLEET_CHAT_CLOSE_H defaults), read over the same facts: the fleet state document's sessions.
 # A revision is any git rev of this repo; a path is a checkout or worktree, read as it is on disk.
 # --self reads each row as that session asking about itself (close --self, what /wind-down auto
 # runs). Prints one tab-separated line per changed session: target, bucket, verdict a -> verdict b,
@@ -44,16 +44,20 @@ default() {
 
 # verdicts <rev|path>: one {id, target, bucket, v, why} per session in the document.
 verdicts() {
-  local src prog idle out sid
+  local src prog out sid args
   src="$(source_of "$1")" || { echo "fleet-close-diff: cannot read fleet-sessions at $1" >&2; return 2; }
   prog="$(close_jq <<<"$src")" || { echo "fleet-close-diff: no CLOSE_JQ in $1" >&2; return 2; }
-  idle="$(default "$src" FLEET_IDLE_CLOSE_MIN)" || return 2
+  args=(--argjson idle_close "$(default "$src" FLEET_IDLE_CLOSE_MIN)") || return 2
+  # The chat threshold is read only by a version whose CLOSE_JQ names it (before 2026-11-18, none).
+  if grep -qF '$chat_close_h' <<<"$prog"; then
+    args+=(--argjson chat_close_h "$(default "$src" FLEET_CHAT_CLOSE_H)") || return 2
+  fi
   out='.close = null | '"$prog"' | {id: (.session_id // .target), target, bucket, v: (.close.verdict // "-"), why: (.close.why // "-")}'
   if [ "$self" = 0 ]; then
-    jq -c --argjson idle_close "$idle" ".sessions[] | $out" "$state"
+    jq -c "${args[@]}" ".sessions[] | $out" "$state"
   else
     jq -r '.sessions[].session_id // empty' "$state" | while read -r sid; do
-      jq -c --argjson idle_close "$idle" --arg self "$sid" \
+      jq -c "${args[@]}" --arg self "$sid" \
         ".sessions[] | select(.session_id == \$self) | $out" "$state"
     done
   fi
