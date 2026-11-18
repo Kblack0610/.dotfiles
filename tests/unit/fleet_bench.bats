@@ -24,7 +24,7 @@ setup() {
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
-  export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false   # nor the real ingest record or inboxes
+  export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
   export BENCH_BUDGET_CMD=false BENCH_BUDGET_FILE="$SANDBOX/budget.json"   # nor the real budget readers
@@ -3577,6 +3577,79 @@ pipeline_fixture() {
   export BENCH_STEPS_CMD=steps-stub
   run "$SUBJECT" pipeline --json
   [ "$(jq '.drift' <<<"$output")" = null ]
+}
+
+# pipeline_flow_fixture: pipeline_fixture plus the admission cap and the class mix, canned in $ADM
+# and $MIX (agent-queue admission --json, agent-queue mix --json), both inside their bounds.
+pipeline_flow_fixture() {
+  pipeline_fixture
+  ADM="$SANDBOX/adm.json" MIX="$SANDBOX/mix.json"
+  echo '{"on":true,"runnable":40,"limit":50,"held_7d":3,"admits":true}' > "$ADM"
+  jq -cn '{on: false, window_days: 7, starve_days: 3, starved: [], classes: [
+    {name: "bug", share: 20, runnable: 2, started: 3, recent: 1, pct: 30},
+    {name: "requested", share: 40, runnable: 5, started: 7, recent: 2, pct: 70},
+    {name: "research", share: 10, runnable: 0, started: 0, recent: 0, pct: 0}]}' > "$MIX"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ADM" > "$SANDBOX/bin/adm-stub"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$MIX" > "$SANDBOX/bin/mix-stub"
+  chmod +x "$SANDBOX/bin/adm-stub" "$SANDBOX/bin/mix-stub"
+  export BENCH_ADMISSION_CMD=adm-stub BENCH_MIX_CMD=mix-stub
+}
+
+@test "pipeline: shows the cap and each class's starts against its share, and --check cap, age and mix pass inside their bounds (plan P4)" {
+  pipeline_flow_fixture
+  run "$SUBJECT" pipeline
+  assert_success
+  assert_line 'cap: 40 runnable against a cap of 50'
+  assert_line 'mix (off), started in 7d against share: bug 3 (30% of 20%), requested 7 (70% of 40%), research 0 (0% of 10%)'
+  assert_line 'starved: none'
+  run "$SUBJECT" pipeline --json
+  [ "$(jq -c '[.admission.limit, (.mix.classes | length)]' <<<"$output")" = '[50,3]' ]
+  for c in cap age mix; do
+    run "$SUBJECT" pipeline --check "$c"
+    assert_success
+    assert_output ''
+  done
+}
+
+@test "pipeline --check: runnable over the cap, queued age past its bound and a starved class each trip their own check; an unreadable source exits 2" {
+  # NEGATIVE CONTROL: the same fixture, each source pushed past its bound in turn
+  pipeline_flow_fixture
+  echo '{"on":true,"runnable":53,"limit":50,"held_7d":3,"admits":false}' > "$ADM"
+  run "$SUBJECT" pipeline --check cap
+  assert_failure 1
+  assert_output 'runnable 53 is over the cap of 50'
+  run "$SUBJECT" pipeline
+  assert_line 'cap: 53 runnable against a cap of 50, over by 3'
+  # at the cap is the cap holding, not a bypass; a cap that is off never trips
+  echo '{"on":true,"runnable":50,"limit":50}' > "$ADM"
+  run "$SUBJECT" pipeline --check cap
+  assert_success
+  echo '{"on":false,"runnable":90,"limit":0}' > "$ADM"
+  run "$SUBJECT" pipeline --check cap
+  assert_success
+  run "$SUBJECT" pipeline --check age
+  assert_success
+  echo step_age_p90_queued_max=60 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" pipeline --check age
+  assert_failure 1
+  assert_output 'queued age p90 120m is past its bound of 60m'
+  jq -c '.starved = ["bug", "research"]' "$MIX" > "$MIX.new" && mv "$MIX.new" "$MIX"
+  run "$SUBJECT" pipeline --check mix
+  assert_failure 1
+  assert_output 'starved: bug, research (runnable, none started in 3d)'
+  run "$SUBJECT" pipeline
+  assert_line 'starved: bug, research, runnable and none started in 3d'
+  export BENCH_ADMISSION_CMD=false BENCH_MIX_CMD=false
+  run "$SUBJECT" pipeline --check cap
+  assert_failure 2
+  run "$SUBJECT" pipeline --check mix
+  assert_failure 2
+  run "$SUBJECT" pipeline
+  assert_success
+  assert_line 'cap: unreadable'
+  assert_line 'mix: unreadable'
+  run "$SUBJECT" pipeline --check
+  assert_failure 2
 }
 
 @test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {

@@ -48,9 +48,13 @@
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
 #                                2 with no SessionStart row in startup_stale_h or a start with no ready
 #                                time (the claude-startup watch)
-#   fleet-bench pipeline [--json]
+#   fleet-bench pipeline [--json | --check cap|age|mix]
 #                                where every item sits, inbox to done: WIP and age per step, in and out,
-#                                dwell, the bottleneck step and the record's drift from the queue folders
+#                                dwell, the bottleneck step and the record's drift from the queue folders,
+#                                the admission cap and each class of service against its share;
+#                                --check exits 1 on runnable over the cap, queued age p90 past its
+#                                bound or a starved class, 2 when its source cannot be read (one
+#                                Sentinel watch each)
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--compare C] [--json]
 #                                each windowed KPI over N days before a change landed against N after,
 #                                beside the same split at C (default N days earlier) as a control
@@ -144,7 +148,7 @@
 # Formulas, fields and outcomes: the fleet-bench skill.
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
-# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
+# BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
 # BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
@@ -254,6 +258,7 @@ set -uo pipefail
 : "${BENCH_QUEUE_CMD:=fleet-dispatch fill --dry-run --json}"   # rows dispatch would start after the live work
 : "${BENCH_ITEMS_CMD:=agent-queue list --json --state active}"   # the queue's items: work already asked for
 : "${BENCH_ADMISSION_CMD:=agent-queue admission --json}"   # the queue cap: adds it held
+: "${BENCH_MIX_CMD:=agent-queue mix --json}"   # each class of service: share, runnable, started, starved
 : "${BENCH_VITALS:=you=human_answered_per_day,buzzes_per_day outcome=requested_unstarted_h,landed_unverified quality=rework_candidate_7d,first_pass_share cost=cost_per_merged_item}"   # the front page: question=kpi,kpi in order; every view reads this list. Only what the human acts on: flow lives in the FLOW strip, trust in kpi --check
 : "${BENCH_LESSONS_CMD:=agentctl-session-outcomes lessons --cached --json}"   # each lesson with a sig: did it hold
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
@@ -2117,12 +2122,38 @@ pipeline_json() {
        steps: $rows}'
 }
 
-# pipeline [--json] -- pipeline_json, or a table of it with the bottleneck, the steps taking in more
-# than they let out over 24h, and the drift.
+# pipeline_check <cap|age|mix> -- one line and exit 1 when the queue's flow is off: runnable items over
+# the admission cap (an add got past it), the queued step's age p90 past its bound, or a class of
+# service starved (agent-queue mix). Exit 2 when its source cannot be read. Each is one Sentinel
+# watch (queue-over-cap, queue-age, queue-class-starved), so one that stays red masks no other.
+pipeline_check() {
+  local out
+  case "$1" in
+    cap) out=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -er 'select(.runnable | numbers)
+           | if .on and .runnable > .limit then "runnable \(.runnable) is over the cap of \(.limit)" else "" end') ;;
+    age) out=$(pipeline_json "$(now)" | jq -er '.steps[] | select(.step == "queued" and (.age_p90_min | numbers) and (.bound | numbers))
+           | if .age_p90_min > .bound then "queued age p90 \(.age_p90_min)m is past its bound of \(.bound)m" else "" end') ;;
+    mix) out=$($BENCH_MIX_CMD 2>/dev/null | jq -er 'select(.starved | arrays) | .starve_days as $d
+           | .starved | if length > 0 then "starved: \(join(", ")) (runnable, none started in \($d)d)" else "" end') ;;
+    *) say "usage: fleet-bench pipeline --check cap|age|mix"; return 2 ;;
+  esac || { say "pipeline --check $1: its source cannot be read"; return 2; }
+  [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
+}
+
+# pipeline [--json | --check cap|age|mix] -- pipeline_json with the admission cap and the class mix
+# (agent-queue mix), or a table of it with the bottleneck, the steps taking in more than they let out
+# over 24h, the drift, the cap and each class's starts against its share; --check is pipeline_check.
 cmd_pipeline() {
-  local json
-  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench pipeline [--json]"; return 2 ;; esac
+  local json adm mix
+  case "${1:-}" in
+    ""|--json) ;;
+    --check) pipeline_check "${2:-}"; return ;;
+    *) say "usage: fleet-bench pipeline [--json | --check cap|age|mix]"; return 2 ;;
+  esac
   json=$(pipeline_json "$(now)") || return 1
+  adm=$($BENCH_ADMISSION_CMD 2>/dev/null | jq -ce 'objects') || adm=null
+  mix=$($BENCH_MIX_CMD 2>/dev/null | jq -ce 'objects') || mix=null
+  json=$(jq -c --argjson a "$adm" --argjson m "$mix" '. + {admission: $a, mix: $m}' <<<"$json")
   [ "${1:-}" = --json ] && { printf '%s\n' "$json"; return 0; }
   jq -r 'def m: if . == null then "-" elif . >= 1440 then "\(. / 144 | round / 10)d" elif . >= 60 then "\(. / 6 | round / 10)h" else "\(.)m" end;
     def c: if . == null then "-" else tostring end;
@@ -2136,7 +2167,12 @@ cmd_pipeline() {
       | if length > 0 then "growing over 24h: \(join(", "))" else empty end),
     ([.steps[] | select((.problems_n // 0) > 0) | "\(.step) \(.problems_n)"]
       | if length > 0 then "problems over 24h: \(join(", "))" else empty end),
-    "drift: \(.drift | c) queue items the record and the queue folders place apart (it sees queue items from \(.items_since // "-"))"' <<<"$json"
+    "drift: \(.drift | c) queue items the record and the queue folders place apart (it sees queue items from \(.items_since // "-"))",
+    (.admission | if . == null then "cap: unreadable" elif .on | not then "cap: off, \(.runnable) runnable"
+      else "cap: \(.runnable) runnable against a cap of \(.limit)\(if .runnable > .limit then ", over by \(.runnable - .limit)" else "" end)" end),
+    (.mix | if . == null then "mix: unreadable"
+      else "mix (\(if .on then "on" else "off" end)), started in \(.window_days)d against share: \([.classes[] | "\(.name) \(.started) (\(.pct // 0)% of \(.share)%)"] | join(", "))",
+        "starved: \(if (.starved | length) > 0 then "\(.starved | join(", ")), runnable and none started in \(.starve_days)d" else "none" end)" end)' <<<"$json"
 }
 
 # ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
