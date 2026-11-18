@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# desk: which part fills each desktop slot (the bar, the notifier), and the one way
+# anything talks to whichever part is running. Usage doc: docs/desk.md.
+#
+#   desk current                  slot=part, one line per slot
+#   desk get <slot>               the part in one slot
+#   desk parts [<slot>]           what each slot accepts: slot part unit
+#   desk use <slot> <part>        record the part and switch to it now
+#   desk start                    start every slot's part (desk.service, at login)
+#   desk signal <module-id>...    re-run the bar chips on each module's signal number
+#   desk notify close|close-all|history|dnd
+#
+# systemd runs the parts and desk only picks; it never enables or masks a unit, because
+# ~/.config/systemd is this repo. State: ~/.local/state/desk/parts, slot=part lines.
+set -euo pipefail
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/desk/parts"
+
+die() { echo "desk: $*" >&2; exit "${2:-1}"; }
+
+# config.base is where every chip's signal number lives. Resolved from this script's
+# own checkout, so a worktree or the test sandbox reads its own copy.
+waybar_dir() {
+    [[ -n "${DESK_WAYBAR_DIR:-}" ]] && { echo "$DESK_WAYBAR_DIR"; return; }
+    echo "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/waybar"
+}
+
+# slot part unit binary. The first row of a slot is its default.
+parts() {
+    cat <<'EOF'
+bar waybar-classic waybar.service waybar
+bar waybar-modern waybar.service waybar
+notify dunst dunst.service dunst
+notify swaync swaync.service swaync
+EOF
+}
+
+row_of() { parts | awk -v s="$1" -v p="$2" '$1 == s && $2 == p'; }
+slots() { parts | awk '!seen[$1]++ { print $1 }'; }
+
+get() {
+    local slot="$1" part=""
+    parts | awk -v s="$slot" '$1 == s { found = 1 } END { exit !found }' || die "no slot '$slot' (slots: $(slots | xargs))" 2
+    [[ -r "$STATE" ]] && part="$(awk -F= -v s="$slot" '$1 == s { p = $2 } END { print p }' "$STATE")"
+    # A part this checkout no longer knows falls back to the default, so a stale
+    # state file never leaves a slot empty.
+    if [[ -z "$part" || -z "$(row_of "$slot" "$part")" ]]; then
+        part="$(parts | awk -v s="$slot" '$1 == s { print $2; exit }')"
+    fi
+    echo "$part"
+}
+
+unit_of() { row_of "$1" "$2" | awk '{ print $3 }'; }
+
+use() {
+    local slot="${1:?usage: desk use <slot> <part>}" part="${2:?usage: desk use <slot> <part>}" row bin old="" was
+    was="$(get "$slot")"
+    row="$(row_of "$slot" "$part")"
+    [[ -n "$row" ]] || die "'$part' is not a $slot part (parts: $(parts | awk -v s="$slot" '$1 == s { print $2 }' | xargs))" 2
+    bin="$(awk '{ print $4 }' <<<"$row")"
+    command -v "$bin" >/dev/null || die "$part needs $bin, which is not installed"
+    mkdir -p "$(dirname "$STATE")"
+    [[ -r "$STATE" ]] && old="$(cat "$STATE")"
+    # Recorded before the restart, because a part's launcher reads its own choice
+    # (waybar's launch.sh picks the layout); put back if the restart fails.
+    { [[ -n "$old" ]] && grep -v "^$slot=" <<<"$old" || true; echo "$slot=$part"; } > "$STATE.tmp"
+    mv "$STATE.tmp" "$STATE"
+    # restart, not start: two parts can share a unit (waybar's layouts), and restart
+    # starts a stopped unit, whose Conflicts= then stops the slot's other part.
+    if ! systemctl --user restart "$(unit_of "$slot" "$part")"; then
+        if [[ -n "$old" ]]; then printf '%s\n' "$old" > "$STATE"; else rm -f "$STATE"; fi
+        die "$part did not start; $slot stays $(get "$slot")"
+    fi
+    # waybar's custom/notify chip streams from the notifier it found at start, so a
+    # new notifier needs the bar to start again to show (or drop) that chip.
+    if [[ "$slot" == notify && "$part" != "$was" && "$(get bar)" == waybar-* ]]; then
+        systemctl --user restart waybar.service || echo "desk: the bar did not restart; its notify chip shows after the next one" >&2
+    fi
+    echo "$slot: $part"
+}
+
+start() {
+    local slot failed=0
+    for slot in $(slots); do
+        systemctl --user start "$(unit_of "$slot" "$(get "$slot")")" || { echo "desk: $slot did not start" >&2; failed=1; }
+    done
+    return "$failed"
+}
+
+# The signal number a module listens on, from its "signal" key in config.base or the
+# pin's config. Comment lines are skipped: config.base quotes "signal": 10 in prose.
+signal_of() {
+    local dir; dir="$(waybar_dir)"
+    awk -v id="$1" '
+        FNR == 1 { key = "" }
+        /^[[:space:]]*\/\// { next }
+        match($0, /^    "[^"]+"[[:space:]]*:/) { key = substr($0, 6); sub(/".*/, "", key) }
+        key == id && match($0, /"signal"[[:space:]]*:[[:space:]]*[0-9]+/) {
+            n = substr($0, RSTART, RLENGTH); sub(/.*:[[:space:]]*/, "", n); print n; exit
+        }' "$dir/config.base" "$dir/config.pin-full"
+}
+
+# Every id that has a number is signalled even when another has none; the unknown
+# ones are named and make the exit 2.
+signal() {
+    [[ $# -gt 0 ]] || die "usage: desk signal <module-id>..." 2
+    local id n nums=() missing=0
+    for id in "$@"; do
+        n="$(signal_of "$id")"
+        if [[ -n "$n" ]]; then nums+=("$n"); else echo "desk: no signal for '$id' in config.base" >&2; missing=1; fi
+    done
+    case "$(get bar)" in
+        waybar-*)
+            # -x: the process name only. -f would match any command line holding "waybar",
+            # this script's callers included. Both bars (main and pin) get it.
+            for n in $(printf '%s\n' "${nums[@]}" | sort -un); do
+                pkill "-RTMIN+$n" -x waybar 2>/dev/null || true
+            done ;;
+    esac
+    [[ "$missing" == 0 ]] || exit 2
+}
+notify() {
+    local verb="${1:-}"
+    case "$(get notify):$verb" in
+        dunst:close)     dunstctl close ;;
+        dunst:close-all) dunstctl close-all ;;
+        dunst:history)   dunstctl history-pop ;;
+        dunst:dnd)       dunstctl set-paused toggle ;;
+        # hide, not close: a hidden popup stays in the panel, as dunst keeps a closed one
+        # in its history. -sw: answer now, not after the panel animation.
+        swaync:close)     swaync-client --hide-latest ;;
+        swaync:close-all) swaync-client --hide-all ;;
+        swaync:history)   swaync-client -t -sw ;;
+        swaync:dnd)       swaync-client -d -sw ;;
+        *) die "usage: desk notify close|close-all|history|dnd" 2 ;;
+    esac
+}
+
+cmd="${1:-current}"
+shift || true
+case "$cmd" in
+    current) for s in $(slots); do echo "$s=$(get "$s")"; done ;;
+    get)     get "${1:?usage: desk get <slot>}" ;;
+    parts)   if [[ $# -gt 0 ]]; then parts | awk -v s="$1" '$1 == s { print $1, $2, $3 }'; else parts | awk '{ print $1, $2, $3 }'; fi ;;
+    use)     use "$@" ;;
+    start)   start ;;
+    signal)  signal "$@" ;;
+    notify)  notify "$@" ;;
+    -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *)       die "unknown command '$cmd' (desk --help)" 2 ;;
+esac
