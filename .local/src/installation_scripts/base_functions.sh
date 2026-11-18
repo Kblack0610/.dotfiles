@@ -444,15 +444,13 @@ build_fleet_tools() {
     build_local_rust_tools agent-panel agent-web
 }
 
-# Setup Git configuration
-setup_git() {
-    log_section "Configuring Git"
-    
-    git config --global user.name "Kenneth"
-    git config --global user.email "kblack0610@gmail.com"
-    git config --global credential.helper store
-    
-    # SSH key setup
+# This machine's own ssh key, for a machine you sign in to by hand: its own module (sshkey), so a
+# fleet node (--only base,fleet,dotfiles) never makes one. Git's identity and credential helper
+# are the stowed .gitconfig: writing them here first left a real ~/.gitconfig that stow then
+# refused to replace on a clean node.
+setup_ssh_key() {
+    log_section "SSH key"
+
     if [[ ! -f ~/.ssh/id_ed25519 ]]; then
         log_info "Generating SSH key..."
         mkdir -p ~/.ssh
@@ -780,7 +778,7 @@ install_all() {
     step desktop    install_gui
 
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private
@@ -795,7 +793,7 @@ export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
+export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
 export -f install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all

@@ -501,7 +501,7 @@ install_all() {
     
     # Additional setup
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_ai_memory

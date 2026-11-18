@@ -4,7 +4,7 @@
 # Usage:
 #   fleet-node install [--no-sudo] [install.sh args]
 #       the whole agent runtime, unattended: install.sh --yes --only base,fleet,dotfiles.
-#       A native host and the fleet-agent image run this one definition.
+#       A native host and any image built later run this one definition.
 #   fleet-node signin
 #       what only the human can do here, one line each: each Claude account with no setup
 #       token, gh, the private overlay. Prints nothing and exits 0 when none is left.

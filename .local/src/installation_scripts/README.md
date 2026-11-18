@@ -66,15 +66,15 @@ New optional thing? Put its packages in `packages.conf` as `PACKAGES_<NAME>[_<OS
 
 ### Fleet node
 
-A machine that runs agent sessions, a native host or the fleet-agent image, is set up by one command:
+A machine that runs agent sessions is set up by one command, `fleet-node`, the one node definition:
 
 ```bash
 fleet-node install      # install.sh --yes --only base,fleet,dotfiles: claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed dotfiles
-fleet-node signin       # what only you can do here, one line each (Claude accounts, gh, the private overlay, the store)
-fleet-node ready        # exit 0 once signin lists nothing; fleet-dispatch probes this over ssh
+fleet-node signin       # what only you can do here, one line each (a setup token per Claude account, gh, the private overlay)
+fleet-node ready        # exit 0 once every Claude account has a token here; fleet-dispatch probes this over ssh, and a node that fails it is not placed
 ```
 
-`--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Logins are never copied to a node; you sign each one in once.
+`--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Nothing here copies a login: you push each account's token from a machine with rbw unlocked (`claude-acct token push <host>`) and run `gh auth login`, once a node. The `sshkey` module (a hand-signed-in machine's own key) is not part of a node.
 
 ## Keeping install files up to date
 
@@ -156,7 +156,7 @@ install_lazygit()       # Git UI
 install_fonts()         # Nerd Fonts
 
 # Setup functions
-setup_git()             # Git configuration (usually not overridden)
+setup_ssh_key()         # This machine's ssh key (module sshkey; git identity is the stowed .gitconfig)
 apply_dotfiles()        # Stow dotfiles (usually not overridden)
 install_npm_packages()  # NPM global packages
 
@@ -212,7 +212,7 @@ What `install_all` runs, in order, and why each step exists. Most steps come fro
 | 7 | `install_rust` | base | Curls `rustup-init` (`-y`) if `rustc` isn't on PATH. Sources `~/.cargo/env` after install. |
 | 8 | `setup_docker` | **WSL override** | Writes `/etc/wsl.conf` with `[boot] systemd=true`, creates the `docker` group, adds `$USER` to it. Enables the docker service if systemd is already running; otherwise warns that `wsl --shutdown` from PowerShell is required first. |
 | 9 | `setup_postgres` | **WSL override** | `initdb` into `/var/lib/postgres/data` (UTF-8, `C.UTF-8` locale) as the `postgres` user. Uses `runuser` when running as root, `sudo -iu` otherwise. Does **not** auto-start the service - left for the user. |
-| 10 | `setup_git` | base | `git config --global user.{name,email}`, generates `~/.ssh/id_ed25519` if missing. |
+| 10 | `setup_ssh_key` | base | Generates `~/.ssh/id_ed25519` if missing (module sshkey; a fleet node skips it). Git identity is the stowed `.gitconfig`. |
 | 11 | `install_npm_packages` | base | `npm install -g` each item in `NPM_PACKAGES` (currently `@google/gemini-cli`, `@marp-team/marp-cli`, `@mermaid-js/mermaid-cli`, `@anthropic-ai/sandbox-runtime` pinned, the srt lane sandbox). marp-cli/mermaid-cli are the cross-OS floor for the `deck` CLI (mmdc renders `.mmd` sources) + the marp-slide skill; on macOS the Brewfile provides them instead. |
 | 12 | `apply_dotfiles` | **WSL override** | Backs up any non-symlink `~/.bashrc`/`~/.zshrc` to `*.preinstall.bak`, writes a WSL-tailored `.stow-local-ignore` (drops Hyprland/waybar/wofi/kitty/keyd/karabiner/aerospace/launchd/firefox/Code/cups/etc.), then `stow .` from `~/.dotfiles`. Sets `git config core.hooksPath .githooks`. |
 | 13 | `setup_ai_memory` | base | Creates `~/.agent/plans/` and symlinks `~/.claude/plans/` to it. Backs up an existing `~/.claude/plans` dir to `.bak` if it's not already a symlink. |

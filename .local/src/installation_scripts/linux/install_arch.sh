@@ -947,7 +947,7 @@ install_all() {
     step music       install_music
 
     step shell       install_fonts
-    step dotfiles    setup_git
+    step sshkey      setup_ssh_key
     step dev         install_npm_packages
     step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
