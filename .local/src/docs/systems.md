@@ -46,9 +46,10 @@ A row's `Applies` narrows it inside its system: a `ui` row for `game` only skips
 | deploy | base | Deploys are a script or workflow, never hand steps | not yet | A hand step is the one that gets skipped under pressure |
 | deploy | base | The deploy doc says how to roll back | `grep -qil rollback docs/operations/*.md "$REPO"/docs/operations/*.md 2>/dev/null` | A rollback first worked out during an outage takes hours |
 | telemetry | base | Errors and crashes from running builds reach a place the human reads | not yet | A fault nobody sees is found by a user |
-| docs | base | A README with build, run and test | `[ -f README.md ]` | It is the first thing a new contributor or agent reads |
-| docs | base | `docs/architecture.md` | `[ -f docs/architecture.md ]` | Without it every session rebuilds the system's shape from the code |
-| docs | base | A standards file, or a link to the shared one | `grep -rqil --include='*.md' standards README.md docs` | Review has nothing to hold a change to without one |
+| docs | base | A README with build, run and test | `t="$(doc_text README.md)" && grep -qi build <<<"$t" && grep -qiw run <<<"$t" && grep -qi test <<<"$t"` | It is the first thing a new contributor or agent reads |
+| docs | base | `docs/architecture.md` | `doc docs/architecture.md` | Without it every session rebuilds the system's shape from the code |
+| docs | base | A standards file, or a link to the shared one | `doc_grep standards README.md docs` | Review has nothing to hold a change to without one |
+| docs | base | A docs index, `docs/README.md`, that links each doc in the tree | `doc docs/README.md` | A doc no index links is a doc nobody finds, and a second copy gets written beside it |
 | security | base | No secret files are tracked | `git -C "$REPO" rev-parse --git-dir >/dev/null && ! git -C "$REPO" ls-files \| grep -Eq '(^\|/)\.env$\|\.pem$\|\.key$\|id_rsa'` | A committed secret is leaked for good once pushed |
 | security | base | A secret scan gates commits or PRs | `grep -rqil -e gitleaks -e trufflehog -e 'secret scan' "$REPO"/.github "$REPO"/.githooks "$REPO"/.pre-commit-config.yaml 2>/dev/null` | People do not spot a token in a diff reliably |
 | security | game, app | Dependencies pinned by a lockfile | `ls "$REPO"/pnpm-lock.yaml "$REPO"/package-lock.json "$REPO"/Packages/packages-lock.json "$REPO"/Cargo.lock 2>/dev/null \| grep -q .` | An unpinned dependency changes the build without a commit |

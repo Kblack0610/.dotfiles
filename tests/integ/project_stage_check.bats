@@ -26,20 +26,28 @@ setup() {
 
 Enforced from: 2026-11-19
 
-| Stage | Applies | Requirement | Check |
-|---|---|---|---|
-| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` |
-| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` |
-| dev | base | A README where the project lives | `[ -f README.md ]` |
-| dev | app | An app-only row | `false` |
-| alpha | base | Plays start to finish | human |
-| alpha | base | A deploy workflow | not yet: needs the forge API |
-| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` |
-| beta | base | A changelog | `[ -f CHANGELOG.md ]` |
+| Stage | Applies | Requirement | Check | Dept |
+|---|---|---|---|---|
+| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` | product |
+| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` | engineering |
+| dev | base | A README where the project lives | `[ -f README.md ]` | engineering |
+| dev | app | An app-only row | `false` | product |
+| alpha | base | Plays start to finish | human | product |
+| alpha | base | A deploy workflow | not yet: needs the forge API | ops |
+| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` | engineering |
+| beta | base | A changelog | `[ -f CHANGELOG.md ]` | engineering |
 
 ## Elsewhere
 
-| draft | base | A table outside Requirements | `false` |
+| draft | base | A table outside Requirements | `false` | product |
+
+## Departments
+
+| Id | Title | Question | Owns |
+| --- | --- | --- | --- |
+| product | Product | Is it the thing? | the brief |
+| engineering | Engineering | Does it build? | the README |
+| ops | Ops | Does it stay up? | the runbook |
 EOF
 
   # A game inside a monorepo: the packages live at the repo root, its README in its folder.
@@ -121,6 +129,102 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --stage beta --json
   assert_failure 1
   assert_equal "$(jq -c '[.fail, .blocks, .requirements[-1].result]' <<<"$output")" '[1,true,"FAIL"]'
+}
+
+@test "--by-dept groups each row under its department's title with a met count, in the Departments order" {
+  run "$CHECK" shooter --stage alpha --by-dept
+  assert_success
+  assert_line --index 0 'Product: 1/2 met'
+  assert_line --index 1 --regexp '^  PASS +draft +A lab sheet$'
+  assert_line --index 2 --regexp '^  HUMAN alpha +Plays start to finish$'
+  assert_line --index 3 'Engineering: 3/3 met'
+  assert_line --index 7 'Ops: 0/1 met'
+  assert_line --index 8 --regexp '^  TODO +alpha +A deploy workflow'
+  refute_output --partial 'app-only'
+  run "$CHECK" shooter --by-dept --json
+  assert_failure 2
+  assert_output --partial '--by-dept is a stage-mode view and takes only --stage'
+}
+
+@test "a Dept cell outside Departments, an empty one or a missing column exits 2 and names the row" {
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)product |$/\1sales |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'the Requirements row "A lab sheet" names Dept "sales"'
+  run "$CHECK" --requirements
+  assert_failure 2
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)sales |$/\1 |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+  sed -i 's/^\(| draft | base | A lab sheet | [^|]* |\).*$/\1/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+}
+
+@test "--json carries each row's dept, and every row of the shipped stages.md names a known one" {
+  run "$CHECK" shooter --stage alpha --json
+  assert_equal "$(jq -r '[.requirements[].dept] | join(" ")' <<<"$output")" 'product engineering engineering product ops engineering'
+  run bash -c '"$0" --requirements --json | jq -r "[.requirements[].dept] | unique | join(\" \")"' "$CHECK"
+  assert_output 'engineering ops product'
+  # NEGATIVE CONTROL: the real doc exits 2 when any row names a dept its Departments table lacks.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
+}
+
+# origin_repo: $REPO as a git repo whose origin/HEAD holds the game's docs/x.md, removed from the
+# working tree, the shape of a clone that is behind its remote.
+origin_repo() {
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm -r "$REPO/Assets/Games/Shooter/docs"
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| dev | base | A doc on origin | `doc docs/x.md` | engineering |
+| dev | base | Its text on origin | `doc_text docs/x.md \| grep -qx '## Rollback'` | ops |
+| dev | base | Its path on origin | `doc_files \| grep -qx docs/x.md` | engineering |
+| dev | base | A grep on origin | `doc_grep rollback docs` | ops |
+| dev | base | A doc nowhere | `doc docs/missing.md` | engineering |
+EOF2
+}
+
+@test "doc helpers read the project's folder on origin/HEAD, so a clone behind its remote still passes" {
+  origin_repo
+  run "$CHECK" shooter
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  # NEGATIVE CONTROL: a path on neither origin nor disk fails.
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  refute_output --partial 'no origin/HEAD'
+}
+
+@test "doc helpers read the working tree with no origin, and warn when origin has no origin/HEAD" {
+  origin_repo
+  git -C "$REPO" remote set-head origin -d
+  run "$CHECK" shooter
+  assert_output --partial 'has an origin but no origin/HEAD'
+  assert_line --regexp '^FAIL +dev +A doc on origin$'
+  git -C "$REPO" remote remove origin
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  run "$CHECK" shooter
+  refute_output --partial 'no origin/HEAD'
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
 }
 
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
@@ -350,7 +454,7 @@ DOC
 
 ## Requirements
 
-| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` |
+| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` | engineering |
 EOF2
   mkdir -p "$HOME/bin"; ln -s "$CHECK" "$HOME/bin/project-stage-check"
   PATH="$HOME/bin:$PATH" run "$CHECK" shooter
@@ -493,7 +597,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
 }
 
 @test "file: a title that passes on one row and fails on another stays open" {
-  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` | engineering |/' "$STAGES_DOC"
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
   printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
   board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
@@ -564,7 +668,12 @@ real_row() {
   local row
   row="$(grep -F "| $1" "$REPO_ROOT/.local/src/docs/stages.md" | head -1)"
   [ -n "$row" ] || { echo "no row: $1" >&2; return 1; }
-  printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n%s\n' "$row" > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n%s\n\n' "$row"; real_depts; } > "$STAGES_DOC"
+}
+
+# real_depts: the Departments section of the shipped stages.md, which every Dept cell must name.
+real_depts() {
+  awk '/^## /{p = ($0 == "## Departments")} p' "$REPO_ROOT/.local/src/docs/stages.md"
 }
 
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
@@ -612,8 +721,8 @@ rs_stub() {
 @test "stages.md: no draft or dev row reads where a project deploys (a deploy is not the app being live)" {
   # Every real draft and dev row, run for a project with a prod deploy: none may ask release-state,
   # the only source of deploy facts, so none can cap where a project deploys.
-  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n'
-    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; } > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n'
+    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; echo; real_depts; } > "$STAGES_DOC"
   rs_stub '{"shooter": {"stage": "draft", "rungs": ["prod"]}}'
   printf '#!/usr/bin/env bash\ntouch "%s"\ncat "%s"\n' "$SANDBOX/rs.asked" "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
   for stage in draft dev; do run "$CHECK" shooter --stage "$stage"; done
@@ -773,7 +882,7 @@ rs_stub() {
 
 ## Requirements
 
-| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` |
+| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` | engineering |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .skills]"' "$CHECK"
   assert_success
@@ -787,7 +896,7 @@ EOF2
 
 ## Requirements
 
-| beta |  | A row whose Applies cell is empty | `true` |
+| beta |  | A row whose Applies cell is empty | `true` | ops |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .requirement, .check]"' "$CHECK"
   assert_success
