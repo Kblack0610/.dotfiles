@@ -3816,3 +3816,23 @@ already"
   assert_output "returned hg-p3 and the items after it to be re-planned (ask $id3)"
   [ -z "$(item queued hg-late)" ]
 }
+
+@test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)"
+  # This week: requested 30 of 60 (0.5), feature 10 of 10 (1.0); research none (0), but its one item is held.
+  for i in $(seq 1 30); do mix_done "$today" "dr$i" human "do thing $i" 1; done
+  for i in $(seq 1 10); do mix_done "$today" "df$i" shepherd "feature done $i" 1; done
+  printf '%s\t%s\tgame\t%s\t1\n' "research(game): held question" research "held question" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r2 "asked 2"
+  "$AQ" add --project game --slug r3 "asked 3"
+  "$AQ" add --project game --from shepherd --slug f1 "feature 1"
+  "$AQ" add --project game --from shepherd --slug z1 --after r2 "research(game): held question"
+  n=0; for s in r2 r3 f1 z1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  jq '.on = true | .lag_places = 10' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"
+  # The floor is requested's 0.5, so feature is cut to 0.6 and both requested items go before it. Had
+  # held research's 0 set the floor, both would be cut to 0.1 and f1 would go second.
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd' '"
+  assert_success
+  assert_output 'z1 r2 r3 f1'
+}

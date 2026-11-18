@@ -898,10 +898,12 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # it starts nothing (next skips it). A class with no share goes after every class with one, and a
 # class with nothing in the bucket takes no place, so its turns go to the rest by their shares.
 # `lag_places` bounds what the window's history can do (the human, ask EF60vp: elastic, no rigidness):
-# at each bucket's start every class in it has its count cut to at most lag_places / (sum of shares)
-# above the lowest count/share among them, as CFS places a waking task near min_vruntime. So a class
-# served a lot this week waits about lag_places places at most, and one served little gets at most
-# lag_places * share / (sum of shares) places ahead. No lag_places is no bound. An AQ_CLASSES not
+# at each bucket's start every class with a runnable item in it has its count cut to at most
+# lag_places / (sum of shares) above the lowest count/share among them, as CFS places a waking task
+# near min_vruntime; a class with only held items there sets no floor, as it starts nothing. The cut
+# count carries into the next bucket like any other. So a class served a lot this week waits about
+# lag_places places at most, and one served little gets at most lag_places * share / (sum of shares)
+# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. An AQ_CLASSES not
 # `on: true`, or unreadable, is no mix.
 # The shares are the human's; DISPATCH_PROJECT_FLOOR (fleet-dispatch) is the separate project axis.
 AQ_CLASSES="${AGENT_QUEUE_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}"
@@ -918,7 +920,7 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | ([$share[] | select(. > 0)] | add // 0) as $sum
   | def ratio($c; $n): if ($share[$c] // 0) > 0 then (($n[$c] // 0) / $share[$c]) else infinite end;
   def bound: if $m.lag_places == null or $sum == 0 then . else
-      (.q | keys | map(select(($share[.] // 0) > 0))) as $in
+      (.q | to_entries | map(select(($share[.key] // 0) > 0 and any(.value[]; .hold == null)) | .key)) as $in
       | if ($in | length) == 0 then . else
           . as $s | (($in | map(ratio(.; $s.n)) | min) + $m.lag_places / $sum) as $top
           | reduce $in[] as $c (.; .n[$c] = ([(.n[$c] // 0), $top * $share[$c]] | min))
@@ -938,8 +940,9 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | .out;'
 
 # class_cfg [--mix] -> AQ_CLASSES on one line: a class list, a window_days of whole days (default 7)
-# and a lag_places, when set, of a number not below 0. Plain, it is the order's config and needs `on: true`; --mix (agent-queue mix) takes it on or off and
-# also needs a starve_days of whole days (default 3) inside the window. Only mix checks starve_days, so
+# and a lag_places, when set, of a number not below 0. Plain, it is the order's config and needs
+# `on: true`; --mix (agent-queue mix) takes it on or off and also needs a starve_days of whole days
+# (default 3) inside the window. Only mix checks starve_days, so
 # a bad watch setting never turns the order off. Any other file fails, printing nothing.
 class_cfg() {
   jq -ce --argjson mix "$([ "${1:-}" = --mix ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
@@ -981,7 +984,7 @@ mix_json() {
 cmd_mix() {
   local json='' cfg q s out
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
-  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, or a window_days or starve_days that is not whole days inside the window"
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, or a lag_places that is not a number of 0 or more"
   q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
     | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
   s="$(class_started "$cfg")" || die "the started items could not be read"
