@@ -311,15 +311,17 @@ impl Plan {
 /// pages, so it follows the options.
 pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> String {
     use std::fmt::Write;
-    let (bold, dim, off) = if color {
-        ("\x1b[1m", "\x1b[2m", "\x1b[0m")
+    // The panels' palette (panel-palette.sh): ANSI indices, so a theme swap recolours the card.
+    // The heading is the needs-you yellow, as the same ask's card in agent-ask.
+    let (bold, head, dim, off) = if color {
+        ("\x1b[1m", "\x1b[1;33m", "\x1b[90m", "\x1b[0m")
     } else {
-        ("", "", "")
+        ("", "", "", "")
     };
     let mut s = String::new();
     let _ = match d.kind {
-        Kind::Plan => writeln!(s, "{bold}plan waiting for your approval{off}"),
-        Kind::Question => writeln!(s, "{bold}question waiting for your answer{off}"),
+        Kind::Plan => writeln!(s, "{head}plan waiting for your approval{off}"),
+        Kind::Question => writeln!(s, "{head}question waiting for your answer{off}"),
     };
     let _ = writeln!(s, "{dim}{who}{off}");
     if !d.tabs.is_empty() {

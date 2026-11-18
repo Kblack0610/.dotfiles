@@ -213,7 +213,7 @@ mod tests {
             words[..5],
             [
                 "[Projects]",
-                "All rows 12",
+                "Board 12",
                 "Deliverables",
                 "Coverage",
                 "Ladder"
@@ -236,7 +236,7 @@ mod tests {
         let hot = l
             .spans
             .iter()
-            .find(|s| s.content.trim() == "All rows 12")
+            .find(|s| s.content.trim() == "Board 12")
             .unwrap();
         assert_eq!(hot.style.fg, Palette::default().warn().fg);
     }

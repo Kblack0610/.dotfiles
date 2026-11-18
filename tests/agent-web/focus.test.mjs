@@ -128,7 +128,7 @@ test("a hash routes to its tab and the note it opens, decoded", () => {
   assert.deepEqual(r("#outbox"), { name: "outbox", tab: "daily", arg: "outbox", query: "" }, "the retired Outbox tab is Daily's outbox");
   assert.deepEqual(r("#projects/notes-cockpit"), { name: "projects", tab: "projects", arg: "notes-cockpit", query: "" });
   assert.deepEqual(r("#projects/personal/notes-cockpit/rows"), { name: "projects", tab: "projects", arg: "personal/notes-cockpit/rows", query: "" }, "a project's path is no inner tab");
-  // The Board tab is Projects' All rows: its old links land there, a search kept.
+  // The old Board tab is Projects' Board inner tab: its old links land there, a search kept.
   assert.deepEqual(r("#board"), { name: "board", tab: "projects", arg: "all", query: "", section: "board" });
   assert.deepEqual(r("#board?q=id:=ar-455"), { name: "board", tab: "projects", arg: "all", query: "q=id:=ar-455", section: "board" });
   assert.deepEqual(r("#projects/all"), { name: "projects", tab: "projects", arg: "all", query: "" });

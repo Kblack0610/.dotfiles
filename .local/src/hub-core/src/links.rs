@@ -20,7 +20,7 @@ pub enum Kind {
     Session,
     /// An agent-queue item, by its slug.
     Queue,
-    /// A board row or an epic, by its id (`ar-1494`): Projects' All rows filtered to exactly that id.
+    /// A board row or an epic, by its id (`ar-1494`): Projects' Board filtered to exactly that id.
     Row,
     /// An agentctl runner's page, on Sessions' Runners (`#sessions/runners/<name>`).
     Runner,
