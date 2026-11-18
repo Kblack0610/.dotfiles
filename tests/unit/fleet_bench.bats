@@ -3661,6 +3661,25 @@ pipeline_flow_fixture() {
   assert_failure 2
 }
 
+@test "pipeline --check held: a queued item with a pending gate trips it; a desk turn, a running hold and a clear queue pass; an unreadable list exits 2" {
+  items_stub "$(item a queued high human)" "$(item b queued high human '{"hold":"hold:unity (behind c, unity-build)"}')" \
+    "$(item d queued high human '{"hold":"hold:unity (desk:auth waits for the human, away)"}')" \
+    "$(item e running high human '{"hold":"after x"}')"
+  export BENCH_ITEMS_CMD=items-stub
+  run "$SUBJECT" pipeline --check held
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: the same queue with two items still behind their gates
+  items_stub "$(item a queued high human)" "$(item f queued high human '{"hold":"after up"}')" \
+    "$(item g queued high human '{"hold":"rbw:infra/key (not in rbw)"}')"
+  run "$SUBJECT" pipeline --check held
+  assert_failure 1
+  assert_output '2 queued with a pending gate, which belongs on its board row: f (after up), g (rbw:infra/key (not in rbw))'
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" pipeline --check held
+  assert_failure 2
+}
+
 @test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
   pipeline_fixture
   jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"

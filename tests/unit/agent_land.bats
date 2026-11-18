@@ -1428,7 +1428,7 @@ real_notes_board() {
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
-  agent-queue add --project dotfiles --slug next --after ship 'next phase' >/dev/null
+  legacy next "after: ship" --project dotfiles 'next phase'
   : >"$LOG"
   run "$LAND" 42 --item ship --partial
   assert_success
