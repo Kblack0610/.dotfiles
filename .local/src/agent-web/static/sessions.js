@@ -165,11 +165,14 @@ async function openSession(id) {
 const SPLIT = matchMedia("(min-width: 900px)");
 const isSel = (r) => !!st.sel && ((r.target && r.target === st.sel.target) || (r.session_id && r.session_id === st.sel.session));
 
+// The fleet worker a target runs on (`<host>@<server>/<session>:<window>`, remote.rs split), or "".
+
 function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
+  const host = sessionAgent(r)?.host || "";
   return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
-    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${host ? " @" + esc(host) : ""}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
 function renderSide(scroll = false) {

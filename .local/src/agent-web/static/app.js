@@ -148,6 +148,8 @@ function renderHead() {
   const noPane = !!(st.sel.parked || st.sel.paneless);
   $("compose").hidden = noPane;
   $("v-screen").disabled = noPane;
+  // A fleet worker's transcript is on that machine: its screen is what this page can read.
+  $("v-transcript").disabled = !!st.sel.host;
   renderActs();
   renderPin();
 }
@@ -172,7 +174,7 @@ function select(a) {
   if (st.sel) markSeen(st.sel.session);
   st.sel = a; st.start = null; st.end = null;
   markSeen(a.session);
-  showView("transcript");
+  showView(a.host ? "screen" : "transcript");
   $("main").classList.add("open");
   $("err").textContent = "";
   renderHead(); renderFacts();
