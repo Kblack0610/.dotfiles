@@ -238,6 +238,15 @@ project() {
 
 row() { printf '%s\t%s\n' "$3" "$4" >> "$NOTES_FIXTURE/rows.$1.$2"; }
 
+# trainee_repo <dir> -- a git repo a trainee may see (DISPATCH_TRAINEE_REPOS) with a sensitive-tokens
+# list (`secretword`), as trainee_public_why reads it.
+trainee_repo() {
+  [ -d "$1/.git" ] || git init -q "$1"
+  mkdir -p "$1/.githooks"
+  printf '# tokens\n\nsecretword\n' > "$1/.githooks/sensitive-tokens.txt"
+  export DISPATCH_TRAINEE_REPOS="$1"
+}
+
 # board_row <project> <lane> <id> <tags json> <details json> [rank] -- that fixture row as `notes board
 # --json` gives it (its raw line from rows.<project>.<lane>), with tags, details and its feed rank (null by default)
 board_row() {
@@ -836,10 +845,11 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem%> [place] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem%> [place] [first] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
 # four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
+# first is its fleet_first, a YAML list such as "[canary, night]".
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -859,6 +869,7 @@ all:
         fleet_place: ${2:-true}
       hosts:
         razer-laptop:
+          fleet_first: ${3:-[]}
           fleet_repos:
             - dest: "$SANDBOX/repos/game"
               repo: game
