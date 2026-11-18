@@ -45,6 +45,8 @@ set -uo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
+# shellcheck source=../../lib/tmux-pane.sh
+. "${SELF%/*}/../../lib/tmux-pane.sh" || exit 1
 
 # The servers we always offer, even when not yet running. DISCOVERED from
 # $MANIFEST_DIR/*.conf rather than hardcoded, so dropping in a manifest creates a
@@ -274,7 +276,7 @@ _refresh_landing() {
     sh|bash|zsh|fish)
       startup="$(_startup_cmd "$srv" "$sess")"
       [ -n "$startup" ] || return 0
-      tmux -L "$srv" send-keys -t "$sess:" "$startup" Enter
+      _type "$srv" "$sess:" "$startup" Enter
       return 0
       ;;
   esac
@@ -293,8 +295,17 @@ _refresh_landing() {
 # quotes. A vault path with a space in it is ordinary.
 _vim_edit() {
   local srv="$1" t="$2" file="$3" line="${4:-}"
-  tmux -L "$srv" send-keys -t "$t" Escape
+  _type "$srv" "$t" Escape || return 1
   tmux -L "$srv" send-keys -t "$t" ":e ${line:++$line }${file// /\\ }" Enter
+}
+
+# _type <server> <target> <key>... -- send-keys into a pane that already exists, out of any
+# tmux mode first (leave_mode says why); a pane that will not leave one gets nothing typed.
+# A pane ensure has only just made is in no mode, so its startup send-keys skips this.
+_type() {
+  local srv="$1" t="$2"; shift 2
+  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode; typed nothing" >&2; return 1; }
+  tmux -L "$srv" send-keys -t "$t" "$@"
 }
 
 # open <server> <file> [line] -- show a file in the world's landing editor and go there.
@@ -313,7 +324,7 @@ cmd_open() {
   cmd="$(tmux -L "$srv" display-message -p -t "$t" '#{pane_current_command}' 2>/dev/null)"
   case "$cmd" in
     nvim) _vim_edit "$srv" "$t" "$file" "$line" ;;
-    sh|bash|zsh|fish) tmux -L "$srv" send-keys -t "$t" "nvim +$line $(printf '%q' "$file")" Enter ;;
+    sh|bash|zsh|fish) _type "$srv" "$t" "nvim +$line $(printf '%q' "$file")" Enter ;;
     *) die "$t is running ${cmd:-nothing}, not nvim or a shell" ;;
   esac
   _enter "$srv" "$t"

@@ -11,6 +11,8 @@ setup() {
   AQ="$REPO_ROOT/.local/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  # The wall clock never decides a test: holds read this hour (a test that needs another sets its own).
+  export AGENT_QUEUE_NOW=12:00
   REPO="$SANDBOX/repos/game"
   git init -q "$REPO"
   # Two games in the game repo (level, arena), a repo whose work counts on its owner (tools ->
@@ -2819,7 +2821,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- "--agent add --detail Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -2830,7 +2832,7 @@ notes --profile work ptask level run lv-8'
   echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "--agent add --detail $long -- fix(menu): word"
+  assert_output --partial "--agent add --detail=$long -- fix(menu): word"
   refute_output --partial '#of/'
   [ "${#long}" -gt 80 ]
 }
@@ -2839,12 +2841,12 @@ notes --profile work ptask level run lv-8'
   story_notes
   "$AQ" add --project level --slug multi -- $'feat(menu): the title screen\ngoal: one record\n  - nested'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail goal: one record\n  - nested -- feat(menu): the title screen #high'
+  assert_output --partial $'--agent add --detail=goal: one record\n  - nested -- feat(menu): the title screen #high'
   # a --title that is not the body's first line keeps the body whole
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug titled --title "feat(menu): a short title" -- $'Phase 2 of the plan: do it\nthen land it'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
+  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
   # NEGATIVE CONTROL: a one-line task that is the row's words writes no brief
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug one "feat(menu): one line"
@@ -3090,116 +3092,137 @@ OUT
   [ -n "$(item running sturdy)" ]
 }
 
-# --- admission (ar-697) ------------------------------------------------------------------
+# --- admission: the cap on runnable items (ar-2918) ---------------------------------------
 
-# started_item <state dir> <slug> <queued> <started> -- an item file as a dispatcher leaves it.
-started_item() {
-  mkdir -p "$AGENT_QUEUE_DIR/$1"
-  printf 'slug: %s\nproject: game\nmode: oneshot\npriority: high\nfrom: human\nqueued: %s\nstarted: %s\n---\n%s\n' \
-    "$2" "$3" "$4" "$2" > "$AGENT_QUEUE_DIR/$1/$2.md"
-}
-
-@test "admission holds a machine filer's add once the runnable items reach the limit, writes nothing and logs the hold" {
-  export AGENT_QUEUE_ADMIT_MIN=2
-  "$AQ" add --project game --slug one "one" >/dev/null
-  run "$AQ" add --project game --from auto:docs-cleanup --slug machine-a "machine a"
-  assert_success
-  [ "$(field "$(item queued machine-a)" from)" = auto:docs-cleanup ]
-  run "$AQ" add --project game --from research:costs --slug machine-b "machine b"
+@test "the cap holds an add over it: no item, its board row left un-started with the whole brief, the hold logged" {
+  story_notes
+  export AGENT_QUEUE_CAP=2
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  "$AQ" add --project level --slug two "feat(menu): two" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --slug three "feat(menu): three
+second line of the brief
+- [ ] a step"
   assert_failure 5
-  assert_output --partial "held by admission, nothing was added: 2 items can start now against a limit of 2"
-  assert_output --partial "notes ptask game --agent add"
-  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
+  assert_output --partial "held by admission, nothing was queued: 2 items can start now against a cap of 2 (human)"
+  assert_output --partial "its board row lv-9 on level is left un-started"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-three.md 2>/dev/null)" ] || fail "a held add wrote an item"
+  # the brief is one value of several lines, less the row's own words; notes escapes the step
+  assert_called "ptask level --agent add --detail=second line of the brief"
+  assert_called "- [ ] a step -- feat(menu): three #high"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   run jq -c '{from, slug, runnable, limit}' "$AGENT_QUEUE_DIR/admission.jsonl"
-  assert_output '{"from":"research:costs","slug":"machine-b","runnable":2,"limit":2}'
+  assert_output '{"from":"human","slug":"three","runnable":2,"limit":2}'
   # A held item does not count: an `after:` one leaves room.
   "$AQ" cancel one >/dev/null
-  "$AQ" add --project game --slug later --after machine-a "later" >/dev/null
-  run "$AQ" add --project game --from research:costs --slug machine-b "machine b"
+  "$AQ" add --project level --slug later --after two "feat(menu): later" >/dev/null
+  run "$AQ" add --project level --slug three "feat(menu): three"
   assert_success
 }
 
-@test "admission never holds a human, #requested, red, auto:epics verify, urgent or --running add, at or over the limit" {
-  export AGENT_QUEUE_ADMIT_MIN=1
-  "$AQ" add --project game --slug one "one" >/dev/null
-  run "$AQ" add --project game --from auto:x --slug held "held"
+
+@test "an over-cap add that names --row files no second row, and a short task under a different --title keeps its words" {
+  story_notes
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --row lv-2 --slug named "feat(menu): named"
   assert_failure 5
-  "$AQ" add --project game --slug human "human" >/dev/null
-  "$AQ" add --project game --from auto:x --tags '#requested' --slug asked "asked" >/dev/null
-  "$AQ" add --project game --from auto:x --tags red --slug broken "broken" >/dev/null
-  "$AQ" add --project game --from auto:epics --priority high --tags verify --slug verify-e-1 "verify e" >/dev/null
+  assert_output --partial "row lv-2 is left un-started where it is"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
+  assert_failure 5
+  assert_called "--detail=the real wording of the task -- "
+}
+
+@test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
+  story_notes
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --tags '#requested' --slug asked "feat(menu): asked"
+  assert_failure 5
+  assert_called "ptask level --agent add --want human -- feat(menu): asked #high"
+}
+
+@test "a project with no board gets the command to file by hand, nothing written, and a machine filer is held the same" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  run "$AQ" add --project game --slug held "held"
+  assert_failure 5
+  assert_output --partial "game has no board row to file this on: notes ptask game --agent add"
+  run "$AQ" add --project game --from research:costs --slug machine-b "machine b"
+  assert_failure 5
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-held.md "$AGENT_QUEUE_DIR"/queued/*-machine-b.md 2>/dev/null)" ] || fail "a held add wrote an item"
+}
+
+@test "the cap never holds an urgent, red, --running, held-on-arrival, board-origin, canary or auto:epics verify add" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  run "$AQ" add --project game --slug human "human"
+  assert_failure 5
+  "$AQ" add --project game --tags red --slug broken "broken" >/dev/null
+  "$AQ" add --project game --priority urgent --slug urgent "urgent" >/dev/null
+  "$AQ" add --project game --running --session s1 --slug mine "mine" >/dev/null
+  "$AQ" add --project game --after one --slug chained "chained" >/dev/null
+  "$AQ" add --project game --tags at:2099-01-01T09:00 --slug dated "dated" >/dev/null
+  "$AQ" add --project game --from board:game:gm-3 --slug gm-3 "feat(game): from the board" >/dev/null
+  "$AQ" add --project game --from canary --tags 'night canary' --slug canary "check(canary): x" >/dev/null
+  "$AQ" add --project game --from auto:epics --tags verify --slug verify-e-1 "verify e" >/dev/null
   run "$AQ" add --project game --from auto:x --tags verify --slug other-verify "another filer's verify"
   assert_failure 5
-  "$AQ" add --project game --from auto:x --priority urgent --slug urgent "urgent" >/dev/null
-  "$AQ" add --project game --from auto:x --running --session s1 --slug mine "mine" >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "asked,broken,human,mine,one,urgent,verify-e-1"
+  assert_output "broken,canary,chained,dated,gm-3,mine,one,urgent,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 2 ]
 }
 
-@test "a queue item's session adding without --from files item:<its slug>, held at the limit; its deferral, urgent and --from human are not" {
-  export AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_ITEM=parent
+@test "a queue item's session adding without --from files item:<its slug>, held at the cap like any add" {
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_ITEM=parent
   run "$AQ" add --project game --slug first "first follow-up"
   assert_success
   [ "$(field "$(item queued first)" from)" = item:parent ]
   run "$AQ" add --project game --slug second "second follow-up"
   assert_failure 5
-  assert_output --partial "an automated add (item:parent) waits"
-  "$AQ" add --project game --slug after-one --after first "after first" >/dev/null
+  assert_output --partial "against a cap of 1 (item:parent)"
   "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
-  "$AQ" add --project game --slug asked --from human "the human asked" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
   "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
-  # Only an add admission gates is from the item; the rest keep human, as the readers of from expect.
+  # Only a capped add is from the item; the rest keep human, as the readers of from expect.
   [ "$(field "$(item queued dated)" from)" = human ]
   [ "$(field "$(item queued now)" from)" = human ]
-  [ "$(field "$(item queued asked)" from)" = human ]
   [ "$(field "$(item running own)" from)" = human ]
-}
-
-@test "admission's limit is a day of measured drain, the items started out of the queue in 7 days, never under the floor" {
-  local i now old
-  now="$(date -u -d '1 hour ago' +%FT%TZ)"; old="$(date -u -d '10 days ago' +%FT%TZ)"
-  # 21 started out of the queue in the window: 3 a day. Not counted: one started 10 days ago,
-  # and one started the minute it was added (--running), which never sat in the queue.
-  for i in $(seq 1 21); do started_item "done/$(date +%F)" "d$i" "$(date -u -d '2 hours ago' +%FT%TZ)" "$now"; done
-  started_item running r-old "$old" "$old"
-  started_item running r-now "$now" "$now"
-  run env AGENT_QUEUE_ADMIT_MIN=1 "$AQ" admission --json
-  assert_success
-  assert_output '{"on":true,"runnable":0,"limit":3,"drain_per_day":3,"held_7d":0,"admits":true}'
-  run env AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_ADMIT_DAYS=2 "$AQ" admission --json
-  assert_equal "$(jq .limit <<<"$output")" 6
-  run "$AQ" admission --json
-  assert_equal "$(jq .limit <<<"$output")" 10
-  run env AGENT_QUEUE_ADMIT_DAYS=0 "$AQ" admission
-  assert_output --partial "admission: off,"
 }
 
 @test "admission holds a machine filer's --plan as a whole, and admitted, queues every phase" {
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/orphan.md"
-  export AGENT_QUEUE_ADMIT_MIN=1 AGENT_QUEUE_START=0
+  # The night phases must stay held: setup pins the hour, this pins the window.
+  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_START=0 AGENT_QUEUE_NIGHT=23:00-06:00
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project game --from auto:plans --tags night
   assert_success
   run bash -c "'$AQ' list --json | jq -r .slug | paste -sd,"
   assert_output "orphan-p1,orphan-p2,orphan-p3"
   "$AQ" add --project game --slug runnable "runnable" >/dev/null
+  "$AQ" add --project game --slug runnable2 "runnable too" >/dev/null
   printf '# Q\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/other.md"
   run "$AQ" add --plan "$SANDBOX/other.md" --project game --from auto:plans --tags night
   assert_failure 5
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-other-p1.md 2>/dev/null)" ] || fail "a held plan queued a phase"
 }
 
-@test "admission is off at AGENT_QUEUE_ADMIT_DAYS=0, and admission --json counts the holds of the last 7 days" {
-  export AGENT_QUEUE_ADMIT_MIN=1
+@test "AGENT_QUEUE_CAP=0 is the negative control: the same adds overflow past the cap, and admission --json counts the holds of 7 days" {
+  export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
-  AGENT_QUEUE_ADMIT_DAYS=0 run "$AQ" add --project game --from auto:x --slug free "free"
+  AGENT_QUEUE_CAP=0 run "$AQ" add --project game --from auto:x --slug free "free"
   assert_success
   run "$AQ" add --project game --from auto:x --slug held "held"
   assert_failure 5
   printf '{"at":"2000-01-01T00:00:00Z","from":"auto:x","slug":"old"}\n' >> "$AGENT_QUEUE_DIR/admission.jsonl"
   run "$AQ" admission --json
-  assert_equal "$(jq -c '[.held_7d, .admits]' <<<"$output")" '[1,false]'
+  assert_equal "$(jq -c '[.on, .runnable, .limit, .held_7d, .admits]' <<<"$output")" '[true,2,1,1,false]'
+  run env AGENT_QUEUE_CAP=0 "$AQ" admission
+  assert_output --partial "admission: off,"
   # A filer retrying the same item counts once, and the next hold drops lines past the window.
   run "$AQ" add --project game --from auto:x --slug held "held"
   assert_failure 5
@@ -3209,13 +3232,32 @@ started_item() {
   assert_output "$(printf 'held\nheld')"
 }
 
-@test "at the limit, a machine add of a slug already queued says so, not that admission held it" {
-  export AGENT_QUEUE_ADMIT_MIN=1
+@test "at the cap, an add of a slug already queued says so, not that admission held it" {
+  export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --from auto:x --slug one "one again"
   assert_failure 1
   assert_output --partial "already in the queue: one"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
+}
+
+@test "return only un-starts its board row: the row already holds the brief, so nothing is written to it" {
+  story_notes
+  "$AQ" add --project game --slug ha "first line of the brief
+second line of the brief"
+  "$AQ" set ha row=game:gm-1
+  "$AQ" add --project game --slug hb "short one-liner"
+  "$AQ" set hb row=game:gm-2
+  "$AQ" add --project game --from board:game:gm-3 --slug gm-3 "feat(game): row text
+generated line"
+  "$AQ" add --project game --slug hd "kept
+already"
+  "$AQ" set hd row=game:gm-4
+  : > "$NOTES_FIXTURE/calls.log"
+  for s in ha hb gm-3 hd; do "$AQ" return "$s" --why "back" >/dev/null; done
+  run grep -c ' ptask game --agent edit ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  for r in gm-1 gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
 }
 
 @test "a partial merge cannot close ok or release after items" {
@@ -3236,6 +3278,7 @@ started_item() {
 
 @test "--row, a row move and --plan check the queue for a row or plan without deriving a hold (ar-2544)" {
   story_notes
+  export AGENT_QUEUE_CAP=0 # the cap derives every hold to count runnable; this test is about the writers that do not
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\necho OPEN\n' "$SANDBOX" > "$SANDBOX/bin/gh"
   chmod +x "$SANDBOX/bin/gh"
