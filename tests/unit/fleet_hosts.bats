@@ -52,7 +52,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": [], \"agent_cpus\": \"\"}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": [], \"agent_cpus\": \"\", \"local\": false}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure

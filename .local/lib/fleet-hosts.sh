@@ -186,6 +186,7 @@ for h in members.get(group, []):
         "power": str(v.get("fleet_power", "")),
         "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
         "agent_cpus": str(v.get("agent_cpus") or ""),
+        "local": v.get("ansible_connection") == "local",
     }))
 PY
 }

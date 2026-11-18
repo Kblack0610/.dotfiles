@@ -782,9 +782,10 @@ gate_ledger() {
 @test "busy_line: the 2026-11-18 afternoon (workstation 96% busy) is OVER and fails" {
   run busy_line <<<$'workstation 0.96\nms-a2 0.50'
   assert_failure
-  assert_output 'fleet: OVER 90% busy: workstation 96% (of 2 hosts)'
+  assert_output 'fleet: OVER 90% busy: workstation (workstation 96%; of 2 hosts)'
   FLEET_HOST_BUSY_MAX=95 run busy_line <<<$'workstation 0.949'
   assert_success
+  assert_output 'fleet: no host over 95% busy (1 hosts; busiest workstation 94%)'
 }
 
 @test "busy_line: Prometheus not answering is said, and fails nothing" {
@@ -797,12 +798,15 @@ gate_ledger() {
   run cap_line ws 2-7,8-15,18-31 <<<$'tmux-spawn-a.scope 2-15 18-31\napp-agentctl.slice 2-15 18-31'
   assert_success
   assert_output 'cap: ws 2-7,8-15,18-31 live on 2 of 2 units'
+  run cap_line ws 2-15,18-31 <<<$'tmux-spawn-a.scope 2-14'
+  assert_success
+  assert_output 'cap: ws 2-15,18-31 live on 1 of 1 units'
 }
 
 @test "cap_line: a unit on every CPU, or with no cpuset at all, is NOT live and fails" {
   run cap_line razer 1-7,9-15 <<<$'tmux-spawn-a.scope 1-7 9-15\ntmux-spawn-b.scope 0-15\ntmux-spawn-c.scope '
   assert_failure
-  assert_output 'cap: razer NOT live: 2 of 3 units outside 1-7,9-15 (tmux-spawn-b.scope on 0-15, tmux-spawn-c.scope on)'
+  assert_output 'cap: razer NOT live: 2 of 3 units outside 1-7,9-15 (tmux-spawn-b.scope on 0-15, tmux-spawn-c.scope on no cpuset)'
 }
 
 @test "cap_line: a host with no agent unit running says so and passes" {
