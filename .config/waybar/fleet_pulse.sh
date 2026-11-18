@@ -29,7 +29,7 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 #   GATUS_BASE=https://fleet.your.lan   in ~/.config/fleet-pulse/env
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
-STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
+STALE_AFTER="${FLEET_STALE_AFTER:-$FLEET_STALE_AFTER_DEFAULT}" # seconds a heartbeat stays "fresh"
 
 # Who is counted (ROSTER) and how the bar draws it (FLEET_PULSE_DISPLAY) both come from
 # $GATUS_BASE/roster, rendered from the home-config inventory (fleet-pulse-roster.sh).
