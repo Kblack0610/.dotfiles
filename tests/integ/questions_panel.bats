@@ -601,6 +601,8 @@ transcript() {
   run "$Q" key g "$alive"
   assert_output 'change-footer~session sid-alive still runs outside tmux; nothing to go to~'
   assert_not_called "--resume sid-alive"
+  # A directory that is there and not a linked worktree is never put back.
+  assert_not_called "wt revive"
   # A directory that is gone goes through wt revive; when nothing can be put back it says so and resumes nothing.
   lost="$(CLAUDE_CODE_SESSION_ID=sid-lost ask demo agent-6 'go=run it now|later=run it later' 'lost?')"
   transcript sid-lost "$BATS_TEST_TMPDIR/deleted"
