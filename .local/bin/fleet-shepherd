@@ -971,7 +971,7 @@ shared_sample() {
     [ -n "$fact" ] || continue
     awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
     cm="${test%%(*}"; cm="$(awk -F. '{ print (NF > 1 ? $(NF - 1) "." : "") $NF }' <<<"$cm")"
-    slug="$(shared_owners "$test" | head -1)"
+    slug="$(shared_owners "$test" | awk 'NR==1')"
     if [ -z "$slug" ]; then
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \

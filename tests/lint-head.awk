@@ -1,6 +1,8 @@
-# lint-head.awk FILE -> "<line>:<text>" for each pipeline in FILE where a text producer (jq, grep,
-# sed, tr, awk, sort, cut) pipes straight into head: tests/lint.sh house rule 3, which runs this on
-# the scripts that set pipefail. tests/unit/lint_head.bats pins what it flags and what it passes.
+# lint-head.awk FILE -> "<line>:<text>" for each pipeline in FILE where any command (a binary, a
+# builtin like printf or compgen, a shell function) pipes into head: tests/lint.sh house rule 3,
+# which runs this on the scripts that set pipefail. The hazard is head closing the pipe, not which
+# command writes into it, so there is no producer list (ar-2499). tests/unit/lint_head.bats pins
+# what it flags and what it passes.
 #
 # Each line is scanned for shell quoting so the match sees only code: single-quoted and
 # double-quoted text is blanked, a $(...) inside double quotes stays code, and comments and
@@ -38,8 +40,15 @@ function scan(s,    i, c, t, n, out) {
   return out
 }
 
-function flush() {
-  if (code ~ /(^|[^[:alnum:]_.-])(jq|grep|sed|tr|awk|sort|cut)([^[:alnum:]_-][^|]*)?\|[[:space:]]*head([^[:alnum:]_-]|$)/ && !SPANS)
+# A case arm's pattern list (`repo | head)`, at the start of the code or after `case W in`, `;;`,
+# `;&`) is alternation, not a pipe, so it is blanked before the match. ARM is that grammar, single
+# words joined by `|`, so a command (`grep in f | head -1)`, a subshell closing on its last line)
+# never reads as one.
+function flush(    arm) {
+  arm = "[^[:space:]();|]+([[:space:]]*\\|[[:space:]]*[^[:space:]();|]+)*[[:space:]]*\\)"
+  sub("^[[:space:]]*" arm, " ", code)
+  gsub("(^|[[:space:];])(case[[:space:]]+[^[:space:]]+[[:space:]]+in|;;&?|;&)[[:space:]]+" arm, " ", code)
+  if (code ~ /[^|]\|[[:space:]]*head([^[:alnum:]_-]|$)/ && !SPANS)
     print start ":" buf
   buf = ""; code = ""; ST = ""
 }

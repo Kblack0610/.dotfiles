@@ -2625,7 +2625,7 @@ cmd_requests() {
   done
   t=$(now)
   if [ -z "$since" ]; then
-    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | head -1)
+    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | awk 'NR==1')
     if [ -n "$last" ]; then since=$(stat -c %Y "$last"); else since=$((t - BENCH_WINDOW_H * 3600)); fi
   fi
   items=$($BENCH_ITEMS_CMD) || { say "the agent queue is unreadable"; return 1; }
