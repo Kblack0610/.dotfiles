@@ -32,6 +32,23 @@ if [ "${1:-}" = --lead ]; then
   exit
 fi
 
+# One suite at a time per machine (ar-3277): nine sessions each ran a --jobs 2 suite at once and
+# load reached 86 on 32 cores. A second run waits on the flock, an event and not a timer, naming
+# the holder. A nested run (a test of this script) inherits RUN_BATS_SLOT and skips it, and so
+# does CI, whose shards have their own cpusets and must not queue. bats gets the fd closed, so a
+# process a test leaks cannot hold the slot once this script exits.
+slot_fd=
+if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
+  export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
+  if ! command -v flock >/dev/null || ! exec {slot_fd}>>"$RUN_BATS_SLOT"; then
+    echo "run-bats.sh: no flock or cannot open $RUN_BATS_SLOT; running without the slot" >&2
+  elif ! flock -n "$slot_fd"; then
+    echo "run-bats.sh: pid $(cat "$RUN_BATS_SLOT") holds $RUN_BATS_SLOT, waiting" >&2
+    flock "$slot_fd" || exit 1
+  fi
+  [ -n "$slot_fd" ] && echo $$ >"$RUN_BATS_SLOT"
+fi
+[ -n "$slot_fd" ] || exec {slot_fd}</dev/null   # so the launch below always has an fd to close
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 sid=
 
@@ -63,6 +80,6 @@ trap 'exit 143' TERM
 # fork and $! is the new session's id, the leader's pid, whose parent is this script. Such a job
 # also starts with stdin on /dev/null and SIGINT ignored, past any trap: <&0 keeps stdin, and the
 # leader's env restores SIGINT for bats so the Ctrl-C handed on reaches it.
-TMPDIR="$own" setsid setpriv --pdeathsig TERM "$self" --lead $$ "$@" <&0 &
+TMPDIR="$own" setsid setpriv --pdeathsig TERM "$self" --lead $$ "$@" <&0 {slot_fd}>&- &
 sid=$!
 wait "$sid"

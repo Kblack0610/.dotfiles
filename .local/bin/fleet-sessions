@@ -861,8 +861,10 @@ prs_key() {
 # no PRs) reads host/owner/repo. Read off origin, home-config's merged PRs were never found, and a branch
 # whose files master rewrote after the merge read "no PR" (ar-2587).
 # One the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass), as
-# has a mirror-only clone of a Forgejo-canonical repo; any other GitHub repo it does not list is
-# unreadable (`schedules-sync repos` is the list).
+# has a mirror-only clone of a Forgejo-canonical repo, and a clone whose origin is on a host that is
+# neither GitHub nor a listed Forgejo (~/.agent on forge-primary, backup-only: every session that wrote
+# a lesson read "could not read PR store" and never closed itself). Any other GitHub repo it does not
+# list is unreadable (`schedules-sync repos` is the list).
 prs_for() {
   local dir="$1" key repo out rc=0
   key="$(prs_key "$dir")" || return 0
@@ -880,7 +882,7 @@ prs_for() {
       # The open PRs waiting their landing turn (queued_in), one number a line.
       [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
           <<<"$out" > "$key.queued" 2>/dev/null || { : > "$key.queued"; unreadable "PR store labels ($repo)"; }
-    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir"; }; then : > "$key"
+    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir" || ! origin_on_github "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
   [ ! -f "$key.failed" ] || blind_row
