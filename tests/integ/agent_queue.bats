@@ -11,6 +11,8 @@ setup() {
   AQ="$REPO_ROOT/.local/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
   export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  # The wall clock never decides a test: holds read this hour (a test that needs another sets its own).
+  export AGENT_QUEUE_NOW=12:00
   REPO="$SANDBOX/repos/game"
   git init -q "$REPO"
   # Two games in the game repo (level, arena), a repo whose work counts on its owner (tools ->
@@ -1555,7 +1557,7 @@ notes --profile bnb ptask game --agent run gm-9"
   AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --priority urgent --slug d1 "a session's urgent"
   assert_success
   assert_not_called 'start --item d1'
-  AGENT_QUEUE_NOW=12:00 run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
+  run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
   assert_success
   assert_output --partial 'n1 is held'
   assert_not_called 'start --item n1'
@@ -3220,8 +3222,8 @@ second line of the brief
 
 @test "admission holds a machine filer's --plan as a whole, and admitted, queues every phase" {
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/orphan.md"
-  # midday: a night-held phase is not runnable, whatever the clock reads when the suite runs
-  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_START=0 AGENT_QUEUE_NOW=12:00
+  # The night phases must stay held: setup pins the hour, this pins the window.
+  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_START=0 AGENT_QUEUE_NIGHT=23:00-06:00
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project game --from auto:plans --tags night
   assert_success
   run bash -c "'$AQ' list --json | jq -r .slug | paste -sd,"
