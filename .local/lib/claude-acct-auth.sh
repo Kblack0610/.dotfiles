@@ -134,9 +134,10 @@ auth_check() {
     auth_state
     [[ -n "$ROWS" ]] || { echo "no accounts in $CONF"; return 2; }
     # asked only for an account the refresh rule would name, so a quiet check never reads rbw
-    tok=$(while read -r n; do acct_token "$n" >/dev/null 2>&1 && echo "$n"; done < <(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" \
+    tok=$(while read -r n; do acct_token "$n" </dev/null >/dev/null 2>&1 && echo "$n"; done < <(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" \
         '.[] | select(.logged_in and .working > 0 and .access_expires > 0 and (.access_expires + $grace) < $now) | .name' <<< "$ROWS") |
         jq -Rsc 'split("\n") | map(select(. != ""))')
+    tok=${tok:-[]}
     bad=$(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" --argjson gave "$(wake_gave_up)" --argjson tok "$tok" '
         .[] | . as $a
         | (if (.logged_in | not) then "signed out (\(.why))\(if .stuck > 0 then ", \(.stuck) sessions on Not logged in" else "" end)"
