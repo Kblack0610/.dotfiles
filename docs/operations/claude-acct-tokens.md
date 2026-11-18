@@ -28,7 +28,7 @@ Each Claude account in `~/.config/claude-acct/accounts` can hold one long-lived 
 
 ## Other machines
 
-A session on another machine gets the same token from the same rbw entry, with no extra step, once `rbw` is logged in there and `claude-acct` runs there. The 2026-11-12 ruling "no Claude on any worker machine" (ask FLhm88) stands until the human lifts it, so this ships for the workstation and the agent machine only. To opt a machine in: install the dotfiles, `rbw login` and `rbw unlock`, copy `~/.config/claude-acct/accounts`, and start sessions through `cl` or `fleet-dispatch`.
+Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any worker machine" ruling was lifted 2026-11-17). A machine with rbw unlocked reads the tokens from rbw. A fleet worker has none (headless, and nobody unlocks it after a reboot), so it reads a 0600 copy in `~/.config/claude-acct/tokens/<account>`, written by `claude-acct token push <host...>` from a machine whose rbw is unlocked. The push sends each token over ssh stdin and asks the host's own `claude-acct` to read it back, so a host whose dotfiles predate the copy fails by name. Re-run it after `setup-token --renew`. Revoke a leaked copy on claude.ai and renew.
 
 ## Troubleshooting
 
@@ -41,4 +41,6 @@ A session on another machine gets the same token from the same rbw entry, with n
 | `rbw is locked, so <acct> starts on its login credentials` | The unattended start found rbw locked. `rbw unlock`; running sessions are not affected. |
 | Session still stops with a login error | The account has no entry (`claude-acct check tokens` names it) or the token expired; run `setup-token --renew`. |
 | `check tokens` exits 2 | rbw is missing or locked on this machine. |
+| `token push: <host>: <acct> failed` | ssh to the host failed, or its dotfiles are too old to read the copy: pull them there, re-run. |
+| `setup-token` paste box drawn thousands of columns wide | Fixed: it ran claude in a 4000-column pty. Pull the dotfiles. |
 | Account reads unread after `.credentials.json` was wiped | Expected when the usage endpoint refuses setup tokens; `/login` on that account restores the read. |

@@ -2530,8 +2530,8 @@ sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
 # blank line. `rbw add|edit` runs $EDITOR on a temp file like the real one, and every call's argv
 # lands in vault/argv.log, so a test can prove the token is never an argument.
 
-TOK_MAIN=sk-ant-oat01-mainmainmainmain
-TOK_ALT=sk-ant-oat01-altaltaltalt
+TOK_MAIN=sk-ant-oat01-mainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmai   # setup tokens are 108 characters (TOKEN_LEN)
+TOK_ALT=sk-ant-oat01-altaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltal
 
 rbw_stub() {
   export SANDBOX
@@ -2593,6 +2593,57 @@ vault_put() {
   assert_failure 1
   assert_output ''
   [[ "$stderr" == *'rbw is locked'* ]]
+}
+
+@test "token: a machine whose rbw is locked or absent reads the pushed copy" {
+  rbw_stub
+  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
+  touch "$SANDBOX/vault/locked"
+  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
+  run --separate-stderr "$ACCT" token alt
+  assert_success
+  assert_output "$TOK_ALT"
+  run --separate-stderr "$ACCT" token main
+  assert_failure 1
+  [[ "$stderr" == *"rbw is locked"* ]]   # no copy for main: it says why, as before
+}
+
+@test "token push: each token goes to the host on ssh stdin, never in an argument, and is read back" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  # the stub runs the remote command locally, with HOME as the host's home
+  mkdir -p "$SANDBOX/far/.local/bin" "$SANDBOX/farbin"
+  printf "#!/bin/sh\nexit 1\n" > "$SANDBOX/farbin/rbw"; chmod +x "$SANDBOX/farbin/rbw"   # the host has no unlocked rbw
+  ln -s "$ACCT" "$SANDBOX/far/.local/bin/claude-acct"
+  cat > "$SANDBOX/bin/ssh" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/ssh.argv"
+while [[ "\$1" == -* ]]; do [[ "\$1" == -o ]] && shift; shift; done
+shift
+HOME="$SANDBOX/far" XDG_CONFIG_HOME= CLAUDE_ACCT_CONFIG="$CLAUDE_ACCT_CONFIG" PATH="$SANDBOX/farbin:/usr/bin:/bin" bash -c "\$*" 2>>"$SANDBOX/ssh.err"
+STUB
+  chmod +x "$SANDBOX/bin/ssh"
+  run "$ACCT" token push far
+  assert_success
+  assert_output 'far: main alt read back'
+  [[ "$(cat "$SANDBOX/far/.config/claude-acct/tokens/alt")" == "$TOK_ALT" ]]
+  [[ "$(stat -c %a "$SANDBOX/far/.config/claude-acct/tokens/alt")" == 600 ]]
+  run grep -c -e "$TOK_MAIN" -e "$TOK_ALT" "$SANDBOX/ssh.argv"
+  assert_output 0
+}
+
+@test "token push: refuses with rbw locked here, and names an account the host cannot read" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" token push far
+  assert_failure 2
+  rm "$SANDBOX/vault/locked"
+  printf '#!/usr/bin/env bash\ncat >/dev/null; exit 255\n' > "$SANDBOX/bin/ssh"; chmod +x "$SANDBOX/bin/ssh"
+  run --separate-stderr "$ACCT" token push far
+  assert_failure 1
+  [[ "$stderr" == *'far: alt failed'* ]]
 }
 
 @test "token-prefix: a command substitution for an account that has a token, never the token" {
@@ -2704,9 +2755,9 @@ STUB
   run "$ACCT" setup-token alt < /dev/null
   assert_success
   assert_output --partial 'already has a token'
-  run "$ACCT" setup-token --renew alt <<< "sk-ant-oat01-newnewnewnew"
+  run "$ACCT" setup-token --renew alt <<< "sk-ant-oat01-newnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewne"
   assert_success
-  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnew ]]
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewne ]]
 }
 
 @test "setup-token: an API key in the environment stops it before any call" {
