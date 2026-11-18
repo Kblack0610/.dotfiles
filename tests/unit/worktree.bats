@@ -1633,6 +1633,12 @@ make_unity_tree() {
   run cmd_revive "$WT_ROOT/repo-agent-5" --branch main
   assert_success
   assert_output --regexp 'on agent-5-'
+  # A cwd in a subdirectory revives the whole tree; a hold left by an rm -rf does not block it.
+  rm -rf "$WT_ROOT/repo-agent-5"
+  run cmd_revive "$WT_ROOT/repo-agent-5/sub/dir"
+  assert_success
+  assert_output --regexp 'revived repo-agent-5 on agent-5-'
+  assert [ -e "$WT_ROOT/repo-agent-5/.git" ]
 }
 
 @test "revive refuses a slot another tree or session holds now, and a path outside WT_ROOT" {

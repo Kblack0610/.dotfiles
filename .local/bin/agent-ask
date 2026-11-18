@@ -1217,7 +1217,9 @@ reopen_session() {
   session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
   cwd="$(session_cwd "$sid")"
   [ -n "$cwd" ] || { echo "session $sid records no directory; resume with claude --resume $sid" >&2; return 1; }
-  # A linked worktree is checked too: wt new may have re-cut its slot for another session.
+  # A gone directory, or one that is a linked worktree (its git dir is not the common dir), goes
+  # through wt revive: that puts the first back and refuses the second when wt new re-cut the slot
+  # for another session (it is on another branch than the conversation last ran on).
   if [ ! -d "$cwd" ] || [ "$(git -C "$cwd" rev-parse --path-format=absolute --git-dir 2>/dev/null)" != \
     "$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
     out="$(wt revive "$cwd" --branch "$(session_branch "$sid")" </dev/null 2>&1)" ||
@@ -1294,7 +1296,8 @@ session_cwd() {
 session_branch() {
   local t; t="$(session_transcript "$1")"
   [ -n "$t" ] || return 0
-  grep '"gitBranch":' "$t" | tail -1 | jq -r '.gitBranch // empty' 2>/dev/null
+  # Only a top-level field counts: a message can quote the key.
+  grep '"gitBranch":' "$t" | jq -rR 'fromjson? | objects | .gitBranch // empty | strings' 2>/dev/null | tail -1
 }
 
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing. This

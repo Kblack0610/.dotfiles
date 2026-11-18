@@ -1294,6 +1294,8 @@ cmd_revive() {
     esac
   done
   [ -n "$path" ] || panel_die "usage: wt revive <path> [--branch <b>]"
+  # A conversation started in a subdirectory revives the whole tree.
+  case "$path" in "$WT_ROOT"/*/*) path="${path#"$WT_ROOT"/}" && path="$WT_ROOT/${path%%/*}" ;; esac
   name="${path##*/}"
   [ "$branch" != HEAD ] || branch=''
   # A tree still there is kept unless it is on another branch: then `new` re-cut the slot.
@@ -1312,8 +1314,13 @@ cmd_revive() {
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
   trap "rm -f $(printf '%q' "$lock")" EXIT
   git -C "$main" fetch origin --quiet || panel_warn "fetch failed; reviving off the local refs"
-  # A hold that outlived its directory (`rm -rf` past wt_hold) would make git refuse the add.
-  { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
+  # A registration that outlived its directory (`rm -rf` past wt_hold) would make git refuse the
+  # add: wt's own hold comes off and prune drops it. Another tool's lock stays, and the add fails.
+  local held
+  held=$(git -C "$main" worktree list --porcelain 2>/dev/null | awk -v w="worktree $path" \
+    '$0 == w { f = 1; next } /^worktree / { f = 0 } f && /^locked/ { sub(/^locked ?/, ""); print; exit }')
+  [[ "$held" != "${WT_HOLD_REASON%%:*}:"* ]] || git -C "$main" worktree unlock "$path" 2>/dev/null || :
+  git -C "$main" worktree prune 2>/dev/null || :
   def=$(wt_default_branch "$main") || panel_die "cannot resolve the default branch of $main"
   [ "$branch" != "$def" ] || branch=''
   mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"

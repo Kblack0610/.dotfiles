@@ -1112,6 +1112,9 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   mkdir -p "$HOME/.claude/projects/p"
   printf '{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"main"}\n{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"agent-3-x"}\n' \
     "$wt" "$wt" >"$HOME/.claude/projects/p/sid-7.jsonl"
+  # A message that quotes the key is not the branch the session ran on.
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"gitBranch":"quoted"}}]}}\n' \
+    >>"$HOME/.claude/projects/p/sid-7.jsonl"
   printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
   printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
   # The repo's wt, never the stowed copy.
