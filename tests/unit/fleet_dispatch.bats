@@ -2804,6 +2804,35 @@ J
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
+@test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {
+  # 2026-11-18: 27 sessions sat on razer-laptop's first-run screen for hours and nothing paged.
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  remote_item working; sed -i 's/^session: .*/&\nsessions: aaa-1 aaa-2\naccount: .claude-bnb/' "$(qitem running working)"
+  remote_item picker;  sed -i 's/^session: .*/&\nsessions: bbb-1\naccount: main/' "$(qitem running picker)"
+  remote_item booting; sed -i "s/^started: .*/started: $(date -u +%FT%TZ)/; s/^session: .*/&\nsessions: ccc-1/" "$(qitem running booting)"
+  remote_item plain;   sed -i 's/^session: .*/&\nsessions: ddd-1/' "$(qitem running plain)"
+  # The worker's home: the stub ssh runs each command here. claude-acct link makes an account's
+  # projects a link to main's, so find must follow it. The item with no account has had its turn.
+  mkdir -p "$HOME/.claude/projects/-w" "$HOME/.claude-bnb"
+  ln -s "$HOME/.claude/projects" "$HOME/.claude-bnb/projects"
+  : > "$HOME/.claude/projects/-w/aaa-2.jsonl"
+  : > "$HOME/.claude/projects/-w/ddd-1.jsonl"
+  cd "$HOME"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_success
+  assert_equal "$(jq -r .stuck <<<"$output")" 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial '1 stuck at start'
+  # Once it writes its transcript it is not stuck; a worker that does not answer is unknown, not 0.
+  : > "$HOME/.claude/projects/-w/bbb-1.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r .stuck <<<"$output")" 0
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r .stuck <<<"$output")" null
+}
+
 @test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
   project game beta "$SANDBOX/repos/game"
   worker '2.0 16 1 50'

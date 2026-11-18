@@ -221,6 +221,47 @@ creds() {
   [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
 }
 
+
+@test "link marks first-run done in every account and touches no other key" {
+  # A worker's account dirs start empty; without the flag Claude opens on its theme picker
+  # and a session nobody watches sits there (27 on razer-laptop, 2026-11-18).
+  printf '{"oauthAccount":{"emailAddress":"a@b"},"projects":{"/x":{"hasTrustDialogAccepted":true}},"numStartups":3}\n' > "$HOME/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"c@d"},"hasCompletedOnboarding":false}\n' > "$ALT/.claude.json"
+  local before_main before_alt
+  before_main=$(jq -S . "$HOME/.claude.json")
+  before_alt=$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq '.hasCompletedOnboarding' "$HOME/.claude.json")" == true ]]
+  [[ "$(jq '.hasCompletedOnboarding' "$ALT/.claude.json")" == true ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$HOME/.claude.json")" == "$before_main" ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")" == "$before_alt" ]]
+  # a rerun writes nothing
+  local stamp; stamp=$(stat -c %Y.%i "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_output ''
+  [[ "$(stat -c %Y.%i "$ALT/.claude.json")" == "$stamp" ]]
+}
+
+@test "link gives an account with no config yet one that has first-run done, and leaves a broken one alone" {
+  printf 'not json' > "$HOME/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+  [[ "$(cat "$HOME/.claude.json")" == 'not json' ]]
+  assert_output --partial 'first-run left as is'
+}
+
+@test "link marks first-run done through a symlinked config and in an empty one" {
+  printf '{"numStartups":1}\n' > "$SANDBOX/real.json"
+  ln -s "$SANDBOX/real.json" "$HOME/.claude.json"
+  : > "$ALT/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ -L "$HOME/.claude.json" ]]
+  [[ "$(jq -c . "$SANDBOX/real.json")" == '{"numStartups":1,"hasCompletedOnboarding":true}' ]]
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+}
 # --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
 
 src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
