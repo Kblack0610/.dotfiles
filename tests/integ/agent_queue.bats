@@ -3171,7 +3171,8 @@ second line of the brief
 
 @test "admission holds a machine filer's --plan as a whole, and admitted, queues every phase" {
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/orphan.md"
-  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_START=0
+  # The night phases must stay held whatever the wall clock says, so pin the window and the hour.
+  export AGENT_QUEUE_CAP=2 AGENT_QUEUE_START=0 AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=12:00
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project game --from auto:plans --tags night
   assert_success
   run bash -c "'$AQ' list --json | jq -r .slug | paste -sd,"
