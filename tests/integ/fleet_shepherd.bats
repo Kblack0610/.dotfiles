@@ -471,6 +471,18 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -z "$(typed)" ]
 }
 
+@test "check's re-page for a LANDED row with no next phase names no phase" {
+  # Its decision once read "decide phase '-' of -".
+  doc "[$(jq -n --arg at "$(date -Iseconds)" '{session_id: "s-nophase", target: "lab/s-nophase:1", bucket: "LANDED",
+    reason: "PR #12 merged, tree clean", fact: "LANDED PR #12 merged, tree clean", nudged: true, escalated: true,
+    idle_min: 400, labels: [], pr: "12", next_phase: null, plan_file: null}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/s-nophase"
+  "$SH" check >/dev/null || true
+  run grep 'lab/s-nophase:1: one decision' "$HOME/pages"
+  assert_output --partial 'give its plan a ## Phases checklist, or close its window'
+  refute_output --partial "phase '"
+}
+
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
 
