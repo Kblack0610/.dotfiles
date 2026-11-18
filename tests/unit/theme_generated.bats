@@ -91,6 +91,16 @@ is_ignored() {
   assert_failure
 }
 
+@test "noctalia's rendered palette is ignored" {
+  run is_ignored .config/noctalia/palettes/dotfiles.json
+  assert_success
+}
+
+@test "noctalia's hand-authored config.toml is tracked" {
+  run is_ignored .config/noctalia/config.toml
+  assert_failure
+}
+
 @test "hyprland's rendered theme.lua is ignored" {
   # Hyprland requires it (conf/look-and-feel.lua), so like sketchybar's colors.sh it is
   # also why the installers and the post-merge hook render it.
@@ -124,7 +134,7 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the thirteen that were classified" {
+@test "theme-switch's write targets are still the fourteen that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
   # switch; converting each to its tool's native include (lazygit LG_CONFIG_FILE, an nvim
   # palette module) is the unfinished half of the job.
@@ -140,6 +150,7 @@ is_ignored() {
     .config/hypr/conf/theme.lua \
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \
+    .config/noctalia/palettes/dotfiles.json \
     .config/nvim/lua/kennethblack/init.lua \
     .config/nvim/lua/kennethblack/plugins/lualine.lua \
     .config/nvim/lua/kennethblack/plugins/neo-tree.lua \
@@ -217,4 +228,45 @@ hypr_read_keys() {
   assert_success
   run diff "$committed" "$root/.termux/colors.properties"
   assert_success
+}
+
+# --- a generated file gets its $HOME link from the writer ------------------
+
+@test "theme-switch links a render that stow never will, only from the stowed checkout" {
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root" "$HOME/.config/swaync" "$HOME/.config/noctalia"
+  ln -s "$root" "$HOME/.dotfiles"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only swaync,noctalia
+  assert_success
+  # The relative link stow writes, resolving to the render.
+  case "$(readlink "$HOME/.config/swaync/style.css")" in /*) false ;; esac
+  assert_equal "$(readlink -f "$HOME/.config/swaync/style.css")" "$(readlink -f "$root/.config/swaync/style.css")"
+  assert_equal "$(readlink -f "$HOME/.config/noctalia/palettes/dotfiles.json")" "$(readlink -f "$root/.config/noctalia/palettes/dotfiles.json")"
+  # Negative control: a worktree render (DOTFILES_ROOT is not ~/.dotfiles) links nothing.
+  rm "$HOME/.config/swaync/style.css"
+  DOTFILES_ROOT="$BATS_TEST_TMPDIR/worktree" run "$THEME_SWITCH" batman --only swaync
+  assert_success
+  [ ! -e "$HOME/.config/swaync/style.css" ] && [ ! -L "$HOME/.config/swaync/style.css" ]
+}
+
+@test "theme-switch links nothing for a tool not deployed on this machine" {
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root"
+  ln -s "$root" "$HOME/.dotfiles"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only swaync
+  assert_success
+  [ ! -e "$HOME/.config/swaync" ]
+}
+
+@test "the noctalia palette is JSON whose every colour is a hex value from the theme" {
+  local root="$BATS_TEST_TMPDIR/dotfiles" out
+  mkdir -p "$root"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only noctalia
+  assert_success
+  out="$root/.config/noctalia/palettes/dotfiles.json"
+  # 16 dark roles, 6 terminal keys and 16 ANSI colours, each "#rrggbb": an unset palette
+  # variable would leave "" or "#" and fail here.
+  run jq -r '[.dark | .. | strings] | length, all(test("^#[0-9a-fA-F]{6}$"))' "$out"
+  assert_success
+  assert_output $'38\ntrue'
 }
