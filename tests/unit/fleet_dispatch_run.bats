@@ -867,6 +867,32 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+@test "fleet_harnesses: a codex item starts on a worker whose codex reads ready while this machine is hot; one that resumes a thread here stays here" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would take the worker's one session
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[codex]'
+  printf 'harnesses\ncodex\n' >> "$NOTES_FIXTURE/ssh.probe"
+  # Negative control: its last thread's rollout is in this machine's ~/.codex, so no worker takes it.
+  agent-queue add --project game --slug cx-resume --agent codex --priority urgent "Fix the map" >/dev/null
+  codex_ran cx-resume 019a-thread
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item cx-resume on razer-laptop'
+  refute_output --partial 'could not start queue item cx-resume'   # host_takers keeps it off; start --host is only the backstop
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/*/*-cx-resume.md)" host)" ''
+  agent-queue move cx-resume done --status ok >/dev/null
+  agent-queue add --project game --slug cx-new --agent codex --priority urgent "Fix the menu" >/dev/null
+  agent-queue set cx-new model=sol >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item cx-new on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'claude-acct link'
+}
+
 @test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
   worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
   # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).

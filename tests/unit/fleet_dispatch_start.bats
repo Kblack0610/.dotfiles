@@ -1341,9 +1341,16 @@ trainee_start_ready() {
   harness_ready
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
   harness_sandboxed paid
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex nope
+  stub agent-codex 'exit 0'
+  stub codex '[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
   assert_success
-  assert_output "$(printf '%s\n' paid 'codex: it is no opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
+    'opencode: it is neither codex nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  # Codex runs on the worker's own ChatGPT login.
+  touch "$NOTES_FIXTURE/codex.login"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output codex
   rm "$SANDBOX/paid.key"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
   assert_output "paid: its key file $SANDBOX/paid.key is not readable"

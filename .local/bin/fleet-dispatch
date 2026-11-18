@@ -1746,17 +1746,23 @@ harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.ke
 # sources file; claude-acct is the one reader of how much that source has left).
 harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
-# harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing:
-# a worker runs only a sandboxed opencode harness (headless, its own config_dir), so it needs the map
-# entry, opencode, the lane sandbox's profile and srt's tools (SANDBOX_SRT_NEEDS), the config and the
-# key file. The map, the configs and the profiles come with the private overlay; the key files and srt
-# with home-config's fleet-worker role.
+# harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing.
+# A worker runs codex, on its own ChatGPT login (the codex and agent-codex it runs), and a sandboxed
+# opencode harness (headless, its own config_dir), which needs the map entry, opencode, the lane
+# sandbox's profile and srt's tools (SANDBOX_SRT_NEEDS), the config and the key file. The map, the
+# configs and the profiles come with the private overlay; the key files and srt with home-config's
+# fleet-worker role; the codex login is the human's (`codex login` there).
 harness_ready_why() {
   local h="$1" sbx cfg key prof why
   [ -r "$HARNESSES" ] || { echo "no harness map at $HARNESSES"; return 1; }
   jq -e --arg h "$h" '.harnesses | has($h)' "$HARNESSES" >/dev/null 2>&1 || { echo "$HARNESSES has no $h"; return 1; }
+  if [ "$(harness_launcher "$h")" = codex ]; then
+    command -v codex >/dev/null 2>&1 && command -v agent-codex >/dev/null 2>&1 || { echo "codex or agent-codex is not on PATH"; return 1; }
+    codex login status >/dev/null 2>&1 || { echo "codex is not logged in here (codex login, as the human)"; return 1; }
+    return 0
+  fi
   [ "$(harness_launcher "$h")" = opencode ] && [ -n "$(jq -r --arg h "$h" '.harnesses[$h].config_dir // empty' "$HARNESSES")" ] ||
-    { echo "it is no opencode harness with a config_dir, and a worker runs only those"; return 1; }
+    { echo "it is neither codex nor an opencode harness with a config_dir, and a worker runs only those"; return 1; }
   sbx=$(harness_sandbox "$h"); [ -n "$sbx" ] || { echo "it names no lane sandbox, and a worker runs only a sandboxed harness"; return 1; }
   command -v opencode >/dev/null 2>&1 || { echo "opencode is not on PATH"; return 1; }
   prof="$SANDBOX_DIR/$sbx.json"
@@ -2595,10 +2601,13 @@ cmd_start() {
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
     origin=${START_ORIGIN:-hand}
     [ -n "$harness" ] || harness=$(jq -r '.agent // "claude"' <<<"$it")
-    # A worker runs claude, and the sandboxed opencode harnesses its fleet_harnesses lists (harness_prep
+    # A worker runs claude, and codex and the sandboxed opencode harnesses its fleet_harnesses lists (harness_prep
     # refuses one it cannot run there).
     [ -z "$host" ] || [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
       { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
+    # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
+    [ -z "$host" ] || [ -z "$(resume_thread "$it" "$harness")" ] ||
+      { say "start: $item resumes its last $harness thread, which is on this machine; start it here"; return 2; }
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
@@ -4278,6 +4287,7 @@ remote_open() {
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
 # light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
 # or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
+# a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR) and other harnesses stay
 # here. Roster order, a worker the governor powers last: it costs money while it runs. With
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
@@ -4291,6 +4301,7 @@ host_takers() {
   agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
     and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
+  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
