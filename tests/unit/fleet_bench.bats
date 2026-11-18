@@ -5719,7 +5719,7 @@ STUB
   run jq -c '[.run, .id, .session_id, .pass, .rc, .pr, (.config.crepo | length)]' "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'["canary-greet-w1","greet","c1",false,1,"o/r#7",12]\n["canary-greet-w2","greet","c2",true,0,"o/r#7",12]'
   run "$SUBJECT" canary list
-  assert_output $'greet\to/r#7\t2 pts\t2 runs\tcanary-greet-w2: pass'
+  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass\t2 pts'
   # BENCH_CANARY_WRAP (fleet-dispatch's srt line for a sandboxed lane) runs the oracle command inside it.
   BENCH_CANARY_WRAP="touch $(printf %q "$SANDBOX/wrapped") && exec" AGENT_QUEUE_ITEM=canary-greet-w3 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
@@ -6010,14 +6010,16 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary list --by model
   assert_failure 2
   # By size: each lane splits by its tasks' pts, read from the task files; a score whose task file is
-  # gone (solo, wk) has pts null. Same-task stays inside the size: codex at 5 pts shares big with claude.
+  # gone (solo, wk) or that names none has pts null. Same-task stays inside the size: codex at 5 pts shares big with claude.
   jq '.id = "big" | .pts = 5' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/big.json"
+  cp "$FLEET_BENCH_DIR/canary.jsonl" "$SANDBOX/canary.before"
   jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "i", id: "big", session_id: "c2", pass: false},
-    {epoch: ($t - 86000), run: "j", id: "big", session_id: "x2", harness: "codex", model: "sol", pass: true}' >> "$FLEET_BENCH_DIR/canary.jsonl"
+    {epoch: ($t - 86000), run: "j", id: "big", session_id: "x2", harness: "codex", model: "sol", pass: true},
+    {epoch: ($t - 86000), run: "k", session_id: "x3", harness: "codex", model: "sol", pass: false}' >> "$FLEET_BENCH_DIR/canary.jsonl"
   run "$SUBJECT" canary list --by harness,model,pts --json
   assert_success
   run jq -sc 'map([.harness, .model, .pts, .runs, .same_tasks, .pass_rate_same, .claude_pass_rate_same])' <<<"$output"
-  assert_output '[["claude",null,null,2,null,null,null],["claude",null,2,1,null,null,null],["claude",null,5,1,null,null,null],["claude","haiku",2,1,1,1,1],["codex","sol",null,2,1,1,0],["codex","sol",2,2,1,0.5,1],["codex","sol",5,1,1,1,0]]'
+  assert_output '[["claude",null,null,2,null,null,null],["claude",null,2,1,null,null,null],["claude",null,5,1,null,null,null],["claude","haiku",2,1,1,1,1],["codex","sol",null,3,1,1,0],["codex","sol",2,2,1,0.5,1],["codex","sol",5,1,1,1,0]]'
   run "$SUBJECT" canary list --by harness,model,pts
   assert_line --partial $'codex/sol\t5 pts\t1 runs'
   # A task file without its size is not a task.
@@ -6026,7 +6028,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
   assert_output --partial 'is not a task (id, project, base, merge, task, pts,'
   rm "$BENCH_CANARY_DIR/big.json" "$BENCH_CANARY_DIR/nopts.json"
-  head -n 8 "$FLEET_BENCH_DIR/canary.jsonl" > "$FLEET_BENCH_DIR/c.t" && mv "$FLEET_BENCH_DIR/c.t" "$FLEET_BENCH_DIR/canary.jsonl"
+  mv "$SANDBOX/canary.before" "$FLEET_BENCH_DIR/canary.jsonl"
   # Both codex sessions leave the human KPIs too (an eval is not work), but only the claude baseline scores canary_:
   # the haiku lane pins an effort, so it is a lane beside claude, not a claude run.
   run "$SUBJECT" kpi --json

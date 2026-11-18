@@ -5119,7 +5119,7 @@ canary_list() {
       | [$k[] | select(.id == $x.id)] as $rs | ($rs | max_by(.epoch)) as $l
       | {id, project, pr, pts, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
     if [ -n "$json" ]; then cat; else
-      jq -r '"\(.id)\t\(.pr // "-")\t\(.pts) pts\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)"'
+      jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)\t\(.pts) pts"'
     fi
 }
 
@@ -5140,12 +5140,12 @@ canary_lanes() {
     | ($ts | split("\n") | map(select(length > 0) | fromjson | {key: .id, value: .pts}) | from_entries) as $pts
     | [$k[] | select(canary_base)] as $base
     | ($base | map(.id) | unique) as $bt
-    | $k | group_by([.harness // "claude", .model // "", .effort // ""] + (if $by == "pts" then [$pts[.id] // 0] else [] end)) | map(
+    | $k | group_by([.harness // "claude", .model // "", .effort // ""] + (if $by == "pts" then [$pts[.id // ""] // 0] else [] end)) | map(
         [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
         | any(.[]; canary_base) as $isbase
         | (map(.id) | unique | map(select(IN($bt[])))) as $st
         | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null)}
-        + (if $by == "pts" then {pts: $pts[.[0].id]} else {} end) + {runs: length,
+        + (if $by == "pts" then {pts: $pts[.[0].id // ""]} else {} end) + {runs: length,
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),
            same_tasks: (if $isbase then null else ($st | length) end),
            pass_rate_same: (if $isbase then null else (. as $l | $st | map(. as $i | $l | per_task($i)) | mean(.) | if . then round2 else . end) end),
