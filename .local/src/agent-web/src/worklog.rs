@@ -6,7 +6,7 @@ use axum::extract::{Query, State};
 use axum::Json;
 use chrono::NaiveDate;
 use hub_core::session_actions::System;
-use hub_core::table::View;
+use hub_core::table::{self, View};
 use hub_core::worklog::{self, Gathered, Window, Work};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -32,9 +32,9 @@ pub struct Q {
     #[serde(default)]
     wdir: String,
     #[serde(default)]
-    wday: String,
+    wpg: String,
     #[serde(default)]
-    all: Option<String>,
+    wday: String,
 }
 
 pub struct Cache(EventCache<Gathered, READ_FOR_SECS>);
@@ -45,20 +45,21 @@ impl Cache {
     }
 }
 
-/// The rows the window and the view keep, past Work's `layout::page_rows` only when asked for them all.
+/// The page of rows the window and the view keep, Work's `layout::page_rows` a page.
 fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let window = Window::parse(&q.wday, today);
     let inside: Vec<&Work> = g.rows.iter().filter(|r| window.keeps(r)).collect();
     let view = View::new::<&Work>(&q.wq, &q.ws, &q.wsort, &q.wdir);
-    let (rows, table) = view.summary(&inside);
-    let cap = if q.all.is_some() {
-        rows.len()
-    } else {
-        hub_core::layout::page_rows("work")
-    };
+    let (mut rows, mut table) = view.summary(&inside);
+    let page = q.wpg.parse().unwrap_or(1);
+    table::page(
+        &mut rows,
+        &mut table,
+        page,
+        hub_core::layout::page_rows("work"),
+    );
     json!({
-        "rows": rows.iter().take(cap).collect::<Vec<_>>(),
-        "more": rows.len().saturating_sub(cap),
+        "rows": rows,
         "errors": g.errors,
         "today": today.to_string(),
         "items_from": g.items_from,
@@ -136,24 +137,29 @@ mod tests {
     }
 
     #[test]
-    fn past_the_cap_it_says_how_many_more_until_asked_for_them_all() {
-        let cap = hub_core::layout::page_rows("work");
+    fn past_one_page_it_sends_the_asked_page_and_its_pager() {
+        let per = hub_core::layout::page_rows("work");
         let g = Gathered {
-            rows: (0..cap + 5)
+            rows: (0..per + 5)
                 .map(|_| row("done", "2026-11-09T01:00", "a"))
                 .collect(),
             ..Gathered::default()
         };
         let v = shown(&g, &Q::default(), today());
-        assert_eq!(v["rows"].as_array().unwrap().len(), cap);
-        assert_eq!(v["more"], 5);
-        assert_eq!(v["table"]["shown"], cap + 5);
+        assert_eq!(v["rows"].as_array().unwrap().len(), per);
+        assert_eq!(v["table"]["pager"]["pages"], 2);
+        assert_eq!(v["table"]["shown"], per + 5);
         let q = Q {
-            all: Some("1".into()),
+            wpg: "2".into(),
             ..Q::default()
         };
         let v = shown(&g, &q, today());
-        assert_eq!(v["rows"].as_array().unwrap().len(), cap + 5);
-        assert_eq!(v["more"], 0);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 5);
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        let one = Gathered {
+            rows: vec![row("done", "2026-11-09T01:00", "a")],
+            ..Gathered::default()
+        };
+        assert!(shown(&one, &Q::default(), today())["table"]["pager"].is_null());
     }
 }

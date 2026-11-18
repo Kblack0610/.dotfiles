@@ -902,7 +902,8 @@ pub fn time(rows: &mut [Run]) -> Vec<RunTime> {
     out
 }
 
-/// The cap on the rows a surface draws at once; the rest are one search or chip away.
+/// The cap on the runs the TUI's Runs section draws at once; the rest are one search or chip
+/// away. The web pages the same list instead (`layout::page_rows("runs")`).
 pub const LIST_ROWS: usize = 100;
 
 /// The runs query a run's page names (`links::Kind::CiRun`, `<repo>/<id>`, the repo as its column
