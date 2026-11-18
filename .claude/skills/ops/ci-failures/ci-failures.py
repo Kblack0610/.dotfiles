@@ -32,7 +32,7 @@ hub_core's (`hub ci pass`), which day-log reads. A finished attempt's jobs, anno
 change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>). --offline
 reads only that cache, the ledger and the archive. A job GitHub stored no log for is read from its annotations and step and listed in
 logs_missing. On any other gh error, an archive that cannot be read,
-or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
+or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL with the first read that failed (`partial_why` in --json) and exits 3.
 """
 import argparse
 import datetime
@@ -111,6 +111,12 @@ class Source:
         self.partial, self.since, self.archived, self.from_gh, self.logs_missing = None, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
 
+    def fail(self, why):
+        """Print a failed read and keep the first one as the partial reason, on one line."""
+        why = " ".join(why.split())
+        print(why, file=sys.stderr)
+        self.partial = self.partial or why
+
     def gh(self, *args):
         if self.partial:
             raise Partial()
@@ -118,11 +124,10 @@ class Source:
             return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
         except (subprocess.CalledProcessError, OSError) as e:
             err = (getattr(e, "stderr", "") or str(e)).strip()
-            why = f"gh {' '.join(args[:3])}: {err[:200]}"
-            print(why, file=sys.stderr)
             if err.startswith("log not found"):
+                print(f"gh {' '.join(args)}: {err[:200]}", file=sys.stderr)
                 raise Missing()
-            self.partial = why
+            self.fail(f"gh {' '.join(args)}: {err[:200]}")
             raise Partial()
 
     def cached(self, name, fetch, as_json=True):
@@ -166,8 +171,7 @@ class Source:
         except OSError as e:
             why = str(e)
         if why:
-            print(f"{label}: {why}", file=sys.stderr)
-            self.partial = self.partial or f"{label}: {why}"
+            self.fail(f"{label}: {why}")
             return None
         return json.loads(got.stdout)
 
@@ -358,7 +362,7 @@ def analyse(runs, records, base, branches):
 
 
 def report(a, args, since, until, partial, logs_missing):
-    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh, the run ledger or the job archive failed, counts are low" if partial else ""))
+    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + (f"  PARTIAL: {partial}; counts are low" if partial else ""))
     if logs_missing:
         print(f"no log on GitHub for {len(logs_missing)} failed job(s), read from annotations and step: {', '.join(map(str, logs_missing))}")
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"

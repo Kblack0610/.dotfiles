@@ -174,7 +174,7 @@ online() {
 @test "negative control: any other gh error on a log is PARTIAL, exit 3, and partial_why names the call" {
   run --separate-stderr online "HTTP 502: Bad Gateway"
   assert_failure 3
-  assert_equal "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['partial'], d['partial_why'])" "$output")" "True gh run view -R: HTTP 502: Bad Gateway"
+  assert_equal "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['partial'], d['partial_why'])" "$output")" "True gh run view -R o/r --job 1061 --log-failed: HTTP 502: Bad Gateway"
 }
 
 @test "a full read has no partial_why" {
