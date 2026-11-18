@@ -121,16 +121,20 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
-@test "an approved plan is fleet-dispatch reap's to file: the sweep files no row for it, and one approved past the window gets its row" {
-  plan approved '1 day ago 1 hour ago' "$OPEN"
-  plan lapsed '1 day ago 1 hour ago' "$OPEN"
-  export PLAN_LEDGER="$SANDBOX/approved.jsonl"
-  jq -cn --arg p "$SANDBOX/acct/plans/approved.md" --argjson e "$(date +%s)" '{plan: $p, session: "s1", epoch: $e}' > "$PLAN_LEDGER"
-  jq -cn --arg p "$SANDBOX/acct/plans/lapsed.md" --argjson e "$(( $(date +%s) - 31 * 86400 ))" '{plan: $p, session: "s2", epoch: $e}' >> "$PLAN_LEDGER"
+
+@test "a plan fleet-dispatch reap filed gets no row, by its own name or its pointer stub's; one reap did not file gets its row" {
+  plan filed '1 day ago 1 hour ago' "$OPEN"
+  mkdir -p "$SANDBOX/elsewhere"; printf '# real\n\n%b\n' "$OPEN" > "$SANDBOX/elsewhere/real.md"; : > "$ASK_SWEEP_PLAN_CACHE/board/real.md"
+  plan unfiled '1 day ago 1 hour ago' "$OPEN"
+  printf 'Phase 2 of %s\n' "$SANDBOX/elsewhere/real.md" > "$ASK_SWEEP_PLANS/random-name.md"
+  touch -d '1 day ago 1 hour ago' "$ASK_SWEEP_PLANS/random-name.md"
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"; mkdir -p "$FLEET_DISPATCH_DIR"
+  printf '%s\n' "$SANDBOX/acct/plans/filed.md" "$SANDBOX/acct/plans/random-name.md" > "$FLEET_DISPATCH_DIR/plans-filed"
   run "$SWEEP" run
   assert_success
-  assert_not_called 'finish approved'
-  assert_called 'ptask board --agent add --want ask chore(plan): finish lapsed'
+  assert_not_called 'finish filed'
+  assert_not_called 'finish real'
+  assert_called 'ptask board --agent add --want ask chore(plan): finish unfiled'
 }
 
 @test "a plan with no checklist files no row and is only counted" {
