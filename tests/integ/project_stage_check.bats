@@ -648,6 +648,17 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'done'
 }
 
+@test "file: --json reads a board past the kernel's 128 KB argument limit, not a quiet error" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  awk 'BEGIN { pad = sprintf("%600s", ""); gsub(/ /, "x", pad); for (i = 0; i < 300; i++) print "- [ ] feat(ui): filler " i " " pad " <!-- id:sh-" (i + 10) " -->" }' >> "$LAB/agent/README.md"
+  [ "$(wc -c < "$LAB/agent/README.md")" -gt 140000 ]
+  run --separate-stderr "$CHECK" shooter --file --json
+  assert_success
+  run jq -c '[.fail, .filed_open, .filed_closed]' <<<"$output"
+  assert_output '[1,1,0]'
+}
+
 @test "file: a title that passes on one row and fails on another stays open" {
   sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` | engineering |/' "$STAGES_DOC"
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
