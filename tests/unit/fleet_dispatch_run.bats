@@ -861,6 +861,10 @@ case "$1" in log) echo run-9 ;; classify)
   ls "$SANDBOX"/oc-ocfree/run/srt-ses_*.json >/dev/null || fail 'harness-prep wrote no srt settings'
   assert_called 'srt --settings'
   assert_not_called 'claude-acct link'
+  # The run holds the worker's one session (fleet_max_live 1), though it holds no unit of the Claude target.
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
 @test "negative control: a harness's max_tier keeps a tier-2 item off it, pinned or routed; a tier-1 item and a tier-3 canary run on it" {

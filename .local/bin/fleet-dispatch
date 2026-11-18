@@ -27,6 +27,9 @@
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
+#   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
+#   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir" (start --host asks it on the worker)
+#   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
 #   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
@@ -2251,16 +2254,24 @@ trainee_waiting() {
 # left in that worker's TRAINEE_DIR into this one's; rc 1, the files untouched, when it ran here, the
 # worker does not answer, or it holds no patch.
 trainee_fetch() {
-  local host slug out
-  host=$(jq -r '.host // empty' <<<"$1"); slug=$(jq -r .slug <<<"$1")
+  local host slug tmp
+  IFS=$'\t' read -r host slug < <(jq -r '[.host // "", .slug] | @tsv' <<<"$1")
   [ -n "$host" ] || return 1
-  # shellcheck disable=SC2016 # the worker's shell expands these
-  out=$(fleet_host_run "$host" sh -c 'd="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"; head -n 1 "$d/$1.base" && test -s "$d/$1.patch" && cat "$d/$1.patch"' _ "$slug" 2>/dev/null) &&
-    [ -n "$out" ] || return 1
   mkdir -p "$TRAINEE_DIR" || return 1
-  printf '%s\n' "$out" | tail -n +2 >"$TRAINEE_DIR/$slug.patch.$$" && head -n 1 <<<"$out" >"$TRAINEE_DIR/$slug.base" &&
-    mv -f "$TRAINEE_DIR/$slug.patch.$$" "$TRAINEE_DIR/$slug.patch" || { rm -f "$TRAINEE_DIR/$slug.patch.$$"; return 1; }
+  tmp="$TRAINEE_DIR/$slug.fetch.$$"
+  fleet_host_run "$host" fleet-dispatch trainee-patch "$slug" >"$tmp" 2>/dev/null && [ -s "$tmp" ] &&
+    head -n 1 "$tmp" >"$TRAINEE_DIR/$slug.base" && tail -n +2 "$tmp" >"$tmp.patch" &&
+    mv -f "$tmp.patch" "$TRAINEE_DIR/$slug.patch" || { rm -f "$tmp" "$tmp.patch"; return 1; }
+  rm -f "$tmp"
   logline "trainee: fetched $slug's patch from $host"
+}
+
+# cmd_trainee_patch <slug> -- this machine's base for that row's trainee diff, one line, then the patch
+# (TRAINEE_DIR); rc 1, nothing printed, with no patch. A dispatcher runs it on the worker (trainee_fetch).
+cmd_trainee_patch() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || { say "trainee-patch: no slug"; return 2; }
+  [ -s "$TRAINEE_DIR/$1.patch" ] && [ -s "$TRAINEE_DIR/$1.base" ] || return 1
+  head -n 1 "$TRAINEE_DIR/$1.base" && cat "$TRAINEE_DIR/$1.patch"
 }
 
 # trainee_review_task <item json> <trainee> <base> <patch> <task key> -> one row's part of a batch
@@ -4198,30 +4209,31 @@ unpark_preempted() {
 # whether wt and claude are on its PATH and its agent-queue forwards (an older one would write the
 # queue on the worker), and its MemAvailable as a whole percent of MemTotal: HOST_PROBE[<name>] is
 # "<load> <cores> <ready 0|1> <mem %>", or "unreachable". HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
-# and start_items takes each start there off it, a gateway run it holds (live_runs --gateway) too.
+# and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
+# each gateway run on a worker (live_runs --gateway), which demand_pass reads too.
 # HOST_POWER[<name>] is its fleet_power. For a worker that lists fleet_harnesses, the same ssh runs
 # `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
 # runs, space-separated, and HOST_HARN_WHY[<name>] why each other one is not, "; "-joined. Read once a
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
+HOST_RUNS=''
 declare -gA HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=()   # -g: global when a test sources this inside a function
 probe_hosts() {
-  local name place max power listed out h ready why runs
-  HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=()
+  local name place max power listed out h ready why answers
+  HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
-  runs="$1"$'\n'"$(live_runs --gateway)"
   while IFS='|' read -r name place max power listed; do
     [ "$place" = true ] || continue
     HOST_POWER[$name]=$power
-    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$runs") ))
+    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
     if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null; }' _ $listed 2>/dev/null); then
       HOST_PROBE[$name]=$(sed '/^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
-      ready='' why=''
+      ready='' why='' answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
       for h in $listed; do
-        case $'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n' in
+        case $answers in
           *$'\n'"$h"$'\n'*) ready+="${ready:+ }$h" ;;
-          *$'\n'"$h: "*) why+="${why:+; }$(grep -m1 "^$h: " <<<"$out")" ;;
+          *$'\n'"$h: "*) why+="${why:+; }$(grep -m1 "^$h: " <<<"$answers")" ;;
           *) why+="${why:+; }$h: no answer from its fleet-dispatch harness-ready (an older fleet-dispatch there)" ;;
         esac
       done
@@ -4275,16 +4287,16 @@ host_takers() {
     classes=$(jq -c '(" " + (.tags // "") + " ") as $t | if ($t | contains(" canary ")) then ["canary"] else [] end' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
-  jq -e '(.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)' <<<"$1" >/dev/null || return 0
-  agent=$(jq -r '.agent // "claude"' <<<"$1")
+  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  [ -n "$agent" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
   while IFS= read -r name; do
-    host_runs "$name" "$agent" && echo "$name"
+    host_runs "$name" "$agent" || continue
+    echo "$name"
   done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
     | select($c == null or any(.first[]?; . as $x | $c | index($x))))
     | sort_by(.power == "governor") | .[].name')
-  return 0
 }
 
 # place_host <item json> [first] -> the first worker host_takers names that takes a session now.
@@ -4313,9 +4325,9 @@ demand_claim() {
   return 1
 }
 
-# demand_pass <live_runs> -- for each placed worker the governor powers (fleet_power: governor),
+# demand_pass -- for each placed worker the governor powers (fleet_power: governor), after probe_hosts,
 # write the demand this pass has for it into the "<host>.demand" key of the governor's override
-# ConfigMap: the run units its sessions hold, plus the waiting items it would take, at most its
+# ConfigMap: the run units its sessions hold (HOST_RUNS), plus the waiting items it would take, at most its
 # fleet_max_live. Each waiting item counts once, for the first place that takes it in the order
 # pick_item uses: a worker whose fleet_first names the item's class, then this machine's free units
 # while its own pace is open, then an open home worker, then a powered one with room. Nothing counts
@@ -4345,7 +4357,7 @@ demand_pass() {
     done < <(next_items)
   fi
   for name in "${!want[@]}"; do
-    live=$(units_on "$name" <<<"$1")
+    live=$(units_on "$name" <<<"$HOST_RUNS")
     data=$(jq -c --arg k "$name.demand" --argjson d "$(( live + want[$name] ))" --argjson u "$(( $(date +%s) + DISPATCH_DEMAND_TTL ))" \
       '.[$k] = ({demand: $d, until: $u} | tojson)' <<<"$data")
     says+=("$(( live + want[$name] )) for $name ($live live, ${want[$name]} waiting${why:+, none counted: $why})")
@@ -5523,7 +5535,7 @@ cmd_run() {
   RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
   BUSY_PROJECTS=$(busy_projects)
   UNITS_FREE=$(( TARGET - live ))
-  demand_pass "$runs"
+  demand_pass
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
@@ -6059,6 +6071,7 @@ main() {
     hosts) shift; cmd_hosts "$@" ;;
     harness-ready) shift; cmd_harness_ready "$@" ;;
     harness-prep) shift; harness_prep "$@" ;;
+    trainee-patch) shift; cmd_trainee_patch "$@" ;;
     -h | --help) sed -n '2,40p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac

@@ -893,8 +893,8 @@ trainee_start_ready() {
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
   trainee_start_ready
   worker '2.0 16 1 50'
-  # The worker's state dir is not this one's: its ssh runs the worker's command under its own FLEET_DISPATCH_STATE.
-  stub ssh "echo \"ssh \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; eval \"set -- \${*: -1}\"; FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") \"\$@\""
+  # The worker's fleet-dispatch, over ssh, reads its own state dir, which is not this one's.
+  stub fleet-dispatch "FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""
   for s in t-one t-here; do
     [ "$s" = t-one ] || agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
     agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
