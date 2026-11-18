@@ -1,7 +1,0 @@
-[Unit]
-Description=Wake the Claude sessions stopped on "Not logged in" once their account is signed in again
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/claude-acct wake
-TimeoutStartSec=90
