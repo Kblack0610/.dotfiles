@@ -765,14 +765,16 @@ mod tests {
     fn the_grid_is_two_across_at_eighty_and_four_from_one_sixty() {
         let all = hub_core::cards::grid(&Default::default());
         let at80 = grid_text(&all, 80);
-        // Eight cards, two across: four rows of four lines and a blank.
-        assert_eq!(at80.len(), 4 * 5, "{at80:#?}");
-        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("QUEUE  - reading"));
-        assert_eq!(at80[0].find("QUEUE"), Some(39 + 2), "{:?}", at80[0]);
+        // Nine cards, two across: five rows of four lines and a blank, the last card alone.
+        assert_eq!(at80.len(), 5 * 5, "{at80:#?}");
+        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("BOARD  - reading"));
+        assert_eq!(at80[0].find("BOARD"), Some(39 + 2), "{:?}", at80[0]);
+        assert!(at80[20].starts_with("PROJECTS"));
         assert!(at80.iter().all(|l| l.chars().count() <= 80));
         let at160 = grid_text(&all, 160);
-        assert_eq!(at160.len(), 2 * 5);
-        assert!(at160[0].contains("INFRA") && at160[5].contains("PROJECTS"));
+        assert_eq!(at160.len(), 3 * 5);
+        assert!(at160[0].contains("ALERTS") && at160[5].contains("INFRA"));
+        assert!(at160[10].starts_with("PROJECTS"));
         assert!(at160.iter().all(|l| l.chars().count() <= 160));
     }
 

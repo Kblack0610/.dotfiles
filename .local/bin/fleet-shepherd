@@ -286,8 +286,11 @@ cmd_due() {
   local verdict holds parked preempt
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
-  if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
-    out+="${out:+$'\n'}pace: hold $holds while the machine reads CLEAR"
+  # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
+  # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
+  local lift; lift="$(tr , '\n' <<<"$holds" | grep -vx restore | paste -sd, -)"
+  if [ -n "$lift" ] && [ "$verdict" = CLEAR ]; then
+    out+="${out:+$'\n'}pace: hold $lift while the machine reads CLEAR"
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
