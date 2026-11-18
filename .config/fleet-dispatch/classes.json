@@ -1,0 +1,11 @@
+{
+  "on": false,
+  "window_days": 7,
+  "classes": [
+    {"name": "bug", "share": 20, "tags": ["red"], "kinds": ["fix", "perf"]},
+    {"name": "requested", "share": 40, "tags": ["requested"], "from": ["human"]},
+    {"name": "cleanup", "share": 10, "tags": ["cleanup", "canary"], "kinds": ["chore", "refactor", "check"]},
+    {"name": "research", "share": 10, "kinds": ["research", "design", "legal", "market", "decide"]},
+    {"name": "feature", "share": 20, "default": true}
+  ]
+}

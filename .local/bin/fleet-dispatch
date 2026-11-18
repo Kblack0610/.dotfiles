@@ -3456,7 +3456,7 @@ start_items() {
 # What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
 TAKEN_JQ='(.waits | not)'
 
-# next_items -> the queued items a pass may try, in agent-queue's order (red, priority, project rank, cleanup, age),
+# next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, project rank, priority, then the class mix and age),
 # one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 # With --points each carries its board row's points, which a trainee reads (item_points): every caller
 # that feeds a start passes it, and a count does not, so it pays no board read.
