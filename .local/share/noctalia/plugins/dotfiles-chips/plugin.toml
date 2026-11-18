@@ -1,0 +1,25 @@
+# One bar widget that draws any waybar custom/* chip from config.base, so the Noctalia bar
+# shows the same chips as waybar without a second copy of any. `desk chip` reads and runs
+# the chip; chip.luau only draws what it prints. Usage: docs/desk.md, "Noctalia".
+id = "dotfiles/chips"
+name = "Dotfiles chips"
+version = "1.0.0"
+# 43: the newest API Noctalia 5.4.1 accepts, so no member below is gated off.
+plugin_api = 43
+author = "dotfiles"
+license = "MIT"
+dependencies = []
+tags = ["bar"]
+icon = "puzzle"
+description = "Draws a waybar custom/* chip from config.base in the bar."
+
+[[widget]]
+id = "chip"
+entry = "chip.luau"
+
+  [[widget.setting]]
+  key = "module"
+  type = "string"
+  label_key = "settings.module.label"
+  description_key = "settings.module.description"
+  default = "custom/ci"

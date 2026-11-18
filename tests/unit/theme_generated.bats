@@ -91,6 +91,16 @@ is_ignored() {
   assert_failure
 }
 
+@test "noctalia's rendered palette is ignored" {
+  run is_ignored .config/noctalia/palettes/dotfiles.json
+  assert_success
+}
+
+@test "noctalia's hand-authored config.toml is tracked" {
+  run is_ignored .config/noctalia/config.toml
+  assert_failure
+}
+
 @test "hyprland's rendered theme.lua is ignored" {
   # Hyprland requires it (conf/look-and-feel.lua), so like sketchybar's colors.sh it is
   # also why the installers and the post-merge hook render it.
@@ -124,7 +134,7 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the thirteen that were classified" {
+@test "theme-switch's write targets are still the fourteen that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
   # switch; converting each to its tool's native include (lazygit LG_CONFIG_FILE, an nvim
   # palette module) is the unfinished half of the job.
@@ -140,6 +150,7 @@ is_ignored() {
     .config/hypr/conf/theme.lua \
     .config/jesseduffield/lazygit/config.yml \
     .config/kitty/current-theme.conf \
+    .config/noctalia/palettes/dotfiles.json \
     .config/nvim/lua/kennethblack/init.lua \
     .config/nvim/lua/kennethblack/plugins/lualine.lua \
     .config/nvim/lua/kennethblack/plugins/neo-tree.lua \

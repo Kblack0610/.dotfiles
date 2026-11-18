@@ -4,7 +4,7 @@
 
 | Slot | Parts | Unit |
 |---|---|---|
-| bar | `waybar-classic`, `waybar-modern` | `waybar.service` (our `launch.sh` drop-in) |
+| bar | `waybar-classic`, `waybar-modern`, `noctalia` | `waybar.service` (our `launch.sh` drop-in), `noctalia.service` |
 | notify | `dunst`, `swaync` | `dunst.service`, `swaync.service` |
 
 ## Use
@@ -20,7 +20,7 @@ The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.servi
 
 Scripts and binds never signal a part directly:
 
-- `desk signal custom/<chip>` re-runs that chip now, and every chip sharing its signal number. It reads the chip's `"signal"` from `.config/waybar/config.base` (or `config.pin-full`).
+- `desk signal custom/<chip>` re-runs that chip now, and every chip sharing its signal number. It reads the chip's `"signal"` from `.config/waybar/config.base` (or `config.pin-full`), then sends it to waybar as `SIGRTMIN+N` or to Noctalia over its plugin IPC.
 - `desk notify close|close-all|history|dnd` drives the notifier (Super+N, Shift, Ctrl, Alt). Under swaync, `history` opens the control panel.
 
 desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, so that would dirty the tree. A slot whose parts run as different units gets `Conflicts=` between them (`dunst.service.d/desk.conf`), so starting one stops the other.
@@ -28,6 +28,16 @@ desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, 
 ## The two bars
 
 Both read the same chips from `config.base`; they differ only in stylesheet. `launch.sh` gives classic the theme's `style.css` and modern the tracked `style-modern.css`, which imports `style.css`, then `palette.css` (written by `theme-switch` from the active palette), then `layout-modern.css` (a clear bar with three rounded islands). A theme switch recolours both. The pin bar loads `style.css`, so it keeps the classic look under either.
+
+## Noctalia
+
+`desk use bar noctalia` runs the Noctalia shell (`noctalia.service`, which conflicts with `waybar.service`). Its bar is laid out in the tracked `.config/noctalia/config.toml`: Noctalia's own workspaces, clock, volume, network, Bluetooth, tray and control center, plus our chips.
+
+Each chip is the `dotfiles/chips` plugin (`.local/share/noctalia/plugins/dotfiles-chips/`) with a `module` setting such as `custom/ci`. The plugin holds no chip logic: `desk chip <id>` reads that module from `config.base` (stream, poll interval or run once, signal, click commands) and `desk chip <id> run` runs its exec and prints plain JSON (pango stripped, one class). So a chip changes in `config.base` and shows the same on all three bars. A module with no exec (Bluetooth, the clock) has a Noctalia widget of its own instead.
+
+Notifications stay with the notify slot: `config.toml` sets `[notification] enable_daemon = false`. Noctalia ignores dunst's `x-dunst-stack-tag`, so fleet pages would stack instead of replacing each other; it is not offered as a notifier.
+
+`theme-switch` writes `.config/noctalia/palettes/dotfiles.json`, which `config.toml` selects (`custom_palette = "dotfiles"`), and reloads Noctalia. Settings changed in Noctalia's own settings window go to `~/.local/state/noctalia/settings.toml` and win over `config.toml`; delete a line there to get the tracked value back.
 
 ## The control panel
 
@@ -40,5 +50,8 @@ Both read the same chips from `config.base`; they differ only in stylesheet. `la
 | No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service waybar.service`, then `desk start` |
 | `desk use` says a part "needs X, which is not installed" | the part's package is missing | install it (`packages.conf` lists it), then rerun |
 | A chip does not refresh on a keybind | the chip has no `"signal"` key, so `desk signal` exits 2 | add `"signal": N` to the module in `config.base` |
-| swaync shows its default grey look | `~/.config/swaync/style.css` is not there: theme-switch writes it into the repo and the link is missing | `theme-switch "$(cat ~/.config/theme/current)" --only swaync`, then `dotfiles-deploy --missing` |
+| swaync shows its default grey look | `~/.config/swaync/style.css` is not there: theme-switch writes it into the repo, and stow links only the files that existed when it ran | `theme-switch "$(cat ~/.config/theme/current)" --only swaync`, then `ln -s ../../.dotfiles/.config/swaync/style.css ~/.config/swaync/style.css` |
 | The wrong notifier pops up after one crashed | both own `org.freedesktop.Notifications`, and D-Bus starts whichever it finds first | `desk start` brings back the recorded part, and Conflicts= stops the other |
+| Noctalia shows its own colours, not the theme's | `~/.config/noctalia/palettes` is missing, for the same stow reason | `theme-switch "$(cat ~/.config/theme/current)" --only noctalia`, then `ln -s ../../.dotfiles/.config/noctalia/palettes ~/.config/noctalia/palettes` |
+| A Noctalia chip reads `custom/<x> ?` in red | `desk chip custom/<x>` failed: the module is not in `config.base`, or desk is not on PATH at `~/.local/bin/desk` | run `desk chip custom/<x>` and fix what it says |
+| A Noctalia chip does not refresh on a keybind | the chip polls or streams, so the signal is ignored, or the plugin is not loaded | `noctalia msg plugin dotfiles/chips:chip all refresh <N>` by hand; check `[plugins] enabled` in `config.toml` |

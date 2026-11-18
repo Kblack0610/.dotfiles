@@ -32,15 +32,9 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 # shellcheck source=../../.config/waybar/pango.sh
 . "$CONF_DIR/pango.sh"
 
-# The waybar config as one JSON object of module definitions. The files are JSONC; every
-# comment in them is a whole line, so dropping those lines leaves JSON (a URL's // survives).
-# control_menu.bats parses the real files, so a comment added mid-line fails there first.
-config_json() {
-    local f
-    for f in "$CONF_DIR/config.base" "$CONF_DIR/config.pin-full"; do
-        [ -r "$f" ] && sed '/^[[:space:]]*\/\//d' "$f"
-    done | jq -s 'map(if type == "array" then add else . end) | add'
-}
+# shellcheck source=../lib/waybar-config.sh
+. "$(dirname "$SELF")/../lib/waybar-config.sh"
+config_json() { waybar_config_json "$CONF_DIR"; }
 
 # registry rows: key<TAB>label<TAB>first module id
 registry() {
