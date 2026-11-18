@@ -178,3 +178,18 @@ test("a failed read says so over the rows it could not replace", () => {
   assert.match(box.innerHTML, /card err">502/);
   assert.match(box.innerHTML, /agent-1/);
 });
+
+test("a triaged trip reads trigger -> triage -> fix, linking its item and PR", () => {
+  fresh();
+  const triage = { key: "watch nightly", item: "ar-1", pr_url: "https://github.com/o/r/pull/7",
+    word: "route agent nightly-fix, row agent-runtime ar-1, item ar-1 fixing, PR o/r#7" };
+  const trip = act(3, { actor: "sentinel", verb: "tripped", source: "notify", text: "nightly is red", triage });
+  const bare = act(4, { actor: "sentinel", verb: "tripped", source: "notify", text: "gate is red", triage: { key: "watch gate", word: "" } });
+  ast.data = { ...data, actions: [trip, bare] };
+  run("ast.render()");
+  const h = box.innerHTML;
+  assert.match(h, /nightly is red<div class="muted">triage: route agent nightly-fix, row agent-runtime ar-1, item ar-1 fixing, PR o\/r#7 /);
+  assert.match(h, /<a class="tl" href="#queue\?q=ar-1">item<\/a>/, "the item opens its queue record");
+  assert.match(h, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/7" target="_blank" rel="noopener">PR<\/a>/);
+  assert.match(h, /gate is red<\/td>/, "a trip the server did not join shows no triage line");
+});

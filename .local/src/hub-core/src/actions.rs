@@ -14,8 +14,12 @@
 //!
 //! Queue starts are not read from the queue: the dispatch log already records them. Holds, go's
 //! and parks are read from the audit log, not from the titles of the pages that announce them.
+//!
+//! `read` also joins each Sentinel trip to how it was triaged (`triage`): its route from
+//! `fleet-bench triage --route` and its fix item from `fleet-bench reds`, which own both. `gather`
+//! and `window` (`hub actions`, the briefing's digest) read the ledgers alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone};
@@ -23,6 +27,7 @@ use serde::Serialize;
 
 use crate::jobs::read_or_empty;
 use crate::queue::Item;
+use crate::reds::{Red, Reds, Route};
 use crate::table::{Row, Val};
 
 /// Actions sent to a caller, newest first. `Gathered::counts` still counts the whole window.
@@ -52,6 +57,28 @@ pub struct Action {
     pub reference: Option<String>,
     /// Which ledger said so (the module table).
     pub source: String,
+    /// How a Sentinel trip was triaged (`triage`); none on any other action, and left out of the
+    /// JSON until joined, so `hub actions` and Alerts History carry no empty triage.
+    #[serde(skip_serializing_if = "unjoined")]
+    pub triage: Option<Triage>,
+}
+
+/// What `fleet-bench triage` made of one Sentinel trip, so the trip reads trigger -> triage -> fix:
+/// the route TRIAGE_ROUTES gives its key, and the fix item `fleet-bench reds` lists for it with the
+/// board row it was promoted from. `parse_notify` sets only the key; `triage` fills the rest, so a
+/// reader that does not join (Alerts' History) has an empty `word` and shows none.
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+pub struct Triage {
+    /// `watch <name>`: the key fleet-bench files a watch's red under.
+    pub key: String,
+    /// The fix item's slug and PR link, for the web line's links; none when no item was filed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// `route agent ci-cost, row agent-runtime ar-1557, item ar-1557 fixed, PR o/r#9`: the line
+    /// both surfaces print under the trip, and what a search matches. Empty until joined.
+    pub word: String,
 }
 
 /// A page at one of these priorities is under the `loud` chip; normal and low ones are not.
@@ -84,6 +111,18 @@ impl Row for Action {
             _ => true,
         }
     }
+
+    /// The columns' text and a trip's triage line, so a search for its fix item finds the trip.
+    fn text(&self) -> String {
+        let cols = Self::COLUMNS.iter().filter_map(|c| match self.val(c) {
+            Val::Text(t) => Some(t),
+            _ => None,
+        });
+        cols.chain(self.triage.iter().map(|t| t.word.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase()
+    }
 }
 
 impl Action {
@@ -97,6 +136,7 @@ impl Action {
             failed: false,
             reference: None,
             source: source.into(),
+            triage: None,
         }
     }
 }
@@ -184,13 +224,109 @@ pub fn queue_items() -> (Vec<Item>, Option<String>) {
     }
 }
 
-/// `gather` over this host's ledgers and live queue: what Log's Actions section shows on both
-/// surfaces.
-pub fn read(since: i64) -> Gathered {
+/// `gather` over this host's ledgers and live queue, each Sentinel trip triaged: what Log's
+/// Actions section shows on both surfaces. `reds` is `fleet-bench reds` (open and settled) when
+/// the surface already holds it fresh for its Alerts tab, so it runs once for both; `None` reads it.
+pub fn read(since: i64, reds: Option<Result<Vec<Red>, String>>) -> Gathered {
     let (items, err) = queue_items();
     let mut g = gather(&Paths::from_env(), since, &items);
     g.errors.extend(err);
+    triaged(&mut g, reds, &items);
     g
+}
+
+/// `fleet-bench reds` as one list, open and settled.
+pub fn all_reds(r: Result<Reds, String>) -> Result<Vec<Red>, String> {
+    r.map(|r| [r.open, r.settled].concat())
+}
+
+/// `triage` over `g`'s trips, reading the reds (unless given) and the routes of their keys only
+/// when there is a trip; a read that fails is an error line, and its part of each line says so.
+fn triaged(g: &mut Gathered, reds: Option<Result<Vec<Red>, String>>, items: &[Item]) {
+    let keys: Vec<String> = g
+        .actions
+        .iter()
+        .filter_map(|a| a.triage.as_ref().map(|t| t.key.clone()))
+        .collect();
+    if keys.is_empty() {
+        return;
+    }
+    let runner = &crate::session_actions::System;
+    let reds = reds.unwrap_or_else(|| all_reds(crate::reds::read(runner)));
+    let routes = crate::reds::routes(runner, keys);
+    if let Err(e) = &reds {
+        g.errors.push(format!("fleet-bench reds: {e}"));
+    }
+    if let Err(e) = &routes {
+        g.errors.push(format!("triage routes: {e}"));
+    }
+    triage(
+        &mut g.actions,
+        reds.as_deref().ok(),
+        routes.as_ref().ok(),
+        items,
+    );
+}
+
+/// Join each Sentinel trip (newest first, as gathered) to its route and its fix. `None` for
+/// `reds` or `routes` is a read that failed.
+pub fn triage(
+    actions: &mut [Action],
+    reds: Option<&[Red]>,
+    routes: Option<&HashMap<String, Route>>,
+    items: &[Item],
+) {
+    let not_read = crate::reading::NOT_READ;
+    // The next (newer) trip of each key, walking newest first.
+    let mut next: HashMap<String, i64> = HashMap::new();
+    for a in actions.iter_mut() {
+        let at = a.at;
+        let Some(t) = a.triage.as_mut() else {
+            continue;
+        };
+        let before = next.insert(t.key.clone(), at).unwrap_or(i64::MAX);
+        let route = routes.map(|r| r.get(&t.key).map_or("-".into(), Route::word));
+        let mut parts = vec![format!("route {}", route.as_deref().unwrap_or(not_read))];
+        match reds.map(|reds| fix_for(reds, &t.key, at, before)) {
+            None => parts.push(format!("fix {not_read}")),
+            Some(None) => parts.push("no fix item".into()),
+            Some(Some(fix)) => {
+                let item = items.iter().find(|i| i.slug == fix.slug);
+                if let Some((project, id)) = item.and_then(Item::board_row) {
+                    parts.push(format!("row {project} {id}"));
+                }
+                parts.push(format!("item {} {}", fix.slug, fix.outcome));
+                if let Some(pr) = &fix.pr {
+                    parts.push(format!("PR {pr}"));
+                }
+                t.item = Some(fix.slug.clone());
+                t.pr_url = fix.pr_url.clone();
+            }
+        }
+        t.word = parts.join(", ");
+    }
+}
+
+/// The red item filed under `key` that was open when it tripped at `at`, else the first one queued
+/// after it and before that watch's next trip at `before`: triage files one row per key, so a trip
+/// while a fix is in hand is that fix's.
+fn fix_for<'a>(reds: &'a [Red], key: &str, at: i64, before: i64) -> Option<&'a Red> {
+    let mine = || reds.iter().filter(move |r| r.red == key);
+    mine()
+        .filter(|r| {
+            r.queued_at().is_some_and(|q| q <= at) && r.finished_at().map_or(r.open(), |f| f >= at)
+        })
+        .max_by_key(|r| r.queued_at())
+        .or_else(|| {
+            mine()
+                .filter(|r| r.queued_at().is_some_and(|q| q >= at && q < before))
+                .min_by_key(|r| r.queued_at())
+        })
+}
+
+/// A triage `triage` has not worded: what `serde` leaves out of an action's JSON.
+fn unjoined(t: &Option<Triage>) -> bool {
+    t.as_ref().is_none_or(|t| t.word.is_empty())
 }
 
 /// Every action at or after `since` (epoch seconds), with the dispatch log's times read as this
@@ -499,6 +635,13 @@ pub fn parse_notify(text: &str) -> (Vec<Action>, Vec<Reject>) {
             let mut a = Action::new(at, &actor, verb, &text, "notify");
             a.priority = Some(prio.to_string()).filter(|p| !p.is_empty());
             a.reference = reference;
+            // A trip's title names its watch: the key its triage is filed under.
+            if let (true, "tripped", Some(name)) = (head == "Sentinel", verb, target) {
+                a.triage = Some(Triage {
+                    key: format!("watch {name}"),
+                    ..Triage::default()
+                });
+            }
             Some(a)
         },
     )
@@ -947,6 +1090,144 @@ not json
                 "page"
             ]
         );
+    }
+
+    /// A trip of watch `w` at `at`, as `parse_notify` reads it.
+    fn trip(at: &str, w: &str) -> String {
+        format!("{at}\thigh\tSentinel: {w}\t{w} is red. Run the probe.\n")
+    }
+
+    fn fix(slug: &str, red: &str, queued: &str, finished: Option<&str>, outcome: &str) -> Red {
+        Red {
+            slug: slug.into(),
+            red: red.into(),
+            queued: Some(queued.into()),
+            finished: finished.map(String::from),
+            outcome: outcome.into(),
+            ..Red::default()
+        }
+    }
+
+    #[test]
+    fn only_a_trip_carries_its_watch_as_the_triage_key() {
+        let text = [
+            trip("2026-11-05T09:00:00Z", "nightly"),
+            "2026-11-05T10:00:00Z\tlow\tSentinel: nightly\tNightly back to normal after 1h.\n"
+                .into(),
+            "2026-11-05T11:00:00Z\thigh\tshepherd: agent-3\tstalled\n".into(),
+        ]
+        .concat();
+        let keys: Vec<Option<String>> = parse_notify(&text)
+            .0
+            .iter()
+            .map(|a| a.triage.as_ref().map(|t| t.key.clone()))
+            .collect();
+        assert_eq!(keys, [Some("watch nightly".into()), None, None]);
+    }
+
+    #[test]
+    fn a_trip_reads_its_route_row_and_the_fix_filed_for_it() {
+        // Newest first, as gathered: nightly tripped at 09:00, again at 12:00 while its first fix
+        // was in hand, and at 20:00 after that fix merged; gate tripped once, and nothing filed.
+        let text = [
+            trip("2026-11-05T09:00:00Z", "nightly"),
+            trip("2026-11-05T12:00:00Z", "nightly"),
+            trip("2026-11-05T20:00:00Z", "nightly"),
+            trip("2026-11-05T21:00:00Z", "gate"),
+        ]
+        .concat();
+        let mut a = parse_notify(&text).0;
+        a.reverse();
+        let first = fix(
+            "ar-1",
+            "watch nightly",
+            "2026-11-05T09:30:00Z",
+            Some("2026-11-05T13:00:00Z"),
+            "came back",
+        );
+        let reds = [
+            Red {
+                pr: Some("Kblack0610/.dotfiles#7".into()),
+                pr_url: Some("https://github.com/Kblack0610/.dotfiles/pull/7".into()),
+                ..first
+            },
+            fix(
+                "ar-2",
+                "watch nightly",
+                "2026-11-05T20:20:00Z",
+                None,
+                "fixing",
+            ),
+            fix(
+                "ar-9",
+                "watch other",
+                "2026-11-05T21:10:00Z",
+                None,
+                "fixing",
+            ),
+        ];
+        let routes = crate::reds::parse_routes(
+            "watch nightly\tagent\tnightly-fix\t#size/m\nwatch gate\t-\t-\t\n",
+        );
+        let items = [Item {
+            slug: "ar-1".into(),
+            from: Some("board:agent-runtime:ar-1".into()),
+            ..Item::default()
+        }];
+        triage(&mut a, Some(&reds), Some(&routes), &items);
+        let words: Vec<&str> = a
+            .iter()
+            .map(|a| a.triage.as_ref().unwrap().word.as_str())
+            .collect();
+        assert_eq!(
+            words,
+            [
+                "route -, no fix item",
+                "route agent nightly-fix, item ar-2 fixing",
+                "route agent nightly-fix, row agent-runtime ar-1, item ar-1 came back, PR Kblack0610/.dotfiles#7",
+                "route agent nightly-fix, row agent-runtime ar-1, item ar-1 came back, PR Kblack0610/.dotfiles#7",
+            ],
+            "a trip while a fix is open is that fix's; a fix queued after the next trip is not this one's"
+        );
+        let t = a[3].triage.as_ref().unwrap();
+        assert_eq!(
+            t.pr_url.as_deref(),
+            Some("https://github.com/Kblack0610/.dotfiles/pull/7")
+        );
+        assert_eq!(t.item.as_deref(), Some("ar-1"));
+        let found = View::new::<Action>("ar-1", "", "", "").apply(&a).len();
+        assert_eq!(found, 2, "a search for the fix item finds its trips");
+    }
+
+    #[test]
+    fn an_unread_source_says_so_on_the_line() {
+        let mut a = parse_notify(&trip("2026-11-05T09:00:00Z", "nightly")).0;
+        triage(&mut a, None, None, &[]);
+        assert_eq!(
+            a[0].triage.as_ref().unwrap().word,
+            "route not read, fix not read"
+        );
+    }
+
+    #[test]
+    fn a_settled_fix_with_no_finish_time_claims_no_later_trip() {
+        let mut a = parse_notify(&trip("2026-11-05T20:00:00Z", "nightly")).0;
+        let reds = [fix(
+            "ar-1",
+            "watch nightly",
+            "2026-11-05T09:00:00Z",
+            None,
+            "fixed",
+        )];
+        triage(&mut a, Some(&reds), Some(&HashMap::new()), &[]);
+        assert_eq!(a[0].triage.as_ref().unwrap().word, "route -, no fix item");
+    }
+
+    #[test]
+    fn an_unjoined_trip_carries_no_triage_in_its_json() {
+        let a = parse_notify(&trip("2026-11-05T09:00:00Z", "nightly")).0;
+        let json = serde_json::to_value(&a[0]).unwrap();
+        assert!(json.get("triage").is_none(), "{json}");
     }
 
     #[test]

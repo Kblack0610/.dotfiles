@@ -1251,9 +1251,14 @@ impl App {
     /// opens, on `r` and on the tick while it is open, as agent-web's feed does.
     pub fn read_actions(&mut self) {
         if self.actions_read.want() {
+            // The Alerts tab's reds while under `REDS_REFRESH` old: else the read runs
+            // `fleet-bench reds` for the trips' triage.
+            let fresh = self.reds_at.is_some_and(|t| t.elapsed() < REDS_REFRESH);
+            let reds = self.reds.clone().filter(|_| fresh);
             let tx = self.tx.clone();
             std::thread::spawn(move || {
-                let g = hub_core::actions::read(jobs::now() - logtab::ACTIONS_HOURS * 3600);
+                let since = jobs::now() - logtab::ACTIONS_HOURS * 3600;
+                let g = hub_core::actions::read(since, reds.map(hub_core::actions::all_reds));
                 let _ = tx.send(Msg::Actions(Box::new(g)));
             });
         }
@@ -6234,6 +6239,7 @@ mod tests {
             failed: false,
             reference: None,
             source: "shepherd".into(),
+            triage: None,
         };
         a.actions = Some(hub_core::actions::Gathered {
             actions: vec![at(2, "nudge"), at(1, "failed")],

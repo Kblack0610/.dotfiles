@@ -41,7 +41,15 @@ const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], pri
 
 const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).toISOString())}">${stamp(a.at)}</td>` +
   `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
-  `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
+  `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}${triageLine(a.triage)}</td></tr>`;
+
+// A Sentinel trip's triage under its text, so it reads trigger -> triage -> fix: the route, the board
+// row, the fix item (linked to its queue record) with its outcome, and its PR. The server words it.
+function triageLine(t) {
+  if (!t?.word) return "";
+  const links = [t.item && tblLink("#queue?q=" + encodeURIComponent(t.item), "item"), t.pr_url && tblLink(t.pr_url, "PR")].filter(Boolean).join(" ");
+  return `<div class="muted">triage: ${esc(t.word)}${links ? " " + links : ""}</div>`;
+}
 
 // Log's Actions fold carries the title (index.html); the window buttons and the state chips count
 // the rows, so the head is only what could not be read.

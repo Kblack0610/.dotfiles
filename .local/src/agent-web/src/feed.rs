@@ -1,11 +1,13 @@
 //! Log's Actions section: everything the fleet's machinery did (shepherd, dispatch, pages, failed
 //! runs, the queue), read by `hub_core::actions`, the same reader as `hub actions` and the
-//! briefing's digest.
+//! briefing's digest. Each Sentinel trip is triaged against the Alerts tab's cached `fleet-bench
+//! reds`, so it runs once for both tabs.
 
 use crate::cache::EventCache;
 use axum::extract::{Query, State};
 use axum::Json;
 use hub_core::actions::{self, Action, Gathered};
+use hub_core::reds::Red;
 use hub_core::table::View;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -48,11 +50,12 @@ fn shown(g: &Gathered, q: &Q) -> Value {
     json!({ "actions": rows, "counts": g.counts, "errors": g.errors, "table": table })
 }
 
-fn read(span: i64) -> Gathered {
+/// `span` seconds of actions, each Sentinel trip triaged against `reds` (the Alerts tab's cached read).
+fn read(span: i64, reds: Result<Vec<Red>, String>) -> Gathered {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    actions::read(now - span)
+    actions::read(now - span, Some(reds))
 }
 
 /// The last read, so typing in the search box does not re-read every ledger: `agent-queue list`
@@ -82,7 +85,11 @@ impl Cache {
 }
 
 pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
-    let g = s.actions.gathered(window(q.hours), read).await;
+    let reds = actions::all_reds(s.alerts.reds().await);
+    let g = s
+        .actions
+        .gathered(window(q.hours), move |span| read(span, reds))
+        .await;
     Json(shown(&g, &q))
 }
 
@@ -145,6 +152,7 @@ mod tests {
             failed: false,
             reference: None,
             source: "shepherd".into(),
+            triage: None,
         };
         let actions = vec![row(2, "shepherd"), row(1, "dispatch")];
         let g = Gathered {
