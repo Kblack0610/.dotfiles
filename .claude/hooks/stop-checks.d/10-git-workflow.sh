@@ -45,13 +45,12 @@ ITEM=${AGENT_QUEUE_ITEM:-}
 command -v agent-queue >/dev/null 2>&1 || ITEM=''
 
 # lost_fence -- block a session its item names in `lost:`: reap gave its run up when its host stopped
-# answering, and another node carries the item now. A worker's agent-queue reads the state host over
-# ssh (AGENT_STATE_HOST); a peer clone that comes back holds the store from before, so lost_fence sync
-# first takes the store's latest there (bounded: offline it reads the clone).
+# answering, and another node carries the item now. A peer clone that comes back holds the store from
+# before, so lost_fence sync first takes the store's latest (bounded: offline it reads the clone).
 lost_fence() {
   local lost
   [ -n "$ITEM" ] && [ -n "${STOP_SESSION_ID:-}" ] || return 0
-  [ "${1:-}" != sync ] || [ -n "${AGENT_STATE_HOST:-}" ] || timeout 30 store-sync --now >/dev/null 2>&1
+  [ "${1:-}" != sync ] || timeout 30 store-sync --now >/dev/null 2>&1
   lost=$(agent-queue show "$ITEM" --json 2>/dev/null | jq -r '.lost // ""' 2>/dev/null)
   [[ " $lost " == *" $STOP_SESSION_ID "* ]] || return 0
   echo "FAILED: queue item $ITEM was re-queued to another node while ${lost%% *} did not answer, and this session's run was given up for lost: do not push, open a PR or land; wind down without auto" >&2

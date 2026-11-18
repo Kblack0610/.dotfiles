@@ -95,83 +95,84 @@ ago() { echo $(( NOW - $1 * 60 )); }
   assert_failure 2
 }
 
-# The fleet home reads presence, but the human often sits at another machine: that machine
-# publishes its last input there, and the home takes the newest of its own and every report.
+# Dispatch may run on any machine, and the human often sits at another: every machine publishes its
+# last input to presence/<host> in the store, and status takes the newest of its own and every file.
 
-@test "a report from the machine the human sits at counts on the home, named by host" {
+# report <host> <minutes ago> <source>: the presence file that host's publish left in the store.
+report() { mkdir -p "$HOME/.agent/presence"; echo "$(ago "$2") $3" > "$HOME/.agent/presence/$1"; }
+
+@test "a machine the human sits at counts everywhere, named by host" {
   socket hub
   "$SH" desktop idle 7200
-  "$SH" report cachyos-rog "$(( 3 * 60 ))" tmux
+  report cachyos-rog 3 tmux
   STUB_CLIENTS="$(ago 180)\n" run "$SH"
   assert_output 'here 3 cachyos-rog:tmux'
 }
 
-@test "a headless home with no client reads the human from a report alone" {
-  "$SH" report cachyos-rog "$(( 1 * 60 ))" desktop
+@test "a headless machine with no client reads the human from the store alone" {
+  report cachyos-rog 1 desktop
   STUB_PROCS=none run "$SH"
   assert_output 'here 1 cachyos-rog:desktop'
 }
 
-@test "a report ages like a local input: a machine that stopped publishing goes away" {
-  "$SH" report cachyos-rog "$(( 45 * 60 ))" tmux
+@test "a published input ages like a local one: a machine that stopped publishing goes away" {
+  report cachyos-rog 45 tmux
   STUB_PROCS=none run "$SH"
   assert_output 'away 45 cachyos-rog:tmux'
 }
 
-@test "local input newer than every report wins, and a newer report replaces its host's last" {
+@test "local input newer than every file wins, and a newer file wins over it" {
   socket hub
   "$SH" desktop idle 7200
-  "$SH" report cachyos-rog "$(( 20 * 60 ))" tmux
+  report cachyos-rog 20 tmux
   STUB_CLIENTS="$(ago 2)\n" run "$SH"
   assert_output 'here 2 tmux'
-  "$SH" report cachyos-rog "$(( 1 * 60 ))" desktop
+  report cachyos-rog 1 desktop
   STUB_CLIENTS="$(ago 2)\n" run "$SH"
   assert_output 'here 1 cachyos-rog:desktop'
 }
 
-@test "report refuses a host, age or source it could not store as given" {
-  for args in "../x 1 tmux" "rog/x 1 tmux" "rog x tmux" "rog -5 tmux" "rog 1 tm/ux" "rog 1"; do
-    # shellcheck disable=SC2086 # each case is its argument list
-    run "$SH" report $args
-    assert_failure 2
-  done
-  [ -z "$(ls -A "$XDG_RUNTIME_DIR/fleet-presence" 2>/dev/null)" ] || fail "stored a refused report"
-  [ ! -e "$XDG_RUNTIME_DIR/x" ] || fail "wrote outside the report dir"
-  run "$SH" report my_host.lan 60 tmux
-  assert_success
-}
-
-# publish: FLEET_INVENTORY names state.lan the home; ssh is a stub that logs its call.
+# publish: store-sync is a stub that logs its call.
 publish_fixture() {
-  export FLEET_INVENTORY="$SANDBOX/inventory.yml" FLEET_HOST="$1"
-  printf 'all:\n  children:\n    fleet_workers:\n      vars:\n        fleet_state_host: state.lan\n      hosts:\n        worker:\n' > "$FLEET_INVENTORY"
-  stub ssh 'echo "ssh $*" >> "$HOME/ssh.log"'
+  export FLEET_HOST="$1"
+  stub store-sync 'echo "store-sync $*" >> "$HOME/sync.log"'
 }
 
-@test "publish on a machine that is not the home sends the age of its last input, never its clock" {
+@test "publish writes this machine's last input to the store and pushes it, then rewrites it only once it moved 5 minutes" {
   publish_fixture cachyos-rog
   socket hub
   "$SH" desktop idle 7200
-  STUB_CLIENTS="$(ago 4)\n" run "$SH" publish
+  STUB_CLIENTS="$(ago 10)\n" run "$SH" publish
   assert_success
-  run cat "$HOME/ssh.log"
-  assert_output --regexp "state\.lan PATH=\"\\\$HOME/\.local/bin:\\\$PATH\" exec env -u AGENT_STATE_HOST AGENT_STATE_LOCAL=1 fleet-presence report cachyos-rog 24[0-9] tmux $"
+  assert_equal "$(cat "$HOME/.agent/presence/cachyos-rog")" "$(ago 10) tmux"
+  assert_equal "$(cat "$HOME/sync.log")" "store-sync --now --bg"
+  # Four minutes later: the same source, under PUBLISH_STEP_S, so no write and no push.
+  STUB_CLIENTS="$(ago 6)\n" run "$SH" publish
+  assert_equal "$(cat "$HOME/.agent/presence/cachyos-rog")" "$(ago 10) tmux"
+  assert_equal "$(wc -l < "$HOME/sync.log")" 1
+  # A changed source is written at once, and so is input 5 minutes on.
+  STUB_CLIENTS="$(ago 180)\n" "$SH" desktop active
+  STUB_CLIENTS="$(ago 180)\n" run "$SH" publish
+  assert_equal "$(cut -d' ' -f2 "$HOME/.agent/presence/cachyos-rog")" desktop
+  assert_equal "$(wc -l < "$HOME/sync.log")" 2
+  [ -z "$(find "$HOME/.agent/presence" -name '.*')" ] || fail "left a temp file in the store"
 }
 
-@test "publish sends nothing when a source is unread, or with no session at all" {
+@test "publish writes nothing when a source is unread, or with no session at all" {
   publish_fixture cachyos-rog
   STUB_PROCS=hyprland run --separate-stderr "$SH" publish
   assert_success
   assert_equal "$stderr" "fleet-presence: hypridle is unreadable here, so nothing was published"
   STUB_PROCS=none run "$SH" publish
   assert_success
-  [ ! -e "$HOME/ssh.log" ] || fail "sent a report with nothing readable to report"
+  [ ! -e "$HOME/.agent/presence" ] || fail "wrote presence with nothing readable to publish"
+  [ ! -e "$HOME/sync.log" ] || fail "pushed with nothing written"
 }
 
-@test "publish on the home sends nothing: the home reads itself" {
-  publish_fixture state
+@test "publish refuses a host name that could not name a file in the store" {
+  publish_fixture ../x
   socket hub
   STUB_CLIENTS="$(ago 4)\n" run "$SH" publish
-  assert_success
-  [ ! -e "$HOME/ssh.log" ] || fail "the home published to itself"
+  assert_failure 2
+  [ ! -e "$HOME/.agent/presence" ] || fail "wrote outside the presence dir"
 }
