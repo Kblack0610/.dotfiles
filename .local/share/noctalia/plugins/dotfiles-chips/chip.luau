@@ -9,7 +9,11 @@ local desk = home .. "/.local/bin/desk"
 local spec = nil
 local busy = false
 local hasDetail = false
+local published = nil
 local PANEL = "dotfiles/chips:detail"
+-- Off (config.toml `dropdown = false`) for a chip whose click acts, such as cycling the mic:
+-- it keeps its click and its plain tooltip.
+local dropdown = noctalia.getConfig("dropdown") ~= false
 
 -- A chip's class picks a palette role, so a theme switch recolours it. The classes are
 -- the ones the chip scripts print (pango.sh LEVEL_CLASS, timebox, audio_input).
@@ -41,14 +45,22 @@ local function show(line)
   barWidget.setText(text)
   -- Noctalia's tooltip is plain text, 280 px wide and three lines at most, so hover shows the
   -- tooltip's first line and a click opens the whole of it in colour (detail.luau).
-  local title = string.match(chip.tooltip or "", "[^\n]+")
-  if title then
-    barWidget.setTooltip(title)
+  hasDetail = dropdown and type(chip.detail) == "table" and #chip.detail > 0
+  local tip = hasDetail and string.match(chip.tooltip, "[^\n]+") or chip.tooltip or ""
+  if tip ~= "" then
+    barWidget.setTooltip(tip)
   else
     barWidget.clearTooltip()
   end
-  hasDetail = type(chip.detail) == "table" and #chip.detail > 0
-  noctalia.state.set("dotfiles.detail:" .. module, { lines = chip.detail or {}, click = spec and spec.click or "" })
+  if hasDetail then
+    -- Published only when it changed, so an open panel is not rebuilt on every poll.
+    local detail = { lines = chip.detail, click = spec and spec.click or "" }
+    local key = noctalia.json.encode(detail)
+    if key ~= published then
+      published = key
+      noctalia.state.set("dotfiles.detail:" .. module, detail)
+    end
+  end
   barWidget.setColor(ROLE[chip.class or ""] or "on_surface")
 end
 

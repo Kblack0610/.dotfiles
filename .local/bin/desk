@@ -234,13 +234,14 @@ chip_run() {
             | gsub("&apos;"; "'"'"'") | gsub("&amp;"; "&");
         def plain: gsub("<[^>]*>"; "") | ents;
         # The pango subset the chip scripts write, as lines of styled runs for the detail panel:
-        # t text, c colour, a alpha (0..1), b bold, m monospace (<tt>), i italic. Only known tags
-        # are markup, so a stray "<" in a line stays text.
+        # t text, c colour (#rrggbb only: the panel takes no named or short colour, and bgcolor
+        # is not a text colour), a alpha (0..1), b bold, m monospace (<tt>), i italic. Only known
+        # tags are markup, so a stray "<" in a line stays text. Markup with no text is no detail.
         def tagstyle: if test("^<b>") then {b: true} elif test("^<tt>") then {m: true}
             elif test("^<i>") then {i: true}
             elif test("^<span") then
-                ((capture("(?:fg)?(?:color|foreground)=[\\x22\\x27](?<c>[^\\x22\\x27]+)").c // null) as $c
-                | (capture("alpha=[\\x22\\x27](?<a>[0-9]+)%").a // null) as $a
+                ((capture("\\s(?:fgcolor|color|foreground)=[\\x22\\x27](?<c>#[0-9a-fA-F]{6})[\\x22\\x27]").c // null) as $c
+                | (capture("\\s(?:fg)?alpha=[\\x22\\x27](?<a>[0-9]+)%").a // null) as $a
                 | (if $c then {c: $c} else {} end) + (if $a then {a: ($a | tonumber / 100)} else {} end)
                 + (if test("weight=[\\x22\\x27]bold") then {b: true} else {} end))
             else {} end;
@@ -252,7 +253,7 @@ chip_run() {
                  | reduce range(0; $parts | length) as $i (.;
                      (if $i > 0 then .lines += [[]] else . end)
                      | if $parts[$i] == "" then . else .lines[-1] += [$s + {t: $parts[$i]}] end)
-             end) | .lines;
+             end) | .lines | if all(.[]; length == 0) then [] else . end;
         ((fromjson? | objects) // {text: .})
         | ((.text // "") | tostring) as $t | ((.alt // "") | tostring) as $alt
         | (if ($m."format-icons" | type) == "object" then ($m."format-icons"[$alt] // $m."format-icons".default // "") else "" end) as $icon

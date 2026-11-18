@@ -243,6 +243,20 @@ JSON
   assert_output '[true,"#ffcc2f",0.6,true,true,"#ef5734",["t"]]'
 }
 
+@test "chip run detail keeps only a #rrggbb text colour and drops a tooltip with no text" {
+  chip_fixture
+  # bgcolor is not the text colour, and a named colour is not one the panel can draw.
+  jq -cn '{text: "x", tooltip: "<span bgcolor=\"#000000\" foreground=\"#ff0000\">a</span><span color=\"red\">b</span>"}' \
+    > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.detail' <<<"$output"
+  assert_output '[[{"c":"#ff0000","t":"a"},{"t":"b"}]]'
+  jq -cn '{text: "x", tooltip: "<b></b>\n<tt></tt>"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.detail' <<<"$output"
+  assert_output '[]'
+}
+
 @test "chip run on a failing exec-if prints an empty chip and never runs the exec" {
   chip_fixture
   run "$DESK" chip custom/gated run
