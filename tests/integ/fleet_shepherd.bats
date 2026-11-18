@@ -396,7 +396,7 @@ esac'
 # chat <target> <nudged> <escalated> <idle_min> [age_min] [verdict]: a CHAT row, quiet for the lesser of the two, its close verdict keep unless named
 chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
 
-@test "a CHAT row is due only on a close-now verdict (FLEET_CHAT_CLOSE_H quiet, fleet-sessions), then nudged once and escalated once" {
+@test "a CHAT row is due only on a close-now verdict (FLEET_IDLE_CLOSE_MIN quiet, fleet-sessions), then nudged once and escalated once" {
   doc "[$(chat a false false 60), $(chat b false false 1440 5000 now), $(chat c false false 2000 30 after)]"
   run "$SH" due
   assert_success

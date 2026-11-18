@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1214" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
-  <!-- The fleet-sessions close flow (CLOSE_JQ), one chain for every session, first match wins.
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 956" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <!-- The fleet-sessions close flow (CLOSE_JQ), one chain and one quiet timer for every session, first match wins.
        Source of truth: .local/src/docs/fleet-states.md, Close verdict. Keep the two in step. -->
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#667085"/></marker>
@@ -18,11 +18,15 @@
   <rect class="node" x="85" y="12" width="400" height="44" rx="22"/>
   <text class="label sm" x="285" y="34">each shepherd check (15-min runner, each pass) reads each row</text>
   <rect class="lane" x="20" y="76" width="840" height="160" rx="10"/>
-  <rect class="lane" x="20" y="242" width="840" height="160" rx="10"/>
-  <rect class="lane" x="20" y="408" width="840" height="160" rx="10"/>
-  <rect class="lane" x="20" y="574" width="840" height="160" rx="10"/>
-  <rect class="lane" x="20" y="740" width="840" height="368" rx="10"/>
   <text class="lane-title" x="40" y="98" style="text-anchor:start">A. Not ours to judge</text>
+  <rect class="lane" x="20" y="242" width="840" height="104" rx="10"/>
+  <text class="lane-title" x="40" y="264" style="text-anchor:start">B. The human holds it</text>
+  <rect class="lane" x="20" y="352" width="840" height="104" rx="10"/>
+  <text class="lane-title" x="40" y="374" style="text-anchor:start">C. It is working</text>
+  <rect class="lane" x="20" y="462" width="840" height="216" rx="10"/>
+  <text class="lane-title" x="40" y="484" style="text-anchor:start">D. Work left here</text>
+  <rect class="lane" x="20" y="684" width="840" height="160" rx="10"/>
+  <text class="lane-title" x="40" y="706" style="text-anchor:start">E. The timer</text>
   <path class="edge" d="M285,56 V109"/>
   <rect class="decision" x="50" y="110" width="470" height="40" rx="6"/>
   <text class="label sm" x="285" y="130">parked: its claude is gone?</text>
@@ -31,115 +35,70 @@
   <rect class="node" x="590" y="110" width="230" height="40" rx="20"/>
   <text class="label sm" x="705" y="130">KEEP</text>
   <path class="edge" d="M285,150 V165"/>
+  <text class="elabel" x="300" y="160" style="text-anchor:start">no</text>
   <rect class="decision" x="50" y="166" width="470" height="40" rx="6"/>
   <text class="label sm" x="285" y="186">runs on a fleet worker?</text>
   <path class="edge" d="M520,186 H588"/>
   <text class="elabel" x="554" y="180">yes</text>
   <rect class="node" x="590" y="166" width="230" height="40" rx="20"/>
   <text class="label sm" x="705" y="186">KEEP</text>
-  <text class="elabel" x="300" y="160" style="text-anchor:start">no</text>
-  <text class="lane-title" x="40" y="264" style="text-anchor:start">B. The human is on it</text>
   <path class="edge" d="M285,206 V275"/>
+  <text class="elabel" x="300" y="270" style="text-anchor:start">no</text>
   <rect class="decision" x="50" y="276" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="296">manual label, plan mode, manual permission mode, a dialog?</text>
+  <text class="label sm" x="285" y="296">manual label, plan mode, or a dialog in its pane?</text>
   <path class="edge" d="M520,296 H588"/>
   <text class="elabel" x="554" y="290">yes</text>
   <rect class="node" x="590" y="276" width="230" height="40" rx="20"/>
   <text class="label sm" x="705" y="296">KEEP</text>
-  <text class="elabel" x="300" y="270" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,316 V331"/>
-  <rect class="decision" x="50" y="332" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="352">on the human's screen, or they typed in it under 30 min ago?</text>
-  <path class="edge" d="M520,352 H588"/>
-  <text class="elabel" x="554" y="346">yes</text>
-  <rect class="node" x="590" y="332" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="352">KEEP</text>
-  <text class="elabel" x="300" y="326" style="text-anchor:start">no</text>
-  <text class="lane-title" x="40" y="430" style="text-anchor:start">C. It is working</text>
-  <path class="edge" d="M285,372 V441"/>
-  <rect class="decision" x="50" y="442" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="462">working (busy, quiet under 20 min, or past its ask), not a coordinator?</text>
-  <path class="edge" d="M520,462 H588"/>
-  <text class="elabel" x="554" y="456">yes</text>
-  <rect class="node" x="590" y="442" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="462">KEEP</text>
-  <text class="elabel" x="300" y="436" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,482 V497"/>
-  <rect class="decision" x="50" y="498" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="518">stalled, other than on its own open queue item?</text>
-  <path class="edge" d="M520,518 H588"/>
-  <text class="elabel" x="554" y="512">yes</text>
-  <rect class="node" x="590" y="498" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="518">KEEP</text>
-  <text class="elabel" x="300" y="492" style="text-anchor:start">no</text>
-  <text class="lane-title" x="40" y="596" style="text-anchor:start">D. Work left here</text>
-  <path class="edge" d="M285,538 V607"/>
+  <path class="edge" d="M285,316 V385"/>
+  <text class="elabel" x="300" y="380" style="text-anchor:start">no</text>
+  <rect class="decision" x="50" y="386" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="406">working (busy, or past its ask)? not asked by --self</text>
+  <path class="edge" d="M520,406 H588"/>
+  <text class="elabel" x="554" y="400">yes</text>
+  <rect class="node" x="590" y="386" width="230" height="40" rx="20"/>
+  <text class="label sm" x="705" y="406">KEEP</text>
+  <path class="edge" d="M285,426 V495"/>
+  <text class="elabel" x="300" y="490" style="text-anchor:start">no</text>
+  <rect class="decision" x="50" y="496" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="516">work not landed: dirty files, an unmerged branch, an open PR?</text>
+  <path class="edge" d="M520,516 H588"/>
+  <text class="elabel" x="554" y="510">yes</text>
+  <rect class="node" x="590" y="496" width="230" height="40" rx="20"/>
+  <text class="label sm" x="705" y="516">KEEP: land it</text>
+  <path class="edge" d="M285,536 V551"/>
+  <text class="elabel" x="300" y="546" style="text-anchor:start">no</text>
+  <rect class="decision" x="50" y="552" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="572">LANDED, with plan phases nobody queued?</text>
+  <path class="edge" d="M520,572 H588"/>
+  <text class="elabel" x="554" y="566">yes</text>
+  <rect class="node" x="590" y="552" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
+  <text class="label sm" x="705" y="572">AFTER: queue them</text>
+  <path class="edge" d="M285,592 V607"/>
+  <text class="elabel" x="300" y="602" style="text-anchor:start">no</text>
   <rect class="decision" x="50" y="608" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="628">work not landed: dirty files, an unmerged branch, an open PR?</text>
+  <text class="label sm" x="285" y="628">only its own open queue item, every phase done or queued?</text>
   <path class="edge" d="M520,628 H588"/>
   <text class="elabel" x="554" y="622">yes</text>
-  <rect class="node" x="590" y="608" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="628">KEEP: land it</text>
-  <text class="elabel" x="300" y="602" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,648 V663"/>
-  <rect class="decision" x="50" y="664" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="684">coordinator of a plan whose queued phases have not landed?</text>
-  <path class="edge" d="M520,684 H588"/>
-  <text class="elabel" x="554" y="678">yes</text>
-  <rect class="node" x="590" y="664" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="684">KEEP until they land</text>
-  <text class="elabel" x="300" y="658" style="text-anchor:start">no</text>
-  <text class="lane-title" x="40" y="762" style="text-anchor:start">E. Done</text>
-  <path class="edge" d="M285,704 V773"/>
-  <rect class="decision" x="50" y="774" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="794">finished, its item moved on (fleet-states.md), or only own asks open?</text>
+  <rect class="node" x="590" y="608" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
+  <text class="label sm" x="705" y="628">AFTER: close the item</text>
+  <path class="edge" d="M285,648 V717"/>
+  <text class="elabel" x="300" y="712" style="text-anchor:start">no</text>
+  <rect class="decision" x="50" y="718" width="470" height="40" rx="6"/>
+  <text class="label sm" x="285" y="738">quiet under 60 min (FLEET_IDLE_CLOSE_MIN)? not asked by --self</text>
+  <path class="edge" d="M520,738 H588"/>
+  <text class="elabel" x="554" y="732">yes</text>
+  <rect class="node" x="590" y="718" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
+  <text class="label sm" x="705" y="738">AFTER: wait it out</text>
+  <path class="edge" d="M285,758 V773"/>
+  <text class="elabel" x="300" y="768" style="text-anchor:start">no</text>
+  <rect class="node" x="50" y="774" width="470" height="40" rx="20"/>
+  <text class="label sm" x="285" y="794">anything else: done, a chat, stalled with nothing to land, its own ask</text>
   <path class="edge" d="M520,794 H588"/>
-  <text class="elabel" x="554" y="788">yes</text>
   <rect class="node" x="590" y="774" width="230" height="40" rx="20" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
   <text class="label sm" x="705" y="794" style="fill:#b9791f;font-weight:600">CLOSE NOW</text>
-  <text class="elabel" x="300" y="768" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,814 V829"/>
-  <rect class="decision" x="50" y="830" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="850">LANDED, with plan phases nobody queued?</text>
-  <path class="edge" d="M520,850 H588"/>
-  <text class="elabel" x="554" y="844">yes</text>
-  <rect class="node" x="590" y="830" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
-  <text class="label sm" x="705" y="850">AFTER: queue them</text>
-  <text class="elabel" x="300" y="824" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,870 V885"/>
-  <rect class="decision" x="50" y="886" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="906">STALLED only on its own open queue item?</text>
-  <path class="edge" d="M520,906 H588"/>
-  <text class="elabel" x="554" y="900">yes</text>
-  <rect class="node" x="590" y="886" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
-  <text class="label sm" x="705" y="906">AFTER: close the item</text>
-  <text class="elabel" x="300" y="880" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,926 V941"/>
-  <rect class="decision" x="50" y="942" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="962">a chat: no plan, PR or queue item?</text>
-  <path class="edge" d="M520,962 H588"/>
-  <text class="elabel" x="554" y="956">yes</text>
-  <rect class="node" x="590" y="942" width="230" height="40" rx="20" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="705" y="962" style="fill:#b9791f;font-weight:600">quiet 24h: NOW, else AFTER</text>
-  <text class="elabel" x="300" y="936" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,982 V997"/>
-  <rect class="decision" x="50" y="998" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="1018">its own ask open, beside other blockers?</text>
-  <path class="edge" d="M520,1018 H588"/>
-  <text class="elabel" x="554" y="1012">yes</text>
-  <rect class="node" x="590" y="998" width="230" height="40" rx="20" style="stroke-dasharray:5 4"/>
-  <text class="label sm" x="705" y="1018">AFTER: the human answers</text>
-  <text class="elabel" x="300" y="992" style="text-anchor:start">no</text>
-  <path class="edge" d="M285,1038 V1053"/>
-  <rect class="node" x="50" y="1054" width="470" height="40" rx="20"/>
-  <text class="label sm" x="285" y="1074">anything else</text>
-  <path class="edge" d="M520,1074 H588"/>
-  <rect class="node" x="590" y="1054" width="230" height="40" rx="20"/>
-  <text class="label sm" x="705" y="1074">KEEP: its first blocker</text>
-  <text class="elabel" x="300" y="1048" style="text-anchor:start">no</text>
-  <path class="edge" d="M820,794 H840 V1132" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
-  <path class="edge" d="M820,962 H840 V1132" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
-  <rect class="node" x="270" y="1134" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="565" y="1153">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
-  <text class="label sm" x="565" y="1173">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
+  <path class="edge" d="M820,794 H840 V876" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
+  <rect class="node" x="270" y="878" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
+  <text class="label sm" x="565" y="897">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
+  <text class="label sm" x="565" y="917">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
 </svg>

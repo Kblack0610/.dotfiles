@@ -687,7 +687,7 @@ remind_sample() {
 # close_sample: the close nudge without a model. Each row CLOSE_NUDGE_JQ names (the ones cmd_due
 # would give a pass as `nudge DONE|CHAT|CLOSE`) gets its close typed into its pane: /wind-down
 # auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT /wind-down,
-# the human's standing order to close a chat quiet 24h. A pass could only send it by SendMessage,
+# the human's standing order to close a quiet chat. A pass could only send it by SendMessage,
 # and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the claude CLI has no
 # send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
