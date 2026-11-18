@@ -19,7 +19,7 @@ pub const DOWN_SKIPPING_HEADERS: &str = "down+transform:case {} in *━━*) ech
 pub const HELP_KEYS: [&str; 2] = ["alt-?", "f1"];
 /// Off while a row is held, back on when it drops: a sort or view change mid-move would move
 /// the row in an order you cannot see.
-pub const KEYS_OFF_WHILE_MOVING: &str = "ctrl-o,alt-o,ctrl-y";
+pub const KEYS_OFF_WHILE_MOVING: &str = "ctrl-o,alt-o,ctrl-y,alt-d";
 
 /// The preview layout every panel shares, from its one source: `panel-layout.sh args agent-panel`
 /// (`.local/src/tmux/`, beside panel-lib.sh) prints the `--preview-window` to open with, which is
@@ -44,12 +44,14 @@ pub fn layout() -> Result<Vec<String>> {
 
 /// Run fzf over `rows` (newline-joined). `map_file` backs the preview callback;
 /// `restore_line`, when set, positions the cursor on the active agent; `query` is typed into
-/// the search box up front. Returns the selected row text, or None if the user aborted.
+/// the search box up front; `label` is the border label, the A-d view (`dispatched`). Returns the
+/// selected row text, or None if the user aborted.
 pub fn run(
     rows: &str,
     map_file: &Path,
     restore_line: Option<usize>,
     query: Option<&str>,
+    label: &str,
 ) -> Result<Option<String>> {
     let exe = std::env::current_exe()
         .context("cannot resolve own path for fzf callbacks")?
@@ -60,6 +62,7 @@ pub fn run(
 
     let mut child = Command::new("fzf")
         .args(args(&exe, &map, restore_line, query, &layout))
+        .arg(format!("--border-label={label}"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -110,6 +113,9 @@ fn args(
          then echo \"change-prompt({PROMPT_ALL})+reload({rows})\"; \
          else echo \"change-prompt({PROMPT_ASKING})+reload({rows} --asking)\"; fi"
     );
+    // A-d steps the saved view (every session, dispatched hidden, dispatched only) and names it
+    // in the border label, before the reload that reads it.
+    let dispatched_bind = format!("alt-d:transform-border-label({exe} dispatched)+{reload}");
     let manual_bind = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
     let labels_bind = format!(
         "ctrl-l:execute(sh -c 'printf \"labels for %s (+add -drop ^flip): \" \"$1\"; read -r ops; \
@@ -145,6 +151,8 @@ fn args(
         labels_bind,
         "--bind".into(),
         asking_bind,
+        "--bind".into(),
+        dispatched_bind,
         "--bind".into(),
         sort_next_bind,
         "--bind".into(),
@@ -227,6 +235,13 @@ mod tests {
         );
         assert!(
             a.contains(&format!("alt-o:reload({rows} --sort reverse {asking})")),
+            "{a:?}"
+        );
+        // A-d steps the view first, then reloads in it, keeping the asking-only view.
+        assert!(
+            a.contains(&format!(
+                "alt-d:transform-border-label(/bin/ap dispatched)+reload({rows} {asking})"
+            )),
             "{a:?}"
         );
         // Negative control: no active agent, no load bind.

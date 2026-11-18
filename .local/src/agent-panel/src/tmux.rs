@@ -33,6 +33,8 @@ pub struct Pane {
     /// onto the window by each `fleet-sessions` tick. A display copy: the source is fleet-sessions.
     pub stage: String,
     pub labels: String,
+    /// fleet-dispatch started its session: `@dispatch` is set (fleet-dispatch tags the session).
+    pub dispatched: bool,
 }
 
 /// `<server>/<session>:<window>`.
@@ -178,7 +180,7 @@ fn pane_format(now: u64, shepherd_home: (&str, &str)) -> String {
     "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
      #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
      #{?@fav,fav ,}#{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
-     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}"
+     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"
         .replace("NOW", &now.to_string())
         .replace("HOME_SESSION", shepherd_home.0)
         .replace("HOME_WINDOW", shepherd_home.1)
@@ -207,6 +209,7 @@ fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
             tags: f.get(8).copied().unwrap_or("").trim().to_string(),
             stage: f.get(9).copied().unwrap_or("").to_string(),
             labels: f.get(10).copied().unwrap_or("").to_string(),
+            dispatched: f.get(11) == Some(&"1"),
         });
     }
     panes
@@ -299,7 +302,7 @@ mod tests {
 
     #[test]
     fn parses_panes_with_their_server() {
-        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\n\
+        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\t1\n\
                     hub\t1\t/home/u\t43\t%8\t0\t@4\tt\t\nshort\trow\n";
         let panes = parse_panes("hub", text);
         assert_eq!(panes.len(), 2);
@@ -318,6 +321,8 @@ mod tests {
             (panes[1].stage.as_str(), panes[1].labels.as_str()),
             ("", "")
         );
+        // Its own field, not the tags column, where a tag group could be named dispatch.
+        assert!(panes[0].dispatched && !panes[1].dispatched);
     }
 
     #[test]
@@ -335,7 +340,7 @@ mod tests {
         assert!(fmt.contains(tag), "{fmt}");
         assert!(!fmt.contains("HOME_"));
         assert!(
-            fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}"),
+            fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"),
             "{fmt}"
         );
         assert!(!fmt.contains("NOW"));
