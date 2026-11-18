@@ -104,31 +104,37 @@ POST_DIR="$HOOK_DIR/stop-post.d"
 [ "${1:-}" != --checks-only ] || POST_DIR=""   # run_post finds no dir and runs nothing
 
 # --- run_post: sequential, stdout/stderr passed through. Returns max exit code. ---
-# A post script that blocks (exit 2 or a "decision": "block" on stdout, as 86 and 88 do) holds the
-# teardown for the rest of the turn (HELD_FILE): the model was just told to act, an ask to file,
-# so closing the window would drop it. The armed retry runs nothing else, so it reads the hold
-# the blocked Stop left. Each turn's first Stop clears it.
-HELD_FILE="$CACHE_DIR/post-held-${SID:-${PROJ}-${DATE}}"
+# A post script that blocks this Stop (exit 2, or a "decision": "block" on stdout and exit 0, as 86
+# and 88 do) holds the teardown on it: the model was just told to act, an ask to file, and firing
+# would close the window under it. The Stop after it is the armed retry, which fires on its own
+# fresh verdict, as 88 blocks only once a turn. Stdout goes through a file, not $(...), so a
+# background child holding the pipe cannot stall the hook.
 run_post() {
-  local dir="$1" worst=0 rc out
+  local dir="$1" worst=0 rc out blocked=""
   [ -d "$dir" ] || return 0
-  [ -n "$ARMED_RETRY" ] || rm -f "$HELD_FILE"
+  out=$(mktemp "$CACHE_DIR/post-out.XXXXXX" 2>/dev/null) || out=""
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
     if [ "${s##*/}" = 95-wind-down.sh ]; then
-      [ ! -e "$HELD_FILE" ] || { note "wind-down held: a post script blocked this turn"; continue; }
+      [ -z "$blocked" ] || { note "wind-down held: a post script blocked this Stop"; continue; }
     else
       # The armed retry fires the teardown only; the rest ran on the Stop that blocked.
       [ -z "$ARMED_RETRY" ] || continue
     fi
     # Forward original stdin (the JSON payload) so post-checks can see stop_hook_active
-    out=$(bash "$s" < <(printf '%s' "$PAYLOAD"))
-    rc=$?
-    [ -z "$out" ] || printf '%s\n' "$out"
-    case "$out" in *'"decision":'*'"block"'*) rc=$((rc > 2 ? rc : 2)) ;; esac
-    [ "$rc" -lt 2 ] || : >"$HELD_FILE"
+    if [ -n "$out" ]; then
+      bash "$s" < <(printf '%s' "$PAYLOAD") >"$out"
+      rc=$?
+      cat "$out"
+      grep -q '"decision": *"block"' "$out" && blocked=1
+    else
+      bash "$s" < <(printf '%s' "$PAYLOAD")
+      rc=$?
+    fi
+    [ "$rc" -lt 2 ] || blocked=1
     [ "$rc" -gt "$worst" ] && worst=$rc
   done
+  [ -z "$out" ] || rm -f "$out"
   return "$worst"
 }
 

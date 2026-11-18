@@ -332,9 +332,9 @@ run_session() {
   [ ! -e "$HOME/post.seen" ]
 }
 
-@test "a post script that blocks holds an armed wind-down for the rest of the turn" {
-  # 88-ask-filed blocks with "file the ask"; firing the teardown on that Stop, or on the
-  # loop-guarded one after it, closed the window the ask was for.
+@test "a post script that blocks holds an armed wind-down on that Stop, and the Stop after it fires" {
+  # 88-ask-filed blocks with "file the ask"; firing the teardown on that same Stop closed the
+  # window while the model was filing it. It blocks once a turn, so the next Stop fires.
   local spin="$HOME/.agent/spin-down"
   mkdir -p "$spin" "$HOOK_DIR/stop-post.d"
   cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
@@ -342,15 +342,13 @@ run_session() {
   chmod +x "$HOOK_DIR/stop-post.d/88-block.sh"
   echo 'target=%2' > "$spin/aaa.request"
   run_session aaa
+  # A JSON block exits 0: on exit 2 Claude Code would drop the JSON and read stderr instead.
+  assert_equal "$STATUS" 0
   run cat "$OUTF"
   assert_output --partial '"decision": "block"'
   [ -e "$spin/aaa.request" ]
-  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
-  [ -e "$spin/aaa.request" ]
   [ ! -e "$spin/aaa.fired" ]
-  # The next turn's Stop, with nothing blocking, fires it.
-  rm "$HOOK_DIR/stop-post.d/88-block.sh"
-  run_session aaa
+  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
   [ ! -e "$spin/aaa.request" ]
   [ -e "$spin/aaa.fired" ]
 }
