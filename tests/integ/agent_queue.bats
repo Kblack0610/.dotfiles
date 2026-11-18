@@ -4051,6 +4051,17 @@ already"
   [ -z "$(item queued hg-late)" ]
 }
 
+@test "the store-sync a write starts on exit does not inherit the queue lock" {
+  # A sync that held .lock waited out its own sync lock (300s) with every queue writer behind it (2026-11-18).
+  printf '#!/usr/bin/env bash\nif [ -e /proc/$$/fd/8 ]; then echo "store-sync fd8=open" >> "$NOTES_FIXTURE/calls.log"; else echo "store-sync fd8=closed" >> "$NOTES_FIXTURE/calls.log"; fi\n' > "$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/store-sync"
+  run "$AQ" add --project game "Menu: pick sides"
+  assert_success
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "store-sync fd8=closed"
+  refute_output --partial "store-sync fd8=open"
+}
+
 @test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
   today="$(date +%F)"
