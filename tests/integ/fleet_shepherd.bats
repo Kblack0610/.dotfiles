@@ -453,13 +453,21 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -n "$(typed)" ]
 }
 
-@test "a close-now row held by the human's draft pages them once a day and closes once the box is empty" {
+# drafted <screen>: two checks over the same screen, as a draft left in a box meets them
+drafted() { local i; for i in 1 2; do STUB_PANE="$1" "$SH" check >/dev/null || true; done; }
+# boxed <text>: the idle prompt with that text typed after the glyph (escapes and all)
+boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
+
+@test "a close-now row held by the human's draft pages them on the second check, once a day, and closes once the box is empty" {
   doc "[$(crow 1 DONE now)]"
-  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'then after the last part of phase four, queue the rest of it}"
+  draft="$(boxed 'then after the last part of phase four, queue the rest')"
+  # The first check that sees it pages no one: the human may be typing it now.
   STUB_PANE="$draft" run checked
   assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
+  [ ! -s "$HOME/pages" ]
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
   run cat "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 is done (DONE f-1), but your unsent draft 'then after the last part of phase four,...' sits in its prompt. Send it, or clear it and it closes itself."
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
   grep -q 'close: lab/1:1 DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
@@ -473,36 +481,48 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ "$(wc -l < "$HOME/pages")" = 1 ]
 }
 
-@test "a dim ghost suggestion, a busy screen, copy mode or a refused page is no draft page" {
+@test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
   doc "[$(crow 1 DONE now)]"
-  ghost="${IDLE/$'\xc2\xa0'/$'\xc2\xa0\e[2m'try asking about the queue$'\e[22m'}"
-  # A colour index of 2 is a colour, not dim: that text is a draft.
-  colour="${IDLE/$'\xc2\xa0'/$'\xc2\xa0\e[38;5;2m'mine$'\e[39m'}"
-  for screen in "$ghost" "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'mine}"$'\n  esc to interrupt'; do
-    STUB_PANE="$screen" "$SH" check >/dev/null || true
-  done
-  STUB_IN_MODE=1 STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'mine}" "$SH" check >/dev/null || true
+  drafted "$(boxed $'\e[2mtry asking about the queue\e[22m')"
+  # The cursor cell over a ghost's first letter is inverse, the rest dim.
+  drafted "$(boxed $'\e[7mt\e[27m\e[2mry asking about the queue\e[22m')"
+  drafted $'text above\n─────────────\n  How is Claude doing this session?\n  1: Good  2: Bad\n─────────────\n'
+  drafted "$(boxed mine)"$'\n  esc to interrupt'
+  STUB_IN_MODE=1 drafted "$(boxed mine)"
   [ ! -s "$HOME/pages" ]
+  ! grep -q 'draft seen: ' "$FLEET_SHEPHERD_DIR/.remind"
   # agent-notify refusing is not recorded: the next check tries again.
   stub agent-notify 'exit 1'
-  STUB_PANE="$colour" "$SH" check >/dev/null || true
+  drafted "$(boxed mine)"
   ! grep -q 'draft: ' "$FLEET_SHEPHERD_DIR/.remind"
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
-  STUB_PANE="$colour" "$SH" check >/dev/null || true
-  grep -q "your unsent draft 'mine'" "$HOME/pages"
+  STUB_PANE="$(boxed mine)" "$SH" check >/dev/null || true
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
   [ -z "$(typed)" ]
+}
+
+@test "a draft drawn in colour 2 or 7, the colon form, or under a style left open a line above still pages" {
+  for c in $'\e[38;5;2m' $'\e[38;5;7m' $'\e[38:5:2m' $'\e[48;2;7;2;2m'; do
+    : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+    doc "[$(crow 1 DONE now)]"
+    drafted "$(boxed "${c}mine"$'\e[39m')"
+    [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  done
+  : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+  drafted $'text above \e[2mdim tail\n\e[0m───────────── name ─\n\xe2\x9d\xaf\xc2\xa0mine\n─────────────\n  bypass permissions on'
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
 }
 
 @test "a draft page and the escalation reminder for the same fact never silence each other" {
   doc "[$(crow 1 DONE now)]"
-  STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
+  drafted "$(boxed 'half a thought')"
   [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
   # Later the pass nudged and escalated the same fact, and hours went by: the reminder still goes.
   doc "[$(crow 1 DONE now '{"nudged":true, "escalated":true, "idle_min":400}')]"
   printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
   "$SH" check >/dev/null || true
   [ "$(grep -c 'lab/1:1: one decision closes it' "$HOME/pages")" = 1 ]
-  # And both stay recorded for today, each under its own key.
+  # And each stays recorded for today under its own key.
   grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
   grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
 }
