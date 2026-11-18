@@ -246,9 +246,9 @@ pub struct Fleet {
     pub burn: f64,
     pub sustain: f64,
     pub over: Option<f64>,
-    /// Points an hour one session burns.
+    /// Points an hour one working Opus session burns (claude-acct weights each by its model).
     pub rate: Option<f64>,
-    /// Sessions the weeks can carry at that rate.
+    /// Working Opus sessions the weeks can carry at that rate.
     pub carries: Option<u32>,
     /// When the accounts, pooled with each reset's refill, run into the reserve at this burn
     /// (claude-acct's `run_out`); None is that they last to the resets.
