@@ -544,3 +544,22 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
 }
+
+@test "unpark of preempted sessions draws on the wake budget: 3 a settle window, the rest wait for a later pass" {
+  mkdir -p "$PARKED_DIR"
+  local i
+  for i in 1 2 3 4 5; do
+    printf '%s\n' "session=s$i" server=lab why=preempt "parked=$i" > "$PARKED_DIR/lab:s$i"
+  done
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  preempt_items() { :; }
+  live_units() { echo 0; }
+  item_sessions() { :; }
+  TARGET=10 DRY=0
+  run unpark_preempted
+  assert_success
+  assert_equal "$(grep -c 'claude-acct unpark' "$NOTES_FIXTURE/calls.log")" 3
+  assert_called 'claude-acct unpark lab:s3'
+  assert_not_called 'claude-acct unpark lab:s4'
+  assert_output --partial 'unpark lab:s4 waits for the wake budget'
+}
