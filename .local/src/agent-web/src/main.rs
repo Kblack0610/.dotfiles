@@ -933,11 +933,11 @@ struct AgentOut {
     actions: Vec<&'static str>,
     /// The agent-queue items in this pane (hub-core `with_items`).
     items: Vec<String>,
-    /// The dialog or permission prompt a `waiting` agent has open, from its transcript. A
-    /// question asked in the conversation is not read here: the session files it as an ask
-    /// (`stop-post.d/88-ask-filed.sh`), and the ask is what the Waiting tab shows.
+    /// The open question a `waiting` agent has, from its transcript (`agent_core::transcript::
+    /// open_question_at`): a dialog, a permission prompt, or closing text that asks. A message
+    /// that hands the turn back without asking is none.
     #[serde(skip_serializing_if = "Option::is_none")]
-    question: Option<transcript::Question>,
+    question: Option<agent_core::transcript::Question>,
     /// Its transcript's last write, unix seconds: when a `waiting` agent started waiting, and
     /// what the page's new-output dot compares with when it was last opened (sessions.js).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1066,7 +1066,7 @@ fn read_agents() -> Bytes {
                 plan: a.plan_slug,
                 ask: a.ask,
                 question: match (a.status.as_str(), &a.jsonl) {
-                    ("waiting", Some(p)) => transcript::pending_question(p).ok().flatten(),
+                    ("waiting", Some(p)) => agent_core::transcript::open_question_at(p),
                     _ => None,
                 },
                 wrote: a.jsonl.as_ref().and_then(|p| {
