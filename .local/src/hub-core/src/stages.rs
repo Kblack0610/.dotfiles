@@ -83,8 +83,9 @@ pub struct Project {
     pub fail: u32,
     pub todo: u32,
     pub human: u32,
-    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed; with an
-    /// error, unknown like the check's counts.
+    /// Gaps `project-stage-check --file` holds open on the agent sheet (a line of the stage's
+    /// rollup row, or a row of its own) and its rows closed; with an error, unknown like the
+    /// check's counts.
     pub filed_open: u32,
     pub filed_closed: u32,
     /// Why the check could not run; its counts are then unknown, never zero.
@@ -157,7 +158,7 @@ impl Row for Project {
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             FAILING,
-            "a row of its target stage fails its check; the nightly pass files each as a story",
+            "a row of its target stage fails its check; the nightly pass lists each on one row",
         ),
         (MET, "every row of its target stage that has a check passes"),
         (
