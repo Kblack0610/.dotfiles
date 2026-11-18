@@ -1480,6 +1480,8 @@ deliver_to_session() {
   "${send[@]}" send --pane "$pane" "Answer to ask $(field "$f" id): $answer" >&2 || rc=$?
   if [ "$rc" = 255 ] && [ -n "$host" ]; then
     echo "$host did not answer, so the answer was not typed into $(field "$f" session)"
+  elif [ "$rc" = 75 ]; then
+    echo "another send held $(field "$f" session)'s pane, so the answer was not typed into it"
   elif [ "$rc" != 0 ]; then
     echo "it did not submit in $(field "$f" session); the answer is in that session's input box"
   fi
