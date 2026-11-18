@@ -78,7 +78,7 @@ PANEL_TAB=$'\t'
 # The C_* and G_* names live in panel-palette.sh (agent-ask takes them from there too, so the
 # questions card and the panel share one palette). The rules for them, ANSI indices only and
 # the $'..' form, are in that file and in CONVENTIONS.md.
-. "$PANEL_DIR/panel-palette.sh" || return 1
+. "${BASH_SOURCE[0]%/*}/panel-palette.sh" || return 1
 
 # ── Diagnostics ──────────────────────────────────────────────────────────────
 # stderr ALWAYS, plus a best-effort tmux flash. tags.sh:59's idiom, and strictly better than
