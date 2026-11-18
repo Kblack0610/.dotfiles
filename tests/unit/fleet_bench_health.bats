@@ -10,7 +10,7 @@ setup() {
   sandbox_init basic
   SUBJECT="$REPO_ROOT/.local/bin/fleet-bench"
   SM="$REPO_ROOT/.local/bin/sentinel-manifest"
-  export HEALTH_MANIFEST_CMD="$SM"
+  export HEALTH_MANIFEST_CMD="$SM" BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export FLEET_ARCH_DOC="$SANDBOX/ARCHITECTURE.md" HEALTH_EXCLUDE="$SANDBOX/health-exclude"
   export TRIAGE_WATCHES="$SANDBOX/watches" TRIAGE_WATCH_STATE="$SANDBOX/state"
   mkdir -p "$TRIAGE_WATCHES" "$TRIAGE_WATCH_STATE"
@@ -47,7 +47,7 @@ EOF
 # watch <name> <state> <flows-yaml>: a manifest tagged with flows, and the state Sentinel last wrote
 watch() {
   printf 'name: %s\nprobe: command\nexpect_cmd: "true"\nflows: %s\n' "$1" "$3" > "$TRIAGE_WATCHES/$1.yaml"
-  printf '%s' "$2" > "$TRIAGE_WATCH_STATE/$1.state"
+  printf '%s' "$2" > "$TRIAGE_WATCH_STATE/$1.state"; date +%s > "$TRIAGE_WATCH_STATE/$1.lastrun"
 }
 
 @test "parts are the headings above Flows plus the Flows rows, once each, and nothing below" {
@@ -152,7 +152,7 @@ watch() {
   watch old-watch OK '[Nope]'
   run "$SUBJECT" health --json
   assert_success
-  run jq -r '[.parts[0].part, .parts[0].state, (.parts[0].watches | join(",")), .stale[0].name, (.verdict | startswith("fleet health GAPS"))] | join(" ")' <<<"$output"
+  run jq -r '[.parts[0].part, .parts[0].state, (.parts[0].watches | map(.watch + "=" + .state) | join(",")), .stale[0].name, (.verdict | startswith("fleet health GAPS"))] | join(" ")' <<<"$output"
   assert_output 'Runners OK runner-watch=OK Nope true'
 }
 
@@ -189,4 +189,36 @@ watch() {
   assert_success
   assert_line 'W_flows_count=2'
   assert_line "W_flows_1='Delivery chain'"
+}
+
+@test "health negative control: a reading older than the watch's poll window is STALE and counts as ERROR, so a dead Sentinel is never GREEN" {
+  echo $(( $(date +%s) - 7200 )) > "$TRIAGE_WATCH_STATE/runner-watch.lastrun"   # the manifest has no interval: 300s default, 3 windows
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Runners +ERROR +runner-watch=STALE$'
+  assert_line --partial 'fleet health RED'
+  rm "$TRIAGE_WATCH_STATE/runner-watch.lastrun"   # never polled: its state says so, it is not called stale
+  run "$SUBJECT" health
+  assert_line --regexp '^Runners +OK +runner-watch=OK$'
+}
+
+@test "health: stderr noise from the manifest tool is not read as a part or a tag" {
+  printf '#!/usr/bin/env bash\necho "DeprecationWarning: noise" >&2\nexec "%s" "$@"\n' "$SM" > "$SANDBOX/bin/sm-noisy"
+  chmod +x "$SANDBOX/bin/sm-noisy"
+  HEALTH_MANIFEST_CMD=sm-noisy run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Lifecycle'
+}
+
+@test "health: --coverage with --json is a usage error, not a silent choice" {
+  run "$SUBJECT" health --coverage --json
+  assert_failure 2
+}
+
+@test "tags: a null or mapping entry in flows: is no name" {
+  printf 'probe: command\nexpect_cmd: "true"\nflows: [Runners, null, {a: b}]\n' > "$TRIAGE_WATCHES/odd.yaml"
+  run "$SM" tags "$TRIAGE_WATCHES"
+  assert_output --partial $'odd\tRunners'
+  refute_output --partial 'None'
+  refute_output --partial "{"
 }

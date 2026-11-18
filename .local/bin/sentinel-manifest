@@ -304,7 +304,9 @@ def flows_of(doc):
     value = doc.get("flows")
     if value is None:
         return []
-    return [str(v).strip() for v in (value if isinstance(value, (list, tuple)) else [value])]
+    items = value if isinstance(value, (list, tuple)) else [value]
+    # A null or mapping entry is no name; `validate` rejects it (flows_shape_errors).
+    return [v.strip() for v in items if isinstance(v, str) and v.strip()]
 
 
 def flows_shape_errors(doc):

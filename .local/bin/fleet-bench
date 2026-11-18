@@ -4328,19 +4328,29 @@ cmd_triage() {
 # Rows: "<part> TAB <OK|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
 # for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
 health_rows() {
-  local parts tags w p s
-  parts=$($HEALTH_MANIFEST_CMD parts 2>&1) || { say "health: cannot read the parts list: $parts"; return 1; }
-  [ -n "$parts" ] || { say "health: the parts list is empty"; return 1; }
-  tags=$($HEALTH_MANIFEST_CMD tags "$TRIAGE_WATCHES" 2>&1) || { say "health: cannot read the watch tags: $tags"; return 1; }
+  local parts tags w p s lastrun err
+  # shellcheck source=/dev/null
+  . "${BENCH_LIB_DIR:-$HOME/.local/lib}/sentinel-watch.sh" 2>/dev/null || { say "health: cannot read sentinel-watch.sh"; return 1; }
+  err=$(mktemp) || return 1
+  # stderr stays out of the data and is shown only when the command fails
+  parts=$($HEALTH_MANIFEST_CMD parts 2>"$err") || { say "health: cannot read the parts list: $(cat "$err")"; rm -f "$err"; return 1; }
+  [ -n "$parts" ] || { rm -f "$err"; say "health: the parts list is empty"; return 1; }
+  tags=$($HEALTH_MANIFEST_CMD tags "$TRIAGE_WATCHES" 2>"$err") || { say "health: cannot read the watch tags: $(cat "$err")"; rm -f "$err"; return 1; }
+  rm -f "$err"
+  # A dead Sentinel leaves every .state frozen, so a reading older than the watch's poll window
+  # (sentinel-watch.sh, the rule every reader of a watch shares) is STALE, and counts as ERROR.
   tags=$(while IFS=$'\t' read -r w p; do
     [ -n "$w" ] || continue
-    s=$(cat "$TRIAGE_WATCH_STATE/$w.state" 2>/dev/null); printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
+    s=new; [ -r "$TRIAGE_WATCH_STATE/$w.state" ] && read -r s <"$TRIAGE_WATCH_STATE/$w.state"
+    lastrun=""; [ -r "$TRIAGE_WATCH_STATE/$w.lastrun" ] && read -r lastrun <"$TRIAGE_WATCH_STATE/$w.lastrun"
+    case "$s" in OK|TRIP|ERROR) watch_is_stale "$TRIAGE_WATCHES/$w.yaml" "$lastrun" "${BENCH_NOW:-}" && s=STALE ;; esac
+    printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
   done <<<"$tags")
   awk -F'\t' -v OFS='\t' '
     NR == FNR { if ($0 != "") order[++n] = $0; known[$0] = 1; next }
     { if (!($2 in known)) { stale[++ns] = $1 OFS $2; next }
       list[$2] = list[$2] (list[$2] == "" ? "" : ", ") $1 "=" $3
-      r = ($3 == "ERROR") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
+      r = ($3 == "ERROR" || $3 == "STALE") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
       if (r > worst[$2]) worst[$2] = r }
     END {
       split("UNCOVERED OK TRIP ERROR", name, " ")
@@ -4359,6 +4369,7 @@ cmd_health() {
     esac
     shift
   done
+  [ "$json$cov" != 11 ] || { say "health: --coverage prints a list of names, so it takes no --json"; return 2; }
   rows=$(health_rows) || return 1
   if [ "$cov" = 1 ]; then
     rows=$(awk -F'\t' '$1 == "!" { print "stale flows name: " $2 " names " $3; next } $2 == "UNCOVERED" { print $1 }' <<<"$rows")
@@ -4378,7 +4389,7 @@ cmd_health() {
     jq -Rn --arg verdict "$verdict" '
       [inputs | split("\t")] as $r
       | {verdict: $verdict,
-         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ")) end)}],
+         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ") | map(split("=") | {watch: .[0], state: .[1]})) end)}],
          stale: [$r[] | select(.[0] == "!") | {watch: .[1], name: .[2]}]}' <<<"$rows"
   else
     awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
