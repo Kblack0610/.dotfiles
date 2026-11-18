@@ -4,9 +4,9 @@
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
-use hub_core::home::Home;
+use hub_core::home::{Home, SHOWN};
 use hub_core::proposals::{self, Proposal};
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::queue::act;
@@ -20,6 +20,7 @@ pub struct ViewQuery {
     s: String,
     sort: String,
     dir: String,
+    pg: String,
 }
 
 /// Home with `proposals` cut to the rows the view keeps, and the controls that drew them.
@@ -51,9 +52,16 @@ pub struct ProposalsPage {
     proposals_table: Summary,
 }
 
+/// One page of `SHOWN` rows: no other tab lists every proposal, so Home's glance pages them.
 pub fn rows(open: &[Proposal], q: &ViewQuery) -> ProposalsPage {
     let view = View::new::<Proposal>(&q.q, &q.s, &q.sort, &q.dir);
-    let (kept, proposals_table) = view.summary(open);
+    let (mut kept, mut proposals_table) = view.summary(open);
+    table::page(
+        &mut kept,
+        &mut proposals_table,
+        q.pg.parse().unwrap_or(1),
+        SHOWN,
+    );
     ProposalsPage {
         proposals_head: hub_core::proposals::heading(open),
         proposals: kept.into_iter().cloned().collect(),
@@ -129,6 +137,31 @@ mod tests {
             assert_eq!(v[k], full[k], "{k}");
         }
         assert_eq!(v.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn past_shown_rows_the_section_pages_and_counts_every_one() {
+        let open: Vec<Proposal> = (0..SHOWN + 2)
+            .map(|i| Proposal {
+                id: format!("p{i}"),
+                ..Proposal::default()
+            })
+            .collect();
+        let q = ViewQuery {
+            pg: "2".into(),
+            ..ViewQuery::default()
+        };
+        let p = rows(&open, &q);
+        assert_eq!(p.proposals.len(), 2);
+        assert_eq!(p.proposals_table.shown, SHOWN + 2);
+        assert_eq!(
+            p.proposals_table.pager.map(|g| (g.page, g.pages)),
+            Some((2, 2))
+        );
+        assert!(rows(&open[..SHOWN], &ViewQuery::default())
+            .proposals_table
+            .pager
+            .is_none());
     }
 
     #[test]

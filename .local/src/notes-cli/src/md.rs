@@ -787,6 +787,25 @@ pub fn has_done_tag(line: &str) -> bool {
     found
 }
 
+/// The backlog tag for `date`, e.g. `#b261118`: the day a task entered the backlog, which the
+/// 90-day return reads. `YYMMDD` like the done tag, because it is read a quarter later.
+pub fn backlog_tag(date: NaiveDate) -> String {
+    format!("#b{}", date.format(LONG_FMT))
+}
+
+/// True when `tag` (bare, no `#`) is a backlog tag.
+pub fn is_backlog_tag(tag: &str) -> bool {
+    tag.strip_prefix('b')
+        .is_some_and(|d| d.len() == 6 && valid_date_digits(d))
+}
+
+/// Strip every backlog tag from `line`; return the cleaned line plus the day the first names.
+pub fn split_backlog(line: &str) -> (String, Option<NaiveDate>) {
+    let (cleaned, found) = cut_tags(line, is_backlog_tag);
+    let date = found.and_then(|t| NaiveDate::parse_from_str(&t[1..], LONG_FMT).ok());
+    (cleaned, date)
+}
+
 /// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
 /// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
 /// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
@@ -904,7 +923,8 @@ pub fn tag_kind(tag: &str) -> TagKind {
         || is_version_tag(tag)
         || is_created_tag(tag)
         || is_due_tag(tag)
-        || is_done_tag(tag);
+        || is_done_tag(tag)
+        || is_backlog_tag(tag);
     if task {
         TagKind::Task
     } else {
@@ -1443,12 +1463,13 @@ pub fn task_text(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved. The release tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
     // matching a task the moment it is pushed to another release, and the cockpit's
-    // done/start/rm silently no-op on it. The created, due and done tags are stamps, not text,
+    // done/start/rm silently no-op on it. The created, due, done and backlog tags are stamps, not text,
     // so they go too - FIRST, because a legacy day count is only trailing once the tags
     // behind it (`(3d) #c260531`) are gone.
     let (stripped, _) = split_created(t);
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = cut_tags(&stripped, is_done_tag);
+    let (stripped, _) = split_backlog(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_version(&stripped);
     let (stripped, _) = split_parent(&stripped);
@@ -1581,21 +1602,26 @@ pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|tok| tok.strip_prefix(key))
 }
 
-/// `line` with every `<key>value` token taken out of its trailing marker, and the comment
-/// itself gone when nothing is left in it. A line without the token comes back as it is.
+/// `line` with every `<key>value` token taken out of its trailing marker (a `key` ending in `:`;
+/// any other `key` is one whole token, so `tier:backlog` never takes `tier:backlog-x`), and the
+/// comment itself gone when nothing is left in it. A line without the token comes back as it is.
 pub fn remove_marker_token(line: &str, key: &str) -> String {
+    let hit = |t: &&str| {
+        if key.ends_with(':') {
+            t.starts_with(key)
+        } else {
+            *t == key
+        }
+    };
     let trimmed = line.trim_end();
     let (Some(i), true) = (trimmed.rfind("<!--"), trimmed.ends_with("-->")) else {
         return line.to_string();
     };
     let inner = &trimmed[i + 4..trimmed.len() - 3];
-    if !inner.split_whitespace().any(|t| t.starts_with(key)) {
+    if !inner.split_whitespace().any(|t| hit(&t)) {
         return line.to_string();
     }
-    let kept: Vec<&str> = inner
-        .split_whitespace()
-        .filter(|t| !t.starts_with(key))
-        .collect();
+    let kept: Vec<&str> = inner.split_whitespace().filter(|t| !hit(t)).collect();
     let head = trimmed[..i].trim_end();
     if kept.is_empty() {
         head.to_string()
@@ -2408,6 +2434,7 @@ after
             "v0.5.0",
             "c1026",
             "d261026",
+            "b261118",
             "due1031",
         ] {
             assert_eq!(tag_kind(t), TagKind::Task, "{t}");
@@ -2524,6 +2551,14 @@ after
         let none = "- [/] a <!-- id:x-1 -->";
         assert_eq!(remove_marker_token(none, "run:"), none);
         assert_eq!(remove_marker_token("- [/] a", "run:"), "- [/] a");
+        // a key without a colon is one whole token
+        assert_eq!(
+            remove_marker_token(
+                "- [ ] a <!-- tier:backlog-x tier:backlog -->",
+                "tier:backlog"
+            ),
+            "- [ ] a <!-- tier:backlog-x -->"
+        );
     }
 
     #[test]

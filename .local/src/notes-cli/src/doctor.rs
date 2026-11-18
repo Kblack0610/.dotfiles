@@ -94,7 +94,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     dir_check(&mut r, "daily", &p.daily, false);
     dir_check(&mut r, "refs", &p.refs, true);
     dir_check(&mut r, "continuous", &p.continuous, true);
-    file_check(&mut r, "fun backlog", &p.fun);
+    file_check(&mut r, "backlog", &p.backlog);
     // The schedule, not its pre-merge `scheduled.md` ancestor: that file was folded into
     // `schedule.md` and renamed aside, so checking it reported a healthy vault as broken.
     file_check(&mut r, "schedule", &p.schedule);
@@ -110,6 +110,14 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     } else {
         r.add(Status::Pass, "inbox backlog", &format!("{pending} pending"));
     }
+
+    // The agent board beside its Backlog tier: the rows dispatch pulls from, and the rest.
+    let (board, backlog) = crate::board::agent_tiers(p);
+    r.add(
+        Status::Pass,
+        "agent board",
+        &crate::board::tiers(board, backlog),
+    );
 
     // 2. Summarize gaps — daily notes older than yesterday with no continuous entry
     check_gaps(&mut r, p);

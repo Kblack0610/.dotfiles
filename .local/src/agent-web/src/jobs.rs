@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use hub_core::jobs::{self, Job, Jobs, LogRef, Opts, Paths, Source};
+use hub_core::layout;
 use hub_core::releases::Level;
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{off, ReadCache};
@@ -18,7 +19,7 @@ const CACHE_SECS: u64 = 15;
 const MAX_WINDOW_SECS: i64 = 7 * 24 * 3600;
 
 /// What to collect (`name`, `window`, `source`) and the table view over it (`q`, `s`,
-/// `sort`, `dir`, the same keys the page keeps in its URL).
+/// `sort`, `dir`, `pg`, the same keys the page keeps in its URL).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct JobsQuery {
@@ -29,9 +30,11 @@ pub struct JobsQuery {
     pub s: String,
     pub sort: String,
     pub dir: String,
+    pub pg: String,
 }
 
-/// The collection with the view applied: the rows it keeps, and the controls that drew them.
+/// The collection with the view applied: one page of the rows it keeps (`layout`'s `jobs`
+/// size), and the controls that drew them.
 #[derive(Serialize)]
 struct Shown<'a> {
     at: i64,
@@ -76,7 +79,9 @@ fn collect(
 
 fn render(js: &Jobs, q: &JobsQuery) -> String {
     let view = View::new::<Job>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, table) = view.summary(&js.jobs);
+    let (mut rows, mut table) = view.summary(&js.jobs);
+    let page = q.pg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("jobs"));
     let out = Shown {
         at: js.at,
         window_secs: js.window_secs,
@@ -164,6 +169,26 @@ mod tests {
         assert_eq!(v["table"]["states"][4]["n"], 1);
         assert_eq!(v["table"]["facets"][1]["key"], "source");
         assert_eq!(v["table"]["facets"][1]["on"], serde_json::json!(["unity"]));
+        assert!(v["table"].get("pager").is_none(), "one page is unpaged");
+    }
+
+    #[test]
+    fn the_list_pages_at_its_layout_size() {
+        let per = layout::page_rows("jobs");
+        let js = Jobs {
+            jobs: (0..per + 2)
+                .map(|i| Job::new(Source::Agentctl, format!("job {i}"), State::Done))
+                .collect(),
+            ..Default::default()
+        };
+        let q = JobsQuery {
+            pg: "2".into(),
+            ..Default::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&render(&js, &q)).unwrap();
+        assert_eq!(v["jobs"].as_array().unwrap().len(), 2);
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        assert_eq!(v["table"]["shown"], per + 2, "the count is every page's");
     }
 
     #[test]

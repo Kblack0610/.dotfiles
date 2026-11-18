@@ -15,8 +15,9 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use hub_core::layout;
 use hub_core::session_actions::System;
-use hub_core::table::View;
+use hub_core::table::{self, View};
 use hub_core::tasks::{self, Feed, Row, Verb, Write};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -24,7 +25,7 @@ use serde_json::{json, Value};
 use crate::{bad, ApiResult, Shared};
 
 /// Whose rows (`scope=<profile>/<project>`, blank for every project) and the table view over
-/// them (`q`, `s`, `sort`, `dir`, as hub_core::table reads them).
+/// them (`q`, `s`, `sort`, `dir`, `pg`, as hub_core::table reads them).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct BoardQuery {
@@ -33,17 +34,36 @@ pub struct BoardQuery {
     s: String,
     sort: String,
     dir: String,
+    pg: String,
 }
 
-/// The feed with its rows narrowed to the scope and the view, and the controls that drew them.
-/// Each row carries the hub's words for it: `label`, its section cell (`NEXT UP (10)` over a
-/// section's first row), and `when`, its queue state and forecast or its close day and PRs.
+/// The feed with its rows narrowed to the scope and the view, one page of them (`layout`'s
+/// `board` size), and the controls that drew them. Each row carries the hub's words for it:
+/// `label`, its section cell (`NEXT UP (10)` over a section's first row, and over a page's first
+/// row so a later page still names its section), and `when`, its queue state and forecast or its
+/// close day and PRs. `rows` is the page and nothing else, so a write's row index is into it.
+/// `tiers` is the scope's agent board and backlog counts, the words the hub's Board heading shows.
 fn shown(f: &Feed, q: &BoardQuery) -> Value {
     let rows = f.board_rows(q.scope.split_once('/'));
     let view = View::new::<Row>(&q.q, &q.s, &q.sort, &q.dir);
-    let (kept, table) = view.summary(&rows);
+    let (mut kept, mut table) = view.summary(&rows);
+    let all: Vec<&Row> = kept.iter().map(|r| **r).collect();
+    let mut labels = tasks::section_labels(&all, !q.sort.is_empty());
+    let page = q.pg.parse().unwrap_or(1);
+    table::page(&mut kept, &mut table, page, layout::page_rows("board"));
+    if let Some(p) = table.pager {
+        let from = (p.page - 1) * p.per;
+        let head = labels[..=from]
+            .iter()
+            .rev()
+            .find(|l| !l.is_empty())
+            .cloned();
+        labels.drain(..from);
+        if let (Some(first), Some(head)) = (labels.first_mut(), head) {
+            *first = head;
+        }
+    }
     let kept: Vec<&Row> = kept.into_iter().copied().collect();
-    let labels = tasks::section_labels(&kept, !q.sort.is_empty());
     let rows: Vec<Value> = kept
         .iter()
         .zip(labels)
@@ -61,6 +81,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "focus": f.focus,
         "errors": f.errors,
         "totals": f.totals,
+        "tiers": f.agent_tiers(q.scope.split_once('/')),
         "table": table,
     })
 }
@@ -276,6 +297,22 @@ mod tests {
         assert_eq!(all["rows"][3]["when"], "11-05  pr 63");
         assert_eq!(all["today"], "2026-11-06");
         assert_eq!(all["table"]["total"], 4);
+        assert!(
+            all["tiers"].is_null(),
+            "no totals, no tiers line, never a 0"
+        );
+        let tiered = Feed {
+            totals: Some(hub_core::tasks::Totals {
+                agent: 3,
+                backlog: 5,
+                ..Default::default()
+            }),
+            ..f.clone()
+        };
+        assert_eq!(
+            shown(&tiered, &BoardQuery::default())["tiers"],
+            "Board 3 | Backlog 5"
+        );
 
         let q = BoardQuery {
             scope: "bnb/demo".into(),
@@ -291,6 +328,41 @@ mod tests {
             one["table"]["states"][3]["n"], 0,
             "the query narrows the chips"
         );
+    }
+
+    #[test]
+    fn the_board_pages_at_its_layout_size_and_a_later_page_names_its_section() {
+        let per = layout::page_rows("board");
+        let mut f = fixture();
+        f.done.clear();
+        f.rows = (0..per + 5)
+            .map(|i| Row {
+                rank: i as u64,
+                text: format!("row {i}"),
+                raw: format!("- [ ] row {i}"),
+                ..f.rows[1].clone()
+            })
+            .collect();
+        let one = shown(&f, &BoardQuery::default());
+        assert_eq!(texts(&one).len(), per);
+        assert_eq!(one["table"]["pager"]["page"], 1);
+        assert_eq!(one["table"]["shown"], per + 5, "the count is every page's");
+
+        let q = BoardQuery {
+            pg: "2".into(),
+            ..Default::default()
+        };
+        let two = shown(&f, &q);
+        let rest: Vec<String> = (per..per + 5).map(|i| format!("row {i}")).collect();
+        assert_eq!(texts(&two), rest);
+        assert_eq!(two["table"]["pager"]["pages"], 2);
+        let n = format!("NEXT UP ({})", per + 5);
+        assert_eq!(two["rows"][0]["label"], n.as_str());
+        assert_eq!(two["rows"][1]["label"], "");
+
+        let small = shown(&fixture(), &q);
+        assert!(small["table"].get("pager").is_none(), "one page is unpaged");
+        assert_eq!(texts(&small).len(), 4);
     }
 
     #[test]

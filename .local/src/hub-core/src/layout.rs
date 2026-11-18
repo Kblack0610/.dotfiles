@@ -385,32 +385,50 @@ pub const TABS: [Tab; 12] = [
     },
 ];
 
-/// A folded Log section lists at most this many rows, then "+N older". agent-web's `LOG_ROWS`
-/// (static/ui.js) is this number; its assets test checks.
+/// The rows a page of agent-web lists when its section has no `PAGE_ROWS` entry, and the TUI's
+/// folded Log sections before "+N older". agent-web's `LOG_ROWS` (static/ui.js) is this number;
+/// its assets test checks.
 pub const FOLD_ROWS: usize = 50;
 
-/// A web page-height setting, not a TUI one: agent-web lists this many rows of a section whose
-/// rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on live
-/// data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head stay
-/// near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when Work
-/// was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. Stack's rule text wraps to two lines
-/// on a phone: 120 rules drew 6,944 px (2026-11-18), so its tables page at 30. The server pages
-/// or caps each with its section's data (`table::page`, Work's page, the shepherd's `shown`, the
-/// fleet's `verdicts_shown`), so the page holds no copy. The TUI scrolls one-line rows with no
-/// `+N` key, so it keeps `FOLD_ROWS`.
+/// A web page-height setting, not a TUI one: each section here pages at its own size, read with
+/// `page_rows`, so its inner tab stays under three screens at 1400x900 on live data (render.mjs).
+/// The server pages each with its section's data (`table::page`, and `table::page_of` for Log's
+/// rundown cards and the dispatch judge's list), so the page holds no copy. The TUI scrolls
+/// one-line rows with no `+N` key, so it keeps `FOLD_ROWS`. Why each size:
+/// - Work's rows clamp at two lines (54 px at most, so 40 rows and the head stay near 2,550 px);
+///   Work was 9,365 px at 200 rows (2026-11-12).
+/// - A rundown is a card: Rundowns was 6,362 px unpaged (2026-11-12).
+/// - Judges holds two tables of two-line rows, the answer judge's and the dispatch judge's, each
+///   paged here: at 20 each the fixture drew 2,707 px (2026-11-18), so 18.
+/// - Stack's rule text wraps to two lines on a phone: 120 rules drew 6,944 px (2026-11-18).
+/// - Board's 30 rows drew 1,824 px (2026-11-12); Sessions' 342 live rows measured 2,180 px at 20.
+/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12), too close to 2,700 to
+///   survive a wrapped dispatch line, so its `table` pages at 25. Candidates page at the TUI
+///   fold, `queue::CANDIDATES_SHOWN` (30).
+/// - Jobs' rows are one line and Unity gates alone finish about a thousand runs a day: 200.
+/// - Infra's CI runs, a run's suites and the quarantine are one line a row: 100; an opened
+///   suite's tests page as its suites.
 pub const PAGE_ROWS: &[(&str, usize)] = &[
     ("work", 40),
     ("rundowns", 30),
-    ("verdicts", 20),
+    ("verdicts", 18),
     ("flows", 30),
     ("skills", 30),
     ("agents", 30),
     ("hooks", 30),
     ("rules", 30),
+    ("board", 30),
+    ("sessions/sessions", 20),
+    ("queue/table", 25),
+    ("candidates", 30),
+    ("jobs", 200),
+    ("runs", 100),
+    ("tests", 100),
+    ("quarantine", 100),
 ];
 
-/// How many rows a section of agent-web lists a page (or before its `+N` line): its `PAGE_ROWS`
-/// entry, else `FOLD_ROWS`.
+/// How many rows a section of agent-web lists a page: its `PAGE_ROWS` entry, else `FOLD_ROWS`. A
+/// section id another tab uses for other rows (`table`, `sessions`) is keyed `<tab>/<section>`.
 pub fn page_rows(section: &str) -> usize {
     PAGE_ROWS
         .iter()
@@ -1035,16 +1053,26 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_section_lists_fewer_rows_and_every_other_folds_at_fold_rows() {
+    fn a_section_with_its_own_page_size_names_it_and_every_other_pages_at_fold_rows() {
         for (s, n) in PAGE_ROWS {
+            let (tab, sec) = s.split_once('/').map_or((None, *s), |(t, x)| (Some(t), x));
             assert!(
-                TABS.iter().any(|t| t.sections.contains(s)),
+                TABS.iter()
+                    .any(|t| tab.is_none_or(|id| t.id == id) && t.sections.contains(&sec)),
                 "{s} is no tab's section"
             );
-            assert!(*n < FOLD_ROWS, "{s} lists {n}, not fewer than FOLD_ROWS");
+            assert_ne!(*n, FOLD_ROWS, "{s} restates the default page size");
             assert_eq!(page_rows(s), *n);
         }
         assert_eq!(page_rows("actions"), FOLD_ROWS);
+        // Costs has a `table` and a `sessions` section too; Queue's and Sessions' sizes are theirs.
+        assert_eq!(page_rows("table"), FOLD_ROWS);
+        assert_eq!(page_rows("sessions"), FOLD_ROWS);
+        assert_eq!(
+            page_rows("candidates"),
+            crate::queue::CANDIDATES_SHOWN,
+            "the TUI fold"
+        );
     }
 
     #[test]

@@ -573,12 +573,22 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
+# in_backlog <line> -- the row's trailing `<!-- ... -->` marker carries the `tier:backlog` token.
+in_backlog() {
+  [[ $1 == *'<!--'*'-->'* ]] || return 1
+  local m=${1##*<!--}
+  [[ " ${m%%-->*} " == *' tier:backlog '* ]]
+}
+
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
-# its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may.
+# its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
+# backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
+# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
+  [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -1487,7 +1497,8 @@ verdict_errors() {
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
 # with the plan. A design or question skip waits on the human, not a plan. A #requested row also
 # gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
-# for their review. Sets PLAN_TAGGED.
+# for their review. A backlog-tier row is left alone: dispatch does not pull it, so a plan would
+# wait for the sweep to lift it. Sets PLAN_TAGGED.
 plan_skips() {
   local board rows room p prof id raw line dsig dj why size req
   local -a add
@@ -1505,7 +1516,7 @@ plan_skips() {
                         elif .verdict == "skip" and .rule != "tier3" and .tier3_only != true then empty
                         elif .clear == false then "unclear" else "size:" + ((.size // "") | ascii_upcase) end)})
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
-    | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))
+    | .rows[]? | select(.lane == "agent" and .id != null and .backlog != true and (plan_tagged | not) and (planned | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
   # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
@@ -1711,7 +1722,7 @@ lane_sandbox() {
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
 last_mode() {
   local t
-  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | head -1)
+  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
   [ -n "$t" ] || return 0
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
@@ -2369,7 +2380,7 @@ resume_thread() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
   local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -2463,6 +2474,10 @@ cmd_start() {
     else
       [ -z "$key$session" ] || { say "start: --item is a launch of its own: no --row or --session"; return 2; }
       [ "$st" = queued ] || { say "start: $item is $st, not queued"; return 1; }
+      # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
+      # refused start leaves no session working an item still queued.
+      hold=$(jq -r '.hold // empty' <<<"$it")
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -3322,7 +3337,7 @@ item_rollout() {
   local id f
   [ "$(harness_launcher "$(jq -r '.agent // "claude"' <<<"$1")")" = codex ] || return 0
   for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
-    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
+    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f -print -quit 2>/dev/null)
     [ -z "$f" ] || { echo "$id $f"; return 0; }
   done
 }
@@ -4972,7 +4987,8 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes)
+# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
@@ -4985,7 +5001,7 @@ cmd_stats() {
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest}' 2>/dev/null)
+    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog}' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)

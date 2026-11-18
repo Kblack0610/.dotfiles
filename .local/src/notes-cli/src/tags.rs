@@ -22,10 +22,17 @@ struct Hit {
     text: String,
 }
 
-/// Recursively collect `.md` files under `dir`, skipping hidden dirs (e.g. `.git`).
+/// Recursively collect `.md` files under `dir` (or `dir` itself when it is a file), skipping hidden dirs (e.g. `.git`).
 /// A missing dir is silently ignored (like `index::collect`), so an unset/partial
 /// profile never panics.
 pub(crate) fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
+    // A scanned path may be one file (the backlog), whose parent is too wide to scan.
+    if dir.is_file() {
+        if dir.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push(dir.to_path_buf());
+        }
+        return;
+    }
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -121,7 +128,11 @@ fn ranked(hits: &[Hit], only: Option<TagKind>) -> Vec<(String, usize)> {
     // tasks, `rg '#c10'` a month's.
     for h in hits {
         let t = h.tag.trim_start_matches('#');
-        if !md::is_created_tag(t) && !md::is_due_tag(t) && !md::is_done_tag(t) {
+        if !md::is_created_tag(t)
+            && !md::is_due_tag(t)
+            && !md::is_done_tag(t)
+            && !md::is_backlog_tag(t)
+        {
             *counts.entry(&h.tag).or_default() += 1;
         }
     }

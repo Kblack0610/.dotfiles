@@ -162,15 +162,9 @@ impl<'a> Accounts<'a> {
 /// The metric name of the textfile's age, after the `claude_account_` prefix.
 pub const AGE_KEY: &str = "textfile_age_seconds";
 
-/// What an idle row says: a Claude account's token refreshes on launch; any other source has had
-/// no usage read yet.
-pub fn idle_note(kind: &str) -> &'static str {
-    if kind == DEFAULT_KIND {
-        "idle, token refreshes on launch"
-    } else {
-        "no usage read yet"
-    }
-}
+/// What an idle row says, whatever its kind: a Claude account reads its usage with its setup
+/// token, so it has no state that waits on a launch.
+pub const IDLE_NOTE: &str = "no usage read yet";
 
 /// What a source's kind is when its textfile carries no `kind` label (one written before sources).
 pub const DEFAULT_KIND: &str = "claude";
@@ -1054,12 +1048,6 @@ mod tests {
         parent.labels.insert("parent".into(), "lazer".into());
         all.push(parent);
         all
-    }
-
-    #[test]
-    fn an_idle_key_has_no_token_to_refresh() {
-        assert_eq!(idle_note("claude"), "idle, token refreshes on launch");
-        assert_eq!(idle_note("litellm-key"), "no usage read yet");
     }
 
     #[test]

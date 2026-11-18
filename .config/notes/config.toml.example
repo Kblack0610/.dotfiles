@@ -27,6 +27,19 @@ default_profile = "personal"
 # one 47-item client project burying the rest. Empty/absent = everything full.
 # full  = ["bnb"]
 
+# --- Sheet shape --------------------------------------------------------------
+# How a project sheet's `## Tasks` is laid out. Every key is optional; the values
+# below are the defaults.
+[sheet]
+# done_days = 7         # days a closed row stays in ### Done
+# done_max = 30         # the most closed rows ### Done keeps
+# The unpinned open rows each project's agent board keeps; every other open row is
+# marked `tier:backlog`, which dispatch and board_open skip. Provisional, low
+# confidence (rules.jsonl): 75 a project is about 820 agent rows, about 3 days of
+# closes (2026-11-18). Revisit when a project's board empties before its next
+# sweep, or dispatch starves while backlog rows wait.
+# agent_board_max = 75
+
 # --- Project types ------------------------------------------------------------
 # The defaults ship in notes (notes-cli/templates/project_types.toml). Declare a
 # `[project_type.<t>]` table here only to replace that type on this machine.
@@ -43,7 +56,6 @@ default_profile = "personal"
 root      = "~/.notes"
 daily     = "journal/daily"
 refs      = "journal/refs"
-fun       = "journal/backlogs/fun.md"
 carryover = "journal/backlogs/carryover.md"
 summaries = "journal/summaries"      # → continuous/ and monthly/ live under here
 archive   = "journal/daily_archive"
@@ -67,14 +79,14 @@ projects  = "lab/projects/current"   # `notes projects`; the daily note links th
 # Same git repo, same note shape, same engine: only the root changes.
 #
 # A JOB IS ONE LINE. Every path key below the root defaults to the org convention
-# (daily/, refs/, backlogs/fun.md, summaries/, daily_archive/, permanent/,
+# (daily/, refs/, backlog.md, summaries/, daily_archive/, permanent/,
 # meetings/, index/, inbox/, projects/current), so restating them buys nothing and
 # drifts. Add a key only where this job genuinely differs. `personal` above is the
 # sole profile that overrides them all, because its root IS the vault.
 [profile.AcmeCorp]
 root = "~/.notes/employment/jobs/AcmeCorp"
-# Work notes link only the schedule in their footer: the personal `fun` backlog is
-# a life thing and does not belong in work notes.
+# Work notes link only the schedule in their footer: the personal backlog is a
+# life thing and does not belong in work notes.
 footer_links = ["schedule"]
 # A job tracked in its own tool (ClickUp, Jira) opts out of board automation: no
 # sweep, save sweep, doctor, triage or dispatch rewrites or reads its sheets.

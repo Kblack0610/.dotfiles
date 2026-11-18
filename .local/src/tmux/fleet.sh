@@ -326,7 +326,7 @@ bench() {
   local line any=0
   line="$(fleet-bench headline 2>/dev/null)"
   [ -n "$line" ] && hint_row "$line"
-  line="$(PROM_TIMEOUT=2 hub vitals 2>/dev/null | head -n 1)"
+  line="$(PROM_TIMEOUT=2 hub vitals 2>/dev/null | awk 'NR==1')"
   [ -n "$line" ] && hint_row "vitals: $line"
   while IFS= read -r line; do
     [ -n "$line" ] || continue

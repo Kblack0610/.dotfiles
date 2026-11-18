@@ -7,7 +7,8 @@
 # must be the `# step:<id>` tagged branches of close_verdict in CLOSE_JQ, and (f) the committed
 # fleet-close-flow.svg must be close-flow-svg's output of it.
 # The Owners table names one writer per shared fact: (g) its forbidden copy matches nothing outside the
-# writer file, (h) the writer functions exist and take the lock the row names, and (i) its pins exist.
+# writer file, (h) the writer functions (shell or Rust) exist and take the lock the row names, and (i)
+# its pins exist (a bats @test, or a Rust test fn).
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
 
 setup() {
@@ -52,11 +53,14 @@ check_cells() { # <doc>
   return "$bad"
 }
 
-# pins_missing: reads "<row> US <test name>" lines and prints one for each name no `@test` has
+# pins_missing: reads "<row> US <test name>" lines and prints one for each name no `@test` has;
+# a bare snake_case name may instead be a Rust test, `fn <name>()` under .local/src
 pins_missing() {
   local b name bad=0
   while IFS=$'\037' read -r b name; do
-    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "$b: no @test \"$name\""; bad=1; }
+    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" && continue
+    [[ "$name" =~ ^[a-z0-9_]+$ ]] && grep -rqE --include='*.rs' "^\s*fn $name\(\)" "$REPO_ROOT/.local/src/" && continue
+    echo "$b: no @test \"$name\""; bad=1
   done
   return "$bad"
 }
@@ -118,9 +122,20 @@ owner_rows() {
 # spans <cell> -> its code spans, one per line
 spans() { awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }' <<<"$1"; }
 
-# fn_body <file> <function> -> the function's lines, from `name() {` to the first unindented `}`
+# fn_body <file> <function> -> the function's lines, from `name() {` (in a .rs file, an unindented
+# `fn name(`, `pub` or not) to the first unindented `}`
 fn_body() {
-  awk -v f="$2" 'index($0, f "() {") == 1 {on = 1} on {print} on && /^}/ {exit}' "$1"
+  local rs=0; [[ "$1" != *.rs ]] || rs=1
+  awk -v f="$2" -v rs="$rs" '
+    !on && (rs ? $0 ~ ("^(pub(\\([a-z]+\\))? )?fn " f "[(<]") : index($0, f "() {") == 1) {on = 1}
+    on {print} on && /^}/ {exit}' "$1"
+}
+
+# takes_flock <file> <function> -> exit 0 when the function's code, comments aside, takes a flock:
+# `flock` in shell, std's `File::lock` or `try_lock` (flock(2) on Unix) in Rust
+takes_flock() {
+  local re='\bflock\b'; [[ "$1" != *.rs ]] || re='\bflock\b|\.(try_)?lock\(\)'
+  fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
 }
 
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
@@ -132,21 +147,21 @@ owned_files() {
 }
 
 check_owner_cells() { # <doc>
-  local fact writer home copy lock pinned c file fn lk bad=0 fns
+  local fact writer home copy lock pinned c file fn f lk body bad=0 fns
   [ "$(owner_rows "$1" | wc -l)" -gt 0 ] || { echo "no Owners table in $1"; return 1; }
   while IFS=$'\037' read -r fact writer home copy lock pinned; do
     for c in writer home copy lock pinned; do [ -n "${!c}" ] || { echo "$fact: no $c"; bad=1; }; done
     mapfile -t fns < <(spans "$writer")
     file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
     [ -f "$REPO_ROOT/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
+    lk=-; [ "$lock" = - ] || lk=$(spans "$lock")
+    [ "$lk" = - ] || takes_flock "$REPO_ROOT/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
+    # A writer span after the first is a function in the same file, or `<file>:<fn>` in another.
     for fn in "${fns[@]}"; do
-      [ -n "$(fn_body "$REPO_ROOT/$file" "$fn")" ] || { echo "$fact: $file has no function $fn"; bad=1; }
-    done
-    [ "$lock" != - ] || continue
-    lk=$(spans "$lock")
-    fn_body "$REPO_ROOT/$file" "$lk" | grep -vE '^\s*#' | grep -qw flock || { echo "$fact: its lock $lk takes no flock"; bad=1; }
-    for fn in "${fns[@]}"; do
-      [ "$lk" = "$fn" ] || fn_body "$REPO_ROOT/$file" "$fn" | grep -vE '^\s*#' | grep -qw "$lk" ||
+      f=$file; [[ $fn != *:* ]] || { f=${fn%%:*}; fn=${fn#*:}; }
+      body=$(fn_body "$REPO_ROOT/$f" "$fn")
+      [ -n "$body" ] || { echo "$fact: $f has no function $fn"; bad=1; continue; }
+      [ "$lk" = - ] || [ "$lk" = "$fn" ] || grep -vE '^\s*(#|//)' <<<"$body" | grep -qw "$lk" ||
         { echo "$fact: $fn does not take its lock $lk"; bad=1; }
     done
   done < <(owner_rows "$1")
@@ -260,7 +275,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 @test "negative controls: a planted copy, a missing writer, a lock a writer skips, a bad pattern and a dead pin all fail" {
   local t="$BATS_TEST_TMPDIR"
   mapfile -t files < <(owned_files)
-  printf ': "${WAKE_BATCH:=3}"\n' > "$t/wake-pace.sh"
+  printf ': "${WAKE_BUDGET:=3}"\n' > "$t/wake-pace.sh"
   printf 'c="$HOME/.config/claude-acct/pace.conf"\n' > "$t/reader"
   printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
   run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land"
@@ -290,4 +305,36 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   run check_owner_pins "$t/dead.md"
   assert_failure
   assert_output --partial 'past FLEET_SHEPHERD_CHECK_WAIT exits 75"'
+}
+
+@test "negative controls for a Rust writer: a planted raw typer, a missing fn, a fn that skips the lock, a lock with no flock and a dead Rust pin all fail" {
+  local t="$BATS_TEST_TMPDIR" row='/^| Keystrokes into a Claude pane/'
+  mapfile -t files < <(owned_files)
+  # main's close_sample line (fleet-shepherd before P9)
+  printf '%s\n' '    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then' > "$t/typer"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/typer"
+  assert_failure
+  assert_output --partial 'Keystrokes into a Claude pane'
+  assert_output --partial "$t/typer:1:"
+  sed "$row s/send.rs:message\`/send.rs:messages\`/" "$DOC" > "$t/no-fn.md"
+  run check_owner_cells "$t/no-fn.md"
+  assert_failure
+  assert_output --partial '.local/src/agent-core/src/send.rs has no function messages'
+  sed "$row s/send.rs:message\` (/send.rs:message\` (also \`deliver\`; /" "$DOC" > "$t/rs-skips.md"
+  run check_owner_cells "$t/rs-skips.md"
+  assert_failure
+  assert_output --partial 'deliver does not take its lock lock_pane'
+  sed "$row s/dialog.rs:answer_in/dialog.rs:answer/" "$DOC" > "$t/rs-other-file.md"
+  run check_owner_cells "$t/rs-other-file.md"
+  assert_failure
+  assert_output --partial 'answer does not take its lock lock_pane'
+  sed "$row s/| \`lock_pane\` |/| \`pane_key\` |/" "$DOC" > "$t/rs-no-lock.md"
+  run check_owner_cells "$t/rs-no-lock.md"
+  assert_failure
+  assert_output --partial 'its lock pane_key takes no flock'
+  sed "$row s/then_goes\`/then_goes_now\`/" "$DOC" > "$t/rs-dead.md"
+  run check_owner_pins "$t/rs-dead.md"
+  assert_failure
+  # Only the tail: the whole name in quotes here would be the @test the check finds.
+  assert_output --partial 'finish_then_goes_now"'
 }

@@ -104,8 +104,8 @@ fi
   if [[ $over_budget == 1 ]]; then
     echo "context-budget-guard: $path ($kind) is over budget."
     [[ $bytes -gt $max_bytes ]] && echo "  size $bytes bytes > $max_bytes"
-    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | head -8; }
-    [[ -n $fat ]] && { echo "  lessons holding text this edit wrote, over the per-lesson cap (\`lessons fat\`):"; printf '%s\n' "$fat" | head -8; }
+    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | awk 'NR<=8'; }
+    [[ -n $fat ]] && { echo "  lessons holding text this edit wrote, over the per-lesson cap (\`lessons fat\`):"; printf '%s\n' "$fat" | awk 'NR<=8'; }
     echo
     echo "Make room by deleting, not by squeezing: remove what the new text supersedes, merge"
     echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
@@ -115,7 +115,7 @@ fi
   fi
   if [[ -n $dups ]]; then
     echo "context-budget-guard: $path restates an instruction another home already holds."
-    printf '%s\n' "$dups" | head -8
+    printf '%s\n' "$dups" | awk 'NR<=8'
     echo
     echo "The winner keeps the instruction: delete the losing home's line, or leave a one-line"
     echo "pointer to the winner (ranks: instruction-homes.json; on a pick, choose one and delete the other)."

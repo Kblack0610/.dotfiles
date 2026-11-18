@@ -3,34 +3,78 @@
 //! (`l`): what the fleet costs, not who is working.
 
 use hub_core::costs::tokens as count;
-use hub_core::tokens::{Count, Langfuse, Share, Tokens};
+use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
-use crate::fit::{clip_line, Table};
+use crate::fit::{clip_line, Cell, Table};
 use crate::fmt::{clock, dur, kilo, pct, Palette};
 
 fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
 
-/// The tokens fold: `u` folds or opens it, `U` switches its window. None is the default, open
-/// (dashboards rule 4).
-#[derive(Clone, Copy, Debug, Default)]
+/// The tokens fold: `u` folds or opens it, `U` switches its window, `i` opens the next row that
+/// has parts, at any depth, and past the last closes it. None is the default, open (dashboards
+/// rule 4).
+#[derive(Clone, Debug, Default)]
 pub struct TokensView {
     pub open: Option<bool>,
     pub day: bool,
+    /// The open row as the keys of it and its parents (`part_key`), empty when none is open: a
+    /// name, not an index, so a new snapshot that reorders the tools keeps the same row open.
+    pub part: Vec<String>,
+}
+
+/// A row's key in an open path: an Other row is "Other", since its label counts the tools it
+/// holds and that count differs between windows and snapshots (agent-web keys it the same way).
+fn part_key(r: &Share) -> &str {
+    if r.other {
+        "Other"
+    } else {
+        &r.name
+    }
+}
+
+/// Every row with parts as its path, a parent before its own parts: the order `i` steps in.
+fn openable(rows: &[Share], pre: &[String], out: &mut Vec<Vec<String>>) {
+    for r in rows.iter().filter(|r| !r.parts.is_empty()) {
+        let path = [pre, &[part_key(r).to_string()]].concat();
+        out.push(path.clone());
+        openable(&r.parts, &path, out);
+    }
 }
 
 impl TokensView {
-    pub fn is_open(self, t: Option<&Tokens>) -> bool {
+    pub fn is_open(&self, t: Option<&Tokens>) -> bool {
         t.is_some() && self.open.unwrap_or(true)
+    }
+
+    /// The window the fold shows.
+    pub fn split<'a>(&self, t: &'a Tokens) -> &'a Split {
+        if self.day {
+            &t.day
+        } else {
+            &t.week
+        }
+    }
+
+    /// The row `i` opens next: the one after the open one, the first when none is open or the
+    /// open one is gone from this snapshot, and none past the last.
+    pub fn next_part(&self, s: &Split) -> Vec<String> {
+        let mut all = vec![];
+        openable(&s.tools, &[], &mut all);
+        let at = all
+            .iter()
+            .position(|p| *p == self.part)
+            .map_or(0, |i| i + 1);
+        all.into_iter().nth(at).unwrap_or_default()
     }
 }
 
 /// Where the tokens go: a head line with the week's total, and open, one window's two tables.
 pub fn tokens(
     t: Option<&Tokens>,
-    v: TokensView,
+    v: &TokensView,
     p: Palette,
     now: i64,
     w: usize,
@@ -87,11 +131,10 @@ pub fn tokens(
         ),
         w,
     ));
-    out.extend(token_table("BY TOOL", &s.tools, p, w));
-    out.extend(token_table("BY BASH COMMAND", &s.commands, p, w));
+    out.extend(token_table(&s.tools, &v.part, p, w));
     out.push(clip_line(
         Line::styled(
-            "  nightly, claude-recall tool-output; U yesterday | 7d; dollars: the tool cut",
+            "  + opens: i the next tool's rows; nightly, claude-recall tool-output; U yesterday | 7d",
             p.dim(),
         ),
         w,
@@ -219,14 +262,16 @@ pub fn langfuse(
     out
 }
 
+/// A duration as the tool tables read it: 99ms, 17.5s.
+fn ms(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let ms = |ms: u64| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    };
     let rows = f
         .tools
         .iter()
@@ -250,24 +295,52 @@ fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
     .fit(w, p.head())
 }
 
-fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec<Line<'static>> {
-    let rows = rows
-        .iter()
-        .map(|r| {
-            vec![
-                r.name.clone().into(),
+/// The tool table: a row with parts wears `+`, and the open one (`part`) and its parents wear `-`
+/// with every part under them, indented a step per level. TIME is wall time over the calls that
+/// carry it and AVG per such call, - for a row with none (a snapshot from before the timing).
+fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Line<'static>> {
+    fn walk(rs: &[Share], part: &[String], depth: usize, rows: &mut Vec<Vec<Cell>>) {
+        for r in rs {
+            let on = !r.parts.is_empty() && part.first().is_some_and(|k| k == part_key(r));
+            let mark = match (r.parts.is_empty(), on) {
+                (true, _) => "  ",
+                (false, false) => "+ ",
+                (false, true) => "- ",
+            };
+            rows.push(vec![
+                format!("{}{mark}{}", "    ".repeat(depth), r.name).into(),
                 r.calls.to_string().into(),
                 format!("{} ch", count(Some(r.chars as f64))).into(),
                 format!("{:.1}%", r.share * 100.0).into(),
                 count(Some(r.carried_tokens as f64)).into(),
-            ]
-        })
-        .collect();
+                match (r.timed, r.ms) {
+                    (0, _) => "-".into(),
+                    (_, 0..1000) => ms(r.ms),
+                    _ => dur(r.ms as f64 / 1000.0),
+                }
+                .into(),
+                r.ms.checked_div(r.timed).map_or("-".into(), ms).into(),
+            ]);
+            if on {
+                walk(&r.parts, &part[1..], depth + 1, rows);
+            }
+        }
+    }
+    let mut rows = vec![];
+    walk(tools, part, 0, &mut rows);
     Table {
-        header: vec![title, "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
+        header: vec![
+            "BY TOOL",
+            "CALLS",
+            "OUTPUT",
+            "OF OUTPUT",
+            "RE-READ",
+            "TIME",
+            "AVG",
+        ],
         rows,
-        keep: vec![0, 3, 2, 4, 1],
-        right: vec![1, 2, 3, 4],
+        keep: vec![0, 3, 2, 5, 4, 1, 6],
+        right: vec![1, 2, 3, 4, 5, 6],
         ..Default::default()
     }
     .fit(w, p.head())
@@ -276,7 +349,7 @@ fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hub_core::tokens::{LangfuseView, LfModel, LfTool, Split};
+    use hub_core::tokens::{LangfuseView, LfModel, LfTool};
 
     const NOW: i64 = crate::fleettab::tests::NOW;
 
@@ -287,7 +360,10 @@ mod tests {
             chars,
             share,
             carried_tokens: 2_550_000_000,
+            ms: 0,
+            timed: 0,
             other: name.starts_with("Other"),
+            parts: vec![],
         };
         let split = |context| Split {
             days: 7,
@@ -296,10 +372,25 @@ mod tests {
             per_response: 120_000,
             carried_share: 0.15,
             tools: vec![
-                row("Bash", 331_000_000, 0.823),
-                row("Other (22)", 10_000_000, 0.026),
+                Share {
+                    parts: vec![
+                        row("sed -n", 89_000_000, 0.221),
+                        row("Other", 40_000_000, 0.1),
+                    ],
+                    ..row("Bash", 331_000_000, 0.823)
+                },
+                row("WebSearch", 2_000_000, 0.005),
+                Share {
+                    parts: vec![
+                        Share {
+                            parts: vec![row("code .rs", 8_000_000, 0.018)],
+                            ..row("Edit", 9_000_000, 0.02)
+                        },
+                        row("Write", 1_000_000, 0.002),
+                    ],
+                    ..row("Other (22)", 10_000_000, 0.026)
+                },
             ],
-            commands: vec![row("sed", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
         };
         Tokens {
             date: "2026-11-05".into(),
@@ -416,7 +507,7 @@ mod tests {
         );
     }
 
-    fn token_text(t: Option<&Tokens>, v: TokensView, w: usize) -> Vec<String> {
+    fn token_text(t: Option<&Tokens>, v: &TokensView, w: usize) -> Vec<String> {
         tokens(t, v, Palette::default(), NOW, w)
             .iter()
             .map(crate::fit::plain)
@@ -426,7 +517,7 @@ mod tests {
     #[test]
     fn the_tokens_fold_starts_open_and_folds_to_one_line() {
         let t = token_fixture(false);
-        let l = token_text(Some(&t), TokensView::default(), 80);
+        let l = token_text(Some(&t), &TokensView::default(), 80);
         assert!(
             l[0].starts_with("- WHERE THE TOKENS GO") && l.len() > 1,
             "{l:?}"
@@ -434,8 +525,9 @@ mod tests {
         let shut = TokensView {
             open: Some(false),
             day: false,
+            part: vec![],
         };
-        let l = token_text(Some(&t), shut, 80);
+        let l = token_text(Some(&t), &shut, 80);
         assert_eq!(
             l,
             ["+ WHERE THE TOKENS GO  7d 18.0B, tool output 15%  u opens it"]
@@ -445,25 +537,27 @@ mod tests {
     #[test]
     fn a_stale_snapshot_opens_the_fold_and_says_so_until_it_is_folded() {
         let t = token_fixture(true);
-        let l = token_text(Some(&t), TokensView::default(), 80);
+        let l = token_text(Some(&t), &TokensView::default(), 80);
         assert!(l[0].starts_with("- WHERE THE TOKENS GO"), "{l:?}");
         assert!(l[0].contains("stale, 2026-11-05"), "{l:?}");
         assert!(l.len() > 1);
         let shut = TokensView {
             open: Some(false),
             day: false,
+            part: vec![],
         };
-        assert_eq!(token_text(Some(&t), shut, 80).len(), 1);
+        assert_eq!(token_text(Some(&t), &shut, 80).len(), 1);
     }
 
     #[test]
     fn no_snapshot_is_a_head_with_nothing_to_open() {
-        let l = token_text(None, TokensView::default(), 80);
+        let l = token_text(None, &TokensView::default(), 80);
         assert_eq!(l.len(), 1);
         assert!(l[0].contains("no snapshot"), "{l:?}");
         let open = TokensView {
             open: Some(true),
             day: false,
+            part: vec![],
         };
         assert!(!open.is_open(None));
     }
@@ -473,27 +567,113 @@ mod tests {
         let t = token_fixture(false);
         let mut v = TokensView {
             open: Some(true),
-            day: false,
+            ..Default::default()
         };
-        let l = token_text(Some(&t), v, 80);
+        let l = token_text(Some(&t), &v, 80);
         let all = l.join("\n");
         assert!(all.contains("7d: 18.0B context, 120k/response"), "{all}");
         assert!(
-            all.contains("BY TOOL") && all.contains("BY BASH COMMAND"),
+            all.contains("BY TOOL") && !all.contains("BY BASH COMMAND"),
             "{all}"
         );
-        assert!(all.contains("Bash") && all.contains("82.3%"), "{all}");
-        assert!(all.contains("Other (22)") && all.contains("sed"), "{all}");
+        assert!(all.contains("+ Bash") && all.contains("82.3%"), "{all}");
+        assert!(
+            all.contains("+ Other (22)") && !all.contains("sed"),
+            "{all}"
+        );
         assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
         v.day = true;
-        let all = token_text(Some(&t), v, 80).join("\n");
+        let all = token_text(Some(&t), &v, 80).join("\n");
         assert!(all.contains("yesterday: 3.9B context"), "{all}");
         let stale = Tokens {
             stale: true,
             date: "2026-11-02".into(),
             ..t.clone()
         };
-        let all = token_text(Some(&stale), v, 80).join("\n");
+        let all = token_text(Some(&stale), &v, 80).join("\n");
         assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
+    }
+
+    #[test]
+    fn a_row_shows_its_wall_time_and_mean_per_timed_call_and_an_untimed_one_a_dash() {
+        let mut t = token_fixture(false);
+        t.week.tools[0].ms = 9_000_000;
+        t.week.tools[0].timed = 3_000;
+        t.week.tools[2].ms = 480;
+        t.week.tools[2].timed = 40;
+        let v = TokensView {
+            open: Some(true),
+            ..Default::default()
+        };
+        let l = token_text(Some(&t), &v, 120);
+        let all = l.join("\n");
+        assert!(all.contains("TIME") && all.contains("AVG"), "{all}");
+        let bash = l.iter().find(|x| x.contains("+ Bash")).unwrap();
+        let tail: Vec<&str> = bash.split_whitespace().rev().take(2).collect();
+        assert_eq!(tail, ["3.0s", "2h30m"], "{bash}");
+        let web = l.iter().find(|x| x.contains("WebSearch")).unwrap();
+        let tail: Vec<&str> = web.split_whitespace().rev().take(2).collect();
+        assert_eq!(tail, ["-", "-"], "{web}");
+        let other = l.iter().find(|x| x.contains("+ Other (22)")).unwrap();
+        let tail: Vec<&str> = other.split_whitespace().rev().take(2).collect();
+        assert_eq!(
+            tail,
+            ["12ms", "480ms"],
+            "under a second reads in ms: {other}"
+        );
+    }
+
+    #[test]
+    fn i_opens_each_tool_with_parts_in_turn_and_past_the_last_closes() {
+        let t = token_fixture(false);
+        let mut v = TokensView::default();
+        let step = |v: &mut TokensView| v.part = v.next_part(v.split(&t));
+        step(&mut v);
+        assert_eq!(v.part, ["Bash"], "Bash first");
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(
+            all.contains("- Bash") && all.contains("      sed -n"),
+            "{all}"
+        );
+        assert!(!all.contains("Edit"), "only the open row's parts: {all}");
+        step(&mut v);
+        // WebSearch has no parts, so it is skipped; Other is keyed "Other", not its count.
+        assert_eq!(v.part, ["Other"]);
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(
+            all.contains("- Other (22)") && all.contains("    + Edit") && !all.contains("sed -n"),
+            "{all}"
+        );
+        assert!(
+            !all.contains("code .rs") && !all.contains("+ Write"),
+            "{all}"
+        );
+        step(&mut v);
+        assert_eq!(v.part, ["Other", "Edit"], "a tool inside Other opens too");
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(
+            all.contains("    - Edit") && all.contains("          code .rs"),
+            "{all}"
+        );
+        step(&mut v);
+        assert!(v.part.is_empty(), "past the last, it closes");
+    }
+
+    #[test]
+    fn the_open_row_is_a_name_so_a_reordered_snapshot_keeps_it_open() {
+        let mut t = token_fixture(false);
+        let v = TokensView {
+            part: vec!["Other".into(), "Edit".into()],
+            ..Default::default()
+        };
+        t.week.tools.reverse();
+        let all = token_text(Some(&t), &v, 80).join("\n");
+        assert!(all.contains("code .rs") && !all.contains("sed -n"), "{all}");
+        t.week.tools.retain(|r| !r.other);
+        assert_eq!(
+            v.next_part(&t.week),
+            ["Bash"],
+            "a row gone from the snapshot starts over"
+        );
     }
 }
