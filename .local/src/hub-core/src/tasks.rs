@@ -27,7 +27,7 @@ pub struct Project {
     /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
     /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
-    /// project's `agent_board_max`): still on the sheet, off the board dispatch reads.
+    /// project's days budget (`agent_board_days`)): still on the sheet, off the board dispatch reads.
     pub agent_backlog: usize,
     pub playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.

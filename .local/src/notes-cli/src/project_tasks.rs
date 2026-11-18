@@ -147,7 +147,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
-        board_max: None,
+        board_weight: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -2656,11 +2656,27 @@ pub(crate) fn sweep_ctx(
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape,
-        board_max: (lane == Lane::Agent).then_some(shape.agent_board_max),
+        board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
         open: version_in(dir, content),
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
     }
+}
+
+/// The days of shipped work a budget is measured over.
+const BUDGET_WINDOW_DAYS: u32 = 7;
+
+/// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
+/// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
+/// project that shipped nothing.
+fn board_budget(dir: &Path, days: u32) -> u32 {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let shipped = crate::board::shipped_weight(&name, dir, today, BUDGET_WINDOW_DAYS.into());
+    (shipped * days).div_ceil(BUDGET_WINDOW_DAYS)
 }
 
 /// The systems `### Epics` is ordered by, read only when there is an order to keep: two or more
@@ -3243,6 +3259,39 @@ Version: v1.13.0
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // The budget is a day of the weight the agent lane shipped with a PR in the last week: a
+    // close with no PR, an old close, and a human-lane close add nothing.
+    #[test]
+    fn the_board_budget_is_the_weight_shipped_with_a_pr_per_day() {
+        let dir = std::env::temp_dir().join(format!("ptask-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let old = today - chrono::Duration::days(30);
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: v1.0.0\n\n## Tasks\n- [x] human #size/l <!-- pr:9 done:{today} -->\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            format!(
+                "# demo\n\n## Tasks\n- [ ] open #size/l\n### Done\n\
+- [x] a #size/m <!-- pr:1 done:{today} -->\n\
+- [x] b #size/l <!-- pr:2 done:{today} -->\n\
+- [x] no pr #size/l <!-- done:{today} -->\n\
+- [x] old #size/l <!-- pr:3 done:{old} -->\n"
+            ),
+        )
+        .unwrap();
+        let shipped = crate::projects::size_weight("- [x] a #size/m")
+            + crate::projects::size_weight("- [x] b #size/l");
+        assert_eq!(board_budget(&dir, 7), shipped);
+        assert_eq!(board_budget(&dir, 1), shipped.div_ceil(7));
+        assert_eq!(board_budget(&dir, 0), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_move_retags_the_row_where_it_stands() {
         let pick = w("live one");
@@ -3281,7 +3330,7 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
-            board_max: None,
+            board_weight: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
