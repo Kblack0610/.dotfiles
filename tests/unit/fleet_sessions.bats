@@ -1161,7 +1161,7 @@ MD
   escalate sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
   run mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p4 p5'
   assert_failure 1
-  assert_output --partial 'already sent its close nudge'
+  assert_output --partial 'already nudged for this fact'
   run mark sid-3 'DONE clean, nothing on the branch, its PRs #658,#1479 merged, no plan file, its PR landed'
   assert_failure 1
   run nudged sid-3 'DONE clean, no plan file'
@@ -1177,33 +1177,40 @@ MD
   assert_failure 1
 }
 
-@test "a session that left DONE keeps its entry and, once marked DONE or CHAT, is never sent a second close nudge (ar-1863)" {
+@test "a session that left DONE keeps its entry, and its close claim is one per session for good (ar-1863)" {
   mark sid-4 'DONE clean, no plan file'
-  mark sid-5 'DONE clean, no plan file'
+  mark --close sid-5
   mark sid-6 'STALLED PR #9 CI red @feat/x'
   release_left "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
   run nudged sid-4 'DONE clean, no plan file'
   assert_success
-  # sid-5 left DONE, and its entry stays: the same DONE fact is still nudged, and a later DONE or CHAT is refused
-  run nudged sid-5 'DONE clean, no plan file'
-  assert_success
-  run mark sid-5 'DONE clean, nothing on the branch, its PRs #9 merged'
+  # sid-5 left DONE, and its claim stays: a second close is refused
+  run mark --close sid-5
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
-  run mark sid-5 'CHAT idle, no plan file'
-  assert_failure 1
-  # a STALLED fact is not a close nudge and is marked as before
+  run mark --close ../x
+  assert_failure 2
+  # a STALLED fact is not a close and is marked as before
   run nudged sid-6 'STALLED PR #9 CI red @feat/x'
   assert_success
   run mark sid-6 'STALLED PR #9 green, not merged @feat/x'
   assert_success
 }
 
-@test "a DONE nudge is sent once even after a STALLED mark replaced the ledger fact (ar-1848)" {
-  # 2026-11-12: three passes sent agent-15 the same DONE nudge an hour apart; a mark of another fact between them had replaced the single ledger slot
-  mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
+@test "the close claim and the fact ledger never block each other (ar-1848, 2026-11-18)" {
+  # 2026-11-18: a LANDED message held unseen in a manual-mode session marked its fact, and the close keyed on that mark was never typed
+  mark sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  escalate sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  run mark --close sid-8
+  assert_success
+  # the claim left the fact and its escalation alone
+  run nudged sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  assert_success
+  run escalated sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  assert_success
+  # 2026-11-12: a mark of another fact replaced the single ledger slot; the claim is apart from it
   mark sid-8 'STALLED PR #1904 CI red @agent-15-stop-upstream-deletes@0123456789ab'
-  run mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
+  run mark --close sid-8
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
 }
@@ -1933,26 +1940,32 @@ clean_fixture() {
   assert_line --index 0 --partial 'now: '
 }
 
-@test "end to end: a DONE or CHAT row whose session was sent its close nudge reads nudged, whatever the ledger fact now says (ar-1863)" {
+@test "end to end: a row whose session was typed its close reads close_sent and nudged, whatever the ledger fact says (ar-1863)" {
   clean_fixture
   S="$REPO_ROOT/.local/bin/fleet-sessions"
   run "$S" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
   [ "$(jq -r .nudged <<<"$output")" = false ]
-  "$S" mark sid-9 "$(jq -r .fact <<<"$output")"
-  # a later LANDED nudge overwrites the ledger fact, as it did for hub/dotfiles:1; the claim stays
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
+  # a held LANDED message marks its fact: that is not the close claim
   "$S" mark sid-9 'LANDED PR #875 merged, tree clean @feat/x'
   run "$S" --json
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
+  "$S" mark --close sid-9
+  run "$S" --json
+  [ "$(jq -r .close_sent <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
-  # the same session DONE after working again: still nudged, so cmd_due never types a second close
+  # the same session DONE after working again: still close_sent, so close_sample never types a second close
   queue_item queued lab:s1
   run "$S" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .close_sent <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
-  # a session that was never sent one is unaffected
+  # a session that was never typed one is unaffected
   rm "$FLEET_SHEPHERD_DIR/.closed/sid-9"
   run "$S" --json
   [ "$(jq -r .nudged <<<"$output")" = false ]
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
 }
 
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {

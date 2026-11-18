@@ -227,19 +227,18 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
-# manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
-# verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
-# question waits; DONE, LANDED and STALLED get the DONE close nudge once their verdict is now, CHAT its
-# own, and a LANDED or STALLED row not yet closable its bucket nudge once; a
-# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
+# manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
+# close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
+# being where the question waits; a LANDED or STALLED row not yet closable gets its bucket nudge once; a
+# NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
-# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
-# (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
-# otherwise. cmd_due turns it into a due line for a pass, close_sample types it; one rule for both.
+# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close is owed to (its close
+# verdict now, its close not yet sent, not manual; CLOSE when it holds an open ask it filed), null
+# otherwise. close_sample types it, and cmd_due gives a pass no line for it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
-  if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now") then null
+  if ((.labels // []) | index("manual")) or .close_sent or ((.close.verdict // "") != "now") then null
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif .bucket == "CHAT" then "CHAT"
   elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
@@ -268,9 +267,7 @@ cmd_due() {
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ((.own_asks // 0) > 0) as $ask
-      | close_nudge as $close
-      | if $close then
-          "nudge \($close): \(.target)\(ptag) \(.fact // "")"
+      | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
           if ($ask | not) and (.bucket | IN("LANDED","STALLED"))
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
@@ -689,18 +686,18 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
-# close_sample: the close nudge without a model. Each row CLOSE_NUDGE_JQ names (the ones cmd_due
-# would give a pass as `nudge DONE|CHAT|CLOSE`) gets its close typed into its pane: /wind-down
-# auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT /wind-down,
-# the human's standing order to close a quiet chat. A pass could only send it by SendMessage,
-# and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the claude CLI has no
-# send, so typing is the one model-free way in, as claude-acct types /exit.
+# close_sample: the one closer. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
+# /wind-down auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT
+# /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
+# to a session in another permission mode is held for approval and expires unseen, and its mark
+# stopped this typing (2026-11-18: hub/dotfiles:4 and :8 left open overnight); the claude CLI has
+# no send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
-# cancelling the human's copy mode, and reads the screen again after the mark, just before the
-# keys; any other screen is left for the pass, which sends the message by SendMessage. The mark
-# claims the fact first, so the two never both send it; a send that fails after it reaches the
-# human through the row's escalation. Having typed, it refreshes the document, so cmd_due reads
-# those rows as nudged.
+# cancelling the human's copy mode, and reads the screen again after the claim, just before the
+# keys; any other screen waits for the next check. The close claim (mark --close) comes first, so
+# a session is typed one close for good; a send that fails after it reaches the human through the
+# row's escalation. Having typed, it refreshes the document, so cmd_due reads those rows as
+# close_sent.
 close_sample() {
   local sid target pane close fact server cmd typed=""
   while IFS=$'\t' read -r sid target pane close fact; do
@@ -708,7 +705,7 @@ close_sample() {
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
     pane_takes_keys "$server" "$pane" || continue
-    fleet-sessions mark "$sid" "$fact" >/dev/null 2>&1 || continue
+    fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$server" "$pane"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
       continue
@@ -722,8 +719,8 @@ close_sample() {
     fi
   done < <(jq -r "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
     | close_nudge as $close | select($close)
-    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
-    | [.session_id, .target, .pane, $close, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
+    | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " "))] | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
 }
 
@@ -1251,7 +1248,7 @@ lane_cols() {
   model="$(head -n 1 "$LEDGER/.lane-$id" 2>/dev/null)"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
   while IFS= read -r k; do
-    [[ "$k" =~ ^nudge\ (DONE|LANDED|STALLED|CHAT):\ ([^ ]+) ]] || continue
+    [[ "$k" =~ ^nudge\ (LANDED|STALLED):\ ([^ ]+) ]] || continue
     grep -qxF -- "$k" <<<"$now_keys" && continue
     nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
     awk -v t="$t" '$1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"$now_keys" &&
