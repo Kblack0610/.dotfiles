@@ -184,7 +184,7 @@ for h in members.get(group, []):
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
         "power": str(v.get("fleet_power", "")),
-        "first": [str(c) for c in (v.get("fleet_first") or [])],
+        "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
     }))
 PY
 }

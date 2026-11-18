@@ -64,10 +64,11 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   assert_equal "$(fleet_host razer-laptop | jq -r '"\(.dest) [\(.power)]"')" 'kb@192.0.2.26 []'
 }
 
-@test "a worker's fleet_first is the item classes it takes ahead of the dispatcher; none is an empty list" {
+@test "a worker's fleet_first is the item classes it takes ahead of the dispatcher; a single class is a one-item list" {
   sed -i 's/^          fleet_place: true$/&\n          fleet_first: [canary, night]/' "$FLEET_INVENTORY"
+  sed -i 's/^          fleet_max_live: 2$/&\n          fleet_first: canary/' "$FLEET_INVENTORY"
   assert_equal "$(fleet_host hp-victus | jq -c .first)" '["canary","night"]'
-  assert_equal "$(fleet_host razer-laptop | jq -c .first)" '[]'
+  assert_equal "$(fleet_host razer-laptop | jq -c .first)" '["canary"]'
 }
 
 @test "no inventory or no group is an empty roster, not an error" {
