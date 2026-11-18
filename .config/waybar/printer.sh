@@ -4,7 +4,7 @@
 # from Moonraker at CC_NEPTUNE_URL, the address the slicer sends prints to, so a dim icon also means
 # the slicer cannot reach it. A1 is a connect to its LAN port (CC_A1_ADDR, host:port): bright when
 # on, dim when off, since its print state lives only in Home Assistant. The chip sits in a full bar,
-# so its text stays at most MAX_CHARS wide (tests/integ/waybar_printer.bats); names go on hover.
+# so its text stays at most 10 characters (the cap tests/integ/waybar_printer.bats checks); names go on hover.
 # The hover has the Neptune's file, elapsed time, time left and temperatures. A printer whose
 # address is unset is left out; with neither set the chip is hidden.
 

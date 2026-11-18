@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 # printer.sh: the waybar 3D printer chip. What these pin: the module is gated and in group/status
 # after custom/ci; a print reads its percent with the slicer's time left (Moonraker metadata, not
-# file progress); a print still at 0s reads heating; no answer reads a dim icon; Klipper not ready
-# is amber; the A1 is bright when its port accepts; with no address set the chip is hidden; in every
-# state the text fits MAX_CHARS, so the chip cannot push the bar off a 1920px screen. curl is a stub serving fixtures, and the
-# A1 port is a local listener.
+# file progress); a print still at 0s reads heat; no answer reads a dim icon; Klipper not ready is
+# amber; the A1 is bright when its port accepts, dim when not; with no address set the chip is hidden;
+# in every state the text fits 10 characters, so the chip cannot push the bar off a 1920px screen.
+# curl is a stub serving fixtures, and the A1 port is a local listener.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -163,9 +163,14 @@ A1: no answer at 127.0.0.1:1"
   # `Neptune 21%  A1 on` and pushed the right side over the workspaces (2026-11-17).
   MAX_CHARS=10
   echo '{"result": {"estimated_time": 7200}}' > "$FX/meta.json"
-  for st in "printing 0.99 3600" "printing 0 0" "paused 0.5 60" "error 0 0" "complete 1 60" "standby 0 0"; do
-    # shellcheck disable=SC2086  # the state, progress and duration are three words on purpose
-    neptune $st; chip
+  for st in "printing 1 3600" "printing 0 0" "paused 0.5 60" "error 0 0" "complete 1 60" "standby 0 0" notjson notready; do
+    case $st in
+      notjson) echo "<html>502</html>" > "$FX/query.json" ;;
+      notready) echo '{"error": {"message": "Klippy Host not connected"}}' > "$FX/query.json" ;;
+      # shellcheck disable=SC2086  # the state, progress and duration are three words on purpose
+      *) neptune $st ;;
+    esac
+    chip
     vis="$(sed 's/<[^>]*>//g' <<< "$TEXT")"
     (( ${#vis} <= MAX_CHARS )) || fail "$st reads '$vis', ${#vis} chars, over $MAX_CHARS"
   done

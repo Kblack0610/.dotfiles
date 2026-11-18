@@ -255,7 +255,7 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // 3D printers: the Neptune from Moonraker, the A1 on or off (printer.sh); the addresses are in
+    // 3D printers: the Neptune as an icon with its state, A1 dim when off (printer.sh); the addresses are in
     // command-center/env. Click opens the Neptune page in Home Assistant, right-click the slicer.
     "custom/printer": {
         "format": "{}",
