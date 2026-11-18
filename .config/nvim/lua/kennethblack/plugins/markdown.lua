@@ -253,6 +253,8 @@ return {
       vim.api.nvim_set_hl(0, "TaskPriorityUrgent", { link = "DiagnosticError", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
+      -- The project tag `#p:<name>` (tag_source.lua): green, a colour no priority uses.
+      vim.api.nvim_set_hl(0, "TaskProjectTag", { link = "DiagnosticOk", default = true })
 
       -- Task status = the checkbox state. `<leader>ts` cycles it:
       --   [ ] todo -> [/] in progress -> [x] done -> [ ] todo
@@ -1073,7 +1075,7 @@ return {
       vim.api.nvim_create_autocmd("FileType", { pattern = "markdown", callback = read_board })
       vim.api.nvim_create_autocmd("BufWritePost", { pattern = "README.md", callback = read_board })
 
-      -- Color the priority tags. matchadd is window-local, so (re)apply it once
+      -- Color the priority and project tags. matchadd is window-local, so (re)apply it once
       -- per window showing a markdown buffer; a window flag prevents duplicates.
       -- BufWinEnter fires whenever the buffer is displayed in a window (open,
       -- split), which is exactly when a fresh window needs its matches.
@@ -1090,6 +1092,8 @@ return {
           for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
             vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
+          -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
+          vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])
         end,
       })
     end,
