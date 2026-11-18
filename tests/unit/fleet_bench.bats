@@ -607,7 +607,8 @@ iso() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ; }
 # A gh stand-in: pr view served from $GHD, every call logged, and a schedules-sync stand-in: `runs`
 # serves $GHD/runs-<branch>.json (gh run list field names) as run ledger rows, exit 3 while
 # $GHD/unsynced exists, 4 while $GHD/later does; `prs` serves $GHD/repo-prs.json as the PR store,
-# each row's merged_at its own or its pr-<n>.json's mergedAt, exit 1 while $GHD/prs-stale exists. agentctl-run is stubbed too, so a test can prove
+# each row's merged_at its own or its pr-<n>.json's mergedAt, exit 1 while $GHD/prs-stale exists;
+# `sync-prs` clears prs-stale, or fails while $GHD/sync-fails exists. agentctl-run is stubbed too, so a test can prove
 # the count never launches a model.
 docs_prs() { local n; for n in "$@"; do printf 'docs/a.md\n' > "$GHD/files-$n"; done; }
 drop_sections() { jq -c 'del(.sections)' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/c" && mv "$SANDBOX/c" "$FLEET_BENCH_DIR/pr-ci.jsonl"; }
@@ -633,6 +634,10 @@ AR
   printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
   cat >> "$SCHEDULES_SYNC" <<'SS'
 echo "schedules-sync $*" >> "$D/calls.log"
+if [ "$1" = sync-prs ]; then
+  [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $3: HTTP 502" >&2; exit 1; }
+  rm -f "$D/prs-stale"; exit 0
+fi
 if [ "$1" = prs ]; then
   [ ! -e "$D/prs-stale" ] || { echo "$2: PRs last synced 2026-10-01T00:00:00Z, older than 30m" >&2; exit 1; }
   jq -c --slurpfile pv <(for f in "$D"/pr-*.json; do [ ! -e "$f" ] || jq -c '{key: (.headRefName | ltrimstr("b")), value: .mergedAt}' "$f"; done) \
@@ -961,7 +966,7 @@ GH
   assert_output '[7,8]'
 }
 
-@test "review: a sections repo's merges come from the PR store, only those merged in the window; a stale store fails" {
+@test "review: a sections repo's merges come from the PR store, refreshed first, only those merged in the window; a store it cannot refresh fails" {
   stub_review
   sections_map
   merged_pr s1 7 35
@@ -972,9 +977,18 @@ GH
   run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[7]'
   grep -q "^schedules-sync prs o/r --state merged --since $(iso $((T0 - 86400)))\$" "$GHD/calls.log"
+  grep -q "^schedules-sync sync-prs --wait o/r\$" "$GHD/calls.log"
+  # a boot catch-up: the store is hours stale, and the refresh brings it current
   touch "$GHD/prs-stale"
   BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  [ ! -e "$GHD/prs-stale" ]
+  # negative control: a store the refresh cannot bring current still fails the run
+  touch "$GHD/prs-stale" "$GHD/sync-fails"
+  BENCH_NOW=$T0 run "$SUBJECT" review
   assert_failure
+  assert_output --partial 'HTTP 502'
+  assert_output --partial 'older than 30m'
   run outcome
   assert_output FAILED
 }
