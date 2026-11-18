@@ -62,6 +62,8 @@ const tblDrawn = new WeakMap();
 // Draw a table's body before its bar, forgetting what an earlier draw put in the header, so a body
 // that now draws no header (no rows) leaves every facet to the bar.
 const tblBodyFirst = (t, draw) => { if (t?.facets) tblDrawn.delete(t.facets); return draw(); };
+// The same for a block a tab draws itself: its body, then the pager under it (tblTab draws its own).
+const tblPaged = (t, draw) => tblBodyFirst(t, () => draw() + tblPager(t));
 const tblFacets = (t) => { const d = tblDrawn.get(t.facets); return tblSort(t) + t.facets.filter((f) => !d?.has(f.key)).map((f) => tblFacet(f, t.q)).join(""); };
 // The state chips with their counts, the first the view the table opens on (hub-core
 // `Row::in_default`): for the Sessions side list, too narrow for tiles. A table draws its states
@@ -123,8 +125,6 @@ function tblHead(t, labels) {
   }).join("") + "</tr>" + filters;
 }
 
-// The button a capped body ends in; tblTab's listener answers `data-all` (t.all, reset by a view change).
-const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
 // The pager under a paged body (the summary's `pager`, hub_core::table::page): prev, the first,
 // last and nearby pages, next, and which rows are on screen. Each button is a view patch {pg}
 // (tblPatch); page 1 is the bare view. Nothing when every row came.
@@ -187,16 +187,15 @@ const tblDropdown = (el) => el?.dataset?.tsv !== undefined || (el?.dataset?.twin
 //          html that leads the tab on that path too (an inner strip); tiles(t): the tab's own
 //          tiles after the state tiles; days(t): what tblDays draws in the bar
 //   (a paged summary draws tblPager under the body, and any view change but a page pick opens page 1)
-//   pages  the server caps the rows, so "+N more" reads them again with params asking for all
 //   head, body, tail (t)  the html above the bar, the rows and below them; wrap(html): around the bar and rows (Costs' inner tab); table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
 //   got(t) after a good read; after(t): after every read, once drawn; reset(t): on a view change
 //   open() the fold map paint keeps (ui.js); draw(html): the whole paint, when it is more than paint(el, html);
 //          render(): the tab's own, for a table drawn inside a tab that draws itself (Home)
-//   state  the tab's own fields, kept beside data, err, sel and all on the object this returns, which
+//   state  the tab's own fields, kept beside data, err and sel on the object this returns, which
 //          also carries refresh(), render(), view(patch), repaint(), redraw(), html() and moved().
 function tblTab(o) {
-  const t = Object.assign({ data: null, err: null, sel: null, all: false }, o.state), id = o.id, pre = o.pre || "", elId = o.el || id;
+  const t = Object.assign({ data: null, err: null, sel: null }, o.state), id = o.id, pre = o.pre || "", elId = o.el || id;
   const shown = o.shown || (() => st.tab === o.tab);
   const table = () => (o.table ? o.table(t) : t.data?.table);
   const part = (k, f) => (f ? `<div id="${id}-${k}">${f(t)}</div>` : "");
@@ -264,16 +263,14 @@ function tblTab(o) {
   t.view = (patch) => {
     const paged = "pg" in patch;
     setQuery(tblSet(st.views[o.tab], patch, pre));
-    t.all = false;
     if (o.reset) o.reset(t);
     const read = t.refresh();
     if (paged) Promise.resolve(read).then(() => { const b = $(id + "-body"); if (b && b.getBoundingClientRect().top < 0) b.scrollIntoView({ block: "start" }); $(elId)?.querySelector(`[data-tbl="${pre}"] .tpager [aria-current]`)?.focus({ preventScroll: true }); });
   };
-  // The bar's, the headers' and the more button's events from this table's own block. A picked
+  // The bar's, the headers' and the pager's events from this table's own block. A picked
   // sort or day dropdown lets go of focus, so the answer redraws it; a facet's menu is reopened.
   for (const ev of ["input", "change", "click"]) $(o.on || elId).addEventListener(ev, (e) => {
     if (tblOf(e) !== pre || !shown()) return;
-    if (e.type === "click" && e.target.dataset?.all) { t.all = true; if (o.pages) t.refresh(); else t.render(); return; }
     const v = tblPatch(e);
     if (!v) return;
     if (e.type === "change" && tblDropdown(e.target)) e.target.blur?.();

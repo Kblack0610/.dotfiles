@@ -44,10 +44,10 @@ const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
 // Every capped Home list holds more rows than the page draws (hub_core::home SHOWN), the Needs you list at the 83 that read 2783 px live (ar-2038): Home must stay under budget however long they run.
 const NEEDS = 83, RUNNING = 12, PROPOSALS = 12;
-// The cap the server sends, read from hub-core so a change to it moves the fixture too.
+// The page size the server sends, read from hub-core so a change to it moves the fixture too.
 const HOME_SHOWN = Number(readFileSync(new URL("../../../.local/src/hub-core/src/home.rs", import.meta.url), "utf8").match(/pub const SHOWN: usize = (\d+);/)[1]);
 const home = {
-  errors: [], shown: HOME_SHOWN, grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
+  errors: [], grafana: "https://grafana.example", sessions: "39 live, 3 need you, 2 stalled",
   health: [{ name: "dispatch", level: "ok" }, { name: "shepherd", level: "warn" }, { name: "sentinel", level: "ok" }],
   vitals: null,
   running: rows(RUNNING, (i) => ({ project: pick(PROJECTS, i), title: pick(TEXT, i), slug: `${pick(SLUGS, i)}-${i}`, started: iso(ago(40 + i * 10)), phases: { done: 1 + (i % 4), total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
@@ -58,37 +58,44 @@ const home = {
   proposals_head: `${PROPOSALS} from 3 streams`, proposals_failed: false,
   proposals_table: table(PROPOSALS, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
 };
+// What the server sends of them (agent-web main.rs home_shown): Needs you and Proposals page 1 at
+// SHOWN, Running its first SHOWN (the page links the rest on Queue).
+for (const [k, t] of [["needs", "table"], ["proposals", "proposals_table"]]) {
+  home[t] = { ...home[t], pager: { page: 1, pages: Math.ceil(home[k].length / HOME_SHOWN), per: HOME_SHOWN } };
+  home[k] = home[k].slice(0, HOME_SHOWN);
+}
+home.running = home.running.slice(0, HOME_SHOWN);
 const briefing = {
   since: iso(ago(600)), since_label: "since last night", errors: [], ok_line: "4 more lanes green",
   rows: rows(3, (i) => ({ name: pick(["dispatch", "ci", "spend"], i), link: "", level: pick(["warn", "bad", "ok"], i), line: TEXT[i + 3], details: [], fix: null })),
 };
 
-// A table's open_rows as agent-web sends it: the TABLE_OPEN_ROWS of src/<file>, read from the source
-// so a fixture sends what agent-web sends.
-function openRows(file) {
-  const src = new URL(`../../../.local/src/agent-web/src/${file}`, import.meta.url);
-  const m = readFileSync(src, "utf8").match(/TABLE_OPEN_ROWS[^=]*=\s*(\d+)/);
-  if (!m) throw new Error(`fixtures.mjs: no TABLE_OPEN_ROWS = <n> in ${src.pathname}; a fixture's open_rows reads it`);
+// A table's page size as agent-web pages it: its hub_core::layout PAGE_ROWS entry, read from layout.rs
+// so a change there moves the fixture.
+const LAYOUT = readFileSync(new URL("../../../.local/src/hub-core/src/layout.rs", import.meta.url), "utf8");
+export const pageRows = (section) => {
+  const m = LAYOUT.match(new RegExp(`\\("${section}",\\s*(\\d+)\\)`));
+  if (!m) throw new Error(`hub-core layout.rs PAGE_ROWS has no ("${section}", N) entry`);
   return Number(m[1]);
-}
+};
 // Queue: hub_core::queue, live-sized: the active view of 2026-11-12 (637 of 3,007 items, titles
-// that wrap and a note on some), of which the page draws the server's open_rows.
-const QUEUE_ROWS = openRows("queue.rs");
+// that wrap and a note on some), of which the server sends the first page.
 const QUEUE_STATE = ["running", "waiting", "queued", "queued", "running", "done", "done"];
 const qTitle = (i) => (i % 3 ? TEXT[i % TEXT.length] : `${TEXT[i % TEXT.length]}, and ${TEXT[(i + 1) % TEXT.length]}`);
 const QUEUE_TABLE = table(637, ["#", "title", "project", "priority", "state", "hold", "from", "in", "wait", "run", "pr", "row", "kind", "size", "pts", "acct", "mode", "plan"], ["active", "needs you", "running", "on a PR", "ready", "held", "done", "all"], { project: PROJECTS.slice(0, 3), priority: ["urgent", "high"], state: ["running", "ready"], hold: ["after"], from: ["human", "board"], kind: ["fix", "feat"], acct: ["main", "bnb"] });
 QUEUE_TABLE.states = [["active", 637], ["needs you", 6], ["running", 9], ["on a PR", 40], ["ready", 582], ["done", 2370], ["all", 3007]].map(([name, n]) => ({ name, n, tone: TONE[name] }));
-// Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first CANDIDATES_SHOWN
-// rows on the shared table), and the counts its `?counts=1` read sends for the heading.
+// Candidates: fleet-dispatch's snapshot as /api/queue/candidates sends it (the first page of rows on
+// the shared table), and the counts its `?counts=1` read sends for the heading.
 const candRow = (i) => ({ profile: "personal", project: pick(PROJECTS, i), lane: "agent", key: `ar-${1400 + i}`, text: TEXT[i % TEXT.length], title: TEXT[i % TEXT.length], stage: "alpha", priority: pick(["urgent", "high", "normal"], i), why: `${pick(PROJECTS, i)} is behind its pace and this row unblocks ${TEXT[(i + 2) % TEXT.length]}`, auto: i % 3 === 0, verdict: i % 5 ? "start" : "hold", held: i % 5 === 0, area: "ui", prio: i % 7 ? 2 : 0, blocked: i % 4 ? [] : ["no worker covers the project", "size l over the slot"], start_label: pick(["oneshot", "plan"], i) });
 const CAND_TABLE = table(2612, ["rank", "project", "key", "task", "start", "why", "blocked"], ["all", "clear", "blocked"], { project: PROJECTS.slice(0, 3), blocked: ["no worker", "size"] });
 CAND_TABLE.states = [["all", 2612], ["clear", 2140], ["blocked", 472]].map(([name, n]) => ({ name, n, tone: name === "blocked" ? "warn" : undefined }));
-const candidates = { rows: rows(30, (i) => ({ rank: i + 1, ...candRow(i) })), more: 2582, table: CAND_TABLE, auto: 412, urgent_blocked: 3, uncovered: PROJECTS.slice(2, 4), as_of: "13:10" };
+const candidates = { ...paged({ rows: rows(CAND_TABLE.total, (i) => ({ rank: i + 1, ...candRow(i) })), table: CAND_TABLE }, "candidates"), auto: 412, urgent_blocked: 3, uncovered: PROJECTS.slice(2, 4), as_of: "13:10" };
 const queue = {
   items: rows(637, (i) => ({ slug: `${pick(SLUGS, i)}-${i}`, title: qTitle(i), project: pick(PROJECTS, i), state: pick(QUEUE_STATE, i), status: "ok", priority: pick(["urgent", "high", "normal"], i), start: i === 2 ? 1 : null, hold: i === 3 ? `after ${SLUGS[2]}` : "", waits_for: i === 3 ? `after ${SLUGS[2]}` : "", source: pick(["human", "board"], i), row_id: i % 2 ? `ar-${1100 + i}` : "", mode: "oneshot", plan_label: i === 1 ? "queue table" : "", type: pick(["fix", "feat", "chore"], i), size: pick(["s", "m", "l"], i), account: pick(["main", "bnb", "alt"], i), pr: i > 3 ? `#${1590 + i}` : "", pr_label: i > 3 ? `#${1590 + i}` : "", pr_url: i > 3 ? `https://github.com/Kblack0610/.dotfiles/pull/${1590 + i}` : "", pr_merged: i > 4, note: i % 4 ? "" : TEXT[(i + 3) % TEXT.length], unproven: false, timing: { in_state: 14 + i * 9, wait: 3 + i, run: 22 + i * 6 } })),
   table: QUEUE_TABLE,
-  section_aliases: {}, needs_you: 6, open_rows: QUEUE_ROWS,
+  section_aliases: {}, needs_you: 6,
 };
+{ const p = paged({ rows: queue.items, table: queue.table }, "queue/table"); Object.assign(queue, { items: p.rows, table: p.table }); }
 const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
@@ -168,26 +175,26 @@ const board = {
   focus: [{ profile: "personal", open: 12 }],
 };
 
-// Sessions: hub_core::session_table, live-sized: 342 rows on 2026-11-12, of which the page draws
-// the server's open_rows, and a lane a session under the table.
+// Sessions: hub_core::session_table, live-sized: 342 rows on 2026-11-12, of which the server sends
+// the first page, and a lane a session under the table.
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
 const SESSION_ROWS = 342;
 const sessions = {
-  open_rows: openRows("sessions.rs"),
   table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "done today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
   rows: rows(SESSION_ROWS, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-000000000000`, bucket: pick(BUCKET, i), activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: qTitle(i), by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i % 6, phases_total: 5, idle_min: 2 + i * 6, ended: null, context_tokens: i % 4 ? 40000 + i * 900 : null, context_window: i % 4 ? 200000 : null, context_pct: i % 4 ? Math.round((40000 + i * 900) / 2000) : null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
   spend_usd: 41.5, buckets: ["NEEDS", "STALLED", "WORKING", "LANDED", "DONE"], errors: [],
 };
+Object.assign(sessions, paged(sessions, "sessions/sessions"));
 const capacity = { parts: [{ text: "39 live", warn: false, start: "", confirm: "" }, { text: "2 slots free", warn: true, start: "", confirm: "" }], unlinked: 0, live: 39, errors: [] };
 const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
-// Log's Rundowns: as many as agent-web sends (shepherd.rs RUNDOWNS), each a long sum-up like the
-// live ones, so the inner tab's height is measured at a live count.
+// Log's Rundowns: as many as agent-web keeps (shepherd.rs RUNDOWNS), each a long sum-up like the
+// live ones, of which the server sends the first page, so the inner tab's height is measured at a live count.
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
 const shepherd = {
   target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
-  shown: 30, // layout::page_rows("rundowns"), sent by shepherd.rs
   rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
 };
+{ const p = paged({ rows: shepherd.rundowns, table: { shown: shepherd.rundowns.length, pager: null } }, "rundowns"); Object.assign(shepherd, { rundowns: p.rows, rundowns_table: p.table }); }
 
 // Infra: Prometheus instant vectors, and the jobs board from hub_core::jobs.
 const runner = (i) => ({ labels: { name: `runner-${i}`, host: pick(["asus-laptop", "mac-mini", "workstation"], i), site: "home", state: "busy", pool: pick(["unity", "default"], i), repo: "game-core-playground", pr: `${1700 + i}`, job_name: "Tests (EditMode)", title: TEXT[i], workflow: "ci", branch: `feat/${SLUGS[i]}` }, value: 600 + i * 120 });
@@ -229,14 +236,15 @@ const actions = {
 };
 
 // Log's Work table: hub_core::worklog, a live-sized table of which the server sends the first
-// WORK_SHOWN rows (hub_core::layout::page_rows("work")).
-const WORK_SHOWN = 40;
+// page of WORK_SHOWN rows (hub_core::layout::page_rows("work")) and its pager.
+const WORK_SHOWN = pageRows("work");
 const WORK_TOTAL = 3235;
 const logWork = {
   table: table(WORK_TOTAL, ["state", "when", "project", "what", "plan", "kind", "ci", "pr", "cost"], ["all", "done", "active", "waiting", "queued", "failed", "cancelled"], { project: PROJECTS.slice(0, 5), kind: ["fix", "feat", "chore"] }),
   rows: rows(WORK_SHOWN, (i) => ({ state: pick(["failed", "waiting", "active", "done", "done", "queued"], i), when: iso(ago(30 + i * 90)).slice(0, 16), project: pick(PROJECTS, i), what: TEXT[i % TEXT.length], kind: pick(["fix", "feat", "chore"], i), pr: `.dotfiles#${1580 + i}`, url: "https://github.com/Kblack0610/.dotfiles/pull/1", cost: 1.25 * i, slug: SLUGS[i % SLUGS.length], unproven: false, plan: i % 3 ? null : `${SLUGS[i % SLUGS.length]}: ${TEXT[(i + 2) % TEXT.length].slice(0, 30)} P${1 + (i % 9)}`, ci: i % 7 ? null : pick(["CI pending", "draft"], i) })),
-  more: WORK_TOTAL - WORK_SHOWN, errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
+  errors: [], today: iso(NOW).slice(0, 10), items_from: "2026-11-04", prs_from: "2026-10-14",
 };
+logWork.table.pager = { page: 1, pages: Math.ceil(WORK_TOTAL / WORK_SHOWN), per: WORK_SHOWN };
 
 // Sessions' Runners: hub_core::fleet::who, live-sized: 42 runners on 2026-11-12, a FOR up to 152
 // characters and a DOING NOW up to 390, so a row that wraps shows here as it does live.
@@ -245,9 +253,10 @@ const fleet = {
   table: table(RUNNERS, ["kind", "who", "state", "cost", "since", "for", "doing", "under"], ["all", "lead", "deliver", "observe", "learn", "maintain", "held", "failed", "working", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"] }),
   who: rows(RUNNERS, (i) => ({ tier: i ? 2 : 1, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `${pick(SLUGS, i)}-${i}`, state: pick(["working", "held", "idle", "failed"], i), since: ago(20 + i * 15), cost_24h: i % 2 ? 1.2 * i : null, cost_estimated: false,
     for: pick(TEXT, i + 1), doing: i % 3 ? pick(TEXT, i) : `FAILED ${pick(TEXT, i)} why: ${pick(TEXT, i + 2)} (1 failed 24h)`, under: i % 5 ? "" : "4 sessions" })),
-  hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::page_rows("verdicts")
-  // Log's Judges at live counts: hub_core::fleet sends the newest 30 dispatch verdicts
-  // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long.
+  hidden: 0, legend: [], at: NOW, errors: [], workers: [],
+  // Log's Judges at live counts: hub_core::fleet reads the newest 30 dispatch verdicts
+  // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long; the
+  // server sends the first page of each (below).
   dispatch: {
     recent: rows(30, (i) => ({ at: iso(ago(5 + i * 9)), ts: ago(5 + i * 9), project: pick(PROJECTS, i), key: `ar-${1990 - i}`, verdict: pick(["dispatch", "skip", "failed"], i), tier: 1 + (i % 3), clear: i % 2 === 0, reason: TEXT[i % TEXT.length] })),
     counts_24h: { dispatch: 12, skip: 9, failed: 9 }, counts_7d: { dispatch: 80, skip: 51, failed: 40 }, log_24h: { started: 12, reaped: 10 }, partial: false, eval: { rules: [], prompt_sha: "" },
@@ -257,6 +266,11 @@ const fleet = {
     verdicts: rows(200, (i) => ({ id: `v${i}`, at: ago(4 + i * 7), project: pick(PROJECTS, i), question: `${TEXT[i % TEXT.length]}?`, type: pick(["credential_or_account", "agent_policy", "scope"], i), rule: pick(["knowledge", "policy"], i), said: pick(["passed", "answered", "would answer"], i), judge: "human", evidence: TEXT[(i + 3) % TEXT.length], reason: `${TEXT[(i + 5) % TEXT.length]}; ${TEXT[(i + 6) % TEXT.length]}`, you: pick(["pending", "a", "b"], i), score: pick(["pending", "right", "wrong"], i) })),
   },
 };
+{
+  const d = paged({ rows: fleet.dispatch.recent, table: { shown: fleet.dispatch.recent.length, pager: null } }, "verdicts");
+  const v = paged({ rows: fleet.judge.verdicts, table: table(fleet.judge.verdicts.length, ["when", "project", "type", "said", "question", "why", "you"], ["all", "answered", "would answer", "passed", "wrong"]) }, "verdicts");
+  Object.assign(fleet, { dispatch_table: d.table, dispatch: { ...fleet.dispatch, recent: d.rows }, judge: { ...fleet.judge, verdicts: v.rows, table: v.table } });
+}
 
 // One runner's page, hub_core::fleet::runner at the counts its reader sends (runs, activity and
 // calls at 20, an extras block's rows at 10, every conf line), sized from live inbox-triage and
@@ -324,14 +338,8 @@ const schedules = {
 };
 
 // Stack: hub_core::stack, five tables in one read (agent-web src/stack.rs), each paged by the server
-// at its hub_core::layout PAGE_ROWS entry (read from layout.rs, so a change there moves the fixture).
+// at its hub_core::layout PAGE_ROWS entry (pageRows).
 const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
-const LAYOUT = readFileSync(new URL("../../../.local/src/hub-core/src/layout.rs", import.meta.url), "utf8");
-export const pageRows = (section) => {
-  const m = LAYOUT.match(new RegExp(`\\("${section}",\\s*(\\d+)\\)`));
-  if (!m) throw new Error(`hub-core layout.rs PAGE_ROWS has no ("${section}", N) entry`);
-  return Number(m[1]);
-};
 // One table as hub_core::table::page leaves it: the rows of `page`, and the pager when there is more than one.
 function paged(part, section, page = 1) {
   const per = pageRows(section), pages = Math.ceil(part.rows.length / per);
