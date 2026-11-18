@@ -1231,7 +1231,7 @@ reopen_session() {
 # REOPEN_RESUME: the `resume` reopen-on-answer sets; ask-resume runs it as `agent-ask reopen <id>`.
 REOPEN_RESUME='run: agent-ask reopen'
 
-# cmd_reopen_on_answer <id>: a session closing over its own pending ask (close rule "only its own
+# cmd_reopen_on_answer <id>: a session closing over its own pending ask (the close step "only its own
 # ask is open") has the answer reopen it, so the answer carries on without the window. Refuses an
 # ask that is not pending, has no session, or already resumes some other way.
 cmd_reopen_on_answer() {

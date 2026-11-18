@@ -104,10 +104,13 @@ mod tests {
         let (tx, rx) = broadcast::channel(8);
         let c = Cache::new(rx);
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Each read says it ran, so the one behind a stale answer is awaited, not slept on.
+        let (ran, mut done) = tokio::sync::mpsc::unbounded_channel();
         let count = || {
-            let reads = reads.clone();
+            let (reads, ran) = (reads.clone(), ran.clone());
             move |_| {
                 reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = ran.send(());
                 Gathered::default()
             }
         };
@@ -120,7 +123,9 @@ mod tests {
         assert_eq!(n(), 1, "an event about something else does not outdate it");
         tx.send(r#"{"kind":"queue"}"#.to_string()).unwrap();
         c.gathered(3600, count()).await;
-        assert_eq!(n(), 2, "a ledger's event does");
+        done.recv().await;
+        done.recv().await;
+        assert_eq!(n(), 2, "a ledger's event does, behind the answer");
         c.gathered(7200, count()).await;
         assert_eq!(n(), 3, "another window is another read");
         let failed = c.gathered(3600, |_| panic!("read failed")).await;
