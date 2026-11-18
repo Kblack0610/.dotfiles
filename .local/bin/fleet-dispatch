@@ -2276,7 +2276,7 @@ resume_thread() {
 #                           item on a harness that resumes (codex), agent-codex resume on its last thread.
 #                           The sheet is not touched: the row was claimed before the reboot.
 #                           --item SLUG re-attaches the started item that session was working;
-#                           without it, the running or waiting item that lists ID (`agent-queue mine --sid`).
+#                           without it, the running, waiting or review item that lists ID, the newest when several do (`agent-queue mine --sid --newest`).
 #                           --window NAME opens it as a window of --session instead, which may
 #                           already hold others: a world session like hub:dotfiles.
 #                           It reopens in the mode its transcript last shows; with none, plan for
@@ -2348,10 +2348,8 @@ cmd_start() {
     # One writer per transcript: a second claude on a live conversation would also take its item.
     ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
     # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
-    if [ -z "$item" ]; then
-      item=$(agent-queue mine --sid "$resume" 2>&1)
-      case $? in 0) ;; 2) say "start: ${item#agent-queue: }; pass --item"; return 1 ;; *) item='' ;; esac
-    fi
+    # A conversation that worked several items resumes the one updated last (ar-2676).
+    [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" --newest 2>/dev/null) || item=''
   fi
   if [ -n "$item" ] && [ -z "$resume" ]; then
     [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
@@ -2633,14 +2631,15 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 
 # restore_world <lost record> <dry run 0|1> -- reopen each conversation as a window of the session
 # it was in, through start, with the running or waiting queue item that lists its Claude session
-# (`agent-queue mine --sid`), so the item records where it runs again. A claude conversation whose
-# item is running gets RESTORE_PROMPT as its first message and carries on; any other comes back at
-# an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
-# back the declared sessions and windows first; a plain shell is listed, not reopened. A prompted
-# reopen is a wake and is paced (wake_take): one past the batch is left for a later pass, listed in
-# RESTORE_OWED (restore_pace reads it). Consumed only
-# when every reopen worked and none is owed, so a rerun finishes, and only as read at the start,
-# under record's lock: a death world_lost adds to it meanwhile stays owed.
+# (`agent-queue mine --sid --newest`: when several do, a running one, then the one updated last),
+# so the item records where it runs again. A claude conversation whose item is running gets
+# RESTORE_PROMPT as its first message and carries on; any other comes back at an empty prompt (the
+# human's own conversation, or an item waiting on someone). The manifest brings back the declared
+# sessions and windows first; a plain shell is listed, not reopened. A prompted reopen is a wake and
+# is paced (wake_take): one past the batch is left for a later pass, listed in RESTORE_OWED
+# (restore_pace reads it). Consumed only when every reopen worked and none is owed, so a rerun
+# finishes, and only as read at the start, under record's lock: a death world_lost adds to it
+# meanwhile stays owed.
 restore_world() {
   local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked
   walked=$(sha256sum < "$f")
@@ -2651,7 +2650,7 @@ restore_world() {
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
     if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
-    item=$(agent-queue mine --sid "$id" 2>/dev/null) || item=''
+    item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
     prompt=''; said=''

@@ -303,3 +303,31 @@ EOF
   assert_output --partial "status API unreachable"
   assert_output --partial '"class": "unreachable"'
 }
+
+# --- the stale window ----------------------------------------------------------
+@test "a heartbeat 5 minutes old is stale by the shared 180 s default, fresh when the env raises it" {
+  FIVE="$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "$STATUSES" <<JSON
+[
+  {"name":"linux-cachyos","group":"homelab","results":[{"success":true,"timestamp":"$FIVE"}]}
+]
+JSON
+  STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_output --partial "linux-cachyos: STALE"
+  FLEET_STALE_AFTER=600 STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_output --partial "linux-cachyos: up"
+}
+
+@test "an empty FLEET_STALE_AFTER falls back to the default instead of marking every host stale" {
+  FLEET_STALE_AFTER= STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_output --partial "linux-cachyos: up"
+}
+
+@test "the stale window has one default, in fleet-pulse-roster.sh, not one per bar" {
+  run grep -nE 'STALE_AFTER[:=-]+[0-9]' "$MODULE" "$REPO_ROOT/.config/sketchybar/plugins/fleet.sh"
+  assert_failure
+  run grep -cE '^FLEET_STALE_AFTER_DEFAULT=[0-9]+ ' "$REPO_ROOT/.local/lib/fleet-pulse-roster.sh"
+  assert_output 1
+}
