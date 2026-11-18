@@ -117,7 +117,7 @@ function chromium(pw) {
 
 // The page and CSP exactly as the server fills them, never a dump left over from another checkout:
 // each run dumps into its own directory, so harness runs from two worktrees at once never read each
-// other's page. The target is the crate's own, as in CI (CARGO_TARGET_DIR there), never a copy under SCRATCH that nothing reaps.
+// other's page. The target is the crate's own, which CI also uses, so no copy under SCRATCH piles up unreaped.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "dump-"));
