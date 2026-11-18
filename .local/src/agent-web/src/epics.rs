@@ -12,7 +12,7 @@ use crate::cache::{off, ReadCache};
 
 const EPICS_SECS: u64 = 120;
 
-static LAST: ReadCache<Vec<Chain>, EPICS_SECS> = ReadCache::new();
+static LAST: ReadCache<Vec<Chain>, EPICS_SECS> = ReadCache::new("epics");
 
 /// Every project's chain. A failed read is handed back and not kept, so the next one tries again.
 pub async fn chains() -> Result<Arc<Vec<Chain>>, String> {

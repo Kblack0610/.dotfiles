@@ -31,7 +31,7 @@ use crate::cache::{off, ReadCache};
 /// A finished run's results never change; this only bounds how long a stale `Loaded` (a failed
 /// report fixed by a re-fetch) could be kept.
 const CACHE_SECS: u64 = 600;
-static LOADED: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new();
+static LOADED: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new("suites");
 
 /// The table view, under the section's own key prefix, and the run to show (a run id).
 #[derive(Deserialize, Default)]

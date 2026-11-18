@@ -61,7 +61,7 @@ pub struct Cache(EventCache<Gathered, READ_FOR_SECS, i64>);
 
 impl Cache {
     pub fn new(events: broadcast::Receiver<String>) -> Self {
-        Cache(EventCache::new(events, &KINDS))
+        Cache(EventCache::new(events, &KINDS, "actions"))
     }
 
     /// `span` seconds of actions.

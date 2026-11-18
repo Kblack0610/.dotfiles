@@ -35,8 +35,13 @@ struct Shown<'a> {
     table: Summary,
 }
 
-#[derive(Default)]
 pub struct Cache(ReadCache<Schedules, CACHE_SECS>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(ReadCache::new("schedules"))
+    }
+}
 
 fn render(s: &Schedules, q: &Query) -> String {
     let view = View::new::<Schedule>(&q.q, &q.s, &q.sort, &q.dir);

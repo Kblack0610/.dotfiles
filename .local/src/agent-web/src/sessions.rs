@@ -61,12 +61,21 @@ struct Shown<'a> {
     open_rows: usize,
 }
 
-#[derive(Default)]
 pub struct Cache {
     table: ReadCache<Read, CACHE_SECS>,
     /// The last page opened, by its id.
     page: ReadCache<Option<SessionPage>, CACHE_SECS, String>,
     capacity: ReadCache<Capacity, CAPACITY_SECS>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            table: ReadCache::new("session-table"),
+            page: ReadCache::new("session-page"),
+            capacity: ReadCache::new("session-capacity"),
+        }
+    }
 }
 
 fn render(r: &Read, q: &TableQuery) -> String {

@@ -14,7 +14,7 @@ use crate::Shared;
 
 /// release-state's read takes seconds and Home re-reads on every queue event, so the card keeps
 /// one for half a minute; the Releases tab reads its own fresh.
-static RELEASES: ReadCache<Releases, 30> = ReadCache::named("releases-card");
+static RELEASES: ReadCache<Releases, 30> = ReadCache::new("releases-card");
 
 /// A read as the grid takes it, through any pointer the cache keeps it behind.
 fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> cards::Got<'_, T> {
