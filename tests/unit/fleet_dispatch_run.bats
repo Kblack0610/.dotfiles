@@ -956,13 +956,21 @@ trainee_ready() {
   agent-queue add --project game --slug t2-row --priority urgent --tags tier2 "Fix the save title" >/dev/null
   agent-queue set t2-row row=game:gm-7 >/dev/null
   echo '{"project":"game","id":"gm-7","points":2,"size":"s"}' > "$NOTES_FIXTURE/board.rows"
-  TRAINEE_CONF='' TRAINEE_LANE="${TRAINEE_LANE/\"tiers\":\[1,2\],/}" run trainee_why "$(agent-queue show t2-row --json --points)" gotrain
+  no_tiers="${TRAINEE_LANE/\"tiers\":\[1,2\],/}"
+  [ "$no_tiers" != "$TRAINEE_LANE" ] || fail "fixture: the no-tiers lane still has its tiers"
+  TRAINEE_CONF='' TRAINEE_LANE="$no_tiers" run trainee_why "$(agent-queue show t2-row --json --points)" gotrain
   assert_failure; assert_output 'it is tier 2, and a trainee takes tier 1 only, and one tier-3 cleanup row in 2'
   # The 2 points live on the board row alone: show --points joins them, plain show does not.
   run trainee_why "$(agent-queue show t2-row --json)" gotrain
   assert_failure; assert_output 'it carries no #pts/N'
   run harness_tier_why gotrain "$(agent-queue show t2-row --json --points)"
   assert_success
+  # Out of a lane sandbox no run is stamped a trainee's, so max_tier holds the same row off.
+  sbx=$(jq -c '.harnesses.gotrain.sandbox' "$DISPATCH_HARNESSES")
+  harness_set 'del(.harnesses.gotrain.sandbox)'
+  run harness_tier_why gotrain "$(agent-queue show t2-row --json --points)"
+  assert_failure; assert_output --partial 'it takes tier 1 work at most'
+  harness_set --argjson s "$sbx" '.harnesses.gotrain.sandbox = $s'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t2-row on gotrain (glm), a trainee run'
   assert_equal "$(qfield "$(qitem running t2-row)" trainee)" gotrain:glm
@@ -980,8 +988,11 @@ trainee_ready() {
   agent-queue add --project game --slug t3-feat --priority low "feat(menu): add a save label #pts/1" >/dev/null
   run trainee_why "$(agent-queue show t3-feat --json)" gotrain
   assert_failure; assert_output 'it is tier 3, and a trainee takes tier 1, 2 only, and one tier-3 cleanup row in 2'
-  agent-queue add --project game --slug t3-fix-b --priority low "fix(menu): drop the dead save label #pts/1" >/dev/null
-  run trainee_why "$(agent-queue show t3-fix-b --json)" gotrain
+  # The share is the salted slug cksum (tier3_pick): these two fixture slugs fall on each side of it.
+  [ $(( $(cksum <<<"tier3:t3-fix-c" | cut -d' ' -f1) % 2 )) = 1 ] && [ $(( $(cksum <<<"tier3:t3-fix" | cut -d' ' -f1) % 2 )) = 0 ] ||
+    fail "fixture: t3-fix must hit the share of 2 and t3-fix-c miss it"
+  agent-queue add --project game --slug t3-fix-c --priority low "fix(menu): drop the dead save label #pts/1" >/dev/null
+  run trainee_why "$(agent-queue show t3-fix-c --json)" gotrain
   assert_failure; assert_output --partial 'it is tier 3'
   agent-queue add --project game --slug t3-fix --priority low "fix(menu): drop the dead load label #pts/1" >/dev/null
   run trainee_why "$(agent-queue show t3-fix --json)" gotrain
