@@ -797,7 +797,7 @@ forgejo_outcome() {
   rm "$FLEET_BENCH_DIR/pr-ci.jsonl" "$RBW_FIXTURE/forgejo_repo_admin" "$RBW_FIXTURE/calls.log"
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_failure
-  assert_output --partial 'no token (rbw forgejo_repo_admin)'
+  assert_output --partial 'no token: FORGEJO_TOKEN unset'
   run grep -c '^rbw get' "$RBW_FIXTURE/calls.log"
   assert_output 1
 }

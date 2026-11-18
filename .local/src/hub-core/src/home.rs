@@ -145,8 +145,8 @@ impl NeedKind {
         }
     }
 
-    /// A session row's, from its open dialog (`transcript::Question::kind`); a session with
-    /// no dialog, or only its last message, waits for its turn.
+    /// A session row's, from its open question (`agent_core::transcript::Question::kind`); a
+    /// session with none, or a closing message that asks, waits for its turn.
     fn of_dialog(dialog: &str) -> NeedKind {
         match dialog {
             "choice" => NeedKind::Ask,
