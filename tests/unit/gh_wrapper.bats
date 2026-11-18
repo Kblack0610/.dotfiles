@@ -32,6 +32,8 @@ SH
   chmod +x "$STUB/real-gh" "$STUB/gh-app" "$STUB/getent"
   export PATH="$STUB:$PATH" GH_REAL="$STUB/real-gh" GH_CALLS_DIR="$BATS_TEST_TMPDIR/calls" BATS_TEST_TMPDIR
   unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_WRAPPED AGENT_QUEUE_ITEM
+  # The reserve programs the tests name, so a suite run under a real one (a night lane) still sees its waits.
+  export GH_RESERVE_CALLERS="gate-line.py ci-gate.sh agent-land"
   cd "$BATS_TEST_TMPDIR"
 }
 
@@ -270,17 +272,17 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_equal "$(gh_calls)" 1
 }
 
-@test "budget: a reserve program anywhere above the read counts, through timeout and bash -c" {
+@test "budget: a reserve program anywhere above the read counts, through timeout, bash -c and bash -o" {
   echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
   printf '#!/usr/bin/env bash\ntimeout 10 bash -c '\''"$0" run view 5 -R other/x --json status; :'\'' "%s"\n' "$WRAP" \
     > "$BATS_TEST_TMPDIR/ci-gate.sh"
-  run bash "$BATS_TEST_TMPDIR/ci-gate.sh" </dev/null
+  run bash -o pipefail "$BATS_TEST_TMPDIR/ci-gate.sh" </dev/null
   assert_success
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user
   # NEGATIVE CONTROL: the same chain under a script no list names waits
   cp "$BATS_TEST_TMPDIR/ci-gate.sh" "$BATS_TEST_TMPDIR/ci-cost.sh"
-  run bash "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
+  run bash -o pipefail "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
 }
@@ -293,6 +295,10 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_equal "$(bucket)" user
   # NEGATIVE CONTROL: the same command with no terminal waits
   run -75 "$WRAP" run view 5 -R other/x --json status </dev/null
+  assert_equal "$(bucket)" user:deferred
+  # and so does a loop in a pane, which has the terminal on stdin but reads gh through a pipe
+  script -qec "$WRAP run view 5 -R other/x --json status | cat" /dev/null
+  assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
 }
 

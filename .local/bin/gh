@@ -114,14 +114,17 @@ route_owner() {
 # prog_of <pid> -> that process's program, or for an interpreter the script it runs. A `zsh -c '<cmd>'`
 # (an agent's own Bash call) stays zsh: its payload is a command line, not a script.
 prog_of() {
-  local a name=""
+  local a name="" skip=""
   if [ -r "/proc/$1/cmdline" ]; then
     while IFS= read -r -d '' a; do
-      if [ -z "$name" ]; then
+      if [ -n "$skip" ]; then
+        skip=""
+      elif [ -z "$name" ]; then
         name="${a##*/}"
         [[ "$name" =~ ^(ba|z|da|k)?sh$|^python[0-9.]*$|^perl$|^node$|^env$ ]] || break
       else
-        case "$a" in -*) ;; *' '*) break ;; *) name="${a##*/}"; break ;; esac
+        # bash -o pipefail x.sh, env VAR=1 x: the option's value and an assignment are not the program
+        case "$a" in [-+][oOW]) skip=1 ;; -*|[A-Za-z_]*=*) ;; *' '*) break ;; *) name="${a##*/}"; break ;; esac
       fi
     done < "/proc/$1/cmdline"
   else
@@ -229,13 +232,14 @@ budget_left() {
 }
 
 # defer_read <gh args>: succeed (and say why on stderr) when this read must wait: the shared budget is
-# under the reserve with its reset still ahead, no human is at a terminal (stdin), and no program
-# above it is in GH_RESERVE_CALLERS. The process walk runs only under the reserve.
+# under the reserve with its reset still ahead, no human is at a terminal (stdin and stdout; a
+# dashboard in a pane reads gh through a pipe, so it waits), and no program above it is in
+# GH_RESERVE_CALLERS. The process walk runs only under the reserve.
 defer_read() {
   local who a rem reset now="${EPOCHSECONDS:-$(date +%s)}"
   is_read "$@" || return 1
   for a in "$@"; do [ "$a" != rate_limit ] || return 1; done # the free probe that shows the reset
-  [ ! -t 0 ] || return 1 # the human at a terminal never waits, so never pays for the reading either
+  if [ -t 0 ] && [ -t 1 ]; then return 1; fi # the human never waits, so never pays for the reading either
   read -r rem reset <<<"$(budget_left)"
   [[ "$rem" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 1
   [ "$rem" -lt "$GH_BUDGET_RESERVE" ] && [ "$reset" -gt "$now" ] || return 1
