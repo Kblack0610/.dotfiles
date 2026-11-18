@@ -13,12 +13,15 @@
 #                                   mac-desktop); --class says why it needs it (`classes`)
 #   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
 #                                   claimed resource next (agent-queue desk:<class>)
-#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
+#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays: name a
+#                                   session by its Claude session id or fleet-sessions target
+#                                   (hub/dotfiles:3, or dotfiles:3); a bare tmux session name
+#                                   matches only a session with one window
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
 #   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
-#                                   when the caller's session has been granted
+#                                   when the caller is granted or holds the claim
 #   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
@@ -92,12 +95,47 @@ need_resource() {
   valid_resource "${1:-}" || { echo "agent-hold: bad resource name '${1:-}' (letters, digits, . _ -)" >&2; exit 2; }
 }
 
-# Who is holding: the tmux session when there is one (that is the name ListAgents and the
-# panel show), else the working directory's basename.
+# tmux_names -> the caller's tmux window as fleet-sessions names it, one name per line: the
+# target <server>/<session>:<window>, then <session>:<window>, then the bare session only when
+# it has one window. A world session (hub:dotfiles) has many, so its bare name is none of them:
+# a grant to `dotfiles` let every window through (ar-2836). Asked of $TMUX_PANE: with no -t,
+# tmux answers for the window the client is looking at, not the caller's. Nothing outside a pane.
+tmux_names() {
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  local s w n
+  IFS=$'\t' read -r s w n < <(tmux display-message -p -t "$TMUX_PANE" \
+    $'#{session_name}\t#{window_index}\t#{session_windows}' 2>/dev/null)
+  [ -n "${s:-}" ] && [ -n "${w:-}" ] || return 0
+  printf '%s/%s:%s\n%s:%s\n' "$(basename "${TMUX%%,*}")" "$s" "$w" "$s" "$w"
+  [ "${n:-}" != 1 ] || printf '%s\n' "$s"
+}
+
+# callers -> every name the caller answers to, one per line, for `check` and a claim's owner:
+# its Claude session id (what fleet-sessions rows and NIGHTLY owners carry), its tmux names,
+# else the working directory's basename.
+callers() {
+  local t
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || printf '%s\n' "$CLAUDE_CODE_SESSION_ID"
+  t="$(tmux_names)"
+  if [ -n "$t" ]; then printf '%s\n' "$t"; elif [ -n "${PWD##*/}" ]; then printf '%s\n' "${PWD##*/}"; fi
+}
+
+# Who is holding, as set and claim record it: the fleet-sessions target in a tmux pane, else
+# the Claude session id, else the working directory's basename.
 default_by() {
-  local s=""
-  [ -n "${TMUX:-}" ] && s="$(tmux display-message -p '#S' 2>/dev/null)"
-  printf '%s' "${s:-${PWD##*/}}"
+  local t
+  t="$(tmux_names | head -n 1)"
+  printf '%s' "${t:-${CLAUDE_CODE_SESSION_ID:-${PWD##*/}}}"
+}
+
+# is_caller <name>: true when the caller answers to that name.
+is_caller() { [ -n "$1" ] && callers | grep -qxF -- "$1"; }
+
+# owns_claim <file>: the caller holds this claim, by any of its names or by the Claude session
+# id the claim recorded.
+owns_claim() {
+  local sid; sid="$(field "$1" sid)"
+  is_caller "$(field "$1" by)" || { [ -n "$sid" ] && [ "$sid" = "${CLAUDE_CODE_SESSION_ID:-}" ]; }
 }
 
 notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
@@ -176,16 +214,24 @@ cmd_claim() {
   done
   [ -n "$reason" ] || { echo "agent-hold claim: say what you are doing with it" >&2; exit 2; }
   [ -z "$class" ] || [ -n "$(class_rank "$class")" ] || { echo "agent-hold claim: unknown class '$class' (agent-hold classes)" >&2; exit 2; }
-  [ -n "$by" ] || by="$(default_by)"
-  by="$(oneline "$by")"
+  # A claim taken as this session also records its Claude session id: renumber-windows moves a
+  # window's index, and so its target, while the claim is held, and the id keeps it the owner.
+  # One made for a name given by --by is that name's alone.
+  local f="$HOLD_ROOT/$resource" body own="" sid=""
+  if [ -n "$by" ]; then
+    by="$(oneline "$by")"
+    [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ] && own=1
+  else
+    by="$(oneline "$(default_by)")" sid="$(oneline "${CLAUDE_CODE_SESSION_ID:-}")"
+    [ -f "$f" ] && owns_claim "$f" && own=1
+  fi
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
-  local f="$HOLD_ROOT/$resource" body
   # A refresh with no --class keeps the class the claim had.
-  if [ -z "$class" ] && [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then class="$(field "$f" class)"; fi
+  if [ -z "$class" ] && [ -n "$own" ]; then class="$(field "$f" class)"; fi
   class="${class:-other}"
-  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
-    "$resource" "$class" "$(now_iso)" "$by" "$(oneline "$reason")")"
-  if [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then
+  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\n%broster: \ngranted: \nreason: %s\n' \
+    "$resource" "$class" "$(now_iso)" "$by" "${sid:+sid: $sid\n}" "$(oneline "$reason")")"
+  if [ -n "$own" ]; then
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
@@ -201,10 +247,6 @@ cmd_claim() {
   echo "busy: $resource since $(field "$f" since) by $(field "$f" by)${held:+ ($held)}: $(field "$f" reason)$outrank" >&2
   return 1
 }
-
-# Who is asking, for `check`: the same name `set` records as `by`, which is also the name
-# the shepherd and fleet-sessions use for a session.
-caller() { default_by; }
 
 # in_list <name> <a,b,c>
 in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
@@ -328,16 +370,15 @@ cmd_check() {
   need_resource "$resource"
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || return 0
-  local me
-  me="$(caller)"
-  if [ -n "$me" ] && [ "$(field "$f" kind)" = claim ] && [ "$(field "$f" by)" = "$me" ]; then
-    echo "claimed: $resource by $me" >&2
+  if [ "$(field "$f" kind)" = claim ] && owns_claim "$f"; then
+    echo "claimed: $resource by $(field "$f" by)" >&2
     return 0
   fi
-  if [ -n "$me" ] && in_list "$me" "$(field "$f" granted)"; then
-    echo "granted: $resource for $me" >&2
-    return 0
-  fi
+  local name names
+  IFS=, read -ra names <<<"$(field "$f" granted)"
+  for name in "${names[@]}"; do
+    is_caller "$name" && { echo "granted: $resource for $name" >&2; return 0; }
+  done
   echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
   return 1
 }
@@ -368,7 +409,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in

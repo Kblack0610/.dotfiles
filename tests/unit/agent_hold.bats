@@ -123,7 +123,7 @@ setup() {
   [ ! -e "$HOME/.agent/escape" ]
 }
 
-# A grant is GO as state. Caller identity is default_by: the tmux session, here (no TMUX in
+# A grant is GO as state. Caller identity is callers: the Claude session id, the tmux window, here (no TMUX in
 # the sandbox) the working directory's basename.
 as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 
@@ -172,6 +172,82 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   assert_failure 1
 }
 
+
+# A tmux pane, faked: the stub answers display-message only when asked of $STUB_PANE, so a
+# caller that asks without -t "$TMUX_PANE" gets no name.
+in_pane() { # <session> <window index> <windows in the session>
+  export TMUX="$SANDBOX/tmp/hub,1,0" TMUX_PANE=%5 STUB_PANE=%5 STUB_S="$1" STUB_W="$2" STUB_N="$3"
+}
+tmux_stub() {
+  cat > "$SANDBOX/bin/tmux" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2 $3" = "display-message -p -t" ] && [ "$4" = "$STUB_PANE" ] || exit 1
+printf '%s\t%s\t%s\n' "$STUB_S" "$STUB_W" "$STUB_N"
+STUB
+  chmod +x "$SANDBOX/bin/tmux"
+}
+
+@test "a grant names one window of a many-window session; its bare name matches none of them (ar-2836)" {
+  tmux_stub
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity hub/dotfiles:3 dotfiles:2
+  in_pane dotfiles 3 4
+  run "$HOLD" check unity
+  assert_success
+  assert_output 'granted: unity for hub/dotfiles:3'
+  in_pane dotfiles 2 4
+  run "$HOLD" check unity
+  assert_success
+  in_pane dotfiles 1 4
+  run "$HOLD" check unity
+  assert_failure 1
+  # the session's bare name used to let every window through
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity dotfiles
+  in_pane dotfiles 3 4
+  run "$HOLD" check unity
+  assert_failure 1
+  # a one-window session still answers to its bare name
+  "$HOLD" grant unity agent-1
+  in_pane agent-1 1 1
+  run "$HOLD" check unity
+  assert_success
+}
+
+@test "a grant to a Claude session id lets that session through, wherever it runs" {
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity 0d1e-aaaa
+  as_session somewhere
+  run env CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" check unity
+  assert_success
+  run env CLAUDE_CODE_SESSION_ID=0d1e-bbbb "$HOLD" check unity
+  assert_failure 1
+}
+
+@test "a claim made in a pane records its target and session id; the window keeps it after a renumber" {
+  tmux_stub
+  in_pane dotfiles 3 4
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "store form"
+  grep -qx 'by: hub/dotfiles:3' "$AGENT_HOLD_DIR/mac-desktop"
+  grep -qx 'sid: s-x' "$AGENT_HOLD_DIR/mac-desktop"
+  # another window of the same session is another caller
+  in_pane dotfiles 2 4
+  run env CLAUDE_CODE_SESSION_ID=s-y "$HOLD" check mac-desktop
+  assert_failure 1
+  run env CLAUDE_CODE_SESSION_ID=s-y "$HOLD" claim mac-desktop "screenshots"
+  assert_failure 1
+  # window 1 closed: the holder is now window 2, and its session id says it is still the holder
+  run env CLAUDE_CODE_SESSION_ID=s-x "$HOLD" check mac-desktop
+  assert_success
+  run env CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "store form, page 2"
+  assert_output 'claimed: mac-desktop (refreshed)'
+  grep -qx 'by: hub/dotfiles:2' "$AGENT_HOLD_DIR/mac-desktop"
+  # a claim for a name given by --by is that name's, so it records no session id
+  "$HOLD" release mac-desktop
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop --by agent-6 "for agent-6"
+  run grep -c '^sid:' "$AGENT_HOLD_DIR/mac-desktop"
+  assert_output 0
+}
 @test "claim: a second session is refused, the holder's check passes, release frees it" {
   run "$HOLD" claim mac-desktop --by agent-6 "store-console sign-in"
   assert_success

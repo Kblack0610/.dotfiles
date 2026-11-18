@@ -61,7 +61,7 @@ Reply once with what you stopped; no other reply needed.
 
 - Narrow the list first. `ListAgents`, then keep only the sessions touching the affected repo or resource. Never message every session.
 - Set the hold before you send anything, so the state exists even for sessions you missed.
-- The session the human is talking to coordinates: it sets the hold, sends the messages, keeps a roster of who acked, and later sends GO to the same roster, as `agent-hold grant <resource> <sessions>` while the hold stays or `agent-hold release` at the end (it prints the roster back).
+- The session the human is talking to coordinates: it sets the hold, sends the messages, keeps a roster of who acked, and later sends GO to the same roster, as `agent-hold grant <resource> <sessions>` while the hold stays (name each by its Claude session id or fleet-sessions target, `hub/dotfiles:3`: a bare tmux session name matches only a one-window session, so it never stands for one window of a world session like hub:dotfiles) or `agent-hold release` at the end (it prints the roster back).
 - A `ListAgents` row that is a plain shell (no Claude) cannot receive. Stop that work at the resource gate (the hold) or at the process. `fleet-assess` shows which consumers are which.
 
 ## When a message arrives

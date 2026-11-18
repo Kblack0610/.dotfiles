@@ -711,6 +711,11 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure
   run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
   assert_failure
+  # The asker's own claim is not the item's: the queue asks as no session, Claude session id too.
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  CLAUDE_CODE_SESSION_ID=s-1 "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop "steam forms" >/dev/null
+  run env CLAUDE_CODE_SESSION_ID=s-1 AGENT_QUEUE_NOW=02:00 "$AQ" next --json
+  assert_failure
   "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
   run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
