@@ -356,7 +356,10 @@ mod tests {
     #[test]
     fn the_content_key_ignores_the_read_time_and_moves_with_what_is_drawn() {
         let a = document(&[card()], &[], 0, None);
-        assert_eq!(a.content_key(), document(&[card()], &[], 99, None).content_key());
+        assert_eq!(
+            a.content_key(),
+            document(&[card()], &[], 99, None).content_key()
+        );
         let mut c = card();
         c.big = "4".into();
         assert_ne!(a.content_key(), document(&[c], &[], 0, None).content_key());
