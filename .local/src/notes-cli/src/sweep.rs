@@ -31,9 +31,11 @@ fn lane_of(line: &str) -> usize {
 pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
-/// puts it and an authored heading elsewhere survives as content.
+/// puts it and an authored heading elsewhere survives as content. It sits at column 0, like
+/// markdown.lua's `is_scaffold`: an indented `---` or `### Low` is a row's note, so only the
+/// end is trimmed.
 fn is_scaffold(line: &str, layout: Layout) -> bool {
-    let t = line.trim();
+    let t = line.trim_end();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
         || md::PRIORITIES
@@ -69,7 +71,7 @@ pub(crate) fn mark_break(gap: &mut Option<&'static str>, b: &'static str) {
 
 /// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
 fn scaffold_lane(line: &str) -> Option<usize> {
-    let t = line.trim();
+    let t = line.trim_end();
     md::PRIORITIES
         .iter()
         .position(|(_, _, h)| t.eq_ignore_ascii_case(h))
