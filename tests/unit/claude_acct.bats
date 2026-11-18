@@ -2411,15 +2411,6 @@ STUB
   [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnew ]]
 }
 
-@test "setup-token: another account's token under this name is refused and nothing is stored" {
-  setup_stubs
-  vault_put claude-oauth-main "$TOK_MAIN"
-  run "$ACCT" setup-token alt <<< "$TOK_MAIN"
-  assert_failure
-  assert_output --partial "that is main's token"
-  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
-}
-
 @test "setup-token: an API key in the environment stops it before any call" {
   setup_stubs
   ANTHROPIC_API_KEY=sk-ant-api03-x run "$ACCT" setup-token alt <<< "$TOK_ALT"
@@ -2444,4 +2435,34 @@ STUB
   run "$ACCT" setup-token
   assert_failure
   assert_output --partial 'rbw is locked'
+}
+
+@test "resume_cmd: the token prefix follows launch_env, so its env -u does not drop the token" {
+  src
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  launch_env() { printf "env -u CLAUDE_CODE_OAUTH_TOKEN "; }
+  run resume_cmd 1 /w "$ALT" 'claude --resume s1' hi fix-menu
+  # the assignment comes after the launch env's `env -u ... -u CLAUDE_CODE_OAUTH_TOKEN`, never before it
+  [[ "$output" =~ -u\ CLAUDE_CODE_OAUTH_TOKEN.*\ CLAUDE_CODE_OAUTH_TOKEN=\"\$\(claude-acct\ token ]] || fail "order: $output"
+  [[ "$output" != *"$TOK_ALT"* ]]
+}
+
+@test "usage read: an expired login stays 'token expired' when the setup token is refused too" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  creds "$HOME/.claude" 1000
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
+  run "$ACCT" status --json
+  assert_success
+  [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == expired ]]
+}
+
+@test "setup-token: a call that exits 0 without answering is not a verified token" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) echo "login required" ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
 }

@@ -192,7 +192,9 @@ fetch() {
     fi
     # No usable login: the account's setup token, if the endpoint takes one (it may not: a setup
     # token carries only the inference scope, and a refusal reads as unread, as it always did).
-    [[ -n "$token" ]] || token=$(acct_token "$name" 2>/dev/null) || true
+    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed".
+    local via_setup=0
+    if [[ -z "$token" ]]; then token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1; fi
     [[ -n "$token" ]] || return "$rc"
 
     local ver tmp
@@ -209,6 +211,7 @@ fetch() {
         return 0
     fi
     rm -f "$tmp"
+    (( via_setup )) && return "$rc"
     return 1
 }
 
@@ -477,7 +480,7 @@ cmd_pick() {
 
 # --- long-lived tokens ------------------------------------------------------------------
 # `claude setup-token` mints a token that lasts about a year; rbw holds one per account, and the
-# one reader is acct_token. No copy lands on disk and none is ever put on a command line: a pane's
+# one reader is acct_token. No lasting copy lands on disk (setup-token holds one in a 0700 temp dir for the length of its run) and none is ever put on a command line: a pane's
 # launch line carries `$(claude-acct token ...)`, which its shell runs at the moment of launch.
 
 # acct_name <name|dir> -> the account's name ('' when it is none); empty arg and "-" are main
@@ -560,7 +563,7 @@ check_tokens() {
 
 # setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or
 # already held, 1 failed (the reason printed). The token lives in a shell variable and in the 0600
-# files of one mktemp -d, removed on return; it is never an argument and never printed here.
+# files of one mktemp -d, removed on return or by the trap if the run is interrupted; it is never an argument and never printed here.
 setup_one() {
     local name="$1" dir="$2" renew="$3" email tok='' tmp pty ent ed other code exp note
     email=$(email_of "$dir")
@@ -569,6 +572,7 @@ setup_one() {
         echo "   $name already has a token (rbw $TOKEN_ENTRY$name); --renew replaces it"; return 0
     fi
     tmp=$(mktemp -d) || return 1
+    SETUP_TMP="$tmp"   # removed by cmd_setup_token's trap if the run is interrupted
     chmod 700 "$tmp"
     pty="$tmp/pty.log"
     echo "   claude setup-token opens a browser: sign in as ${email:-that account}, approve, and the token prints."
@@ -587,21 +591,13 @@ setup_one() {
     if [[ "$tok" != sk-ant-oat* ]]; then
         echo "   $name: no token (it starts sk-ant-oat); nothing stored" >&2; rm -rf "$tmp"; return 1
     fi
-    # One account's token stored under another's name would bill the wrong week, silently.
-    while IFS=$'\037' read -r other _; do
-        [[ "$other" == "$name" ]] && continue
-        if [[ "$(acct_token "$other" 2>/dev/null)" == "$tok" ]]; then
-            echo "   $name: that is $other's token: sign in as ${email:-$name}, not as $other" >&2
-            rm -rf "$tmp"; return 1
-        fi
-    done < <(accounts)
     # Verify: one tiny call that must bill the subscription, so no API key may be in play.
     if [[ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
         echo "   $name: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set, so the call would not bill the subscription; unset it and re-run" >&2
         rm -rf "$tmp"; return 1
     fi
     if ! env -u ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR="$tmp/cfg" CLAUDE_CODE_OAUTH_TOKEN="$tok" \
-            claude -p 'Reply with the word ok' --model haiku --max-turns 1 >"$tmp/probe.out" 2>&1 || [[ ! -s "$tmp/probe.out" ]]; then
+            claude -p 'Reply with the word ok' --model haiku --max-turns 1 >"$tmp/probe.out" 2>&1 || ! grep -qiw ok "$tmp/probe.out"; then
         echo "   $name: the token did not run a call; nothing stored" >&2; rm -rf "$tmp"; return 1
     fi
     echo "   verified: one haiku call ran on the token"
@@ -639,6 +635,9 @@ cmd_setup_token() {
         esac
         shift
     done
+    # The pty transcript and the entry file hold the token while a run lasts; an interrupt removes them.
+    trap 'rm -rf "${SETUP_TMP:-}"; exit 130' INT TERM
+    trap 'rm -rf "${SETUP_TMP:-}"' EXIT
     command -v rbw >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is not installed" >&2; return 1; }
     rbw unlocked >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is locked; run rbw unlock first" >&2; return 1; }
     command -v claude >/dev/null 2>&1 || { echo "claude-acct setup-token: claude is not on PATH" >&2; return 1; }
@@ -1713,11 +1712,12 @@ launch_env() {
 # typed into the pane's shell (after a cd) when not
 resume_cmd() {
     local c
-    c="$4 $(printf %q "$5")"
+    # The token goes straight before claude, so launch_env's `env -u CLAUDE_CODE_OAUTH_TOKEN` (which
+    # drops an inherited one) comes first and does not drop this one.
+    c="$(cmd_token_prefix "$3")$4 $(printf %q "$5")"
     [[ "$1" == 1 ]] && c="$(launch_env "$2" "${6:-}")$c"
     if [[ -n "$3" ]]; then c="CLAUDE_CONFIG_DIR=$(printf %q "$3") $c"
     else c="env -u CLAUDE_CONFIG_DIR $c"; fi
-    c="$(cmd_token_prefix "$3")$c"
     [[ "$1" == 1 ]] || c="cd $(printf %q "$2") && $c"
     printf '%s' "$c"
 }

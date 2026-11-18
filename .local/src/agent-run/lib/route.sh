@@ -230,6 +230,7 @@ route_account() {
   if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
   # The account's long-lived token (claude-acct setup-token), when it has one: the scrub took any
   # inherited token, so the only one a run carries is the one for the account it chose.
+  unset CLAUDE_CODE_OAUTH_TOKEN
   if command -v "$cmd" >/dev/null 2>&1; then
     tok="$("$cmd" token "${dir:--}" 2>/dev/null)" || tok=''
     if [ "${tok:0:10}" = sk-ant-oat ]; then export CLAUDE_CODE_OAUTH_TOKEN="$tok"; fi

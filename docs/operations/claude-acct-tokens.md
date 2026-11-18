@@ -8,14 +8,14 @@ Each Claude account in `~/.config/claude-acct/accounts` can hold one long-lived 
 2. `claude-acct setup-token` walks every account in the file; `claude-acct setup-token alt` does one. For each it prints the email to sign in as.
 3. `claude setup-token` runs on a scratch config dir (your logins are not touched), opens the browser, and prints the token. The script reads it off the screen; if it cannot, it asks you to paste it (hidden).
 4. It then runs one `haiku` call on the token (billed to the subscription), probes the usage endpoint with it, and stores it in rbw as `claude-oauth-<account>`: the token is the password, the notes carry `email`, `minted`, `expires` and `usage_endpoint`.
-5. An account that already has a token is skipped; `--renew` replaces it. A token that is another account's, or that runs no call, is refused and nothing is stored.
+5. An account that already has a token is skipped; `--renew` replaces it. A token that does not answer the verify call is refused and nothing is stored. The tool cannot tell which email the browser was signed in as, so read the email it prints before you approve.
 
 ## How a session gets its token
 
 - `claude-acct run` / `cl` / the picker: exports the chosen account's token and unsets any inherited one (a parent session's token belongs to another account).
 - `fleet-dispatch start` and `claude-acct move/unpark`: the launch line carries `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)"`, which the pane's shell runs at launch. The token is never typed into a pane, an argument list or a file. The launch env (`claude_launch_env`) drops any inherited token first.
 - `agentctl-run` (timer runners): `route_account` sets the chosen account's token after the scrub.
-- An account with no entry, or a locked rbw (one stderr line), starts on its `/login` credentials exactly as before. rbw stays unlocked 24h after `rbw unlock` (`lock_timeout`), so an unattended start needs a recent unlock.
+- An account with no entry, or a locked rbw (one stderr line; every start prints it while rbw is locked), starts on its `/login` credentials exactly as before. rbw stays unlocked 24h after `rbw unlock` (`lock_timeout`), so an unattended start needs a recent unlock.
 - A cloud session (`claude-cloud-run`) gets no token: it needs the full login.
 
 ## Usage reads
@@ -36,7 +36,6 @@ A session on another machine gets the same token from the same rbw entry, with n
 |---|---|
 | `setup-token: rbw is locked` | `rbw unlock`, re-run. |
 | `ANTHROPIC_API_KEY ... would not bill the subscription` | Unset both variables in that shell and re-run; the verify call must spend the plan. |
-| `that is <other>'s token` | The browser was signed in as the wrong account. Sign out, sign in as the email printed, run `setup-token --renew <name>`. |
 | `token not read from the screen; paste it` | The screen capture found no `sk-ant-oat` text. Paste the token claude printed. |
 | `the token did not run a call; nothing stored` | The token was cut off or the account has no plan. Re-run, signed in to an account with a plan. |
 | `rbw is locked, so <acct> starts on its login credentials` | The unattended start found rbw locked. `rbw unlock`; running sessions are not affected. |
