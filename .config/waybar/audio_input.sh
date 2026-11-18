@@ -8,7 +8,9 @@
 #   audio_input.sh next|prev   step through the list (click, right-click)
 #
 # watch reads `pactl subscribe`: a server event is a default change, a source event a mute or
-# volume change, a client event REAPER opening or closing (a rig_ input is silent without it).
+# volume change. REAPER opening or closing (a rig_ input is silent without it) is its out1 port
+# coming or going in `pw-link -m -o`. Never a client event: each render runs pactl, itself a
+# client, so rendering on one renders again forever.
 # AUDIO_INPUTS moves the list, for the tests.
 set -u
 here="$(dirname "$(readlink -f "$0")")"
@@ -106,8 +108,8 @@ watch() {
   show() { line="$(render)"; [[ $line == "$last" ]] || { printf '%s\n' "$line"; last=$line; }; }
   show
   while read -r event; do
-    case $event in *" on server"* | *" on source "* | *" on client "*) show ;; esac
-  done < <(pactl subscribe)
+    case $event in *" on server"* | *" on source "* | [+-]REAPER:out1) show ;; esac
+  done < <(pactl subscribe & pw-link -m -o & wait)
 }
 
 case "${1:-}" in
