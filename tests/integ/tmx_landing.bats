@@ -117,16 +117,30 @@ in_landing() {
   [ -n "$esc" ] && [ -n "$edit" ] && [ "$esc" -lt "$edit" ]
 }
 
-@test "the pane leaves copy or view mode before any key is typed into it" {
-  # A failed run-shell left the hub pane in view mode, where `:` is goto-line: send-keys
-  # opened that prompt and blocked on it, and `tmx root hub` froze.
+# left_mode_first: the subject left any tmux mode before it typed its first key. A failed
+# run-shell left the hub pane in view mode, where `:` is goto-line: send-keys opened that
+# prompt and blocked on it, and `tmx root hub` froze.
+left_mode_first() {
+  local log quit keys
+  log=$(grep -E 'copy-mode|send-keys' "$NOTES_FIXTURE/calls.log")
+  quit=$(grep -n 'copy-mode -q' <<<"$log" | head -1 | cut -d: -f1)
+  keys=$(grep -n 'send-keys' <<<"$log" | head -1 | cut -d: -f1)
+  [ -n "$quit" ] && [ -n "$keys" ] && [ "$quit" -lt "$keys" ]
+}
+
+@test "the editor pane leaves copy or view mode before any key is typed into it" {
   in_landing lab lab
   STUB_PANE_CMD=nvim run "$TMX" land lab root
   assert_success
-  run bash -c "grep -nE 'copy-mode|send-keys' '$NOTES_FIXTURE/calls.log'"
-  quit=$(printf '%s\n' "$output" | grep -n 'copy-mode -q' | head -1 | cut -d: -f1)
-  keys=$(printf '%s\n' "$output" | grep -n 'send-keys' | head -1 | cut -d: -f1)
-  [ -n "$quit" ] && [ -n "$keys" ] && [ "$quit" -lt "$keys" ]
+  left_mode_first
+}
+
+@test "a pane stuck in a tmux mode gets nothing typed into it" {
+  in_landing lab lab
+  STUB_PANE_CMD=nvim STUB_PANE_IN_MODE=1 run "$TMX" land lab root
+  assert_output --partial 'stuck in a tmux mode'
+  run calls
+  refute_output --partial 'send-keys'
 }
 
 # --- the shell case, unchanged ---
@@ -139,6 +153,7 @@ in_landing() {
   assert_output --partial "nvim \"$LAB_PAGE\""
   # The shell branch RUNS the command; it must not also try to drive an editor.
   refute_output --partial ":e "
+  left_mode_first
 }
 
 # --- what it must NOT do ---
@@ -257,6 +272,7 @@ boards_declared() {
   run calls
   assert_output --partial "nvim +1 $(printf '%q' "$LAB_PAGE")"
   refute_output --partial ':e '
+  left_mode_first
 }
 
 @test "open leaves a pane running something else alone, and says so" {

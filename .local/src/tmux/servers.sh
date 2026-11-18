@@ -45,6 +45,8 @@ set -uo pipefail
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
+# shellcheck source=../../lib/tmux-pane.sh
+. "${SELF%/*}/../../lib/tmux-pane.sh" || exit 1
 
 # The servers we always offer, even when not yet running. DISCOVERED from
 # $MANIFEST_DIR/*.conf rather than hardcoded, so dropping in a manifest creates a
@@ -293,17 +295,16 @@ _refresh_landing() {
 # quotes. A vault path with a space in it is ordinary.
 _vim_edit() {
   local srv="$1" t="$2" file="$3" line="${4:-}"
-  _type "$srv" "$t" Escape
-  _type "$srv" "$t" ":e ${line:++$line }${file// /\\ }" Enter
+  _type "$srv" "$t" Escape || return 1
+  tmux -L "$srv" send-keys -t "$t" ":e ${line:++$line }${file// /\\ }" Enter
 }
 
-# _type <server> <target> <key>... -- send-keys into a pane that already exists, taken out
-# of any tmux mode first. A failed run-shell leaves its error in view mode on the active
-# pane, and a pane in copy or view mode reads keys as mode commands: `:` opens a goto-line
-# prompt and send-keys blocks until someone answers it, which froze `tmx root`.
+# _type <server> <target> <key>... -- send-keys into a pane that already exists, out of any
+# tmux mode first (leave_mode says why); a pane that will not leave one gets nothing typed.
+# A pane ensure has only just made is in no mode, so its startup send-keys skips this.
 _type() {
   local srv="$1" t="$2"; shift 2
-  tmux -L "$srv" copy-mode -q -t "$t" 2>/dev/null
+  leave_mode "$srv" "$t" || { echo "tmx: $t is stuck in a tmux mode; typed nothing" >&2; return 1; }
   tmux -L "$srv" send-keys -t "$t" "$@"
 }
 
