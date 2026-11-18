@@ -541,7 +541,7 @@ if [ -n "$BY_DEPT" ]; then
     grep -q $'\t'"$id"'$' <<<"$res" || continue
     printf '%s\n' "$(awk -F'\t' -v d="$id" -v t="$title" '$5 == d { n++; if ($2 == "PASS") m++ } END { printf "%s: %d/%d met", t, m, n }' <<<"$res")"
     while IFS=$'\t' read -r stage r req check d; do
-      [ "$d" = "$id" ] && printf '  %s' "$(line "$r" "$stage" "$req" "$check")" && echo
+      [ "$d" != "$id" ] || printf '  %s\n' "$(line "$r" "$stage" "$req" "$check")"
     done <<<"$res"
   done < <(rows "$STAGES_DOC" Departments)
 fi
