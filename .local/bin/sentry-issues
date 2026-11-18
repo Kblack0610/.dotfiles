@@ -22,6 +22,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 
 # Timeout guard on every external call, in seconds.
 PROBE_TIMEOUT="${SENTRY_ISSUES_TIMEOUT:-15}"
@@ -44,7 +46,12 @@ UNRESOLVED_PERIOD=90d
 PAGE=100
 PAGES=30
 
-die() { echo "sentry-issues: $*" >&2; exit 2; }
+# A die in a $( ) subshell leaves the outcome to its caller's die, so a pass declares once.
+die() {
+  echo "sentry-issues: $*" >&2
+  [ "$BASHPID" != "$$" ] || proof_runner_outcome FAILED "$*"
+  exit 2
+}
 usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 for t in jq curl; do
@@ -177,6 +184,18 @@ prom_lines() {
 }
 
 if [ "$MODE" = publish ]; then
-  prom_textfile sentry_issues.prom prom_lines "$doc" || echo "sentry-issues: could not write sentry_issues.prom" >&2
+  # The runner's outcome: under agentctl a pass that declares none reads STALLED. An unread slug is
+  # in the file (sentry_issues_up 0), so one bad slug is not a failed pass; a pass that published
+  # nothing or read no slug at all is.
+  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc")
+  why=""
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile sentry_issues.prom prom_lines "$doc"; then
+    why="could not write sentry_issues.prom"
+    echo "sentry-issues: $why" >&2
+  elif [ "${unread:-0}" = "${n:-0}" ]; then why="no Sentry project could be read (${n:-0} slugs)"
+  fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
+  else proof_runner_outcome WORKED "$n slugs, $unread unread"; fi
 fi
 printf '%s\n' "$doc"
