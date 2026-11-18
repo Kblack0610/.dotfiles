@@ -261,6 +261,14 @@ test("a machine page with no reading says why, in amber, and holds the governor'
   assert.match(h, /Nothing firing names it\./);
 });
 
+test("a machine page's power history lists every change of the window, newest first, with no fold", () => {
+  const changes = Array.from({ length: 40 }, (_, i) => ({ at: 1_700_000_000 + i * 600, state: i % 2 ? "on" : "off", reason: i === 39 ? "queue" : "none" }));
+  const h = run(`powerHistory(${JSON.stringify({ days: [], changes })})`);
+  assert.equal(h.match(/<tr><td>/g).length, 40);
+  assert.ok(h.indexOf("queue") < h.indexOf("<td class=\"muted\"></td>"), "the newest change comes first");
+  assert.doesNotMatch(h, /data-hist-all|older/);
+});
+
 test("the Machines table's power cell has no buttons: they are the machine page's", () => {
   const h = run(`powerCell({ power: { host: "aws-burst-1", state: "stopped", hours: 1, max: 8, rule: "r", reason: "", usd_per_hour: null } })`);
   assert.doesNotMatch(h, /data-cloud|7 days/);

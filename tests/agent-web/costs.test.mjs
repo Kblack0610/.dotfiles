@@ -326,6 +326,26 @@ test("the Sections block starts open with its window, All PRs on top and both ca
   assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "no claimed session is a dash");
 });
 
+test("the spend table and Sections draw the server's page and a pager each, and a page pick asks for it", async () => {
+  const paged = (t, shown) => ({ ...t, shown, pager: { page: 1, pages: 2, per: 50 } });
+  const d = board({ table: paged(board().table, 52), sections: { ...sections(), table: paged(sections().table, 51) } });
+  const h = show(d);
+  assert.equal((h.match(/<nav class="tpager"/g) || []).length, 2, "one pager under each table");
+  assert.match(h, /rows 1-50 of 52/);
+  assert.match(h, /<div id="costs-sec-body">[\s\S]*rows 1-50 of 51<\/span><\/nav><\/div><\/div>/, "Sections' pager is in its own block");
+  assert.ok(h.includes("gpt-5-codex") && h.includes("opus-5-5"), "every row sent is drawn, the page is the server's");
+  asked = [];
+  body = d;
+  run("st.views.costs = ''");
+  const pick = (tbl) => ({ dataset: { tpg: "2" }, closest: (sel) => (sel === "[data-tbl]" ? (tbl ? { dataset: { tbl } } : null) : sel === "[data-tpg]" ? { dataset: { tpg: "2" } } : null) });
+  fire("click", { type: "click", target: pick("s") });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?spg=2");
+  fire("click", { type: "click", target: pick("") });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?pg=2&spg=2");
+});
+
 test("a header click sorts the Sections block both ways without touching the main table", async () => {
   asked = [];
   body = board({ sections: sections() });

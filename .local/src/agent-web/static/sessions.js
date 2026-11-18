@@ -7,7 +7,7 @@
 
 const sst = tblTab({
   tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
-  wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
+  wait: "Loading the sessions.", state: { cap: null, capErr: null, confirm: null },
   shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
   tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
@@ -112,15 +112,12 @@ function sessionRow(r) {
     `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
 
-// A day's ended sessions run to hundreds, so the table draws the server's open_rows (agent-web
-// sessions.rs TABLE_OPEN_ROWS) with the rest a click away; the chips, search and filters reach every row.
+// A day's ended sessions run to hundreds, so the server sends one page (Sessions' size in
+// hub_core::layout) and tblTab draws the pager under it; the chips, search and filters reach every row.
 function sessionsBody(d) {
-  const t = d.table, shown = d.rows || [];
-  const rows = sst.all ? shown : shown.slice(0, d.open_rows);
-  const more = shown.length - rows.length;
-  return shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      tblMore(more, "more") + `</div>`
+  const t = d.table, rows = d.rows || [];
+  return rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table></div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
 }
 
@@ -177,9 +174,9 @@ function renderSide(scroll = false) {
   if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
   const d = sst.data;
   if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
-  // The list scrolls in its own column, so it holds every row the view keeps.
+  // The list scrolls in its own column over the table's page, with the table's pager under it.
   const rows = d.rows || [];
-  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>'));
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") + tblPager(d.table) : '<div class="muted">No sessions match.</div>'));
   if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
 }
 

@@ -305,7 +305,7 @@ function pOpen(key, inner) {
   bst.draft.key = key;
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
   if (pDepts(c).length) deptRead(key);
-  bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
+  bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.controlsKey = "";
   dst.data = null;
   paint($("p-deliv"), "");
   $("projects").scrollTop = 0;

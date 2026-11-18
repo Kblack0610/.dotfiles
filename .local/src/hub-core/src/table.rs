@@ -452,32 +452,49 @@ pub struct Pager {
 /// Keeps page `page` (from 1; past the last reads the last) of `per` rows of a view and lays the
 /// summary's links beside them. A view that fits on one page is left whole and unpaged.
 pub fn page<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, page: usize, per: usize) {
+    if let Some(p) = page_of(rows, page, per) {
+        table.links = links(rows);
+        table.pager = Some(p);
+    }
+}
+
+/// Keeps page `page` of `per` items and answers where it is, None when every item fits on one
+/// page: the cut [`page`] and [`paged`] share.
+pub fn page_of<T>(items: &mut Vec<T>, page: usize, per: usize) -> Option<Pager> {
     let per = per.max(1);
-    let pages = rows.len().div_ceil(per);
+    let pages = items.len().div_ceil(per);
     if pages <= 1 {
-        return;
+        return None;
     }
     let page = page.clamp(1, pages);
-    rows.drain(..(page - 1) * per);
-    rows.truncate(per);
-    table.links = links(rows);
-    table.pager = Some(Pager { page, pages, per });
+    items.drain(..(page - 1) * per);
+    items.truncate(per);
+    Some(Pager { page, pages, per })
+}
+
+/// A list that is not a shared table (Log's rundown cards, the dispatch judge's verdicts, Alerts'
+/// open fixes) cut to one page: the count before the cut and where the page sits, which is all
+/// the web's pager reads (static/table.js `tblPager`).
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Paged {
+    pub shown: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pager: Option<Pager>,
+}
+
+/// [`page`] for such a list: keeps page `page` of `per` items.
+pub fn paged<T>(items: &mut Vec<T>, page: usize, per: usize) -> Paged {
+    let shown = items.len();
+    Paged {
+        shown,
+        pager: page_of(items, page, per),
+    }
 }
 
 /// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))
-}
-
-/// Cuts a view's rows to the first `cap` and lays the summary's links beside the rows left, in
-/// their order (a caller may have reordered them); the summary still counts every row, and the
-/// answer is how many the cap left out.
-pub fn cap<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, cap: usize) -> usize {
-    let more = rows.len().saturating_sub(cap);
-    rows.truncate(cap);
-    table.links = links(rows);
-    more
 }
 
 /// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
@@ -818,19 +835,6 @@ mod tests {
     }
 
     #[test]
-    fn a_cap_cuts_the_rows_counts_the_rest_and_keeps_the_summary_whole() {
-        let all = rows();
-        let (mut shown, mut t) = View::default().summary(&all);
-        assert_eq!(cap(&mut shown, &mut t, 3), 1);
-        assert_eq!((shown.len(), t.total, t.shown), (3, 4, 4));
-        assert_eq!(
-            cap(&mut shown, &mut t, 10),
-            0,
-            "under the cap nothing is left out"
-        );
-    }
-
-    #[test]
     fn a_page_keeps_its_rows_clamps_past_the_last_and_leaves_one_page_unpaged() {
         let all = rows();
         let names = |s: &[&T]| s.iter().map(|r| r.name).collect::<Vec<_>>();
@@ -881,6 +885,24 @@ mod tests {
             (shown.len(), t.pager),
             (0, None),
             "an empty table is not paged"
+        );
+    }
+
+    #[test]
+    fn a_plain_list_pages_the_same_way() {
+        let mut cards: Vec<u32> = (1..=7).collect();
+        let p = page_of(&mut cards, 3, 3);
+        assert_eq!(
+            (cards, p.map(|p| (p.page, p.pages))),
+            (vec![7], Some((3, 3)))
+        );
+        let mut few = vec![1, 2];
+        assert_eq!((page_of(&mut few, 2, 3), few.len()), (None, 2));
+        let mut more: Vec<u32> = (1..=7).collect();
+        let p = paged(&mut more, 2, 3);
+        assert_eq!(
+            (p.shown, p.pager.map(|p| p.page), more),
+            (7, Some(2), vec![4, 5, 6])
         );
     }
 
