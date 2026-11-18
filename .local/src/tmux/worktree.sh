@@ -38,6 +38,12 @@
 #                     when it is still here or on origin, else on a new branch off the trunk,
 #                     so a conversation that ran there can `claude --resume` (agent-ask reopen).
 #                     Refuses a path or session name another tree holds now.
+#   revive <file.bundle>
+#                     put an archived tree back at its old path from its bundle, its
+#                     uncommitted work back in the files. The bundle stays.
+#   archive <path>    save a HELD tree (nobody in it, work on no remote) to a verified bundle
+#                     under ~/.agent/archive/worktrees/<repo>/, uncommitted work included,
+#                     then remove it. Refuses a landed or claimed tree. rc 1 kept, 2 failed.
 #   gc [<repo>] [-n] [--tsv]
 #                     reap every eligible worktree and NAME the ones it kept, one state word
 #                     per tree (README: "Worktree states"). With no repo, everything under
@@ -1344,6 +1350,14 @@ cmd_revive() {
     esac
   done
   [ -n "$path" ] || panel_die "usage: wt revive <path> [--branch <b>]"
+  case "$path" in
+  *.bundle)
+    [ -f "$path" ] || panel_die "no such bundle: $path"
+    [ -z "$branch" ] || panel_die "--branch does not apply to a bundle: it revives on its own branch"
+    wt_revive_bundle "$(realpath "$path")"
+    return
+    ;;
+  esac
   # A conversation started in a subdirectory revives the whole tree.
   case "$path" in "$WT_ROOT"/*/*) path="${path#"$WT_ROOT"/}" && path="$WT_ROOT/${path%%/*}" ;; esac
   name="${path##*/}"
@@ -1387,6 +1401,148 @@ cmd_revive() {
   wt_heal_submodule_urls "$path"
   wt_hold "$path"
   printf 'revived %s on %s\n' "$name" "$branch"
+}
+
+# The one ref a bundle carries, in the main repo only while one is written or read back:
+# branch/<name> (or detached) at the archive commit, whose tree is the tree's files and whose
+# parent is its HEAD. That commit is on no remote, so `--not --remotes` never drops the ref, even
+# for a tree whose only work is uncommitted on a pushed HEAD.
+WT_ARCHIVE_REFS=refs/wt-archive
+# Archive and revive both write the namespace, so both take this lock.
+wt_archive_lock() { printf '%s/archive-%s.lock' "$WT_LOCK_DIR" "$1"; }
+wt_archive_refs_clear() {
+  git -C "$1" for-each-ref --format='delete %(refname)' "$WT_ARCHIVE_REFS/" | git -C "$1" update-ref --stdin
+}
+
+# cmd_archive <path> -- save a held tree's work to a verified bundle, then remove the tree: the
+# end of a tree nobody is in whose work exists nowhere else (README "Worktree states", held).
+# Uncommitted changes, untracked files included and ignored ones (Library/, builds, .env) not,
+# go into the archive commit through a temporary index, so the tree's own index is not touched.
+# The bundle holds that commit and its history minus what any remote has, at
+# $WT_ARCHIVE_DIR/<repo>/<name>@<UTC stamp>.bundle; `wt revive <bundle>` puts it back. The tree
+# goes only once `git bundle verify` passes. rc 1 when the policy keeps the tree (landed,
+# claimed, a submodule holds work), 2 when its state cannot be read or the bundle could not be
+# written or verified.
+cmd_archive() {
+  local path name work rc occ main repo out sub lock
+  [ ! -L "${1:?usage: wt archive <path>}" ] || panel_die "not a worktree: $1 is a symlink"
+  path="$(realpath "$1" 2>/dev/null)" || panel_die "no such path: $1"
+  name=${path##*/}
+  work=$(wt_work_reason_fetched "$path")
+  case $? in
+  0) panel_fail "kept $name: its work has landed, so wt reap removes it"; return 1 ;;
+  1) ;;
+  *) panel_fail "kept $name: $work"; return 2 ;;
+  esac
+  occ=$(wt_occupied_reason "$path") || { panel_fail "kept $name: $occ"; return 1; }
+  ! out=$(wt_submodule_worktrees "$path") || { panel_fail "kept $name: a submodule worktree lives off it: $out"; return 1; }
+  # A bundle of the superproject holds none of a submodule's own commits or edits.
+  while IFS=$'\t' read -r _ sub; do
+    [ -e "$path/$sub/.git" ] || continue
+    [ -z "$(git -C "$path/$sub" status --porcelain 2>/dev/null)" ] && wt_submodule_pushed "$path/$sub" ||
+      { panel_fail "kept $name: submodule $sub holds work its bundle would not save"; return 1; }
+  done < <(wt_submodule_list "$path")
+
+  main=$(wt_main_repo "$path") || { panel_fail "kept $name: cannot resolve its repo"; return 2; }
+  repo=$(wt_repo_name "$main")
+  lock=$(wt_archive_lock "$repo")
+  wt_lock "$lock" || { panel_fail "kept $name: another archive or revive of $repo is running"; return 2; }
+  wt_archive_refs_clear "$main"
+  wt_archive_tree "$path" "$main" "$repo"
+  rc=$?
+  wt_archive_refs_clear "$main"
+  rm -f "$lock"
+  return "$rc"
+}
+
+# wt_archive_tree <path> <main> <repo> -- cmd_archive's bundle-verify-remove, under its lock.
+wt_archive_tree() {
+  local path="$1" main="$2" repo="$3" name branch head ref tree idx snap dir file out rc
+  name=${path##*/}
+  branch=$(wt_branch_of "$path")
+  head=$(git -C "$path" rev-parse HEAD) || { panel_fail "kept $name: no HEAD"; return 2; }
+  if [ -n "$branch" ]; then ref="$WT_ARCHIVE_REFS/branch/$branch"; else ref="$WT_ARCHIVE_REFS/detached"; fi
+  idx=$(mktemp) || return 2
+  # A copy of the tree's own index keeps its stat cache, so add -A hashes only what changed (a
+  # Unity tree is 15-20 GB); a tree with no index starts from HEAD.
+  if { cp "$(git -C "$path" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null ||
+    GIT_INDEX_FILE=$idx git -C "$path" read-tree HEAD; } && GIT_INDEX_FILE=$idx git -C "$path" add -A &&
+    tree=$(GIT_INDEX_FILE=$idx git -C "$path" write-tree); then
+    rm -f "$idx"
+  else
+    rm -f "$idx"
+    panel_fail "kept $name: could not snapshot its uncommitted work"
+    return 2
+  fi
+  # Made even when the files match HEAD: an empty commit still names HEAD as its parent.
+  snap=$(git -C "$path" commit-tree "$tree" -p "$head" -m "wt archive: $name, uncommitted work included") &&
+    git -C "$main" update-ref "$ref" "$snap" ||
+    { panel_fail "kept $name: could not commit its uncommitted work"; return 2; }
+
+  dir="${WT_ARCHIVE_DIR:-$HOME/.agent/archive/worktrees}"
+  mkdir -p "$dir/$repo" && chmod 700 "$dir" || { panel_fail "kept $name: cannot create $dir/$repo"; return 2; }
+  file="$dir/$repo/$name@$(date -u +%Y%m%dT%H%M%SZ).bundle"
+  out=$(git -C "$main" bundle create "$file" "$ref" --not --remotes 2>&1) &&
+    out=$(git -C "$main" bundle verify "$file" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$file"
+    panel_fail "kept $name: its bundle did not verify: ${out##*$'\n'}"
+    return 2
+  fi
+
+  # The bundle holds the work, so the removal is forced past the edits it saved; another tool's
+  # lock was refused above, and wt's own hold comes off here.
+  git -C "$main" worktree unlock "$path" 2>/dev/null || :
+  out=$(git -C "$main" worktree remove --force "$path" 2>&1) ||
+    { wt_hold "$path"; panel_fail "kept $name (bundle kept at $file): git worktree remove refused: $out"; return 2; }
+  [ -z "$branch" ] || git -C "$main" branch -D "$branch" >/dev/null 2>&1 || :
+  printf 'archived %s to %s\n' "$name" "$file"
+}
+
+# wt_revive_bundle <bundle> -- put an archived tree back at $WT_ROOT/<name> from the bundle
+# `wt archive` wrote: its branch (or detached HEAD) at the archived commit, and its uncommitted
+# work back in the files, uncommitted again. The bundle stays, its mtime reset so the runner's
+# retention counts from this revive.
+wt_revive_bundle() {
+  local file="$1" name path main repo heads ref branch='' snap base lock alock
+  name=${file##*/}
+  name=${name%@*}
+  path="$WT_ROOT/$name"
+  { [ ! -e "$path" ] && [ ! -L "$path" ]; } || panel_die "$name is taken: another tree is there now"
+  ! wt_session_exists "$name" || panel_die "$name is taken: a live session holds the name"
+  main=$(wt_repo_of_name "$name") || panel_die "no repo cuts worktrees named like $name"
+  repo=$(wt_repo_name "$main")
+  git -C "$main" bundle verify -q "$file" >/dev/null 2>&1 || panel_die "$file does not verify against $main"
+  heads=$(git -C "$main" bundle list-heads "$file") || panel_die "cannot read $file"
+  ref=$(awk -v p="$WT_ARCHIVE_REFS/" '$2 ~ "^" p "(branch/|detached$)" { print $2; exit }' <<<"$heads")
+  [ -n "$ref" ] || panel_die "$file is not a wt archive"
+  case "$ref" in "$WT_ARCHIVE_REFS"/branch/*) branch=${ref#"$WT_ARCHIVE_REFS"/branch/} ;; esac
+  lock="$WT_LOCK_DIR/new-$repo.lock"
+  alock=$(wt_archive_lock "$repo")
+  wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
+  wt_lock "$alock" || { rm -f "$lock"; panel_die "an archive or revive of $repo is running"; }
+  # shellcheck disable=SC2064 # expand now: these are local, and gone by the time EXIT fires
+  trap "wt_archive_refs_clear $(printf '%q' "$main"); rm -f $(printf '%q %q' "$lock" "$alock")" EXIT
+  wt_archive_refs_clear "$main"
+  git -C "$main" fetch -q "$file" "+$ref:$ref" || panel_die "cannot fetch from $file"
+  snap=$(git -C "$main" rev-parse --verify "$ref^{commit}") && base=$(git -C "$main" rev-parse --verify "$snap^") ||
+    panel_die "$file holds no archive commit"
+  mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
+  if [ -z "$branch" ]; then
+    git -C "$main" worktree add --quiet --detach "$path" "$base" >&2 || panel_die "git worktree add failed: $path"
+  elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
+    [ "$(git -C "$main" rev-parse "refs/heads/$branch")" = "$base" ] ||
+      panel_die "branch $branch exists here at another commit; revive it by hand from $file"
+    git -C "$main" worktree add --quiet "$path" "$branch" >&2 || panel_die "git worktree add failed: $path"
+  else
+    git -C "$main" worktree add --quiet -b "$branch" "$path" "$base" >&2 || panel_die "git worktree add failed: $path"
+  fi
+  git -C "$path" restore --source="$snap" --worktree -- . || panel_warn "could not put back the uncommitted work; it is commit $snap"
+  touch -- "$file"
+  wt_heal_submodule_urls "$path"
+  wt_hold "$path"
+  printf 'revived %s from %s on %s\n' "$name" "$file" "${branch:-a detached HEAD}"
 }
 
 # wt_other_claude <session> -- print "<window index> <pane id>" for each Claude agent in <session>
@@ -1736,6 +1892,10 @@ reap)
 revive)
   shift
   cmd_revive "$@"
+  ;;
+archive)
+  shift
+  cmd_archive "$@"
   ;;
 gc)
   shift
