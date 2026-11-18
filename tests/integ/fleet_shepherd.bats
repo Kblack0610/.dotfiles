@@ -855,7 +855,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   # flock holds the lock while the run inside it runs, so that run is the second one.
   run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" run
   assert_success
-  assert_output --partial 'another run is starting a pass now'
+  assert_output --partial 'a run or a check holds the run lock now: no second pass'
   [ ! -e "$HOME/tmux.calls" ]
   [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
   # Negative control: the lock free, the same run starts one.

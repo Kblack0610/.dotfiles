@@ -1664,8 +1664,8 @@ run_locked() {
     echo "$NAME: a run held the run lock past ${FLEET_SHEPHERD_CHECK_WAIT}s: no check; run it again once that run ends" >&2
     return 75
   fi
-  echo "$NAME: another run is starting a pass now: no second one"
-  publish WORKED "another run held the run lock: no second pass"
+  echo "$NAME: a run or a check holds the run lock now: no second pass"
+  publish WORKED "a run or a check held the run lock: no second pass"
 }
 
 cmd_run() {

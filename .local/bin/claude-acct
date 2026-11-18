@@ -2142,8 +2142,11 @@ cmd_unpark() {
                     preempt) owned+=("$k (preempt: fleet-dispatch resumes it)"); continue ;;
                     *) owned+=("$k ($why: claude-acct unpark $k)"); continue ;;
                 esac
+                # wake_take refuses every later call once it refuses one: skip the lock wait for those.
                 ((WAKE_REFUSED == 0)) || { ((left++)); continue; }
                 what="$k"; park_lock "$(ledger_session "$f")" || { rc=1; continue; }
+                # Read before the lock: an unpark that held it may have resumed this one already.
+                [[ -f "$f" ]] || { park_unlock; ((n--)); continue; }
                 if wake_take unpark "$k"; then unpark_ledger unpark "$f" || rc=1; else ((left++)); fi
                 park_unlock
             done
