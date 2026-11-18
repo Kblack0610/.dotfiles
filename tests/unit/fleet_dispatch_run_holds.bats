@@ -457,6 +457,36 @@ load 'fleet_dispatch/common'
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
 
+# 2026-11-18: canary and night work filled the workstation first while razer-laptop sat idle.
+@test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
+  game_ready
+  worker '2.0 16 1 50' true '[canary, night]'
+  agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=c"
+}
+
+@test "fleet_first: a canary starts here when no worker lists its class" {
+  game_ready
+  worker '2.0 16 1 50' true '[night-only]'
+  agent-queue add --project game --slug c --from canary --tags canary "Canary eval c: run fleet-bench canary start c" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item c'
+  assert_not_called 'wt new --host'
+}
+
+@test "fleet_first: a plain item starts here even when a worker lists canary and night" {
+  game_ready
+  worker '2.0 16 1 50' true '[canary, night]'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu'
+  assert_not_called 'wt new --host'
+}
+
 @test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
   game_ready
   cloud_worker
