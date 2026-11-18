@@ -908,7 +908,7 @@ full_fleet() {
 
 @test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {
   game_ready
-  worker '64.0 16 1'
+  worker '64.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run

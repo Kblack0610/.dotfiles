@@ -998,7 +998,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 @test "run: a machine that does not hold the fleet lease stands down and writes nothing" {
   game_ready
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT=$OTHER_HOLDS run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output "fleet-dispatch: run: ${OTHER_HOLDS#fleet-lease: }"
@@ -1021,7 +1021,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 @test "reap, start, fill and promote do nothing on a machine that does not hold the fleet lease" {
   game_ready
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   agent-queue add --project game --slug x "x" >/dev/null
   local verb
   for verb in reap start fill promote; do
@@ -1038,7 +1038,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 @test "a lease no remote can say is a fault: run exits 1 and writes nothing; hosts prints the lease status" {
   game_ready
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   FLEET_LEASE_STUB_RC=2 FLEET_LEASE_STUB_OUT='fleet-lease: no remote of the store answered, so state cannot tell who holds the fleet lease and skips fleet-dispatch' \
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure 1
@@ -1057,16 +1057,16 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  worker '2.0 16 1' false
+  worker '2.0 16 1 50' false
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   assert_not_called 'ssh'
-  worker '2.0 16 0'
+  worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
   assert_output --partial 'razer-laptop has no wt, no claude, or a store that is not a peer clone (store-sync join)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item busy
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
@@ -1075,7 +1075,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 @test "a heavy item stays here: a worker takes light claude work only" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -1086,7 +1086,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 @test "with room here a pass starts here first, and with no roster nothing asks a worker" {
   game_ready
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success

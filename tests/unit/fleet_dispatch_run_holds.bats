@@ -416,7 +416,7 @@ load 'fleet_dispatch/common'
 
 @test "run places a light queue item on a fleet worker when this machine is over its load pace" {
   game_ready
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -428,6 +428,29 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+}
+
+# 2026-11-18: razer-laptop's load per core read 0.27 while 52 freqtrade pods held 10.7 GB of its 32,
+# so load alone would have placed sessions on it until it ran out of memory.
+@test "a worker under the memory floor, or one that reports no free memory, takes nothing; one over it takes the item" {
+  game_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  worker '2.0 16 1 12'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop: 12% memory free is under the 20% floor'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new --host'
+  worker '2.0 16 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop did not report its free memory (/proc/meminfo)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new --host'
+  # The floor is the knob: the same 12% worker takes the item once the floor is under it.
+  worker '2.0 16 1 12'
+  DISPATCH_HOST_MEM_MIN_PCT=10 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
 
 @test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
