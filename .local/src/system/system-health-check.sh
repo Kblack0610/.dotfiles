@@ -32,7 +32,7 @@ count_units() { [ -n "$1" ] && awk -F', ' '{print NF}' <<<"$1" || echo 0; }
 FAILING_SERVICES=$(count_units "$FAILED_USER")
 FAILING_SYSTEM=$(count_units "$FAILED_SYSTEM")
 ZOMBIE_COUNT=$(ps aux 2>/dev/null | awk '$8 ~ /Z/ {count++} END {print count+0}')
-TOP_CPU=$(ps aux --sort=-%cpu 2>/dev/null | head -6 | tail -5 | awk '{printf "- %s (%.1f%%)\n", $11, $3}')
+TOP_CPU=$(ps aux --sort=-%cpu 2>/dev/null | awk 'NR>=2 && NR<=6 {printf "- %s (%.1f%%)\n", $11, $3}')
 
 # Swap-thrash signals (the WSL/VDI "unusable after returning" fingerprint):
 # idle pages forced onto the slow VHD swap then faulted back in. We watch swap
