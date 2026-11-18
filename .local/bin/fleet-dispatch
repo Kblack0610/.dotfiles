@@ -792,7 +792,7 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# live_runs -> "<project>/<area> <weight>[ <host>]" for every running session this runner started
+# live_runs -> "<project>/<area> <weight>[ <host>]" for every running Claude session (panel_lists) this runner started
 # itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
 # other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
 # A parked session holds none either: its claude has exited and costs nothing until it is unparked.
@@ -801,6 +801,7 @@ live_runs() {
   while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
+    panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
@@ -3532,22 +3533,30 @@ source_floor_start() {
 # to a non-Claude source with room: the target is Claude's budget (pace_target), so codex, go, ocfree and
 # the gateway teams wait on their own room (max_live, reserve and budget, in claude-acct room --json), never on it.
 # CLAUDE_FULL=1 makes route refuse claude, so an item starts only on another candidate. Tried: an item pinned
-# to another harness, one whose cached verdict (lane_cached) names one, and at most one unclassified item
-# a slot (its verdict is cached when it routes nowhere, so a pass asks model-lane little). Bound: the free
-# slots of the sources with room (max_live less live, 1 a pass for one with no max_live);
-# start_items reads the gate again each start. Rc FLOOR_SHUT when nothing is due.
+# to a harness whose source has room, one whose cached verdict (lane_cached) names such a harness, and at
+# most one unclassified item a slot (its verdict is cached when it routes nowhere, so a pass asks
+# model-lane little). Bound: the free slots of the sources with room (max_live less live, 1 a pass for one
+# with no max_live), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
+# Rc FLOOR_SHUT when nothing is due.
 other_source_start() {
-  local items rows slots s v fresh
+  local items rows slots open s v fresh
   rows=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
+  open=$(jq -c --slurpfile map "$HARNESSES" '[.sources[]? | select(.room.ok == true) | .name] as $ok
+    | [$map[0].harnesses | to_entries[]? | select(.value.source as $s | $s != null and any($ok[]; . == $s)) | .key]' <<<"$rows" 2>/dev/null)
   slots=$(jq -r --slurpfile map "$HARNESSES" '[$map[0].harnesses[]? | .source // empty] as $s
     | [.sources[]? | select(.room.ok == true and (.name as $n | any($s[]; . == $n)))
        | if .max_live then ([.max_live - (.live // 0), 0] | max) else 1 end] | add // 0' <<<"$rows" 2>/dev/null)
   [[ "$slots" =~ ^[0-9]+$ ]] && [ "$slots" -gt 0 ] || return "$FLOOR_SHUT"
+  [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
   items=$(fresh=0; while IFS= read -r s; do
     [ -n "$s" ] || continue
-    if item_pinned "$s"; then printf '%s\n' "$s"; continue; fi
+    if item_pinned "$s"; then
+      jq -e --argjson o "${open:-[]}" '.agent as $a | any($o[]; . == $a)' <<<"$s" >/dev/null 2>&1 && printf '%s\n' "$s"
+      continue
+    fi
     v=$(lane_cached "$(jq -r .slug <<<"$s")")
-    if [ -n "$v" ]; then jq -e 'any(.candidates[]?; .harness != "claude")' <<<"$v" >/dev/null 2>&1 && printf '%s\n' "$s"
+    if [ -n "$v" ]; then
+      jq -e --argjson o "${open:-[]}" 'any(.candidates[]?; .harness as $h | $h != "claude" and any($o[]; . == $h))' <<<"$v" >/dev/null 2>&1 && printf '%s\n' "$s"
     elif [ "$fresh" -lt "$slots" ]; then fresh=$((fresh + 1)); printf '%s\n' "$s"; fi
   done < <(jq -c 'select(((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary "))) | not)' <<<"$1"))
   [ -n "$items" ] || return "$FLOOR_SHUT"
@@ -3951,7 +3960,8 @@ preempt_for() {
 # park a victim for it (preempt_for), re-read the units, and pick that item alone, so the units the
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
-  [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
+  # Past a full Claude target (OTHER_PASS) claude is refused, so a park would free units no start can use.
+  [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
   UNITS_FREE=$(( TARGET - $(live_units) ))
   pick_item "$PICK_RESERVED"
