@@ -51,13 +51,10 @@
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
-#   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back in the queue, held on that agent-hold or ask
-#   settle-ask <id>    fail each queued item the human answered that ask against (another option), its board row
-#       left open; one held on a cancelled ask stays queued and held, named on stderr and in queue-starved.
-#       agent-ask runs it on every cancel and human answer
-#   settle-dead    each queued item whose after: closed failed or cancelled: machine work returns with its chain,
-#       the human's is held on one ask (retry, replan, drop) that the next run carries out; fleet-dispatch reap runs it
-#   ask-holds [<id>]   `<slug><TAB><ask id><TAB><releasing options>` per active item held on an ask (that ask only, given one)
+#   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
+#       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears
+#   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
+#       #ask/<id>, held on an ask (that ask only, given one)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -66,10 +63,11 @@
 #   admission [--json]    the runnable items, the cap an add is admitted under, and the adds held in 7 days
 #   mix [--json]          each class of service: share, runnable, started in its window, and the starved ones
 # Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
-# the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
-# wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
-# filer's, waits for a dispatch pass, which starts the queue in priority order; one held (at:,
-# ask:) waits for the pass after that releases. AGENT_QUEUE_START=0 only queues.
+# the human at hand (human_at_hand), an urgent oneshot and each queued phase of an urgent or high --plan.
+# The queue holds no gated work: an add that waits on a hold or an after: item not done is filed as its
+# board row carrying the gate, and exits AQ_EX_HELD (cmd_add). An item that closes ok pulls the rows
+# gated #after/<its row> at once (pull_after, fleet-dispatch pull-after). A low one, or a machine
+# filer's, waits for a dispatch pass, which starts the queue in priority order. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
@@ -396,12 +394,11 @@ AQ_CAP="${AGENT_QUEUE_CAP:-50}"
 AQ_HELD_DAYS=7
 AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 
-# admission_now -> "<runnable> <cap>": the queued items that can start now, and the cap. An item held
-# only to its time of day (at:HH:MM) counts at every hour: uncounted by day, 225 items held to the
-# night window took the count from 205 to 362 at 01:00 on 2026-11-18.
+# admission_now -> "<runnable> <cap>": the queued items, and the cap. The queue holds only work that
+# can start (a gate waits on its board row, cmd_add), so every queued item counts.
 admission_now() {
   local runnable
-  runnable="$(snap_json . queued | jq '[.[] | select(.hold == null or (.hold | test("^at:[0-9]{2}:[0-9]{2}$")))] | length')" || return 1
+  runnable="$(snap_json . queued | jq 'length')" || return 1
   printf '%s %s\n' "$runnable" "$AQ_CAP"
 }
 
@@ -419,7 +416,7 @@ make_room() {
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
   victim="$(collect queued | jq -r '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
-    | [.[] | select((.hold == null or (.hold | test("^at:[0-9]{2}:[0-9]{2}$"))) and .priority != "urgent" and (.row // "") != "")
+    | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
         | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
@@ -493,8 +490,8 @@ cmd_admission() {
   since="$(admission_since)"
   if [ -s "$AQ_ADMISSION_LOG" ]; then
     read -r held boarded returned < <(jq -rs --arg s "$since" '[.[] | select(.at >= $s)] as $w
-      | ([$w[] | select(.why | IN("board-only", "returned") | not) | [.project, .slug]] | unique | length)
-      , ([$w[] | select(.why == "board-only") | [.project, .slug, .title]] | unique | length)
+      | ([$w[] | select(.why | IN("board-only", "gated", "returned") | not) | [.project, .slug]] | unique | length)
+      , ([$w[] | select(.why | IN("board-only", "gated")) | [.project, .slug, .title]] | unique | length)
       , ([$w[] | select(.why == "returned")] | length)' "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
   fi
   if [ -n "$json" ]; then
@@ -567,7 +564,7 @@ hold_for() {
       "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD_DEAD=1 HOLD="after $s closed $AST, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show $s"
+      *) HOLD_DEAD=1 HOLD="after $s closed $AST, dead: it never releases (queue $s again, or set after= without it); who closed it and why: agent-queue show $s"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
         [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an ask the human answered>"
         return ;;
@@ -1366,18 +1363,25 @@ row_brief() {
   if [ "$(bare_words <<<"$first")" = "$(bare_words <<<"$1")" ]; then printf '%s' "$rest"; else printf '%s' "$body"; fi
 }
 
-# overflow_row <project> <title> <priority> <epic> <want> <task> -- an add over the cap leaves its board
-# row un-started, ranked as filed (`#requested` first) with the whole task under it as its brief,
-# and says so on stderr. A project with no board to file on gets the command to run by hand and a non-zero
-# return: the caller still holds the task, and nothing was written.
+# overflow_row <project> <title> <priority> <epic> <want> <task> [<gates> <slug>] -- an add the queue does
+# not take leaves its board row un-started, ranked as filed (`#requested` first) with the whole task under
+# it as its brief, carrying <gates> (board gate tags, no #) when it waits on any, and says so on stderr;
+# given a slug, `held <slug> -> <board>:<id>` on stdout, the line a caller reads the row from. A project
+# with no board to file on gets the command to run by hand and a non-zero return: the caller still holds
+# the task, and nothing was written.
 overflow_row() {
-  local kept board prof id
-  kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep)"
+  local kept board prof id gates="${7:-}"
+  kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep "$gates")"
   if [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
-    echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+    if [ -n "$gates" ]; then
+      echo "agent-queue: its board row $id on $board waits on #${gates// / #}: dispatch promotes it once that clears" >&2
+    else
+      echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+    fi
+    [ -z "${8:-}" ] || echo "held $8 -> $board:$id${gates:+ (#${gates// / #})}"
   else
-    echo "agent-queue: $1 has no board row to file this on: notes ptask $1 --agent add \"<type(area): title> #size/s\"" >&2
+    echo "agent-queue: $1 has no board row to file this on: notes ptask $1 --agent add \"<type(area): title> #size/s${gates:+ #${gates// / #}}\"" >&2
     return 1
   fi
 }
@@ -1394,9 +1398,11 @@ overflow_row() {
 # code files nothing, and a failed write never stops the add. The row is the task: the item's
 # <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
-# <keep> non-empty files the row un-started (an add over the cap, see overflow_row).
+# <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
+# tags with no #, go on the row it files, and onto an open twin it links (gate_row).
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() keep="${7:-}"
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() keep="${7:-}" gates="${8:-}" g gt=""
+  for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -1412,7 +1418,7 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
@@ -1420,7 +1426,10 @@ file_story() {
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
     3) [ -n "$id" ] || { echo "agent-queue: no story row filed: ${out##*$'\n'}" >&2; return 0; }
        # The twin is open: start it unless a live item already did, or the row is left on the board.
-       if [ -z "$keep" ] && grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi ;;
+       if [ -z "$keep" ] && grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi
+       # shellcheck disable=SC2086 # gates is a space-separated list of tags
+       [ -z "$gates" ] || gate_row "$project:$id" "$lab" agent $gates ||
+         { echo "agent-queue: the open row $id on $project did not take its gates, so nothing was filed: $GATE_HINT" >&2; return 0; } ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
@@ -1559,13 +1568,21 @@ cmd_add() {
   [ -n "$slug" ] || slug_from_text=1
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
-  # Admission: every add that is not held, running or the board's own pull counts against the cap
+  # The queue holds only work that can start: an add still waiting on a gate (an after: item not done ok,
+  # or a hold tag not clear, hold_for) is filed as its board row carrying the gate (#after/<row-id>,
+  # #rbw/..., gate_board_tag) and queues nothing; dispatch promotes the row once `gate` reads it clear
+  # (QUEUE.md "Admission"). A --running record is already started, so it waits on nothing, and dispatch's
+  # pull of a board row (promote) judged that row's gates clear the moment before, so none is read twice.
+  local GATES='' AFTER_ITEMS=''
+  if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
+    add_gates "$slug" "$after" "$tags"; after="$AFTER_ITEMS"
+  fi
+  # Admission: every add that is not running or the board's own pull counts against the cap
   # (see admit); a queue item's session adding without --from is recorded as from the item.
-  local capped=1 deferred=''
-  for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
+  local capped=1
   case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
-  { [ -z "$running" ] && [ -z "$after" ] && [ -z "$deferred" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
+  { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   lock
@@ -1577,14 +1594,28 @@ cmd_add() {
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   local hold_title="${title:-$(head -1 <<<"$text")}"
-  if ! pull_ok "$running" "$from" "$from_given"; then
-    admission_log "$from" "$project" "$slug" "$hold_title" "" "" board-only
+  if [ -n "$GATES" ] || ! pull_ok "$running" "$from" "$from_given"; then
+    local bwhy=board-only
+    [ -z "$GATES" ] || bwhy=gated
+    admission_log "$from" "$project" "$slug" "$hold_title" "" "" "$bwhy"
     unlock
-    board_only_say
+    [ -n "$GATES" ] || board_only_say
     case "$row:$from" in
-      :board:*) echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" || exit 1 ;;
-      *) echo "agent-queue: row $row is left where it is: dispatch promotes it" >&2 ;;
+      :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
+        echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
+      :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
+        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" || exit 1 ;;
+      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" || exit 1 ;;
+      *) if [ -n "$GATES" ]; then
+           local rboard rlab
+           IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
+           # shellcheck disable=SC2086 # GATES is a space-separated list of tags
+           gate_row "$rboard:$row" "$rlab" agent $GATES || die "row $row did not take its gates, so nothing was held: $GATE_HINT"
+           echo "agent-queue: row $row waits on #${GATES// / #}: dispatch promotes it once that clears" >&2
+           echo "held $slug -> $rboard:$row (#${GATES// / #})"
+         else
+           echo "agent-queue: row $row is left where it is: dispatch promotes it" >&2
+         fi ;;
     esac
     exit "$AQ_EX_HELD"
   fi
@@ -1670,19 +1701,15 @@ cmd_add() {
 # machine filer, or an unattended session that took the default from, waits for a dispatch pass.
 human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
 
-# start_at_add <file> <slug> <priority> -- start a just-queued item now, as start_next starts a released
-# one: a plan session, the human's urgent ask (it waited up to a dispatch pass, ar-2944), and each
-# phase of the human's urgent or high --plan whose wait is already met. Not a low one (waits_turn), not
-# one an item hold keeps (an after: hold is start_next's to release), not under the dispatch hold.
+# start_at_add <file> <slug> <priority> -- start a just-queued item now: a plan session, the human's
+# urgent ask (it waited up to a dispatch pass, ar-2944), and each queued phase of the human's urgent or
+# high --plan (the queue holds no gated one). Not a low one (waits_turn), not under the dispatch hold.
 start_at_add() {
   local h
   ! waits_turn "$2" "$3" || return 0
+  # A free desk resource still goes to its best-ranked waiter first (desk_wait).
   h="$(hold_reason "$1")"
-  case "$h" in
-    '') ;;
-    "after "*) return 0 ;;
-    *) echo "agent-queue: $2 is held ($h), so a dispatch pass starts it once that releases"; return 0 ;;
-  esac
+  [ -z "$h" ] || { echo "agent-queue: $2 waits its turn ($h), so a dispatch pass starts it"; return 0; }
   ! dispatch_held "$2" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   unlock
@@ -1796,13 +1823,16 @@ add_plan() {
   check_after "$after"
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
-  local n=0 total why skipped=0 added=()
+  # A phase that waits on one not yet landed is no queue item: cmd_add files it as its board row, gated
+  # #after/<that phase's row> (add_gates), and each phase after it waits on that row id in turn (key).
+  local n=0 total why skipped=0 added=() out rc held=0
+  local -A key=()
   total="$(wc -l <<<"$rows")"
   while IFS=$'\t' read -r s dep ph text ttl; do
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
-      *) wait="$prefix-p$dep" ;;
+      *) wait="${key[$prefix-p$dep]:-$prefix-p$dep}" ;;
     esac
     why=''
     [ -n "$repeat" ] || why="$(finished_ok "$s")"
@@ -1817,13 +1847,19 @@ add_plan() {
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
     else
-      AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
+      rc=0
+      out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
-          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text" ||
+          --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
+      [ -z "$out" ] || printf '%s\n' "$out"
+      if [ "$rc" = 0 ]; then added+=("$s")
+      elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
+        key[$s]="${BASH_REMATCH[2]}" held=$((held + 1))
+      else
         die "queued $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
-      added+=("$s")
+      fi
     fi
-    n=$((n + 1)); prev="$s"
+    n=$((n + 1)); prev="${key[$s]:-$s}"
   done <<<"$rows"
   [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
@@ -2021,7 +2057,7 @@ cancel_close() {
   host="$(fm_get "$f" host)"
   # Close what the item owns: its window when it recorded one (a hand start), its session only
   # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
-  if [ -n "$session" ] && [ "$(state_of "$f")" != queued ]; then
+  if [ -n "$session" ] && [ "$(state_of "$f")" != queued ] && [ -z "${AQ_RETURN_KEEP_SESSION-}" ]; then
     if [ -n "$window" ]; then
       close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
         echo "agent-queue: window $window was not open on $server" >&2
@@ -2228,6 +2264,17 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # A gate on a queued item sends it back to its board row (below), so one with no row is refused
+  # before anything is written: it would stay queued with a pending hold.
+  local new_after new_tags HOLD HOLD_DEAD
+  if [ "$(state_of "$f")" = queued ] && [[ " $* " == *" tags="* || " $* " == *" after="* ]] && [ -z "$(item_row "$f")" ] && [[ " $* " != *" row="* ]]; then
+    new_after="$(fm_get "$f" after)" new_tags="$(fm_get "$f" tags)"
+    for kv in "$@"; do
+      case "$kv" in after=*) new_after="$(word_list "${kv#*=}")" ;; tags=*) new_tags="${kv#*=}" ;; esac
+    done
+    hold_for "$new_after" "$new_tags"
+    [ -z "$HOLD" ] || die "$slug has no board row to wait on its gate ($HOLD): give it one (agent-queue set $slug row=<board>:<id>) first; the queue holds only work that can start"
+  fi
   # The row it works before the set, with the profile and lane that row is on (item_row).
   local left_row="" left_prof="" left_lane="" set_kv=()
   case " $* " in *" row="* | *" from="*)
@@ -2254,6 +2301,15 @@ cmd_set() {
   item_event item-set "$f" --why "${set_kv[*]}"
   echo "$slug: $*"
   [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
+  # A queued item the set gave a gate waits on its board row, not in the queue (cmd_add): it goes back
+  # there carrying it (return_gates).
+  case " $* " in *" tags="* | *" after="*) ;; *) return 0 ;; esac
+  [ "$(state_of "$f")" = queued ] || return 0
+  hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
+  [ -n "$HOLD" ] || return 0
+  [ -n "${AQ_LOCKED-}" ] || unlock
+  ( cmd_return "$slug" --why "the set gave it a gate ($HOLD): it waits on its board row" ) ||
+    die "$slug is queued with a gate ($HOLD) it could not take back to its board row: agent-queue return $slug --why <why>, or set it back"
 }
 
 # repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
@@ -2309,31 +2365,66 @@ gate_row() {
 # settles, so neither goes. Nor does an after: item with no row that is in <chain> (the slugs this
 # return closes, space-padded): it closes here undelivered, so nothing is left to wait on. Dies naming
 # a hold with no board form: any other after: item with no row, or a tag value a hashtag cannot carry.
-return_gates() {
-  local f=$1 chain=$2 slug s g row t attag="" out="" AST HOLD HOLD_DEAD GB
-  slug="$(fm_get "$f" slug)"
-  for s in $(fm_get "$f" after); do
+return_gates() { pending_gates "$(fm_get "$1" slug)" "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$2" return; }
+
+# pending_gates <slug> <after> <tags> <chain> <verb> -> return_gates for these header values; <verb> is
+# the act a die names (`return`, or `hold` for an add, cmd_add). An add passes no chain.
+pending_gates() {
+  local slug=$1 chain=$4 verb=$5 s g row t attag="" desk="" out="" AST HOLD HOLD_DEAD GB
+  for s in $2; do
     after_status "$s"
     [ -z "$AST" ] || continue
     g="$(find_item "$s")" row=""
     [ -z "$g" ] || row="$(item_row "$g")"
     [ -n "$row" ] || [[ "$chain" != *" $s "* ]] || continue
-    [ -n "$row" ] || die "cannot return $slug: it waits on $s, which has no board row for its row to wait on (#after/<row-id>); return $s, which takes $slug back with it, or set $slug after= without it"
+    if [ -z "$row" ]; then
+      [ "$verb" = return ] || die "cannot hold $slug on the board: it waits on $s, which has no board row for its row to wait on (#after/<row-id>); give $s a row (agent-queue set $s row=<board>:<id>), or add $slug without --after $s"
+      die "cannot return $slug: it waits on $s, which has no board row for its row to wait on (#after/<row-id>); return $s, which takes $slug back with it, or set $slug after= without it"
+    fi
+    [[ "${row#*:}" =~ ^[A-Za-z0-9_./-]+$ ]] ||
+      die "cannot $verb $slug: it waits on $s, whose row id '${row#*:}' has no board form (a hashtag is letters, digits and _ . / -)"
     out+=" after/${row#*:}"
   done
-  for t in $(fm_get "$f" tags); do [[ "$t" =~ ^at:[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] && attag="$t"; done
-  for t in $(fm_get "$f" tags); do
+  for t in $3; do [[ "$t" =~ ^at:[0-9]{4}-[0-9]{2}-[0-9]{2}T ]] && attag="$t"; done
+  for t in $3; do
     case "$t" in
       ask:?*) ;;
+      # Not a gate: the rank its hold: gives it among the desk's waiters (desk_wait), which promote puts back.
+      desk:?*) desk="desk/${t#desk:}"; continue ;;
       # Judged with the item's at: date, as hold_for judges a nightly: on that night.
       at:* | rbw:* | pr:* | hold:* | nightly:*) hold_for "" "$t${attag:+ $attag}"; [[ "$HOLD" == "$t"* ]] || continue ;;
       *) continue ;;
     esac
     gate_board_tag "$t" ${attag:+"${attag:3:10}"} ||
-      die "cannot return $slug: its hold $t has no board form (a hashtag is letters, digits and _ . / -); set $slug tags= without it first"
+      die "cannot $verb $slug: its hold $t has no board form (a hashtag is letters, digits and _ . / -); ${chain:+set $slug tags= without it first}${chain:-pass --tags without it}"
     out+=" $GB"
   done
+  [[ -z "$desk" || " $out" != *" hold/"* ]] || out+=" $desk"
   printf '%s' "${out# }"
+}
+
+# add_gates <slug> <after> <tags> -> sets AFTER_ITEMS to the item slugs of <after> and GATES to the board
+# gate tags (no #, space-separated) the add still waits on: pending_gates for its hold, plus after/<id>
+# for each <after> word that is an open row's id and no item's slug (add --plan chains a phase filed on the
+# board so). Empty GATES: it can start now. Dies on a hold that never releases, since a row waiting on it
+# would never start either.
+add_gates() {
+  local s st HOLD HOLD_DEAD rows=""
+  AFTER_ITEMS="" GATES=""
+  for s in $2; do
+    if [[ "$s" =~ ^[a-z0-9]+-[0-9]+$ ]] && [ -z "$(find_item "$s")" ] && [ -z "$(done_status "$s")" ]; then rows+=" $s"
+    else AFTER_ITEMS+="${AFTER_ITEMS:+ }$s"; fi
+  done
+  check_after "$AFTER_ITEMS" "$1"
+  hold_for "$AFTER_ITEMS" "$3"
+  [ -z "$HOLD_DEAD" ] || die "$1 would never start: $HOLD"
+  [ -z "$HOLD" ] || GATES="$(pending_gates "$1" "$AFTER_ITEMS" "$3" "" hold)" || exit 1
+  for s in $rows; do
+    # A row add_plan just filed is open: no board read to say so.
+    [[ " ${AQ_ROWS_FILED-} " != *" $s "* ]] || { GATES+="${GATES:+ }after/$s"; continue; }
+    st="$( (cmd_gate "after/$s") 2>&1)" && continue
+    case "$st" in pending*) GATES+="${GATES:+ }after/$s" ;; *) die "--after $s: ${st#* after/$s: }" ;; esac
+  done
 }
 
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
@@ -2473,7 +2564,7 @@ cancel_stamp() {
 # moment ago never undoes a move made since (a requeue, the session's own close).
 cmd_move() {
   local slug="${1:?usage: agent-queue move <slug> <state> [--status s] [--end reason] [--if state]}" to="${2:?usage: agent-queue move <slug> <state>}"
-  local status="" end="" expect="" why="" ask="" f from dest deps run tags
+  local status="" end="" expect="" why="" ask="" f from dest run tags
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2496,6 +2587,12 @@ cmd_move() {
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
+  # The queue holds only work that can start (cmd_add): an item that still waits goes back to its row.
+  if [ "$to" = queued ]; then
+    local HOLD HOLD_DEAD
+    hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
+    [ -z "$HOLD" ] || die "$slug waits on $HOLD, and the queue holds only work that can start: agent-queue return $slug --why <why> takes it back to its board row with that gate"
+  fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
     die "$slug has a partial landing; finish with agent-land <N> without --partial before closing it ok"
@@ -2504,11 +2601,6 @@ cmd_move() {
   # reads that item again and its after: items start on work that never landed (#1145, #1146).
   if [ "$to" = done ] && [ "$status" = ok ] && [ -n "$(fm_get "$f" pr)" ] && [ -z "$(fm_get "$f" merged)" ]; then
     die "$slug has pr:$(fm_get "$f" pr) and no merged:, so done ok would close it with the PR open: land it with agent-land <N>, which records the merge, or move it to review until the PR merges (fleet-dispatch reap closes it then)"
-  fi
-  # The items after: this one, named before it closes, since an ok close starts them (start_next).
-  if [ "$to" = done ] && [ "$status" = ok ]; then
-    deps="$(dependents "$slug")"
-    [ -z "$deps" ] || echo "$slug releases: $(paste -sd' ' <<<"$deps")"
   fi
   run="$(fm_get "$f" lane_run)"
   case "$to" in
@@ -2547,10 +2639,8 @@ cmd_move() {
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
   [ "$to" = done ] && [ "$status" = ok ] || return 0
-  local rc=0
-  [ "${AGENT_QUEUE_START:-1}" != 1 ] || start_next "$slug" || rc=$?
   close_row_on_item "$slug" "$dest"
-  return "$rc"
+  [ "${AGENT_QUEUE_START:-1}" != 1 ] || pull_after "$slug" "$dest"
 }
 
 # mark_row <file> <run|start> -- the item's board row records its queue state, through notes, the rows'
@@ -2570,7 +2660,7 @@ mark_row() {
 # fleet-dispatch close_row when its session died first). Its sessions read the move as closing the
 # row, and a row left started reads as an orphan. A row already closed (a doc kind closes its own
 # with doc: proof) is left as it is; a close that fails warns unless the board shows the row closed.
-# After start_next, which scans the queue under the lock: this frees it before calling notes.
+# Before pull_after, which pulls the rows waiting on this one: this frees the lock before calling notes.
 close_row_on_item() {
   local slug=$1 row prof lane pr flag=() out key board
   IFS=$'\x1f' read -r row prof lane pr < <(item_json "$2" |
@@ -2684,6 +2774,8 @@ cmd_requeue() {
   fi
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
+  # The wait is the board row's (cmd_add): an item with none has nowhere to wait.
+  [ -n "$(item_row "$f")" ] || die "$slug has no board row to wait on $tag: give it one (agent-queue set $slug row=<board>:<id>) and requeue again"
   tags="$(fm_get "$f" tags)"
   local want="$tags"
   case " $want " in *" $tag "*) ;; *) want="${want:+$want }$tag" ;; esac
@@ -2692,17 +2784,27 @@ cmd_requeue() {
   want="${want# }"
   [ "$want" = "$tags" ] || { header_set "$f" tags "$want"; item_event item-set "$f" --why "tags=$want"; }
   header_del "$f" lane_run
-  # The move runs under this lock, so no writer closes or moves the item between the edit and it.
-  local AQ_LOCKED=1
-  cmd_move "$slug" queued
+  unlock
+  # Its row takes the gate (#ask/<id>, #hold/<res>, with #desk/<class>) and the item closes returned:
+  # the row is promoted once the gate clears, and the answer reaches the new item's brief
+  # (fleet-dispatch ask_decisions). The session that asked is not closed: it is the caller, and stops.
+  AQ_RETURN_KEEP_SESSION=1 cmd_return "$slug" --why "requeued behind $tag: its row waits on it"
 }
 
 # ask-holds [<id>] -- each active item held on an ask, `<slug><TAB><ask id><TAB><options>` (options
 # `+`-joined as the tag has them, empty for any answer), from the header's slug and tags lines alone.
 # Why: agent-ask asks this on every card and answer, and `list --json` builds every item's whole
-# record for it, 1.7 s against a few ms (2026-11-13).
+# record for it, 1.7 s against a few ms (2026-11-13). A board row gated #ask/<id>[/<option>...] is held
+# on it the same way, `<row id><TAB><ask id><TAB><options>`: the work waits there, not in the queue
+# (cmd_add), and agent-ask's guards (the judge never answers it, an answer starts a dispatch pass) read
+# both. A board that cannot be read lists the items alone.
 cmd_ask_holds() {
   local id="${1:-}" FILES=()
+  if command -v notes >/dev/null; then
+    notes board --json 2>/dev/null | jq -r --arg id "$id" '.rows[]? | select(.state == "open" or .state == "doing") | .id as $r
+      | .tags[]? | select(startswith("ask/")) | .[4:] | split("/") | select($id == "" or .[0] == $id)
+      | [$r, .[0], (.[1:] | join("+"))] | @tsv' 2>/dev/null
+  fi
   lock_read
   list_files waiting review running queued
   ((${#FILES[@]})) || return 0
@@ -2724,214 +2826,13 @@ cmd_ask_holds() {
     END { flush() }' "${FILES[@]}"
 }
 
-# settle-ask <id> -- once the human answered or cancelled that ask, settle each queued item held on it
-# that it can no longer release (ask_pending decides). An answer naming an option its tag does not is
-# the human's no: the item closes failed, `note:` naming the ask, and its board row stays open, so
-# re-gating it is one add (2026-11-10: three items sat behind vmToL3, answered a, gate wanted b).
-# A cancel decides nothing (the ask was superseded, folded into another or moot), so the item stays
-# queued and held: its hold reads `ask:<id> (cancelled)` in list and the hub, stderr tells the
-# canceller how to re-gate or close it, and fleet-dispatch dead_holds names it in queue-starved until
-# someone does (no note: the live hold is the flag, and a note would outlive a re-gate). Why: cancelling yaZGII (2026-11-13) closed consoles-p3 with its
-# work unfinished, and consoles-p5, after it, went dead with it.
-cmd_settle_ask() {
-  local id="${1:?usage: agent-queue settle-ask <id>}" f tag why slug note flag
-  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "not an ask id: $id"
-  lock
-  local AQ_LOCKED=1
-  while IFS= read -r f; do
-    for tag in $(fm_get "$f" tags); do
-      [ "${tag%%=*}" = "ask:$id" ] || continue
-      why="$(ask_pending "${tag#ask:}")"
-      # A judge or shepherd answer ("answered by judge, not the human") is not dead: the human can still answer.
-      case "$why" in "answered by "*) continue ;; cancelled | "answered "*", not "*) ;; *) continue ;; esac
-      slug="$(fm_get "$f" slug)" note="$(fm_get "$f" note)"
-      if [ "$why" = cancelled ]; then
-        echo "agent-queue: $slug stays queued behind cancelled ask $id: set its tags without $tag (plus the ask that replaced it), or move it done --status cancelled --why <why>" >&2
-      else
-        header_set "$f" note "dead hold: $tag ($why)${note:+; $note}"
-        cmd_move "$slug" done --status failed
-      fi
-      break
-    done
-  done < <(items_in "$AQ_DIR/queued")
-}
-
-# settle-dead -- no chain waits in silence on an item that closed other than ok. fleet-dispatch's reap
-# runs it every pass. Each queued item held dead (its after: names an item that closed failed or
-# cancelled, hold_for) is settled:
-#   - machine work goes back to its board with the items after it (return), each item's
-#     cancel_cause: naming the close, their rows un-started for dispatch to pick again;
-#   - the human's work (human_work) is theirs to decide: one ask (retry, replan, drop) holds it
-#     (`ask:<id>` in tags, `dead_ask:` naming it), and the pass after their answer carries it out.
-#     retry queues the closed item again under its slug, so the chain runs on once it lands (dead_retry);
-#     replan returns the chain to the board to be planned again; drop returns it and drops its rows.
-#     A cancelled ask, or an answer that names no option, returns the chain; the judge's answer
-#     decides nothing (ask_pending).
-# One line per item settled; exit 1 when one could not be. Why: a failed phase left every later one
-# held `closed failed, dead` and nothing released it; on 2026-11-17 three chains sat so (ar-2943 P5).
-cmd_settle_dead() {
-  local f rc=0 fd
-  local -a dead=()
-  # One settle at a time: two overlapping reaps would each post an ask for the same item.
-  mkdir -p "$AQ_DIR" && exec {fd}>"$AQ_DIR/.settle-dead.lock" || die "cannot open the settle-dead lock in $AQ_DIR"
-  flock -n "$fd" || return 0
-  lock_read
-  mapfile -t dead < <(dead_scan)
-  unlock_read
-  for f in ${dead[@]+"${dead[@]}"}; do
-    # A subshell each: a die in a return or an add stops that item only.
-    (settle_dead_one "$(fm_get "$f" slug)") || rc=1
-  done
-  return "$rc"
-}
-
-# dead_scan -> the queued item files held dead (dead_root), read from one index (index_load): reap runs
-# this every pass, so a pass with nothing dead costs one find and one awk, not a lookup per after: slug.
-dead_scan() {
-  local f s
-  local -a files=()
-  local -A LIST_MEMO=() QI_LIVE=() QI_ST=() QI_FIN=() QI_AFTER=() QI_TAGS=() QI_WMETA=()
-  mapfile -t files < <(items_in "$AQ_DIR/queued")
-  [ ${#files[@]} -gt 0 ] || return 0
-  index_load "${files[@]}"
-  for f in "${files[@]}"; do
-    for s in ${QI_AFTER[$f]-}; do
-      [ -z "${QI_LIVE[$s]+x}" ] || continue
-      case "${QI_ST[$s]-}" in ok | "") ;; *) printf '%s\n' "$f"; break ;; esac
-    done
-  done
-}
-
-# settle_dead_one <slug> -- settle-dead for one item, read again since the scan.
-settle_dead_one() {
-  local slug=$1 f root st ask pick opt
-  [ -n "$slug" ] && f="$(find_item "$slug")" && [ -n "$f" ] && [ "$(state_of "$f")" = queued ] || return 0
-  root="$(dead_root "$f")" || return 0
-  st="${root#* }" root="${root% *}"
-  ask="$(fm_get "$f" dead_ask)"
-  if [ -z "$ask" ]; then
-    if human_work "$(fm_get "$f" from)" "$(fm_get "$f" tags)"; then
-      dead_ask_post "$f" "$slug" "$root" "$st"; return
-    fi
-    settle_return "$slug" "returned $slug and the items after it: $(dead_cause "$f")" \
-      --why "$root closed $st, so the items after it went back to the board"
-    return
-  fi
-  case "$(ask_pending "$ask")" in
-    "") ;;
-    cancelled) settle_return "$slug" "returned $slug and the items after it: ask $ask was cancelled" \
-      --why "ask $ask on $root closing $st was cancelled"; return ;;
-    # An ask deleted or pruned is asked again, or the chain would wait on nothing.
-    "no such ask") dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return ;;
-    # Pending, the judge's answer, or an ask this tree cannot read: the human's work waits.
-    *) return 0 ;;
-  esac
-  pick=""
-  for opt in retry replan drop; do [ -n "$(ask_pending "$ask=$opt")" ] || { pick=$opt; break; }; done
-  # A drop, or a return of an item with no board row, needs the answer to name every item it closes
-  # (cancel_guard): a chain that grew since the ask is asked again, naming the items added.
-  if [ "$pick" != retry ] && ! dead_ask_names "$slug" "$f" "$ask"; then
-    dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return
-  fi
-  case "$pick" in
-    retry) dead_retry "$slug" "$root" "$ask" ;;
-    replan) settle_return "$slug" "returned $slug and the items after it to be re-planned (ask $ask)" \
-      --why "the human asked to re-plan after $root closed $st" --ask "$ask" ;;
-    drop) settle_return "$slug" "dropped $slug and the items after it, their rows with them (ask $ask)" \
-      --why "the human dropped it after $root closed $st" --ask "$ask" --drop ;;
-    *) settle_return "$slug" "returned $slug and the items after it: ask $ask was answered in free text" \
-      --why "the human's answer to ask $ask named no option" --ask "$ask" ;;
-  esac
-}
-
-# settle_return <slug> <message> <return args...> -- return the chain, then print what settle-dead did.
-settle_return() {
-  local slug=$1 msg=$2
-  shift 2
-  cmd_return "$slug" "$@" >/dev/null || return 1
-  echo "$msg"
-}
-
-# dead_ask_post <file> <slug> <root> <status> -- the ask settle-dead holds the human's dead
-# item on. It names every item of the chain, so its answer guards their drop (cancel_guard). It is
-# the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
-# session that has an ask of its own is not refused (one open question per session). An approval:
-# the human's work is theirs to drop, so the judge never answers it (agent-ask post --kind).
-# dead_ask_names <slug> <file> <ask> -- the ask's file names every item of the chain, as cancel_guard checks.
-dead_ask_names() {
-  local s af
-  af="$(compgen -G "$AQ_ASKS/*/$3.md" | awk 'NR == 1')"
-  [ -n "$af" ] || return 1
-  while IFS=$'\t' read -r s _; do grep -qwF -- "$s" "$af" || return 1; done < <(chain_of "$1" "$2")
-}
-
-dead_ask_post() {
-  local f=$1 slug=$2 root=$3 st=$4 old=${5-} cause chain plan rec why id tags
-  cause="$(dead_cause "$f")"
-  chain="$(chain_of "$slug" "$f" | cut -f1 | paste -sd' ' | sed 's/ /, /g')"
-  plan="$(fm_get "$f" plan)"
-  if [ "$st" = failed ]; then
-    rec=retry why="a failed run most often stopped on the way (a limit or a red), and the work is still wanted"
-  else
-    rec=replan why="someone stopped that step on purpose, so the steps after it may no longer fit"
-  fi
-  id="$(env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" post --project "$(fm_get "$f" project)" --task "$slug" --kind approval \
-    --options "retry=queue that step again; the waiting steps run once it lands|replan=send the waiting steps back to the board as rows, to plan again|drop=drop the waiting steps and their board rows" \
-    --recommend "$rec" --why "$why" \
-    --context "These are queue items, steps of your work that run one after another: $root is the step that closed $st ($cause), and $chain wait on it${plan:+, steps of the plan $(basename "$plan")}. Nothing starts them until you answer." \
-    "A step of your work closed $st and the steps after it wait: retry it, re-plan them or drop them?" </dev/null)" && [ -n "$id" ] ||
-    { echo "agent-queue: $slug waits dead on $root, and its ask could not be posted" >&2; return 1; }
-  lock
-  f="$(find_item "$slug")"
-  # Gone or asked by another settle meanwhile: this ask holds nothing, so it is cancelled, not left open.
-  if [ -z "$f" ] || [ "$(fm_get "$f" dead_ask)" != "$old" ]; then
-    unlock
-    env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" cancel "$id" "$slug was settled while this ask was posted" </dev/null >/dev/null 2>&1
-    return 0
-  fi
-  tags="$(fm_get "$f" tags | tr ' ' '\n' | grep -vxF "ask:${old:-}" | paste -sd' ')"
-  header_set "$f" tags "${tags:+$tags }ask:$id"
-  header_set "$f" dead_ask "$id"
-  item_event item-set "$f" --why "dead_ask=$id: $root closed $st${old:+, in place of ask $old}"
-  unlock
-  echo "asked $id about $slug: $root closed $st"
-}
-
-# dead_retry <slug> <root> <ask> -- the human's retry: the closed item queued again under its
-# slug, its task, row, plan, phases, from: and after:, so the dead item's after: reads a live hold again;
-# then the ask comes off the dead item. It is the human's answer, so it goes in as dispatch's pull does
-# (pull_ok); a retry the cap holds is tried again on the next pass.
-dead_retry() {
-  local slug=$1 root=$2 ask=$3 f pf row tags pfrom s out rc
-  local -a afters=()
-  if [ -z "$(find_item "$root")" ]; then
-    pf="$(latest_done "$root")"; [ -n "$pf" ] || die "$root has no finished item to queue again"
-    row="$(item_row "$pf")"
-    tags="$(fm_get "$pf" tags | tr " " "\n" | grep -vE "^(ask|pr):" | paste -sd" ")" pfrom="$(fm_get "$pf" from)"
-    for s in $(fm_get "$pf" after); do afters+=(--after "$s"); done
-    out="$(fm_body "$pf" | AGENT_QUEUE_START=0 AGENT_QUEUE_PULL=dispatch AQ_ITEM_PLAN="$(fm_get "$pf" plan)" AQ_ITEM_PHASES="$(fm_get "$pf" phases)" \
-      cmd_add_one --project "$(fm_get "$pf" project)" --slug "$root" --priority "$(fm_get "$pf" priority)" --from "${pfrom:-human}" ${afters[@]+"${afters[@]}"} \
-        ${row:+--row "${row#*:}"} ${tags:+--tags "$tags"} 2>&1)"; rc=$?
-    [ "$rc" -ne "$AQ_EX_HELD" ] || { echo "agent-queue: the retry of $root (ask $ask) is held by the queue cap; the next pass tries again" >&2; return 0; }
-    [ "$rc" -eq 0 ] || { echo "agent-queue: could not queue $root again (ask $ask): ${out##*$'\n'}" >&2; return 1; }
-  fi
-  lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue while $root was queued again"
-  tags="$(fm_get "$f" tags | tr ' ' '\n' | grep -vxF "ask:$ask" | paste -sd' ')"
-  if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi
-  header_del "$f" dead_ask
-  item_event item-set "$f" --why "retry: $root queued again (ask $ask)"
-  unlock
-  echo "queued $root again (ask $ask): $slug runs after it lands"
-}
-
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
 # such as a reap that read a live session as gone (ar-900, 2026-11-07: the shepherd had to move the
 # file under the lock by hand). The latest done item with the slug goes to running (or waiting) with
 # its session: and sessions: as they were, so the next reap reads it live again; status: and
 # finished: go, note: says why and keeps the close's own note. Its board row, which the close
 # un-started, is started again, after the queue lock is let go. Only a failed close is reopened: an ok
-# one may have started the items after: it (start_next) and a cancel closed its session, so either is
+# one may have started the items after: it (pull_after) and a cancel closed its session, so either is
 # new work under the slug. A reap that parked a live item in waiting/ needs none: the next reap that
 # lists its Claude moves it back to running.
 cmd_reopen() {
@@ -3025,38 +2926,6 @@ waits_on() {
   return 1
 }
 
-# dependents <slug> -> the slugs of the queued items its ok close releases, oldest first: `after:`
-# it, with every other slug they name already done ok.
-dependents() {
-  local f s AST free
-  while IFS= read -r f; do
-    [ -n "$f" ] && waits_on "$f" "$1" || continue
-    free=1
-    for s in $(fm_get "$f" after); do
-      [ "$s" != "$1" ] || continue
-      after_status "$s"; [ "$AST" = ok ] || { free=""; break; }
-    done
-    [ -z "$free" ] || fm_get "$f" slug
-  done < <(items_in "$AQ_DIR/queued")
-}
-
-# phases_ticked <item file> -- every phase the item carries is already ticked (or deferred) in its
-# plan: another session landed it, so starting it would do it twice (lesson 2026-11-05: closing p4
-# started p5, which had landed). No plan, no phases, or a plan it cannot read is not ticked.
-phases_ticked() {
-  local plan phases
-  plan="$(fm_get "$1" plan)" phases="$(fm_get "$1" phases)"
-  [ -n "$plan" ] && [ -n "$phases" ] && [ -f "$plan" ] || return 1
-  plan_phase_list "$plan" | jq -e --arg ph "$phases" '
-    . as $all | ($ph | split(" ") | map(tonumber? // empty)) as $n
-    | ($n | length) > 0 and all($n[]; . as $k | (first($all[] | select(.n == $k) | .state) // "open") != "open")' >/dev/null
-}
-
-# start_next <slug> -- the urgent and high items `after:` this one start the moment it closes ok, unless
-# another slug in their `after:` (or any other hold) still holds them. Each takes the slot the closing
-# session frees, so it waits for no dispatch pass and none of its load gates: an urgent or high plan's
-# next phase never sits behind fresh work. A low one waits its turn (waits_turn). A dispatch hold (agent-hold) still holds it. One
-# whose plan phases are already ticked closes ok instead, which releases the item after it in turn.
 # waits_turn <slug> <priority> -- exit 0, and say so, when agent-queue must not start the item itself:
 # a low one waits for a dispatch pass, which starts the queue in priority order, so low work never
 # jumps it (the human, 2026-11-12). Urgent and high start at once. The one place this rule lives.
@@ -3075,32 +2944,19 @@ dispatch_held() {
   echo "agent-queue: dispatch is held ($why), so $1 stays queued for the next dispatch pass" >&2
 }
 
-start_next() {
-  local f s h next=() landed=() self
-  self="$(realpath "${BASH_SOURCE[0]}")"
-  while IFS= read -r f; do
-    [ -n "$f" ] && waits_on "$f" "$1" || continue
-    # Another slug in its after: still holds it: neither started nor closed as landed.
-    h="$(hold_reason "$f")"
-    case "$h" in "after "*) continue ;; esac
-    if phases_ticked "$f"; then landed+=("$(fm_get "$f" slug)")
-    elif [ -z "$h" ] && ! waits_turn "$(fm_get "$f" slug)" "$(fm_get "$f" priority)"; then next+=("$(fm_get "$f" slug)")
-    fi
-  done < <(items_in "$AQ_DIR/queued")
-  [ $((${#next[@]} + ${#landed[@]})) -gt 0 ] || return 0
-  # The starter writes these items back through this script: free the lock, and keep the fd out of tmux.
+# pull_after <slug> <file> -- an item that closed ok pulls the board rows gated #after/<its row> now
+# (fleet-dispatch pull-after: promoted behind the same gates and room a pass checks, the urgent and high
+# ones started), so a plan's next phase takes the slot the closing session frees and waits for no
+# dispatch pass. An item with no row has nothing waiting on it there. A failed pull leaves the rows for
+# the next pass, which reads the row closed.
+pull_after() {
+  local row
+  row="$(item_row "$2")"
+  [ -n "$row" ] || return 0
+  # fleet-dispatch adds through this script: free the lock, and keep the fd out of tmux.
   unlock
-  for s in "${landed[@]}"; do
-    "$self" set "$s" "note=its plan phases were ticked before $1 closed" >/dev/null
-    echo "$s: its plan phases are already ticked, so it closes instead of starting"
-    "$self" move "$s" done --status ok
-  done
-  [ ${#next[@]} -gt 0 ] || return 0
-  ! dispatch_held "${next[*]}" || return 0
-  for s in "${next[@]}"; do
-    fleet-dispatch start --item "$s" ||
-      echo "agent-queue: $s could not start now, so it stays queued for the next dispatch pass" >&2
-  done
+  fleet-dispatch pull-after "${row#*:}" ||
+    echo "agent-queue: the rows after ${row#*:} were not pulled now, so the next dispatch pass promotes them" >&2
   return 0
 }
 
@@ -3328,8 +3184,6 @@ command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
-  settle-ask) shift; cmd_settle_ask "$@" ;;
-  settle-dead) shift; cmd_settle_dead "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;

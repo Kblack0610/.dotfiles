@@ -8,6 +8,7 @@
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item
+#   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
@@ -26,7 +27,7 @@
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
-#   (run, reap, start, fill and promote do nothing on a machine that does not hold the fleet lease: lease_guard)
+#   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
 #
@@ -3356,16 +3357,18 @@ settle_item() {
     fi
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
-  # Codex runs that asked, 2026-11-10) is held on it while its work is unfinished (no report, no PR or
-  # an open one): the human's answer releases it and starts it again (agent-ask start_held), where a
-  # failed item turned the answer into a board row. A report or a merge is the work done, ask or not.
+  # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
+  # unfinished (no report, no PR or an open one): the human's answer promotes the row again
+  # (agent-ask start_held), where a failed item turned the answer into a new board row. An item with no
+  # row has nowhere to wait (agent-queue requeue) and fails as below. A report or a merge is the work
+  # done, ask or not.
   if [ -z "$report" ] && { [ -z "$pr" ] || [ "$state" = OPEN ]; }; then
     ask=$(item_ask "$1" "$it") || { logline "reaped $2: queue item $1 left: agent-ask could not be read"; return 0; }
-    if [ -n "$ask" ]; then
+    if [ -n "$ask" ] && [ -n "$(jq -r '.row // (.from // "" | select(startswith("board:"))) // empty' <<<"$it")" ]; then
+      note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; its row waits until the human answers it"
       agent-queue requeue "$1" --ask "$ask" >/dev/null 2>&1 || { logline "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed"; return 0; }
-      note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; held until the human answers it"
-      logline "reaped $2: session gone, queue item $1 held on ask ${ask%%=*}"
-      echo "held queue item $1 (ask ${ask%%=*} pending, $2 ended)"
+      logline "reaped $2: session gone, queue item $1 returned to its board row behind ask ${ask%%=*}"
+      echo "returned queue item $1 to its board row behind ask ${ask%%=*} ($2 ended)"
       return 0
     fi
     # Its host is lost (host_lost, the third argument): the run went with the machine, so a running or
@@ -3431,11 +3434,18 @@ settle_item() {
     # to queued/ and its next start waits on the source's room, which claude-acct holds reached from
     # the refusal until the window resets (ar-1120). agent-codex pushed any work it left to salvage/<slug>
     # when it exited, and the next start resumes its thread there (resume_thread). A run started before
-    # its `after:` items finished (a hand start does not check holds) waits for them the same way.
+    # its `after:` items finished (a hand start does not check holds) goes back to its board row gated
+    # #after/ on them (agent-queue return): the queue holds only work that can start. One with no row
+    # to go back to fails as below.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
     for after in $(jq -r '.after // ""' <<<"$it"); do
       case "$(item_state "$after")" in queued | running | waiting | review)
-        requeue_blocked "$1" "$2" "it waits after $after"; return 0 ;; esac
+        if agent-queue return "$1" --why "session $2 ended before $after, which it waits after, closed: its row waits on it" >/dev/null 2>&1; then
+          logline "reaped $2: session gone, queue item $1 returned to its board row: it waits after $after"
+          echo "returned queue item $1 ($2 ended; it waits after $after)"
+          return 0
+        fi
+        break ;; esac
     done
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
@@ -4664,7 +4674,7 @@ cmd_starved() {
   started=$(last_run_start)
   dead=$(dead_holds)
   if [ -n "$dead" ]; then
-    echo "held on an ask that can never be answered: (agent-queue set <slug> tags=<its tags without it, plus the ask that replaced it>, or agent-queue move <slug> done --status cancelled --why <why>)"
+    echo "board rows gated on what can never clear: (notes ptask <project> --agent tag --remove <gate> <id>, plus --add the gate that replaced it, or drop the row)"
     sed 's/^/  /' <<<"$dead"
   fi
   # A run start in the window proves the passes move the queue, which clears the high items they work
@@ -4726,14 +4736,21 @@ cmd_starved() {
   return 1
 }
 
-# dead_holds -> one line per queued item held on an ask that was cancelled, no longer exists, or the
-# human answered with another option: no answer can release it (agent-queue ask_pending), so it
-# waits for good unless someone sees it. A cancel leaves its items here by design (agent-queue
-# settle-ask): this is where they surface. On 2026-11-07 trader's Kalshi phases sat behind
-# cancelled ask ybXZIM and nothing named them.
+# dead_holds -> one line per open board row gated on what can never clear (load_gates): an #after/ on a
+# row that was dropped or does not exist, an #ask/ the human cancelled, that no longer exists, or that
+# was answered with another option (agent-queue ask_pending), or any gate `gate` calls dead. Nothing
+# promotes such a row, so it waits for good unless someone sees it: this is where they surface. On
+# 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
-  agent-queue list --json --state queued 2>/dev/null |
-    jq -r 'select((.hold // "") | test("^ask:[^ ]+ \\((cancelled|no such ask|answered [^,]*, not [^)]+)\\)")) | "\(.slug) (\(.project), \(.hold))"'
+  local board p i t g
+  load_gates
+  board=$(notes board --json 2>/dev/null) || return 0
+  while IFS=$'\t' read -r p i t; do
+    for g in $t; do
+      [ "${GATE_ST[$g]:-}" = dead ] || { [[ "$g" == ask/* ]] && [[ "${GATE_WHY[$g]:-}" =~ \((cancelled|no\ such\ ask|answered\ [^,]*,\ not\ [^\)]+)\)$ ]]; } || continue
+      printf '%s (%s, #%s: %s)\n' "$i" "$p" "$g" "${GATE_WHY[$g]}"
+    done
+  done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags // []) | join(" "))"' <<<"$board")
   return 0
 }
 
@@ -5028,9 +5045,6 @@ cmd_reap() {
     [[ " ${active[*]} " == *" ${s##*/} "* ]] || rm -f "$s"
   done
   unstart_orphans
-  # A chain held dead on an item that closed failed or cancelled is returned to the board, or, for the
-  # human's work, asked about and then settled by the answer (agent-queue settle-dead, ar-2943 P5).
-  agent-queue settle-dead 2>&1 | while IFS= read -r s; do logline "settle-dead: $s"; done
   reconcile_plans
   reconcile_epics
   return 0
@@ -5576,6 +5590,8 @@ promote() {
   load_gates
   [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
   for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
+    # A returned hold:'s desk class rides as #desk/<class> (agent-queue pending_gates): back on the item, off the row.
+    case "$g" in desk/?*) tags="${tags:+$tags }desk:${g#desk/}" rm+=(--remove "$g"); continue ;; esac
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
   done
   if [ "${#gates[@]}" -gt 0 ]; then
@@ -5663,6 +5679,33 @@ cmd_promote() {
   [ -n "$key" ] || { say "promote: not on the $project $lane board as given, so it changed: $raw"; return 1; }
   promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" \
     '{profile: $profile, project: $project, lane: $lane, key: $key}')" "$tags" "$(sed 's/^- \[.\] //' <<<"$raw")" repeat
+}
+
+# cmd_pull_after <row id> -- the open board rows gated #after/<row id>, pulled the moment that row's item
+# closed ok (agent-queue pull_after), so a plan's next phase takes the slot the closing session frees and
+# waits for no pass. Each is promoted as a pass would (its other gates and the cap still hold it: promote,
+# agent-queue admission), and an urgent or high one started at once (start --item); a low one waits for a
+# pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
+# closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the
+# proof. Under the dispatch hold (agent-hold) nothing is pulled; the pass after the release does it.
+cmd_pull_after() {
+  local id=${1-} board c pri
+  [ -n "$id" ] || { say "usage: fleet-dispatch pull-after <row id>"; return 2; }
+  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
+  agent-hold check dispatch >/dev/null 2>&1 || { say "pull-after $id: dispatch is held, so the rows after it wait for a pass"; return 0; }
+  board=$(notes board --json 2>/dev/null) || { say "pull-after $id: notes board --json failed, so a pass promotes the rows after it"; return 1; }
+  load_gates
+  GATE_ST[after/$id]=clear
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    PROMOTED=''
+    promote "$c" "" "$(jq -r .raw <<<"$c" | sed 's/^- \[.\] //')" || continue
+    pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
+    if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
+    cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
+  done < <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
+    | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
+  return 0
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
@@ -5822,7 +5865,7 @@ main() {
   # reap sessions stand down before they read anything.
   case "${1:-}" in
     run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
-    reap | start | fill | promote) lease_guard "$1" || return 1 ;;
+    reap | start | fill | promote | pull-after) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
     run)
@@ -5837,6 +5880,7 @@ main() {
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
+    pull-after) shift; PULL=dispatch cmd_pull_after "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;

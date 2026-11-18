@@ -186,24 +186,29 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 }
 
 @test "add --plan skips a phase whose slug finished ok and queues the rest after it; all landed is refused" {
+  story_notes
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/rq.md"
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq >/dev/null
-  "$AQ" cancel rq-p2 >/dev/null
-  "$AQ" move rq-p1 done --status ok >/dev/null
-  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
+  # P2 waits on P1, so it is P1's board row's waiter (#after/lv-9), never a queue item.
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rq.md" --project level --slug rq
+  assert_success
+  assert_line "held rq-p2 -> level:lv-9 (#after/lv-9)"
+  [ -z "$(item queued rq-p2)" ]
+  AGENT_QUEUE_START=0 "$AQ" move rq-p1 done --status ok >/dev/null
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project level --slug rq
   assert_success
   assert_output --partial "skipped rq-p1 already finished ok"
   assert_output --partial "tick its box in $SANDBOX/rq.md"
   [ -z "$(item queued rq-p1)" ] || fail "a landed phase was queued again"
   [ "$(field "$(item queued rq-p2)" after)" = rq-p1 ] || fail "p2 does not go after the landed p1"
-  "$AQ" move rq-p2 done --status ok >/dev/null
-  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq
+  AGENT_QUEUE_START=0 "$AQ" move rq-p2 done --status ok >/dev/null
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project level --slug rq
   assert_failure 4
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ] || fail "a landed phase was queued again"
-  # negative control: --repeat queues every phase as new work
-  run "$AQ" add --plan "$SANDBOX/rq.md" --project game --slug rq --repeat
+  # negative control: --repeat queues every phase as new work, P2 again on P1's row
+  run "$AQ" add --plan "$SANDBOX/rq.md" --project level --slug rq --repeat
   assert_success
-  [ -n "$(item queued rq-p1)" ] && [ -n "$(item queued rq-p2)" ]
+  [ -n "$(item queued rq-p1)" ]
+  assert_line "held rq-p2 -> level:lv-9 (#after/lv-9)"
 }
 
 @test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
@@ -320,7 +325,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   "$AQ" add --project game --slug r1 "asked by the human"
   "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
   "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
-  "$AQ" add --project game --from shepherd --slug h1 --after r1 "fix(game): a held bug"
+  legacy h1 "after: r1" --project game --from shepherd "fix(game): a held bug"
   "$AQ" add --project game --from shepherd --slug b2 --tags cleanup "fix(game): another bug"
   "$AQ" add --project game --from shepherd --slug c1 --tags cleanup "chore(game): c"
   "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
@@ -367,7 +372,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
   "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
   "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
-  "$AQ" add --project game --from shepherd --slug c1 --after r1 "chore(game): held"
+  legacy c1 "after: r1" --project game --from shepherd "chore(game): held"
   mix_classes false
   off="$("$AQ" list --json --state queued | jq -r .slug)"
   run "$AQ" mix --json
@@ -434,13 +439,16 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   [ "$(jq -r .slug <<<"$output")" = b-app-red ]
 }
 
-@test "an after: successor in a project off focus starts when its item closes" {
-  "$AQ" add --project app --slug first --running "a" >/dev/null
-  "$AQ" add --project app --slug second --after first "b" >/dev/null
+@test "an after: successor waits on its board row, and an ok close pulls it, whatever the focus" {
+  story_notes
+  "$AQ" add --project level --slug first --running "a" >/dev/null
+  run "$AQ" add --project level --slug second --after first "b"
+  assert_failure 5
+  assert_output --partial "held second -> level:lv-9 (#after/lv-9)"
   printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
   run "$AQ" move first done --status ok
   assert_success
-  assert_called 'fleet-dispatch start --item second'
+  assert_called 'fleet-dispatch pull-after lv-9'
 }
 
 @test "an after: on a re-queued slug holds while the slug is live, whatever an old done record says" {
@@ -468,7 +476,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 
 @test "after holds an item until that slug is done ok" {
   "$AQ" add --project game --slug first "a"
-  "$AQ" add --project game --slug second --from shepherd --priority urgent --after first "b"
+  legacy second "after: first" --project game --from shepherd --priority urgent "b"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
   [ "$("$AQ" next --json | jq -r .slug)" = first ]
@@ -477,7 +485,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" next
   assert_failure
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed failed, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first"
+  assert_output "after first closed failed, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first"
   "$AQ" add --project game --slug first --repeat "again"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
@@ -487,19 +495,18 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 
 @test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
   "$AQ" add --project game --slug first "a"
-  "$AQ" add --project game --slug second --after first "b"
+  legacy second "after: first" --project game "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
 }
 
 # ar-39: after: is a list of slugs.
 @test "after: takes a list: a comma list and a repeated --after store one line, set too, and an unknown or own slug is refused" {
-  "$AQ" add --project game --slug a "a" >/dev/null
-  "$AQ" add --project game --slug b "b" >/dev/null
-  "$AQ" add --project game --slug c "c" >/dev/null
+  # Each landed, so the list is clear and d is queued (a pending one waits on its board row).
+  for s in a b c; do "$AQ" add --project game --slug $s "$s" >/dev/null; "$AQ" move $s done --status ok >/dev/null; done
   "$AQ" add --project game --slug d --after a,b --after "c a" "d" >/dev/null
   [ "$(field "$(item queued d)" after)" = "a b c" ]
   "$AQ" set d after=c,b >/dev/null
@@ -520,30 +527,21 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   [ "$(field "$(item queued d)" after)" = "c b" ]
 }
 
-@test "a list after: holds until every slug closed ok, names the live ones and a dead one first, and the last close starts it" {
+@test "a list after: holds until every slug closed ok and names the live ones and a dead one first" {
   "$AQ" add --project game --slug a --running "a" >/dev/null
   "$AQ" add --project game --slug b --running "b" >/dev/null
-  "$AQ" add --project game --slug both --after a,b "both" >/dev/null
+  legacy both "after: a b" --project game "both"
   f="$(item queued both)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"both\") | .hold'"
   assert_output "after a b"
   run "$AQ" bump both urgent
   assert_output --partial "both is held after a b: it starts when those land"
-  # tk's plan phases are already ticked: it closes as landed, but only once both its parents have.
-  printf '## Phases\n\n- [x] one\n' > "$SANDBOX/tk-plan.md"
-  "$AQ" add --project game --slug tk --after a,b "tk" >/dev/null
-  sed -i "/^from: /i plan: $SANDBOX/tk-plan.md\nphases: 1" "$(item queued tk)"
-  run "$AQ" move a done --status ok
-  refute_output --partial "releases"
-  # One of two closed ok: it still holds on the other, and nothing starts or closes it.
-  assert_not_called 'start --item both'
-  [ -n "$(item queued tk)" ]
+  "$AQ" move a done --status ok >/dev/null
+  # One of two closed ok: it still holds on the other.
   run bash -c "'$AQ' show both --json | jq -r '.hold, .ready // \"none\"'"
   assert_output $'after b\nnone'
-  run "$AQ" move b done --status ok
-  assert_line "b releases: both tk"
-  assert_called 'fleet-dispatch start --item both'
-  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-tk.md)" status)" = ok ]
+  "$AQ" move b done --status ok >/dev/null
+  [ "$("$AQ" next --json | jq -r .slug)" = both ]
   "$AQ" set a finished=2026-11-03T12:00:00Z >/dev/null
   "$AQ" set b finished=2026-11-03T13:00:00Z >/dev/null
   # ready is the latest finish of the list, through list and show alike.
@@ -554,14 +552,14 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   # A dead slug in the list is named even while another is live: it never releases.
   "$AQ" add --project game --slug c "c" >/dev/null
   "$AQ" add --project game --slug x "x" >/dev/null
-  "$AQ" add --project game --slug two --from shepherd --after c,x "two" >/dev/null
+  legacy two "after: c x" --project game --from shepherd "two"
   "$AQ" move x done --status failed >/dev/null
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
-  assert_output "after x closed failed, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show x"
+  assert_output "after x closed failed, dead: it never releases (queue x again, or set after= without it); who closed it and why: agent-queue show x"
 }
 
 @test "at: tags hold until their time, other tags are labels" {
-  "$AQ" add --project game --slug later --priority high --tags "at:18:00 ui" "b"
+  legacy later "tags: at:18:00 ui" --project game --priority high "b"
   "$AQ" add --project game --slug now --tags ui "c"
   AGENT_QUEUE_NOW=12:00 run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = now ]
@@ -577,8 +575,8 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 }
 
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
-  "$AQ" add --project game --slug tomorrow --tags "at:2026-11-05T09:00" "a"
-  "$AQ" add --project game --slug clock --tags "at:09:00" "b"
+  legacy tomorrow "tags: at:2026-11-05T09:00" --project game "a"
+  legacy clock "tags: at:09:00" --project game "b"
   # 16:00 the day before: the time-of-day tag has passed, the dated one holds.
   AGENT_QUEUE_NOW=2026-11-04T16:00 run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = clock ]
@@ -602,7 +600,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
     assert_failure
   done
   ask a1 pending
-  "$AQ" add --project game --slug money --tags "ask:a1=a" "go live"
+  legacy money "tags: ask:a1=a" --project game "go live"
   run "$AQ" next --json
   assert_failure
   run "$AQ" next --json
@@ -621,7 +619,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = money ]
   ask a2 pending
-  "$AQ" add --project game --slug any --priority urgent --tags "ask:a2" "any answer"
+  legacy any "tags: ask:a2" --project game --priority urgent "any answer"
   ask a2 answered 'whatever'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = any ]
@@ -637,7 +635,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" add --project game --slug bare --tags "ask:o1" "x"
   assert_failure
   assert_output --partial 'that ask offers a,b,c'
-  "$AQ" add --project game --slug go --tags "ask:o1=a+b" "go"
+  legacy go "tags: ask:o1=a+b" --project game "go"
   # Negative control: an option the tag does not list holds, and says so for dead_holds to read.
   ask o1 answered 'c' human
   run "$AQ" next --json
@@ -662,10 +660,10 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 @test "ask-holds lists each active item held on an ask, as list --json's tags have them" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   for i in h1 h2; do printf 'id: %s\nstatus: pending\noptions: a|b\n' "$i" > "$AGENT_ASK_DIR/game/$i.md"; done
-  "$AQ" add --project game --slug one --tags "ui ask:h1=a+b" "one"
-  "$AQ" add --project game --slug two --tags "ask:h1=a ask:h2=b" "two"
+  legacy one "tags: ui ask:h1=a+b" --project game "one"
+  legacy two "tags: ask:h1=a ask:h2=b" --project game "two"
   "$AQ" add --project game --slug free "no ask"
-  "$AQ" add --project game --slug gone --tags "ask:h2=a" "gone"
+  legacy gone "tags: ask:h2=a" --project game "gone"
   "$AQ" cancel gone >/dev/null
   run "$AQ" ask-holds
   assert_success
@@ -687,12 +685,12 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
     assert_failure; assert_output --partial 'that ask offers go,stop-burst+do-bridge,steps done, verify it'
   done
   # Negative controls: a real option in any case, a slug holding a +, and a multi-word option by its first word.
-  "$AQ" add --project game --slug one --tags "ask:o2=GO" "x"
-  "$AQ" add --project game --slug two --tags "ask:o2=stop-burst+do-bridge+go" "x"
-  "$AQ" add --project game --slug three --tags "ask:o2=steps" "x"
+  legacy one "tags: ask:o2=GO" --project game "x"
+  legacy two "tags: ask:o2=stop-burst+do-bridge+go" --project game "x"
+  legacy three "tags: ask:o2=steps" --project game "x"
   # An ask with no options has nothing to check a name against.
   printf 'id: o3\nstatus: pending\n' > "$AGENT_ASK_DIR/game/o3.md"
-  "$AQ" add --project game --slug four --tags "ask:o3=anything" "x"
+  legacy four "tags: ask:o3=anything" --project game "x"
 }
 
 @test "add and set tags= refuse an ask that can never release the item: cancelled, the judge's answer, another option" {
@@ -707,9 +705,9 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   done
   # Negative control: a pending ask, and the human's answer naming that option, are accepted.
   ask live pending
-  "$AQ" add --project game --slug p3 --tags "tier3 ask:live=a" "go live"
+  legacy p3 "tags: tier3 ask:live=a" --project game "go live"
   ask yes answered 'a' human
-  "$AQ" add --project game --slug p4 --tags "ask:yes=a" "the next"
+  legacy p4 "tags: ask:yes=a" --project game "the next"
   # Re-pointing an item off a dead ask goes through set, which checks the same way.
   run "$AQ" set p3 tags="tier3 ask:dead"
   assert_failure; assert_output --partial 'can never release it (cancelled)'
@@ -722,7 +720,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial "hold:<resource>"
   done
-  "$AQ" add --project game --slug forms --tags "hold:mac-desktop" "fill the store forms"
+  legacy forms "tags: hold:mac-desktop" --project game "fill the store forms"
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
   # A claim by another session holds it, and so does one by the asker: the item's own session is not the claimer.
@@ -758,7 +756,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial "rbw:<folder>/<name>"
   done
-  "$AQ" add --project game --slug deploy-key --tags "rbw:trading/manifold-key" "deploy the manifold key"
+  legacy deploy-key "tags: rbw:trading/manifold-key" --project game "deploy the manifold key"
   # Same name in another folder, and a prefix of a listed name, do not release it.
   run "$AQ" next --json
   assert_failure
@@ -781,12 +779,11 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = deploy-key ]
   # A read asks rbw only after it lets the lock go (ar-2427). A writer still asks it under the lock
-  # (start_next reads the holds of the items after the one it closes), and rbw never gets its fd
+  # (a move back to queued reads the hold it would bring), and rbw never gets its fd
   # there either: an rbw-agent it starts would hold the lock for good.
   [ ! -e "$SANDBOX/rbw.underlock" ]
-  "$AQ" add --project game --running --slug first "first" >/dev/null
-  "$AQ" add --project game --slug second --after first --tags "rbw:trading/manifold-key" "second" >/dev/null
-  "$AQ" move first done --status ok >/dev/null
+  "$AQ" add --project game --running --slug first --tags "rbw:trading/manifold-key" "first" >/dev/null
+  "$AQ" move first queued >/dev/null
   [ -s "$SANDBOX/rbw.underlock" ]
   [ ! -e "$SANDBOX/rbw.lockfd" ]
   # Only the read-only verbs ran: never get, unlock or sync.
@@ -888,9 +885,9 @@ gate_rbw() {
   printf 'id: a1\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/a1.md"
   "$AQ" add --project game --running --from shepherd --slug up "upstream" >/dev/null
   "$AQ" set up row=game:gm-9 >/dev/null
-  "$AQ" add --project game --from shepherd --slug gt --after up --tags "rbw:infra/y at:11:00 at:13:00 ask:a1=a" "gated" >/dev/null
+  legacy gt "after: up\ntags: rbw:infra/y at:11:00 at:13:00 ask:a1=a" --project game --from shepherd "gated"
   "$AQ" set gt row=game:gm-7 >/dev/null
-  "$AQ" add --project game --from shepherd --slug gf --after gt "follower" >/dev/null
+  legacy gf "after: gt" --project game --from shepherd "follower"
   "$AQ" set gf row=game:gm-8 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" return gt --why "back to the board"
@@ -902,7 +899,7 @@ gate_rbw() {
   [ "$(grep -n 'tag --add after/gm-9' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" -lt "$(grep -n 'unstart gm-7' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" ]
   # An after: on an item with no row has no board form: the return is refused and nothing closes.
   "$AQ" add --project game --running --from shepherd --slug norow "no row" >/dev/null
-  "$AQ" add --project game --from shepherd --slug behind --after norow "behind" >/dev/null
+  legacy behind "after: norow" --project game --from shepherd "behind"
   "$AQ" set behind row=game:gm-6 >/dev/null
   run "$AQ" return behind --why "back"
   assert_failure
@@ -916,7 +913,7 @@ gate_rbw() {
   [ -z "$(grep "tag .*gm-6" "$NOTES_FIXTURE/calls.log")" ]
   # --drop closes the rows, so it writes no gate.
   : > "$NOTES_FIXTURE/calls.log"
-  "$AQ" add --project game --from shepherd --slug dg --tags "rbw:infra/y" "dropped" >/dev/null
+  legacy dg "tags: rbw:infra/y" --project game --from shepherd "dropped"
   "$AQ" set dg row=game:gm-5 >/dev/null
   run "$AQ" return dg --why "not wanted" --drop
   assert_success
@@ -925,7 +922,7 @@ gate_rbw() {
 
 @test "return leaves a row started, exit 1, when it did not take its gates" {
   gate_rbw
-  "$AQ" add --project game --from shepherd --slug gx --tags "rbw:infra/y" "x" >/dev/null
+  legacy gx "tags: rbw:infra/y" --project game --from shepherd "x"
   "$AQ" set gx row=game:gm-4 >/dev/null
   printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\ncase "$*" in *" tag "*) exit 1 ;; esac\n' > "$SANDBOX/bin/notes"
   chmod +x "$SANDBOX/bin/notes"
@@ -935,7 +932,7 @@ gate_rbw() {
   refute grep -q 'unstart gm-4' "$NOTES_FIXTURE/calls.log"
 }
 
-@test "requeue --hold puts a started item back behind the resource, keeps its tags, and is not a model redo (ar-613)" {
+@test "requeue --hold returns a started item to its row behind the resource, and is not a model redo (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   printf '#!/usr/bin/env bash\necho "model-lane $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/model-lane"
   chmod +x "$SANDBOX/bin/model-lane"
@@ -948,33 +945,23 @@ gate_rbw() {
   # Behind a free resource it would restart at once, so the session is told to claim it.
   run "$AQ" requeue forms --hold mac-desktop
   assert_failure; assert_output --partial "claim it"
-  [ -n "$(item running forms)" ]
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
+  # The wait is the board row's: an item with none is refused and stays running.
   run "$AQ" requeue forms --hold mac-desktop
-  assert_success; assert_output --partial "forms: running -> queued"
-  f="$(item queued forms)"
+  assert_failure; assert_output --partial "has no board row to wait on hold:mac-desktop"
+  [ -n "$(item running forms)" ]
+  "$AQ" set forms row=game:gm-9 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" requeue forms --hold mac-desktop
+  assert_success
+  assert_called "ptask game --agent tag --add hold/mac-desktop gm-9"
+  # The item closes returned, nothing waits in queued/, and the model is not charged a redo.
+  [ -z "$(item queued forms 2>/dev/null)" ]
+  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-forms.md)"
+  [ "$(field "$f" end_reason)" = returned ]
   [ "$(field "$f" tags)" = "ui hold:mac-desktop" ]
-  [ -z "$(field "$f" lane_run)" ]
-  [ -z "$(field "$f" started)" ]
-  # A second requeue adds the tag once.
-  "$AQ" requeue forms --hold mac-desktop >/dev/null
-  [ "$(field "$(item queued forms)" tags)" = "ui hold:mac-desktop" ]
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
   assert_failure
-  run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
-  assert_failure
-  # The asker's own claim is not the item's: the queue asks as no session, Claude session id too.
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
-  CLAUDE_CODE_SESSION_ID=s-1 "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop "steam forms" >/dev/null
-  run env CLAUDE_CODE_SESSION_ID=s-1 AGENT_QUEUE_NOW=02:00 "$AQ" next --json
-  assert_failure
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
-  run env AGENT_QUEUE_NOW=02:00 "$AQ" next --json
-  [ "$(jq -r .slug <<<"$output")" = forms ]
-  # Started, its hold tag is spent: its own session may claim the desktop, and a later requeue
-  # must not hold it behind that claim.
-  "$AQ" move forms running >/dev/null
-  [ "$(field "$(item running forms)" tags)" = ui ]
 }
 
 @test "one waiter per release: the best desk class starts, the rest wait behind it, desk:auth only while the human is here" {
@@ -985,12 +972,12 @@ gate_rbw() {
   run "$AQ" add --project game --slug bad --tags "hold:mac-desktop desk:nope" "x"
   assert_failure; assert_output --partial "desk:<class>"
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
-  "$AQ" add --project game --slug shots --tags "hold:mac-desktop desk:listing" "store screenshots" >/dev/null
-  "$AQ" add --project game --slug plain --tags "hold:mac-desktop" "no class" >/dev/null
-  "$AQ" add --project game --slug signup --tags "hold:mac-desktop desk:legal" "xbox sign-up" >/dev/null
+  legacy shots "tags: hold:mac-desktop desk:listing" --project game "store screenshots" >/dev/null
+  legacy plain "tags: hold:mac-desktop" --project game "no class" >/dev/null
+  legacy signup "tags: hold:mac-desktop desk:legal" --project game "xbox sign-up" >/dev/null
   # Held by its own at: as well, an older item of the same class does not keep the desktop from the rest.
-  "$AQ" add --project game --slug at-tonight --tags "hold:mac-desktop desk:auth at:23:59" "tonight" >/dev/null
-  "$AQ" add --project game --slug code --tags "hold:mac-desktop desk:auth" "2fa step" >/dev/null
+  legacy at-tonight "tags: hold:mac-desktop desk:auth at:23:59" --project game "tonight" >/dev/null
+  legacy code "tags: hold:mac-desktop desk:auth" --project game "2fa step" >/dev/null
   run "$AQ" next --json
   assert_failure
   "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
@@ -1032,10 +1019,10 @@ gate_rbw() {
   export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_QUEUE_NOW=12:00
   printf '#!/usr/bin/env bash\necho "here 5 tmux"\n' > "$SANDBOX/bin/fleet-presence"; chmod +x "$SANDBOX/bin/fleet-presence"
   "$AQ" add --project game --slug blocker "still live" >/dev/null
-  "$AQ" add --project game --slug old --tags "hold:mac-desktop desk:listing" "oldest" >/dev/null
-  "$AQ" add --project game --slug waits --priority urgent --after blocker --tags "hold:mac-desktop desk:listing" "held by after" >/dev/null
-  "$AQ" add --project game --slug hot --priority urgent --tags "hold:mac-desktop desk:listing" "urgent" >/dev/null
-  "$AQ" add --project game --slug late --priority low --tags "hold:mac-desktop desk:listing" "low" >/dev/null
+  legacy old "tags: hold:mac-desktop desk:listing" --project game "oldest" >/dev/null
+  legacy waits "after: blocker\ntags: hold:mac-desktop desk:listing" --project game --priority urgent "held by after" >/dev/null
+  legacy hot "tags: hold:mac-desktop desk:listing" --project game --priority urgent "urgent" >/dev/null
+  legacy late "tags: hold:mac-desktop desk:listing" --project game --priority low "low" >/dev/null
   run "$AQ" list --state queued
   assert_output --partial "hold:mac-desktop (behind hot, listing)"
   # Control: with hot gone, the oldest heads (late waits behind it), not waits, which its after: holds.
@@ -1048,29 +1035,30 @@ gate_rbw() {
 @test "requeue --class tags the item's desk class once, and a later --class replaces it" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   "$AQ" add --project game --running --slug forms "fill the store forms" >/dev/null
+  "$AQ" set forms row=game:gm-9 >/dev/null
   "$REPO_ROOT/.local/bin/agent-hold" claim mac-desktop --by other "steam forms" >/dev/null
   run "$AQ" requeue forms --hold mac-desktop --class nope
   assert_failure; assert_output --partial "desk:<class>"
   run "$AQ" requeue forms --ask q1 --class legal
   assert_failure; assert_output --partial "usage"
+  : > "$NOTES_FIXTURE/calls.log"
   "$AQ" requeue forms --hold mac-desktop --class legal >/dev/null
-  [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:legal" ]
-  # A requeue with no --class keeps the class the item had.
-  "$AQ" move forms running >/dev/null
-  [ -z "$(field "$(item queued forms 2>/dev/null)" desk_start)" ]
-  "$AQ" requeue forms --hold mac-desktop >/dev/null
-  [ "$(field "$(item queued forms)" tags)" = "desk:legal hold:mac-desktop" ]
-  [ -z "$(field "$(item queued forms)" desk_start)" ]
-  "$AQ" move forms running >/dev/null
-  "$AQ" requeue forms --hold mac-desktop --class auth >/dev/null
-  [ "$(field "$(item queued forms)" tags)" = "hold:mac-desktop desk:auth" ]
+  assert_called "ptask game --agent tag --add hold/mac-desktop --add desk/legal gm-9"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-forms.md)" tags)" = "hold:mac-desktop desk:legal" ]
+  # One class per item: a --class replaces the one it had.
+  "$AQ" add --project game --running --slug legal --tags desk:legal "sign the terms" >/dev/null
+  "$AQ" set legal row=game:gm-8 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" requeue legal --hold mac-desktop --class auth >/dev/null
+  assert_called "ptask game --agent tag --add hold/mac-desktop --add desk/auth gm-8"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-legal.md)" tags)" = "hold:mac-desktop desk:auth" ]
 }
 
-@test "requeue --ask puts a headless run that needs the human back behind its ask; the human's answer releases it" {
+@test "requeue --ask returns a headless run that needs the human to its row behind the ask" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
   "$AQ" add --project game --running --slug codexrun "pick a palette" >/dev/null
-  "$AQ" set codexrun "lane_run=r-codex" >/dev/null
+  "$AQ" set codexrun "lane_run=r-codex" row=game:gm-9 >/dev/null
   run "$AQ" requeue codexrun --ask q9
   assert_failure; assert_output --partial "no agent-ask has that id"
   run "$AQ" requeue codexrun --ask q9 --hold mac-desktop
@@ -1080,16 +1068,13 @@ gate_rbw() {
   assert_failure; assert_output --partial "already answered"
   [ -n "$(item running codexrun)" ]
   ask q9 pending
+  : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" requeue codexrun --ask q9
-  assert_success; assert_output --partial "codexrun: running -> queued"
-  f="$(item queued codexrun)"
-  [ "$(field "$f" tags)" = "ask:q9" ]
-  [ -z "$(field "$f" lane_run)" ]
-  run "$AQ" next --json
-  assert_failure
-  ask q9 answered 'b, the dark one' human
-  run "$AQ" next --json
-  [ "$(jq -r .slug <<<"$output")" = codexrun ]
+  assert_success
+  # Its row waits on the ask (agent-ask start_held promotes it on the answer); no queued item holds.
+  assert_called "ptask game --agent tag --add ask/q9 gm-9"
+  [ -z "$(item queued codexrun 2>/dev/null)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-codexrun.md)" end_reason)" = returned ]
 }
 
 # ar-900: reap failed a live item on one agent-panel read, and the shepherd had to mv its file back by hand.
@@ -1199,9 +1184,9 @@ notes --profile bnb ptask game --agent run gm-9"
   printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\ncat "%s/pr-$3"\n' "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/gh"
   chmod +x "$SANDBOX/bin/gh"
   echo OPEN > "$SANDBOX/pr-7"; echo OPEN > "$SANDBOX/pr-8"
-  "$AQ" add --project game --slug blocked --priority urgent --tags "pr:Org/game#7" "a"
+  legacy blocked "tags: pr:Org/game#7" --project game --priority urgent "a"
   "$AQ" add --project game --slug base "b"
-  "$AQ" add --project game --slug both --priority urgent --after base --tags "pr:Org/game#8" "c"
+  legacy both "after: base\ntags: pr:Org/game#8" --project game --priority urgent "c"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"blocked\") | .hold'"
   assert_output "pr:Org/game#7 not merged"
   [ "$("$AQ" next --json | jq -r .slug)" = base ]
@@ -1220,7 +1205,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a pr: tag holds while gh cannot read the PR" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
-  "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
+  legacy blocked "tags: pr:Org/game#9" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#9 not merged"
 }
@@ -1238,7 +1223,7 @@ notes --profile bnb ptask game --agent run gm-9"
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/rbw-fj" "$SANDBOX/bin/curl-fj"
   export SO_CURL=curl-fj SO_RBW=rbw-fj SO_FORGEJO_HOSTS=git.example.test
   echo '{"number": 5, "state": "open", "merged": false, "head": {"sha": "h1"}}' > "$SANDBOX/fj.pr"
-  "$AQ" add --project game --slug blocked --tags "pr:kblack0610/game#5" "a"
+  legacy blocked "tags: pr:kblack0610/game#5" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:kblack0610/game#5 not merged"
   # Read, not failed: a failed read would cache an empty state.
@@ -1253,7 +1238,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a pr: read that fails is cached for the TTL, so a pass of lists costs one call (negative control: TTL 0 asks again)" {
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
-  "$AQ" add --project game --slug blocked --tags "pr:Org/game#9" "a"
+  legacy blocked "tags: pr:Org/game#9" --project game "a"
   for _ in 1 2 3; do "$AQ" list --json >/dev/null; done
   [ "$(wc -l < "$SANDBOX/gh.log")" -eq 1 ] || fail "gh asked $(wc -l < "$SANDBOX/gh.log") times"
   AGENT_QUEUE_PR_TTL=0 "$AQ" list --json >/dev/null
@@ -1264,7 +1249,7 @@ notes --profile bnb ptask game --agent run gm-9"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
   echo CLOSED > "$SANDBOX/pr-11"
-  "$AQ" add --project game --slug dead --tags "pr:Org/game#11" "a"
+  legacy dead "tags: pr:Org/game#11" --project game "a"
   run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "pr:Org/game#11 closed unmerged, never releases: cancel the item or set its tags without it"
   [ -z "$("$AQ" next --json)" ] || fail "a closed PR released its hold"
@@ -1281,7 +1266,7 @@ notes --profile bnb ptask game --agent run gm-9"
       {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
        runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
   }
-  "$AQ" add --project game --slug triage --priority urgent --tags "nightly:game" "a"
+  legacy triage "tags: nightly:game" --project game --priority urgent "a"
   "$AQ" add --project game --slug other "b"
   # No state file yet: held, never released on a guess.
   AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
@@ -1306,7 +1291,7 @@ notes --profile bnb ptask game --agent run gm-9"
   jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-07T09:05:00Z", workflows: [
     {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
      runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
-  "$AQ" add --project game --slug validate --tags "at:2026-11-07T00:00 nightly:game" "a"
+  legacy validate "tags: at:2026-11-07T00:00 nightly:game" --project game "a"
   AGENT_QUEUE_NOW=2026-11-06T09:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "at:2026-11-07T00:00"
   AGENT_QUEUE_NOW=2026-11-07T01:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
@@ -1323,11 +1308,11 @@ notes --profile bnb ptask game --agent run gm-9"
     {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
      runs: [{id: 1, created_at: "2026-11-08T10:01:00Z", status: "completed"},
             {id: 2, created_at: "2026-11-09T10:01:00Z", status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
-  "$AQ" add --project game --slug validate --tags "at:2026-11-08T00:00 nightly:game" "a"
+  legacy validate "tags: at:2026-11-08T00:00 nightly:game" --project game "a"
   [ "$(AGENT_QUEUE_NOW=2026-11-09T08:20 "$AQ" next --json | jq -r .slug)" = validate ]
   # NEGATIVE CONTROL: with no at: date the same hold reads today (11-09) and still waits on soak.
   "$AQ" cancel validate
-  "$AQ" add --project game --slug today --tags "nightly:game" "b"
+  legacy today "tags: nightly:game" --project game "b"
   AGENT_QUEUE_NOW=2026-11-09T08:20 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"today\") | .hold'"
   assert_output "nightly:game (soak.yml due 22:00)"
 }
@@ -1449,7 +1434,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "done ok refuses an item with pr: and no merged:, and its after: item stays queued" {
   "$AQ" add --project game --running --slug p "p" >/dev/null
-  "$AQ" add --project game --slug next --after p "next" >/dev/null
+  legacy next "after: p" --project game "next" >/dev/null
   "$AQ" set p pr=o/game#9999 >/dev/null
   run "$AQ" move p done --status ok
   assert_failure
@@ -1549,7 +1534,7 @@ notes --profile bnb ptask game --agent run gm-9"
 }
 
 @test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {
-  "$AQ" add --project game --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
+  legacy r "tags: at:2030-01-01T09:00" --project game "expect 16.7"
   f="$(item queued r)"
   head="$(sed '/^---$/q' "$f")"
   run "$AQ" retask r "expect 85.0" "(17 of 20)"
@@ -1806,6 +1791,7 @@ notes --profile bnb ptask game --agent run gm-9"
 }
 
 @test "an urgent oneshot from the human starts at add; high, a machine filer's urgent, a dispatched session's urgent and a held urgent do not (ar-2944)" {
+  story_notes
   run "$AQ" add --project game --priority urgent --slug u1 "fix it now"
   assert_success
   assert_called 'fleet-dispatch start --item u1'
@@ -1818,24 +1804,29 @@ notes --profile bnb ptask game --agent run gm-9"
   AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --priority urgent --slug d1 "a session's urgent"
   assert_success
   assert_not_called 'start --item d1'
-  run "$AQ" add --project game --priority urgent --tags at:23:59 --slug n1 "tonight"
-  assert_success
-  assert_output --partial 'n1 is held'
+  # Held work is its board row's, never the queue's: nothing starts.
+  run "$AQ" add --project level --priority urgent --tags at:23:59 --slug n1 "tonight"
+  assert_failure 5
+  assert_output --partial 'held n1 -> level:lv-9 (#at/2359)'
   assert_not_called 'start --item n1'
-  "$AQ" add --project game --running --slug par "parent" >/dev/null
-  run "$AQ" add --project game --priority urgent --after par --slug a1 "after parent"
+  "$AQ" add --project level --running --slug par "parent" >/dev/null
+  run "$AQ" add --project level --priority urgent --after par --slug a1 "after parent"
+  assert_failure 5
+  assert_output --partial 'held a1 -> level:lv-9 (#after/lv-9)'
   assert_not_called 'start --item a1'
-  refute_output --partial 'a1 is held'
 }
 
 @test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
-  run "$AQ" add --plan "$SANDBOX/ch.md" --project game --slug ch
+  run "$AQ" add --plan "$SANDBOX/ch.md" --project level --slug ch
   assert_success
   assert_called 'fleet-dispatch start --item ch-p1'
   assert_called 'fleet-dispatch start --item ch-p3'
+  # P2 waits on P1, so it is P1's row's waiter on the board, not a queue item.
+  assert_line 'held ch-p2 -> level:lv-2 (#after/lv-1)'
   assert_not_called 'start --item ch-p2'
-  [ -f "$(item queued ch-p2)" ]
+  [ -z "$(item queued ch-p2)" ]
   printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/lo.md"
   run "$AQ" add --plan "$SANDBOX/lo.md" --project game --priority low --slug lo
   assert_success
@@ -1854,54 +1845,28 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item q0-p1'
 }
 
-@test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
-  "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
-  "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
-  "$AQ" add --project game --slug other "unrelated" >/dev/null
+@test "an ok close pulls the rows gated on its row through fleet-dispatch pull-after; a failed close, a rowless item and AGENT_QUEUE_START=0 pull nothing" {
+  story_notes
+  # The rows after it are pulled through fleet-dispatch, which runs the admission and room checks.
+  "$AQ" add --project level --running --slug ph1 "phase 1" >/dev/null
   run "$AQ" move ph1 done --status ok
   assert_success
-  assert_called 'fleet-dispatch start --item ph2'
-  assert_not_called 'start --item other'
-  # Only urgent and high skip the queue: a low next phase waits for a dispatch pass.
-  "$AQ" add --project game --running --slug l1 "parent" >/dev/null
-  "$AQ" add --project game --slug l2 --after l1 --priority low "low next" >/dev/null
-  "$AQ" add --project game --slug l3 --after l1 --priority high "high next" >/dev/null
-  run "$AQ" move l1 done --status ok
-  assert_success
-  assert_output --partial 'l2 is low priority, so a dispatch pass starts it in its turn'
-  assert_not_called 'start --item l2'
-  [ -f "$(item queued l2)" ]
-  assert_called 'fleet-dispatch start --item l3'
-  # A failed parent leaves its next phase held.
-  "$AQ" add --project game --running --slug f1 "fails" >/dev/null
-  "$AQ" add --project game --slug f2 --after f1 "after a failure" >/dev/null
-  run "$AQ" move f1 done --status failed
-  assert_not_called 'start --item f2'
-  # Another hold on the next item still holds it.
-  "$AQ" add --project game --running --slug t1 "tagged parent" >/dev/null
-  AGENT_QUEUE_NOW=08:00 "$AQ" add --project game --slug t2 --after t1 --tags at:23:59 "later today" >/dev/null
-  AGENT_QUEUE_NOW=08:00 run "$AQ" move t1 done --status ok
-  assert_not_called 'start --item t2'
-  # A dispatch hold keeps it queued for the pass.
-  "$AQ" add --project game --running --slug h1 "held parent" >/dev/null
-  "$AQ" add --project game --slug h2 --after h1 "held next" >/dev/null
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
-  run "$AQ" move h1 done --status ok
-  assert_success
-  assert_output --partial 'by human: next queue), so h2 stays queued'
-  assert_not_called 'start --item h2'
-  [ -f "$(item queued h2)" ]
-  "$REPO_ROOT/.local/bin/agent-hold" release dispatch >/dev/null
-  # A start that fails leaves it queued.
-  "$AQ" add --project game --running --slug x1 "parent" >/dev/null
-  "$AQ" add --project game --slug x2 --after x1 "next" >/dev/null
+  assert_called 'fleet-dispatch pull-after lv-9'
+  : > "$NOTES_FIXTURE/calls.log"
+  # NEGATIVE CONTROLS: a failed close, an item with no row and AGENT_QUEUE_START=0 pull nothing.
+  "$AQ" add --project level --running --slug f1 "fails" >/dev/null
+  "$AQ" move f1 done --status failed >/dev/null
+  "$AQ" add --project game --running --slug g1 "no row" >/dev/null
+  "$AQ" move g1 done --status ok >/dev/null
+  AGENT_QUEUE_START=0 "$AQ" add --project level --running --slug z1 "parent" >/dev/null
+  AGENT_QUEUE_START=0 "$AQ" move z1 done --status ok >/dev/null
+  assert_not_called 'pull-after'
+  # A pull that fails leaves the rows to the next pass, and the close stands.
+  "$AQ" add --project level --running --slug x1 "parent" >/dev/null
   FD_EXIT=1 run "$AQ" move x1 done --status ok
   assert_success
-  assert_output --partial 'x2 could not start now, so it stays queued'
-  AGENT_QUEUE_START=0 "$AQ" add --project game --running --slug z1 "parent" >/dev/null
-  "$AQ" add --project game --slug z2 --after z1 "next" >/dev/null
-  AGENT_QUEUE_START=0 run "$AQ" move z1 done --status ok
-  assert_not_called 'start --item z2'
+  assert_output --partial 'the rows after lv-9 were not pulled now, so the next dispatch pass promotes them'
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-x1.md)" status)" = ok ]
 }
 
 plan_fixture() {
@@ -1924,18 +1889,21 @@ plan_fixture() {
 EOF
 }
 
-@test "add --plan queues one oneshot item per unchecked phase, each after the one before; --dry-run writes nothing" {
+@test "add --plan queues the phase that can start and files each later one as a board row gated on the row before; --dry-run writes nothing" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   plan_fixture
-  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
-  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --dry-run
+  "$AQ" add --project level --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --after base --dry-run
   assert_success
   assert_line --index 0 --regexp '^would queue my-plan-p2	phases 2	after base$'
   assert_line --index 2 --regexp '^would queue my-plan-p4	phases 4 5	after my-plan-p2$'
   assert_line --index 4 --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
-  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base --priority high --tags ui
+  AGENT_QUEUE_START=0 "$AQ" move base done --status ok >/dev/null
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --after base --priority high --tags ui
   assert_success
-  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+  # P2 can start, so it is the one queue item; each phase after it waits on the row before it (#after/<row>).
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
   f="$(item queued my-plan-p2)"
   [ "$(field "$f" mode)" = oneshot ]
   [ "$(field "$f" after)" = base ]
@@ -1944,17 +1912,18 @@ EOF
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = ui ]
   [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
+  [ "$(field "$f" row)" = level:lv-2 ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
-  f="$(item queued my-plan-p4)"
-  [ "$(field "$f" after)" = my-plan-p2 ]
-  [ "$(field "$f" phases)" = "4 5" ]
-  [ "$(field "$f" title)" = "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4" ]
-  grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$f"
-  [ "$(field "$(item queued my-plan-p6)" after)" = my-plan-p4 ]
+  assert_line 'held my-plan-p4 -> level:lv-3 (#after/lv-2)'
+  assert_line 'held my-plan-p6 -> level:lv-4 (#after/lv-3)'
+  # The row carries the phase's title and its whole brief, for the item dispatch promotes from it.
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -F "my-plan P4+5: Fourth thing. More words; Fifth thing: shares the branch of 4 #high" | grep -qF '#after/lv-2'
+  grep -qF "Phases 4 and 5 of the plan $SANDBOX/my-plan.md: Fourth thing; Fifth thing. Read the plan whole, then do ONLY these phases, on one branch" "$NOTES_FIXTURE/calls.log"
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
 }
 
 @test "add --plan: (independent) waits on --after alone, (after N) on phase N's item, unmarked lines keep the chain" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   cat > "$SANDBOX/marked.md" <<'EOF'
 ## Phases
 
@@ -1967,8 +1936,8 @@ EOF
 - [ ] 7. Seventh thing (after 5)
 - [ ] 8. Eighth thing (after 1)
 EOF
-  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
-  run "$AQ" add --plan "$SANDBOX/marked.md" --project game --after base --dry-run
+  "$AQ" add --project level --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/marked.md" --project level --after base --dry-run
   assert_success
   assert_line --index 0 --regexp '^would queue marked-p2	phases 2	after base$'
   assert_line --index 2 --regexp '^would queue marked-p3	phases 3	after base$'
@@ -1978,18 +1947,21 @@ EOF
   # (after 5) is phase 5's item, which is 4's; (after 1) names a landed phase, so --after alone.
   assert_line --index 8 --regexp '^would queue marked-p7	phases 7	after marked-p4$'
   assert_line --index 10 --regexp '^would queue marked-p8	phases 8	after base$'
-  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/marked.md" --project game
+  # With no --after, 2, 3 and 8 can start: queued, rows lv-2, lv-3 and lv-7. The rest wait on a row.
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/marked.md" --project level
   assert_success
   f="$(item queued marked-p3)"
   [ "$(field "$f" after)" = "" ]
   [ "$(field "$f" title)" = "marked P3: Third thing: runs beside 2" ]
-  [ "$(field "$(item queued marked-p4)" after)" = marked-p2 ]
-  [ "$(field "$(item queued marked-p4)" title)" = "marked P4+5: Fourth thing; Fifth thing" ]
   [ "$(field "$(item queued marked-p8)" after)" = "" ]
+  assert_line 'held marked-p4 -> level:lv-4 (#after/lv-2)'
+  assert_line 'held marked-p6 -> level:lv-5 (#after/lv-4)'
+  assert_line 'held marked-p7 -> level:lv-6 (#after/lv-4)'
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'marked P4+5: Fourth thing; Fifth thing #high #after/lv-2'
   # A marker that cannot be honoured is refused whole, naming the line; nothing is queued.
   bad() {
     printf '## Phases\n\n- [-] 1. Deferred\n- [ ] 2. Two\n- [ ] 3. %s\n' "$1" > "$SANDBOX/bad.md"
-    run "$AQ" add --plan "$SANDBOX/bad.md" --project game --slug bad --dry-run
+    run "$AQ" add --plan "$SANDBOX/bad.md" --project level --slug bad --dry-run
     assert_failure
     assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
   }
@@ -1997,10 +1969,11 @@ EOF
   bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
   bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
   bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
-  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 7 ]
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
 }
 
 @test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   cat > "$SANDBOX/labelled.md" <<'EOF2'
 ## Phases
 
@@ -2010,29 +1983,31 @@ EOF
 - [ ] P8 Later thing (after 7; waits on the check)
 - [ ] P10 Last thing
 EOF2
-  "$AQ" add --project game --slug base "the work before the plan" >/dev/null
-  run "$AQ" add --plan "$SANDBOX/labelled.md" --project game --after base --dry-run
+  "$AQ" add --project level --slug base "the work before the plan" >/dev/null
+  run "$AQ" add --plan "$SANDBOX/labelled.md" --project level --after base --dry-run
   assert_success
   # NEGATIVE CONTROL: by position these would be p2, p4 and p5; by label they are p7, p8 and p10.
   assert_line --index 0 --regexp '^would queue labelled-p7	phases 7	after base$'
   assert_line --index 2 --regexp '^would queue labelled-p8	phases 8	after labelled-p7$'
   assert_line --index 4 --regexp '^would queue labelled-p10	phases 10	after labelled-p8$'
-  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/labelled.md" --project game
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/labelled.md" --project level
   assert_success
   [ "$(field "$(item queued labelled-p7)" phases)" = 7 ]
   [ "$(field "$(item queued labelled-p7)" title)" = "labelled P7: Check a thing first" ]
-  [ "$(field "$(item queued labelled-p8)" title)" = "labelled P8: Later thing" ]
+  assert_line 'held labelled-p8 -> level:lv-3 (#after/lv-2)'
+  assert_line 'held labelled-p10 -> level:lv-4 (#after/lv-3)'
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'labelled P8: Later thing #high #after/lv-2'
   # The ticked box and the open phase are read by the same number: p9 landed, p8 did not.
   source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
   [ "$(plan_phase_list "$SANDBOX/labelled.md" | jq -c 'map(.n)')" = "[1,7,9,8,10]" ]
   printf '## Phases\n\n- [ ] P2 Two\n- [ ] P2 Again\n' > "$SANDBOX/dup.md"
-  run "$AQ" add --plan "$SANDBOX/dup.md" --project game --slug dup --dry-run
+  run "$AQ" add --plan "$SANDBOX/dup.md" --project level --slug dup --dry-run
   assert_failure
   assert_output --partial "two phases carry the same number"
   # A P0 phase is a phase like any other (it once read as an `(with 0)` on every later line), a
   # label's punctuation leaves the title, and a repeated number among landed phases is harmless.
   printf '## Phases\n\n- [x] P2 Done once (#1)\n- [x] P2 Done twice (#2)\n- [ ] P0. Preflight\n- [ ] P3 Three\n' > "$SANDBOX/zero.md"
-  run "$AQ" add --plan "$SANDBOX/zero.md" --project game --slug zero --dry-run
+  run "$AQ" add --plan "$SANDBOX/zero.md" --project level --slug zero --dry-run
   assert_success
   assert_line --index 0 --regexp '^would queue zero-p0	phases 0	after -$'
   assert_line --index 1 --partial ': Preflight. Read the plan whole'
@@ -2041,7 +2016,7 @@ EOF2
 
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
   "$AQ" add --project game --slug first "first"
-  "$AQ" add --project game --slug second --after first "second"
+  legacy second "after: first" --project game "second"
   run "$AQ" bump second urgent
   assert_success
   assert_output --partial "second -> urgent"
@@ -2054,7 +2029,7 @@ EOF2
   assert_output "second -> high"
   # An after: that released leaves a pr: hold, which bump does not name (ar-39 review).
   "$AQ" move first done --status ok >/dev/null
-  "$AQ" set second tags=pr:Org/game#11 >/dev/null
+  sed -i '/^from: /i tags: pr:Org/game#11' "$(item queued second)"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"
   echo CLOSED > "$SANDBOX/pr-11"
@@ -2186,8 +2161,8 @@ EOF2
 # cancelled those one by one, 40 chains lost.
 @test "return sends A back with B after: A: B is returned, not left dead, and both rows are un-started" {
   "$AQ" add --project game --from shepherd --slug ra "a"
-  "$AQ" add --project game --from shepherd --slug rb --after ra "b"
-  "$AQ" add --project game --from shepherd --slug rc --after rb "c"
+  legacy rb "after: ra" --project game --from shepherd "b"
+  legacy rc "after: rb" --project game --from shepherd "c"
   "$AQ" add --project game --from shepherd --slug rz "unrelated"
   "$AQ" set ra row=game:gm-1
   "$AQ" set rb row=game:gm-2
@@ -2228,7 +2203,7 @@ EOF2
 
 @test "return of an item already behind a dead after: keeps that root cause" {
   "$AQ" add --project game --from shepherd --slug va "a"
-  "$AQ" add --project game --from shepherd --slug vb --after va "b"
+  legacy vb "after: va" --project game --from shepherd "b"
   CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel va --why "set aside"
   "$AQ" return vb --why "back"
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-vb.md)" cancel_cause)" = "after va closed cancelled by sess-1: set aside" ]
@@ -2236,8 +2211,8 @@ EOF2
 
 @test "negative control: a plain cancel of A still leaves B dead, and cancelling B records A as the cause" {
   "$AQ" add --project game --from shepherd --slug na "a"
-  "$AQ" add --project game --from shepherd --slug nb --after na "b"
-  "$AQ" add --project game --from shepherd --slug nc --after nb "c"
+  legacy nb "after: na" --project game --from shepherd "b"
+  legacy nc "after: nb" --project game --from shepherd "c"
   CLAUDE_CODE_SESSION_ID=sess-1 "$AQ" cancel na --why "set aside"
   run bash -c "'$AQ' show nb --json | jq -r .hold"
   assert_output --partial "after na closed cancelled, dead"
@@ -2255,7 +2230,7 @@ EOF2
 
 @test "a session returns the human's work to its board row with no ask, but not an item with no row" {
   "$AQ" add --project game --from shepherd --slug ga "a"
-  "$AQ" add --project game --slug gb --after ga "b"
+  legacy gb "after: ga" --project game "b"
   # gb has no board row: returning it would leave the human's work nowhere, so the guard holds the chain
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "drain the queue under its cap"
   assert_failure; assert_output --partial "gb is work the human asked for"
@@ -2272,7 +2247,7 @@ EOF2
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
-  "$AQ" add --project game --slug gb --after ga "b"
+  legacy gb "after: ga" --project game "b"
   "$AQ" set gb row=game:gm-8
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --drop
   assert_failure; assert_output --partial "gb is work the human asked for"
@@ -2292,7 +2267,7 @@ EOF2
 @test "return follows only the items that wait on it, and an item that waits on two returns with either" {
   "$AQ" add --project game --slug qa "a"
   "$AQ" add --project game --slug qx "x"
-  "$AQ" add --project game --slug qb --after qa,qx "b"
+  legacy qb "after: qa qx" --project game "b"
   "$AQ" return qa --why "back to the board"
   [ -n "$(item queued qx)" ]
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-qb.md)" end_reason)" = returned ]
@@ -2300,130 +2275,37 @@ EOF2
   assert_failure; assert_output --partial "nothing active with slug nope"
 }
 
-# ar-2943 P5: a phase that closed failed left every later one held `closed failed, dead`, and nothing
-# released it (three chains sat so on 2026-11-17).
+# ar-2922: an add --plan that stopped part way (a lock it timed out on) left the first items of a chain.
 chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   printf '# %s\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two\n- [ ] 3. three\n- [ ] 4. four\n' "$1" > "$SANDBOX/$1.md"
 }
 
-@test "settle-dead returns the machine's chain after a failed phase with its cause; an ok close releases the next as before" {
-  chain_plan ch; chain_plan ok
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/ch.md" --project game --from shepherd --priority low >/dev/null
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/ok.md" --project game --from shepherd --priority low >/dev/null
-  "$AQ" set ch-p3 row=game:gm-3
-  "$AQ" move ch-p1 done --status ok >/dev/null
-  "$AQ" move ch-p2 done --status failed >/dev/null
-  "$AQ" move ok-p1 done --status ok >/dev/null
-  : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" settle-dead
-  assert_success
-  assert_output "returned ch-p3 and the items after it: after ch-p2 closed failed"
-  for s in ch-p3 ch-p4; do
-    f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-$s.md)"
-    [ "$(field "$f" status)" = cancelled ]
-    [ "$(field "$f" end_reason)" = returned ]
-    [ "$(field "$f" cancel_why)" = "ch-p2 closed failed, so the items after it went back to the board" ]
-  done
-  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ch-p3.md)" cancel_cause)" = "after ch-p2 closed failed" ]
-  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ch-p4.md)" cancel_cause)" = "returned with ch-p3" ]
-  assert_called "ptask game --agent unstart gm-3"
-  # negative control: the ok chain's next phase is free to start and nothing of it was returned
-  run bash -c "'$AQ' list --json | jq -r 'select(.slug | startswith(\"ok-\")) | .slug + \" \" + (.hold // \"\")'"
-  assert_line "ok-p2 "
-  assert_line --partial "ok-p3 after ok-p2"
-  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-ok-p2.md 2>/dev/null)" ]
-  run "$AQ" settle-dead
-  assert_success; assert_output ""
-}
-
-@test "settle-dead asks the human about their dead chain once, and their retry queues the failed phase again" {
-  chain_plan hp; story_notes
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/hp.md" --project level --priority high >/dev/null
-  for n in 2 3 4; do "$AQ" set hp-p$n row=level:lv-$n >/dev/null; done
-  "$AQ" move hp-p1 done --status ok >/dev/null
-  "$AQ" move hp-p2 done --status failed >/dev/null
-  run "$AQ" settle-dead
-  assert_success
-  assert_output --regexp '^asked [A-Za-z0-9_-]+ about hp-p3: hp-p2 closed failed$'
-  id="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
-  a="$HOME/.agent/asks/level/$id.md"
-  [ -f "$a" ]
-  grep -qx 'recommend: retry' "$a"
-  grep -q 'hp-p2 is the step that closed failed' "$a"
-  grep -q 'hp-p3, hp-p4 wait on it, steps of the plan hp.md' "$a"
-  f="$(item queued hp-p3)"
-  [ "$(field "$f" dead_ask)" = "$id" ]
-  [[ " $(field "$f" tags) " == *" ask:$id "* ]]
-  [ -n "$(item queued hp-p4)" ]
-  # an approval, so the judge never answers it; pending, nothing moves and no second ask is filed
-  grep -qx 'kind: approval' "$a"
-  run "$AQ" settle-dead; assert_success; assert_output ""
-  [ "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" -eq 1 ]
-  [ -n "$(item queued hp-p3)" ]
-  "$AGENT_ASK" answer "$id" retry >/dev/null 2>&1
-  run "$AQ" settle-dead
-  assert_success
-  assert_output "queued hp-p2 again (ask $id): hp-p3 runs after it lands"
-  g="$(item queued hp-p2)"
-  [ "$(field "$g" plan)" = "$SANDBOX/hp.md" ]
-  [ "$(field "$g" phases)" = 2 ]
-  [ "$(field "$g" row)" = level:lv-2 ]
-  # the retry keeps the failed item's own from: and after:
-  [ "$(field "$g" from)" = "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hp-p2.md)" from)" ]
-  [ "$(field "$g" after)" = hp-p1 ]
-  f="$(item queued hp-p3)"
-  [ -z "$(field "$f" dead_ask)" ]
-  [[ " $(field "$f" tags) " != *" ask:$id "* ]]
-  run bash -c "'$AQ' show hp-p3 --json | jq -r .hold"
-  assert_output "after hp-p2"
-  run "$AQ" settle-dead; assert_success; assert_output ""
-}
-
-@test "settle-dead carries out the human's drop: the chain is returned and its board rows dropped" {
-  chain_plan hd
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/hd.md" --project game --priority high >/dev/null
-  "$AQ" set hd-p3 row=game:gm-7
-  "$AQ" move hd-p1 done --status ok >/dev/null
-  "$AQ" cancel hd-p2 --why "set aside" >/dev/null
-  run "$AQ" settle-dead
-  assert_success
-  id="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
-  grep -qx 'recommend: replan' "$HOME/.agent/asks/game/$id.md"
-  "$AGENT_ASK" answer "$id" drop >/dev/null 2>&1
-  : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" settle-dead
-  assert_success
-  assert_output "dropped hd-p3 and the items after it, their rows with them (ask $id)"
-  for s in hd-p3 hd-p4; do
-    f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-$s.md)"
-    [ "$(field "$f" end_reason)" = returned ]
-  done
-  assert_called "ptask game --agent drop gm-7 --why"
-  assert_not_called "unstart gm-7"
-}
-
 @test "add --plan resumes a chain an earlier add left part way, and still refuses a chain already whole" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  printf '# pp\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n' > "$SANDBOX/pp.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/pp.md" --project level --from shepherd --priority low >/dev/null
+  # negative control: the whole chain is queued, so a second add refuses and writes nothing
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project level --from shepherd --priority low
+  assert_failure; assert_output --partial "the phases of $SANDBOX/pp.md are already queued"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
+  # The plan grew to a chain of four, and an add from before the queue held no gated work left its
+  # first two items queued, pp-p2 after pp-p1 (it stopped on a lock it timed out on, ar-2922).
   chain_plan pp
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low >/dev/null
-  # the earlier add stopped after its first two items (a lock it timed out on, ar-2922)
-  rm "$(item queued pp-p3)" "$(item queued pp-p4)"
+  sed -i '/^from: /i after: pp-p1' "$(item queued pp-p2)"
   # a kept item queued with other phases than the plan gives it now is refused, nothing added
   "$AQ" set pp-p2 phases=3 >/dev/null
-  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project level --from shepherd --priority low
   assert_failure; assert_output --partial "pp-p2 is queued with other phases than"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
   "$AQ" set pp-p2 phases=2 >/dev/null
-  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project level --from shepherd --priority low
   assert_success
   assert_output --partial "kept pp-p1, queued by an earlier add of"
   assert_output --partial "kept pp-p2, queued by an earlier add of"
-  [ "$(field "$(item queued pp-p3)" after)" = pp-p2 ]
-  [ "$(field "$(item queued pp-p4)" after)" = pp-p3 ]
-  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
-  # negative control: the whole chain is queued, so a third add refuses and writes nothing
-  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low
-  assert_failure; assert_output --partial "the phases of $SANDBOX/pp.md are already queued"
-  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+  # The rest wait on the board, each on the row before it.
+  assert_line 'held pp-p3 -> level:lv-3 (#after/lv-2)'
+  assert_line 'held pp-p4 -> level:lv-4 (#after/lv-3)'
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
 }
 
 @test "set phases= takes plan checklist numbers, as add --plan writes them, and refuses anything else" {
@@ -2441,7 +2323,7 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
   "$AQ" add --project game --slug mkt-16 "mkt-16" >/dev/null
-  for n in 17 18 19 20; do "$AQ" add --project game --slug "mkt-$n" --after "mkt-$((n - 1))" "mkt-$n" >/dev/null; done
+  for n in 17 18 19 20; do legacy "mkt-$n" "after: mkt-$((n - 1))" --project game "mkt-$n"; done
   "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
   "$AQ" add --project game --from shepherd --slug chore "chore" >/dev/null
   # The terminal cancel (no session env) is the human's: mkt-16 goes, and its chain is dead.
@@ -2664,7 +2546,7 @@ EOF
   "$AQ" add --project game --slug d --running "d"
   # c can start and has sat two hours; e waits on c.
   f="$(item queued c)"; sed -i "s/^queued: .*/queued: $(date -u -d '2 hours ago' +%FT%TZ)/" "$f"
-  "$AQ" add --project game --slug e --after c "e"
+  legacy e "after: c" --project game "e"
   run "$AQ" stats --json --since 2000-01-01
   assert_success
   [ "$(jq -r '.active.queued' <<<"$output")" = 2 ]
@@ -2693,7 +2575,7 @@ EOF
 
 @test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
   "$AQ" add --project game --slug p "p"
-  "$AQ" add --project game --slug f --after p "f"
+  legacy f "after: p" --project game "f"
   "$AQ" move p running; "$AQ" move p done --status ok
   "$AQ" set p finished=2026-11-03T12:00:00Z
   f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
@@ -2710,7 +2592,7 @@ EOF
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
 @test "list --json carries ready: queued, else its after: item's finish when later, none while that holds it" {
   "$AQ" add --project game --slug p "p"
-  "$AQ" add --project game --slug f --after p "f"
+  legacy f "after: p" --project game "f"
   "$AQ" add --project game --slug plain "plain"
   f="$(item queued f)"; sed -i 's/^queued: .*/queued: 2026-11-03T08:00:00Z/' "$f"
   f="$(item queued plain)"; sed -i 's/^queued: .*/queued: 2026-11-03T09:00:00Z/' "$f"
@@ -2809,7 +2691,7 @@ teardown() {
     "$SANDBOX" "$SANDBOX" "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
   chmod +x "$SANDBOX/rbw-fake"
   export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
-  "$AQ" add --project game --slug held --tags "rbw:trading/key" "deploy the key" >/dev/null
+  legacy held "tags: rbw:trading/key" --project game "deploy the key" >/dev/null
   "$AQ" list --json > "$SANDBOX/read.out" 3>&- &
   READER=$!
   # Opened read-write, a fifo never blocks the open: the read's timeout and the go are the only waits,
@@ -2945,44 +2827,16 @@ teardown() {
   [ ! -e "$AGENT_QUEUE_DIR" ]
 }
 
-@test "a close names the items it releases, and one whose plan phases are already ticked closes instead of starting" {
-  plan_fixture
-  "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
-  "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null
-  # Another session landed phase 2 and ticked it; its queue item never heard.
-  sed -i 's/^- \[ \] 2\. Second/- [x] 2. Second/' "$SANDBOX/my-plan.md"
-  run "$AQ" move base done --status ok
-  assert_success
-  assert_line "base releases: my-plan-p2"
-  assert_output --partial "my-plan-p2: its plan phases are already ticked, so it closes instead of starting"
-  assert_line "my-plan-p2 releases: my-plan-p4"
-  assert_not_called 'start --item my-plan-p2'
-  assert_called 'fleet-dispatch start --item my-plan-p4'
-  f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-my-plan-p2.md)"
-  [ "$(field "$f" status)" = ok ]
-  [ "$(field "$f" note)" = "its plan phases were ticked before base closed" ]
-  # Phases 4 and 5 travel together: one still open, so the item is not landed.
-  sed -i 's/^- \[ \] 4\. Fourth/- [x] 4. Fourth/' "$SANDBOX/my-plan.md"
-  "$AQ" add --project game --running --slug base2 "another parent" >/dev/null
-  "$AQ" set my-plan-p6 after=base2 >/dev/null
-  run "$AQ" move base2 done --status ok
-  assert_called 'fleet-dispatch start --item my-plan-p6'
-}
-
 @test "a 1b sub-phase takes no place: items keep their phase numbers, and a 1b is read by its label" {
   plan_fixture
-  "$AQ" add --project game --running --slug base "the work before the plan" >/dev/null
-  "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --after base >/dev/null
-  [ "$(field "$(item queued my-plan-p6)" phases)" = 6 ]
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
+  assert_line --regexp '^would queue my-plan-p6	phases 6	after my-plan-p4$'
   # Someone adds a 1b under the landed phase 1 after the items were queued, and phase 5 lands. By
   # position 5 would now be "4. Fourth" and 6 would be "5. Fifth", ticked: p6 would close, never worked.
   sed -i 's/^- \[x\] 1\. Landed thing: details/&\n- [x] 1b. Follow-up of phase 1 (#7)/; s/^- \[ \] 5\. Fifth/- [x] 5. Fifth/' "$SANDBOX/my-plan.md"
   # NEGATIVE CONTROL: by position this list would be [1,2,3,4,5,6,7] and p6 would read ticked.
   source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
   [ "$(plan_phase_list "$SANDBOX/my-plan.md" | jq -c 'map(.n)')" = '[1,"1b",2,3,4,5,6]' ]
-  run "$AQ" move base done --status ok
-  assert_success
-  refute_output --partial "my-plan-p6: its plan phases are already ticked"
   # An open 1b is no queue item (no integer for `phases:`): it is named on stderr and skipped, and
   # phase 2 keeps its number and its place in the chain.
   printf '## Phases\n\n- [x] 1. One (#1)\n- [ ] 1b. Follow-up\n- [ ] 2. Two\n' > "$SANDBOX/sub.md"
@@ -3001,7 +2855,7 @@ teardown() {
 
 # story_notes -- give the level and arena games a lab sheet, and a notes stub for the story write:
 # every call lands in calls.log; `ptask ... start <id>` fails once closed.<id> exists (no open row);
-# `ptask ... add` prints its row with id lv-9 and exits 0, or, with
+# `ptask ... add` prints its row with id lv-9 (lv-<n> counting up from story.seq when that file holds <n>) and exits 0, or, with
 # story.rc set, prints story.out on stderr and exits story.rc (3 is ptask's "already open").
 # `ptask ... propose` prints propose.out, else its words unchanged; propose.rc makes it refuse.
 # `ptask ... done` fails once done.rc exists (no open row), `ptask ... run` once run.rc does; `ptask ... list` prints list.out, or fails with list.rc.
@@ -3018,7 +2872,8 @@ case " $* " in
   exit 0 ;;
 *' add '*)
   rc=$(cat "$NOTES_FIXTURE/story.rc" 2>/dev/null || echo 0)
-  if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-9 -->\n' "${@: -1}"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
+  id=9; if [ -s "$NOTES_FIXTURE/story.seq" ]; then id=$(cat "$NOTES_FIXTURE/story.seq"); echo $((id + 1)) > "$NOTES_FIXTURE/story.seq"; fi
+  if [ "$rc" = 0 ]; then printf -- '- [ ] %s #c1105 <!-- id:lv-%s -->\n' "${@: -1}" "$id"; else cat "$NOTES_FIXTURE/story.out" >&2; fi
   exit "$rc" ;;
 *' start '*) [ ! -e "$NOTES_FIXTURE/closed.${@: -1}" ] && [ ! -e "$NOTES_FIXTURE/closed.$4.${@: -1}" ] ||
   { echo "no open task matches" >&2; exit 1; } ;;
@@ -3029,6 +2884,58 @@ case " $* " in
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
+}
+
+# queue-held-to-board (ar-3121): no writer leaves a queued item with a pending hold; each gate goes on
+# the item's board row instead. no_held fails on any queued item list --json reads a hold for.
+no_held() {
+  local held
+  held="$("$AQ" list --state queued --json | jq -r 'select((.hold // "") != "") | "\(.slug): \(.hold)"')"
+  [ -z "$held" ] || fail "queued items that hold: $held"
+}
+
+@test "no writer leaves a queued item with a pending hold: a gated add, --plan and a set of tags= or after= all wait on the row" {
+  story_notes; gate_rbw
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  echo 1 > "$NOTES_FIXTURE/story.seq"
+  # A session's add on a missing rbw item files its row with the gate and queues nothing.
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=s-1 run "$AQ" add --project level --priority low --tags rbw:infra/missing --slug key "chore(deploy): the key"
+  assert_failure 5
+  assert_output --partial "held key -> level:lv-1 (#rbw/infra/missing)"
+  assert_called "#rbw/infra/missing"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-key.md 2>/dev/null)" ] || fail "a gated add wrote an item"
+  no_held
+  "$AQ" add --project level --slug base "feat(menu): base" >/dev/null
+  run "$AQ" add --project level --after base --slug next "feat(menu): next"
+  assert_failure 5
+  no_held
+  printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/inv.md"
+  run "$AQ" add --plan "$SANDBOX/inv.md" --project level
+  assert_success
+  no_held
+  # A set that gives a queued item a gate returns it to its row; one with no row is refused unwritten.
+  "$AQ" add --project level --slug other "feat(menu): other" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" set other "tags=rbw:infra/missing"
+  assert_success
+  assert_called "--add rbw/infra/missing"
+  [ -z "$(item queued other 2>/dev/null)" ]
+  no_held
+  "$AQ" add --project level --slug last "feat(menu): last" >/dev/null
+  run "$AQ" set last after=base
+  assert_success
+  [ -z "$(item queued last 2>/dev/null)" ]
+  no_held
+  "$AQ" add --project game --slug bare "bare" >/dev/null
+  run "$AQ" set bare "tags=rbw:infra/missing"
+  assert_failure; assert_output --partial "bare has no board row to wait on its gate"
+  [ -z "$(field "$(item queued bare)" tags)" ]
+  no_held
+  # Negative control: a legacy item written past the writers is what no_held catches.
+  legacy old "tags: rbw:infra/missing" --project game "old"
+  run no_held
+  assert_failure; assert_output --partial "old: "
 }
 
 @test "a canary item files no story row, and --from takes only the known origins, research:<facet> among them" {
@@ -3572,9 +3479,11 @@ second line of the brief
   assert_output 0
   run jq -c '{from, slug, runnable, limit}' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output '{"from":"human","slug":"three","runnable":2,"limit":2}'
-  # A held item does not count: an `after:` one leaves room.
+  # A gated add files its row and queues nothing, so it takes no room.
   "$AQ" cancel one >/dev/null
-  "$AQ" add --project level --slug later --after two "feat(menu): later" >/dev/null
+  run "$AQ" add --project level --slug later --after two "feat(menu): later"
+  assert_failure 5
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-later.md 2>/dev/null)" ]
   run "$AQ" add --project level --slug three "feat(menu): three"
   assert_success
 }
@@ -3622,14 +3531,14 @@ second line of the brief
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   "$AQ" add --project game --from shepherd --priority low --tags '#requested' --slug req "asked for" >/dev/null
   "$AQ" add --project game --from shepherd --priority low --slug head "chain head" >/dev/null
-  "$AQ" add --project game --from shepherd --priority low --after head --slug tail "chain tail" >/dev/null
+  legacy tail "after: head" --project game --from shepherd --priority low "chain tail"
   "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
   for s in a req head b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
-  export AGENT_QUEUE_CAP=5
+  export AGENT_QUEUE_CAP=6
   : > "$NOTES_FIXTURE/calls.log"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
   assert_success
-  assert_output --partial "returned b to its board row to make room for urgent u1 under the cap of 5"
+  assert_output --partial "returned b to its board row to make room for urgent u1 under the cap of 6"
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" end_reason)" = returned ]
   assert_called "ptask game --agent unstart gm-b"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags red --slug r1 "red one"
@@ -3638,7 +3547,7 @@ second line of the brief
   # Negative controls: what is left is the human's, #requested, a chain head and urgent or red work.
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u2 "urgent two"
   assert_failure 5
-  assert_output --partial "held by admission, nothing was queued: 5 items can start now against a cap of 5"
+  assert_output --partial "held by admission, nothing was queued: 6 items can start now against a cap of 6"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "h,head,r1,req,tail,u1"
   run "$AQ" admission --json
@@ -3650,7 +3559,7 @@ a"
 
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
-  "$AQ" add --project game --from shepherd --priority low --tags at:23:59 --slug n "tonight" >/dev/null
+  legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
   "$AQ" set n row=game:gm-n >/dev/null
   export AGENT_QUEUE_CAP=2
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
@@ -3671,7 +3580,7 @@ a"
   assert_output "n"
 }
 
-@test "the cap never holds a --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
+@test "the cap never holds a --running, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
   run "$AQ" add --project game --slug human "human"
@@ -3682,8 +3591,6 @@ a"
   run "$AQ" add --project game --priority urgent --slug urgent "urgent"
   assert_failure 5
   "$AQ" add --project game --running --session s1 --slug mine "mine" >/dev/null
-  "$AQ" add --project game --after one --slug chained "chained" >/dev/null
-  "$AQ" add --project game --tags at:2099-01-01T09:00 --slug dated "dated" >/dev/null
   AGENT_QUEUE_PULL=hand "$AQ" add --project game --from board:game:gm-3 --slug gm-3 "feat(game): started by hand" >/dev/null
   "$AQ" add --project game --from auto:epics --tags verify --slug verify-e-1 "verify e" >/dev/null
   run "$AQ" add --project game --from board:game:gm-4 --slug gm-4 "feat(game): dispatch's fill"
@@ -3694,7 +3601,7 @@ a"
   assert_failure
   assert_output --partial "only the board fills the queue"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "canary,chained,dated,gm-3,mine,one,verify-e-1"
+  assert_output "canary,gm-3,mine,one,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
@@ -3751,16 +3658,16 @@ a"
   assert_success
 }
 
-@test "an item held only to its time of day counts against the cap at every hour" {
+@test "every queued item counts against the cap, one held to a time of day or a date too" {
+  # The queue holds only work that can start (a gated add files a board row), so every queued item
+  # counts: one left from before, held to a time of day or a date, too.
   export AGENT_QUEUE_CAP=2
-  "$AQ" add --project game --tags at:20:00 --slug n1 "evening one" >/dev/null
-  "$AQ" add --project game --tags at:18:00 --slug evening "evening" >/dev/null
+  legacy n1 "tags: at:20:00" --project game "evening one"
+  legacy dated "tags: at:2099-01-01T09:00" --project game "dated"
   run "$AQ" add --project game --slug day "day"
   assert_failure 5
   assert_output --partial "2 items can start now against a cap of 2"
-  # Negative control: a dated hold (at:YYYY-MM-DDTHH:MM) is a one-off, not a daily flood, and is not counted.
-  "$AQ" cancel evening >/dev/null
-  "$AQ" add --project game --tags at:2099-01-01T09:00 --slug dated "dated" >/dev/null
+  "$AQ" cancel dated >/dev/null
   run "$AQ" add --project game --slug day "day"
   assert_success
 }
@@ -3773,14 +3680,12 @@ a"
   run "$AQ" add --project game --priority low --slug second "second follow-up"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
-  "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
   # Urgent is capped too (2026-11-18): with nothing to return it is held, from the item.
   run "$AQ" add --project game --slug now --priority urgent "urgent for the human"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
-  [ "$(field "$(item queued dated)" from)" = human ]
   [ "$(field "$(item running own)" from)" = human ]
 }
 
@@ -3837,7 +3742,7 @@ already"
 
 @test "a partial merge cannot close ok or release after items" {
   "$AQ" add --project game --running --slug partial 'two repos' >/dev/null
-  "$AQ" add --project game --slug next --after partial 'next phase' >/dev/null
+  legacy next "after: partial" --project game 'next phase' >/dev/null
   "$AQ" set partial pr=o/game#1 merged=aaa111 partial=yes >/dev/null
   run "$AQ" move partial done --status ok
   assert_failure
@@ -3857,7 +3762,7 @@ already"
   export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
   printf '#!/usr/bin/env bash\necho "gh $*" >> "%s/gh.log"\necho OPEN\n' "$SANDBOX" > "$SANDBOX/bin/gh"
   chmod +x "$SANDBOX/bin/gh"
-  "$AQ" add --project game --slug held --tags "pr:Org/game#7" "a"
+  legacy held "tags: pr:Org/game#7" --project game "a"
   : > "$SANDBOX/gh.log"
   run "$AQ" add --project game --row lv-2 --slug by-row "feat(menu): the row's work"
   assert_success
@@ -3986,34 +3891,3 @@ already"
   [ "$(field "$(item queued s5)" priority)" = high ]
 }
 
-@test "settle-dead asks again when its ask is gone, or when the chain grew past what the answered ask names" {
-  chain_plan hg
-  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/hg.md" --project game --priority high >/dev/null
-  "$AQ" move hg-p1 done --status ok >/dev/null
-  "$AQ" move hg-p2 done --status failed >/dev/null
-  run "$AQ" settle-dead; assert_success
-  id="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
-  rm "$HOME/.agent/asks/game/$id.md"
-  run "$AQ" settle-dead
-  assert_success
-  assert_output --regexp '^asked [A-Za-z0-9_-]+ about hg-p3: hg-p2 closed failed$'
-  id2="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
-  [ "$id2" != "$id" ]
-  f="$(item queued hg-p3)"
-  [ "$(field "$f" dead_ask)" = "$id2" ]
-  [[ " $(field "$f" tags) " != *" ask:$id "* ]]
-  # an item queued after the chain once the ask went out: the answer does not name it, so it is asked again
-  AGENT_QUEUE_START=0 "$AQ" add --project game --from shepherd --slug hg-late --after hg-p4 "late" >/dev/null
-  "$AGENT_ASK" answer "$id2" replan >/dev/null 2>&1
-  run "$AQ" settle-dead
-  assert_success
-  assert_output --regexp '^asked [A-Za-z0-9_-]+ about hg-p3: hg-p2 closed failed$'
-  id3="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
-  grep -qw hg-late "$HOME/.agent/asks/game/$id3.md"
-  [ -n "$(item queued hg-late)" ]
-  "$AGENT_ASK" answer "$id3" replan >/dev/null 2>&1
-  run "$AQ" settle-dead
-  assert_success
-  assert_output "returned hg-p3 and the items after it to be re-planned (ask $id3)"
-  [ -z "$(item queued hg-late)" ]
-}
