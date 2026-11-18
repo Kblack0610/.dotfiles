@@ -93,6 +93,14 @@
 #                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
+#   fleet-bench health [--coverage] [--json]
+#                                one row for each part of the fleet (the sections above the
+#                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
+#                                `flows:` names it and their state, then one verdict line. A part is
+#                                TRIP or ERROR on its worst live watch, OK when each is, UNCOVERED
+#                                when no watch probes it. Exit 1 on any TRIP or ERROR; --coverage
+#                                prints only the UNCOVERED parts and any `flows:` name that is no
+#                                part, and exits 1 on any
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
@@ -293,6 +301,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RELEASES_CMD:=hub releases --json}"   # request_to_live_h: a project with a row goes live at its tag's first deploy (hub_core::release_graph), one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
+: "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
@@ -4312,6 +4321,76 @@ cmd_triage() {
   upsert_report "$rows" "$extra"
 }
 
+# health: the fleet's parts joined to the watches that probe them. The parts list and each watch's
+# `flows:` names come from sentinel-manifest, a watch's reading from Sentinel's own <watch>.state
+# (the files triage reads), so this runs no probe and asks no model. A watch with no reading yet
+# (state "new") is not a live probe: it shows beside its part but does not make it covered.
+# Rows: "<part> TAB <OK|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
+# for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
+health_rows() {
+  local parts tags w p s
+  parts=$($HEALTH_MANIFEST_CMD parts 2>&1) || { say "health: cannot read the parts list: $parts"; return 1; }
+  [ -n "$parts" ] || { say "health: the parts list is empty"; return 1; }
+  tags=$($HEALTH_MANIFEST_CMD tags "$TRIAGE_WATCHES" 2>&1) || { say "health: cannot read the watch tags: $tags"; return 1; }
+  tags=$(while IFS=$'\t' read -r w p; do
+    [ -n "$w" ] || continue
+    s=$(cat "$TRIAGE_WATCH_STATE/$w.state" 2>/dev/null); printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
+  done <<<"$tags")
+  awk -F'\t' -v OFS='\t' '
+    NR == FNR { if ($0 != "") order[++n] = $0; known[$0] = 1; next }
+    { if (!($2 in known)) { stale[++ns] = $1 OFS $2; next }
+      list[$2] = list[$2] (list[$2] == "" ? "" : ", ") $1 "=" $3
+      r = ($3 == "ERROR") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
+      if (r > worst[$2]) worst[$2] = r }
+    END {
+      split("UNCOVERED OK TRIP ERROR", name, " ")
+      for (i = 1; i <= n; i++) print order[i], name[worst[order[i]] + 1], (order[i] in list ? list[order[i]] : "-")
+      for (i = 1; i <= ns; i++) print "!", stale[i]
+    }' <(printf '%s\n' "$parts") <(printf '%s' "$tags")
+}
+
+cmd_health() {
+  local rows json=0 cov=0 verdict
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --coverage) cov=1 ;;
+      *) say "usage: fleet-bench health [--coverage] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  rows=$(health_rows) || return 1
+  if [ "$cov" = 1 ]; then
+    rows=$(awk -F'\t' '$1 == "!" { print "stale flows name: " $2 " names " $3; next } $2 == "UNCOVERED" { print $1 }' <<<"$rows")
+    [ -z "$rows" ] || { echo "$rows"; return 1; }
+    return 0
+  fi
+  verdict=$(awk -F'\t' '
+    $1 == "!" { stale++; next }
+    { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1 }
+    END {
+      v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + stale > 0) ? "GAPS" : "GREEN"
+      printf "fleet health %s: %d parts, %d OK, %d TRIP, %d ERROR, %d UNCOVERED", v, n, c["OK"], c["TRIP"], c["ERROR"], c["UNCOVERED"]
+      if (bad != "") printf " (down: %s)", bad
+      if (stale > 0) printf ", %d stale flows names", stale
+      printf "\n" }' <<<"$rows")
+  if [ "$json" = 1 ]; then
+    jq -Rn --arg verdict "$verdict" '
+      [inputs | split("\t")] as $r
+      | {verdict: $verdict,
+         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ")) end)}],
+         stale: [$r[] | select(.[0] == "!") | {watch: .[1], name: .[2]}]}' <<<"$rows"
+  else
+    awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
+      END { for (i = 1; i <= NR; i++)
+        if (a[i] == "!") printf "%-*s  %-9s  %s\n", w, "?", "STALE", b[i] " names " c[i]
+        else printf "%-*s  %-9s  %s\n", w, a[i], b[i], c[i] }' <<<"$rows"
+    echo "$verdict"
+  fi
+  grep -qE $'\t(TRIP|ERROR)\t' <<<"$rows" && return 1
+  return 0
+}
+
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
 # included. fleet-assess decides for this box alone; these read the pool and the other hosts too.
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
@@ -5770,6 +5849,7 @@ main() {
     canary) shift; cmd_canary "$@" ;;
     room) intake_room ;;
     triage) shift; cmd_triage "$@" ;;
+    health) shift; cmd_health "$@" ;;
     reds) shift; cmd_reds "$@" ;;
     findings) shift; cmd_findings "$@" ;;
     respond) shift; cmd_respond "$@" ;;

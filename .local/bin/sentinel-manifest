@@ -40,6 +40,19 @@ Verbs
                  documentation gap to a runtime fault would have paged eleven
                  times for eleven healthy watches. Skills run --strict when
                  WRITING a manifest; the daemon never does.
+  parts          one name per line: each part of the fleet a watch may claim to probe,
+                 read from the architecture doc (the headings above its Flows table, then
+                 the Flows table's first column), less the parts `health-exclude` names.
+  tags [DIR]     "<watch>, TAB, <part>" for each name in each manifest's `flows:` list (DIR
+                 is ~/.agent/watches by default). `fleet-bench health` joins these with the
+                 watch state; an unreadable manifest tags nothing, so its parts show
+                 UNCOVERED rather than the watch vanishing without a word.
+
+`flows:` is an optional list of part names: which parts of the fleet the watch probes. Plain
+`validate` checks its shape; `validate --strict` also checks each name is in `parts`. Plain
+`validate` must not check names: the loop runs it every pass and sends a failing manifest to
+ERROR and a page, so renaming a Flows row would stop every watch that named it.
+`fleet-bench health --coverage` reports a stale name instead.
 
 Timestamps are deliberately kept as strings: PyYAML would otherwise resolve
 `created: 2026-07-26T10:50:00-07:00` into a datetime and reformat it, and the
@@ -231,6 +244,121 @@ def cmd_env(path):
     return 0
 
 
+def arch_doc_path():
+    return os.environ.get("FLEET_ARCH_DOC") or os.path.expanduser(
+        "~/.config/agentctl/ARCHITECTURE.md"
+    )
+
+
+def exclude_path():
+    return os.environ.get("HEALTH_EXCLUDE") or os.path.expanduser(
+        "~/.config/agentctl/health-exclude"
+    )
+
+
+def fleet_parts():
+    """The parts of the fleet, in the architecture doc's own order, as a list of names.
+
+    Every `## ` heading above `## Flows` is a part (Runners, Work, Sessions, Evals, Asks), then
+    each row of the Flows table. A name in both is one part. A part named in `health-exclude`
+    (`name<TAB>why`, one a line) is left out. A doc with no Flows table is an error: an empty
+    list would read as a fleet with nothing to check.
+    """
+    with open(arch_doc_path(), "r", encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    parts = []
+    in_flows = False
+    seen_flows = False
+    for line in lines:
+        if line.startswith("## "):
+            title = line[3:].strip()
+            in_flows = title == "Flows"
+            seen_flows = seen_flows or in_flows
+            if seen_flows and not in_flows:
+                break
+            if not seen_flows:
+                parts.append(title)
+        elif in_flows and line.startswith("|"):
+            cell = line.strip().strip("|").split("|")[0].strip()
+            if cell and cell != "Flow" and not set(cell) <= set("-: "):
+                parts.append(cell)
+    if not seen_flows:
+        raise ValueError(f"{arch_doc_path()} has no '## Flows' section")
+    excluded = set()
+    try:
+        with open(exclude_path(), "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip() and not line.startswith("#"):
+                    excluded.add(line.split("\t", 1)[0].strip())
+    except FileNotFoundError:
+        pass
+    ordered = []
+    for name in parts:
+        if name not in excluded and name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
+def flows_of(doc):
+    """The manifest's `flows:` names as a list; a lone scalar counts as one."""
+    value = doc.get("flows")
+    if value is None:
+        return []
+    return [str(v).strip() for v in (value if isinstance(value, (list, tuple)) else [value])]
+
+
+def flows_shape_errors(doc):
+    if "flows" not in doc:
+        return []
+    value = doc["flows"]
+    items = value if isinstance(value, (list, tuple)) else [value]
+    if not items or not all(isinstance(v, str) and v.strip() for v in items):
+        return ["flows must be a list of part names (strings), e.g. [Runners, Timers]"]
+    return []
+
+
+def flows_name_errors(doc):
+    """--strict only: each `flows:` name must be a part of the fleet."""
+    names = flows_of(doc)
+    if not names:
+        return []
+    try:
+        known = fleet_parts()
+    except (OSError, ValueError) as exc:
+        return [f"cannot check flows: {exc}"]
+    return [
+        f"flows names {name!r}, which is not a part of the fleet (known: {', '.join(known)})"
+        for name in names
+        if name not in known
+    ]
+
+
+def cmd_parts():
+    try:
+        print("\n".join(fleet_parts()))
+    except (OSError, ValueError) as exc:
+        print(f"sentinel-manifest: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_tags(directory):
+    directory = directory or os.path.expanduser("~/.agent/watches")
+    try:
+        files = sorted(f for f in os.listdir(directory) if f.endswith(".yaml"))
+    except OSError as exc:
+        print(f"sentinel-manifest: {exc}", file=sys.stderr)
+        return 1
+    for f in files:
+        try:
+            names = flows_of(load(os.path.join(directory, f)))
+        except ValueError:
+            continue
+        for name in names:
+            print(f"{f[:-5]}\t{name}")
+    return 0
+
+
 def bash_syntax_error(cmd):
     """Return a reason string if CMD is not valid bash, else None."""
     proc = subprocess.run(
@@ -301,12 +429,15 @@ def cmd_validate(path, strict=False):
         errors.extend(legibility_errors(doc))
         errors.extend(expiry_errors(path, doc))
         errors.extend(pagination_errors(doc))
+        errors.extend(flows_name_errors(doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
             errors.append(f"key {key!r} is not a valid shell identifier")
         if isinstance(value, dict):
             errors.append(f"key {key!r} is a nested mapping; the schema is flat")
+
+    errors.extend(flows_shape_errors(doc))
 
     probe = scalar(doc.get("probe"))
     if not probe:
@@ -403,13 +534,17 @@ def cmd_validate(path, strict=False):
     return 0
 
 
-USAGE = "usage: sentinel-manifest {env|validate [--strict]} FILE"
+USAGE = "usage: sentinel-manifest {env|validate [--strict]} FILE | parts | tags [DIR]"
 
 
 def main(argv):
     args = argv[1:]
     strict = "--strict" in args
     args = [a for a in args if a != "--strict"]
+    if args[:1] == ["parts"] and len(args) == 1 and not strict:
+        return cmd_parts()
+    if args[:1] == ["tags"] and len(args) <= 2 and not strict:
+        return cmd_tags(args[1] if len(args) == 2 else "")
     if len(args) != 2 or args[0] not in ("env", "validate"):
         print(USAGE, file=sys.stderr)
         return 2
