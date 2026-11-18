@@ -353,10 +353,18 @@ fn human_at(text: &str) -> Option<u64> {
         })
 }
 
-/// A typed prompt the human sent, not one our tooling typed with tmux send-keys.
+/// A typed prompt the human sent, not one our tooling typed with tmux send-keys, nor the brief
+/// fleet-dispatch started the session with (`DISPATCH_BRIEF`).
 fn human_typed(line: &str) -> bool {
-    typed_prompt(line).is_some_and(|p| !TOOLING.iter().any(|t| p.starts_with(t)))
+    typed_prompt(line)
+        .is_some_and(|p| !TOOLING.iter().any(|t| p.starts_with(t)) && !p.contains(DISPATCH_BRIEF))
 }
+
+/// The line every fleet-dispatch start brief carries (`item_brief` and its fix, land, proof and
+/// doc briefs). A brief opens with the entry skill the human types too ("/one-shot ..."), so no
+/// prefix tells the two apart: read as typed, it held each dispatched session open for the human
+/// keep after its start (2026-11-17). A test keeps fleet-dispatch writing it.
+const DISPATCH_BRIEF: &str = "This is agent-queue item ";
 
 /// Prompts our tooling types into a pane as if the human had: the shepherd's close
 /// (`fleet-shepherd` `close_sample`), fleet-dispatch's restore (`RESTORE_PROMPT`) and an
@@ -2739,6 +2747,10 @@ mod tests {
                 r#""type":"user","message":{"content":"Answer to ask bnLnIa: done at 16:30"}"#,
             ),
             at(
+                28,
+                r#""type":"user","message":{"content":"<command-message>one-shot</command-message>\n<command-name>/one-shot</command-name>\n<command-args>Phase 2 of the plan\n\nThis is agent-queue item plan-p2, and that item is its record.</command-args>"}"#,
+            ),
+            at(
                 26,
                 r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"x"}]}"#,
             ),
@@ -2753,7 +2765,29 @@ mod tests {
             human_at(&[lines.join("\n"), mine].join("\n")),
             Some(base + 30 * 60)
         );
+        // And so does a /one-shot the human typed: the entry skill alone is not a dispatch brief.
+        let shot = at(
+            31,
+            r#""type":"user","message":{"content":"<command-name>/one-shot</command-name>\n<command-args>fix the chip</command-args>"}"#,
+        );
+        assert_eq!(
+            human_at(&[lines.join("\n"), shot].join("\n")),
+            Some(base + 31 * 60)
+        );
         assert_eq!(human_at(&lines[2..].join("\n")), None);
+    }
+
+    #[test]
+    fn fleet_dispatch_briefs_carry_the_dispatch_brief_line() {
+        let src = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../bin/fleet-dispatch"
+        ))
+        .unwrap();
+        assert!(
+            src.contains(&format!("\"{DISPATCH_BRIEF}$slug")),
+            "fleet-dispatch's briefs lost {DISPATCH_BRIEF:?}; add it back or change DISPATCH_BRIEF"
+        );
     }
 
     #[test]
