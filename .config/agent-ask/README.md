@@ -160,7 +160,7 @@ An ask that waits on something the human must do with their hands (wear a headse
 
 Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
-An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). A session on a fleet worker is found in that worker's agent-panel (`fleet_panel_row`, fleet-hosts.sh) and typed into there, through `fleet_host_run <host> agent-panel send`; `target` and `reopen` read the same row, so a session live on a worker is never reopened here. If the session does not take the Enter, or its worker does not answer, the delivery ends `failed` with a note saying where the text is.
+An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). A session on a fleet worker is found in the snapshot of every worker's agent-panel rows that the minute record publishes (`fleet_panel_row`, fleet-hosts.sh; no ssh to read it, with none fresh, or for a worker it names silent, it asks that worker live, all at once) and typed into on that worker, through `fleet_host_run <host> agent-panel send`; `target` and `reopen` read the same row, so a session live on a worker is never reopened here. If the session does not take the Enter, or its worker does not answer, the delivery ends `failed` with a note saying where the text is.
 
 Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (the delivery calls it; `ask-resume --all` drains by hand).
 

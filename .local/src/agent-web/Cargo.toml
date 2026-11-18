@@ -19,6 +19,7 @@ notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync", "io-util", "time"] }
+tower-http = { version = "0.6", default-features = false, features = ["compression-br", "compression-gzip"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 [profile.release]
