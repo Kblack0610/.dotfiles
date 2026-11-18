@@ -201,12 +201,12 @@ impl Pages {
     pub(crate) async fn get<F>(
         &self,
         name: String,
-        inputs: impl Future<Output = F>,
+        inputs: impl Future<Output = F> + Send + 'static,
     ) -> Result<String, (StatusCode, String)>
     where
         F: FnOnce() -> Result<String, String> + Send + 'static,
     {
-        let read = async {
+        let read = async move {
             off(inputs.await)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
@@ -218,14 +218,13 @@ impl Pages {
     /// `#infra/machines/<host>`'s read (`hub_core::machine_page`).
     pub async fn machine(
         &self,
-        infra: &Cache,
-        alerts: &crate::alerts::Cache,
+        s: crate::Shared,
         host: String,
     ) -> Result<String, (StatusCode, String)> {
         let h = host.clone();
         self.get(host, async move {
-            let i = infra.infra().await;
-            let firing = alerts.firing(infra).await;
+            let i = s.infra.infra().await;
+            let firing = s.alerts.firing(&s.infra).await;
             let now = hub_core::jobs::now().max(0) as u64;
             let jobs = hub_core::builds::Paths::from_env().jobs;
             move || {
@@ -237,10 +236,14 @@ impl Pages {
     }
 
     /// `#infra/pools/<pool>`'s read (`hub_core::pool_page`).
-    pub async fn pool(&self, infra: &Cache, name: String) -> Result<String, (StatusCode, String)> {
+    pub async fn pool(
+        &self,
+        s: crate::Shared,
+        name: String,
+    ) -> Result<String, (StatusCode, String)> {
         let n = name.clone();
         self.get(name, async move {
-            let i = infra.infra().await;
+            let i = s.infra.infra().await;
             let now = hub_core::jobs::now().max(0) as u64;
             move || pool_page::read(&i, &n, now).map(|p| pool_json(&p))
         })

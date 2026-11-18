@@ -5,20 +5,16 @@
 use axum::extract::State;
 use axum::Json;
 use hub_core::cards::{self, Card};
-use hub_core::projects::{self, Projects};
+use hub_core::projects;
 use hub_core::releases::{self, Releases};
 use hub_core::session_actions::System;
 
 use crate::cache::{off, ReadCache};
 use crate::Shared;
 
-/// The Projects tab reads its list fresh on each open; the card keeps one for a minute, the
-/// cadence Home re-reads at, so the grid does not run its CLIs on every repaint.
-static PROJECTS: ReadCache<Projects, 60> = ReadCache::new();
-
 /// release-state's read takes seconds and Home re-reads on every queue event, so the card keeps
 /// one for half a minute; the Releases tab reads its own fresh.
-static RELEASES: ReadCache<Releases, 30> = ReadCache::new();
+static RELEASES: ReadCache<Releases, 30> = ReadCache::named("releases-card");
 
 /// A read as the grid takes it, through any pointer the cache keeps it behind.
 fn got<T: ?Sized, P: std::ops::Deref<Target = T>>(r: &Result<P, String>) -> cards::Got<'_, T> {
@@ -38,7 +34,7 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         s.alerts.read(&s.infra),
         crate::costs::read(),
         s.schedules.read(),
-        PROJECTS.get((), off(projects::gather)),
+        crate::projects::GATHERED.get((), off(projects::gather)),
     );
     let items = queue.items.clone();
     let (releases, pipeline) = tokio::join!(

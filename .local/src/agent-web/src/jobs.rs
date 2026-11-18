@@ -52,8 +52,10 @@ struct CiLine {
 #[derive(Default)]
 pub struct Cache(ReadCache<Jobs, CACHE_SECS>);
 
-/// Collect what `q` names, off the async workers.
-async fn collect(q: &JobsQuery) -> Result<Jobs, String> {
+/// The read `q` names, owning its options, so a cache can run it behind a stale answer.
+fn collect(
+    q: &JobsQuery,
+) -> impl std::future::Future<Output = Result<Jobs, String>> + Send + 'static {
     let mut opts = Opts {
         name: q.name.clone().filter(|n| !n.is_empty()),
         ..Opts::default()
@@ -64,7 +66,7 @@ async fn collect(q: &JobsQuery) -> Result<Jobs, String> {
     if let Some(s) = q.source {
         opts.sources = vec![s];
     }
-    off(move || jobs::collect(&Paths::from_env(), &opts)).await
+    off(move || jobs::collect(&Paths::from_env(), &opts))
 }
 
 fn render(js: &Jobs, q: &JobsQuery) -> String {
