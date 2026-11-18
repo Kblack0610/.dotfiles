@@ -38,6 +38,12 @@
 #                     when it is still here or on origin, else on a new branch off the trunk,
 #                     so a conversation that ran there can `claude --resume` (agent-ask reopen).
 #                     Refuses a path or session name another tree holds now.
+#   revive <file.bundle>
+#                     put an archived tree back at its old path from its bundle, its
+#                     uncommitted work back in the files. The bundle stays.
+#   archive <path>    save a HELD tree (nobody in it, work on no remote) to a verified bundle
+#                     under ~/.agent/archive/worktrees/<repo>/, uncommitted work included,
+#                     then remove it. Refuses a landed or claimed tree. rc 1 kept, 2 failed.
 #   gc [<repo>] [-n] [--tsv]
 #                     reap every eligible worktree and NAME the ones it kept, one state word
 #                     per tree (README: "Worktree states"). With no repo, everything under
@@ -267,13 +273,62 @@ wt_submodule_pushed() {
 # commit on the trunk, so HEAD is never its ancestor, and the forge deletes the branch, so
 # there is no upstream left either. Without this every squash-merged worktree was held as
 # "not merged" forever (2026-10-23: unity-core-playground had several of those at 15-20 GB each).
+#
+# A fourth: HEAD is on any remote branch, whatever the local branch tracks. A tree cut with
+# `worktree add -b <b> origin/main` tracks origin/main, and a plain `git push origin <b>` never
+# moves that, so its pushed work read as "unpushed" (2026-11-18: 86 of 132 held trees, every
+# ref live on its server). Trusted only for a repo wt_fetch_pruned fetched with --prune in
+# this run, so a branch deleted on the server is never taken for pushed work; the picker
+# fetches nothing and so never applies it.
 wt_landed() {
   git -C "$1" merge-base --is-ancestor HEAD "$2" 2>/dev/null && return 0
   if git -C "$1" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 &&
     [ -z "$(git -C "$1" rev-list '@{upstream}..HEAD' 2>/dev/null)" ]; then
     return 0
   fi
+  local main
+  if main=$(wt_main_repo "$1" 2>/dev/null) && printf '%s\n' "${WT_PRUNED_REPOS-}" | grep -qxF "$main" &&
+    wt_submodule_pushed "$1"; then
+    return 0
+  fi
   wt_pr_merged_at_head "$1"
+}
+
+# wt_fetch_pruned <main>... -- fetch every remote of each repo with --prune, at most once per run:
+# each repo tried goes on WT_FETCHED_REPOS, each that fetched cleanly on WT_PRUNED_REPOS (both
+# exported, so the $(...) subshells the reap policy runs in see them). A repo whose fetch fails
+# stays off the second list, so its trees are judged without the remote-branch rule: offline only
+# ever keeps a tree, and the fetch is not retried for every tree of that repo.
+wt_fetch_pruned() {
+  local main
+  for main in "$@"; do
+    printf '%s\n' "${WT_FETCHED_REPOS-}" | grep -qxF "$main" && continue
+    WT_FETCHED_REPOS="${WT_FETCHED_REPOS:+$WT_FETCHED_REPOS$'\n'}$main"
+    if timeout "${WT_FETCH_TIMEOUT:-120}" git -C "$main" fetch --all --prune --quiet >/dev/null 2>&1; then
+      WT_PRUNED_REPOS="${WT_PRUNED_REPOS:+$WT_PRUNED_REPOS$'\n'}$main"
+    else
+      panel_warn "fetch --prune failed in $main; its pushed-branch trees stay held this run"
+    fi
+  done
+  export WT_FETCHED_REPOS WT_PRUNED_REPOS
+}
+
+# wt_work_reason_fetched <path> -- wt_work_reason, asked again after a pruned fetch of its repo when
+# the first answer kept the work (rc 1) and that repo was not tried this run, so only a tree the
+# remote-branch rule could still clear waits on the network. `reap` and `done` judge through this;
+# gc fetches every repo up front, and the picker never fetches.
+wt_work_reason_fetched() {
+  local reason rc main
+  reason=$(wt_work_reason "$1")
+  rc=$?
+  if [ "$rc" -eq 1 ] && main=$(wt_main_repo "$1" 2>/dev/null) &&
+    ! printf '%s\n' "${WT_FETCHED_REPOS-}" | grep -qxF "$main"; then
+    wt_fetch_pruned "$main"
+    reason=$(wt_work_reason "$1")
+    rc=$?
+  fi
+  [ -z "$reason" ] || printf '%s\n' "$reason"
+  return "$rc"
 }
 
 # wt_pr_merged_at_head <path> -- true when GitHub has a MERGED PR whose head is this HEAD.
@@ -568,10 +623,12 @@ wt_work_reason() {
 
 # wt_reap_reason <path> -- print why <path> may NOT be reaped; nothing, and rc 0, when it may.
 # The ONE place the reap policy lives, so the picker's glyph, `reap` and `gc` can never
-# disagree about what is safe.
+# disagree about what is safe. --fetch judges the work through wt_work_reason_fetched (reap);
+# the picker and `new` ask without it, so they never wait on the network.
 wt_reap_reason() {
-  local reason
-  reason=$(wt_work_reason "$1") || {
+  local reason work=wt_work_reason
+  [ "${2:-}" != --fetch ] || work=wt_work_reason_fetched
+  reason=$("$work" "$1") || {
     printf '%s\n' "$reason"
     return 1
   }
@@ -1198,8 +1255,7 @@ cmd_reap() {
   [ "${1:-}" = --after-kill ] && settle=1 && shift
   path="$(realpath "${1:-$PWD}" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
   [ "$settle" -eq 0 ] || wt_settle "$path"
-
-  if reason=$(wt_reap_reason "$path"); then
+  if reason=$(wt_reap_reason "$path" --fetch); then
     :
   else
     panel_fail "kept $(basename "$path"): $reason" || return 1
@@ -1294,6 +1350,14 @@ cmd_revive() {
     esac
   done
   [ -n "$path" ] || panel_die "usage: wt revive <path> [--branch <b>]"
+  case "$path" in
+  *.bundle)
+    [ -f "$path" ] || panel_die "no such bundle: $path"
+    [ -z "$branch" ] || panel_die "--branch does not apply to a bundle: it revives on its own branch"
+    wt_revive_bundle "$(realpath "$path")"
+    return
+    ;;
+  esac
   # A conversation started in a subdirectory revives the whole tree.
   case "$path" in "$WT_ROOT"/*/*) path="${path#"$WT_ROOT"/}" && path="$WT_ROOT/${path%%/*}" ;; esac
   name="${path##*/}"
@@ -1337,6 +1401,148 @@ cmd_revive() {
   wt_heal_submodule_urls "$path"
   wt_hold "$path"
   printf 'revived %s on %s\n' "$name" "$branch"
+}
+
+# The one ref a bundle carries, in the main repo only while one is written or read back:
+# branch/<name> (or detached) at the archive commit, whose tree is the tree's files and whose
+# parent is its HEAD. That commit is on no remote, so `--not --remotes` never drops the ref, even
+# for a tree whose only work is uncommitted on a pushed HEAD.
+WT_ARCHIVE_REFS=refs/wt-archive
+# Archive and revive both write the namespace, so both take this lock.
+wt_archive_lock() { printf '%s/archive-%s.lock' "$WT_LOCK_DIR" "$1"; }
+wt_archive_refs_clear() {
+  git -C "$1" for-each-ref --format='delete %(refname)' "$WT_ARCHIVE_REFS/" | git -C "$1" update-ref --stdin
+}
+
+# cmd_archive <path> -- save a held tree's work to a verified bundle, then remove the tree: the
+# end of a tree nobody is in whose work exists nowhere else (README "Worktree states", held).
+# Uncommitted changes, untracked files included and ignored ones (Library/, builds, .env) not,
+# go into the archive commit through a temporary index, so the tree's own index is not touched.
+# The bundle holds that commit and its history minus what any remote has, at
+# $WT_ARCHIVE_DIR/<repo>/<name>@<UTC stamp>.bundle; `wt revive <bundle>` puts it back. The tree
+# goes only once `git bundle verify` passes. rc 1 when the policy keeps the tree (landed,
+# claimed, a submodule holds work), 2 when its state cannot be read or the bundle could not be
+# written or verified.
+cmd_archive() {
+  local path name work rc occ main repo out sub lock
+  [ ! -L "${1:?usage: wt archive <path>}" ] || panel_die "not a worktree: $1 is a symlink"
+  path="$(realpath "$1" 2>/dev/null)" || panel_die "no such path: $1"
+  name=${path##*/}
+  work=$(wt_work_reason_fetched "$path")
+  case $? in
+  0) panel_fail "kept $name: its work has landed, so wt reap removes it"; return 1 ;;
+  1) ;;
+  *) panel_fail "kept $name: $work"; return 2 ;;
+  esac
+  occ=$(wt_occupied_reason "$path") || { panel_fail "kept $name: $occ"; return 1; }
+  ! out=$(wt_submodule_worktrees "$path") || { panel_fail "kept $name: a submodule worktree lives off it: $out"; return 1; }
+  # A bundle of the superproject holds none of a submodule's own commits or edits.
+  while IFS=$'\t' read -r _ sub; do
+    [ -e "$path/$sub/.git" ] || continue
+    [ -z "$(git -C "$path/$sub" status --porcelain 2>/dev/null)" ] && wt_submodule_pushed "$path/$sub" ||
+      { panel_fail "kept $name: submodule $sub holds work its bundle would not save"; return 1; }
+  done < <(wt_submodule_list "$path")
+
+  main=$(wt_main_repo "$path") || { panel_fail "kept $name: cannot resolve its repo"; return 2; }
+  repo=$(wt_repo_name "$main")
+  lock=$(wt_archive_lock "$repo")
+  wt_lock "$lock" || { panel_fail "kept $name: another archive or revive of $repo is running"; return 2; }
+  wt_archive_refs_clear "$main"
+  wt_archive_tree "$path" "$main" "$repo"
+  rc=$?
+  wt_archive_refs_clear "$main"
+  rm -f "$lock"
+  return "$rc"
+}
+
+# wt_archive_tree <path> <main> <repo> -- cmd_archive's bundle-verify-remove, under its lock.
+wt_archive_tree() {
+  local path="$1" main="$2" repo="$3" name branch head ref tree idx snap dir file out rc
+  name=${path##*/}
+  branch=$(wt_branch_of "$path")
+  head=$(git -C "$path" rev-parse HEAD) || { panel_fail "kept $name: no HEAD"; return 2; }
+  if [ -n "$branch" ]; then ref="$WT_ARCHIVE_REFS/branch/$branch"; else ref="$WT_ARCHIVE_REFS/detached"; fi
+  idx=$(mktemp) || return 2
+  # A copy of the tree's own index keeps its stat cache, so add -A hashes only what changed (a
+  # Unity tree is 15-20 GB); a tree with no index starts from HEAD.
+  if { cp "$(git -C "$path" rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null ||
+    GIT_INDEX_FILE=$idx git -C "$path" read-tree HEAD; } && GIT_INDEX_FILE=$idx git -C "$path" add -A &&
+    tree=$(GIT_INDEX_FILE=$idx git -C "$path" write-tree); then
+    rm -f "$idx"
+  else
+    rm -f "$idx"
+    panel_fail "kept $name: could not snapshot its uncommitted work"
+    return 2
+  fi
+  # Made even when the files match HEAD: an empty commit still names HEAD as its parent.
+  snap=$(git -C "$path" commit-tree "$tree" -p "$head" -m "wt archive: $name, uncommitted work included") &&
+    git -C "$main" update-ref "$ref" "$snap" ||
+    { panel_fail "kept $name: could not commit its uncommitted work"; return 2; }
+
+  dir="${WT_ARCHIVE_DIR:-$HOME/.agent/archive/worktrees}"
+  mkdir -p "$dir/$repo" && chmod 700 "$dir" || { panel_fail "kept $name: cannot create $dir/$repo"; return 2; }
+  file="$dir/$repo/$name@$(date -u +%Y%m%dT%H%M%SZ).bundle"
+  out=$(git -C "$main" bundle create "$file" "$ref" --not --remotes 2>&1) &&
+    out=$(git -C "$main" bundle verify "$file" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$file"
+    panel_fail "kept $name: its bundle did not verify: ${out##*$'\n'}"
+    return 2
+  fi
+
+  # The bundle holds the work, so the removal is forced past the edits it saved; another tool's
+  # lock was refused above, and wt's own hold comes off here.
+  git -C "$main" worktree unlock "$path" 2>/dev/null || :
+  out=$(git -C "$main" worktree remove --force "$path" 2>&1) ||
+    { wt_hold "$path"; panel_fail "kept $name (bundle kept at $file): git worktree remove refused: $out"; return 2; }
+  [ -z "$branch" ] || git -C "$main" branch -D "$branch" >/dev/null 2>&1 || :
+  printf 'archived %s to %s\n' "$name" "$file"
+}
+
+# wt_revive_bundle <bundle> -- put an archived tree back at $WT_ROOT/<name> from the bundle
+# `wt archive` wrote: its branch (or detached HEAD) at the archived commit, and its uncommitted
+# work back in the files, uncommitted again. The bundle stays, its mtime reset so the runner's
+# retention counts from this revive.
+wt_revive_bundle() {
+  local file="$1" name path main repo heads ref branch='' snap base lock alock
+  name=${file##*/}
+  name=${name%@*}
+  path="$WT_ROOT/$name"
+  { [ ! -e "$path" ] && [ ! -L "$path" ]; } || panel_die "$name is taken: another tree is there now"
+  ! wt_session_exists "$name" || panel_die "$name is taken: a live session holds the name"
+  main=$(wt_repo_of_name "$name") || panel_die "no repo cuts worktrees named like $name"
+  repo=$(wt_repo_name "$main")
+  git -C "$main" bundle verify -q "$file" >/dev/null 2>&1 || panel_die "$file does not verify against $main"
+  heads=$(git -C "$main" bundle list-heads "$file") || panel_die "cannot read $file"
+  ref=$(awk -v p="$WT_ARCHIVE_REFS/" '$2 ~ "^" p "(branch/|detached$)" { print $2; exit }' <<<"$heads")
+  [ -n "$ref" ] || panel_die "$file is not a wt archive"
+  case "$ref" in "$WT_ARCHIVE_REFS"/branch/*) branch=${ref#"$WT_ARCHIVE_REFS"/branch/} ;; esac
+  lock="$WT_LOCK_DIR/new-$repo.lock"
+  alock=$(wt_archive_lock "$repo")
+  wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
+  wt_lock "$alock" || { rm -f "$lock"; panel_die "an archive or revive of $repo is running"; }
+  # shellcheck disable=SC2064 # expand now: these are local, and gone by the time EXIT fires
+  trap "wt_archive_refs_clear $(printf '%q' "$main"); rm -f $(printf '%q %q' "$lock" "$alock")" EXIT
+  wt_archive_refs_clear "$main"
+  git -C "$main" fetch -q "$file" "+$ref:$ref" || panel_die "cannot fetch from $file"
+  snap=$(git -C "$main" rev-parse --verify "$ref^{commit}") && base=$(git -C "$main" rev-parse --verify "$snap^") ||
+    panel_die "$file holds no archive commit"
+  mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
+  if [ -z "$branch" ]; then
+    git -C "$main" worktree add --quiet --detach "$path" "$base" >&2 || panel_die "git worktree add failed: $path"
+  elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
+    [ "$(git -C "$main" rev-parse "refs/heads/$branch")" = "$base" ] ||
+      panel_die "branch $branch exists here at another commit; revive it by hand from $file"
+    git -C "$main" worktree add --quiet "$path" "$branch" >&2 || panel_die "git worktree add failed: $path"
+  else
+    git -C "$main" worktree add --quiet -b "$branch" "$path" "$base" >&2 || panel_die "git worktree add failed: $path"
+  fi
+  git -C "$path" restore --source="$snap" --worktree -- . || panel_warn "could not put back the uncommitted work; it is commit $snap"
+  touch -- "$file"
+  wt_heal_submodule_urls "$path"
+  wt_hold "$path"
+  printf 'revived %s from %s on %s\n' "$name" "$file" "${branch:-a detached HEAD}"
 }
 
 # wt_other_claude <session> -- print "<window index> <pane id>" for each Claude agent in <session>
@@ -1400,7 +1606,7 @@ cmd_done() {
 
   # Ask about the WORK, not the session -- the session is the thing we are about to kill, so
   # wt_reap_reason would refuse every time by design.
-  reason=$(wt_work_reason "$path") || panel_die "kept $name: $reason"
+  reason=$(wt_work_reason_fetched "$path") || panel_die "kept $name: $reason"
 
   # The kill below is by session name, and a session can hold more than the window `done` was
   # run from: a second window running claude would die with it, mid-turn. Refused here, while
@@ -1524,12 +1730,21 @@ cmd_gc() {
     return 0
   fi
 
+  # One pruned fetch per repo before any tree is judged, so wt_landed's remote-branch rule
+  # reads the servers' branches as they are now. Never through a symlink: gc skips those, so it
+  # does not fetch in the repo one points into.
+  local main
+  for path in "${candidates[@]}"; do
+    [ ! -L "$path" ] && [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null) || continue
+    wt_fetch_pruned "$main"
+  done
+
   # Each tree gets one state (wt_state) and one action. HELD is the tree nobody will come back
   # for: kept for its work (dirty, unlanded) by an owner that is gone, so gc names it every
   # night rather than keeping it silently (2026-11-02: 30 of 70 playground trees, some for weeks).
   # A symlink, a main checkout or a dir git cannot resolve is NOT-A-WORKTREE and is skipped, so
   # it no longer inflates that count (2026-11-06: 12 of 44 "stranded" were such entries).
-  local reaped=0 skipped=0 line state action hue reason ends out states='' w by='' main
+  local reaped=0 skipped=0 line state action hue reason ends out states='' w by=''
   local -a mains=()
   for path in "${candidates[@]}"; do
     line=$(wt_state "$path")
@@ -1589,13 +1804,71 @@ cmd_gc() {
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 
-# cmd_orphans [-n] -- end every orphan daemon whose Unity editor is gone, wherever its project
-# lives. The plugin stops its gamedev-mcp-server only when its editor quits cleanly; after a
-# crash or a kill the server ran on, holding its port, until someone killed it by hand (ar-228).
-# reap ends one only in a landed tree, so the main checkout, a clone or an unlanded tree kept
-# theirs. A dir counts as a project when it has ProjectSettings/. The unity-orphan-gc runner
-# runs this on a cadence: nothing signals the exit of a process that is not our child.
-# rc 1 when a daemon outlived SIGTERM, named by pid and project.
+# WT_ORPHAN_KEEP -- what a closed pane's scope may hold that is not left over, matched against
+# /proc/<pid>/comm: a tmux server started from a pane (its own panes have their own scopes, so
+# ending it would end every session on it) and rbw's agent, which holds the unlocked vault that
+# every session reads, and the ssh and gpg agents, which hold keys other sessions use.
+WT_ORPHAN_KEEP="${WT_ORPHAN_KEEP:-tmux: server|rbw-agent|ssh-agent|gpg-agent}"
+WT_SYSTEMCTL="${WT_SYSTEMCTL:-systemctl}"
+WT_TMUX="${WT_TMUX:-tmux}"
+
+# wt_live_panes -- "<server pid> <pane pid>" for each pane of each of this user's tmux servers that
+# answers. One call a server, so a server lists every pane or none: one that does not answer lists
+# none, and wt_closed_pane_scopes skips its scopes rather than read them as closed.
+wt_live_panes() {
+  local sock
+  for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+    [ -e "$sock" ] || continue
+    timeout 5 "$WT_TMUX" -S "$sock" list-panes -a -F '#{pid} #{pane_pid}' 2>/dev/null
+  done
+}
+
+# wt_closed_pane_scopes -- "<unit> <cgroup>" for each pane scope whose pane is gone. tmux puts each
+# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and what the
+# pane started stays in it after the pane closes, whatever it is: a test run, a build, a browser.
+# A scope is closed when its server answered without that pane, or its server has exited; one whose
+# server is alive but did not answer is skipped, and so is the scope this process runs in. Scopes are
+# listed before panes, so a pane opened in between is live, not closed. No systemctl (macOS): none.
+wt_closed_pane_scopes() {
+  local proc="${WT_PROC_ROOT:-/proc}" scopes live own unit pane spid cg
+  command -v "$WT_SYSTEMCTL" >/dev/null 2>&1 || return 0
+  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" 2>/dev/null |
+    awk -F= '$1 == "Id" { id = $2 } $1 == "ControlGroup" { cg = $2 }
+      $1 == "Description" { n = split($2, w, " "); if (w[1] == "tmux" && w[3] == "pane") { pane = w[4]; spid = w[n] } }
+      /^$/ { if (pane != "") print id, pane, spid, cg; id = cg = pane = spid = "" }
+      END { if (pane != "") print id, pane, spid, cg }')
+  live=$(wt_live_panes)
+  own=$(sed -n "s/^0:://p" "$proc/$$/cgroup" 2>/dev/null)
+  while read -r unit pane spid cg; do
+    [ -n "$unit" ] || continue
+    [ "$cg" = "$own" ] && continue
+    grep -qx "$spid $pane" <<<"$live" && continue
+    if ! grep -q "^$spid " <<<"$live"; then
+      case "$(cat "$proc/$spid/comm" 2>/dev/null)" in tmux*) continue ;; esac # alive but silent
+    fi
+    printf '%s %s\n' "$unit" "$cg"
+  done <<<"$scopes"
+}
+
+# wt_scope_leftovers <cgroup> -- the live pids in a closed pane's scope, but for WT_ORPHAN_KEEP. A
+# zombie is already dead, waiting on its parent, so it is not one.
+wt_scope_leftovers() {
+  local proc="${WT_PROC_ROOT:-/proc}" pid comm stat
+  while read -r pid; do
+    comm=$(cat "$proc/$pid/comm" 2>/dev/null) stat=$(cat "$proc/$pid/stat" 2>/dev/null)
+    [[ "$comm" =~ ^($WT_ORPHAN_KEEP)$ ]] && continue
+    [[ "${stat##*) }" == Z* ]] && continue
+    printf '%s\n' "$pid"
+  done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
+}
+
+# cmd_orphans [-n] -- end what nobody owns any more on this node: a Unity daemon whose editor is
+# gone, in any project with ProjectSettings/ (the plugin stops its gamedev-mcp-server only on a
+# clean quit, and reap ends one only in a landed tree, ar-228), and whatever a closed tmux pane
+# left running, of any kind (wt_closed_pane_scopes; bats runs of ended sessions ran 25 hours,
+# ar-3269). Each gets SIGTERM and WT_SETTLE_SECS to exit. The orphan-gc runner runs this on a
+# cadence: nothing signals the exit of a process that is not our child, and a pane can end with
+# its whole server. rc 1 when one outlived SIGTERM, named by pid and project or scope.
 cmd_orphans() {
   local dry=0 arg root pids rc=0 n=0
   for arg in "$@"; do
@@ -1622,7 +1895,30 @@ cmd_orphans() {
   # project, so one under a dir named Library is still found.
   done < <(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/exe -maxdepth 0 -lname '*/Library/*' -printf '%l\n' 2>/dev/null |
     awk -F'/Library/' '{ p = $1; print p; for (i = 2; i < NF; i++) { p = p "/Library/" $i; print p } }' | sort -u)
-  [ "$n" -gt 0 ] || panel_hint 'no orphan daemons'
+  local unit cg what pid left
+  while read -r unit cg; do
+    pids=$(wt_scope_leftovers "$cg")
+    [ -n "$pids" ] || continue
+    n=$((n + 1))
+    what=$(for pid in $pids; do cat "${WT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null; done | sort | uniq -c |
+      awk '{ c = $1; $1 = ""; sub(/^ /, ""); printf "%s%s x%d", sep, $0, c; sep = ", " }')
+    if [ "$dry" -eq 1 ]; then
+      printf 'would end %s  %s (%s)\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
+      continue
+    fi
+    # shellcheck disable=SC2086 # one pid per word
+    kill -TERM $pids 2>/dev/null
+    # shellcheck disable=SC2086
+    wt_await_exit $pids
+    left=$(wt_scope_leftovers "$cg")
+    if [ -z "$left" ]; then
+      printf 'ended %s  %s (%s)\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
+    else
+      printf 'failed %s  %s: outlived SIGTERM\n' "$(paste -sd, - <<<"$left")" "$unit"
+      rc=1
+    fi
+  done < <(wt_closed_pane_scopes)
+  [ "$n" -gt 0 ] || panel_hint 'no orphans'
   return "$rc"
 }
 
@@ -1677,6 +1973,10 @@ reap)
 revive)
   shift
   cmd_revive "$@"
+  ;;
+archive)
+  shift
+  cmd_archive "$@"
   ;;
 gc)
   shift

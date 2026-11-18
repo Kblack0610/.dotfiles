@@ -603,6 +603,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
       *) printf 'A=1\0CLAUDE_CONFIG_DIR=%s/\0CLAUDE_CONFIG_DIR=/not-first\0' "$dir" ;;
     esac > "$SANDBOX/proc/$pid/environ"
   done
+  printf 'claude\0--model\0sonnet\0-p\0x\0' > "$SANDBOX/proc/3/cmdline"
   mkdir -p "$SANDBOX/proc/5"   # a process gone between the glob and the read: no comm, no environ
   echo claude > "$SANDBOX/proc/5/comm"; rm "$SANDBOX/proc/5/comm"
   mkdir -p "$SANDBOX/shim"
@@ -614,7 +615,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   PATH="$SANDBOX/shim:$PATH" run --separate-stderr live_of
   assert_success
   [ -z "$stderr" ]
-  [ "$(sort <<<"$output" | paste -sd' ')" = "@ @$ALT" ]
+  # each line ends in a tab and its model's weight: pid 3 runs --model sonnet, pid 1 has no cmdline (1)
+  [ "$(sort <<<"$output" | paste -sd' ')" = "@"$'\t'"1 @$ALT"$'\t'"0.6" ]
   [ ! -e "$SANDBOX/fork.log" ] || { cat "$SANDBOX/fork.log"; false; }
 }
 
@@ -674,7 +676,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   assert_output "$ALT"
 }
 
-# live <dir> <n> -- n claude processes running on that account (empty dir = main)
+# live <dir> <n> [model] -- n claude processes running on that account (empty dir = main), started
+# with --model <model> when one is given
 live() {
   local i pid
   for ((i = 0; i < $2; i++)); do
@@ -682,6 +685,7 @@ live() {
     mkdir -p "$CLAUDE_ACCT_PROC/$pid"
     echo claude > "$CLAUDE_ACCT_PROC/$pid/comm"
     if [ -n "$1" ]; then printf 'CLAUDE_CONFIG_DIR=%s\0' "$1"; else : ; fi > "$CLAUDE_ACCT_PROC/$pid/environ"
+    [ -z "${3:-}" ] || printf 'claude\0--model\0%s\0' "$3" > "$CLAUDE_ACCT_PROC/$pid/cmdline"
   done
 }
 
@@ -757,7 +761,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *working_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_cost*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -791,7 +795,7 @@ STUB
   assert_output 1
   run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -cF 'avg_over_time((max by (account) (claude_account_working_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_working_cost{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
@@ -1078,7 +1082,7 @@ seen_claude() {
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1109,6 +1113,33 @@ seen_claude() {
   run --separate-stderr "$ACCT" room --json
   # the status line's "carries ~2": 0.24 an hour over 0.1 a session
   assert_equal "$(jq -c '[.fleet.carries, .fleet.rate]' <<<"$output")" '[2,0.1]'
+}
+
+@test "a working session burns by its model: Sonnet and Haiku count less than Opus, so the spend has more spare" {
+  # 2026-11-18 (ar-3230): carries counted every working session at one averaged rate, so Sonnet and
+  # Haiku sessions held as much of the pace target as Opus ones.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.025
+  week main 80 84
+  week alt 80 84
+  live "" 1                         # no --model: counted as Opus
+  live "$ALT" 1 claude-sonnet-5-5   # pace.conf MODEL_WEIGHT_SONNET 0.6
+  live "$ALT" 1 haiku               # MODEL_WEIGHT_HAIKU 0.2
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .working_cost <<<"$output")" = 1 ]
+  [ "$(field alt .working <<<"$output")" = 2 ]
+  [ "$(field alt '.working_cost * 10 | round' <<<"$output")" = 8 ]
+  [ "$(field alt '.burn * 1000 | round' <<<"$output")" = 20 ]
+  run --separate-stderr "$ACCT" room --json
+  # keeps 0.24: (0.24 - 1.8 x 0.025) / 0.025 = 7.8
+  assert_equal "$(jq -c '[.fleet.spare, (.fleet.working_cost * 10 | round)]' <<<"$output")" '[7,18]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working, 1\.8 at Opus cost\), .*, room for ~7 more\)'
+  # negative control: the same three on Opus leave less spare, (0.24 - 0.075) / 0.025 = 6.6
+  find "$CLAUDE_ACCT_PROC" -name cmdline -delete
+  run --separate-stderr "$ACCT" room --json
+  assert_equal "$(jq -c '[.fleet.spare, .fleet.working_cost]' <<<"$output")" '[6,3]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working\), '
 }
 
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
@@ -1401,6 +1432,7 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   assert_line 'claude_fleet_working_sessions 5'
   assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
+  assert_line 'claude_account_working_cost{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
   assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
@@ -2319,307 +2351,17 @@ EOS
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
 }
 
-# --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------
-
-# login <dir> [access end ms] [login end ms] -> a signed-in credentials file
-login() {
-  printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":%s,"refreshTokenExpiresAt":%s}}\n' \
-    "${2:-$(((NOW + 3600) * 1000))}" "${3:-$(((NOW + 20 * 86400) * 1000))}" > "$1/.credentials.json"
-}
-
-# session <pane> <account> <status> [stuck] -> one agent-panel row, and with "stuck" a pane on Not logged in
-session() {
-  jq -nc --arg p "$1" --arg a "$2" --arg s "$3" \
-    '{harness: "claude", pane: $p, target: ("hub/s" + $p), account: $a, status: $s, parked: false}' >> "$NOTES_FIXTURE/agent-panel.list.json"
-  if [[ "${4:-}" == stuck ]]; then
-    printf 'did the work\n\nNot logged in · Please run /login\n\n> \n' > "$NOTES_FIXTURE/tmux.capture.${1#*/}"
-  fi
-}
-
-sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
-
-@test "check auth: every account signed in is quiet, and the line says how many" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  run "$ACCT" check auth
-  assert_success
-  assert_output '2 accounts signed in'
-}
-
-@test "check auth: a credentials file emptied to {} trips, naming the account and the login command" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (the credentials file holds no login): cl --acct alt, then /login'
-  # a missing file and a file with only an access token are signed out too
-  rm "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (no credentials file): cl --acct alt, then /login'
-  printf '{"claudeAiOauth":{"accessToken":"a"}}\n' > "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt signed out (no refresh token)'
-  # negative control: signing in again clears it
-  login "$ALT"
-  run "$ACCT" check auth
-  assert_success
-}
-
-@test "check auth: every account signed out is one line naming each, and counts the sessions stopped on it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  echo '{}' > "$HOME/.claude/.credentials.json"; echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'main signed out'
-  assert_output --partial 'alt signed out (the credentials file holds no login), 2 sessions on Not logged in: cl --acct alt, then /login'
-}
-
-@test "check auth: an access token long past its end with sessions working is a refresh that failed; idle, it is not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW - 40 * 60) * 1000))
-  run "$ACCT" check auth
-  assert_success
-  session hub/%1 alt busy
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt not refreshing: its access token ended 40m ago with 1 sessions working: cl --acct alt, then /login'
-  # inside the grace Claude is still about to refresh
-  login "$ALT" $(((NOW - 10 * 60) * 1000))
-  run "$ACCT" check auth
-  assert_success
-}
-
-@test "check auth: an account whose sessions run on a setup token is not 'not refreshing' for its file's access token" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW - 90 * 60) * 1000))
-  session hub/%1 alt busy
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt not refreshing'
-  rbw_stub
-  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
-  touch "$SANDBOX/vault/locked"
-  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
-  run "$ACCT" check auth
-  assert_success
-  # the login itself ending still trips
-  login "$ALT" $(((NOW - 90 * 60) * 1000)) $(((NOW - 3600) * 1000))
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt signed out (its login ended'
-}
-
-@test "check expiry: a login ending within three days trips, naming the account; a month out is quiet" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW + 3600) * 1000)) $(((NOW + 2 * 86400 + 3 * 3600) * 1000))
-  run "$ACCT" check expiry
-  assert_failure 1
-  assert_output 'alt login ends in 2d 3h: cl --acct alt, then /login'
-  login "$ALT"
-  run "$ACCT" check expiry
-  assert_success
-  assert_output 'no login ends within 3 days'
-}
-
-@test "check expiry: a signed-out account is check auth's, not named here" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  run "$ACCT" check expiry
-  assert_success
-}
-
-@test "textfile: publishes each account's sign-in, its token ends, its last write and the stopped sessions" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 30 84
-  login "$HOME/.claude" $(((NOW + 3600) * 1000)) $(((NOW + 20 * 86400) * 1000))
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck; session hub/%3 main busy
-  mkdir -p "$SANDBOX/tf"
-  run "$ACCT" textfile "$SANDBOX/tf"
-  assert_success
-  run cat "$SANDBOX/tf/claude_acct.prom"
-  assert_line 'claude_account_logged_in{account="main",kind="claude"} 1'
-  assert_line 'claude_account_logged_in{account="alt",kind="claude"} 0'
-  assert_line "claude_account_access_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 3600))"
-  assert_line "claude_account_refresh_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 20 * 86400))"
-  assert_line --regexp '^claude_account_credentials_written_timestamp_seconds\{account="main",kind="claude"\} [0-9]+$'
-  assert_line 'claude_account_not_logged_in_sessions{account="alt",kind="claude"} 2'
-  assert_line 'claude_account_not_logged_in_sessions{account="main",kind="claude"} 0'
-  assert_line 'claude_fleet_not_logged_in_sessions 2'
-  assert_line 'claude_fleet_signed_out_accounts 1'
-  # an emptied file has no token to end: no expiry line for it
-  refute_line --partial 'expires_timestamp_seconds{account="alt"'
-}
-
-@test "auth: the table names each account's state, and --json is the rows" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 main busy
+@test "there is no /login sign-in: auth, wake, check auth and check expiry are gone, and no code reads a credentials file" {
   run "$ACCT" auth
-  assert_success
-  assert_output --regexp 'main +yes +in 1h 0m +in 20d 0h .* 1 +0'
-  assert_output --partial 'alt'
-  assert_output --partial 'NO:the_credentials_file_holds_no_login'
-  run jq -c '[.[] | {name, logged_in, working}]' <(
-    "$ACCT" auth --json)
-  assert_output '[{"name":"main","logged_in":true,"working":1},{"name":"alt","logged_in":false,"working":0}]'
-}
-
-@test "stuck: only an idle session whose last lines say Not logged in counts; a quote higher up or a busy session does not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  session hub/%2 main idle
-  printf 'Not logged in · Please run /login\nthen I carried on\nline\nline\nline\nline\nline\nline\nline\n> \n' > "$NOTES_FIXTURE/tmux.capture.%2"
-  session hub/%3 main busy stuck
-  run jq -c '[.[] | {name, stuck}]' <("$ACCT" auth --json)
-  assert_output '[{"name":"main","stuck":1},{"name":"alt","stuck":0}]'
-}
-
-@test "wake: a session stopped on Not logged in, on an account signed in again, is typed to; a signed-out account's is not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 main idle stuck
-  session hub/%2 alt idle stuck
+  assert_failure
+  assert_output --partial "unknown verb 'auth'"
   run "$ACCT" wake
-  assert_success
-  assert_output 'woke hub/shub/%1 (hub/%1, account main), try 1 of 3'
-  assert_equal "$(sent)" 1
-  grep -q -- 'agent-panel send --pane hub/%1 You were signed out and are signed in again' "$NOTES_FIXTURE/calls.log"
-  ! grep -q -- 'send --pane hub/%2' "$NOTES_FIXTURE/calls.log"
-}
-
-@test "wake: at most WAKE_BATCH a run, the rest the next run; a loaded machine wakes one" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_LOADAVG="$SANDBOX/loadavg"
-  echo '0.1 0.1 0.1 1/1 1' > "$SANDBOX/loadavg"
-  login "$HOME/.claude"
-  for i in 1 2 3 4 5; do session "hub/%$i" main idle stuck; done
-  run "$ACCT" wake
-  assert_success
-  assert_equal "$(sent)" 3
-  # the same minute again: the three are inside their gap, so the other two go
-  run "$ACCT" wake
-  assert_equal "$(sent)" 5
-  # negative control: past the load line a run wakes one
-  : > "$NOTES_FIXTURE/calls.log"
-  rm -rf "$XDG_CACHE_HOME/claude-acct/wake"
-  echo '999 999 999 1/1 1' > "$SANDBOX/loadavg"
-  run "$ACCT" wake
-  assert_equal "$(sent)" 1
-}
-
-@test "wake: a pane waits out its gap, is tried WAKE_TRIES times, and then check auth pages it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake; assert_output --partial 'try 1 of 3'
-  run "$ACCT" wake; assert_output ''
-  for t in 2 3; do
-    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
-    run "$ACCT" wake
-    assert_output --partial "try $t of 3"
-  done
-  export CLAUDE_ACCT_NOW=$((NOW + 4 * 600))
-  run "$ACCT" wake
-  assert_output ''
-  assert_equal "$(sent)" 3
+  assert_output --partial "unknown verb 'wake'"
   run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'main 1 sessions stay on Not logged in after the wakes: cl --acct main, then /login'
-}
-
-@test "wake: a pane that came back is forgotten, so a later sign-out starts its tries again" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  printf 'working again\n> \n' > "$NOTES_FIXTURE/tmux.capture.%1"
-  run "$ACCT" wake
-  assert_output ''
-  [ ! -e "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-}
-
-@test "wake --dry-run names what it would wake and types nothing" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake --dry-run
-  assert_output 'would wake hub/shub/%1 (hub/%1, account main)'
-  assert_equal "$(sent)" 0
-}
-
-@test "auth: agent-panel missing or failing is said on stderr, never counted as no stuck sessions in silence" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  run --separate-stderr "$ACCT" check auth
-  assert_success
-  [[ "$stderr" == *'agent-panel list failed (1)'* ]]
-}
-
-@test "check auth: a refresh token past its end is signed out even though the file still holds it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" "$(((NOW - 7200) * 1000))" "$(((NOW - 3 * 3600) * 1000))"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (its login ended 3h ago): cl --acct alt, then /login'
-}
-
-@test "wake: a send the pane did not take still counts as a try, so check auth reaches it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  touch "$NOTES_FIXTURE/agent-panel.unsent"
-  for t in 0 1 2 3 4; do
-    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
-    run "$ACCT" wake
-  done
-  assert_equal "$(sent)" 3
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'main 1 sessions stay on Not logged in'
-}
-
-@test "wake: a pane at work keeps its tries, and one a human touched a minute ago is left alone" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  rm "$NOTES_FIXTURE/agent-panel.list.json"
-  session hub/%1 main busy
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  rm "$NOTES_FIXTURE/agent-panel.list.json" "$XDG_CACHE_HOME/claude-acct/wake/hub_%1"
-  jq -nc --argjson h "$((NOW - 60))" '{harness: "claude", pane: "hub/%1", target: "hub/s%1", account: "main", status: "idle", parked: false, human_at: $h}' \
-    > "$NOTES_FIXTURE/agent-panel.list.json"
-  run "$ACCT" wake
-  assert_output ''
-  assert_equal "$(sent)" 1
-}
-
-@test "wake: when agent-panel cannot list, nothing is woken and the ledger stays" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  run "$ACCT" wake
-  assert_failure 1
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  assert_failure 2
+  run "$ACCT" check expiry
+  assert_failure 2
+  ! grep -vE '^[[:space:]]*#' "$REPO_ROOT/.local/bin/claude-acct" | grep -qF credentials.json
 }
 
 # --- long-lived tokens (setup-token) ---------------------------------------------------
@@ -2689,7 +2431,8 @@ vault_put() {
   run --separate-stderr "$ACCT" token alt
   assert_failure 1
   assert_output ''
-  [[ "$stderr" == *'rbw is locked'* ]]
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so alt starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+  [[ "$stderr" != *login* ]]
 }
 
 @test "token: a machine whose rbw is locked or absent reads the pushed copy" {
@@ -2771,7 +2514,7 @@ STUB
   assert_output --partial 'tok=none dir=main'
 }
 
-@test "check tokens: good, inside the warn window, expired, and unread when rbw is locked" {
+@test "check tokens: good, no token (its only sign-in), inside the warn window, expired, and unread when rbw is locked" {
   rbw_stub
   export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
   vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
@@ -2781,8 +2524,8 @@ STUB
   assert_output '2 tokens good'
   rm "$SANDBOX/vault/claude-oauth-alt"
   run "$ACCT" check tokens
-  assert_success
-  assert_output 'no token yet: alt'
+  assert_failure 1
+  assert_output 'no token: alt (claude-acct setup-token <name>)'
   vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
   run "$ACCT" check tokens
   assert_failure 1

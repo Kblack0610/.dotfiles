@@ -20,7 +20,6 @@ writer_texts() {
   local b="$REPO_ROOT/.local/bin" l="$REPO_ROOT/.local/lib"
   sed -n 's/^: "${RESTORE_PROMPT:=\([^$%]*\).*/\1/p' "$b/fleet-dispatch"
   sed -n 's/.*\(This is agent-queue item \)\$.*/\1/p' "$b/fleet-dispatch" | sort -u
-  sed -n 's/^WAKE_TEXT="${CLAUDE_ACCT_WAKE_TEXT:-\([^$}]*\)}"$/\1/p' "$l/claude-acct-auth.sh"
   sed -n 's/.*cmd="\(\/wind-down[^"]*\)".*/\1/p' "$b/fleet-shepherd"
   sed -n 's/.*"\(Answer to ask \)\$.*/\1/p' "$b/agent-ask" | sort -u
   sed -n 's/.*p="\(This session was [a-z]*\) .*/\1/p' "$b/claude-acct"
@@ -32,8 +31,8 @@ every_writer_typed() {
     n=$((n + 1))
     fleet_typed "$t" || { echo "no line of $TYPED_PREFIXES starts: $t"; return 1; }
   done < <(writer_texts)
-  # restore, brief, wake, wind-down, answer, parked, moved: a writer that moved its text drops out here
-  [ "$n" -ge 7 ] || { echo "found $n writer texts, want 7"; return 1; }
+  # restore, brief, wind-down, answer, parked, moved: a writer that moved its text drops out here
+  [ "$n" -ge 6 ] || { echo "found $n writer texts, want 6"; return 1; }
 }
 
 @test "the shell reader and claude-recall agree with the shared golden" {

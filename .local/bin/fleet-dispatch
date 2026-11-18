@@ -65,7 +65,7 @@ unset _k _v
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
-: "${DISPATCH_TARGET_PRESENT:=50}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
+: "${DISPATCH_TARGET_PRESENT:=50}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
 : "${DISPATCH_TARGET_AWAY:=25}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
 : "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
@@ -573,12 +573,22 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
+# in_backlog <line> -- the row's trailing `<!-- ... -->` marker carries the `tier:backlog` token.
+in_backlog() {
+  [[ $1 == *'<!--'*'-->'* ]] || return 1
+  local m=${1##*<!--}
+  [[ " ${m%%-->*} " == *' tier:backlog '* ]]
+}
+
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
-# its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may.
+# its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
+# backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
+# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
+  [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -876,13 +886,18 @@ units_on() {
 live_units() { live_runs | units_on ''; }
 
 # pace_target -- TARGET is the live Claude sessions the fleet fills to now, TARGET_WHEN which cap:
-# what the Claude accounts carry at their weekly pace (claude-acct's fleet.carries, from ACCT_ROWS
-# when the caller already read it), at most DISPATCH_TARGET_PRESENT while the human is here and
-# DISPATCH_TARGET_AWAY while away, and never under DISPATCH_RUN_FLOOR (the floor wins over the cap).
-# Present and away share the carry: a fixed present 30 ran 34 Claude sessions while the accounts
-# carried 19 and codex, go and ocfree sat idle (2026-11-18). A pass reads its own (each start reads
-# room again, so it shares none). An unread carry is the cap: room still refuses an account past its
-# line. The target is Claude's budget only: an item routed to another source is held by that
+# the live count plus what the Claude accounts' spend has spare at their weekly pace (claude-acct's
+# fleet.spare, from ACCT_ROWS when the caller already read it: the working Opus sessions more that
+# keeps holds on top of the measured burn), at most DISPATCH_TARGET_PRESENT while the human is here
+# and DISPATCH_TARGET_AWAY while away, and never under DISPATCH_RUN_FLOOR (the floor wins over the
+# cap). It reads spend, not a session count: the session carry (fleet.carries, 19) held against every
+# live session, idle and waiting ones too, read full while the accounts spent 0.7/h of 1.6/h, and a
+# Sonnet or Haiku session burns less, so it leaves more spare (2026-11-18, ar-3230). Each start is
+# counted as one more Opus session, so the cheap guess never overspends. Present and away share the
+# spare: a fixed present 30 ran 34 Claude sessions while the accounts carried 19 and codex, go and
+# ocfree sat idle (2026-11-18). A pass reads its own (each start reads room again, so it shares
+# none). An unread spare is the cap: room still refuses an account past its line. The target is
+# Claude's budget only: an item routed to another source is held by that
 # source's room, not by it (other_source_start). TOTAL_LIVE is every
 # Claude session in the fleet state document, hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
@@ -894,10 +909,8 @@ live_units() { live_runs | units_on ''; }
 pace_target() {
   if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
   else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
-  local carries live
-  carries=$(jq -r '.fleet.carries // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-  if [[ "$carries" =~ ^[0-9]+$ ]] && [ "$carries" -lt "$TARGET" ]; then TARGET=$carries; fi
-  [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
+  local spare live
+  spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
   live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
     | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
@@ -905,6 +918,11 @@ pace_target() {
        line: (map(select(.open_job == "queue") | .project // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries)}' \
     "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
+  if [[ "$spare" =~ ^-?[0-9]+$ && "$TOTAL_LIVE" =~ ^[0-9]+$ ]]; then
+    spare=$(( TOTAL_LIVE + spare )); [ "$spare" -ge 0 ] || spare=0
+    [ "$spare" -ge "$TARGET" ] || TARGET=$spare
+  fi
+  [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
   LINE_WAITS=$(jq -c '.line // {}' <<<"$live" 2>/dev/null)
   [ -n "$LINE_WAITS" ] || LINE_WAITS='{}'
 }
@@ -1479,7 +1497,8 @@ verdict_errors() {
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
 # with the plan. A design or question skip waits on the human, not a plan. A #requested row also
 # gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
-# for their review. Sets PLAN_TAGGED.
+# for their review. A backlog-tier row is left alone: dispatch does not pull it, so a plan would
+# wait for the sweep to lift it. Sets PLAN_TAGGED.
 plan_skips() {
   local board rows room p prof id raw line dsig dj why size req
   local -a add
@@ -1497,7 +1516,7 @@ plan_skips() {
                         elif .verdict == "skip" and .rule != "tier3" and .tier3_only != true then empty
                         elif .clear == false then "unclear" else "size:" + ((.size // "") | ascii_upcase) end)})
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
-    | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))
+    | .rows[]? | select(.lane == "agent" and .id != null and .backlog != true and (plan_tagged | not) and (planned | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
   # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
@@ -1703,7 +1722,7 @@ lane_sandbox() {
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
 last_mode() {
   local t
-  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | head -1)
+  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
   [ -n "$t" ] || return 0
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
@@ -3318,7 +3337,7 @@ item_rollout() {
   local id f
   [ "$(harness_launcher "$(jq -r '.agent // "claude"' <<<"$1")")" = codex ] || return 0
   for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
-    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
+    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f -print -quit 2>/dev/null)
     [ -z "$f" ] || { echo "$id $f"; return 0; }
   done
 }
@@ -4895,7 +4914,7 @@ cmd_headroom() {
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  pace:      \(.total_live // "?") of \(.target) live Claude sessions, the \(.target_when) target (what the Claude accounts carry, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
+        "  pace:      \(.total_live // "?") of \(.target) live Claude sessions, the \(.target_when) target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
@@ -4968,7 +4987,8 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes)
+# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
@@ -4981,7 +5001,7 @@ cmd_stats() {
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest}' 2>/dev/null)
+    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog}' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -5415,7 +5435,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
-  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: what the Claude accounts carry, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)"
+  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)"
   unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")

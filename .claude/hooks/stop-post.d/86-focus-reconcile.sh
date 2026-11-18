@@ -246,7 +246,7 @@ fi
 # --- block ---
 DAILY_NOTE=$(focus_daily_note)
 FOCUS_BODY=$(focus_body "$DAILY_NOTE")
-OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
+OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | awk 'NR<=5' | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
 if [ "$PR_WORK" -eq 1 ]; then

@@ -8,13 +8,16 @@
 #   audio_input.sh next|prev   step through the list (click, right-click)
 #
 # watch reads `pactl subscribe`: a server event is a default change, a source event a mute or
-# volume change, a client event REAPER opening or closing (a rig_ input is silent without it).
+# volume change. REAPER opening or closing (a rig_ input is silent without it) is its out1 port
+# coming or going in `pw-link -m -o`. Never a client event: each render runs pactl, itself a
+# client, so rendering on one renders again forever.
 # AUDIO_INPUTS moves the list, for the tests.
 set -u
 here="$(dirname "$(readlink -f "$0")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 conf="${AUDIO_INPUTS:-${XDG_CONFIG_HOME:-$HOME/.config}/audio/inputs.conf}"
+REAPER_PORT='REAPER:out1'
 
 # rows: the list, one "key|bar|label|source glob" per line.
 rows() { grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$conf"; }
@@ -76,7 +79,7 @@ render() {
   if row="$(match "$def")"; then
     IFS='|' read -r key bar label glob <<<"$row"
     class=ok
-    [[ $def == rig_* ]] && ! pw-link -o 2>/dev/null | grep -qx 'REAPER:out1' && class=warn
+    [[ $def == rig_* ]] && ! pw-link -o 2>/dev/null | grep -qxF "$REAPER_PORT" && class=warn
   else
     label="$(pactl -f json list sources 2>/dev/null | jq -r --arg n "$def" '.[] | select(.name == $n) | .description' | head -1)"
     label="${label:-$def}" bar="${label:0:12}" class=other
@@ -100,14 +103,30 @@ render() {
   emit "$text" "$tip" "$class"
 }
 
+# events: both monitors on one stream. It ends when either one does, so watch exits and the bar
+# starts it again (a pipewire restart ends pactl's), and it takes the other down with it.
+events() {
+  trap 'kill $(jobs -p) 2>/dev/null; wait' EXIT
+  trap exit TERM
+  pactl subscribe &
+  pw-link -m -o &
+  wait -n
+}
+
 watch() {
   [[ -f $conf ]] || { echo '{"text":""}'; exit 0; }
-  local last='' line event
+  local last='' line event ev feed
   show() { line="$(render)"; [[ $line == "$last" ]] || { printf '%s\n' "$line"; last=$line; }; }
   show
-  while read -r event; do
-    case $event in *" on server"* | *" on source "* | *" on client "*) show ;; esac
-  done < <(pactl subscribe)
+  exec {ev}< <(events)
+  feed=$!
+  # A bar that stops the chip stops its monitors too: pw-link is quiet between port changes, so
+  # without this it would never take the SIGPIPE that ends an orphan.
+  trap 'kill "$feed" 2>/dev/null; wait "$feed" 2>/dev/null' EXIT
+  trap exit TERM INT HUP
+  while read -r -u "$ev" event; do
+    case $event in *" on server"* | *" on source "* | [+-]"$REAPER_PORT") show ;; esac
+  done
 }
 
 case "${1:-}" in
