@@ -13,6 +13,9 @@
 #   desk notify drop <tag>        close that tag's popup
 #   desk chip <module-id> [run|stream]   a waybar chip for the Noctalia bar: how to run
 #                                 it, one run's output, or its stream kept running
+#   desk panel <custom/chip|panel-id> [context]   toggle a bar panel: a chip's dropdown or a
+#                                 Noctalia panel (Noctalia only; Super+A b)
+#   desk panel letters '<module>=<key> ...'|off   show or clear each chip's key in the bar
 #
 # systemd runs the parts and desk only picks; it never enables or masks a unit, because
 # ~/.config/systemd is this repo. State: ~/.local/state/desk/parts, slot=part lines.
@@ -282,6 +285,22 @@ chip_stream() {
     done
 }
 
+# The bar's panels from a keybind (Super+A b, leader.lua). A custom/* chip opens its
+# dropdown, the plugin's detail panel with the chip as context; anything else is a Noctalia
+# panel id. `letters` sends each chip its key to show, or `off` to clear it (chip.luau onIpc).
+# waybar has no panels to open, only hover tooltips, so it is refused there.
+panel() {
+    [[ $# -gt 0 ]] || die "usage: desk panel <custom/chip|panel-id> [context] | letters '<module>=<key> ...'|off" 2
+    local bar
+    bar="$(get bar)"
+    [[ "$bar" == noctalia ]] || die "panels are on the noctalia bar, and the bar is $bar (desk use bar noctalia)" 2
+    case "$1" in
+        letters)  noctalia msg plugin dotfiles/chips:chip all letters "${2:?usage: desk panel letters <spec>|off}" >/dev/null ;;
+        custom/*) noctalia msg panel-toggle dotfiles/chips:detail "$1" >/dev/null ;;
+        *)        noctalia msg panel-toggle "$@" >/dev/null ;;
+    esac
+}
+
 # kill_tree <pid>: every descendant of <pid>, deepest first (not <pid> itself).
 kill_tree() {
     local c
@@ -299,6 +318,7 @@ case "$cmd" in
     signal)  signal "$@" ;;
     notify)  notify "$@" ;;
     chip)    chip "$@" ;;
-    -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+    panel)   panel "$@" ;;
+    -h|--help|help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0" ;;
     *)       die "unknown command '$cmd' (desk --help)" 2 ;;
 esac
