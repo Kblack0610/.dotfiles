@@ -251,6 +251,17 @@ creds() {
   [[ "$(cat "$HOME/.claude.json")" == 'not json' ]]
   assert_output --partial 'first-run left as is'
 }
+
+@test "link marks first-run done through a symlinked config and in an empty one" {
+  printf '{"numStartups":1}\n' > "$SANDBOX/real.json"
+  ln -s "$SANDBOX/real.json" "$HOME/.claude.json"
+  : > "$ALT/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ -L "$HOME/.claude.json" ]]
+  [[ "$(jq -c . "$SANDBOX/real.json")" == '{"numStartups":1,"hasCompletedOnboarding":true}' ]]
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+}
 # --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
 
 src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }

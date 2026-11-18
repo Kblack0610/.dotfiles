@@ -438,7 +438,9 @@ scores() {
 first_run_done() {
     local f="$HOME/.claude.json" tmp
     if [[ -n "$2" ]]; then [[ -d "$2" ]] || return 0; f="$2/.claude.json"; fi
-    [[ -f "$f" ]] || { printf '{"hasCompletedOnboarding": true}\n' > "$f"; return 0; }
+    # Write through a symlinked config, never over the link; an empty file is a config not made yet.
+    f=$(readlink -f "$f") || return 0
+    [[ -s "$f" ]] || { printf '{"hasCompletedOnboarding": true}\n' > "$f"; return 0; }
     jq -e '.hasCompletedOnboarding == true' "$f" >/dev/null 2>&1 && return 0
     tmp=$(mktemp "$f.XXXXXX") || return 0
     if jq '.hasCompletedOnboarding = true' "$f" > "$tmp" 2>/dev/null; then

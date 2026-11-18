@@ -2811,9 +2811,13 @@ J
   remote_item working; sed -i 's/^session: .*/&\nsessions: aaa-1 aaa-2\naccount: .claude-bnb/' "$(qitem running working)"
   remote_item picker;  sed -i 's/^session: .*/&\nsessions: bbb-1\naccount: main/' "$(qitem running picker)"
   remote_item booting; sed -i "s/^started: .*/started: $(date -u +%FT%TZ)/; s/^session: .*/&\nsessions: ccc-1/" "$(qitem running booting)"
-  # The worker's home: the stub ssh runs each command here. Only the first item has had a turn.
-  mkdir -p "$HOME/.claude-bnb/projects/-w" "$HOME/.claude/projects/-w"
-  : > "$HOME/.claude-bnb/projects/-w/aaa-2.jsonl"
+  remote_item plain;   sed -i 's/^session: .*/&\nsessions: ddd-1/' "$(qitem running plain)"
+  # The worker's home: the stub ssh runs each command here. claude-acct link makes an account's
+  # projects a link to main's, so find must follow it. The item with no account has had its turn.
+  mkdir -p "$HOME/.claude/projects/-w" "$HOME/.claude-bnb"
+  ln -s "$HOME/.claude/projects" "$HOME/.claude-bnb/projects"
+  : > "$HOME/.claude/projects/-w/aaa-2.jsonl"
+  : > "$HOME/.claude/projects/-w/ddd-1.jsonl"
   cd "$HOME"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   assert_success
