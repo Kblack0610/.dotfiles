@@ -357,6 +357,23 @@ chips_sim() {
   assert_line --index 0 'panel=custom/ci'
 }
 
+@test "the panel counts hover across its nodes, enter before leave, string or boolean" {
+  # Line to line: the next node's enter arrives before the last one's leave.
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'hover custom/ci off' 'panelhover on' 'panelhover on bool' 'panelhover off' 'tick 1000' show 'panelhover off bool' 'tick 500' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  assert_line --index 2 'panel=closed'
+}
+
+@test "a click while a hover's open is on its way pins it, and an open the host never answers goes stale" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' 'click custom/ci' settle 'hover custom/ci off' 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' drop 'hover custom/ci off' 'tick 1200' 'hover custom/ci on' settle show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+}
+
 @test "a chip with dropdown = false keeps its plain tooltip and opens nothing on hover" {
   run chips_sim 'chip custom/mic nodrop' 'hover custom/mic on' settle show
   assert_success

@@ -4,10 +4,13 @@
 --   chip <id> [nodrop]     load a chip (nodrop: config.toml `dropdown = false`)
 --   hover <id> on|off      pointer enters or leaves the chip
 --   click <id>             left click on the chip
---   panelhover on|off      pointer enters or leaves the panel
+--   panelhover on|off [bool]  pointer enters or leaves a node in the panel (bool: passed as a
+--                          boolean, not the documented "true"/"false" string)
 --   letter <id>            `desk panel` opening the panel for <id> (Super+A b)
 --   settle                 run the togglePanel calls queued so far (the host runs them later)
---   tick <ms>              one frame of <ms>, delivered only while the panel wants frame ticks
+--   drop                   lose the queued togglePanel calls, as a host that never answers
+--   tick <ms>              advance the clock (nowMs) by <ms>; one frame, delivered only while
+--                          the panel wants frame ticks
 --   show                   print "panel=<shown chip or closed>" and each chip's tooltip
 -- The stub's json.decode maps the tokens its runAsync prints back to tables, so no JSON parser.
 local dir = arg[1]
@@ -16,6 +19,7 @@ local PANEL = "dotfiles/chips:detail"
 local state, watchers = {}, {}
 local tokens, ntok = {}, 0
 local queue = {}
+local now = 0
 local panelOpen, frameTicks, panelHover = false, false, nil
 local chips, order = {}, {}
 local detail
@@ -47,6 +51,7 @@ local function api(conf)
     return {
         getConfig = function(k) return conf[k] end,
         getenv = function() return "/home/sim" end,
+        nowMs = function() return now end,
         setUpdateInterval = function() end,
         runStream = function() end,
         runAsync = function(cmd, cb)
@@ -133,10 +138,17 @@ function cmds.chip(id, opt)
 end
 function cmds.hover(id, on) chips[id].onHover(on == "on") end
 function cmds.click(id) chips[id].onClick() end
-function cmds.panelhover(on) if panelHover then panelHover(on == "on" and "true" or "false", "") end end
+function cmds.panelhover(on, kind)
+    local v = on == "on"
+    if panelHover then panelHover(kind == "bool" and v or tostring(v), "") end
+end
+function cmds.drop() queue = {} end
 function cmds.letter(id) queue[#queue + 1] = id end
 function cmds.settle() settle() end
-function cmds.tick(ms) if panelOpen and frameTicks then detail.onFrameTick(ms) end end
+function cmds.tick(ms)
+    now = now + tonumber(ms)
+    if panelOpen and frameTicks then detail.onFrameTick(ms) end
+end
 function cmds.show()
     print("panel=" .. (panelOpen and tostring(state["dotfiles.detail.shown"]) or "closed"))
     for _, id in ipairs(order) do

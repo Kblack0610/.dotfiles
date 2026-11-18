@@ -14,11 +14,11 @@ local FONT_SIZE = 14
 local GRACE_MS = 400
 local open = nil
 local watched = {}
-local inPanel = false
+local inPanel = 0
 local closeIn = nil
 
 local function idle()
-  return open ~= nil and not inPanel and noctalia.state.get(S .. "hover") == nil
+  return open ~= nil and inPanel == 0 and noctalia.state.get(S .. "hover") == nil
     and noctalia.state.get(S .. "pinned") == false
 end
 
@@ -49,8 +49,14 @@ function onFrameTick(deltaMs)
   end
 end
 
+-- A count, not a flag: the column, each line and the Open button report their own enter and
+-- leave, and moving between two may deliver the enter before the other's leave.
 local function hovered(state)
-  inPanel = state == "true"
+  if state == true or state == "true" then
+    inPanel = inPanel + 1
+  else
+    inPanel = math.max(0, inPanel - 1)
+  end
   check()
 end
 
@@ -140,13 +146,13 @@ function onOpen(context)
     show(noctalia.state.get(S .. "want"))
   end
   noctalia.state.set(S .. "shown", open)
-  inPanel = false
+  inPanel = 0
   check()
 end
 
 function onClose()
   open = nil
-  inPanel = false
+  inPanel = 0
   closeIn = nil
   noctalia.state.set(S .. "opening", nil)
   noctalia.state.set(S .. "pinned", nil)
