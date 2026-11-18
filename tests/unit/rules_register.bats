@@ -79,6 +79,33 @@ row() {
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+@test "rules --check: a bound copied from the file its measure reads restates it, whatever the number" {
+  printf 'CAP=10\n' >> "$SANDBOX/rules.md"
+  row 'under ten' low "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'restates: rules.md: under ten'
+}
+
+@test "rules --check: a size read with wc is a real bound on its own source, and a reading has no bound to move" {
+  row 'under ten' high "wc -c < '$SANDBOX/rules.md'" 100000
+  printf 'CAP=10\n' >> "$SANDBOX/rules.md"
+  jq -nc --arg s "$SANDBOX/rules.md" --arg m "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" \
+    '{source: $s, anchor: "Never force push", kind: "provisional", confidence: "low", measure: $m}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_success
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | [.holds, .restates, .moved]]' <<<"$output")" '[[true,false,false],[null,false,false]]'
+  assert_equal "$(jq -c '.[1].value' <<<"$output")" 10
+}
+
+@test "rules --check: a reading that prints no number is dead too" {
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: "echo nope"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten'
+}
+
 @test "rules --check: a rule whose text left its source is stale" {
   row 'not in the file' high 'echo 3' 10
   run "$SUBJECT" rules --check
@@ -146,7 +173,6 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or ((.action != "keep") and (.why // "") == "")
       or ((.anchor // "") | length < 12)
       or (((.anchor // "") + (.measure // "")) | test("\n"))
-      or (.measure != null and .max == null and .min == null)
       or (.kind == "invariant" and (.measure != null or .max != null or .min != null))
       or (.kind == "invariant" and (.scenario // "") == "")) | .anchor' "$REAL"
   assert_output ''

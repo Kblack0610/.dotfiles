@@ -330,8 +330,9 @@ pub struct Rule {
     pub source: String,
     pub number: String,
     pub confidence: String,
-    /// `ok`, `stale` (its anchor is gone from its source), `moved` (its measured number left the
-    /// recorded bound) or `dead`.
+    /// `ok`, `stale` (its anchor is gone from its source, or the source is not here), `moved`
+    /// (its measured number disagrees with its recorded confidence), `restates` (its bound is a
+    /// copy of the number its measure reads) or `dead` (its measure printed no number).
     pub state: String,
     pub today: String,
     pub revisit: String,
@@ -341,23 +342,31 @@ pub struct Rule {
 pub const OK: &str = "ok";
 pub const STALE: &str = "stale";
 pub const MOVED: &str = "moved";
+pub const RESTATES: &str = "restates";
 pub const DEAD: &str = "dead";
 
 impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
-    const STATES: &'static [&'static str] = &[ALL, STALE, MOVED, DEAD];
+    const STATES: &'static [&'static str] = &[ALL, STALE, MOVED, RESTATES, DEAD];
     const FACETS: &'static [&'static str] = &["kind", "confidence", "state"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "rule";
     const GLANCE: &'static [&'static str] = &["kind", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
-        (STALE, "its anchor text is gone from its source file"),
+        (
+            STALE,
+            "its anchor text is gone from its source file, or that file is not on this machine",
+        ),
         (
             MOVED,
-            "its measured number left the bound it was recorded at",
+            "its measured number disagrees with its recorded confidence: a confident row past its bound, or a low one back inside it",
         ),
-        (DEAD, "it names a thing that no longer exists"),
+        (
+            RESTATES,
+            "its bound is a copy of the number its measure reads from its own source; the reading is the number",
+        ),
+        (DEAD, "its measure printed no number"),
     ];
 
     fn val(&self, col: &str) -> Val {
@@ -1088,12 +1097,19 @@ fn read_rules(runner: &dyn Runner, errors: &mut Vec<String>) -> Vec<Rule> {
             rule: s(&r["rule"]),
             kind: s(&r["kind"]),
             source: s(&r["source"]),
-            number: s(&r["number"]),
+            // A measured rule shows what its measure read today beside its recorded number.
+            number: match (s(&r["number"]), r["value"].is_number()) {
+                (n, false) => n,
+                (n, true) if n.is_empty() => s(&r["value"]),
+                (n, true) => format!("{n} (now {})", s(&r["value"])),
+            },
             confidence: s(&r["confidence"]),
             state: if r["dead"] == true {
                 DEAD
-            } else if r["anchored"] == false {
+            } else if r["anchored"] != true {
                 STALE
+            } else if r["restates"] == true {
+                RESTATES
             } else if r["moved"] == true {
                 MOVED
             } else {
@@ -1222,7 +1238,7 @@ mod tests {
 
     const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
-    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","anchored":true,"moved":true,"dead":false},{"rule":"never force push","kind":"invariant","anchored":true,"moved":false,"dead":false},{"rule":"old","kind":"provisional","anchored":false,"moved":false,"dead":false}]"#;
+    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","anchored":true,"moved":true,"dead":false},{"rule":"never force push","kind":"invariant","anchored":true,"moved":false,"dead":false},{"rule":"old","kind":"provisional","anchored":false,"moved":false,"dead":false},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","anchored":true,"value":2,"moved":false,"dead":false},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","anchored":true,"value":3,"restates":true,"moved":false,"dead":false},{"rule":"elsewhere","kind":"invariant","anchored":null,"moved":false,"dead":false}]"#;
 
     #[test]
     fn each_part_is_read_from_its_own_store() {
@@ -1372,12 +1388,20 @@ mod tests {
     }
 
     #[test]
-    fn a_rule_says_stale_moved_or_ok() {
+    fn a_rule_says_stale_moved_restates_or_ok() {
         let p = fixture("rules");
         let s = read(&p, &Fixed(Ok(RULES.into())), 0);
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
-        assert_eq!(states, [MOVED, OK, STALE]);
-        assert_eq!(s.strip["rules"], 2);
+        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, STALE]);
+        assert_eq!(
+            s.rules[3].number, "max_live in sources (now 2)",
+            "a reading shows what it read"
+        );
+        assert_eq!(
+            s.rules[0].number, "50",
+            "an unmeasured rule shows its number as recorded"
+        );
+        assert_eq!(s.strip["rules"], 4, "every row not ok");
     }
 
     /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
