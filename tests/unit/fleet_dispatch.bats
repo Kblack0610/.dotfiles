@@ -391,6 +391,16 @@ ptask game --agent tag --add plan ga-7'
   grep -qx -- '--user start --no-block agentctl@inbox-plan.service' "$NOTES_FIXTURE/systemctl.log"
 }
 
+@test "plan_skips: a backlog-tier row gets no #plan, since dispatch does not pull it" {
+  plan_fixture
+  jq -c 'if .id == "ga-1" then .backlog = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
+  mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  plan_skips
+  assert_equal "$PLAN_TAGGED" 1
+  run grep -o 'ptask game --agent tag --add plan [a-z0-9-]*' "$NOTES_FIXTURE/calls.log"
+  assert_output 'ptask game --agent tag --add plan ga-7'
+}
+
 @test "plan_skips: a requested row gets #go beside #plan, so inbox-plan does not hold it for the person's review" {
   plan_fixture
   jq -c 'if .id == "ga-7" then .requested = true else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"

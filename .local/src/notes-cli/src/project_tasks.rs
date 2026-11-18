@@ -2828,8 +2828,11 @@ pub(crate) fn archive_blocks(
     let rows: Vec<String> = blocks
         .iter()
         .filter(|b| md::row_id(&b[0]).is_none_or(|id| !have.contains(&id)))
-        .flatten()
-        .cloned()
+        .flat_map(|b| {
+            // A closed row is in no tier, here as on the sheet: `reopen` brings it back clean.
+            let first = project_sweep::with_backlog(&b[0], false);
+            std::iter::once(first).chain(b[1..].iter().cloned())
+        })
         .collect();
     if !rows.is_empty() {
         md::write_atomic(&note, &append_done_rows(&prior, section, &rows))?;
@@ -3893,7 +3896,9 @@ Version: v0.0.1
             "# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n- [ ] human row\n",
         )
         .unwrap();
-        fs::write(dir.join("agent/README.md"), BOARD).unwrap();
+        // A closed row archived with a tier token left on it goes into the note without one.
+        let board = BOARD.replace("<!-- pr:12 -->", "<!-- pr:12 tier:backlog -->");
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
         p.projects = Some(projects);
         p.project_index = Some(index);
         let log = Logger::new(root.join(".state/log"), false);
@@ -3902,7 +3907,7 @@ Version: v0.0.1
         archive(&p, &log, "demo", true, Lane::Agent).unwrap();
         assert_eq!(
             fs::read_to_string(dir.join("agent/README.md")).unwrap(),
-            BOARD
+            board
         );
 
         archive(&p, &log, "demo", false, Lane::Agent).unwrap();

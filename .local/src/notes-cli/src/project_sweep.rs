@@ -79,11 +79,12 @@ fn pinned(line: &str, parents: &HashSet<String>, today: NaiveDate) -> bool {
 }
 
 /// Mark `open`, already in sheet order, by the board budget: the pinned rows and the first
-/// `board_max` others stay on the board, every other row takes [`BACKLOG`], and a row back
-/// inside the budget loses it. Every sweep runs it, so a close refills the board from the top
-/// of the backlog. The human sheet (`board_max` `None`) is left as it is.
-fn tier(open: Vec<Block>, board_max: Option<usize>, today: NaiveDate) -> Vec<Block> {
-    let Some(mut room) = board_max else {
+/// `board_max` others aimed at the open version stay on the board, every other row takes
+/// [`BACKLOG`], and a row back inside the budget loses it. A row aimed later takes no slot: the
+/// board does not list it until its release opens. Every sweep runs it, so a close refills the
+/// board from the top of the backlog. The human sheet (`board_max` `None`) is left as it is.
+fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
+    let (Some(mut room), today) = (ctx.board_max, ctx.today) else {
         return open;
     };
     let parents: HashSet<String> = open
@@ -92,11 +93,12 @@ fn tier(open: Vec<Block>, board_max: Option<usize>, today: NaiveDate) -> Vec<Blo
         .collect();
     open.into_iter()
         .map(|mut b| {
-            let board = pinned(&b[0], &parents, today) || {
-                let fits = room > 0;
-                room = room.saturating_sub(1);
-                fits
-            };
+            let board = pinned(&b[0], &parents, today)
+                || (!sheet::is_later(&b[0], ctx.open) && {
+                    let fits = room > 0;
+                    room = room.saturating_sub(1);
+                    fits
+                });
             b[0] = with_backlog(&b[0], !board);
             b
         })
@@ -315,7 +317,7 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     let mut open = tb.open;
     // Rows aimed past the open version wait in the backlog whatever their rank.
     open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
-    let open = tier(open, ctx.board_max, ctx.today);
+    let open = tier(open, ctx);
     let mut by: [Vec<Block>; 4] = Default::default();
     for b in open {
         by[section_of(&b[0]) as usize].push(b);
@@ -886,6 +888,17 @@ Version: v0.12.1
             sweep_sheet(&refilled, &write).is_none(),
             "settles:\n{refilled}"
         );
+    }
+
+    // A row aimed past the open version takes no board slot: the board does not list it, so it
+    // waits on the backlog and the slot goes to the next current row.
+    #[test]
+    fn a_row_aimed_later_takes_no_board_slot() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
+- [ ] later #high #c1001 #v0.13.0\n- [ ] now #low #c1002\n- [ ] next #low #c1003\n";
+        let out = sweep_sheet(s, &agent(1)).unwrap().0;
+        assert_eq!(tiered(&out, false), ["now"], "{out}");
+        assert_eq!(tiered(&out, true), ["next", "later"], "{out}");
     }
 
     // A row that climbs back into the budget (here by turning urgent) loses its token.

@@ -1489,7 +1489,8 @@ verdict_errors() {
 # are open, then kick inbox-plan. Its plan splits or rewrites the row, so the judge reads it again
 # with the plan. A design or question skip waits on the human, not a plan. A #requested row also
 # gets #go: the judge asked for this plan, not the person, so inbox-plan plans it without holding it
-# for their review. Sets PLAN_TAGGED.
+# for their review. A backlog-tier row is left alone: dispatch does not pull it, so a plan would
+# wait for the sweep to lift it. Sets PLAN_TAGGED.
 plan_skips() {
   local board rows room p prof id raw line dsig dj why size req
   local -a add
@@ -1507,7 +1508,7 @@ plan_skips() {
                         elif .verdict == "skip" and .rule != "tier3" and .tier3_only != true then empty
                         elif .clear == false then "unclear" else "size:" + ((.size // "") | ascii_upcase) end)})
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
-    | .rows[]? | select(.lane == "agent" and .id != null and (plan_tagged | not) and (planned | not))
+    | .rows[]? | select(.lane == "agent" and .id != null and .backlog != true and (plan_tagged | not) and (planned | not))
     | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.why)\t\(.requested == true)\t\(.raw)"' <<<"$board")
   # raw last: read hands it the rest of the line; details_json is JSON, with no bare tab. No field
