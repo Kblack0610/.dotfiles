@@ -64,6 +64,22 @@ for a in "$@"; do
     esac
 done
 
+# Tilecast push: a poke to agent-web, which pushes "fetch now" to the phone widget when what it
+# draws changed, at most once every 30s (agent-web src/push.rs). It goes before the broker check,
+# since it needs no broker, and in the background with a short timeout, so a stopped agent-web
+# never slows a hook. No widget key, no poke. The key goes on stdin, out of argv.
+poke_widget_push() {
+    local key
+    key="$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/agent-web/widget.token" 2>/dev/null)" || return 0
+    # A key with anything but token characters would break the quoted config line below.
+    case "$key" in "" | *[!A-Za-z0-9_-]*) return 0 ;; esac
+    command -v curl >/dev/null 2>&1 || return 0
+    printf 'header = "Authorization: Bearer %s"\n' "$key" |
+        curl -sS -o /dev/null -m 2 -X POST -K - "${AGENT_WEB_URL:-http://127.0.0.1:8790}/widget/push-send" \
+            >/dev/null 2>&1 &
+}
+[ "$mode" = dry ] || poke_widget_push
+
 [ "$mode" = dry ] || [ -n "$MQTT_HOST" ] || exit 0
 
 say() { [ "$quiet" = 1 ] || printf 'agent-mqtt-publish: %s\n' "$*" >&2; }
@@ -206,12 +222,16 @@ snapshot() {
         [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
+            --arg severity "$(watch_severity "$f")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
-              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch}')"
+              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch,
+              # The manifest severity, ranked because mqtt2prom drops text: the command-center
+              # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
+              severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity]}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.

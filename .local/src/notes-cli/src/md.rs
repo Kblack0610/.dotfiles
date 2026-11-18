@@ -239,6 +239,11 @@ pub fn is_checked(line: &str) -> bool {
     t.starts_with("- [x]") || t.starts_with("- [X]")
 }
 
+/// A task the human marked in progress, `- [/]`.
+pub fn is_in_progress(line: &str) -> bool {
+    line.trim_start().starts_with("- [/]")
+}
+
 /// An OPEN task line: a real task, not checked off, not the empty `- [ ]` placeholder.
 /// The shared definition of "something still on the list" — `## Focus` cockpit verbs and
 /// the `## Work` job roster must agree on it, so it lives here rather than being spelled
@@ -1366,19 +1371,6 @@ pub fn set_checkbox(line: &str, mark: char) -> String {
     }
 }
 
-/// Reset a carried task's in-progress checkbox `[/]` back to an open `[ ]`, preserving
-/// indentation. Status (`[/]`) is a same-day signal set in the editor (see markdown.lua's
-/// `<leader>t` cycle); it does not survive the daily carry — only the open todo + its
-/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry),
-/// and are deliberately left alone should they ever arrive: only `[/]` is reset.
-fn reset_status(line: &str) -> String {
-    if line.trim_start().starts_with("- [/]") {
-        set_checkbox(line, ' ')
-    } else {
-        line.to_string()
-    }
-}
-
 /// Stamp a task line with its created tag, `#c1026` ([`created_tag`]), and put its date tags
 /// in canonical spelling and order: text, created, due, priority last.
 ///
@@ -1390,16 +1382,16 @@ fn reset_status(line: &str) -> String {
 /// - A due date in any spelling (`#due1031`, `#due-1031`, `#due261031`, `[2026-10-31]`)
 ///   becomes `#due1031` ([`due_tag`]).
 ///
-/// A priority tag (`#low` etc.) is normalised to sit last, deduped; an in-progress `[/]`
-/// checkbox is reset to `[ ]` (status is a same-day signal). Non-task lines pass through.
+/// A priority tag (`#low` etc.) is normalised to sit last, deduped. The checkbox is kept: an
+/// in-progress `[/]` stays in progress across days until the human flips it (2026-11-17).
+/// Non-task lines pass through.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
     }
     // Lift any priority tag(s) off the whole line first so the stamp lands in front of
-    // the single canonical tag rather than behind a buried one; drop the in-progress mark.
-    let line = reset_status(line);
-    let (core, prio) = split_priority(&line);
+    // the single canonical tag rather than behind a buried one.
+    let (core, prio) = split_priority(line);
     let origin = find_since(&core, today);
     let due = find_due(&core, today);
     let (core, _) = split_created(&core);
@@ -2458,14 +2450,13 @@ after
     }
 
     #[test]
-    fn stamp_resets_in_progress_checkbox() {
-        // An in-progress task carried to the next day reverts to an open todo, but
-        // keeps its priority tag (which does carry).
+    fn stamp_keeps_in_progress_checkbox() {
+        // An in-progress task carried to the next day stays in progress, with its tags.
         let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(out, "- [ ] wire it up #c0714 #high");
+        assert_eq!(out, "- [/] wire it up #c0714 #high");
         // Indentation on a nested task is preserved.
         let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(nested, "  - [ ] sub-step #c0714");
+        assert_eq!(nested, "  - [/] sub-step #c0714");
     }
 
     #[test]
