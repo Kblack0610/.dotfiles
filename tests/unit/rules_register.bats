@@ -134,6 +134,10 @@ row() {
   assert_equal "$(jq -c '[.[] | .form]' <<<"$output")" '["rule","mechanism","rule"]'
   run "$SUBJECT" rules
   assert_line 'mechanisms=1'
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "invariant", form: "mechanims"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'form: rules.md: under ten: mechanims is neither rule nor mechanism'
 }
 
 @test "rules --check: a rule whose text left its source is stale" {

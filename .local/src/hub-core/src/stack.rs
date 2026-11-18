@@ -274,8 +274,13 @@ pub struct Hook {
     pub from: String,
     /// The script resolves to a file on disk; false is a hook that cannot run.
     pub found: bool,
-    /// The ledger's mechanism rows whose source is this script: what it enforces, on Rules.
+    /// The script's file, when the command names its place; what its ledger rows are matched on.
+    #[serde(skip)]
+    pub path: Option<PathBuf>,
+    /// The ledger's mechanism rows whose source is this script's file: what it enforces, on Rules.
     pub rules: usize,
+    /// Those rows' `source` as the ledger spells it, so a link to them filters on exactly that.
+    pub source: String,
 }
 
 pub const MISSING: &str = "missing";
@@ -369,6 +374,10 @@ impl Row for Rule {
     const GLANCE: &'static [&'static str] = &["kind", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
+            RULES_FORM,
+            "text a session reads, plus any mechanism that is not ok",
+        ),
+        (
             MECHANISMS,
             "a hook, script or config that enforces a rule, not text a session reads",
         ),
@@ -403,13 +412,16 @@ impl Row for Rule {
     fn in_state(&self, s: &str) -> bool {
         match s {
             ALL => true,
+            // The rules a session reads, and any mechanism that needs a look: a broken
+            // enforcer is the row least to be hidden.
+            RULES_FORM => self.form != MECHANISM || (self.state != OK && self.state != ABSENT),
             MECHANISMS => self.form == MECHANISM,
             _ => self.state == s,
         }
     }
 
     fn in_default(&self) -> bool {
-        self.form != MECHANISM
+        self.in_state(RULES_FORM)
     }
 
     fn text(&self) -> String {
@@ -700,11 +712,31 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     let runners = conf_names(&paths.runners).len();
     let mut hooks = read_hooks(paths, &mut errors);
     let rules = read_rules(runner, &mut errors);
+    // A hook's rows are the mechanism rows whose source is the same file, symlinks resolved
+    // (the ledger names the checkout, a hook command the stowed link), never a namesake elsewhere.
+    let file = |p: &Path| std::fs::canonicalize(p).ok();
+    let mechanisms: Vec<(PathBuf, &str)> = rules
+        .iter()
+        .filter(|r| r.form == MECHANISM)
+        .filter_map(|r| {
+            let p = match r.source.strip_prefix("~/") {
+                Some(rest) => paths.home.join(rest),
+                None => PathBuf::from(&r.source),
+            };
+            Some((file(&p)?, r.source.as_str()))
+        })
+        .collect();
     for h in &mut hooks {
-        h.rules = rules
+        let Some(mine) = h.path.as_deref().and_then(file) else {
+            continue;
+        };
+        let rows: Vec<&str> = mechanisms
             .iter()
-            .filter(|r| r.form == MECHANISM && r.source.rsplit('/').next() == Some(&h.script))
-            .count();
+            .filter(|(f, _)| *f == mine)
+            .map(|(_, s)| *s)
+            .collect();
+        h.rules = rows.len();
+        h.source = rows.first().map(|s| s.to_string()).unwrap_or_default();
     }
     let rule_files = read_rule_files(&paths.rule_files);
     let flows = read_flows(paths, &mut errors);
@@ -1024,13 +1056,13 @@ fn runner_skills(dir: &Path) -> BTreeMap<String, Vec<String>> {
 /// The script a hook command runs: the first word naming a `.sh` or `.py` file, quotes dropped and
 /// `~`, `$HOME` and `${HOME}` filled in, and whether it is on disk. A command naming no script, or
 /// one under another variable or a relative path the harness resolves, counts as found.
-fn script_of(command: &str, home: &Path) -> (String, bool) {
+fn script_of(command: &str, home: &Path) -> (String, bool, Option<PathBuf>) {
     let word = command
         .split_whitespace()
         .map(|w| w.trim_matches(|c| c == '"' || c == '\''))
         .find(|w| w.ends_with(".sh") || w.ends_with(".py"));
     let Some(w) = word else {
-        return (command.to_string(), true);
+        return (command.to_string(), true, None);
     };
     let home_rel = ["~/", "$HOME/", "${HOME}/"]
         .iter()
@@ -1041,7 +1073,8 @@ fn script_of(command: &str, home: &Path) -> (String, bool) {
         .map_or(w.to_string(), |n| n.to_string_lossy().to_string());
     // Only a path that names its own place can be checked from here.
     let checkable = home_rel.is_some() || path.is_absolute();
-    (name, !checkable || path.is_file())
+    let found = !checkable || path.is_file();
+    (name, found, checkable.then_some(path))
 }
 
 /// A harness's `hooks` object: event -> [{matcher, hooks: [{command}]}].
@@ -1055,7 +1088,7 @@ fn config_hooks(v: &serde_json::Value, harness: &str, from: &str, home: &Path) -
             let matcher = g["matcher"].as_str().unwrap_or_default().to_string();
             for h in g["hooks"].as_array().into_iter().flatten() {
                 let command = h["command"].as_str().unwrap_or_default().to_string();
-                let (script, found) = script_of(&command, home);
+                let (script, found, path) = script_of(&command, home);
                 out.push(Hook {
                     harness: harness.into(),
                     event: event.clone(),
@@ -1064,7 +1097,8 @@ fn config_hooks(v: &serde_json::Value, harness: &str, from: &str, home: &Path) -
                     command,
                     from: from.into(),
                     found,
-                    rules: 0,
+                    path,
+                    ..Default::default()
                 });
             }
         }
@@ -1106,7 +1140,8 @@ fn read_hooks(paths: &Paths, errors: &mut Vec<String>) -> Vec<Hook> {
                 command: f.display().to_string(),
                 from: d.into(),
                 found: true,
-                rules: 0,
+                path: Some(f),
+                ..Default::default()
             });
         }
     }
@@ -1267,7 +1302,7 @@ mod tests {
 
     const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
-    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","state":"moved"},{"rule":"never force push","kind":"invariant","state":"ok"},{"rule":"old","kind":"provisional","state":"stale"},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","value":2,"state":"ok"},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","value":3,"state":"restates"},{"rule":"elsewhere","kind":"invariant","state":"absent"},{"rule":"no sleep polls","kind":"invariant","source":"~/.claude/hooks/block-poll.py","form":"mechanism","state":"ok"},{"rule":"no other poll","kind":"invariant","source":"/x/block-poll.py","form":"mechanism","state":"ok"}]"#;
+    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","state":"moved"},{"rule":"never force push","kind":"invariant","state":"ok"},{"rule":"old","kind":"provisional","state":"stale"},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","value":2,"state":"ok"},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","value":3,"state":"restates"},{"rule":"elsewhere","kind":"invariant","state":"absent"},{"rule":"asks are filed","kind":"invariant","source":"~/hooks/stop-post.d/88-ask-filed.sh","form":"mechanism","state":"ok"},{"rule":"a namesake elsewhere","kind":"invariant","source":"/x/88-ask-filed.sh","form":"mechanism","state":"ok"},{"rule":"a broken enforcer","kind":"invariant","source":"~/hooks/stop-post.d/88-ask-filed.sh","form":"mechanism","state":"stale"}]"#;
 
     #[test]
     fn each_part_is_read_from_its_own_store() {
@@ -1421,7 +1456,10 @@ mod tests {
         let p = fixture("rules");
         let s = read(&p, &Fixed(Ok(RULES.into())), 0);
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
-        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, ABSENT, OK, OK]);
+        assert_eq!(
+            states,
+            [MOVED, OK, STALE, OK, RESTATES, ABSENT, OK, OK, STALE]
+        );
         assert_eq!(
             s.rules[3].number, "max_live in sources (now 2)",
             "a reading shows what it read"
@@ -1431,7 +1469,7 @@ mod tests {
             "an unmeasured rule shows its number as recorded"
         );
         assert_eq!(
-            s.strip["rules"], 3,
+            s.strip["rules"], 4,
             "every row not ok, past one whose source is elsewhere"
         );
     }
@@ -1445,14 +1483,38 @@ mod tests {
                 .apply(&s.rules)
                 .len()
         };
-        assert_eq!(shown(""), 6, "the default view is the rules chip: no mechanism");
-        assert_eq!(shown(RULES_FORM), 6);
-        assert_eq!(shown(MECHANISMS), 2);
-        assert_eq!(shown(ALL), 8);
-        let poll = s.hooks.iter().find(|h| h.script == "block-poll.py").unwrap();
-        assert_eq!(poll.rules, 2, "every mechanism row whose source file is the script");
-        let echo = s.hooks.iter().find(|h| h.command == "echo hi").unwrap();
-        assert_eq!(echo.rules, 0);
+        assert_eq!(
+            shown(""),
+            7,
+            "the default view is the rules chip: the rules, and a mechanism only when it is not ok"
+        );
+        assert_eq!(shown(RULES_FORM), 7);
+        assert_eq!(shown(MECHANISMS), 3);
+        assert_eq!(shown(ALL), 9);
+        let ask = s
+            .hooks
+            .iter()
+            .find(|h| h.script == "88-ask-filed.sh")
+            .unwrap();
+        assert_eq!(
+            (ask.rules, ask.source.as_str()),
+            (2, "~/hooks/stop-post.d/88-ask-filed.sh"),
+            "the rows whose source is this file, not a namesake elsewhere"
+        );
+        let poll = s
+            .hooks
+            .iter()
+            .find(|h| h.script == "block-poll.py")
+            .unwrap();
+        assert_eq!(poll.rules, 0, "a script not on disk matches no row");
+        let linked =
+            crate::table::View::new::<Rule>(&format!("source:={}", ask.source), MECHANISMS, "", "")
+                .apply(&s.rules)
+                .len();
+        assert_eq!(
+            linked, ask.rules,
+            "the hook's link shows the rows its count counts"
+        );
     }
 
     /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
@@ -1552,13 +1614,13 @@ mod tests {
         std::fs::write(home.join("here.sh"), "").unwrap();
         assert_eq!(
             script_of("bash \"$HOME/here.sh\" x", &home),
-            ("here.sh".into(), true)
+            ("here.sh".into(), true, Some(home.join("here.sh")))
         );
         assert_eq!(
             script_of("${HOME}/gone.sh", &home),
-            ("gone.sh".into(), false)
+            ("gone.sh".into(), false, Some(home.join("gone.sh")))
         );
-        assert_eq!(script_of("'~/gone.py'", &home), ("gone.py".into(), false));
+        assert!(!script_of("'~/gone.py'", &home).1);
         assert!(
             script_of("$CLAUDE_PROJECT_DIR/x.sh", &home).1,
             "another variable is not judged"

@@ -2271,7 +2271,8 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
-      else empty end' <<<"$1"
+      else empty end,
+    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism")' <<<"$1"
 }
 
 # rules_summary <states array> -> the counts, key=value.
