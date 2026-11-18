@@ -45,7 +45,7 @@ impl Cache {
     }
 }
 
-/// The rows the window and the view keep, past Work's `layout::fold_rows` only when asked for them all.
+/// The rows the window and the view keep, past Work's `layout::page_rows` only when asked for them all.
 fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let window = Window::parse(&q.wday, today);
     let inside: Vec<&Work> = g.rows.iter().filter(|r| window.keeps(r)).collect();
@@ -54,7 +54,7 @@ fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let cap = if q.all.is_some() {
         rows.len()
     } else {
-        hub_core::layout::fold_rows("work")
+        hub_core::layout::page_rows("work")
     };
     json!({
         "rows": rows.iter().take(cap).collect::<Vec<_>>(),
@@ -137,7 +137,7 @@ mod tests {
 
     #[test]
     fn past_the_cap_it_says_how_many_more_until_asked_for_them_all() {
-        let cap = hub_core::layout::fold_rows("work");
+        let cap = hub_core::layout::page_rows("work");
         let g = Gathered {
             rows: (0..cap + 5)
                 .map(|_| row("done", "2026-11-09T01:00", "a"))

@@ -1085,20 +1085,18 @@ item_json() {
 
 # Queue order: a `red` item first (something is broken), then an urgent one, then the project's `#prio`
 # (order_filter: focus, high, normal, low), then priority; inside each of those buckets the class mix
-# (MIX_JQ) when AQ_CLASSES is on, else a `cleanup` item first; then queued time. The one queue order:
-# every reader (next, list, fleet-dispatch next_items) takes it as is, so a lower tier starts only when
-# no item of a higher one can: a pass takes the first it can place. Nothing is held for a focus (the
-# human, 2026-11-13). `after` and other tags hold, not reorder. The mix's cleanup share replaces the
-# cleanup key; queue-mix-on, which turns the mix on, deletes that key.
+# (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (next, list,
+# fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
+# can: a pass takes the first it can place. Nothing is held for a focus (the human, 2026-11-13).
+# `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
 # A red outranks urgent on purpose: the human's rule is that anything broken goes first. Urgent sits
 # above the project rank, so a row-level #urgent jumps every tier; the rank sits above high, normal
-# and low, so a focus project's work is not queued behind another project's, and above cleanup, so a
-# ranked project's work is not queued behind the fleet's own housekeeping (the human: games go first).
+# and low, so a focus project's work is not queued behind another project's (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
   def bucket: [untagged("red"), (.priority != "urgent"), ($rank[.project // ""] // 2),
     ({"urgent":0,"high":1,"low":2}[.priority] // 1)];
-  if $mix == null then sort_by(bucket, untagged("cleanup"), .queued) else mix($mix; bucket) end'
+  if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
 # Classes of service (AQ_CLASSES, plan can-we-move-our-mellow-sphinx P3): an item is in the first class
 # whose `tags` it carries, else whose `from` it came from, else whose `kinds` holds its row type
@@ -1108,8 +1106,16 @@ ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else
 # is lowest against its `share`, the count being its items started in the last `window_days` (mix_json)
 # plus the places this order already gave it; ties go in file order, and the oldest item of the class
 # takes the place. Counts carry from bucket to bucket; a held item takes a place and adds no count, as
-# it starts nothing (next skips it). A class with no share goes after every class with one. An
-# AQ_CLASSES not `on: true`, or unreadable, is no mix.
+# it starts nothing (next skips it). A class with no share goes after every class with one, and a
+# class with nothing in the bucket takes no place, so its turns go to the rest by their shares.
+# `lag_places` bounds what the window's history can do (the human, ask EF60vp: elastic, no rigidness):
+# at each bucket's start every class with a runnable item in it has its count cut to at most
+# lag_places / (sum of shares) above the lowest count/share among them, as CFS places a waking task
+# near min_vruntime; a class with only held items there sets no floor, as it starts nothing. The cut
+# count carries into the next bucket like any other. So a class served a lot this week waits about
+# lag_places places at most, and one served little gets at most lag_places * share / (sum of shares)
+# places ahead. Shares are weights: the bound divides by their sum. No lag_places is no bound. An AQ_CLASSES not
+# `on: true`, or unreadable, is no mix.
 # The shares are the human's; DISPATCH_PROJECT_FLOOR (fleet-dispatch) is the separate project axis.
 AQ_CLASSES="${AGENT_QUEUE_CLASSES:-$HOME/.config/fleet-dispatch/classes.json}"
 CLASS_JQ='def class_of($cs): ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")]) as $tg
@@ -1122,9 +1128,18 @@ CLASS_JQ='def class_of($cs): ((.tags // "") | if type == "array" then join(" ") 
      // {name: "none"}).name;'
 MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
   | ($m.classes | map({(.name): (.share // 0)}) | add) as $share
+  | ([$share[] | select(. > 0)] | add // 0) as $sum
   | def ratio($c; $n): if ($share[$c] // 0) > 0 then (($n[$c] // 0) / $share[$c]) else infinite end;
+  def bound: if $m.lag_places == null or $sum == 0 then . else
+      (.q | to_entries | map(select(($share[.key] // 0) > 0 and any(.value[]; .hold == null)) | .key)) as $in
+      | if ($in | length) == 0 then . else
+          . as $s | (($in | map(ratio(.; $s.n)) | min) + $m.lag_places / $sum) as $top
+          | reduce $in[] as $c (.; .n[$c] = ([(.n[$c] // 0), $top * $share[$c]] | min))
+        end
+    end;
   reduce (group_by(bucket)[] | sort_by(.queued)) as $b ({out: [], n: $m.done};
     .q = ($b | map({c: class_of($m.classes), i: .}) | group_by(.c) | map({key: .[0].c, value: map(.i)}) | from_entries)
+    | bound
     | until((.q | map(length) | add // 0) == 0;
         . as $s
         | ($s.q | to_entries | map(select(.value | length > 0) | .key)
@@ -1135,13 +1150,15 @@ MIX_JQ='def mix($m; bucket): ($m.classes | map(.name)) as $names
     | del(.q))
   | .out;'
 
-# class_cfg [--mix] -> AQ_CLASSES on one line: a class list and a window_days of whole days (default 7).
-# Plain, it is the order's config and needs `on: true`; --mix (agent-queue mix) takes it on or off and
-# also needs a starve_days of whole days (default 3) inside the window. Only mix checks starve_days, so
+# class_cfg [--mix] -> AQ_CLASSES on one line: a class list, a window_days of whole days (default 7)
+# and a lag_places, when set, of a number not below 0. Plain, it is the order's config and needs
+# `on: true`; --mix (agent-queue mix) takes it on or off and also needs a starve_days of whole days
+# (default 3) inside the window. Only mix checks starve_days, so
 # a bad watch setting never turns the order off. Any other file fails, printing nothing.
 class_cfg() {
   jq -ce --argjson mix "$([ "${1:-}" = --mix ] && echo true || echo false)" 'def days: type == "number" and . >= 1 and . == floor;
     select(($mix or .on == true) and (.classes | type) == "array" and (.classes | length) > 0 and (.window_days // 7 | days)
+      and (.lag_places == null or (.lag_places | type == "number" and . >= 0))
       and (($mix | not) or ((.starve_days // 3 | days) and (.starve_days // 3) <= (.window_days // 7))))' \
     "$AQ_CLASSES" 2>/dev/null
 }
@@ -1178,7 +1195,7 @@ mix_json() {
 cmd_mix() {
   local json='' cfg q s out
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
-  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, or a window_days or starve_days that is not whole days inside the window"
+  cfg="$(class_cfg --mix)" || die "$AQ_CLASSES has no class list, a window_days or starve_days that is not whole days inside the window, or a lag_places that is not a number of 0 or more"
   q="$(snap_json "$CLASS_JQ $cfg"' as $cfg | [.[] | select(.hold == null) | class_of($cfg.classes)]
     | group_by(.) | map({(.[0]): length}) | add // {}' queued)" || die "the queue could not be read"
   s="$(class_started "$cfg")" || die "the started items could not be read"
@@ -3178,8 +3195,10 @@ cmd_backfill_briefs() {
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
-# nothing when they are clean, or when this queue is not the store's).
-[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT
+# nothing when they are clean, or when this queue is not the store's). 8>&-: the sync must not
+# inherit the queue lock (fd 8): it would keep .lock held for as long as it waits on its own sync
+# lock (store-sync LOCK_WAIT_S), and every queue writer timed out behind it (2026-11-18).
+[[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
   add | list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;

@@ -2532,6 +2532,10 @@ cmd_start() {
       [ "$(harness_launcher "$harness")" = claude-cloud ] || acct=$(harness_source "$harness")
       on=$harness
     fi
+    # A worker prepares its own account dirs (shared setup, first-run done) before the pane opens: the
+    # dispatcher's pick linked this machine's, and a worker's were left on the theme picker (razer-laptop,
+    # 2026-11-18).
+    [ -z "$host" ] || fleet_host_run "$host" claude-acct link >/dev/null || say "start: claude-acct link failed on $host; its pane may open on a first-run screen"
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
@@ -4270,23 +4274,54 @@ lease_guard() {
   return "$rc"
 }
 
+# stuck_on <worker> -> how many of its Claude items, started over DISPATCH_REAP_GRACE ago, have no
+# transcript there for any session id they record. Claude writes <id>.jsonl on its first turn, so one
+# with none never got past its start: on 2026-11-18, 27 sat on razer-laptop's first-run screen and
+# nothing paged. agent-panel is no witness: it does not check that a transcript exists.
+# Nothing when the worker does not answer. stdin: the active queue as `agent-queue list --json`, read once
+# for every worker. One find over main's projects dir, which `claude-acct link` shares into every account
+# (so a session moved between accounts is still found), plus each account's own for one not linked yet;
+# -H follows a start point that is that shared link.
+stuck_on() {
+  local started acct sids s n=0 rc=0 found items=() names=() dirs=(.claude/projects)
+  while IFS=$'\037' read -r started acct sids; do
+    past_reap_grace "$started" || continue
+    items+=("$sids")
+    case "$acct" in '' | main) ;; *) dirs+=("$acct/projects") ;; esac
+    for s in $sids; do names+=(-o -name "$s.jsonl"); done
+  done < <(jq -r --arg h "$1" '
+    select(.host == $h and .state != "queued" and (.agent // "claude") == "claude" and (.sessions // "") != "")
+    | [(.started // ""), (.account // ""), .sessions] | join("\u001f")' 2>/dev/null)
+  [ ${#items[@]} -gt 0 ] || { echo 0; return 0; }
+  mapfile -t dirs < <(printf '%s\n' "${dirs[@]}" | sort -u)
+  # A dir missing there is find's rc 1, not an answer missing; 255 is ssh's own.
+  found=$(fleet_host_run "$1" find -H "${dirs[@]}" -maxdepth 2 \( "${names[@]:1}" \) -printf '%f\n' 2>/dev/null) || rc=$?
+  [ "$rc" -ne 255 ] || return 0
+  for sids in "${items[@]}"; do
+    for s in $sids; do grep -qxF "$s.jsonl" <<<"$found" && continue 2; done
+    n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+
 # cmd_hosts [--json] -- who holds the fleet lease (fleet-lease status), then each worker in the
 # roster, as a pass would read it now.
 cmd_hosts() {
-  local h name rows=()
+  local h name rows=() queue
   fleet_roster_fetch
   fleet_hosts >/dev/null
   [ "${1:-}" = --json ] || fleet-lease status 2>&1
   probe_hosts "$(live_runs)"
+  queue=$(agent-queue list --json --state active 2>/dev/null)
   while IFS= read -r h; do
     [ -n "$h" ] || continue
     name=$(jq -r .name <<<"$h")
-    rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" \
-      '{name, dest, place, max_live, free: ($f | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
+    rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$(stuck_on "$name" <<<"$queue")" \
+      '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
   done < <(fleet_hosts)
   [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
-  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)"'; fi
+  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)"'; fi
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label

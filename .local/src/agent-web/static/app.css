@@ -350,6 +350,10 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }
+.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 0; }
+.tpager .btn.sm { margin: 0; }
+.tpager .btn.on { border-color: var(--accent); color: var(--accent); }
+.tpager .btn:disabled { opacity: .4; cursor: default; }
 .headline { font-size: 12px; margin: 10px auto 0; }
 .g2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; margin-top: 12px; }
 .g2 > .panel { min-width: 0; }
@@ -474,6 +478,7 @@ span.warn { color: var(--b-stalled); }
 /* Schedules: an open row reads at the box's width, however far the table is scrolled. */
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
+.flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
@@ -546,7 +551,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.rdjobs tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
   .tbl.rdjobs td { border: 0; padding: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .tbl.rdjobs td::before { content: attr(data-label) " "; color: var(--muted); }
-  .seg button, .tsort, .tqbar select, .tdate { min-height: 40px; }
+  .seg button, .tsort, .tqbar select, .tdate, .tpager .btn { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }

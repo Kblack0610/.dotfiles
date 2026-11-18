@@ -306,5 +306,15 @@ _fh_ssh() {
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
   # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
   ssh $n -T -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
-    'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
+    'PATH="$HOME/.local/bin:$PATH" exec env' "$(_fh_sq "$@")"
+}
+
+# _fh_sq <args...> -> each argument in POSIX single quotes, space-separated, which sh, bash and zsh
+# all read back literally. Not bash's %q: it leaves a leading = bare, which zsh expands to a
+# command's path, so `has-session -t =<name>` exited 1 on a zsh worker and reap read every session
+# there as gone (razer-laptop, 2026-11-18).
+_fh_sq() {
+  local a q="'" out=''
+  for a in "$@"; do out+="'${a//$q/$q\\$q$q}' "; done
+  printf '%s' "$out"
 }
