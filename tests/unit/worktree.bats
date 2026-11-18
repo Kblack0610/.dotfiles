@@ -1014,7 +1014,7 @@ orphan_project() {
 
 # pane_scopes -- tmux server 81 (socket hub) has one pane, child 10. Four pane scopes:
 #   live: pane 10 of 81, still open                        -> spared
-#   gone: pane 20 of 81, closed; bats, chrome, rbw-agent and a tmux server it started
+#   gone: pane 20 of 81, closed; bats, chrome, rbw-agent, a tmux server it started and a zombie
 #   dead: pane 30 of server 90, which has exited            -> rustc
 #   mute: pane 40 of server 95, alive but its socket is gone -> spared
 # systemctl, tmux, /proc and the cgroup tree are all fakes; kill only edits cgroup.procs.
@@ -1032,11 +1032,13 @@ pane_scopes() {
 22 chrome-headless
 23 rbw-agent
 24 tmux: server
+25 bash
 31 rustc
 41 bash
 EOF
+  printf '25 (bash) Z 1\n' > "$WT_PROC_ROOT/25/stat" # a zombie: dead, not yet reaped
   local unit
-  for unit in live:11 gone:21,22,23,24 dead:31 mute:41; do
+  for unit in live:11 gone:21,22,23,24,25 dead:31 mute:41; do
     mkdir -p "$WT_CGROUP_ROOT/s/${unit%%:*}"
     tr , '\n' <<<"${unit#*:}" > "$WT_CGROUP_ROOT/s/${unit%%:*}/cgroup.procs"
   done
@@ -1076,14 +1078,14 @@ EOF
   waitpid() { :; }
 }
 
-@test "orphans ends what a closed pane left running, of any kind, and spares the tmux server and rbw-agent in it" {
+@test "orphans ends what a closed pane left running, of any kind, and spares the tmux server, rbw-agent and a zombie in it" {
   pane_scopes
   run cmd_orphans
   assert_success
   assert_line 'ended 21,22  gone (bats x1, chrome-headless x1)'
   assert_line 'ended 31  dead (rustc x1)'
   assert_equal "$(cat "$SANDBOX/kill.log")" $'-TERM 21 22\n-TERM 31'
-  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
 }
 
 @test "orphans never touches an open pane, or the scopes of a server that does not answer (negative control)" {
