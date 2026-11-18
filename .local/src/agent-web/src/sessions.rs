@@ -30,6 +30,9 @@ pub struct TableQuery {
     pub sort: String,
     pub dir: String,
     pub pg: String,
+    /// The open session (its target or session id): with no `pg`, the page that holds it, so the
+    /// split view's list shows the row it marks.
+    pub sel: String,
 }
 
 /// Every row, the state document under it and what could not be read.
@@ -74,13 +77,14 @@ fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
     let (mut rows, mut table) = view.summary(&r.rows);
     let spend_usd = session_table::spend(rows.iter().copied());
-    let page = q.pg.parse().unwrap_or(1);
-    table::page(
-        &mut rows,
-        &mut table,
-        page,
-        layout::page_rows("sessions/sessions"),
-    );
+    let per = layout::page_rows("sessions/sessions");
+    let page = q.pg.parse().unwrap_or_else(|_| {
+        let at = rows.iter().position(|r| {
+            !q.sel.is_empty() && (r.key == q.sel || r.target == q.sel || r.session_id == q.sel)
+        });
+        at.map_or(1, |at| at / per + 1)
+    });
+    table::page(&mut rows, &mut table, page, per);
     let out = Shown {
         spend_usd,
         rows,
@@ -205,6 +209,20 @@ mod tests {
         assert_eq!(v["table"]["pager"]["page"], 2);
         assert_eq!(v["table"]["shown"], per + 3);
         assert_eq!(v["spend_usd"], (per + 3) as f64);
+        let sel = |sel: &str, pg: &str| TableQuery {
+            sel: sel.into(),
+            pg: pg.into(),
+            ..TableQuery::default()
+        };
+        let page = |q: &TableQuery| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(&render(&r, q)).unwrap()["table"]["pager"]
+                ["page"]
+                .clone()
+        };
+        let tail = format!("k{}", per + 1);
+        assert_eq!(page(&sel(&tail, "")), 2, "the open session's page");
+        assert_eq!(page(&sel(&tail, "1")), 1, "a page asked for wins");
+        assert_eq!(page(&sel("gone", "")), 1);
     }
 
     #[test]

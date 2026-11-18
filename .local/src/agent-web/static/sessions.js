@@ -8,6 +8,8 @@
 const sst = tblTab({
   tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
   wait: "Loading the sessions.", state: { cap: null, capErr: null, confirm: null },
+  // With a session open beside the list and no page asked for, the server sends the page holding it.
+  params: (p) => { if (st.sel && SPLIT.matches && !p.has("pg")) p.set("sel", sessionId(st.sel)); },
   shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
   tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
@@ -180,10 +182,11 @@ function renderSide(scroll = false) {
   if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
 }
 
-// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read.
+// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read
+// or its page lacks that session (the read then asks for the page holding it, `sel`).
 function sideShow(scroll) {
   if (!st.sel || !SPLIT.matches) return renderSide();
-  if (sst.data) renderSide(scroll);
+  if (sst.data && (sst.data.rows || []).some(isSel)) renderSide(scroll);
   else sst.refresh();
 }
 SPLIT.addEventListener("change", () => sideShow(true));

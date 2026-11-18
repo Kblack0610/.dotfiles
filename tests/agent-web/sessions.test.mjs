@@ -249,6 +249,20 @@ test("the table and the side list draw the page the server sends, with its pager
   run("st.sel = null");
 });
 
+test("a session opened off the side list's page reads the page holding it; a page asked for wins", async () => {
+  setup();
+  mq.matches = true;
+  run(`__load = load; load = () => {}; __asked = []; api = async (u) => { __asked.push(u); return { rows: [], table: TABLE }; }`);
+  await run(`openSession("far")`);
+  await new Promise(setImmediate);
+  assert.match(run("__asked.join()"), /^\/api\/sessions\/table\?sel=far$/, run("__asked.join()"));
+  run(`__asked.length = 0; st.views.sessions = "pg=3"; sst.refresh()`);
+  await new Promise(setImmediate);
+  assert.equal(run("__asked.join()"), "/api/sessions/table?pg=3");
+  mq.matches = false;
+  run(`load = __load; st.sel = null; st.views = {}`);
+});
+
 const VOCAB = ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"];
 
 test("the bucket order and colours come from the published vocabulary, not a list in the page", () => {

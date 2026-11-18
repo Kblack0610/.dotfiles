@@ -442,7 +442,9 @@ test("a Home read names the open Needs you rows, which the server keeps on the p
   vm.runInContext(`st.views.home = "npg=2"; hst.open = new Set(["nightly:r9", "ask:a1"])`, ctx);
   const p = new URLSearchParams(vm.runInContext("homePath()", ctx).split("?")[1]);
   assert.deepEqual([p.get("npg"), p.get("nopen")], ["2", "nightly:r9,ask:a1"]);
-  vm.runInContext(`hst.open = new Set()`, ctx);
+  vm.runInContext(`hst.open = new Set(); hst.want = "a7"`, ctx);
+  assert.equal(new URLSearchParams(vm.runInContext("homePath()", ctx).split("?")[1]).get("nopen"), "ask:a7", "an ask a link wants opened, wherever it ranks");
+  vm.runInContext(`hst.want = null`, ctx);
   assert.doesNotMatch(vm.runInContext("homePath()", ctx), /nopen/);
   vm.runInContext(`st.views.home = ""`, ctx);
 });

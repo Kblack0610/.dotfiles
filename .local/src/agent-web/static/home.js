@@ -63,11 +63,12 @@ const propT = tblTab({
   head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
-// /api/home as the URL's three table views ask for it, with the open Needs you rows (`nopen`),
-// which the server keeps on whatever page it sends.
+// /api/home as the URL's three table views ask for it, with the open Needs you rows and the ask a
+// link wants opened (`nopen`), which the server keeps on whatever page it sends.
 const homePath = () => {
   const p = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)]));
-  if (hst.open.size) p.set("nopen", [...hst.open].join(","));
+  const open = [...hst.open, ...(hst.want ? [`ask:${hst.want}`] : [])];
+  if (open.length) p.set("nopen", open.join(","));
   const view = p.toString();
   return "/api/home" + (view ? "?" + view : "");
 };
