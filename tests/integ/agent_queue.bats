@@ -3507,6 +3507,29 @@ second line of the brief
 a"
 }
 
+@test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
+  "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --tags at:23:59 --slug n "tonight" >/dev/null
+  "$AQ" set n row=game:gm-n >/dev/null
+  export AGENT_QUEUE_CAP=2
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned n to its board row"
+  AGENT_QUEUE_CAP=0 "$AQ" add --project game --from shepherd --priority low --slug c "c" >/dev/null
+  "$AQ" set c row=game:gm-c >/dev/null
+  # A retry of a queued urgent add dies on the duplicate and returns nothing first.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure
+  assert_output --partial "already in the queue: u1"
+  refute_output --partial "returned c"
+  "$AQ" move c running >/dev/null
+  AQ_RETURN_QUEUED=1 run "$AQ" return c --why "make room"
+  assert_failure
+  assert_output --partial "c is running now, not queued: not returned"
+  run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "n"
+}
+
 @test "the cap never holds a --running, held-on-arrival, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
