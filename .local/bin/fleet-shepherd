@@ -33,7 +33,8 @@
 #                          type /wind-down into each session whose close verdict is now, and close the window
 #                          of one still closable an hour after its close was typed (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
+#                          once, when nothing is working), 2 if it could not refresh, 75 if a run held the run lock
+#                          past FLEET_SHEPHERD_CHECK_WAIT seconds (a check and a run never sample at once). Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
 #                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd route "<due line>"
@@ -89,6 +90,10 @@
 set -uo pipefail
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
+: "${FLEET_SHEPHERD_CHECK_WAIT:=120}" # seconds a check waits for a run that holds the run lock; past it the check exits 75
+# Set only for the child the run-lock holder starts (run_locked). Unset at once, so nothing that
+# child starts (a pass, a tmux server it makes) inherits it and skips the lock.
+RUN_LOCKED="${FLEET_SHEPHERD_RUN_LOCKED:-}"; unset FLEET_SHEPHERD_RUN_LOCKED
 NAME="${AGENTCTL_NAME:-shepherd}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
@@ -121,6 +126,11 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
 : "${FLEET_SHEPHERD_LANDING_WAIT_MIN:=120}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
+# A skip lasts while its line is due, and at most this long; then the line goes to the next pass
+# plain, with the old why in the log, to act on or skip again. Provisional, 2026-11-18: %247 sat
+# 10h unnudged on a skip whose blocker item finished an hour after the skip. Revisit if the same
+# key is re-skipped more than 3 times a day.
+: "${FLEET_SHEPHERD_SKIP_MAX_MIN:=240}"
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
@@ -273,6 +283,9 @@ cmd_due() {
           "shared red: \(.reason); then: fleet-sessions escalate \(.id) \"\(.fact)\""
         elif (.nudged | not) and ((.owners // []) | length) > 0 and ($item | startswith("row:")) then
           "nudge SHARED: \(.test) is quarantined on main under board row \($item[4:]); tell \(.owners | join(",")): do not gate again on it, merge main to take the quarantine; then: fleet-sessions mark \(.id) \"\(.fact)\""
+        elif (.nudged | not) and ((.owners // []) | length) > 0 and ($item | startswith("board:")) then
+          ($item[6:] | split(":")) as $b
+          | "nudge SHARED: \(.test) is owned by board row \($b[1]) on \($b[0]), which dispatch starts; tell \(.owners | join(",")): do not gate again on it, merge main once it lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         elif (.nudged | not) and ((.owners // []) | length) > 0 then
           "nudge SHARED: \(.test) is owned by queue item \($item); tell \(.owners | join(",")): do not gate again on it, merge main once \($item) lands; then: fleet-sessions mark \(.id) \"\(.fact)\""
         else empty end )
@@ -290,12 +303,12 @@ cmd_due() {
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
   # hold is a hold decision; both are the shepherd's step 1. So is a parked session on a CLEAR
-  # machine with no hold: nothing else ever resumes it. One the budget checkpoint parked is left
-  # out, since that park pages the human and only they resume it, and so is one fleet-dispatch
-  # preempted for an urgent item (ledger why=preempt): its own pass resumes it once units free.
+  # machine with no hold: nothing else ever resumes it. A park that has an owner (its ledger
+  # why) is left out: a budget park (why=budget) paged the human, who decides when it resumes, and
+  # fleet-dispatch resumes its preempts (why=preempt) once their run units free.
   # Only load holds count: a resource hold (bad RAM until a memtest) or a desktop claim is not
   # about load, so a CLEAR machine is no reason to lift it (ar-2605).
-  local verdict holds parked preempt
+  local verdict holds parked owned
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
@@ -306,16 +319,15 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
-    local f; preempt=""
+    # The pace line owns only why=park parks (a missing why is a park); any other why's owner resumes it.
+    local f; owned=""
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
-      [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
+      [ -f "$f" ] && owned+="$(awk -F= '$1=="why"{w=$2} $1=="target"{t=$2} END{if (w!="" && w!="park") print t}' "$f")"$'\n'
     done
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" "$PANE_TAG_JQ"'
-      ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
-      | ($pre | split("\n")) as $pre
+    parked="$(jq -r --arg owned "$owned" "$PANE_TAG_JQ"'
+      ($owned | split("\n")) as $owned
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
-          and (.target as $t | $pre | index($t) | not)
-          and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
+          and (.target as $t | $owned | index($t) | not))
         | "\(.target)\(ptag)"] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
   fi
@@ -647,7 +659,7 @@ budget_sample() {
         *) budget_mark "$slug" "$n" left "budget: $target ($why), $bucket: not parked, it is not spending"; continue ;;
       esac
     fi
-    if out="$(claude-acct park "$target" 2>&1)"; then
+    if out="$(claude-acct park "$target" --why budget 2>&1)"; then
       budget_mark "$slug" "$n" parked "budget: parked $target ($why, $bucket)"
       [ "$st" = pending ] || budget_page "$target parked at its budget" "$why, $bucket. Resume it with claude-acct unpark $target; it runs one more budget before the next checkpoint."
     elif [[ "$out" == *"busy mid-turn"* || "$out" == *"background shells"* ]]; then
@@ -702,7 +714,9 @@ remind_sample() {
 # /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
 # to a session in another permission mode is held for approval and expires unseen, and its mark
 # stopped this typing (2026-11-18: hub/dotfiles:4 and :8 left open overnight); the claude CLI has
-# no send, so typing is the one model-free way in, as claude-acct types /exit.
+# no send, so typing is the one model-free way in, as claude-acct types /exit. The typing is
+# agent-panel send's, which holds the pane's send lock: a pane another send holds (exit 75) is
+# typed nothing and its claim is given back for the next check.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
 # cancelling the human's copy mode, and reads the screen again after the claim, just before the
 # keys; any other screen waits for the next check, and a box holding the human's draft also pages
@@ -718,7 +732,7 @@ remind_sample() {
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact server cmd when now acted="" failed="$LEDGER/.close-failed"
+  local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane close fact idle; do
@@ -754,12 +768,16 @@ close_sample() {
       continue
     fi
     cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
-    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
-      acted=1
-      cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null
-    else
-      cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
-    fi
+    # --wait 0: a pane another send holds is not waited on, so the screen pane_takes_keys just read
+    # is the one typed into; nothing was typed, so the claim goes back and the next check types it.
+    rc=0; agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
+      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
+      75) rm -f "$LEDGER/.closed/$sid" && acted=1
+          cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
+      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
+    esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
@@ -875,10 +893,12 @@ shared_items() {
 
 # shared_sample: one owner holds each shared red episode (ar-623); who counts as an owner is the
 # SHARED row of .local/src/docs/fleet-states.md (ar-2448, ar-2523). An owner that stops being one
-# is dropped and the fact matched again; with no owner, one item is filed per test. A failed add,
-# or one whose slug is taken by an item that does not own the test, files nothing, so the row
-# stays a `shared red:` line the pass escalates; a queue that reads empty or a document that
-# cannot be read changes nothing.
+# is dropped and the fact matched again; with no owner, one is filed per test. Only the board fills
+# the queue (QUEUE.md "Admission"), so the add leaves a board row, which owns the test while it is
+# open and hands it to the item dispatch makes of it (shared_board_owner). A failed add, or one
+# whose slug is taken by an item that does not own the test, files nothing, so the row stays a
+# `shared red:` line the pass escalates; a queue that reads empty or a document that cannot be
+# read changes nothing.
 # SHARED_OWNER_JQ: the active items as inputs, $t the test without its parameters, $q main's
 # unexpired quarantine entries, $full the test as it failed; each owning item's slug out, then
 # row:<row> per quarantine row. A quarantine entry with no parameters covers every case.
@@ -906,12 +926,28 @@ shared_owners() {
 }
 # shared_owner_name <owner>: an owner as a reader names it.
 shared_owner_name() {
-  case "$1" in row:*) echo "board row ${1#row:} (quarantined on main)" ;; *) echo "queue item $1" ;; esac
+  case "$1" in
+    row:*) echo "board row ${1#row:} (quarantined on main)" ;;
+    board:*) local r="${1#board:}"; echo "board row ${r#*:} on ${r%%:*}" ;;
+    *) echo "queue item $1" ;;
+  esac
+}
+# shared_board_owner <board:project:id>: what a filed board row is now, from $active and $board
+# (shared_sample reads the board once): the item dispatch made of the row, else the row while it
+# is open, else nothing (closed or dropped). A board that could not be read keeps the row.
+shared_board_owner() {
+  local r="${1#board:}" item
+  item="$(jq -rn --arg r "$r" 'first(inputs | select(.row == $r) | .slug) // empty' <<<"$active")"
+  [ -z "$item" ] || { echo "$item"; return; }
+  [ -n "$board" ] || { echo "$1"; return; }
+  jq -e --arg p "${r%%:*}" --arg k "${r#*:}" 'any(.rows[]?; .project == $p and .id == $k)' <<<"$board" >/dev/null && echo "$1"
 }
 shared_sample() {
-  local fact test reason cm active quarantine slug out keep rows
+  local fact test reason cm active quarantine slug out keep rows now board=""
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
+  # One read of the board (every open row, every profile) a sample, only while a row owns a red.
+  ! grep -q $'\tboard:' "$SHARED_ITEMS" || board="$(notes board --json 2>/dev/null)" || board=""
   quarantine="$(shared_quarantine)"
   rows="$(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)" || return 0
   # Keep the mappings of the document's live facts whose item still owns the test. A queue that
@@ -919,8 +955,13 @@ shared_sample() {
   [ -n "$active" ] && keep="$(while IFS=$'\t' read -r fact test reason; do
       slug="$(awk -F'\t' -v f="$fact" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
       [ -n "$fact" ] && [ -n "$slug" ] || continue
-      if shared_owners "$test" | grep -qxF -- "$slug"; then
+      now="$slug"
+      case "$slug" in board:*) now="$(shared_board_owner "$slug")" ;; esac
+      if [ -n "$now" ] && [ "$now" = "$slug" ] && [ "${slug#board:}" != "$slug" ]; then
         printf '%s\t%s\n' "$fact" "$slug"
+      elif [ -n "$now" ] && shared_owners "$test" | grep -qxF -- "$now"; then
+        [ "$now" = "$slug" ] || cmd_log "shared red: $test is owned by queue item $now, started from $(shared_owner_name "$slug")" >/dev/null
+        printf '%s\t%s\n' "$fact" "$now"
       else
         cmd_log "shared red: $test is no longer owned by $(shared_owner_name "$slug"): it landed, is low, does not name the test, or its quarantine ended" >/dev/null
       fi
@@ -935,7 +976,9 @@ shared_sample() {
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
-      slug="$(sed -n '/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
+      # A queued add prints its slug; a board-only one (agent-queue overflow_row) `held <slug> -> <board>:<id>`,
+      # and that row owns the test until dispatch starts it.
+      slug="$(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//board:\1/p;q;};/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
         slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"
@@ -1061,6 +1104,7 @@ receipts() {
   touch "$DUE_LAST" "$SKIPPED" "$PAGED" "$HANDED"
   now="$(date +%s)"
   ! last_working || early=1
+  expire_skips "$now"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="$(due_key "$line")"
@@ -1166,7 +1210,26 @@ skip_known() {
   return 1
 }
 
-# skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
+# expire_skips <now>: drop each skip older than FLEET_SHEPHERD_SKIP_MAX_MIN, its key from $PAGED, and from $HANDED,
+# so the line comes back plain and is handed afresh; kept in $HANDED it would come back unhandled,
+# aged from its first handing, and page the human high at once. The log keeps the old why.
+expire_skips() {
+  local cut=$(( $1 - FLEET_SHEPHERD_SKIP_MAX_MIN * 60 )) gone k why t
+  gone="$(awk -F'\t' -v c="$cut" '$3 != "" && $3 < c' "$SKIPPED")"
+  [ -n "$gone" ] || return 0
+  awk -F'\t' -v c="$cut" '!($3 != "" && $3 < c)' "$SKIPPED" > "$SKIPPED.tmp" && mv -f "$SKIPPED.tmp" "$SKIPPED"
+  awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($1 in g)' <(printf '%s\n' "$gone") "$HANDED" > "$HANDED.tmp" \
+    && mv -f "$HANDED.tmp" "$HANDED"
+  # and from $PAGED: a line paged before its skip may page again if it is left once more
+  awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($0 in g)' <(printf '%s\n' "$gone") "$PAGED" > "$PAGED.tmp" \
+    && mv -f "$PAGED.tmp" "$PAGED"
+  while IFS=$'\t' read -r k why t; do
+    cmd_log "skip expired after $(( ($1 - t) / 3600 ))h: $k (was: $why)"
+  done <<<"$gone"
+}
+
+# skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due
+# or FLEET_SHEPHERD_SKIP_MAX_MIN passes (expire_skips), whichever comes first.
 # It logs the skip, so a pass whose only answer was a skip did something and is not STALLED.
 cmd_skip() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ] || die 'usage: fleet-shepherd skip "<due line>" "<why>"'
@@ -1639,20 +1702,29 @@ hand_due() {
   [ ! -e "$LEDGER/.lane-$1" ] || printf '%s\n' "$keys" >> "$LEDGER/.lane-$1"
 }
 
-# run_locked: cmd_run, one at a time. Two runs (the timer and a hand run) would each read the same
-# .pass and start a pass. flock -o holds the lock in flock itself, so nothing the run starts (a tmux
-# server, a page sent in the background) inherits it and holds it past the run. The loser starts
-# nothing; a run that hangs holding it shows as `stuck` (no pass started in STUCK_MIN).
+# run_locked <run|check>: cmd_run or cmd_check_routed, one at a time. Two runs (the timer and a hand
+# run) would each read the same .pass and start a pass, and a check beside a run (a fleet-lead
+# pass's check while the runner samples) rewrites the samples' ledgers (.budget, .remind,
+# $SHARED_ITEMS, the close claims) under it and can park or page twice. flock -o holds the lock in
+# flock itself, so nothing the run starts (a tmux server, a page sent in the background) inherits
+# it and holds it past the run. A run that loses starts nothing; a check waits CHECK_WAIT for it,
+# since its caller wants the due lines, then exits 75. A run that hangs holding it shows as `stuck`
+# (no pass started in STUCK_MIN).
 run_locked() {
   require_table
-  [ -z "${FLEET_SHEPHERD_RUN_LOCKED:-}" ] || { cmd_run; return; }
-  [ -n "$SERVER" ] || die "no world declares session $SESSION"
+  local fn=cmd_run wait=(-n) rc=0
+  [ "$1" = run ] || { fn=cmd_check_routed; wait=(-w "$FLEET_SHEPHERD_CHECK_WAIT"); }
+  if [ -n "$RUN_LOCKED" ]; then "$fn"; return; fi
+  [ "$fn" = cmd_check_routed ] || [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
-  local rc=0
-  FLEET_SHEPHERD_RUN_LOCKED=1 flock -n -o -E 75 "$LEDGER/.run.lock" "$0" run || rc=$?
+  FLEET_SHEPHERD_RUN_LOCKED=1 flock "${wait[@]}" -o -E 75 "$LEDGER/.run.lock" "$0" "$1" || rc=$?
   [ "$rc" = 75 ] || return "$rc"
-  echo "$NAME: another run is starting a pass now: no second one"
-  publish WORKED "another run held the run lock: no second pass"
+  if [ "$fn" = cmd_check_routed ]; then
+    echo "$NAME: a run held the run lock past ${FLEET_SHEPHERD_CHECK_WAIT}s: no check; run it again once that run ends" >&2
+    return 75
+  fi
+  echo "$NAME: a run or a check holds the run lock now: no second pass"
+  publish WORKED "a run or a check held the run lock: no second pass"
 }
 
 cmd_run() {
@@ -1820,13 +1892,13 @@ cmd_budget() {
 }
 
 case "${1:-}" in
-  run)   run_locked ;;
+  run)   run_locked run ;;
   stats) cmd_stats ;;
   budget) shift; cmd_budget "$@" ;;
   stuck) cmd_stuck ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
-  check) cmd_check_routed ;;
+  check) run_locked check ;;
   route) shift; line_route "${1:-}" ;;
   due)   cmd_due ;;
   infra) cmd_infra ;;

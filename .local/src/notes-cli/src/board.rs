@@ -608,6 +608,9 @@ struct FeedRow {
     points: Option<u32>,
     text: String,
     tags: Vec<String>,
+    /// `tags` as written: `tags` is lower-cased for grouping, and a gate tag's value is data
+    /// (`#ask/kxL6vp`), which agent-queue `gate` reads from here.
+    tags_cased: Vec<String>,
     marker: Option<String>,
     since: Option<String>,
     /// `filed:YYYY-MM-DD` in the marker: the day the triager filed it from an inbox.
@@ -734,7 +737,8 @@ fn feed_row(
         .map_or("high", |(word, _, _)| word);
     let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    let all = md::find_hashtags(head);
+    let cased = md::find_hashtags_cased(head);
+    let all: Vec<String> = cased.iter().map(|t| t.to_lowercase()).collect();
     let tier = all.iter().find_map(|t| md::tier_tag(t));
     let worker = all
         .iter()
@@ -743,20 +747,22 @@ fn feed_row(
     let points = crate::projects::points_of(line);
     let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
-    let tags = all
+    let (tags, tags_cased): (Vec<String>, Vec<String>) = all
         .into_iter()
-        .filter(|t| {
+        .zip(cased)
+        .filter(|(t, _)| {
             !words.contains(&t.as_str())
                 && !md::is_version_tag(t)
                 && !md::is_created_tag(t)
                 && !md::is_done_tag(t)
+                && !md::is_backlog_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
                 && !t.starts_with("pts/")
                 && t != "requested"
         })
-        .collect();
+        .unzip();
     FeedRow {
         profile: o.profile.to_string(),
         project: o.project.map(str::to_string),
@@ -781,6 +787,7 @@ fn feed_row(
         points,
         text: md::task_text(line),
         tags,
+        tags_cased,
         marker: md::marker_of(line),
         since: md::find_since(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
         filed: project_tasks::filed_on(line),
@@ -1450,6 +1457,7 @@ mod tests {
             "points",
             "text",
             "tags",
+            "tags_cased",
             "marker",
             "since",
             "filed",

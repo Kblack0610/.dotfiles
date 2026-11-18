@@ -12,8 +12,8 @@ const STACK_REFRESH_MS = 120e3;
 const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["source"], picture: ["picture"], checked: ["checked"], state: ["state"] };
 const SKILL_COLS = { skill: ["skill"], category: ["category"], repo: ["repo"], calls: ["calls", "n"], runners: ["runners"], drift: ["drift"] };
 const AGENT_COLS = { agent: ["agent"], model: ["model"], tools: ["tools"], repo: ["repo"] };
-const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"] };
-const RULE_COLS = { rule: ["rule"], kind: ["kind"], number: ["number", "n"], confidence: ["confidence"], state: ["state"], source: ["source"] };
+const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"], rules: ["rules", "n"] };
+const RULE_COLS = { rule: ["rule"], kind: ["kind"], number: ["number"], confidence: ["confidence"], state: ["state"], source: ["source"] };
 
 const stk = tblTab({
   tab: "stack", id: "stk", el: "stack", api: "/api/stack", hint: "search, or category:ops drift:deadpath -repo:private",
@@ -72,7 +72,12 @@ function stackList(title, part, cols, row, miss, none) {
 }
 
 // The skills' list names the window its calls column counts and the drift snapshot's day.
+// A link to one skill (`q=skill:=<name>`) opens that row once, so its backlinks show on arrival; a
+// click that shuts it keeps it shut until the query changes.
+let linkedQuery = null;
 function skillsBody(d) {
+  const q = new URLSearchParams(st.views.stack || "").get("q") || "";
+  if (q.startsWith("skill:=") && d.rows?.length === 1 && linkedQuery !== q) { linkedQuery = q; stk.sel = d.rows[0].name; }
   const days = d.use_days ? `calls over the newest ${d.use_days} day snapshots` : `calls ${NOT_READ}`;
   const drift = d.drift_day ? `drift as of ${d.drift_day}` : `drift ${NOT_READ}`;
   return `<div class="muted">${esc(days)}; ${esc(drift)}</div>` +
@@ -93,9 +98,10 @@ function skillRow(r) {
 function skillDetail(r) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const finds = (r.drift || []).map((f) => `<div><span class="warn">${esc(f.kind)}</span> ${esc(f.item)} <span class="muted">${esc(f.detail)}</span></div>`).join("");
+  const ran = (r.ran || []).map((x) => `<div><a href="${esc(x.link)}">${esc(x.title || x.session_id.slice(0, 8))}</a> <span class="muted">${esc(x.project)}, ${x.calls} call${x.calls === 1 ? "" : "s"}, ${esc(x.updated)}</span></div>`).join("");
   return `<tr class="wdet"><td colspan="${Object.keys(SKILL_COLS).length}"><div class="sdet">` +
     `<div>${esc(r.description || "no description")}</div>` +
-    line("Loads on", esc((r.paths || []).join(", "))) + line("Drift", finds) +
+    line("Loads on", esc((r.paths || []).join(", "))) + line("Drift", finds) + line("Ran in", ran) +
     line("Spend", `<a href="#costs?by=skill&q=${encodeURIComponent(r.name)}">Costs, Spend by skill</a>`) + `</div></td></tr>`;
 }
 
@@ -130,11 +136,15 @@ const agentRow = (r) => `<tr title="${esc(r.description)}"><td>${esc(r.name)}</t
 const agentsBody = (d) => stackList("Subagents", d.agents, AGENT_COLS, agentRow, "No subagents match.", "No subagents are defined.");
 
 const hookRow = (r) => `<tr title="${esc(r.command)}">${stackCell(r.harness, "muted")}${stackCell(r.event)}${stackCell(r.matcher || "*", "wrap muted")}` +
-  `<td class="${r.found ? "" : "bad"}">${esc(r.script)}${r.found ? "" : " (missing)"}</td>${stackCell(r.from, "muted")}</tr>`;
+  `<td class="${r.found ? "" : "bad"}">${esc(r.script)}${r.found ? "" : " (missing)"}</td>${stackCell(r.from, "muted")}${hookRules(r)}</tr>`;
+// A hook's mechanism rows in the ledger, linked to Rules filtered to exactly their source.
+const hookRules = (r) => r.rules
+  ? `<td class="n"><a href="#stack/rules?rs=mechanisms&rq=${encodeURIComponent(`source:=${r.source}`)}" title="its rows in the rules ledger">${r.rules}</a></td>`
+  : stackCell("-", "n muted");
 const hooksBody = (d) => stackList("Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
 
-const RULE_HUE = { ok: "", stale: "warn", moved: "warn", dead: "bad" };
-const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "n")}` +
+const RULE_HUE = { ok: "", stale: "warn", moved: "warn", restates: "warn", dead: "bad", absent: "muted" };
+const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "wrap")}` +
   `${stackCell(r.confidence, "muted")}${stackCell(r.state, RULE_HUE[r.state] ?? "")}${stackCell(r.source, "wrap muted")}</tr>`;
 
 const rulesBody = (d) => stackList("Rules", d.rules, RULE_COLS, ruleRow, "No rules match.", "No rules are recorded.");

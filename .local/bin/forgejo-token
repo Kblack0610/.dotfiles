@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# forgejo-token - print the Forgejo API token this machine uses, from the one place the order lives:
+#   1. FORGEJO_TOKEN, when set (a caller or a unit passes it in)
+#   2. the first line of ~/.config/forgejo/token (FORGEJO_TOKEN_FILE): a fleet worker's bot token,
+#      written by home-config role fleet-worker from SOPS, since a worker has no rbw
+#   3. rbw get forgejo_repo_admin (FORGEJO_TOKEN_ENTRY; FORGEJO_TOKEN_RBW is the rbw binary, a seam)
+# Exit 1 with one stderr line naming all three when none answers. Readers: session-outcomes.sh
+# so_forgejo_auth (agent-land, the PR scans) and schedules-sync.
+set -uo pipefail
+
+file="${FORGEJO_TOKEN_FILE:-$HOME/.config/forgejo/token}"
+entry="${FORGEJO_TOKEN_ENTRY:-forgejo_repo_admin}"
+
+if [ -n "${FORGEJO_TOKEN:-}" ]; then
+  printf '%s\n' "$FORGEJO_TOKEN"; exit 0
+fi
+if [ -s "$file" ]; then
+  tok=$(head -n1 "$file" | tr -d '[:space:]')   # a CRLF or trailing space would ride into the header and 401
+  [ -n "$tok" ] && { printf '%s\n' "$tok"; exit 0; }
+fi
+tok=$("${FORGEJO_TOKEN_RBW:-rbw}" get "$entry" 2>/dev/null) || tok=""
+[ -n "$tok" ] && { printf '%s\n' "$tok"; exit 0; }
+echo "forgejo-token: no token: FORGEJO_TOKEN unset, $file missing or empty, rbw $entry unread" >&2
+exit 1

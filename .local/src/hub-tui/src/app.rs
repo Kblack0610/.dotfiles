@@ -1618,7 +1618,14 @@ impl App {
         std::thread::spawn(move || {
             use hub_core::{boards, session_page};
             let ledger = boards::shepherd_dir();
-            let page = session_page::read(runner.as_ref(), &ledger, &id, &rows, &state);
+            let page = session_page::read(
+                runner.as_ref(),
+                &ledger,
+                &id,
+                &rows,
+                &state,
+                &hub_core::session_table::registry(),
+            );
             let _ = tx.send(Msg::SessionPage(Box::new((id, page))));
         });
     }
@@ -2858,10 +2865,16 @@ impl App {
                     self.seek = Some(sec);
                 }
             }
-            // An inner tab's name (`hooks`, `rules`) shows it.
+            // An inner tab's name (`hooks`, `rules`) shows it; words after it are that table's query
+            // (`skills skill:=one-shot`).
             (Tab::Stack, Some(q)) => {
-                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), q.trim()) {
-                    self.stv.inner = id;
+                let q = q.trim();
+                let (name, rest) = q.split_once(char::is_whitespace).unwrap_or((q, ""));
+                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), name) {
+                    match rest.trim() {
+                        "" => self.stv.inner = id,
+                        words => self.stv.open_query(id, words),
+                    }
                 }
             }
             (Tab::Queue, Some(q)) => self.open_queue(&q),
@@ -6566,8 +6579,10 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 queued, 1 running")
-                && s.contains("Running 1  On a PR 0  Ready 1  Held 1")
+            s.contains("QUEUE  2 on deck, 1 running")
+                && s.contains("Running 1  On a PR 0")
+                && !s.contains("Ready")
+                && !s.contains("Held")
                 && s.contains("SESSIONS  - reading"),
             "{s}"
         );
@@ -6582,7 +6597,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 2  done 1  cancelled 0  all 5"
             ),
             "{s}"
         );
@@ -8003,6 +8018,20 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_link_opens_stack_skills_on_that_skill() {
+        let (t, q) = crate::tabreq::parse("stack skills skill:=shepherd").unwrap();
+        assert_eq!(t, Tab::Stack);
+        let mut a = ci_app();
+        a.tab = Tab::Stack;
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "skills");
+        assert_eq!(a.stv.skills.view.q, "skill:=shepherd");
+        // An inner tab's bare name still just shows it.
+        let (_, q) = crate::tabreq::parse("stack hooks").unwrap();
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "hooks");
+    }
+    #[test]
     fn a_ledger_append_rereads_builds_only_while_the_tab_is_shown() {
         // `busy` is set on the calling thread when the read is started, so it says a read began
         // without waiting on the worker thread's message.
@@ -8617,7 +8646,7 @@ mod tests {
         ))));
         let s = screen(&mut a, 160, 40);
         assert!(
-            s.contains(&want.to_uppercase()) && s.contains("SHARE"),
+            s.contains(&want.to_uppercase()) && s.contains("SLOTS"),
             "{s}"
         );
         assert!(a.hints().contains("Esc all machines"), "{}", a.hints());

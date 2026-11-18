@@ -32,11 +32,6 @@ usage() {
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
 
-# creds <dir> <expiresAt-ms> -- a login: an access token and the refresh token that renews it
-creds() {
-  printf '{"claudeAiOauth":{"accessToken":"tok","refreshToken":"r","expiresAt":%s}}\n' "$2" > "$1/.credentials.json"
-}
-
 @test "the account whose fuller window is lower wins when resets are unknown" {
   usage main 10 80   # weekly nearly spent
   usage alt 50 50
@@ -102,20 +97,61 @@ creds() {
   assert_output --partial 'claude-acct: alt (5h -, 7d 32%)'
 }
 
-@test "a fresh answer with a null five_hour is accepted, not read as a failed fetch" {
-  creds "$HOME/.claude" 99999999999999
-  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":{\"utilization\":65.0,\"resets_at\":\"2026-11-06T03:00:00+00:00\"}}'" > "$SANDBOX/bin/curl"
+# ratelimit_curl <header lines...> -- curl answers with these response headers (CRLF, as the API
+# sends them); each call appends its argv to $SANDBOX/curl.argv and its stdin (the -K config) to
+# curl.stdin. The Prometheus spend query lands there too, and reads the headers as no data.
+ratelimit_curl() {
+  { printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/curl.argv"; cat >> "$SANDBOX/curl.stdin"\n'
+    printf 'printf "%%s\\r\\n" "HTTP/2 200"'
+    printf ' %q' "$@"
+    printf '\n'; } > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  export SANDBOX
+}
+
+@test "usage read: the setup token's rate-limit headers give the week and the 5h window" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65' 'anthropic-ratelimit-unified-7d-reset: 1795208400' \
+    'anthropic-ratelimit-unified-5h-utilization: 0.2' 'anthropic-ratelimit-unified-5h-reset: 1795100000' \
+    'anthropic-ratelimit-unified-status: allowed'
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(jq -r '.[] | select(.name == "main") | "\(.state) \(.week_used) \(.five_hour) \(.resets) \(.five_hour_resets)"' <<< "$output")" = "ok 65 20 1795208400 1795100000" ]
+  # the token goes in on stdin, never on the argument list
+  grep -qF "$TOK_MAIN" "$SANDBOX/curl.stdin"
+  ! grep -qF "$TOK_MAIN" "$SANDBOX/curl.argv"
+  grep -qF 'v1/messages' "$SANDBOX/curl.argv"
+}
+
+@test "usage read: a week header alone is a fresh answer, with no 5h window, its fraction read to the point" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.29' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +65%'
+  assert_line --regexp '^main +- +29%'
   refute_line --regexp '^main .*fetch failed'
 }
 
-@test "a response with no usage window at all is still a failed fetch" {
-  creds "$HOME/.claude" 99999999999999
-  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":null}'" > "$SANDBOX/bin/curl"
-  run "$ACCT" status
+@test "usage read: an answer with no week header (a refused call) is a failed fetch" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'content-type: application/json'
+  run --separate-stderr "$ACCT" status
   assert_line --regexp '^main .*fetch failed'
+  [[ ! -e "$XDG_CACHE_HOME/claude-acct/main.json" ]]
+  # it says what answered, so a refused probe does not read as a dead network
+  [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
+}
+
+@test "usage read: a call refused at the limit still reads its windows, and is capped" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 1.0' 'anthropic-ratelimit-unified-7d-reset: 1795208400' \
+    'anthropic-ratelimit-unified-status: rejected'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '.[] | select(.name == "main") | "\(.state) \(.week_used) \(.reached) \(.room.reason)"' <<< "$output")" = "ok 100 true capped" ]
 }
 
 @test "a tie goes to the first account in the file" {
@@ -125,25 +161,16 @@ creds() {
   assert_output ''
 }
 
-@test "an expired token scores 0 so launching it refreshes it" {
+@test "an account whose usage cannot be read is never picked, and reads unread" {
   usage main 40 70
-  creds "$ALT" 1000
-  run "$ACCT" pick
-  assert_line "$ALT"
-  assert_output --partial 'token expired'
-}
-
-@test "a signed-out account is never picked: no login, no refresh token, or one past its end" {
-  usage main 40 70
-  echo '{}' > "$ALT/.credentials.json"
+  # negative control: alt read at less use wins
+  usage alt 10 10
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  # alt with no setup token and no cached answer is not read, so it is never the pick
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
   run --separate-stderr "$ACCT" pick
   assert_success
-  assert_output ''
-  printf '{"claudeAiOauth":{"accessToken":"a","expiresAt":1000}}\n' > "$ALT/.credentials.json"
-  run --separate-stderr "$ACCT" pick
-  assert_output ''
-  printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1000,"refreshTokenExpiresAt":1000}}\n' > "$ALT/.credentials.json"
-  run --separate-stderr "$ACCT" pick
   assert_output ''
   run "$ACCT" status --json
   [[ "$(jq -r '.[] | select(.name == "alt") | .state' <<< "$output")" == unread ]]
@@ -156,8 +183,6 @@ creds() {
 }
 
 @test "no usage data at all falls back to the default account" {
-  creds "$HOME/.claude" 99999999999999
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" pick
   assert_success
   assert_output ''
@@ -221,6 +246,47 @@ creds() {
   [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
 }
 
+
+@test "link marks first-run done in every account and touches no other key" {
+  # A worker's account dirs start empty; without the flag Claude opens on its theme picker
+  # and a session nobody watches sits there (27 on razer-laptop, 2026-11-18).
+  printf '{"oauthAccount":{"emailAddress":"a@b"},"projects":{"/x":{"hasTrustDialogAccepted":true}},"numStartups":3}\n' > "$HOME/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"c@d"},"hasCompletedOnboarding":false}\n' > "$ALT/.claude.json"
+  local before_main before_alt
+  before_main=$(jq -S . "$HOME/.claude.json")
+  before_alt=$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq '.hasCompletedOnboarding' "$HOME/.claude.json")" == true ]]
+  [[ "$(jq '.hasCompletedOnboarding' "$ALT/.claude.json")" == true ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$HOME/.claude.json")" == "$before_main" ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")" == "$before_alt" ]]
+  # a rerun writes nothing
+  local stamp; stamp=$(stat -c %Y.%i "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_output ''
+  [[ "$(stat -c %Y.%i "$ALT/.claude.json")" == "$stamp" ]]
+}
+
+@test "link gives an account with no config yet one that has first-run done, and leaves a broken one alone" {
+  printf 'not json' > "$HOME/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+  [[ "$(cat "$HOME/.claude.json")" == 'not json' ]]
+  assert_output --partial 'first-run left as is'
+}
+
+@test "link marks first-run done through a symlinked config and in an empty one" {
+  printf '{"numStartups":1}\n' > "$SANDBOX/real.json"
+  ln -s "$SANDBOX/real.json" "$HOME/.claude.json"
+  : > "$ALT/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ -L "$HOME/.claude.json" ]]
+  [[ "$(jq -c . "$SANDBOX/real.json")" == '{"numStartups":1,"hasCompletedOnboarding":true}' ]]
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+}
 # --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
 
 src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
@@ -446,14 +512,11 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt '.run_out < '$NOW <<<"$output")" = true ]
 }
 
-@test "status --json: an expired token and a failed read say so instead of a number" {
-  creds "$ALT" 1000
-  creds "$HOME/.claude" 99999999999999
+@test "status --json: a failed read says so instead of a number" {
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .state <<<"$output")" = unread ]
   [ "$(field main .week_used <<<"$output")" = null ]
-  [ "$(field alt .state <<<"$output")" = expired ]
 }
 
 @test "status: a table row per account, with email and 24h dollars from Prometheus" {
@@ -558,10 +621,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
 @test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   mkdir -p "$SANDBOX/tf"
   rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
-  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":99999999999999}}\n' > "$ALT/.credentials.json"
   run "$ACCT" textfile "$SANDBOX/tf"
   assert_success
   run cat "$SANDBOX/tf/claude_acct.prom"
@@ -582,7 +643,6 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
 @test "textfile: a reported five hour window publishes its percent and its reset" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   printf '%s' "$(jq -c '.five_hour = {utilization: 26, resets_at: "2026-11-04T03:39:59.658454+00:00"}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   mkdir -p "$SANDBOX/tf"
   run "$ACCT" textfile "$SANDBOX/tf"
@@ -865,14 +925,9 @@ STUB
   assert_output "$ALT"
 }
 
-@test "room: an expired token has room; a failed read with no room elsewhere is exit 2" {
+@test "room: a failed read with no room elsewhere is exit 2" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 70 84
-  creds "$ALT" 1000
-  run --separate-stderr "$ACCT" room
-  assert_success
-  assert_output "$ALT"
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room
   assert_failure 2
 }
@@ -880,7 +935,6 @@ STUB
 @test "room: one account unread does not stop a start on the other" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -899,7 +953,6 @@ STUB
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$ALT" 99999999999999
   run "$ACCT" check usage
   assert_failure 1
   assert_output 'cannot read usage of alt'
@@ -907,14 +960,6 @@ STUB
   run "$ACCT" check usage
   assert_success
   assert_output 'usage read on 2 accounts'
-}
-
-@test "check usage: an expired token is not a failed read" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 30 84
-  creds "$ALT" 1000
-  run "$ACCT" check usage
-  assert_success
 }
 
 @test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
@@ -1130,7 +1175,6 @@ seen_claude() {
 @test "room --json: exit codes match room, an unread account is not a room verdict, and a window at the reserve refuses" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room --json
   assert_success
   [[ "$(field alt .room.reason <<< "$output")" == unread ]]
@@ -1365,7 +1409,7 @@ budget() {
   run --separate-stderr "$ACCT" status
   assert_line --regexp '^fleet: 5 live \(5 working\), burn 0\.3/h vs 0\.1/h sustainable'
   # negative control: with no Claude account read, live stays and burn and sustain are not written
-  rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
   "$ACCT" textfile "$SANDBOX/prom"
   run cat "$SANDBOX/prom/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 0'
@@ -1936,7 +1980,6 @@ pro_rollout() {
   budget team team 40 100
   budget sk-res key 5 20
   # no reply for the pool's own key: the team read fails
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
   assert_output "unread: lazer"
@@ -2227,10 +2270,10 @@ EOS
 @test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
   export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  mkdir -p "$HOME/.local/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"
   # no collector on this machine: skipped, nothing written, status 0
   run "$ACCT" textfile
   assert_success
@@ -2243,307 +2286,50 @@ EOS
   [ ! -e "$ws" ]
 }
 
-# --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------
-
-# login <dir> [access end ms] [login end ms] -> a signed-in credentials file
-login() {
-  printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":%s,"refreshTokenExpiresAt":%s}}\n' \
-    "${2:-$(((NOW + 3600) * 1000))}" "${3:-$(((NOW + 20 * 86400) * 1000))}" > "$1/.credentials.json"
-}
-
-# session <pane> <account> <status> [stuck] -> one agent-panel row, and with "stuck" a pane on Not logged in
-session() {
-  jq -nc --arg p "$1" --arg a "$2" --arg s "$3" \
-    '{harness: "claude", pane: $p, target: ("hub/s" + $p), account: $a, status: $s, parked: false}' >> "$NOTES_FIXTURE/agent-panel.list.json"
-  if [[ "${4:-}" == stuck ]]; then
-    printf 'did the work\n\nNot logged in · Please run /login\n\n> \n' > "$NOTES_FIXTURE/tmux.capture.${1#*/}"
-  fi
-}
-
-sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
-
-@test "check auth: every account signed in is quiet, and the line says how many" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  run "$ACCT" check auth
-  assert_success
-  assert_output '2 accounts signed in'
-}
-
-@test "check auth: a credentials file emptied to {} trips, naming the account and the login command" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (the credentials file holds no login): cl --acct alt, then /login'
-  # a missing file and a file with only an access token are signed out too
-  rm "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (no credentials file): cl --acct alt, then /login'
-  printf '{"claudeAiOauth":{"accessToken":"a"}}\n' > "$ALT/.credentials.json"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt signed out (no refresh token)'
-  # negative control: signing in again clears it
-  login "$ALT"
-  run "$ACCT" check auth
-  assert_success
-}
-
-@test "check auth: every account signed out is one line naming each, and counts the sessions stopped on it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  echo '{}' > "$HOME/.claude/.credentials.json"; echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'main signed out'
-  assert_output --partial 'alt signed out (the credentials file holds no login), 2 sessions on Not logged in: cl --acct alt, then /login'
-}
-
-@test "check auth: an access token long past its end with sessions working is a refresh that failed; idle, it is not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW - 40 * 60) * 1000))
-  run "$ACCT" check auth
-  assert_success
-  session hub/%1 alt busy
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt not refreshing: its access token ended 40m ago with 1 sessions working: cl --acct alt, then /login'
-  # inside the grace Claude is still about to refresh
-  login "$ALT" $(((NOW - 10 * 60) * 1000))
-  run "$ACCT" check auth
-  assert_success
-}
-
-@test "check auth: an account whose sessions run on a setup token is not 'not refreshing' for its file's access token" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW - 90 * 60) * 1000))
-  session hub/%1 alt busy
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt not refreshing'
-  rbw_stub
-  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
-  touch "$SANDBOX/vault/locked"
-  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
-  run "$ACCT" check auth
-  assert_success
-  # the login itself ending still trips
-  login "$ALT" $(((NOW - 90 * 60) * 1000)) $(((NOW - 3600) * 1000))
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'alt signed out (its login ended'
-}
-
-@test "check expiry: a login ending within three days trips, naming the account; a month out is quiet" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" $(((NOW + 3600) * 1000)) $(((NOW + 2 * 86400 + 3 * 3600) * 1000))
-  run "$ACCT" check expiry
-  assert_failure 1
-  assert_output 'alt login ends in 2d 3h: cl --acct alt, then /login'
-  login "$ALT"
-  run "$ACCT" check expiry
-  assert_success
-  assert_output 'no login ends within 3 days'
-}
-
-@test "check expiry: a signed-out account is check auth's, not named here" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  run "$ACCT" check expiry
-  assert_success
-}
-
-@test "textfile: publishes each account's sign-in, its token ends, its last write and the stopped sessions" {
+@test "textfile: with no dir only the fleet-lease holder publishes; another machine removes its copy, one that cannot tell keeps it" {
+  # a fleet worker's copy read every source unread and, merged by account, blanked every Burn row
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  login "$HOME/.claude" $(((NOW + 3600) * 1000)) $(((NOW + 20 * 86400) * 1000))
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck; session hub/%3 main busy
-  mkdir -p "$SANDBOX/tf"
-  run "$ACCT" textfile "$SANDBOX/tf"
+  export PROM_TEXTFILE_DIR="$SANDBOX/tf"
+  mkdir -p "$PROM_TEXTFILE_DIR" "$HOME/.local/bin"
+  # the check runs ~/.local/bin/fleet-lease, as the units do, never a PATH lookup: a fleet
+  # worker's systemd PATH has no ~/.local/bin, and its 127 kept the copy that blanked the rows
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"; }
+  echo 'old 1' > "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  lease 2
+  run "$ACCT" textfile
   assert_success
-  run cat "$SANDBOX/tf/claude_acct.prom"
-  assert_line 'claude_account_logged_in{account="main",kind="claude"} 1'
-  assert_line 'claude_account_logged_in{account="alt",kind="claude"} 0'
-  assert_line "claude_account_access_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 3600))"
-  assert_line "claude_account_refresh_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 20 * 86400))"
-  assert_line --regexp '^claude_account_credentials_written_timestamp_seconds\{account="main",kind="claude"\} [0-9]+$'
-  assert_line 'claude_account_not_logged_in_sessions{account="alt",kind="claude"} 2'
-  assert_line 'claude_account_not_logged_in_sessions{account="main",kind="claude"} 0'
-  assert_line 'claude_fleet_not_logged_in_sessions 2'
-  assert_line 'claude_fleet_signed_out_accounts 1'
-  # an emptied file has no token to end: no expiry line for it
-  refute_line --partial 'expires_timestamp_seconds{account="alt"'
+  assert_output --partial 'fleet-lease cannot tell who holds the lease (exit 2)'
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_output 'old 1'
+  lease 1
+  run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
+  # an explicit dir is not the collector's, so it publishes on any machine
+  mkdir -p "$SANDBOX/own"
+  run "$ACCT" textfile "$SANDBOX/own"
+  assert_success
+  [ -s "$SANDBOX/own/claude_acct.prom" ]
+  lease 0
+  run "$ACCT" textfile
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
 }
 
-@test "auth: the table names each account's state, and --json is the rows" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 main busy
+@test "there is no /login sign-in: auth, wake, check auth and check expiry are gone, and no code reads a credentials file" {
   run "$ACCT" auth
-  assert_success
-  assert_output --regexp 'main +yes +in 1h 0m +in 20d 0h .* 1 +0'
-  assert_output --partial 'alt'
-  assert_output --partial 'NO:the_credentials_file_holds_no_login'
-  run jq -c '[.[] | {name, logged_in, working}]' <(
-    "$ACCT" auth --json)
-  assert_output '[{"name":"main","logged_in":true,"working":1},{"name":"alt","logged_in":false,"working":0}]'
-}
-
-@test "stuck: only an idle session whose last lines say Not logged in counts; a quote higher up or a busy session does not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  session hub/%2 main idle
-  printf 'Not logged in · Please run /login\nthen I carried on\nline\nline\nline\nline\nline\nline\nline\n> \n' > "$NOTES_FIXTURE/tmux.capture.%2"
-  session hub/%3 main busy stuck
-  run jq -c '[.[] | {name, stuck}]' <("$ACCT" auth --json)
-  assert_output '[{"name":"main","stuck":1},{"name":"alt","stuck":0}]'
-}
-
-@test "wake: a session stopped on Not logged in, on an account signed in again, is typed to; a signed-out account's is not" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  echo '{}' > "$ALT/.credentials.json"
-  session hub/%1 main idle stuck
-  session hub/%2 alt idle stuck
+  assert_failure
+  assert_output --partial "unknown verb 'auth'"
   run "$ACCT" wake
-  assert_success
-  assert_output 'woke hub/shub/%1 (hub/%1, account main), try 1 of 3'
-  assert_equal "$(sent)" 1
-  grep -q -- 'agent-panel send --pane hub/%1 You were signed out and are signed in again' "$NOTES_FIXTURE/calls.log"
-  ! grep -q -- 'send --pane hub/%2' "$NOTES_FIXTURE/calls.log"
-}
-
-@test "wake: at most WAKE_BATCH a run, the rest the next run; a loaded machine wakes one" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_LOADAVG="$SANDBOX/loadavg"
-  echo '0.1 0.1 0.1 1/1 1' > "$SANDBOX/loadavg"
-  login "$HOME/.claude"
-  for i in 1 2 3 4 5; do session "hub/%$i" main idle stuck; done
-  run "$ACCT" wake
-  assert_success
-  assert_equal "$(sent)" 3
-  # the same minute again: the three are inside their gap, so the other two go
-  run "$ACCT" wake
-  assert_equal "$(sent)" 5
-  # negative control: past the load line a run wakes one
-  : > "$NOTES_FIXTURE/calls.log"
-  rm -rf "$XDG_CACHE_HOME/claude-acct/wake"
-  echo '999 999 999 1/1 1' > "$SANDBOX/loadavg"
-  run "$ACCT" wake
-  assert_equal "$(sent)" 1
-}
-
-@test "wake: a pane waits out its gap, is tried WAKE_TRIES times, and then check auth pages it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake; assert_output --partial 'try 1 of 3'
-  run "$ACCT" wake; assert_output ''
-  for t in 2 3; do
-    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
-    run "$ACCT" wake
-    assert_output --partial "try $t of 3"
-  done
-  export CLAUDE_ACCT_NOW=$((NOW + 4 * 600))
-  run "$ACCT" wake
-  assert_output ''
-  assert_equal "$(sent)" 3
+  assert_output --partial "unknown verb 'wake'"
   run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'main 1 sessions stay on Not logged in after the wakes: cl --acct main, then /login'
-}
-
-@test "wake: a pane that came back is forgotten, so a later sign-out starts its tries again" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  printf 'working again\n> \n' > "$NOTES_FIXTURE/tmux.capture.%1"
-  run "$ACCT" wake
-  assert_output ''
-  [ ! -e "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-}
-
-@test "wake --dry-run names what it would wake and types nothing" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake --dry-run
-  assert_output 'would wake hub/shub/%1 (hub/%1, account main)'
-  assert_equal "$(sent)" 0
-}
-
-@test "auth: agent-panel missing or failing is said on stderr, never counted as no stuck sessions in silence" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  run --separate-stderr "$ACCT" check auth
-  assert_success
-  [[ "$stderr" == *'agent-panel list failed (1)'* ]]
-}
-
-@test "check auth: a refresh token past its end is signed out even though the file still holds it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  login "$ALT" "$(((NOW - 7200) * 1000))" "$(((NOW - 3 * 3600) * 1000))"
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output 'alt signed out (its login ended 3h ago): cl --acct alt, then /login'
-}
-
-@test "wake: a send the pane did not take still counts as a try, so check auth reaches it" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"; login "$ALT"
-  session hub/%1 main idle stuck
-  touch "$NOTES_FIXTURE/agent-panel.unsent"
-  for t in 0 1 2 3 4; do
-    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
-    run "$ACCT" wake
-  done
-  assert_equal "$(sent)" 3
-  run "$ACCT" check auth
-  assert_failure 1
-  assert_output --partial 'main 1 sessions stay on Not logged in'
-}
-
-@test "wake: a pane at work keeps its tries, and one a human touched a minute ago is left alone" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  rm "$NOTES_FIXTURE/agent-panel.list.json"
-  session hub/%1 main busy
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  rm "$NOTES_FIXTURE/agent-panel.list.json" "$XDG_CACHE_HOME/claude-acct/wake/hub_%1"
-  jq -nc --argjson h "$((NOW - 60))" '{harness: "claude", pane: "hub/%1", target: "hub/s%1", account: "main", status: "idle", parked: false, human_at: $h}' \
-    > "$NOTES_FIXTURE/agent-panel.list.json"
-  run "$ACCT" wake
-  assert_output ''
-  assert_equal "$(sent)" 1
-}
-
-@test "wake: when agent-panel cannot list, nothing is woken and the ledger stays" {
-  export CLAUDE_ACCT_NOW=$NOW
-  login "$HOME/.claude"
-  session hub/%1 main idle stuck
-  run "$ACCT" wake
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  run "$ACCT" wake
-  assert_failure 1
-  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  assert_failure 2
+  run "$ACCT" check expiry
+  assert_failure 2
+  ! grep -vE '^[[:space:]]*#' "$REPO_ROOT/.local/bin/claude-acct" | grep -qF credentials.json
 }
 
 # --- long-lived tokens (setup-token) ---------------------------------------------------
@@ -2613,7 +2399,8 @@ vault_put() {
   run --separate-stderr "$ACCT" token alt
   assert_failure 1
   assert_output ''
-  [[ "$stderr" == *'rbw is locked'* ]]
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so alt starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+  [[ "$stderr" != *login* ]]
 }
 
 @test "token: a machine whose rbw is locked or absent reads the pushed copy" {
@@ -2695,17 +2482,7 @@ STUB
   assert_output --partial 'tok=none dir=main'
 }
 
-@test "usage read: a missing login falls back to the setup token" {
-  rbw_stub
-  vault_put claude-oauth-main "$TOK_MAIN"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$SANDBOX/curl.args"\necho "{\\"five_hour\\":{\\"utilization\\":5},\\"seven_day\\":{\\"utilization\\":5}}"\n' > "$SANDBOX/bin/curl"
-  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
-  run "$ACCT" status --json
-  assert_success
-  grep -q "Authorization: Bearer $TOK_MAIN" "$SANDBOX/curl.args"
-}
-
-@test "check tokens: good, inside the warn window, expired, and unread when rbw is locked" {
+@test "check tokens: good, no token (its only sign-in), inside the warn window, expired, and unread when rbw is locked" {
   rbw_stub
   export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
   vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
@@ -2715,8 +2492,8 @@ STUB
   assert_output '2 tokens good'
   rm "$SANDBOX/vault/claude-oauth-alt"
   run "$ACCT" check tokens
-  assert_success
-  assert_output 'no token yet: alt'
+  assert_failure 1
+  assert_output 'no token: alt (claude-acct setup-token <name>)'
   vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
   run "$ACCT" check tokens
   assert_failure 1
@@ -2822,24 +2599,15 @@ STUB
   [[ "$output" != *"$TOK_ALT"* ]]
 }
 
-@test "usage read: an expired login stays 'token expired' when the setup token is refused too" {
+@test "usage read: no token (none in a locked vault, no pushed copy) reads unread with no call made" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
-  creds "$HOME/.claude" 1000
-  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
-  run "$ACCT" status --json
-  assert_success
-  [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == expired ]]
-}
-
-@test "usage read: a signed-out account whose setup token is refused reads unread, never expired" {
-  rbw_stub
-  vault_put claude-oauth-main "$TOK_MAIN"
-  echo '{}' > "$HOME/.claude/.credentials.json"
-  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
-  run "$ACCT" status --json
+  touch "$SANDBOX/vault/locked"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65'
+  run --separate-stderr "$ACCT" status --json
   assert_success
   [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == unread ]]
+  ! grep -qF 'v1/messages' "$SANDBOX/curl.argv"
 }
 
 @test "setup-token: a call that exits 0 without answering is not a verified token" {

@@ -797,7 +797,7 @@ forgejo_outcome() {
   rm "$FLEET_BENCH_DIR/pr-ci.jsonl" "$RBW_FIXTURE/forgejo_repo_admin" "$RBW_FIXTURE/calls.log"
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_failure
-  assert_output --partial 'no token (rbw forgejo_repo_admin)'
+  assert_output --partial 'no token: FORGEJO_TOKEN unset'
   run grep -c '^rbw get' "$RBW_FIXTURE/calls.log"
   assert_output 1
 }
@@ -3661,6 +3661,25 @@ pipeline_flow_fixture() {
   assert_failure 2
 }
 
+@test "pipeline --check held: a queued item with a pending gate trips it; a desk turn, a running hold and a clear queue pass; an unreadable list exits 2" {
+  items_stub "$(item a queued high human)" "$(item b queued high human '{"hold":"hold:unity (behind c, unity-build)"}')" \
+    "$(item d queued high human '{"hold":"hold:unity (desk:auth waits for the human, away)"}')" \
+    "$(item e running high human '{"hold":"after x"}')"
+  export BENCH_ITEMS_CMD=items-stub
+  run "$SUBJECT" pipeline --check held
+  assert_success
+  assert_output ''
+  # NEGATIVE CONTROL: the same queue with two items still behind their gates
+  items_stub "$(item a queued high human)" "$(item f queued high human '{"hold":"after up"}')" \
+    "$(item g queued high human '{"hold":"rbw:infra/key (not in rbw)"}')"
+  run "$SUBJECT" pipeline --check held
+  assert_failure 1
+  assert_output '2 queued with a pending gate, which belongs on its board row: f (after up), g (rbw:infra/key (not in rbw))'
+  export BENCH_ITEMS_CMD=false
+  run "$SUBJECT" pipeline --check held
+  assert_failure 2
+}
+
 @test "pipeline: a step carries the record's problems, and queued says why dispatch stopped" {
   pipeline_fixture
   jq -c '(.steps[] | select(.step == "running")) += {problems_n: 1, problems: [{ts: "t", subject: "r1", kind: "failed", why: "died", n: 1}]}' "$RJSON" > "$RJSON.new"
@@ -5195,7 +5214,7 @@ qstats_fixture() {
   qstats_fixture
   run env BENCH_NOW=$T0 "$SUBJECT" queue
   assert_success
-  assert_output 'queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h, 2 held'
+  assert_output 'queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h'
   [ "$(cat "$QSTATS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   run env BENCH_NOW=$T0 "$SUBJECT" queue --json
   assert_success
@@ -5212,7 +5231,7 @@ qstats_fixture() {
   assert_line --index 0 '## Queue'
   assert_line '- active now: queued 4, running 1, waiting 1'
   assert_line '- per day: 2026-10-26 2, 2026-10-27 3'
-  assert_line '- queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h, 2 held'
+  assert_line '- queue 7d: 5 done (3 ok, 1 failed, 1 cancelled), 2 with a PR, 0.7/day, wait median 12m p90 2h (3 started at once), to PR median 95m; sitting: 2 can start, oldest 13h'
   assert_line '| game | 3 | 2 | 1 | 0 | 2 | 10m | 95m |'
   assert_line '| app | 2 | 1 | 0 | 1 | 0 | 30m | - |'
   assert_line '| shepherd | 1 | 0 | 0 | 1 | 0 | - | - |'
@@ -5786,7 +5805,7 @@ STUB
   assert_failure 2
 }
 
-@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, and a session's own edit to the oracle does not count" {
+@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back at base clean with its diff kept, and a session's own edit to the oracle does not count" {
   canary_fixture
   git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
   cd "$SANDBOX/wt1"
@@ -5804,12 +5823,21 @@ STUB
   CLAUDE_CODE_SESSION_ID=c1 AGENT_QUEUE_ITEM=canary-greet-w1 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: fail (exit 1)'
-  # A second session does the work and passes.
+  # Scored, the tree is back at base and clean, so wt reaps it; the run's diff waits beside its log.
+  assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  assert_equal "$(git status --porcelain)" ''
+  # It is the session's own diff, taken before the oracle was laid over it: its gamed copy, not the PR's.
+  grep -qx '+exit 0' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the run's diff was not kept"
+  ! grep -q 'hello' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the oracle's overlay leaked into the run's diff"
+  # A second session does the work and passes; a repo it made inside the tree goes too.
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt2" "$CBASE"
-  cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh
+  cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh; git init -q nested; git -C nested -c user.email=t@t -c user.name=t commit -q --allow-empty -m n
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: pass (exit 0)'
+  assert_equal "$(git status --porcelain)" ''
+  grep -qx '+echo hello' "$FLEET_BENCH_DIR/canary/canary-greet-w2.patch" || fail "the run's diff was not kept"
+  echo 'echo hello' > greet.sh
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
   assert_failure 3
   run jq -c '[.run, .id, .session_id, .pass, .rc, .pr, (.config.crepo | length)]' "$FLEET_BENCH_DIR/canary.jsonl"
@@ -5820,8 +5848,26 @@ STUB
   BENCH_CANARY_WRAP="touch $(printf %q "$SANDBOX/wrapped") && exec" AGENT_QUEUE_ITEM=canary-greet-w3 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
   [ -f "$SANDBOX/wrapped" ] || fail "the oracle did not run inside BENCH_CANARY_WRAP"
+  echo 'echo hello' > greet.sh
   BENCH_CANARY_WRAP="false &&" AGENT_QUEUE_ITEM=canary-greet-w4 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: fail (exit 1)'
+  # Negative control: a score run in a main checkout records, and leaves that tree as it was.
+  cd "$CREPO"; git checkout -q --detach "$CBASE"; echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=canary-greet-w5 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: pass (exit 0)'
+  assert_output --partial 'is no linked worktree, so it stays as the run left it'
+  assert_equal "$(cat greet.sh)" 'echo hello'
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w5.patch" ] || fail "a main checkout's diff was staged and saved"
+  assert_equal "$(git diff --cached --name-only -- greet.sh)" ''
+  # Nor a linked worktree on a branch, whose commits a reset to base would drop.
+  git -C "$CREPO" worktree add -q -b b6 "$SANDBOX/wt6" "$CBASE"
+  cd "$SANDBOX/wt6"; echo 'echo hello' > greet.sh
+  git -c user.email=t@t -c user.name=t commit -qam work; head=$(git rev-parse HEAD)
+  AGENT_QUEUE_ITEM=canary-greet-w6 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'is on a branch, not detached by canary start, so it stays as the run left it'
+  assert_equal "$(git rev-parse b6)" "$head"
 }
 
 @test "canary queue: one canary item per task a week, from canary with its own brief; a second pass queues nothing" {
@@ -6102,11 +6148,15 @@ cancel c-old-lane --why canary: superseded by the $week set"
   CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx run "$SUBJECT" canary score greet
   assert_failure 3
   jq -n '{slug: "cx2", agent: "codex", model: "sol"}' > "$CQ/cx2.json"
+  # Each score puts the tree back at base, so each lane's run redoes the edit.
+  echo 'echo hello' > greet.sh
   CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx2 run "$SUBJECT" canary score greet
   assert_success
+  echo 'echo hello' > greet.sh
   CLAUDE_CODE_SESSION_ID=cl1 AGENT_QUEUE_ITEM=cl run "$SUBJECT" canary score greet
   assert_success
   jq -n '{slug: "cx3", agent: "codex", model: "sol", effort: "high"}' > "$CQ/cx3.json"
+  echo 'echo hello' > greet.sh
   CODEX_THREAD_ID=cx-hi AGENT_QUEUE_ITEM=cx3 run "$SUBJECT" canary score greet
   assert_success
   run jq -c '[.run, .session_id, .harness, .model, .effort, .pass]' "$FLEET_BENCH_DIR/canary.jsonl"

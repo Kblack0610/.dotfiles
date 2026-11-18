@@ -1364,7 +1364,7 @@ SH
   assert_success
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
-  grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  grep -qF "'agent-panel' 'list' '--json'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
   # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
   snap="$XDG_STATE_HOME/fleet/worker-panel.json"
   assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
@@ -2191,6 +2191,24 @@ research_item() {
   sed -i "s|^plan: .*|plan: $SANDBOX/alias.md|" "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
+@test "end to end: a session whose next phase add --plan filed on its board row behind a gate reads DONE; an ungated row is no phase (ar-3121)" {
+  # The queue holds no gated work: add --plan files a phase that waits on another as its board row,
+  # gated #after/<row>, its brief naming the plan. A plan read through the queue alone read LANDED,
+  # next phase, and the shepherd would have asked the session to queue it again.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-7","state":"open","tags":["after/apo-6"],"details":["Phase 2 of the plan %s: rollout."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-7' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
+  sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
 @test "end to end: a session whose plan's phases are queued reads DONE, whatever its plan says about a coordinator" {
@@ -3331,6 +3349,22 @@ explain_state() {
   mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(jq -c .unreadable "$doc")" = '[]' ]
+}
+
+@test "end to end: a clone whose origin is on neither GitHub nor a listed Forgejo host has no PRs, never an unreadable store (~/.agent)" {
+  landed_fixture
+  export SO_FORGEJO_HOSTS='git.example.lan'
+  git -C "$SANDBOX/wt" remote set-url origin ssh://git@forge-primary.example.lan:2222/o/.agent.git
+  touch "$LEDGER_DIR/PRS_UNLISTED"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
+  # NEGATIVE CONTROL: the same repo on github.com the store does not list is named
+  git -C "$SANDBOX/wt" remote set-url origin git@github.com:o/.agent.git
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  jq -e '.unreadable | index("PR store (o/.agent)")' "$doc" >/dev/null
 }
 
 @test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {

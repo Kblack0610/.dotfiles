@@ -177,6 +177,17 @@ mod tests {
             skills: vec![
                 Skill {
                     name: "shepherd".into(),
+                    ran: vec![stack::SkillRun {
+                        session_id: "6f296b73-b7a5".into(),
+                        link: hub_core::links::Link::to(
+                            hub_core::links::Kind::Session,
+                            "6f296b73-b7a5",
+                        ),
+                        project: "dotfiles".into(),
+                        title: String::new(),
+                        updated: String::new(),
+                        calls: 2,
+                    }],
                     ..Default::default()
                 },
                 Skill {
@@ -206,6 +217,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();
         assert_eq!(v["rows"].as_array().unwrap().len(), 1, "the skills search");
         assert_eq!(v["rows"][0]["name"], "shepherd");
+        assert_eq!(
+            v["rows"][0]["ran"][0]["link"], "#sessions/sessions/6f296b73-b7a5",
+            "a skill row carries the sessions that ran it, each as its page link"
+        );
         assert_eq!(
             v["hooks"]["rows"].as_array().unwrap().len(),
             1,

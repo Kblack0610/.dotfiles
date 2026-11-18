@@ -787,6 +787,25 @@ pub fn has_done_tag(line: &str) -> bool {
     found
 }
 
+/// The backlog tag for `date`, e.g. `#b261118`: the day a task entered the backlog, which the
+/// 90-day return reads. `YYMMDD` like the done tag, because it is read a quarter later.
+pub fn backlog_tag(date: NaiveDate) -> String {
+    format!("#b{}", date.format(LONG_FMT))
+}
+
+/// True when `tag` (bare, no `#`) is a backlog tag.
+pub fn is_backlog_tag(tag: &str) -> bool {
+    tag.strip_prefix('b')
+        .is_some_and(|d| d.len() == 6 && valid_date_digits(d))
+}
+
+/// Strip every backlog tag from `line`; return the cleaned line plus the day the first names.
+pub fn split_backlog(line: &str) -> (String, Option<NaiveDate>) {
+    let (cleaned, found) = cut_tags(line, is_backlog_tag);
+    let date = found.and_then(|t| NaiveDate::parse_from_str(&t[1..], LONG_FMT).ok());
+    (cleaned, date)
+}
+
 /// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
 /// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
 /// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
@@ -904,7 +923,8 @@ pub fn tag_kind(tag: &str) -> TagKind {
         || is_version_tag(tag)
         || is_created_tag(tag)
         || is_due_tag(tag)
-        || is_done_tag(tag);
+        || is_done_tag(tag)
+        || is_backlog_tag(tag);
     if task {
         TagKind::Task
     } else {
@@ -941,9 +961,18 @@ pub fn looks_like_tier(tag: &str) -> bool {
 ///
 /// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
+    find_hashtags_cased(line)
+        .into_iter()
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// [`find_hashtags`] with each tag as written: a tag whose value is data (an ask id, an rbw
+/// name in a gate tag) keeps its case.
+pub fn find_hashtags_cased(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     for_each_tag(line, |_, tag_start, _, end| {
-        out.push(line[tag_start..end].to_lowercase());
+        out.push(line[tag_start..end].to_string());
     });
     out
 }
@@ -1434,12 +1463,13 @@ pub fn task_text(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved. The release tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
     // matching a task the moment it is pushed to another release, and the cockpit's
-    // done/start/rm silently no-op on it. The created, due and done tags are stamps, not text,
+    // done/start/rm silently no-op on it. The created, due, done and backlog tags are stamps, not text,
     // so they go too - FIRST, because a legacy day count is only trailing once the tags
     // behind it (`(3d) #c260531`) are gone.
     let (stripped, _) = split_created(t);
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = cut_tags(&stripped, is_done_tag);
+    let (stripped, _) = split_backlog(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_version(&stripped);
     let (stripped, _) = split_parent(&stripped);
@@ -2399,6 +2429,7 @@ after
             "v0.5.0",
             "c1026",
             "d261026",
+            "b261118",
             "due1031",
         ] {
             assert_eq!(tag_kind(t), TagKind::Task, "{t}");
@@ -2733,6 +2764,14 @@ after
             vec!["wedding", "house"]
         );
         assert!(find_hashtags("no tags here").is_empty());
+    }
+
+    #[test]
+    fn hashtags_cased_keep_what_was_written() {
+        assert_eq!(
+            find_hashtags_cased("wait #ask/kxL6vp/a `#ask/no` (#rbw/infra/Key)"),
+            vec!["ask/kxL6vp/a", "rbw/infra/Key"]
+        );
     }
 
     #[test]

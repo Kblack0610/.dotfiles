@@ -33,10 +33,10 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 The first path that fits wins:
 
 1. The human first: the outcome is not stated, or an open `decide(` row or ask blocks it. It waits on that answer; a `design(` row is filed only after the human says yes (notes-system skill, "Project board").
-2. A plan chain, `agent-queue add --plan` with a fresh session per phase: the stories must land in order, share a design decision that has to stay consistent, edit the same files and would conflict in parallel, or one leaf is `#size/l`. It needs a plan with an `epic:` line that the human approved or an answered ask settled, and each phase is one PR.
+2. A plan chain, `agent-queue add --plan` with a fresh session per phase: the stories must land in order, share a design decision that has to stay consistent, edit the same files and would conflict in parallel, or one leaf is `#size/l`. It needs a plan with an `epic:` line that the human approved or an answered ask settled, and each phase is one PR. Only the human's `--plan` writes the phase items; from a dispatched session or a script it files one board row, "plan <name>: run its open phases", whose session runs them in order (agentctl `QUEUE.md`, "Admission").
 3. The board, the default: the stories are independent and each is s or m. Dispatch takes them leaf by leaf in priority order; a story it cannot take (human-only, two areas) is rewritten or split, never left to wait.
 
-Never one long-lived session holding the whole epic: its context grows until it loses the thread, so a chain starts a fresh session for each phase.
+Never one long-lived session holding the whole epic: its context grows until it loses the thread, so a chain starts a fresh session for each phase. What holds it: `go` and `one-shot` file a plan with more than one open phase with `add --plan` and stop, building none of it themselves, and `plan-standard.sh` denies a plan with more than one open phase that says it runs in this session or one session (`planning.md`, Chain:).
 
 ## One key up
 

@@ -151,6 +151,8 @@ socket() {
 
 # Not `calls`: the sandbox helper defines that one, over the fixture dir the stock stubs use.
 tmux_calls() { cat "$FIX/calls.log"; }
+# parked_files -> what the park dir holds besides its .lock.<session> files: ledgers and any temp file left
+parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
 
 
 @test "a claude under the pane's shell is exited and resumed there, on the account with room" {
@@ -360,7 +362,7 @@ tmux_calls() { cat "$FIX/calls.log"; }
   run tmux_calls
   assert_line 'tmux -L hub send-keys -t %5 -l /exit'
   refute_line --partial 'send-keys -t %6'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(parked_files)" ]
 
   # a window by name, and a pane id found on whichever server has it
   rm -f "$FIX/calls.log" "$HOME/.claude/sessions/900.json"; rm -rf "$CLAUDE_ACCT_PROC/900"
@@ -587,7 +589,7 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_line --regexp '^parked=[0-9]+$'
   refute_output --partial 'old brief'
   # renamed into place: no temp file is left beside it
-  [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
+  [ "$(parked_files)" = agent-1 ]
 }
 
 @test "park --why and --for land in the ledger and the page, and a preempt resume says why it was parked" {
@@ -943,7 +945,52 @@ trust_prompt() {
   assert_success
   assert_line --partial 'claude-acct: unparked a1 on alt'
   assert_line --partial 'claude-acct: unparked a2 on alt'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(parked_files)" ]
+}
+
+@test "unpark --all leaves a preempt park to fleet-dispatch and a budget park to an unpark by name" {
+  session lab a1 %5 100 101 idle ""
+  "$ACCT" park a1 --server lab --why preempt --for now-one
+  session lab a2 %6 110 111 idle ""
+  "$ACCT" park a2 --server lab --why budget
+  session lab a3 %7 120 121 idle ""
+  "$ACCT" park a3 --server lab
+  run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked a3 on alt'
+  assert_line 'claude-acct: unpark: left to its owner: a1 (preempt: fleet-dispatch resumes it)'
+  assert_line 'claude-acct: unpark: left to its owner: a2 (budget: claude-acct unpark a2)'
+  [ -e "$(PARKED_LEDGER a1)" ] || fail "--all resumed fleet-dispatch's preempt"
+  [ -e "$(PARKED_LEDGER a2)" ] || fail "--all resumed a budget park"
+  # By name it is the caller's choice, and the resume says why it was parked.
+  run "$ACCT" unpark a2
+  assert_success
+  assert_line --partial 'claude-acct: unparked a2 on alt'
+  run tmux_calls
+  assert_output --partial 'parked\ at\ a\ budget\ checkpoint'
+}
+
+@test "a park or unpark of a session another one holds the lock for waits, then is refused and types nothing" {
+  session lab agent-1 %5 100 101 idle ""
+  mkdir -p "$HOME/.agent/parked"
+  # flock holds the session's park lock while the claude-acct inside it runs, as a second actor would.
+  CLAUDE_ACCT_MOVE_TIMEOUT=0 run flock -n "$HOME/.agent/parked/.lock.agent-1" "$ACCT" park agent-1 --server lab
+  assert_failure
+  assert_output --partial 'claude-acct: park agent-1: another park or unpark of agent-1 still runs after 0s; try again once it ends'
+  run tmux_calls
+  refute_output --partial 'send-keys'
+  [ -z "$(parked_files)" ]
+  # Negative control: the lock free, the same park parks.
+  run "$ACCT" park agent-1 --server lab
+  assert_success
+  CLAUDE_ACCT_MOVE_TIMEOUT=0 run flock -n "$HOME/.agent/parked/.lock.agent-1" "$ACCT" unpark agent-1
+  assert_failure
+  assert_output --partial 'claude-acct: unpark agent-1: another park or unpark of agent-1 still runs'
+  [ -e "$(PARKED_LEDGER agent-1)" ]
+  # Another session's lock does not hold this one.
+  run flock -n "$HOME/.agent/parked/.lock.agent-2" "$ACCT" unpark agent-1
+  assert_success
+  assert_line --partial 'claude-acct: unparked agent-1 on alt'
 }
 
 @test "unpark --all wakes only what the wake budget has room for, and a hand unpark of one is never paced" {
@@ -951,7 +998,8 @@ trust_prompt() {
   "$ACCT" park a1 --server lab
   session lab a2 %6 110 111 idle ""
   "$ACCT" park a2 --server lab
-  WAKE_BATCH=1 run "$ACCT" unpark --all
+  sed "s/^WAKE_BUDGET=.*/WAKE_BUDGET=1/" "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$ACCT" unpark --all
   assert_success
   assert_line --partial 'claude-acct: unparked a1 on alt'
   assert_output --partial 'claude-acct: unpark: 1 stay parked: the wake budget is 1 per 5 min'

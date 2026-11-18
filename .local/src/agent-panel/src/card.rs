@@ -4,8 +4,8 @@
 use anyhow::{Context, Result};
 
 use agent_core::agent::{collect, Agent};
-use agent_core::dialog::{answer, parse, Answered, Dialog, Kind};
-use agent_core::{jsonl, send, tmux};
+use agent_core::dialog::{answer_in, parse, Answered, Dialog, Kind};
+use agent_core::{tmux, transcript};
 
 /// The live Claude at a `<server>/<session>:<window>` target: a Codex row has no Claude dialog.
 fn agent(target: &str) -> Result<Agent> {
@@ -29,7 +29,7 @@ pub fn run_card(target: &str, options: bool) -> Result<()> {
         return Ok(());
     }
     let color = std::env::var("AGENT_ASK_COLOR").is_ok_and(|v| v == "1");
-    let plan = Plan::of(&d, a.jsonl.as_deref().and_then(jsonl::open_plan_at));
+    let plan = Plan::of(&d, a.jsonl.as_deref().and_then(transcript::open_plan_at));
     print!(
         "{}",
         card(
@@ -54,7 +54,7 @@ pub enum Plan {
 }
 
 impl Plan {
-    /// The plan for `d`, given the open plan its transcript holds (`jsonl::open_plan_at`).
+    /// The plan for `d`, given the open plan its transcript holds (`transcript::open_plan_at`).
     pub fn of(d: &Dialog, text: Option<String>) -> Plan {
         match (d.kind, text) {
             (Kind::Question, _) => Plan::None,
@@ -117,16 +117,10 @@ pub fn card(d: &Dialog, who: &str, plan: Plan, color: bool, width: usize) -> Str
 }
 
 /// `agent-panel answer <target> <key> --expect <text> [typed]`: exit 0 sent, 3 not taken,
-/// 4 the dialog is gone or changed (the reason on stderr).
+/// 4 the dialog is gone or changed (the reason on stderr), 75 another send held the pane.
 pub fn run_answer(target: &str, key: char, expect: &str, text: &str) -> Result<()> {
     let a = agent(target)?;
-    match answer(
-        &mut send::TmuxPane { target: &a.pane },
-        key,
-        expect,
-        text,
-        send::POLLS,
-    )? {
+    match crate::or_busy_exit(answer_in(&a.pane, key, expect, text))? {
         Answered::Sent => Ok(()),
         Answered::NotTaken => {
             eprintln!("{target} did not take option {key}");

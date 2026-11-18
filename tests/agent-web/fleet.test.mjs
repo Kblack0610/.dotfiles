@@ -71,6 +71,7 @@ const judge = { agree: 0, disagree: 0, deferred: 0, pending: 0, unscored: 0, pre
 const data = {
   at: 1793942659, errors: [], judge,
   dispatch: { counts_24h: {}, counts_7d: {}, log_24h: {}, recent: [], partial: false },
+  dispatch_table: { shown: 0, pager: null },
   workers: [
     worker("ask-judge", {
       eval: {
@@ -95,7 +96,7 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   Object.assign(s, { tab: "log", arg: "judges" });
   s.views.log = "";
   const vs = vm.runInContext("vst", ctx);
-  vs.data = data;
+  vs.data = { ...data, judge: { ...judge, table: { ...judge.table, pager: { page: 1, pages: 40, per: 3 } } } };
   vs.render();
   const h = logBox.innerHTML;
   assert.match(h, /7d: 25% answered, 40% would answer, 91% right/);
@@ -108,7 +109,7 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   assert.match(h, /data-ts="would answer"><span class="tl">WOULD ANSWER<\/span><span class="tv">50<\/span>/);
   assert.match(h, /Answer judge <span class="n">120<\/span><\/h3>/);
   assert.match(h, /<input id="verd-q" data-tsearch/);
-  assert.match(h, /\+117 older/, "the rows the server left out");
+  assert.match(h, /class="tpager"[\s\S]*rows 1-3 of 120/, "the rows the server left out are on its other pages");
   assert.doesNotMatch(h, /data-said|class="seg fseg"/, "no client chips");
   const asked = [];
   const was = ctx.fetch;
@@ -122,33 +123,36 @@ test("Log lists every answer verdict with why and what you did, under tiles the 
   Object.assign(s, { tab: "sessions", arg: "runners" });
 });
 
-test("Log's verdict lists stop at the server's verdicts_shown, clamp long text, and each +N older reads only its own list", async () => {
-  const s = vm.runInContext("st", ctx), vs = vm.runInContext("vst", ctx), cap = 20;
+// A page pick in one of Log's verdict lists: the pager button inside that list's block.
+const pagePick = (tbl, pg) => ({ type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl } } : sel === "[data-tpg]" ? { dataset: { tpg: pg } } : null) } });
+
+test("Log's verdict lists draw the server's pages under their pagers, clamp long text, and each page pick reads only its own list", async () => {
+  const s = vm.runInContext("st", ctx), vs = vm.runInContext("vst", ctx), per = 20;
   Object.assign(s, { tab: "log", arg: "judges" });
   s.views.log = "";
-  const verdicts = Array.from({ length: cap }, (_, i) => ({ ...judge.verdicts[0], id: `v${i}`, question: `question-${i}?` }));
-  const recent = Array.from({ length: cap + 2 }, (_, i) => ({ ts: 1793942659, project: "p", key: `row-${i}`, verdict: "skip", reason: "tier 3", tier: 3, clear: false }));
-  vs.data = { ...data, verdicts_shown: cap, judge: { ...judge, verdicts, table: { ...judge.table, shown: cap + 4 } }, dispatch: { ...data.dispatch, recent } };
+  const verdicts = Array.from({ length: per }, (_, i) => ({ ...judge.verdicts[0], id: `v${i}`, question: `question-${i}?` }));
+  const recent = Array.from({ length: per }, (_, i) => ({ ts: 1793942659, project: "p", key: `row-${i}`, verdict: "skip", reason: "tier 3", tier: 3, clear: false }));
+  vs.data = { ...data, judge: { ...judge, verdicts, table: { ...judge.table, shown: per + 4, pager: { page: 1, pages: 2, per } } },
+    dispatch: { ...data.dispatch, recent }, dispatch_table: { shown: per + 2, pager: { page: 1, pages: 2, per } } };
   vs.render();
-  let h = logBox.innerHTML;
-  assert.match(h, /data-list="dispatch"[\s\S]*?>\+2 older</, "the dispatch list stops at verdicts_shown");
-  assert.doesNotMatch(h, new RegExp(`row-${cap + 1}<`));
-  assert.match(h, /data-all="1">\+4 older</, "the server's cap on the answer judge");
+  const h = logBox.innerHTML;
+  assert.match(h, /Dispatch judge <span class="muted">newest 22<\/span>/);
+  assert.match(h, new RegExp(`<div data-tbl="d">[\\s\\S]*row-${per - 1}<[\\s\\S]*class="tpager"[\\s\\S]*rows 1-20 of 22`), "the dispatch list draws its page under its pager");
+  assert.match(h, /<div data-tbl="v">[\s\S]*class="tpager"[\s\S]*rows 1-20 of 24/, "the answer judge's pager");
+  assert.doesNotMatch(h, /data-all|>\+\d+ older</);
   assert.match(h, /<td class="wrap"><div class="c2" title="question-0\?">question-0\?<\/div><\/td>/, "a long question clamps to two lines");
   const asked = [], was = ctx.fetch;
   ctx.fetch = async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => vs.data }; };
-  // The dispatch list's +N older shows what it holds, with no read.
-  logClick({ type: "click", target: { dataset: { all: "1" }, closest: (sel) => (sel === '[data-list="dispatch"]' ? {} : null) } });
-  h = logBox.innerHTML;
-  assert.match(h, new RegExp(`row-${cap + 1}<`), "the dispatch list shows every row");
-  assert.match(h, /data-all="1">\+4 older</, "the answer judge stays at its first rows");
-  assert.deepEqual(asked, []);
-  // The answer judge's +N older reads the rest from the server.
-  logClick({ type: "click", target: { dataset: { all: "1" }, closest: (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "v" } } : null) } });
+  logClick(pagePick("d", "2"));
   await new Promise((r) => setImmediate(r));
-  assert.deepEqual(asked, ["/api/fleet?vall=1"]);
+  assert.equal(s.views.log, "dpg=2");
+  assert.deepEqual(asked, ["/api/fleet?dpg=2"], "the dispatch page, and the answer judge on its first");
+  logClick(pagePick("v", "2"));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked.slice(1), ["/api/fleet?vpg=2&dpg=2"], "the answer page keeps the dispatch page");
   ctx.fetch = was;
-  Object.assign(vs, { all: false, dispatchAll: false, data });
+  vs.data = data;
+  s.views.log = "";
   Object.assign(s, { tab: "sessions", arg: "runners" });
 });
 
@@ -461,7 +465,14 @@ test("a runner page's lists stop at the server's shown, and each +N more opens o
   const d = await openPage("dispatch-judge", { "dispatch-judge": runnerPage("dispatch-judge", { shown: 1, extras: { kind: "dispatch-verdicts", dispatch: disp } }) });
   assert.match(d, /row one/);
   assert.doesNotMatch(d, /row two/);
-  assert.match(d, /data-more="dispatch">\+1 more</);
+  // A list Log also holds ends in a link to it there, in place of a +N more.
+  assert.match(d, /<a href="#log\/verdicts">all on Log<\/a>/);
+  assert.doesNotMatch(d, /data-more="dispatch"/);
+  const step = base.extras.steps[0];
+  const steps = await openPage("inbox-triage", { "inbox-triage": { ...page, extras: { ...base.extras, steps: [step, { ...step, text: "the second step" }] } } });
+  assert.doesNotMatch(steps, /the second step/);
+  assert.match(steps, /<a href="#log\/actions\?q=source:ingest&amp;hours=168">all on Log<\/a>/);
+  assert.doesNotMatch(steps, /data-more="steps"/);
   // Negative control: a page that sends no shown draws every row.
   const all = await openPage("inbox-triage", { "inbox-triage": { ...page, shown: undefined } });
   assert.match(all, /line 2/);
@@ -500,18 +511,18 @@ test("an unknown runner shows the server's words, and a judge page carries the m
   assert.match(j, /land it\?/);
   // Its verdicts are the same table: tiles counted on the server, a tile a `v` key on Fleet's URL.
   assert.match(j, /<div data-tbl="v"><div class="tiles stiles">.*data-ts="passed"><span class="tl">PASSED<\/span><span class="tv">30<\/span>/);
-  assert.match(j, /\+117 older/);
+  // The server sent the first page; the rest are Log's, under the same answer filter.
+  assert.match(j, /<\/div><div class="muted more"><a href="#log\/verdicts">all 120 on Log<\/a><\/div>/);
+  assert.doesNotMatch(j, /data-more="verdicts"|older/);
+  st.views.sessions = "vs=wrong";
+  ctx.renderRunners();
+  assert.match(box.innerHTML, /<a href="#log\/verdicts\?vs=wrong">all 120 on Log<\/a>/);
+  st.views.sessions = "";
   asked = [];
   click(verdictTile("wrong"));
   await flush();
   assert.deepEqual(asked, ["/api/fleet/runner?name=ask-judge&vs=wrong"]);
   st.views.sessions = "";
-  // The server cut the verdicts, so their +N older is a button that re-reads them all (vall).
-  assert.match(j, /<\/div><button class="btn sm" data-more="verdicts">\+117 older<\/button>/);
-  asked = [];
-  click({ target: { closest: (sel) => (sel === "#ov-runners" ? box : sel === "[data-more]" ? { dataset: { more: "verdicts" } } : null), dataset: {} } });
-  await flush();
-  assert.deepEqual(asked, ["/api/fleet/runner?name=ask-judge&vall=1"]);
   ctx.setTab("sessions", "runners", ""); // leaving the page forgets what it opened
   // One row per type and level, judge-eval's numbers, between the tiles and the verdict list.
   assert.match(j, /<td>ship_deploy<\/td><td>repo<\/td><td class="n">4<\/td><td class="n">3<\/td><td class="n">66.7% <span class="muted">\[20.8-93.9\]<\/span><\/td><td class="n">1<\/td><td class="">yes<\/td><td class="n">3<\/td><td class="n">25%<\/td>/);

@@ -3,8 +3,10 @@
 //! `session_table` row; on top of that the queue item (`agent-queue show`), its board row (`notes
 //! board`), its budget (`fleet-shepherd budget`), the asks its session filed (`agent-ask list`,
 //! by `claude_session`), the shepherd's ledger file for it and, once it has ended, its outcome
-//! card. The transcript is not part of the read: it loads when it is opened (dashboards rule 10).
+//! card. The transcript is not part of the read (dashboards rule 10): it loads when it is opened,
+//! and only its model and skill counts are taken here, for the Model and Skills parts.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
@@ -17,14 +19,17 @@ use crate::outcomes;
 use crate::queue::{self, Item};
 use crate::reds;
 use crate::session_actions::Runner;
-use crate::session_table::{SessionRow, Source};
+use crate::session_table::{self, SessionRow, Source};
 use crate::tasks;
 use crate::text::{cap, headline, TITLE_MAX};
+use agent_core::transcript::{self, Uses};
 
 /// What a page says when its outcome card has not been written, for a session that has ended.
 pub const NO_CARD: &str = "No outcome card yet: the nightly run writes it.";
 /// What `agentctl-session-outcomes card` says, on exit 1, for a session with no card yet.
 const NO_ROW: &str = "no outcome row";
+/// How many skills or models a part names before it says how many more.
+const COUNTED: usize = 4;
 
 /// One labelled line of the page.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -106,6 +111,7 @@ pub fn read(
     id: &str,
     rows: &[SessionRow],
     state: &[Value],
+    registry: &Path,
 ) -> Option<SessionPage> {
     let row = find(rows, id);
     let sid = row.map_or(id, |r| r.session_id.as_str());
@@ -149,6 +155,7 @@ pub fn read(
             .map_err(|e| fail("agent-ask", e))
             .ok()
     };
+    let uses = uses_of(registry, &row.session_id);
     let parts = vec![
         item_part(&row, item.as_ref(), live),
         match project {
@@ -165,9 +172,16 @@ pub fn read(
         pr_part(&row, live, item.as_ref()),
         ci_part(&row, live, item.as_ref()),
         spend_part(&row, budget.as_ref()),
+        account_part(&row),
+        model_part(&uses),
+        lane_part(&row),
+        skills_part(&uses),
         asks_part(asks.as_deref()),
         shepherd_part(&Ledger::read(ledger, &row.session_id), live),
     ];
+    if let Err(e) = &uses {
+        fail("transcript", e.clone());
+    }
     let outcome = match card {
         Some(Ok(c)) => c,
         Some(Err(e)) if !e.contains(NO_ROW) => {
@@ -411,6 +425,81 @@ fn spend_part(r: &SessionRow, budget: Option<&(String, f64)>) -> Part {
     Part::new("Spend", text).warn(over)
 }
 
+/// The transcript's counts, `Ok(None)` when the registry names no transcript for the session or
+/// the file it names is gone (Claude Code purges old ones, which is not a fault).
+fn uses_of(registry: &Path, session: &str) -> Result<Option<Uses>, String> {
+    if session.is_empty() {
+        return Ok(None);
+    }
+    let Some(path) = session_table::transcript(registry, session) else {
+        return Ok(None);
+    };
+    match transcript::uses(&path) {
+        Ok(u) => Ok(Some(u)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// `a x3, b x1` for the first few names, most used first.
+fn counted(by: &BTreeMap<String, u64>) -> String {
+    let mut all: Vec<_> = by.iter().collect();
+    all.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let mut text: Vec<String> = all
+        .iter()
+        .take(COUNTED)
+        .map(|(n, c)| format!("{n} x{c}"))
+        .collect();
+    if all.len() > COUNTED {
+        text.push(format!("+{} more", all.len() - COUNTED));
+    }
+    text.join(", ")
+}
+
+fn account_part(r: &SessionRow) -> Part {
+    match (r.account.as_str(), r.harness.as_str()) {
+        ("", _) => Part::new("Account", "-"),
+        (a, "") => Part::new("Account", a),
+        (a, h) => Part::new("Account", format!("{a}, {h}")),
+    }
+}
+
+fn model_part(uses: &Result<Option<Uses>, String>) -> Part {
+    uses_part("Model", uses, |u| &u.models, "none answered yet")
+}
+
+/// Who started it: `dispatch`, `hand` or `resume`.
+fn lane_part(r: &SessionRow) -> Part {
+    Part::new("Lane", if r.by.is_empty() { "-" } else { &r.by })
+}
+
+/// The skills it called, each linking to the skill's page when there is exactly one.
+fn skills_part(uses: &Result<Option<Uses>, String>) -> Part {
+    let part = uses_part("Skills", uses, |u| &u.skills, "none called");
+    match uses {
+        Ok(Some(u)) if u.skills.len() == 1 => {
+            let only = u.skills.keys().next().map_or("", String::as_str);
+            part.link(Link::to(Kind::Skill, only))
+        }
+        _ => part,
+    }
+}
+
+/// One part of the transcript's counts: its words, or why there are none.
+fn uses_part(
+    label: &'static str,
+    uses: &Result<Option<Uses>, String>,
+    by: impl Fn(&Uses) -> &BTreeMap<String, u64>,
+    none: &str,
+) -> Part {
+    match uses {
+        Err(_) => Part::new(label, "could not be read").warn(true),
+        Ok(None) => Part::new(label, "no transcript"),
+        Ok(Some(u)) if by(u).is_empty() => Part::new(label, none),
+        Ok(Some(u)) => Part::new(label, counted(by(u))),
+    }
+}
+
 /// The asks `session` filed, as `boards::asks` reads them.
 fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<Value>, String> {
     let argv = ["agent-ask", "list", "--all"].map(String::from);
@@ -588,13 +677,113 @@ mod tests {
         std::env::temp_dir().join(format!("hub-page-none-{}", std::process::id()))
     }
 
+    /// A registry with no session in it, so no transcript is named.
+    fn no_registry() -> PathBuf {
+        std::env::temp_dir().join(format!("hub-page-noreg-{}", std::process::id()))
+    }
+
+    /// A registry naming a transcript with `body` for SID, one directory for each test.
+    fn registry_of(test: &str, body: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hub-page-reg-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("dotfiles")).unwrap();
+        let t = d.join("t.jsonl");
+        std::fs::write(&t, body).unwrap();
+        let row = json!({"session_id": SID, "transcript": t});
+        std::fs::write(d.join("dotfiles/sessions.jsonl"), format!("{row}\n")).unwrap();
+        d
+    }
+
+    const USES: &str = concat!(
+        r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"shepherd"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"id":"m2","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"shepherd"}}]}}"#,
+        "\n",
+    );
+
+    #[test]
+    fn the_page_names_account_model_lane_and_skills_from_the_transcript() {
+        let reg = registry_of("uses", USES);
+        let row = SessionRow {
+            account: "bnb".into(),
+            harness: "claude".into(),
+            by: "dispatch".into(),
+            ..live_row()
+        };
+        let p = read(
+            &tools(),
+            &no_ledger(),
+            SID,
+            std::slice::from_ref(&row),
+            &[],
+            &reg,
+        )
+        .unwrap();
+        assert_eq!(text(&p, "Account"), "bnb, claude");
+        assert_eq!(text(&p, "Model"), "claude-opus-5-5 x2");
+        assert_eq!(text(&p, "Lane"), "dispatch");
+        assert_eq!(text(&p, "Skills"), "shepherd x2");
+        let skills = p.parts.iter().find(|x| x.label == "Skills").unwrap();
+        assert_eq!(skills.link, Some(Link::to(Kind::Skill, "shepherd")));
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+
+        // No transcript named: the parts say so, and it is not an error.
+        let p = read(
+            &tools(),
+            &no_ledger(),
+            SID,
+            std::slice::from_ref(&row),
+            &[],
+            &no_registry(),
+        )
+        .unwrap();
+        assert_eq!(text(&p, "Model"), "no transcript");
+        assert_eq!(text(&p, "Skills"), "no transcript");
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+
+        // A named transcript that was purged is no transcript, not an error.
+        let gone = registry_of("gone", USES);
+        std::fs::remove_file(gone.join("t.jsonl")).unwrap();
+        let p = read(
+            &tools(),
+            &no_ledger(),
+            SID,
+            std::slice::from_ref(&row),
+            &[],
+            &gone,
+        )
+        .unwrap();
+        assert_eq!(text(&p, "Skills"), "no transcript");
+        assert!(p.errors.is_empty(), "{:?}", p.errors);
+
+        // One that cannot be read is an error, shown amber.
+        let gone = registry_of("unreadable", USES);
+        std::fs::remove_file(gone.join("t.jsonl")).unwrap();
+        std::fs::create_dir(gone.join("t.jsonl")).unwrap();
+        let p = read(&tools(), &no_ledger(), SID, &[row], &[], &gone).unwrap();
+        assert_eq!(text(&p, "Skills"), "could not be read");
+        assert!(p.parts.iter().any(|x| x.label == "Model" && x.warn));
+        assert!(p.errors.iter().any(|e| e.starts_with("transcript: ")));
+
+        // A session with no lane or account reads as a dash.
+        let p = read(
+            &tools(),
+            &no_ledger(),
+            SID,
+            &[live_row()],
+            &[],
+            &no_registry(),
+        )
+        .unwrap();
+        assert_eq!((text(&p, "Account"), text(&p, "Lane")), ("-", "-"));
+    }
+
     #[test]
     fn a_session_joins_its_item_row_plan_worktree_pr_spend_asks_and_shepherd() {
         let d = ledger(
             "joins",
             "fact: STALLED idle 40m\nat: 2026-11-06T12:49:03-08:00\n",
         );
-        let p = read(&tools(), &d, SID, &[live_row()], &[state()]).unwrap();
+        let p = read(&tools(), &d, SID, &[live_row()], &[state()], &no_registry()).unwrap();
         let labels: Vec<&str> = p.parts.iter().map(|x| x.label).collect();
         assert_eq!(
             labels,
@@ -608,6 +797,10 @@ mod tests {
                 "PR",
                 "CI",
                 "Spend",
+                "Account",
+                "Model",
+                "Lane",
+                "Skills",
                 "Asks",
                 "Shepherd"
             ]
@@ -681,7 +874,7 @@ mod tests {
         let s = json!({"target": row.target, "session_id": SID, "cwd": "/w/x"});
         let only_asks = Fake(vec![("agent-ask list --all", Ok(String::new()))]);
         let d = no_ledger();
-        let p = read(&only_asks, &d, SID, &[row], &[s]).unwrap();
+        let p = read(&only_asks, &d, SID, &[row], &[s], &no_registry()).unwrap();
         assert_eq!(text(&p, "Queue item"), "no queue item");
         assert_eq!(text(&p, "Board row"), "no board row");
         assert_eq!(text(&p, "Epic"), "no epic");
@@ -714,7 +907,7 @@ mod tests {
             "session": "lab:dotfiles-agent-6", "task": "do it"});
         t.0[0].1 = Ok(done.to_string());
         let d = no_ledger();
-        let p = read(&t, &d, "the-item", &[row], &[]).unwrap();
+        let p = read(&t, &d, "the-item", &[row], &[], &no_registry()).unwrap();
         assert_eq!(p.name, "the-item");
         assert_eq!(p.idle, "ended");
         assert_eq!(p.outcome, "Its title (6f296b73)\n  Time  1h");
@@ -754,7 +947,7 @@ mod tests {
             ),
         ]);
         let d = no_ledger();
-        let p = read(&no_card, &d, SID, &[row], &[]).unwrap();
+        let p = read(&no_card, &d, SID, &[row], &[], &no_registry()).unwrap();
         assert_eq!(p.outcome, NO_CARD);
     }
 
@@ -768,7 +961,7 @@ mod tests {
             "agentctl-session-outcomes card",
             Err("agentctl-session-outcomes: not found".into()),
         )]);
-        let p = read(&t, &no_ledger(), SID, &[row], &[]).unwrap();
+        let p = read(&t, &no_ledger(), SID, &[row], &[], &no_registry()).unwrap();
         assert_eq!(p.outcome, "could not be read");
         assert!(p.errors.iter().any(|e| e.starts_with("outcome card: ")));
     }
@@ -776,7 +969,7 @@ mod tests {
     #[test]
     fn an_item_that_cannot_be_read_does_not_claim_it_has_no_board_row() {
         let t = Fake(vec![("agent-ask list --all", Ok(String::new()))]);
-        let p = read(&t, &no_ledger(), SID, &[live_row()], &[]).unwrap();
+        let p = read(&t, &no_ledger(), SID, &[live_row()], &[], &no_registry()).unwrap();
         let board = p.parts.iter().find(|x| x.label == "Board row").unwrap();
         assert_eq!(board.text, "could not be read");
         assert!(board.warn);
@@ -838,22 +1031,26 @@ mod tests {
     #[test]
     fn a_session_past_the_tables_window_opens_from_its_card_and_nothing_else_does() {
         let d = no_ledger();
-        let p = read(&tools(), &d, SID, &[], &[]).unwrap();
+        let p = read(&tools(), &d, SID, &[], &[], &no_registry()).unwrap();
         assert_eq!(p.task, "Its title (6f296b73)");
         assert_eq!(p.idle, "ended");
         assert_eq!(p.session_id, SID);
         for nobody in ["not-a-session", "../../etc/passwd"] {
-            assert_eq!(read(&tools(), &d, nobody, &[], &[]), None, "{nobody}");
+            assert_eq!(
+                read(&tools(), &d, nobody, &[], &[], &no_registry()),
+                None,
+                "{nobody}"
+            );
         }
         let no_card = Fake(vec![]);
-        assert_eq!(read(&no_card, &d, SID, &[], &[]), None);
+        assert_eq!(read(&no_card, &d, SID, &[], &[], &no_registry()), None);
     }
 
     #[test]
     fn a_source_that_fails_says_so_and_the_rest_still_shows() {
         let t = Fake(vec![("agent-ask list --all", Err("exit 1".into()))]);
         let d = no_ledger();
-        let p = read(&t, &d, SID, &[live_row()], &[state()]).unwrap();
+        let p = read(&t, &d, SID, &[live_row()], &[state()], &no_registry()).unwrap();
         assert_eq!(text(&p, "Queue item"), "the-item (could not be read)");
         assert_eq!(text(&p, "Asks"), "could not be read");
         assert_eq!(
@@ -886,7 +1083,7 @@ mod tests {
             cost_usd: Some(30.0),
             ..live_row()
         };
-        let p = read(&tools(), &d, SID, &[row], &[s]).unwrap();
+        let p = read(&tools(), &d, SID, &[row], &[s], &no_registry()).unwrap();
         let warned: Vec<&str> = p.parts.iter().filter(|x| x.warn).map(|x| x.label).collect();
         assert_eq!(warned, ["Worktree", "Spend", "Asks"]);
     }

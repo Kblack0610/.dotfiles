@@ -43,14 +43,14 @@ const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
   progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 }, percent: 25, eta_days: 4,
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
-  doing: 0, hot: 0, held: 0, done_today: 0, oldest: "-",
+  doing: 0, hot: 0, done_today: 0, oldest: "-",
   summary: "v0.1.0 25% done (1 of 4 size points), closed 1 in 7d, 1 in 28d, ETA 4d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest"]
+  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
@@ -107,7 +107,7 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, held: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
@@ -115,7 +115,7 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
@@ -369,14 +369,17 @@ test("Board opens every project's rows, and a stats error is shown, not hidden",
   assert.match(draw(list([], { errors: ["notes projects failed"] })).cards, /panel down">notes projects failed/);
 });
 
-test("rows past the cap wait behind a button, and a view with nothing says so", async () => {
+test("the board draws the page the server sends with its pager, a write names the page's row, and a view with nothing says so", async () => {
   await onBoard();
-  ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i, title: "r" + i, summary: "" }));
-  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
-  assert.match(read().rows, /data-all="1">\+175 more/);
-  click("b-root", { all: "1" });
-  assert.doesNotMatch(read().rows, /\+175 more/);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r204</);
+  ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
+  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
+  assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
+  ctx.sent = [];
+  click("b-root", { start: "4" });
+  await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board" && JSON.parse(s.body).raw === "- [ ] r34"), "the action index is into the page sent");
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
 });

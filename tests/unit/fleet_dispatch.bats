@@ -236,6 +236,22 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output 1
 }
 
+@test "row gates: a gate's value keeps its case: #rbw/infra/Key waits on Key, not key, and its item holds rbw:infra/Key" {
+  # notes lower-cases .tags; read from there, every #ask/<id> gate named no ask (2026-11-18).
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  printf 'infra\tkey\n' > "$NOTES_FIXTURE/rbw.list"
+  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/Key <!-- id:ga-1 -->"
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on rbw infra/Key (not in rbw yet)'
+  printf 'infra\tKey\n' > "$NOTES_FIXTURE/rbw.list"
+  GATES_LOADED=''; load_gates
+  DRY=0 JUDGE_RC='' fill_day 2
+  [[ " $(item_tags ga-1) " == *" rbw:infra/Key "* ]]
+  run grep -c 'ptask game --agent tag --remove rbw/infra/Key ga-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
 @test "row gates: #after/<row-id> holds the row until that row closes done" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): the map first <!-- id:ga-1 -->"
@@ -250,6 +266,34 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   # A gated row is never judged.
   run unjudged_rows
   assert_output ''
+}
+
+@test "pull-after promotes the open rows gated #after/<id>, that row counted clear: high starts at once, low waits its turn, another pending gate holds" {
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-4 "- [ ] feat(game): the keys $T #after/ga-1 #rbw/infra/x <!-- id:ga-4 -->"
+  row game agent ga-5 "- [ ] feat(game): unrelated $T <!-- id:ga-5 -->"
+  cmd_start() { echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after ga-1
+  assert_success
+  assert_output --partial "pull-after ga-1: ga-3 is low priority, so a pass starts it in its turn"
+  assert_equal "$(cat "$NOTES_FIXTURE/started")" "start --item ga-2"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3"
+  assert_output --partial "skip game: ga-4 waits on rbw infra/x"
+  run grep -c 'ptask game --agent tag --remove after/ga-1 ga-2' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # Negative controls: no id is usage, and under the dispatch hold nothing is pulled.
+  run cmd_pull_after
+  assert_failure 2
+  row game agent ga-6 "- [ ] feat(game): the roof $T #after/ga-1 <!-- id:ga-6 -->"
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run cmd_pull_after ga-1
+  assert_success
+  assert_output --partial "dispatch is held"
+  [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
@@ -902,14 +946,13 @@ app urgent: fleet, #urgent, alpha"
 }
 
 @test "every brief that starts or resumes a Claude session has a line agent-panel reads as not the human" {
-  # agent-panel's human_at skips a prompt with a line that starts with DISPATCH_BRIEF; a brief
-  # without it reads as the human typing and holds the session open for the human keep.
-  local m b
-  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-core/src/jsonl.rs")
-  [ -n "$m" ]
+  # agent-panel's human_at skips a prompt typed-prefixes.conf calls fleet-typed; a brief without
+  # one reads as the human typing and holds the session open for the human keep.
+  local b
+  . "$REPO_ROOT/.local/lib/typed-prefixes.sh"
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"
-  marked() { [[ $'\n'"$1" == *$'\n'"$m"* ]] || { echo "no line starts with '$m' in: $1"; return 1; }; }
+  marked() { fleet_typed "$1" || { echo "no line of typed-prefixes.conf starts: $1"; return 1; }; }
   for b in \
     '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task"}' \
     '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task", "tags": "ui"}' \
@@ -1364,21 +1407,21 @@ EOF
   assert_equal "$(cat "$NOTES_FIXTURE/room.n")" 1
 }
 
-@test "starved names an item held on a cancelled ask, which no answer can release" {
+@test "starved names a board row gated on a cancelled ask, which no answer can release" {
+  project game beta "$SANDBOX/repos/game"
   mkdir -p "$HOME/.agent/asks/game"
-  printf 'id: dead1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
-  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
-  agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
-  agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
-  # The ask is cancelled after the item queued behind it (add refuses a dead one).
   printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
-  # A machine held by load still names the dead hold and fails.
+  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
+  # The queue holds no gated item (agent-queue add files it on its row), so a dead gate is a row's.
+  row game agent gm-8 "- [ ] feat(game): kalshi p8 $T #ask/dead1 <!-- id:gm-8 -->"
+  row game agent gm-9 "- [ ] feat(game): waits on the human $T #ask/live1 <!-- id:gm-9 -->"
+  # A machine held by load still names the dead gate and fails.
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
   assert_failure
-  assert_output --partial 'held on an ask that can never be answered:'
-  assert_output --partial 'k8 (game, ask:dead1 (cancelled))'
-  refute_output --partial 'k9'
+  assert_output --partial 'board rows gated on what can never clear:'
+  assert_output --partial 'gm-8 (game, #ask/dead1: '
+  refute_output --partial 'gm-9'
 }
 
 @test "run starts nothing when account usage cannot be read" {
@@ -2407,8 +2450,8 @@ J
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
   jq -e '.last_run_start_epoch != null' <<<"$output"
-  # The whole queue rides along, as agent-queue counts it: 3 queued, 1 held after a phase.
-  assert_equal "$(jq -c '[.queued, .held, .held_after, .held_pr, .held_time, .running, .waiting]' <<<"$output")" '[3,1,1,0,0,0,0]'
+  # The whole queue rides along, as agent-queue counts it: 3 queued, and no hold count: gated work is a board row.
+  assert_equal "$(jq -c '[.queued, .running, .waiting, has("held"), has("held_after")]' <<<"$output")" '[3,0,0,false,false]'
   jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0
@@ -2802,6 +2845,35 @@ J
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
+}
+
+@test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {
+  # 2026-11-18: 27 sessions sat on razer-laptop's first-run screen for hours and nothing paged.
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  remote_item working; sed -i 's/^session: .*/&\nsessions: aaa-1 aaa-2\naccount: .claude-bnb/' "$(qitem running working)"
+  remote_item picker;  sed -i 's/^session: .*/&\nsessions: bbb-1\naccount: main/' "$(qitem running picker)"
+  remote_item booting; sed -i "s/^started: .*/started: $(date -u +%FT%TZ)/; s/^session: .*/&\nsessions: ccc-1/" "$(qitem running booting)"
+  remote_item plain;   sed -i 's/^session: .*/&\nsessions: ddd-1/' "$(qitem running plain)"
+  # The worker's home: the stub ssh runs each command here. claude-acct link makes an account's
+  # projects a link to main's, so find must follow it. The item with no account has had its turn.
+  mkdir -p "$HOME/.claude/projects/-w" "$HOME/.claude-bnb"
+  ln -s "$HOME/.claude/projects" "$HOME/.claude-bnb/projects"
+  : > "$HOME/.claude/projects/-w/aaa-2.jsonl"
+  : > "$HOME/.claude/projects/-w/ddd-1.jsonl"
+  cd "$HOME"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_success
+  assert_equal "$(jq -r .stuck <<<"$output")" 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial '1 stuck at start'
+  # Once it writes its transcript it is not stuck; a worker that does not answer is unknown, not 0.
+  : > "$HOME/.claude/projects/-w/bbb-1.jsonl"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r .stuck <<<"$output")" 0
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r .stuck <<<"$output")" null
 }
 
 @test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {

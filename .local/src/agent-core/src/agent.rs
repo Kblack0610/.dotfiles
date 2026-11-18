@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{account, asks, jsonl, names, parked, procmap::ProcMap, session, tmux};
+use crate::{account, asks, names, parked, procmap::ProcMap, session, tmux, transcript};
 
 /// One detected Claude agent, ready to render.
 #[derive(Clone, Debug, Default)]
@@ -35,9 +35,9 @@ pub struct Agent {
     /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
     pub status: String,
     /// Its permission mode: plan (it will not edit until a plan is approved), manual
-    /// (investigate-only, `jsonl::Mode`), or neither.
-    pub mode: jsonl::Mode,
-    /// The plan it works, by slug (`jsonl::RowInfo::plan_slug`); empty for none.
+    /// (investigate-only, `transcript::Mode`), or neither.
+    pub mode: transcript::Mode,
+    /// The plan it works, by slug (`transcript::RowInfo::plan_slug`); empty for none.
     pub plan_slug: String,
     /// The id of a pending ask (`agent-ask`) it owns, so it is waiting on the human: `asks.rs`.
     pub ask: Option<String>,
@@ -164,7 +164,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
             status: sess.status.clone(),
-            mode: jsonl::Mode::Other,
+            mode: transcript::Mode::Other,
             plan_slug: String::new(),
             ask: asking.get(&sess.session_id).cloned(),
             started_at: sess.started_at.map(|ms| ms / 1000),
@@ -181,7 +181,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         });
     }
     // Side by side, since each transcript is read whole (par_map).
-    let infos = par_map(&agents, |a| a.jsonl.as_deref().map(jsonl::row_info));
+    let infos = par_map(&agents, |a| a.jsonl.as_deref().map(transcript::row_info));
     for (a, info) in agents.iter_mut().zip(infos) {
         let Some(info) = info else { continue };
         if a.summary.is_empty() {
@@ -384,7 +384,7 @@ pub struct ListRow<'a> {
     pub status: &'a str,
     pub summary: &'a str,
     pub target: &'a str,
-    pub time_use: jsonl::TimeUse,
+    pub time_use: transcript::TimeUse,
     pub tmux_session: &'a str,
     pub transcript: String,
     pub window_id: &'a str,
@@ -394,9 +394,9 @@ pub struct ListRow<'a> {
 /// the reads cost their sum; side by side they cost about the largest one.
 pub fn list_rows(agents: &[Agent]) -> Vec<ListRow<'_>> {
     let facts = par_map(agents, |a| match &a.jsonl {
-        Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
+        Some(p) => (transcript::fleet_info(p), mtime_secs(Some(p))),
         None => (
-            jsonl::fleet_info(Path::new("")),
+            transcript::fleet_info(Path::new("")),
             mtime_secs(a.rollout.as_deref()),
         ),
     });
@@ -407,21 +407,21 @@ pub fn list_rows(agents: &[Agent]) -> Vec<ListRow<'_>> {
         .collect()
 }
 
-fn list_row(a: &Agent, info: jsonl::FleetInfo, mtime: u64) -> ListRow<'_> {
+fn list_row(a: &Agent, info: transcript::FleetInfo, mtime: u64) -> ListRow<'_> {
     ListRow {
         account: &a.account,
         ask: a.ask.as_deref(),
         attached: a.attached,
         compactions: info.compactions,
         context_tokens: info.context_tokens,
-        context_window: jsonl::context_window(&info.model),
+        context_window: transcript::context_window(&info.model),
         cwd: &a.cwd,
         doing: info.doing,
         edited_files: info.edited_files,
         harness: if a.codex { "codex" } else { "claude" },
         human_at: info.human_at,
         idle_since: idle_since(info.last_entry, mtime, a.started_at),
-        manual_mode: a.mode == jsonl::Mode::Manual,
+        manual_mode: a.mode == transcript::Mode::Manual,
         model: info.model,
         open_job: info.open_job,
         pane: &a.pane,
@@ -429,7 +429,7 @@ fn list_row(a: &Agent, info: jsonl::FleetInfo, mtime: u64) -> ListRow<'_> {
         pid: a.pid,
         plan: &a.plan_slug,
         plan_file: info.plan_file,
-        plan_mode: a.mode == jsonl::Mode::Plan,
+        plan_mode: a.mode == transcript::Mode::Plan,
         project: &a.project,
         said: info.said,
         server: &a.server,
@@ -585,17 +585,17 @@ mod tests {
     fn plan_mode_counts_only_with_its_dialog_open() {
         let plan_dialog = Agent {
             glyph: '!',
-            mode: jsonl::Mode::Plan,
+            mode: transcript::Mode::Plan,
             ..live_agent("hub", "a", false)
         };
         let plan_idle = Agent {
             glyph: '✓',
-            mode: jsonl::Mode::Plan,
+            mode: transcript::Mode::Plan,
             ..live_agent("hub", "a", false)
         };
         let plan_busy = Agent {
             glyph: '~',
-            mode: jsonl::Mode::Plan,
+            mode: transcript::Mode::Plan,
             ..live_agent("hub", "b", false)
         };
         assert!(plan_dialog.needs_attention());
@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn list_row_keys_are_the_contract() {
         let a = live_agent("hub", "a", false);
-        let row = list_row(&a, jsonl::fleet_info(Path::new("")), 0);
+        let row = list_row(&a, transcript::fleet_info(Path::new("")), 0);
         let v = serde_json::to_value(&row).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(

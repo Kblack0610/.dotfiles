@@ -17,19 +17,6 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)" status)" ok
 }
 
-@test "reap returns a chain held dead behind an item that closed failed, and logs it; a live hold stays (ar-2943 P5)" {
-  agent-queue add --project game --from shepherd --slug da --priority low "a" >/dev/null
-  agent-queue add --project game --from shepherd --slug db --priority low --after da "b" >/dev/null
-  agent-queue add --project game --from shepherd --slug la --priority low "live root" >/dev/null
-  agent-queue add --project game --from shepherd --slug lb --priority low --after la "waits on a live item" >/dev/null
-  agent-queue move da done --status failed >/dev/null
-  run cmd_reap
-  assert_success
-  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-db.md)" end_reason)" returned
-  grep -q 'settle-dead: returned db and the items after it: after da closed failed' "$FLEET_DISPATCH_DIR/log.md"
-  assert_equal "$(agent-queue show lb --json | jq -r .hold)" "after la"
-}
-
 @test "unpark: a preempt ledger is resumed when its units are free and no urgent item waits; a budget park is not" {
   five_of_six_units
   park_stub
@@ -117,7 +104,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
 
 @test "reap queues a plan once: a phase that failed or was cancelled does not come back" {
   stub agent-ask 'echo other-session'
-  approved_plan orphan gone-session
+  approved_plan orphan gone-session '- [x] one\n- [ ] two (independent)\n- [ ] three (independent)'
   reconcile_plans
   agent-queue cancel orphan-p3 >/dev/null
   agent-queue cancel orphan-p2 >/dev/null
@@ -1017,32 +1004,42 @@ OUT
 
 # 2026-11-10 audit: 4 of 24 Codex runs that asked stopped without `requeue --ask`; their items failed
 # or sat in review, and the answer became a board row instead of restarting the work.
-@test "reap: a gone session's item with a pending ask for it is held on that ask, with its open PR, and the next brief continues the PR" {
+@test "reap: a gone session's item with a pending ask for it goes back to its board row behind that ask, with its open PR, and the next brief continues the PR" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   agent-queue set fix-crash "note=pushed the fix, need a call on the API" >/dev/null
   id=$(agent-ask post --project game --task fix-crash --options 'a=keep it|b=drop it' 'keep the old API?')
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
-  assert_output --partial "held queue item fix-crash (ask $id pending, game-agent-1 ended)"
+  assert_output --partial "returned queue item fix-crash to its board row behind ask $id (game-agent-1 ended)"
+  # Its row waits on the ask (#ask/<id>/<options>); agent-ask start_held promotes it on the answer.
+  assert_called "tag --add ask/$id/a/b fix crash"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-fix-crash.md 2>/dev/null)" ]
   it=$(agent-queue show fix-crash --json)
-  assert_equal "$(jq -r '[.state, .tags, .pr] | join(" ")' <<<"$it")" "queued ask:$id=a+b o/game#12"
-  assert_equal "$(jq -r .note <<<"$it")" "session game-agent-1 ended on ask $id; held until the human answers it; was: pushed the fix, need a call on the API"
+  assert_equal "$(jq -r '[.state, .end_reason, .tags, .pr] | join(" ")' <<<"$it")" "done returned ask:$id=a+b o/game#12"
+  assert_equal "$(jq -r .note <<<"$it")" "session game-agent-1 ended on ask $id; its row waits until the human answers it; was: pushed the fix, need a call on the API"
   run item_brief "$it"
   assert_output --partial 'already opened o/game#12: check out its head branch (gh pr checkout 12 -R o/game)'
 }
 
-@test "reap: a gone session's item held only by the ask its ask: field names, with no PR, is held on it" {
+@test "reap: a gone session's item held only by the ask its ask: field names, with no PR, goes back to its row behind it; one with no row fails" {
   project game beta "$SANDBOX/repos/game"
   started_item p lab:game-agent-1 '' '' human waiting
   id=$(agent-ask post --project game --options 'yes=ship it|no=hold it' 'ship it?')
-  agent-queue set p ask="$id" >/dev/null
+  agent-queue set p ask="$id" row=game:gm-4 >/dev/null
   run cmd_reap
   assert_success
-  assert_equal "$(agent-queue show p --json | jq -r '[.state, .tags] | join(" ")')" "queued ask:$id=yes+no"
+  assert_equal "$(agent-queue show p --json | jq -r '[.state, .end_reason, .tags] | join(" ")')" "done returned ask:$id=yes+no"
   # no PR, so the brief names none: it once said "already opened null" (ar-1583)
   run item_brief "$(agent-queue show p --json)"
   refute_output --partial 'already opened'
+  # Negative control: an item with no row has nowhere to wait, so the unclosed run fails.
+  started_item q lab:game-agent-2
+  agent-queue set q ask="$id" >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show q --json | jq -r '[.state, .status] | join(" ")')" "done failed"
 }
 
 @test "reap: an answered ask holds nothing, so the unclosed run still fails (negative control)" {
@@ -1056,20 +1053,24 @@ OUT
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
 }
 
-@test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
+@test "reap: a gone session's item whose after: item is not done goes back to its board row behind it, not failed" {
   project game beta "$SANDBOX/repos/game"
   # after: is a list (ar-39): zero is done ok, so first alone still holds.
   agent-queue add --project game --slug zero "the zeroth part" >/dev/null
   agent-queue move zero done --status ok >/dev/null
   agent-queue add --project game --slug first "the first part" >/dev/null
+  agent-queue set first row=game:gm-1 >/dev/null
   started_item second lab:game-agent-1
-  agent-queue set second after=zero,first >/dev/null
+  agent-queue set second after=zero,first row=game:gm-2 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
-  assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
-  assert_equal "$(agent-queue show second --json | jq -r '[.state, .hold] | join(":")')" 'queued:after first'
+  assert_output --partial 'returned queue item second (game-agent-1 ended; it waits after first)'
+  assert_called 'tag --add after/gm-1 gm-2'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-second.md)" end_reason)" returned
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-second.md 2>/dev/null)" ]
   # Negative control: once its after: item is done, the unclosed run is the run's own failure.
-  rm "$AGENT_QUEUE_DIR"/queued/*-second.md
+  rm "$AGENT_QUEUE_DIR"/done/*/*-second.md
   started_item second lab:game-agent-1
   agent-queue set second after=zero,first >/dev/null
   agent-queue move first done --status ok >/dev/null
@@ -1670,7 +1671,7 @@ OUT
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_output 'hp: did its own'
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch record --here'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''record'\'' '\''--here'\'''
   assert_called 'idle-worker PATH='
   assert_not_called ' state PATH='
   [ -f "$RECORD" ] || fail "this machine's own record was not kept"
@@ -1695,7 +1696,7 @@ OUT
   sandbox_fleet --self hp 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
   assert_success
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch restore --here --server hub --dry-run'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''restore'\'' '\''--here'\'' '\''--server'\'' '\''hub'\'' '\''--dry-run'\'''
   assert_not_called ' state PATH='
   assert_line 'hp: did its own'
   assert_output --partial 'restore: idle-worker did not answer; its own record stays there'
@@ -1783,7 +1784,7 @@ OUT
 @test "reap: a partial merge whose session is gone goes back to the queue for its final landing, keeping its row and after items open" {
   pr_item MERGED
   agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
-  agent-queue add --project game --slug next --after fix-crash 'next phase' >/dev/null
+  legacy next "after: fix-crash" --project game 'next phase'
   run cmd_reap
   assert_success
   assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial)'

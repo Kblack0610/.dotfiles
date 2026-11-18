@@ -21,7 +21,8 @@
 #   claude-acct status [--json]   # every source: window used, window gone, run-out, live sessions,
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
-#   claude-acct textfile [dir]    # write <dir>/claude_acct.prom for node_exporter (default: the collector's dir)
+#   claude-acct textfile [dir]    # write <dir>/claude_acct.prom for node_exporter (default: the collector's dir,
+#                                 # on the fleet-lease holder only; another machine removes its copy)
 #   claude-acct gateway [--out FILE]
 #                        # snapshot the gateway's teams, keys (never a key's secret or hash), the
 #                        # sources and the config's aliases and fallbacks into FILE (default
@@ -35,24 +36,16 @@
 #   claude-acct room --source <name> [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
-#   claude-acct check tokens # one line, exit 1 when a token is expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
+#   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
-#   claude-acct auth [--json]    # each account's sign-in state: logged in (a refresh token in its
-#                                # credentials file), access token end, login end, last write, busy
-#                                # sessions, sessions stopped on "Not logged in"
-#   claude-acct check auth   # one line, exit 1 when an account is signed out, is not refreshing, or
-#                            # holds sessions that wake could not move; names `cl --acct <name>`, /login
-#   claude-acct check expiry # one line, exit 1 when a refresh token ends within AUTH_WARN_DAYS
-#   claude-acct wake [--dry-run]
-#                        # type a continue line into each session stopped on "Not logged in" whose
-#                        # account is signed in again: WAKE_BATCH a run, one under load (pace.conf)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
 #                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
 #                        # its use UNDERUSE_GAP_PCT points or more under its week gone (pace.conf)
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
-#   claude-acct link     # share the main ~/.claude setup into every other account dir
+#   claude-acct link     # share the main ~/.claude setup into every other account dir, and mark
+#                        # first-run done in each account (hasCompletedOnboarding)
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark.
@@ -60,10 +53,13 @@
 #   claude-acct park <target> [--server S] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude so it costs nothing while it waits,
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<key>, with
-#                        # why=<reason> (default park; fleet-dispatch's preempt writes preempt)
-#                        # and for=<slug>, the queue item the park made room for
+#                        # why=<reason>, the park's owner (default park; fleet-dispatch's preempt
+#                        # writes preempt, fleet-shepherd's budget checkpoint budget) and
+#                        # for=<slug>, the queue item the park made room for
 #   claude-acct unpark <target>|--all
-#                        # resume a parked session in its pane, on the account pick returns now
+#                        # resume a parked session in its pane, on the account pick returns now;
+#                        # --all leaves preempt parks to fleet-dispatch and budget parks to an
+#                        # unpark by name
 #                        # <target> is [server/]session[:window] or a pane id (%N). A session
 #                        # holds one claude; a window or pane picks one claude in a shared
 #                        # session (hub/dotfiles:2). The ledger <key> is the session, or
@@ -82,12 +78,12 @@
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
-# One account per session via CLAUDE_CONFIG_DIR. An account with a long-lived token in rbw
-# (setup-token) also gets it as CLAUDE_CODE_OAUTH_TOKEN, so a wiped .credentials.json stops no
-# session; otherwise Claude refreshes the account's login itself when a session starts in that dir.
+# One account per session via CLAUDE_CONFIG_DIR, signed in by its setup token: a long-lived token in
+# rbw (`claude-acct setup-token`) that every launch exports as CLAUDE_CODE_OAUTH_TOKEN. There is no
+# /login and no .credentials.json read: nothing here signs an account in any other way.
 # Only setup-token writes a credential, and only into rbw. docs/operations/claude-acct-tokens.md.
-# Usage comes from the endpoint behind /usage, which rate-limits per token, so each
-# answer is cached for CLAUDE_ACCT_TTL seconds.
+# Usage comes from the rate-limit headers of one 1-token call on the account's setup token (fetch),
+# so each answer is cached for CLAUDE_ACCT_TTL seconds.
 
 set -uo pipefail
 
@@ -107,7 +103,10 @@ HARNESSES="${CLAUDE_ACCT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/h
 CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
 MAIN_DIR="$HOME/.claude"
-USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"   # refuses a setup token; setup-token records that
+MESSAGES_URL="https://api.anthropic.com/v1/messages"
+# fetch's 1-token call: its answer's headers carry the plan's windows
+USAGE_PROBE='{"model":"claude-haiku-5-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}'
 # rbw entry per account: the token is the password, the notes carry email, minted, expires.
 TOKEN_ENTRY="claude-oauth-"
 # A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
@@ -195,47 +194,51 @@ rows_in() {
 # for one source reads that source and its parent, not every account's token and every key's gateway.
 usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]]; }
 
-# fetch <name> <dir> -> usage JSON on stdout
-#   exit 0 = fresh data, 2 = token expired (a launch refreshes it), 1 = signed out or fetch failed
+# fetch <name> -> usage JSON on stdout, in the usage endpoint's shape; exit 0 = fresh data, 1 = unread.
+# Read with the account's setup token. The usage endpoint refuses that token (403, the rbw entry's
+# usage_endpoint note), but every call on it answers with the plan's windows in its
+# anthropic-ratelimit-unified-* headers, so one 1-token call reads them. The call must look like
+# Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
+# A call refused at the limit still carries them, so only the headers are read.
 fetch() {
-    local name="$1" dir="$2" cache="$CACHE/$1.json"
+    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    local creds="${dir:-$MAIN_DIR}/.credentials.json" token='' rc=1 now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
-    local a_ok r_ok a_exp r_exp
-    # Expired (rank 0, the best) only when a launch can refresh it (refresh_live). A signed-out
-    # account reads unread, which pick skips: on 2026-11-17 a `{}` credentials file read expired
-    # and sent runner calls to an account that answered "Not logged in" (ar-1447).
-    if [[ -f "$creds" ]] && IFS=$'\t' read -r a_ok r_ok a_exp r_exp < <(login_tsv "$creds"); then
-        if [[ "$a_ok" == true ]] && (( a_exp > now )); then
-            token=$(jq -r '.claudeAiOauth.accessToken' "$creds" 2>/dev/null); rc=0
-        elif refresh_live "$r_ok" "$r_exp" "$now"; then rc=2; fi
-    fi
-    # No usable login: the account's setup token, if the endpoint takes one (it may not: a setup
-    # token carries only the inference scope, and a refusal reads as unread, as it always did).
-    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed".
-    local via_setup=0
-    if [[ -z "$token" ]]; then token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1; fi
-    [[ -n "$token" ]] || return "$rc"
-
-    local ver tmp
+    token=$(acct_token "$name" 2>/dev/null) || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
-    if curl -fsS -m 5 "$USAGE_URL" \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        -H "User-Agent: claude-code/${ver:-2}" > "$tmp" 2>/dev/null \
-        && jq -e '.five_hour or .seven_day' "$tmp" >/dev/null 2>&1; then
+    # The header goes in on stdin (-K -): argv is readable by every process on the machine.
+    hdrs=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        curl -sS -m 10 -K - -D - -o /dev/null "$MESSAGES_URL" \
+            -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-cli/${ver:-2} (external, cli)" -H "x-app: cli" \
+            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null)
+    if ratelimit_usage <<<"$hdrs" > "$tmp"; then
         mv "$tmp" "$cache"
         cat "$cache"
         return 0
     fi
     rm -f "$tmp"
-    (( via_setup )) && return "$rc"
+    # say why, so a refused probe (no headers) and a dead network do not read alike
+    printf "claude-acct: %s usage read failed: %s\n" "$name" "$(head -n 1 <<<"$hdrs" | tr -d "\r" | grep . || echo "no answer")" >&2
     return 1
+}
+
+# ratelimit_usage < response headers -> {five_hour, seven_day, reached}: each window's utilization
+# (a fraction in the header, a percent here) and resets_at (ISO), null when its header is absent;
+# reached when the plan refuses calls now. Exits non-zero (jq -e) with no weekly window.
+ratelimit_usage() {
+    tr -d '\r' | jq -Rnce '
+        [inputs | capture("^anthropic-ratelimit-unified-(?<k>[^:]+):\\s*(?<v>.*)$"; "i")
+         | {key: (.k | ascii_downcase), value: .v}] | from_entries as $h
+        | def win($w): if $h["\($w)-utilization"] == null then null
+              else {utilization: ($h["\($w)-utilization"] | tonumber * 1000 | round / 10),
+                    resets_at: ($h["\($w)-reset"] | if . == null then null else tonumber | todate end)} end;
+        {five_hour: win("5h"), seven_day: win("7d"), reached: ($h.status == "rejected")}
+        | select(.seven_day != null)'
 }
 
 # --- source readers -------------------------------------------------------------------
@@ -424,15 +427,34 @@ scores() {
         select(.state != "unread") |
         def p: if . == null then "-" else "\(floor)%" end;
         [.rank, ([.five_hour // 0, .week_used // 0] | max), .name, .dir,
-         # An idle account token expires; launching it is what refreshes it.
-         (if .state == "expired" then "token expired, refreshes on launch"
-          else "5h \(.five_hour | p), 7d \(.week_used | p)" end)]
+         "5h \(.five_hour | p), 7d \(.week_used | p)"]
         | map(tostring) | join("\u001f")'
+}
+
+# first_run_done <name> <dir> -- mark Claude Code's first-run screens done for the account at <dir>
+# (empty: main, ~/.claude.json), so a session nobody watches (a fleet worker on a pushed setup token)
+# opens on its prompt, not the theme picker. Sets hasCompletedOnboarding and touches no other key:
+# never a token, oauthAccount or folder trust. A file that is not JSON is left alone.
+first_run_done() {
+    local f="$HOME/.claude.json" tmp
+    if [[ -n "$2" ]]; then [[ -d "$2" ]] || return 0; f="$2/.claude.json"; fi
+    # Write through a symlinked config, never over the link; an empty file is a config not made yet.
+    f=$(readlink -f "$f") || return 0
+    [[ -s "$f" ]] || { printf '{"hasCompletedOnboarding": true}\n' > "$f"; return 0; }
+    jq -e '.hasCompletedOnboarding == true' "$f" >/dev/null 2>&1 && return 0
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if jq '.hasCompletedOnboarding = true' "$f" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+        echo "claude-acct: $1: $f is not JSON, first-run left as is" >&2
+    fi
 }
 
 cmd_link() {
     local name dir e src dst bk
     while IFS=$'\037' read -r name dir; do
+        first_run_done "$name" "$dir"
         [[ -n "$dir" && -d "$dir" ]] || continue
         for e in "${SHARED[@]}"; do
             # One hop to the real file: Claude Code follows a single symlink and renames a
@@ -520,14 +542,14 @@ acct_name() {
 
 # acct_token <name> -> the token on stdout; exit 1 and nothing when the account has none. Silent
 # for "never set up"; one line on stderr when rbw is locked (it would prompt, which an unattended
-# start cannot answer), and the session then runs on the account's login credentials as before.
+# start cannot answer); the session then starts with no token, and the line names the fix.
 acct_token() {
     local t
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
         t=$(cat "$TOKEN_DIR/$1" 2>/dev/null) || t=''
         if [[ "$t" == sk-ant-oat* ]]; then printf '%s' "$t"; return 0; fi
         command -v rbw >/dev/null 2>&1 &&
-            echo "claude-acct: rbw is locked, so $1 starts on its login credentials, not its setup token" >&2
+            echo "claude-acct: rbw is locked and this machine has no pushed copy, so $1 starts with no setup token: rbw unlock, or claude-acct token push here" >&2
         return 1
     fi
     t=$(rbw get "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
@@ -582,7 +604,8 @@ cmd_token_push() {
 
 # token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
 # token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
-# keeps its login. The pane's shell reads the token again at launch.
+# starts signed out (acct_token says why on stderr; check tokens trips on it). The pane's shell
+# reads the token again at launch.
 cmd_token_prefix() {
     local name
     name=$(acct_name "${1:-}") || return 0
@@ -599,9 +622,9 @@ token_expiry() {
     return 0
 }
 
-# check_tokens: one line; exit 1 when a token is expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
-# be read. An account with no token is named but trips nothing: it runs on its login. The auth
-# alert watches this line (ar-2767), so a year-old token is renewed before it stops a session.
+# check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
+# be read. An account with no token trips it too: the token is its only sign-in, so a session on it
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
@@ -619,9 +642,9 @@ check_tokens() {
         else ok=$((ok + 1)); fi
     done < <(accounts)
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
-    if (( ${#none[@]} )); then out+="${out:+; }no token yet: ${none[*]}"; fi
+    if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
-    (( ${#soon[@]} == 0 ))
+    (( ${#soon[@]} + ${#none[@]} == 0 ))
 }
 
 # setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or
@@ -725,21 +748,11 @@ cmd_setup_token() {
 # The weekly percent is what stops work, so pace is read against it: under the line the account
 # can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
 WEEK=604800
-# The numbers live in .config/claude-acct/pace.conf and nowhere else: no env override, so every
+# The numbers live in .config/claude-acct/pace.conf and nowhere else (pace_get, pace-conf.sh), so every
 # reader of the verdict sees the same line (the machine-mode level scales them, by column name). A dispatch floor lifts the pace reason from the
 # published verdict (room.reasons), never by moving the slack.
-PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/claude-acct/pace.conf}"
-# pace_get KEY -> the value; empty and a line naming the file when it is not set or not a plain
-# number, which stops the script below: a missing number must not quietly become a default
-pace_get() {
-    local v
-    v=$(sed -n "/^$1=/{s///p;q;}" "$PACE_CONF" 2>/dev/null)
-    if [[ ! "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        echo "claude-acct: $1 is not set to a number in $PACE_CONF" >&2
-        return 0
-    fi
-    printf '%s' "$v"
-}
+# shellcheck source=../lib/pace-conf.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/pace-conf.sh"
 PACE_SLACK_PCT="$(pace_get PACE_SLACK_PCT)"
 RESERVE_PCT="$(pace_get RESERVE_PCT)"
 # shellcheck source=../lib/machine-mode.sh
@@ -755,8 +768,6 @@ PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
-# shellcheck source=../lib/claude-acct-auth.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/claude-acct-auth.sh"   # auth, wake, check auth|expiry
 
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
@@ -834,7 +845,7 @@ session_rate() {
 }
 
 # usage_json [nospend] -> one JSON object per Claude account; with USAGE_SOURCES=1 (all_json) also
-# one per source, in the same shape. state: ok, expired (idle, refreshes on launch) or unread.
+# one per source, in the same shape. state: ok or unread.
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
@@ -848,15 +859,11 @@ usage_json() {
     lives=$(live_of)
     while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _; do
         case "$kind" in
-            claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
+            claude) json=$(fetch "$name"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
             *) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$(session_rate "${1:-}" "$name") ;;
         esac
-        case $rc in
-            0) state=ok ;;
-            2) state=expired; json='{}' ;;
-            *) state=unread; json='{}' ;;
-        esac
+        if (( rc == 0 )); then state=ok; else state=unread; json='{}'; fi
         used=$(jq -r '.seven_day.utilization // empty' <<< "$json")
         resets=$(jq -r '.seven_day.resets_at // empty' <<< "$json")
         resets=$([[ -n "$resets" ]] && date -d "$resets" +%s 2>/dev/null)
@@ -911,8 +918,7 @@ usage_json() {
             def rank:
                 (.week_used // 0) as $u
                 | sustain as $carry
-                | (if .state == "expired" then 0
-                   elif $u >= 100 then 1e9
+                | (if $u >= 100 then 1e9
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
                    else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
@@ -923,8 +929,7 @@ usage_json() {
             # rest of the window), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
-            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. An expired token is
-            # idle and launching it refreshes it, so it has room. over_points is the points past the
+            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. over_points is the points past the
             # line after slack; headroom_points the same, signed (for a budget: points left before the
             # reserve) and null with no window.
             def room($slack; $reserve):
@@ -934,7 +939,7 @@ usage_json() {
                       if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
                       if .paced and $u != null and $u > $g + $slack then "pace" else empty end,
                       if $f >= 100 - $reserve then "five_hour" else empty end,
-                      if .paced and .state != "expired" and sustain <= .burn then "committed" else empty end,
+                      if .paced and sustain <= .burn then "committed" else empty end,
                       if .max_live != null and .live >= .max_live then "max_live" else empty end]
                    end) as $no
                 | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
@@ -1043,8 +1048,7 @@ cmd_status() {
         [[ -n "$line" ]] || continue
         state=$(jq -r .state <<< "$line")
         if [[ "$state" != ok ]]; then
-            [[ "$state" == expired ]] && state="token expired" || state="fetch failed"
-            printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
+            printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
         printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
@@ -1130,13 +1134,22 @@ fleet_line() {
 
 # textfile [dir]: written to a temp file and renamed, so a scrape never reads half. With no dir
 # it is the machine's collector dir (prom-textfile.sh), and a machine with none is skipped.
+# With no dir it is also a fleet singleton: the file holds every source and the fleet sum, and
+# the hub merges the series by account, so a second host's copy overwrites the first. Only the
+# fleet-lease holder publishes; another machine removes its own copy (a fleet worker, with
+# setup tokens only, read every source unread and blanked every Burn row, 2026-11-18), and one
+# that cannot tell leaves it.
 cmd_textfile() {
-    local dir tmp
+    local dir tmp lease=0
     dir=$(prom_textfile_target "${1:-}") || return 0
+    if [[ -z "${1:-}" ]]; then
+        # the units' own path (ExecCondition=%h/.local/bin/fleet-lease): a fleet worker's systemd
+        # PATH has no ~/.local/bin, and a PATH lookup's 127 kept its stale copy
+        "$HOME/.local/bin/fleet-lease" claude-acct-usage >/dev/null 2>&1 || lease=$?
+        if (( lease == 1 )); then rm -f "$dir/claude_acct.prom"; return 0; fi
+        (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
+    fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
-    # the sign-in lines come first: they read the credential files and the panes, not the usage endpoint
-    # a failed read of them drops only their lines, never the usage ones
-    auth_prom > "$tmp" || { : > "$tmp"; echo "claude-acct: the sign-in lines were not written" >&2; }
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):
             .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\",kind=\"\(.kind)\"} \($v)";
@@ -1390,10 +1403,8 @@ cmd_check() {
                 elif .under != [] then "under-used near its reset: \(.under | join("; "))"
                 else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
             [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
-        auth) auth_check ;;
-        expiry) expiry_check ;;
         tokens) check_tokens ;;
-        *) echo "usage: claude-acct check usage|auth|expiry|pace|underuse|tokens [source...]" >&2; return 2 ;;
+        *) echo "usage: claude-acct check usage|pace|underuse|tokens [source...]" >&2; return 2 ;;
     esac
 }
 
@@ -1640,8 +1651,8 @@ exited() {
 # the pane shows: the cursor on "No, exit" (the default) gets Down, on "Yes, I trust this folder"
 # gets Enter. One key a call, each sent only once the redraw of the last one shows: two keys
 # sent back to back can lose the first. An account that never opened a folder (or, for a
-# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json,
-# which claude-acct never writes. Fails when the pane shows no trust prompt.
+# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json, whose
+# trust keys claude-acct never writes. Fails when the pane shows no trust prompt.
 TRUST_CURSOR=$'\xe2\x9d\xaf'
 trust_step() {
     local screen
@@ -1703,6 +1714,20 @@ resumed() {
 # move is park and unpark back to back, so there is one exit path and one resume path.
 PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 
+# park_lock <tmux session> -- one park, move or unpark of a session's ledgers at a time, held on
+# fd PARK_FD until park_unlock or exit. fleet-dispatch's preempt and its unpark, fleet-shepherd's
+# budget park, fleet-pace and the human each decide from their own read of the pane; two at once
+# would type two resumes into one pane. A holder runs at most two awaits (a move), so a wait of
+# three sees its result; past that the caller is refused. A dot file, so ledger readers skip it.
+park_lock() {
+    park_unlock
+    mkdir -p "$PARKED" && exec {PARK_FD}>"$PARKED/.lock.$1" || { refuse "cannot write to $PARKED"; return; }
+    flock -w "$((3 * MOVE_TIMEOUT))" "$PARK_FD" && return 0
+    park_unlock
+    refuse "another park or unpark of $1 still runs after $((3 * MOVE_TIMEOUT))s; try again once it ends"
+}
+park_unlock() { [[ -z "${PARK_FD:-}" ]] || exec {PARK_FD}>&-; PARK_FD=""; }
+
 # record <ledger key> <what happened> [parked|unparked <session id>] -- park, move and unpark
 # change the fleet the way a hold does, so each pages low with a `park: <session>` title, as
 # agent-hold does with `hold:` and `go:`, and writes a line on the audit log, which keeps the
@@ -1722,6 +1747,9 @@ record() {
 
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
 ledger_get() { sed -n "/^$2=/{s///p;q;}" "$1" 2>/dev/null; }
+
+# ledger_session <file> -> the tmux session a park ledger is filed under (a window key is session:%pane)
+ledger_session() { local s b="${1##*/}"; s=$(ledger_get "$1" session); printf %s "${s:-${b%%:*}}"; }
 
 # refuse <why...> -- one line naming the caller's $verb and its target ($what, else $session), exit 1
 refuse() { echo "claude-acct: $verb ${what:-$session}: $*" >&2; return 1; }
@@ -1754,6 +1782,7 @@ resume_prompt() {
     else
         local cause="to save Claude usage: its claude exited while it waited"
         [[ "$1" == preempt ]] && cause="so an urgent queue item could take its run unit: its claude exited at the end of a turn"
+        [[ "$1" == budget ]] && cause="at a budget checkpoint, its queue item past its budget: its claude exited at the end of a turn, and it now runs one more budget before the next"
         p="This session was parked $cause, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
         [[ "$4" == shell ]] && p+=" Parking stopped your background waits: check what they watched directly instead of restarting them."
     fi
@@ -1877,7 +1906,8 @@ park_flow() {
     if [[ -n "$window" ]] && ! has_window "$server" "$session" "$window"; then
         refuse "no window $window in session $session on server $server"; return
     fi
-
+    # Every check from here reads the pane and the ledger as they are under the lock.
+    ((dry)) || park_lock "$session" || return
     # A session target's ledger is the session; a window or pane is one claude among others, so
     # its ledger is session:%pane, and only that window or pane is searched.
     local hits pid pane pane_pid reg win
@@ -1989,6 +2019,7 @@ park_flow() {
     fi
     mv -f "$tmp" "$PARKED/$key"
     if [[ "$verb" == park ]]; then
+        park_unlock
         echo "claude-acct: parked $key: $PARKED/$key; claude-acct unpark $key resumes it"
         record "$key" "parked on $(name_of "$from") ($status)${reason:+, $reason}${for_item:+ for $for_item}" parked "$sid"
         return 0
@@ -2004,7 +2035,7 @@ unpark_ledger() {
     local created parked
     what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
-    session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
+    session=$(ledger_session "$file")
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
     pid=$(ledger_get "$file" pid); sid=$(ledger_get "$file" session_id); cwd=$(ledger_get "$file" cwd)
     from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
@@ -2019,7 +2050,7 @@ unpark_ledger() {
             [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" == 1 ]]; then
             tmux -L "$server" kill-pane -t "$pane"
         fi
-        rm -f "$file"
+        rm -f "$file"; park_unlock
         echo "claude-acct: $verb $what: its worktree $cwd is gone, so session $sid cannot resume; dropped $file (it was: $base)" >&2
         record "$what" "dropped: worktree $cwd is gone; session $sid, $base"
         [[ "$verb" == move ]] && return 1
@@ -2062,7 +2093,7 @@ unpark_ledger() {
     fi
     await "session $sid to register on $name" resumed_or_trusted "$server" "$pane" "$sid" "$pid" "$to" ||
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
-    rm -f "$file"
+    rm -f "$file"; park_unlock
     # Its item bills this account now; left as the gateway harness it would keep a max_live slot.
     if [[ "$from" == "$GATEWAY_FROM" ]]; then
         local item
@@ -2107,15 +2138,29 @@ cmd_unpark() {
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
             drop_legacy_ledgers
             # A bulk wake, so it takes each from the shared budget (wake-pace.sh); the rest stay parked.
-            local left=0
+            # A park's why is its owner, and --all owns only why=park: fleet-dispatch resumes its
+            # preempts once their run units fit (unpark_preempted), and any other owner (budget: a choice
+            # to spend more) waits for an unpark by name.
+            local left=0 owned=() k why
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
-                ((n++))
-                wake_take unpark "${f##*/}" || { ((left++)); continue; }
-                unpark_ledger unpark "$f" || rc=1
+                ((n++)); k="${f##*/}"; why=$(ledger_get "$f" why)
+                case "${why:-park}" in
+                    park) ;;
+                    preempt) owned+=("$k (preempt: fleet-dispatch resumes it)"); continue ;;
+                    *) owned+=("$k ($why: claude-acct unpark $k)"); continue ;;
+                esac
+                # wake_take refuses every later call once it refuses one: skip the lock wait for those.
+                ((WAKE_REFUSED == 0)) || { ((left++)); continue; }
+                what="$k"; park_lock "$(ledger_session "$f")" || { rc=1; continue; }
+                # Read before the lock: an unpark that held it may have resumed this one already.
+                [[ -f "$f" ]] || { park_unlock; ((n--)); continue; }
+                if wake_take unpark "$k"; then unpark_ledger unpark "$f" || rc=1; else ((left++)); fi
+                park_unlock
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"
-            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BATCH per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
+            ((${#owned[@]} == 0)) || printf 'claude-acct: unpark: left to its owner: %s\n' "${owned[@]}"
+            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BUDGET per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
             return "$rc" ;;
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
@@ -2145,6 +2190,7 @@ cmd_unpark() {
     fi
     [[ -z "$srv" || ! -f "$f" || "$(ledger_get "$f" server)" == "$srv" ]] ||
         { what="$1"; refuse "parked on server $(ledger_get "$f" server), not $srv"; return; }
+    [[ ! -f "$f" ]] || park_lock "$(ledger_session "$f")" || return
     unpark_ledger unpark "$f"
 }
 
@@ -2159,8 +2205,6 @@ case "${1:-}" in
     gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
-    auth)   shift; cmd_auth "$@" ;;
-    wake)   shift; cmd_wake "$@" ;;
     setup-token) shift; cmd_setup_token "$@" ;;
     token)  shift; if [[ "${1:-}" == push ]]; then shift; cmd_token_push "$@"; else cmd_token "$@"; fi ;;
     token-prefix) shift; cmd_token_prefix "$@" ;;

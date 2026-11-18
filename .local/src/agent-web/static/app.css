@@ -350,7 +350,7 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }
-.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 0; }
+.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0; }
 .tpager .btn.sm { margin: 0; }
 .tpager .btn.on { border-color: var(--accent); color: var(--accent); }
 .tpager .btn:disabled { opacity: .4; cursor: default; }
@@ -680,7 +680,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .spendcharts { display: grid; gap: 8px; }
 @media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
 #sec-spend tr[data-sid] { cursor: pointer; }
-#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#sec-tokens tr[data-tokpart] { cursor: pointer; }
+#sec-spend tr[data-sid].sel, #sec-tokens tr.tokpart.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* Releases > an app's status page (releases.js appPageHtml): one check per panel, its uptime
    windows on a line, 90 day bars of one height (30 on a phone, the newest), then 24h latency. */
 .appbanner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
