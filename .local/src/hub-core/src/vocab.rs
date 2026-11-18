@@ -1,7 +1,7 @@
 //! The words the hub uses for state. The bucket vocabulary of state.json lives in agent-panel
 //! (`agent_core::vocab`); hub-core re-exports it. The waiting states are worded here, one line
 //! per state, and each table under them carries its own as its legend (`Row::LEGEND`). Three
-//! things wait to start, each under its own word: a queue item is `ready` or `held`, a job and a
+//! things wait to start, each under its own word: a queue item is `ready`, a job and a
 //! CI job are `waiting`.
 
 pub use agent_core::vocab::Vocab;
@@ -13,10 +13,6 @@ pub const QUEUE: &[(&str, &str)] = &[
     (
         "ready",
         "starts when dispatch has a slot for it; # is agent-queue's order, which dispatch may pass over for load, a lane's tier or a host in use",
-    ),
-    (
-        "held",
-        "waits on its hold: after another item, until a PR merges, until night or a set time; HOLD says which",
     ),
     (
         "cancelled",
@@ -124,32 +120,30 @@ mod tests {
     }
 
     #[test]
-    fn a_queue_item_not_started_is_ready_or_held_a_stuck_one_says_so_and_its_legend_says_which() {
-        let item = |slug: &str, state: State, hold: Option<&str>| Item {
+    fn a_queue_item_not_started_is_ready_a_stuck_one_says_so_and_its_legend_says_which() {
+        let item = |slug: &str, state: State| Item {
             slug: slug.into(),
             state,
-            hold: hold.map(str::to_string),
             started: Some("2026-11-06T10:00:00Z".into()),
             ..Item::default()
         };
-        let mut red = item("pr", State::Review, None);
+        let mut red = item("pr", State::Review);
         red.extra.insert("fix_human".into(), "abc".into());
-        let mut green = item("pg", State::Review, None);
+        let mut green = item("pg", State::Review);
         green.extra.insert("fix_human".into(), "abc".into());
         green.extra.insert("pr_owner".into(), "land".into());
         let stalled = crate::queue::Health {
             bucket: "STALLED".into(),
             ..Default::default()
         };
-        let mut cancelled = item("x", State::Done, None);
+        let mut cancelled = item("x", State::Done);
         cancelled.status = Some("cancelled".into());
         let q = Queue {
             items: vec![
                 cancelled,
-                item("r", State::Queued, None),
-                item("h", State::Queued, Some("after r")),
-                item("s", State::Running, None),
-                item("n", State::Running, None),
+                item("r", State::Queued),
+                item("s", State::Running),
+                item("n", State::Running),
                 red,
                 green,
             ],

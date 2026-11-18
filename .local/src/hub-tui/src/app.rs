@@ -6579,8 +6579,10 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 queued, 1 running")
-                && s.contains("Running 1  On a PR 0  Ready 1  Held 1")
+            s.contains("QUEUE  2 on deck, 1 running")
+                && s.contains("Running 1  On a PR 0")
+                && !s.contains("Ready")
+                && !s.contains("Held")
                 && s.contains("SESSIONS  - reading"),
             "{s}"
         );
@@ -6595,7 +6597,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 2  done 1  cancelled 0  all 5"
             ),
             "{s}"
         );

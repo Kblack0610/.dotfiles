@@ -2217,14 +2217,20 @@ cmd_ledger() {
 # ---------------------------------------------------------------- rules
 
 # The rule register: one JSON row per rule, its kind, the number it rests on, a confidence and a
-# revisit trigger (~/.local/src/docs/standards.md, the last rule). A row with `measure` and `max` or
-# `min` re-measures itself here: `measure` prints a number, `holds` says it is inside the bound.
+# revisit trigger (~/.local/src/docs/standards.md, the last rule). A row with `measure` re-measures
+# itself here: `measure` prints a number (`value`), and with `max` or `min`, `holds` says it is inside
+# the bound. A measure without a bound is a reading: a knob set in its own source (a cap, a share)
+# is read there, so its number has one home; a bound copied from the file the measure reads can
+# never move, and --check fails it (`restates`: a bounded measure naming its own source, ~ or $HOME,
+# that is not a size or count, i.e. no wc, grep -c, stat or find). A size or count is a real bound.
 # confidence low records a number known not to hold, so `moved` is a change from what the register
-# says, never a number merely being past its line. `anchored` is the rule's text still being in its
-# source; null when the source is not on this machine. A row's optional `scenario` is the hard
+# says, never a number merely being past its line. `dead` is a measure that printed no number.
+# `anchored` is the rule's text still being in its source; null when the source is not on this
+# machine. `state` is the one verdict, first of stale, absent, dead, restates, moved, else ok: --check
+# fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 
-# rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead.
+# rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
   local src anchor cmd value anchored
@@ -2243,18 +2249,25 @@ rules_states() {
       | range($rows | length) as $i
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
       | (.max != null or .min != null) as $bounded
-      | .dead = ($bounded and .value == null)
+      | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
+      | .dead = (.measure != null and .value == null)
+      | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
+      | .restates = ($bounded and $raw != "" and .measure != null
+          and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
-      | .moved = (.holds != null and .holds != (.confidence != "low"))'
+      | .moved = (.holds != null and .holds != (.confidence != "low"))
+      | .state = (if .anchored == false then "stale" elif .anchored == null then "absent"
+          elif .dead then "dead" elif .restates then "restates" elif .moved then "moved" else "ok" end)'
 }
 
-# rules_problems <states array> -> one line per row --check fails on.
+# rules_problems <states array> -> one line per row --check fails on: its `state`, which Stack shows too.
 rules_problems() {
   jq -r '.[] | (.source | split("/") | last) as $f
-    | if .anchored == false then "stale: \($f): \(.anchor)"
-      elif .dead then "dead measure: \($f): \(.anchor)"
-      elif .moved then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
+    | if .state == "stale" then "stale: \($f): \(.anchor)"
+      elif .state == "dead" then "dead measure: \($f): \(.anchor)"
+      elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
+      elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end' <<<"$1"
 }
 
@@ -2518,7 +2531,7 @@ queue_line() {
       + "\([.by_project[].prs] | add // 0) with a PR, \($n / $days * 10 | round / 10)/day, "
       + "wait median \(m(.wait_minutes_median)) p90 \(m(.wait_minutes_p90)) (\(.started_at_once // 0) started at once), "
       + "to PR median \(m(.to_pr_minutes_median))"
-      + (.sitting | if . == null then "" else "; sitting: \(.runnable) can start, oldest \(m(.oldest_runnable[0].minutes)), \(.held) held" end)'
+      + (.sitting | if . == null then "" else "; sitting: \(.runnable) can start, oldest \(m(.oldest_runnable[0].minutes))" end)'
 }
 
 cmd_queue() {
