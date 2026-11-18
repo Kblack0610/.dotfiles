@@ -1390,7 +1390,7 @@ reopen_sessions() {
   if grep -q '^reopen: ' "$1"; then
     sed -n 's/^reopen: \(..*\)$/\1/p' "$1"
   else
-    ask_sessions "$1" | head -1
+    ask_sessions "$1" | awk 'NR==1'
   fi
 }
 
