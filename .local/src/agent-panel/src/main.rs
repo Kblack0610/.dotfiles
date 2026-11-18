@@ -162,7 +162,7 @@ fn main() -> anyhow::Result<()> {
             codex,
         }) => chooser::run_list(json, parked, codex),
         Some(Cmd::AsksHuman { transcript }) => {
-            std::process::exit(if agent_core::jsonl::asks_human_at(&transcript) {
+            std::process::exit(if agent_core::transcript::asks_human_at(&transcript) {
                 0
             } else {
                 1
@@ -171,7 +171,7 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::TimeUse { transcript }) => {
             println!(
                 "{}",
-                serde_json::to_string(&agent_core::jsonl::time_use_at(&transcript))?
+                serde_json::to_string(&agent_core::transcript::time_use_at(&transcript))?
             );
             Ok(())
         }
@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Said { transcript, around }) => {
-            match agent_core::jsonl::said_around_at(&transcript, &around) {
+            match agent_core::transcript::said_around_at(&transcript, &around) {
                 Some(said) => {
                     println!("{}", serde_json::to_string(&said)?);
                     Ok(())
