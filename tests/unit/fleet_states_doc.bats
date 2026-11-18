@@ -3,6 +3,9 @@
 # bucket. This guard reads it as text and fails when (a) the bucket words fleet-sessions emits differ
 # from the table's, (b) a row lacks an actor, action or pinning test, (c) a pinning test name has no
 # `@test`, or (d) a row whose actor is the shepherd is missing from fleet-shepherd's due functions.
+# The close table there drives the close flow's checks: (e) its Step ids and verdict words, in order,
+# must be the `# step:<id>` tagged branches of close_verdict in CLOSE_JQ, and (f) the committed
+# fleet-close-flow.svg must be close-flow-svg's output of it.
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
 
 setup() {
@@ -12,6 +15,8 @@ setup() {
   DOC="$REPO_ROOT/.local/src/docs/fleet-states.md"
   SESSIONS="$REPO_ROOT/.local/bin/fleet-sessions"
   SHEPHERD="$REPO_ROOT/.local/bin/fleet-shepherd"
+  SVG="$REPO_ROOT/.local/src/docs/fleet-close-flow.svg"
+  GEN="$REPO_ROOT/.local/bin/close-flow-svg"
 }
 
 # rows <doc> -> bucket, actor, action and pinned, one row of the bucket table per line, split by
@@ -61,6 +66,35 @@ check_shepherd() { # <doc> <fleet-shepherd>
   return "$bad"
 }
 
+# close_rows <doc> -> "<step> <verdict>" for each row of the close table, in order: the Step cell
+# without its backticks and the first word of the Verdict cell
+close_rows() {
+  awk -F'|' '/^\| Step \| Group \| Facts \| Verdict \|/ {t = 1; next}
+    t && /^\|---/ {next}
+    t && !/^\|/ {exit}
+    t { gsub(/[` ]/, "", $2); v = $5; sub(/^ +/, "", v); match(v, /^[a-z]+/); print $2, substr(v, 1, RLENGTH) }' "$1"
+}
+
+# close_tags <fleet-sessions> -> "<step> <verdict>" for each branch of close_verdict in CLOSE_JQ, in
+# order: its `# step:<id>` tag and the first `verdict: "..."` from that line on, up to the `end;`
+# that closes the chain
+close_tags() {
+  awk '/def close_verdict\(/ {on = 1}
+    !on {next}
+    match($0, /# step:[a-z0-9-]+/) { if (id != "") print id, v; id = substr($0, RSTART + 7, RLENGTH - 7); v = "" }
+    id != "" && v == "" && match($0, /verdict: "[a-z]+"/) { v = substr($0, RSTART + 10, RLENGTH - 11) }
+    / end;/ { if (id != "") print id, v; exit }' "$1"
+}
+
+check_steps() { # <doc> <fleet-sessions>
+  [ "$(close_rows "$1" | wc -l)" -gt 0 ] || { echo "no close table in $1"; return 1; }
+  diff <(close_rows "$1") <(close_tags "$2") || { echo "close table (<) and CLOSE_JQ step tags (>) differ"; return 1; }
+}
+
+check_svg() { # <doc> <svg>
+  diff <("$GEN" --doc "$1" --out -) "$2" > /dev/null || { echo "$2 is not close-flow-svg's output of $1: run close-flow-svg"; return 1; }
+}
+
 @test "the bucket table names exactly the buckets fleet-sessions emits" {
   run check_words "$DOC" "$SESSIONS"
   assert_success
@@ -101,4 +135,40 @@ check_shepherd() { # <doc> <fleet-shepherd>
   run check_shepherd "$DOC" "$t/shepherd"
   assert_failure
   assert_output 'CHAT: its actor is the shepherd, but no due function reads it'
+}
+
+@test "the close table's step ids and verdicts, in order, are the tagged branches of close_verdict" {
+  run check_steps "$DOC" "$SESSIONS"
+  assert_success
+}
+
+@test "the committed close flow SVG is close-flow-svg's output of the close table" {
+  run check_svg "$DOC" "$SVG"
+  assert_success
+}
+
+@test "negative controls: an untagged branch, a renamed step, a moved verdict, a hand-edited SVG and a table edit with no regenerate all fail" {
+  local t="$BATS_TEST_TMPDIR"
+  sed 's/ # step:held$//' "$SESSIONS" > "$t/untagged"
+  run check_steps "$DOC" "$t/untagged"
+  assert_failure
+  assert_output --partial 'close table (<) and CLOSE_JQ step tags (>) differ'
+  sed 's/^| `held` |/| `kept` |/' "$DOC" > "$t/renamed.md"
+  run check_steps "$t/renamed.md" "$SESSIONS"
+  assert_failure
+  assert_output --partial '< kept keep'
+  sed '/^| `dialog` |/ s/| keep |$/| now |/' "$DOC" > "$t/moved.md"
+  run check_steps "$t/moved.md" "$SESSIONS"
+  assert_failure
+  assert_output --partial '< dialog now'
+  sed 's/KEEP: land it/KEEP: ship it/' "$SVG" > "$t/hand.svg"
+  run check_svg "$DOC" "$t/hand.svg"
+  assert_failure
+  sed '/^| `unlanded` |/ s/a blocker names unlanded work/a blocker names work not landed/' "$DOC" > "$t/edited.md"
+  run check_svg "$t/edited.md" "$SVG"
+  assert_failure
+  : > "$t/empty.md"
+  run "$GEN" --doc "$t/empty.md" --out -
+  assert_failure 2
+  assert_output --partial 'no close table'
 }
