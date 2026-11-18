@@ -131,6 +131,8 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/one-shot close it\n\nThis is agent-queue item x, and that item is its only record."}'
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"This session was parked to save Claude usage, and it is now resumed on the alt account."}'
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"You were signed out and are signed in again. Carry on with what you were doing."}'
+  # With no table to tell, nothing settles: losing an ask is the worse side.
+  TYPED_PREFIXES="$SANDBOX/none.conf" bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"b"}'
   run "$AGENT_ASK" show "$a"
   assert_line 'status: pending'
   # Negative control: the human naming an option answers it.

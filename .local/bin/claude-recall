@@ -665,7 +665,7 @@ def fleet_typed(text, kinds=("task", "resume")):
     followed by whitespace or the end of the line: agent-panel's fleet_typed, held to the same
     tests/fixtures/typed-prompts.tsv."""
     entries = [e for k, e in typed_prefixes() if k in kinds]
-    for line in text.splitlines():
+    for line in text.split("\n"):
         line = line.lstrip()
         for e in entries:
             if line.startswith(e) and (len(line) == len(e) or line[len(e)].isspace()):

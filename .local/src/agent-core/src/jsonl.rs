@@ -395,7 +395,7 @@ fn typed_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| l.split_once(' '))
+        .filter_map(|l| l.split_once(char::is_whitespace))
         .map(|(kind, text)| (kind, text.trim()))
 }
 
@@ -2906,7 +2906,7 @@ mod tests {
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         {
-            let (kind, text) = line.split_once(' ').unwrap_or((line, ""));
+            let (kind, text) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
             assert!(
                 matches!(kind, "task" | "resume") && !text.trim().is_empty(),
                 "typed-prefixes.conf: {line:?} is not `task|resume <text>`"

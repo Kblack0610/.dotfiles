@@ -1804,12 +1804,14 @@ not_an_answer() {
 # (2026-11-06). An ask a queue item waits on (queue_waits) is not cancelled: it stays pending
 # for the human. A prompt the fleet typed (fleet_typed: a board's "Answer to ask <id>: ...", the
 # shepherd's /wind-down, a restore, a dispatch brief, a park or wake resume) is not the human
-# typing, so every ask stays as it was: on 2026-11-16 a /wind-down cancelled an ask unseen.
+# typing, so every ask stays as it was: on 2026-11-16 a /wind-down cancelled an ask unseen. With
+# no table to tell, it settles nothing and fails, the side that loses no ask.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && [ "$to" = answered ] ||
     { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
   fleet_typed "$*" && return 0
+  [ $? -eq 1 ] || return 1
   local full text f opts pick; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
   while IFS= read -r f; do
     [ -n "$f" ] || continue

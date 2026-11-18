@@ -71,8 +71,8 @@ EOF
   assert_output --partial 'starts: Answer to ask'
 }
 
-@test "a missing table says so and calls nothing fleet-typed" {
-  TYPED_PREFIXES="$SANDBOX/none.conf" run fleet_typed "/wind-down"
+@test "a missing table says so with its own status, neither fleet-typed nor the human" {
+  TYPED_PREFIXES="$SANDBOX/none.conf" run -2 fleet_typed "/wind-down"
   assert_failure
   assert_output --partial 'typed-prefixes: no entries'
 }
