@@ -25,7 +25,7 @@ A session has two independent states, and no surface may fold them into one word
 
 An `idle` session can be NEEDS (an ask is open), LANDED (start the next phase) or STALLED (a green PR nobody merged). Reading "idle" as "done" was the mistake this split exists to stop: `claude-status.sh` used to count idle panes as `done`.
 
-The document holds `activity` as of `generated_at`, a pass old. Who is waiting on the human now is read live everywhere: `agent-panel` (a status file under `~/.claude/sessions`) is its one source, `Agent::needs_attention` its one definition, and `boards::state_with` lays it over the document for every reader of the boards, so an answered dialog is not NEEDS and a new one is, before the next pass. Worker-host rows have no local status file and stay a pass behind. Other slow facts (PR, CI, stage) come from the document. No view computes a bucket itself.
+The document holds `activity` as of `generated_at`, a pass old. Who is waiting on the human now is read live everywhere: the `agent-core` crate (a status file under `~/.claude/sessions`) is its one source, `agent_core::agent::Agent::needs_attention` its one definition, and `boards::state_with` lays it over the document for every reader of the boards, so an answered dialog is not NEEDS and a new one is, before the next pass. Worker-host rows have no local status file and stay a pass behind. Other slow facts (PR, CI, stage) come from the document. No view computes a bucket itself.
 
 ### activity
 

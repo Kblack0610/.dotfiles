@@ -41,7 +41,7 @@
 #     It stays copy-pasted. See CONVENTIONS.md.
 #   - popup geometry. That is a .tmux.conf concern (%hidden constants), not a script one.
 #   - the claude-pane -> session-id resolver. Duplicated today (sessions,
-#     agent-panel/src/procmap.rs) but one copy is Rust; the fix is to shell out to
+#     agent-core/src/procmap.rs) but one copy is Rust; the fix is to shell out to
 #     `agent-panel list`, not to add a fourth implementation here.
 #   - config loading. That is a RULE, not a function: every tunable is ${VAR:-default} at the
 #     top of the script. No sourced sibling .conf, no $HOME/.dotfiles absolute path.
@@ -320,7 +320,7 @@ panel_session_name() {
 
 # panel_focus_session <name> / panel_focus_window <target>
 # switch-client inside tmux, attach outside. A correct copy also lives in
-# agent-panel/src/tmux.rs; this is the shell one.
+# agent-core/src/tmux.rs; this is the shell one.
 panel_focus_session() {
   if panel_in_tmux; then
     tmux switch-client -t "$1"
