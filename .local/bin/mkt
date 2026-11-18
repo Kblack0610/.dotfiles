@@ -14,6 +14,8 @@
 #   mkt list [--project P] [--state S] [--json]   the items, newest first
 #   mkt show <id>                one item as JSON
 #   mkt scorecard [--project P] [--json]          per channel and kind: sent, hand vs adapter, review time
+#   mkt metrics <id> <json>      how a sent item did: {metrics: {name: n}, window: {from, to, final}}
+#                                (mkt-metrics publish writes it; the same numbers again write nothing)
 #   mkt costs <costs.csv> [--max-age-days N]      the rows older than N days (183) or not verified; exit 1 when any
 set -uo pipefail
 
@@ -194,8 +196,10 @@ cmd_draft() {
   id="$(new_id)"; dir="$LEDGER/$project/files/$id"
   mkdir -p "$dir" || die "cannot make $dir"
   cp -- "$file" "$dir/" || die "cannot copy $file"
-  # {utm} in the draft becomes the item's UTM string, which is not known until the id is.
-  U="$(utm "$channel" "$kind" "$project" "$id")" perl -pi -e 's/\{utm\}/$ENV{U}/g' "$dir/$(basename "$file")" || die "cannot write the UTM into the draft"
+  # {utm} in the draft becomes the item's UTM string, which is not known until the id is. The
+  # drafter writes `<url>?{utm}`; on a link that already has a query (the Play link's ?id=) that
+  # second ? becomes &, or the store would read the UTM as part of the last parameter's value.
+  U="$(utm "$channel" "$kind" "$project" "$id")" perl -pi -e 's/(\?[^\s?#{]*)\?\{utm\}/$1&{utm}/g; s/\{utm\}/$ENV{U}/g' "$dir/$(basename "$file")" || die "cannot write the UTM into the draft"
   for a in "${attach[@]}"; do cp -- "$a" "$dir/" || die "cannot copy $a"; copies+=("$dir/$(basename "$a")"); done
   local ev
   ev="$(event draft "$id" '{project: $p, channel: $c, kind: $k, title: $t, draft: $d, attachments: $at, utm: $u, by: $b} + (if $tr == "" then {} else {trigger: $tr} end)' \
@@ -336,6 +340,26 @@ cmd_skip() {
 
 cmd_show() { [ -n "${1:-}" ] || usage; item "$1" | jq .; }
 
+# How a sent item did in the days after its send: mkt-metrics' joins (docs/operations/mkt.md,
+# "Metrics"). The latest event wins in the fold, so a window that grows day by day is one event per
+# change, and the same numbers again write nothing.
+cmd_metrics() {
+  local id="${1:-}" doc="${2:-}" it
+  [ -n "$id" ] && [ -n "$doc" ] || usage
+  jq -e 'def day: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
+    type == "object" and (.metrics | type == "object" and length > 0 and all(.[]; type == "number"))
+    and (.window | type == "object" and (.from | day) and (.to | day) and .from <= .to and (.final | type == "boolean"))' \
+    <<<"$doc" >/dev/null 2>&1 ||
+    die "metrics takes {metrics: {name: number}, window: {from: YYYY-MM-DD, to: YYYY-MM-DD, final: true|false}}"
+  it="$(item "$id")" || exit 1
+  [ "$(jq -r .state <<<"$it")" = sent ] || die "$id is $(jq -r .state <<<"$it"), and only a sent item has numbers"
+  if jq -e --argjson d "$doc" '.metrics == $d.metrics and .window == $d.window' <<<"$it" >/dev/null; then
+    echo unchanged; return 0
+  fi
+  append "$(jq -r .project <<<"$it")" "$(event metrics "$id" '$d | {metrics, window}' --argjson d "$doc")"
+  echo recorded
+}
+
 # The scorecard: one row per project, channel and kind, skipped items left out. A send by "mkt"
 # went through an adapter, any other sender by hand; review hours run from the ask to its verdict.
 SCORE='
@@ -419,6 +443,7 @@ case "$cmd" in
   skip) cmd_skip "$@" ;;
   list) cmd_list "$@" ;;
   show) cmd_show "$@" ;;
+  metrics) cmd_metrics "$@" ;;
   scorecard) cmd_scorecard "$@" ;;
   costs) cmd_costs "$@" ;;
   -h|--help|help) usage 0 ;;

@@ -230,3 +230,32 @@ ask_of() { "$MKT" show "$1" | jq -r .ask; }
   assert_failure 2
   assert_output --partial 'unreadable:'
 }
+
+@test "{utm} after a link that has a query joins it with &, after one without it starts the query" {
+  printf 'Get it: https://play.google.com/store/apps/details?id=com.dodge?{utm} or https://dodge.example?{utm}\n' > "$SANDBOX/work/devlog.md"
+  local id; id="$(draft)"
+  local u="utm_source=reddit&utm_medium=post&utm_campaign=dodge&utm_content=$id"
+  run cat "$MKT_LEDGER_DIR/dodge/files/$id/devlog.md"
+  assert_output "Get it: https://play.google.com/store/apps/details?id=com.dodge&$u or https://dodge.example?$u"
+}
+
+@test "metrics records a sent item's numbers once, and refuses an unsent item or a malformed document" {
+  local doc='{"metrics": {"wishlist_adds_7d": 3}, "window": {"from": "2026-11-01", "to": "2026-11-03", "final": false}}'
+  local id; id="$(draft)"
+  run "$MKT" metrics "$id" "$doc"
+  assert_failure
+  assert_output --partial 'only a sent item has numbers'
+  run "$MKT" log "$id" https://reddit.com/r/x/9
+  assert_success
+  run "$MKT" metrics "$id" '{"metrics": {"wishlist_adds_7d": "3"}, "window": {"from": "2026-11-01", "to": "2026-11-03", "final": false}}'
+  assert_failure
+  run "$MKT" metrics "$id" '{"metrics": {"wishlist_adds_7d": 3}, "window": {"from": "2026-11-04", "to": "2026-11-03", "final": false}}'
+  assert_failure
+  run "$MKT" metrics "$id" "$doc"
+  assert_output recorded
+  run "$MKT" metrics "$id" "$doc"
+  assert_output unchanged
+  run "$MKT" show "$id"
+  assert_equal "$(jq -c '[.metrics, .window.final]' <<<"$output")" '[{"wishlist_adds_7d":3},false]'
+  [ "$(ledger | grep -c '"event":"metrics"')" -eq 1 ]
+}

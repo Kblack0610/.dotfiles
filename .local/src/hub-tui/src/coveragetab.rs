@@ -249,15 +249,18 @@ fn outbound(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
                     i.title.clone().into(),
                     dash(&review).into(),
                     cell(i.state, style),
+                    dash(&i.results).into(),
                     dash(&i.url).into(),
                 ]
             })
             .collect();
         out.extend(
             Table {
-                header: vec!["WHEN", "CHANNEL", "ITEM", "REVIEW", "STATE", "URL"],
+                header: vec![
+                    "WHEN", "CHANNEL", "ITEM", "REVIEW", "STATE", "RESULT", "URL",
+                ],
                 rows,
-                keep: vec![2, 4, 1, 0, 3, 5],
+                keep: vec![2, 4, 5, 1, 0, 3, 6],
                 flex: Some(2),
                 cap: vec![(2, 32)],
                 ..Default::default()
@@ -491,6 +494,7 @@ pub(crate) mod tests {
                 verdict: "hand".into(),
                 reviewed_by: "human".into(),
                 url: "https://bsky.app/x".into(),
+                results: "9 wishlist adds".into(),
                 state: "sent",
                 sent: Some(1_794_650_000),
                 ..Default::default()
@@ -694,7 +698,9 @@ pub(crate) mod tests {
         let row = |want: &str| t.iter().find(|s| s.contains(want)).cloned().unwrap();
         assert!(row("devlog").contains("review"), "{t:#?}");
         assert!(
-            row("clip").contains("hand by human") && row("clip").contains("sent"),
+            row("clip").contains("hand by human")
+                && row("clip").contains("sent")
+                && row("clip").contains("9 wishlist adds"),
             "{t:#?}"
         );
         let review = t.iter().position(|s| s.contains("devlog")).unwrap();
