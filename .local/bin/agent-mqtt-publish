@@ -64,6 +64,20 @@ for a in "$@"; do
     esac
 done
 
+# Tilecast push: a poke to agent-web, which pushes "fetch now" to the phone widget when what it
+# draws changed, at most once every 30s (agent-web src/push.rs). It goes before the broker check,
+# since it needs no broker, and in the background with a short timeout, so a stopped agent-web
+# never slows a hook. No widget key, no poke. The key goes on stdin, out of argv.
+poke_widget_push() {
+    local key
+    key="$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/agent-web/widget.token" 2>/dev/null)" || return 0
+    [ -n "$key" ] && command -v curl >/dev/null 2>&1 || return 0
+    printf 'header = "Authorization: Bearer %s"\n' "$key" |
+        curl -sS -o /dev/null -m 2 -X POST -K - "${AGENT_WEB_URL:-http://127.0.0.1:8790}/widget/push-send" \
+            >/dev/null 2>&1 &
+}
+[ "$mode" = dry ] || poke_widget_push
+
 [ "$mode" = dry ] || [ -n "$MQTT_HOST" ] || exit 0
 
 say() { [ "$quiet" = 1 ] || printf 'agent-mqtt-publish: %s\n' "$*" >&2; }

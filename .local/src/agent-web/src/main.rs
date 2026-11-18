@@ -35,6 +35,7 @@ mod outcomes;
 mod pipelines;
 mod projects;
 mod proposals;
+mod push;
 mod queue;
 mod releases;
 mod remote;
@@ -114,6 +115,8 @@ struct AppState {
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
+    /// Wakes the Tilecast push sender (`push::run`).
+    push: push::Pusher,
 }
 
 type Shared = Arc<AppState>;
@@ -165,8 +168,10 @@ async fn main() -> Result<()> {
         schedules: schedules::Cache::default(),
         session_table: sessions::Cache::default(),
         briefing: briefing::Cache::default(),
+        push: push::Pusher::default(),
     });
     tokio::spawn(warm(state.clone()));
+    tokio::spawn(push::run(state.clone()));
 
     let api = Router::new()
         .route("/api/agents", get(agents))
@@ -258,6 +263,12 @@ async fn main() -> Result<()> {
         .route("/static/{name}", get(static_file))
         .route("/widget", get(widget::page))
         .route("/widget.json", get(widget::doc))
+        // A literal, not push::REGISTER, so audit's route test reads it.
+        .route(
+            "/widget/push-register",
+            post(push::register).delete(push::register),
+        )
+        .route("/widget/push-send", post(push::send))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))

@@ -462,3 +462,28 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   "$PUB" --quiet
   assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 2
 }
+
+# Tilecast push: each run pokes agent-web, broker or not, with the widget key on stdin. The stub
+# signals a FIFO when it has run, since the poke is in the background.
+@test "push: a run pokes agent-web's push-send with the widget key, even with no broker" {
+  unset AGENT_MQTT_HOST
+  mkdir -p "$XDG_CONFIG_HOME/agent-web"
+  printf 'k3y\n' > "$XDG_CONFIG_HOME/agent-web/widget.token"
+  mkfifo "$NOTES_FIXTURE/curl.done"
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+cat > "$NOTES_FIXTURE/curl.stdin"
+printf '%s\n' "$@" > "$NOTES_FIXTURE/curl.args"
+echo ran > "$NOTES_FIXTURE/curl.done"
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+  export AGENT_WEB_URL=http://127.0.0.1:1
+  run "$PUB" --quiet
+  assert_success
+  run timeout 10 cat "$NOTES_FIXTURE/curl.done"
+  assert_output ran
+  grep -qx 'http://127.0.0.1:1/widget/push-send' "$NOTES_FIXTURE/curl.args"
+  assert_equal "$(cat "$NOTES_FIXTURE/curl.stdin")" 'header = "Authorization: Bearer k3y"'
+  # Negative control: the key is never in argv.
+  ! grep -q k3y "$NOTES_FIXTURE/curl.args"
+}

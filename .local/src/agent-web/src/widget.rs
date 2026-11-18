@@ -8,7 +8,8 @@
 //!
 //! `/widget.json` serves the same cards as a Tilecast widget document (`hub_core::widget_doc`)
 //! for the native widget app, opened the same way, and its key hits go to the same file with
-//! `client: tilecast`.
+//! `client: tilecast`. With an https `AGENT_WEB_BASE_URL` the document names `push::REGISTER`,
+//! where the app registers for pushes (`push`), the one write the key opens.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,7 @@ use crate::{auth, Shared};
 #[derive(Deserialize)]
 pub struct WidgetQuery {
     /// The widget key.
-    t: Option<String>,
+    pub(crate) t: Option<String>,
     /// The cards to show, by card id, comma separated; `cards::WIDGET` when absent.
     cards: Option<String>,
 }
@@ -96,7 +97,7 @@ fn given_key<'a>(t: Option<&'a str>, headers: &'a HeaderMap) -> Option<&'a str> 
 
 /// Whether the request opens the widget: Some(true) by the current widget key, Some(false) for a
 /// signed-in browser, None when refused, its reason logged.
-fn opens(s: &Shared, headers: &HeaderMap, t: Option<&str>) -> Option<bool> {
+pub(crate) fn opens(s: &Shared, headers: &HeaderMap, t: Option<&str>) -> Option<bool> {
     let key = auth::widget_token();
     let given = given_key(t, headers);
     if key_opens(given, key.as_deref()) {
@@ -115,15 +116,21 @@ fn opens(s: &Shared, headers: &HeaderMap, t: Option<&str>) -> Option<bool> {
     None
 }
 
-fn refused() -> Response {
+pub(crate) fn refused() -> Response {
     (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+}
+
+/// Every card a widget can name: the grid plus Needs you and Main red.
+pub(crate) async fn all_cards(s: &Shared) -> Vec<Card> {
+    let (mut all, home) = tokio::join!(crate::cards::read(s), crate::home_read(s));
+    all.extend(home_cards(home, hub_core::jobs::now()));
+    all
 }
 
 /// The cards `names` lists, in its order, the names no card has, and when they were read.
 async fn read<'a>(s: &Shared, names: &[&'a str]) -> (Vec<Card>, Vec<&'a str>, i64) {
-    let (mut all, home) = tokio::join!(crate::cards::read(s), crate::home_read(s));
+    let all = all_cards(s).await;
     let now = hub_core::jobs::now();
-    all.extend(home_cards(home, now));
     // A name no card has (a typo in the URL) is said on the widget, never silently one card fewer.
     let missing = names
         .iter()
@@ -186,7 +193,8 @@ pub async fn doc(
     let names = names(q.cards.as_deref());
     let (shown, missing, now) = read(&s, &names).await;
     let base = std::env::var("AGENT_WEB_BASE_URL").ok();
-    let d = widget_doc::document(&shown, &missing, now, base.as_deref());
+    let mut d = widget_doc::document(&shown, &missing, now, base.as_deref());
+    d.push = base.as_deref().and_then(push_register);
     if by_key {
         let ua = user_agent(&headers);
         let hit = serde_json::json!({
@@ -199,6 +207,14 @@ pub async fn doc(
         keep_hit(&headers, "/widget.json", hit);
     }
     ([NO_STORE], Json(d)).into_response()
+}
+
+/// The register URL under `base`, which the format allows only as https; the app sends its auth
+/// there only when it has the document's origin, so `base` must be the address the app fetches.
+fn push_register(base: &str) -> Option<widget_doc::Push> {
+    base.starts_with("https://").then(|| widget_doc::Push {
+        register: format!("{}{}", base.trim_end_matches('/'), crate::push::REGISTER),
+    })
 }
 
 /// The version in a `Tilecast/<version>` user agent (the format's Fetching section), or None.
@@ -241,7 +257,7 @@ fn append(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
 
 /// Writes the hit whole, through a temp file of its own, so two widgets that refresh at once
 /// never leave a torn file.
-fn record(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
+pub(crate) fn record(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = f.parent() {
         std::fs::create_dir_all(dir)?;
@@ -392,6 +408,18 @@ mod tests {
         let ua = header::HeaderValue::from_bytes(b"Bot\xc3\xa9/1").unwrap();
         h.insert(header::USER_AGENT, ua);
         assert_eq!(user_agent(&h), "Bot\u{e9}/1");
+    }
+
+    #[test]
+    fn the_document_names_the_register_route_under_an_https_base_only() {
+        assert_eq!(
+            push_register("https://agents.example.com/")
+                .unwrap()
+                .register,
+            "https://agents.example.com/widget/push-register"
+        );
+        // Negative control: the format allows push.register only as https.
+        assert_eq!(push_register("http://10.0.0.5:8790"), None);
     }
 
     #[test]
