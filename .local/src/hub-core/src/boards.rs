@@ -185,7 +185,7 @@ fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
             s["session_id"].as_str().unwrap_or(""),
             s["cwd"].as_str().unwrap_or(""),
         );
-        if let Ok(Some(q)) = crate::transcript::pending_question(&at) {
+        if let Some(q) = agent_core::transcript::open_question_at(&at) {
             if q.kind == "plan" {
                 s["reason"] = PLAN_WAITING.into();
             }

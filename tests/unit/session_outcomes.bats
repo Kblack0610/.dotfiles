@@ -1952,3 +1952,17 @@ link_fixture() {
   assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"   # the due session's own links still join
   assert_output --partial "no transcript root, cloud sessions unread"
 }
+
+@test "forgejo auth: a fleet worker's token file answers when rbw has no entry; with neither, rc 1 names the sources" {
+  unset FORGEJO_TOKEN
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/rbw-none"; chmod +x "$SANDBOX/bin/rbw-none"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r && printf "%s\n" "$SO_FORGEJO_TOKEN"' _ "$SANDBOX/bin/rbw-none"
+  assert_success; assert_output worker-tok
+  rm "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r; echo "rc=$? $SO_FORGEJO_ERR"' _ "$SANDBOX/bin/rbw-none"
+  assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
+  assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
+}

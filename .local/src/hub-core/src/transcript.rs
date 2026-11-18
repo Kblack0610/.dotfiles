@@ -3,15 +3,14 @@
 //! Transcripts grow to tens of MB, so a page is read from the end backwards in
 //! chunks and never loads the whole file. Offsets always sit on a line start, so a
 //! client can ask for the page `before` the oldest line it holds, or for everything
-//! `after` the newest one when the file grows.
+//! `after` the newest one when the file grows. Every rule over a transcript (its open
+//! question, what it used) is `agent_core::transcript`'s; this is only the pager.
 
-use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::SystemTime;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::Path;
 
+use agent_core::transcript::{clip, str_of, tool_input};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -19,7 +18,6 @@ const CHUNK: u64 = 256 * 1024;
 /// A forward read larger than this means the client fell far behind; it gets the
 /// newest page instead and starts over.
 const MAX_FORWARD: u64 = 4 * 1024 * 1024;
-const MAX_TEXT: usize = 4000;
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Event {
@@ -129,180 +127,6 @@ pub fn page_after(path: &Path, after: u64, limit: usize) -> std::io::Result<Page
     })
 }
 
-/// What a waiting session is asking the human, read from the end of its transcript.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct Question {
-    /// `choice` (an AskUserQuestion dialog, answered with its number key), `tool` (a
-    /// permission prompt for that call) or `text` (the session's last message).
-    pub kind: &'static str,
-    pub text: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<String>,
-}
-
-/// The session's open question: its last assistant block after the human's last
-/// message. Anything the user side wrote since (a reply, a tool result) means it is
-/// answered, so there is none.
-pub fn pending_question(path: &Path) -> std::io::Result<Option<Question>> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    let end = complete_end(&mut f, len)?;
-    let start = end.saturating_sub(CHUNK);
-    let mut buf = vec![0u8; (end - start) as usize];
-    f.seek(SeekFrom::Start(start))?;
-    f.read_exact(&mut buf)?;
-    if start > 0 {
-        // the first line is cut by the window
-        let first = buf
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(buf.len(), |i| i + 1);
-        buf.drain(..first);
-    }
-
-    let mut q = None;
-    for (_, line) in lines_with_offsets(&buf) {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        match v.get("type").and_then(Value::as_str) {
-            Some("user") => q = None,
-            Some("assistant") => {
-                let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
-                    continue;
-                };
-                for b in blocks {
-                    match b.get("type").and_then(Value::as_str) {
-                        Some("text") => {
-                            let text = str_of(b.get("text"));
-                            if !text.trim().is_empty() {
-                                q = Some(question("text", &text, Vec::new()));
-                            }
-                        }
-                        Some("tool_use") => q = Some(tool_question(b)),
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(q)
-}
-
-fn question(kind: &'static str, text: &str, options: Vec<String>) -> Question {
-    Question {
-        kind,
-        text: clip(text),
-        options,
-    }
-}
-
-fn tool_question(b: &Value) -> Question {
-    let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
-    let input = b.get("input");
-    if name == "AskUserQuestion" {
-        if let Some(first) = input.and_then(|i| i.pointer("/questions/0")) {
-            let options = first
-                .get("options")
-                .and_then(Value::as_array)
-                .map(|o| o.iter().map(|o| str_of(o.get("label"))).collect())
-                .unwrap_or_default();
-            return question("choice", &str_of(first.get("question")), options);
-        }
-    }
-    if name == "ExitPlanMode" {
-        let plan = str_of(input.and_then(|i| i.get("plan")));
-        if !plan.trim().is_empty() {
-            return question("plan", &plan, Vec::new());
-        }
-    }
-    question(
-        "tool",
-        &format!("{name}: {}", tool_input(input)),
-        Vec::new(),
-    )
-}
-
-/// What a session used, counted from its transcript: each skill it called and each model that
-/// answered, by name. A live session has no outcome row yet, so this is its only source.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Uses {
-    pub skills: BTreeMap<String, u64>,
-    pub models: BTreeMap<String, u64>,
-}
-
-/// Stream the whole file once, parsing only assistant lines. A streamed reply is written as one
-/// line per content block, so a message id and a tool call id each count once. A line that is not
-/// JSON is skipped.
-pub fn uses(path: &Path) -> std::io::Result<Uses> {
-    let meta = std::fs::metadata(path)?;
-    let stamp = (meta.len(), meta.modified().ok());
-    let mut kept = SCANNED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((was, u)) = kept.get(path) {
-        if *was == stamp {
-            return Ok(u.clone());
-        }
-    }
-    let u = scan(path)?;
-    if kept.len() >= SCANNED_MAX {
-        kept.clear();
-    }
-    kept.insert(path.to_path_buf(), (stamp, u.clone()));
-    Ok(u)
-}
-
-/// The counts of the transcripts scanned, kept while a file's length and mtime hold: a page that
-/// re-reads every few seconds does not stream an unchanged file again.
-static SCANNED: Mutex<BTreeMap<PathBuf, (Stamp, Uses)>> = Mutex::new(BTreeMap::new());
-
-/// A file as it was scanned: its length and mtime.
-type Stamp = (u64, Option<SystemTime>);
-const SCANNED_MAX: usize = 32;
-
-fn scan(path: &Path) -> std::io::Result<Uses> {
-    const ASSISTANT: &[u8] = br#""type":"assistant""#;
-    let mut out = Uses::default();
-    let (mut messages, mut calls) = (HashSet::new(), HashSet::new());
-    for line in BufReader::new(File::open(path)?).split(b'\n') {
-        let line = line?;
-        if !line.windows(ASSISTANT.len()).any(|w| w == ASSISTANT) {
-            continue;
-        }
-        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
-            continue;
-        };
-        if v["type"] != "assistant" {
-            continue;
-        }
-        let m = &v["message"];
-        if let Some(model) = m["model"].as_str().filter(|m| !m.starts_with('<')) {
-            if fresh(&mut messages, &m["id"]) {
-                *out.models.entry(model.to_string()).or_default() += 1;
-            }
-        }
-        for b in m["content"].as_array().into_iter().flatten() {
-            if b["type"] != "tool_use" || b["name"] != "Skill" {
-                continue;
-            }
-            if let Some(skill) = b["input"]["skill"].as_str().filter(|s| !s.is_empty()) {
-                if fresh(&mut calls, &b["id"]) {
-                    *out.skills.entry(skill.to_string()).or_default() += 1;
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// True the first time `id` is seen; a block with no id always counts.
-fn fresh(seen: &mut HashSet<String>, id: &Value) -> bool {
-    id.as_str().is_none_or(|id| seen.insert(id.to_string()))
-}
-
 /// Pull `end` back to just after the last newline, so a line Claude is still
 /// writing is never parsed half-done.
 fn complete_end(f: &mut File, end: u64) -> std::io::Result<u64> {
@@ -388,28 +212,6 @@ pub fn parse_line(line: &[u8]) -> Vec<Event> {
     }
 }
 
-fn str_of(v: Option<&Value>) -> String {
-    v.and_then(Value::as_str).unwrap_or("").to_string()
-}
-
-/// A tool call's input: the command or path when there is an obvious one, else the JSON.
-fn tool_input(v: Option<&Value>) -> String {
-    let Some(v) = v else { return String::new() };
-    for key in [
-        "command",
-        "file_path",
-        "pattern",
-        "url",
-        "prompt",
-        "description",
-    ] {
-        if let Some(s) = v.get(key).and_then(Value::as_str) {
-            return s.to_string();
-        }
-    }
-    v.to_string()
-}
-
 /// Tool result content is a string or an array of `{type:text,text}` blocks.
 fn result_text(v: Option<&Value>) -> String {
     match v {
@@ -422,15 +224,6 @@ fn result_text(v: Option<&Value>) -> String {
         Some(other) => other.to_string(),
         None => String::new(),
     }
-}
-
-fn clip(s: &str) -> String {
-    if s.chars().count() <= MAX_TEXT {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(MAX_TEXT).collect();
-    out.push_str("\n[...]");
-    out
 }
 
 #[cfg(test)]
@@ -472,42 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn uses_counts_skill_calls_and_models_once_per_message() {
-        let body = concat!(
-            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"x"}]}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"shepherd"}}]}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m2","model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"shepherd"}},{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"debug"}},{"type":"tool_use","id":"t4","name":"Bash","input":{"skill":"no"}},{"type":"tool_use","id":"t5","name":"Skill","input":{}}]}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"id":"m3","model":"<synthetic>","content":[]}}"#,
-            "\n",
-            "not json with \"type\":\"assistant\"\n",
-            r#"{"type":"user","message":{"model":"claude-haiku-5-5","content":"Skill"}}"#,
-            "\n",
-        );
-        let u = uses(&write("uses", body)).unwrap();
-        assert_eq!(
-            u.skills.into_iter().collect::<Vec<_>>(),
-            [("debug".into(), 1), ("shepherd".into(), 2)]
-        );
-        assert_eq!(
-            u.models.into_iter().collect::<Vec<_>>(),
-            [
-                ("claude-opus-5-5".into(), 1),
-                ("claude-sonnet-5-5".into(), 1)
-            ],
-            "a streamed message counts once, a synthetic one and a user line not at all"
-        );
-        assert!(uses(Path::new("/no/such/transcript.jsonl")).is_err());
-
-        // An unchanged file is not scanned again; a longer one is.
-        let p = write("uses-kept", &user(1));
-        assert!(uses(&p).unwrap().models.is_empty());
-        std::fs::write(&p, body).unwrap();
-        assert_eq!(uses(&p).unwrap().skills["shepherd"], 2);
-    }
-    #[test]
     fn a_tool_result_names_the_call_it_answers() {
         let call = br#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/a"}}]}}"#;
         let ok = br#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fine"}]}}"#;
@@ -521,63 +278,6 @@ mod tests {
             !json.contains("error"),
             "a result that did not fail sends no error key: {json}"
         );
-    }
-
-    const ASK: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which key?","options":[{"label":"mint-key"},{"label":"stay-off"}]}]}}]}}"#;
-    const SAID: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Should I land it?"}]}}"#;
-
-    #[test]
-    fn pending_question_reads_the_open_dialog() {
-        let p = write("ask", &format!("{}\n{SAID}\n{ASK}\n", user(1).trim_end()));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!(q.kind, "choice");
-        assert_eq!(q.text, "Which key?");
-        assert_eq!(q.options, ["mint-key", "stay-off"]);
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn pending_question_drops_an_answered_dialog_and_reads_what_follows() {
-        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"mint-key"}]}}"#;
-        let p = write("answered", &format!("{ASK}\n{answered}\n"));
-        assert_eq!(pending_question(&p).unwrap(), None);
-        let p2 = write("after", &format!("{ASK}\n{answered}\n{SAID}\n"));
-        let q = pending_question(&p2).unwrap().unwrap();
-        assert_eq!((q.kind, q.text.as_str()), ("text", "Should I land it?"));
-        assert!(q.options.is_empty());
-        std::fs::remove_file(&p).ok();
-        std::fs::remove_file(&p2).ok();
-    }
-
-    #[test]
-    fn pending_question_is_none_after_the_human_replies_or_with_no_assistant() {
-        let p = write("replied", &format!("{SAID}\n{}", user(2)));
-        assert_eq!(pending_question(&p).unwrap(), None);
-        let p2 = write("empty", &user(3));
-        assert_eq!(pending_question(&p2).unwrap(), None);
-        std::fs::remove_file(&p).ok();
-        std::fs::remove_file(&p2).ok();
-    }
-
-    #[test]
-    fn pending_question_names_a_tool_waiting_on_permission() {
-        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git push"}}]}}"#;
-        let p = write("tool", &format!("{SAID}\n{tool}\n"));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!((q.kind, q.text.as_str()), ("tool", "Bash: git push"));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn pending_question_reads_an_open_plan_dialog_as_its_plan() {
-        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"Hello\n1. write hello.txt"}}]}}"#;
-        let p = write("plan", &format!("{SAID}\n{tool}\n"));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!(
-            (q.kind, q.text.as_str()),
-            ("plan", "Hello\n1. write hello.txt")
-        );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]
