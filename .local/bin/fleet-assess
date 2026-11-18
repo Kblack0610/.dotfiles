@@ -448,9 +448,9 @@ CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --pl
 # cap_units <cap host line> -> that host's CAP_PROBE lines; rc non-zero when it cannot be read.
 # This machine is the host named FLEET_HOST, or one the inventory reaches with ansible_connection local.
 cap_units() {
-  local name dest port local
-  IFS=$'\t' read -r name dest port local < <(jq -r '[.name, .dest, .port, (.local // false)] | @tsv' <<<"$1")
-  if [ "$name" = "$FLEET_HOST" ] || [ "$local" = true ]; then
+  local name dest port is_local
+  IFS=$'\t' read -r name dest port is_local < <(jq -r '[.name, .dest, .port, (.local // false)] | @tsv' <<<"$1")
+  if [ "$name" = "$FLEET_HOST" ] || [ "$is_local" = true ]; then
     bash -c "$CAP_PROBE"
   else
     _fh_ssh "$dest" -p "$port" -- bash -c "$CAP_PROBE"
