@@ -24,6 +24,7 @@
         "custom/machine-mode",
         "clock#date",
         "clock#time",
+        "custom/notify",
         "tray"
     ],
     // The input is custom/audio-input beside this, so the volume chip shows the output only.
