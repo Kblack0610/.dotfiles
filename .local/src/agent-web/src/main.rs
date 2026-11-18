@@ -56,6 +56,7 @@ use std::time::Duration;
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use assets::LOGIN;
+use axum::body::Bytes;
 use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -107,11 +108,24 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
+    /// `/api/agents` as served, the sidebar every page draws first.
+    agents: cache::EventCache<Bytes, AGENTS_SECS>,
+    /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
+    home: cache::EventCache<HomeParts, HOME_SECS>,
 }
 
 type Shared = Arc<AppState>;
 /// The events a slow subscriber may fall behind by before it lags (see `main`).
 const EVENT_BACKLOG: usize = 4096;
+/// The sidebar's sources: the session registry and park ledgers, the fleet state's phases, asks.
+const AGENTS_KINDS: [&str; 3] = ["sessions", "watch", "asks"];
+/// A session's status moves without a file event (tmux, a transcript's last line), so the
+/// sidebar is not kept past this.
+const AGENTS_SECS: u64 = 15;
+/// Home's own sources (`HomeParts`); the queue and infra parts are their own caches.
+const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
+/// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
+const HOME_SECS: u64 = 30;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -125,6 +139,7 @@ async fn main() -> Result<()> {
     // Transcripts alone write about four events a second; a cache read less often than the
     // channel holds takes a lag as a change and reads again, so it holds about a quarter hour.
     let (events, _) = broadcast::channel(EVENT_BACKLOG);
+    cache::announce_to(events.clone());
     let watch_off = WatchOff::default();
     watch(events.clone(), watch_off.clone())?;
     let (stop, stopping) = watch::channel(false);
@@ -136,6 +151,8 @@ async fn main() -> Result<()> {
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
+        agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
+        home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -147,6 +164,7 @@ async fn main() -> Result<()> {
         session_table: sessions::Cache::default(),
         briefing: briefing::Cache::default(),
     });
+    tokio::spawn(warm(state.clone()));
 
     let api = Router::new()
         .route("/api/agents", get(agents))
@@ -223,6 +241,7 @@ async fn main() -> Result<()> {
         .route("/api/actions", get(feed::get))
         .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
+        .layer(middleware::from_fn_with_state(state.clone(), wrote))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -504,13 +523,13 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 }
                 Some(msg) = cached_rx.recv() => {
                     if msg == BUILDS_EVENT {
-                        builds::forget().await;
+                        builds::outdate();
                     } else if msg == PIPELINES_EVENT {
-                        pipelines::forget().await;
+                        pipelines::outdate();
                     } else if msg == STAGES_EVENT {
-                        stages::forget().await;
+                        stages::outdate();
                     } else {
-                        costs::forget().await;
+                        costs::outdate();
                     }
                     let _ = tx.send(msg);
                 }
@@ -653,6 +672,21 @@ async fn require_auth(
         Some(_) => next.run(req).await,
         None => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
+}
+
+/// After a write through this server (an answer, a park, a board or session action), the first
+/// paint's own caches are dropped, so the page's next read waits for the fresh answer and shows
+/// the write before its file event lands. A module with its own cache clears it in its handler
+/// (`queue`, `epics`). Typing into a pane (`/api/send`) writes no ledger they read.
+async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
+    let write = req.method() == axum::http::Method::POST && req.uri().path() != "/api/send";
+    let res = next.run(req).await;
+    if write && res.status().is_success() {
+        s.agents.clear();
+        s.home.clear();
+        projects::GATHERED.clear();
+    }
+    res
 }
 
 /// The app for a signed-in browser, the sign-in page otherwise.
@@ -921,9 +955,21 @@ async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no session at {target}")))
 }
 
-async fn agents() -> Json<Vec<AgentOut>> {
-    // Blocking: the dialog is a transcript read, done only for agents that have one open.
-    let out = tokio::task::spawn_blocking(|| {
+/// The sidebar every page draws first, from memory: a session event outdates it, and it is
+/// refreshed behind the answer.
+async fn agents(State(s): State<Shared>) -> Response {
+    let body = s
+        .agents
+        .get((), read_agents)
+        .await
+        .map_or_else(|_| Bytes::from_static(b"[]"), |b| (*b).clone());
+    ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+/// `/api/agents`' body. Blocking: the dialog is a transcript read, done only for agents that have
+/// one open.
+fn read_agents() -> Bytes {
+    let out: Vec<AgentOut> = {
         let state = std::fs::read_to_string(boards::fleet_state())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -965,10 +1011,8 @@ async fn agents() -> Json<Vec<AgentOut>> {
                 tags: a.tags,
             })
             .collect()
-    })
-    .await
-    .unwrap_or_default();
-    Json(out)
+    };
+    serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
 }
 
 #[derive(Deserialize)]
@@ -1504,23 +1548,56 @@ async fn home_board(
 
 /// Home as `/api/home` builds it, before a view narrows it; the widget counts its needs too.
 async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
-    let (infra, queue) = tokio::join!(s.infra.infra(), s.queue.queue());
-    tokio::task::spawn_blocking(move || {
-        let state = boards::state(&boards::fleet_state(), &actions::System);
-        let board = hub_core::tasks::feed(&actions::System);
-        let open = hub_core::proposals::read(&actions::System);
+    let (infra, queue, parts) = tokio::join!(
+        s.infra.infra(),
+        s.queue.queue(),
+        s.home.get((), HomeParts::read)
+    );
+    let p = parts?;
+    // The build walks every row of the state, board and queue: off the async workers.
+    cache::off(move || {
         let mut home = hub_core::home::build(
-            Some(&state),
+            Some(&p.state),
             Some(&queue),
-            Some(&board),
+            Some(&p.board),
             Some(&infra),
             hub_core::jobs::now(),
         );
-        home.set_proposals(&open);
+        home.set_proposals(&p.open);
         home
     })
     .await
-    .map_err(|e| e.to_string())
+}
+
+/// Home's reads that no other tab keeps: the fleet state with its live asks, the board and the
+/// open proposals. `home_read` joins them with the queue and infra caches on each request, so
+/// Home is as fresh as the freshest of them and never caches another cache.
+struct HomeParts {
+    state: serde_json::Value,
+    board: Result<hub_core::tasks::Feed, String>,
+    open: Result<Vec<hub_core::proposals::Proposal>, String>,
+}
+
+impl HomeParts {
+    fn read() -> Self {
+        HomeParts {
+            state: boards::state(&boards::fleet_state(), &actions::System),
+            board: hub_core::tasks::feed(&actions::System),
+            open: hub_core::proposals::read(&actions::System),
+        }
+    }
+}
+
+/// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
+/// the first visitor after a restart is answered from memory too.
+async fn warm(s: Shared) {
+    let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let _ = tokio::join!(
+        s.agents.get((), read_agents),
+        home_read(&s),
+        cards::read(&s),
+        briefing,
+    );
 }
 
 /// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
@@ -1551,7 +1628,7 @@ async fn infra_machine(
     State(s): State<Shared>,
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
-    let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    let json = s.machines.machine(s.clone(), q.host).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1573,7 +1650,7 @@ struct PoolQuery {
 
 /// One pool's page, read only when `#infra/pools/<pool>` opens. An unknown name is a 404.
 async fn infra_pool(State(s): State<Shared>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
-    let json = s.pools.pool(&s.infra, q.name).await?;
+    let json = s.pools.pool(s.clone(), q.name).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
