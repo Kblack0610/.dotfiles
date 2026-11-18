@@ -371,6 +371,11 @@ bats_require_minimum_version 1.5.0
   line_state 5 6 app
   DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item a1'
+  # A canary of a full line starts too: it opens no PR, so it never joins the line.
+  agent-queue move a1 queued >/dev/null
+  agent-queue set a1 priority=high tags=canary >/dev/null
+  DISPATCH_LINE_MAX=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item a1'
 }
 
 @test "the pace target is the present one while the human is here and the away one while away" {
@@ -902,6 +907,25 @@ trainee_ready() {
   agent-queue set t-one agent=gotrain >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
+}
+
+@test "trainee: an item's points are its board row's now, which next_items joins; with neither row points nor #pts/N it is still refused" {
+  trainee_ready
+  agent-queue add --project game --slug t-row --priority low --tags tier1 "Fix the save title" >/dev/null
+  agent-queue set t-row row=game:gm-9 >/dev/null
+  # Negative control first: the row has no points, and the task carries no #pts/N.
+  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row")')" gotrain
+  assert_failure; assert_output 'it carries no #pts/N'
+  # The row sized since the item was queued: one point, so a trainee takes it.
+  echo '{"project":"game","id":"gm-9","points":1,"size":"s"}' > "$NOTES_FIXTURE/board.rows"
+  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row")')" gotrain
+  assert_success
+  # The row's points now win over the #pts/N the task was queued with.
+  agent-queue add --project game --slug t-row2 --priority low --tags tier1 "Fix the save footer #pts/1" >/dev/null
+  agent-queue set t-row2 row=game:gm-9 >/dev/null
+  echo '{"project":"game","id":"gm-9","points":3,"size":"m"}' > "$NOTES_FIXTURE/board.rows"
+  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row2")')" gotrain
+  assert_failure; assert_output 'it is 3 points, and a trainee takes 1 at most'
 }
 
 @test "negative control: with no trainee lane a sandboxed harness refuses a one-point row, pinned or routed; with the lane it starts" {

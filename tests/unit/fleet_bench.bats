@@ -5731,6 +5731,50 @@ STUB
   assert_output ''
 }
 
+# 2026-11-17: 22 week-46 codex canaries were still queued beside the week-47 set (ar-2774).
+@test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; retro runs it" {
+  canary_fixture
+  QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
+  printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
+  cat >> "$SANDBOX/bin/aq-stub" <<'STUB'
+case "$1" in
+  list) cat "$L.list" ;;
+  cancel) printf '%s\n' "$*" >> "$L" ;;
+  show) grep -qx "slug $2" "$L.slugs" 2>/dev/null ;;
+  add) while [ $# -gt 0 ]; do [ "$1" = --slug ] && echo "slug $2" >> "$L.slugs"; shift; done ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/aq-stub"
+  week=$(date -d "@$T0" +%Gw%V) old=$(date -d "@$(( T0 - 7 * 86400 ))" +%Gw%V)
+  jq -nc --arg w "$week" --arg o "$old" '
+    {slug: "c-old", from: "canary", title: "check(canary): greet \($o)"},
+    {slug: "c-old-lane", from: "canary", title: "check(canary): greet \($o) codex/sol@high"},
+    {slug: "c-now", from: "canary", title: "check(canary): greet \($w)"},
+    {slug: "h-old", from: "human", title: "check(canary): greet \($o)"},
+    {slug: "c-noweek", from: "canary", title: "check(canary): greet"}' > "$QLOG.list"
+  run "$SUBJECT" canary retire
+  assert_success
+  assert_output "fleet-bench: canary: retired 2 queued item(s) of an earlier week than $week"
+  run cat "$QLOG"
+  assert_output "cancel c-old --why canary: superseded by the $week set
+cancel c-old-lane --why canary: superseded by the $week set"
+  # Negative control: with only this week's set queued, nothing is cancelled and nothing said.
+  rm "$QLOG"
+  jq -nc --arg w "$week" '{slug: "c-now", from: "canary", title: "check(canary): greet \($w)"}' > "$QLOG.list"
+  run "$SUBJECT" canary retire
+  assert_success; assert_output ''
+  [ ! -e "$QLOG" ] || fail "cancelled: $(cat "$QLOG")"
+  # Retro retires ahead of queueing the week's run.
+  jq -nc --arg o "$old" '{slug: "c-old", from: "canary", title: "check(canary): greet \($o)"}' > "$QLOG.list"
+  run "$SUBJECT" retro
+  assert_output --partial "canary: retired 1 queued item(s) of an earlier week than $week"
+  assert_output --partial "canary: 1 queued, 0 already queued for $week"
+  # An unreadable queue is said, never read as nothing to retire.
+  BENCH_CANARY_QUEUE_CMD=false run "$SUBJECT" canary retire
+  assert_failure
+  assert_output --partial 'the queue is unreadable'
+}
+
 @test "canary lanes: queue --harness makes a lane of its own beside the weekly claude one, carrying agent and model" {
   canary_fixture
   week=$(date -d "@$T0" +%Gw%V)

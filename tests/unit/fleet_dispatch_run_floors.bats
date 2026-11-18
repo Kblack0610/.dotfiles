@@ -846,3 +846,51 @@ load 'fleet_dispatch/common'
   assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting) unwritten: no CC_KUBE_CONTEXT in /nonexistent'
   assert_not_called 'kubectl'
 }
+
+# 2026-11-17: the week-47 canary set sat at queue position 222 of 606 while every night pass ran over
+# the pace target, so no canary had started since 11-14 (ar-2774).
+@test "canary floor: a fleet past its pace target keeps DISPATCH_CANARY_FLOOR canaries running, one lane in turn; a plain item waits; 0 is off" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue add --project game --slug ca2 --priority high --tags canary "check(canary): b 2026w47" >/dev/null
+  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
+  agent-queue set cb1 model=sonnet effort=medium >/dev/null
+  # Negative control first: the floor off, the full fleet starts nothing.
+  DISPATCH_CANARY_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  DISPATCH_CANARY_FLOOR=2 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 2 open)'
+  assert_output --partial 'started queue item ca1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
+  # The low sonnet lane takes the second slot ahead of the high lane's second task.
+  assert_output --partial 'started queue item cb1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
+  refute_output --partial 'started queue item ca2'
+  refute_output --partial 'started queue item p'
+  assert_equal "$(outcome)" WORKED
+}
+
+@test "canary floor: its live canaries fill it, and the gate still holds it" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=1
+  fleet_state 8
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a tags: canary" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug c1 --tags canary "check(canary): c 2026w47" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'wt new'
+  # The live canary gone, its slot opens, but a machine over the load pace still holds the start.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  # Negative control: under the load pace, c1 starts on the open slot.
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item c1 on the canary floor (DISPATCH_CANARY_FLOOR=1)'
+}

@@ -92,6 +92,7 @@ setup() {
   export DISPATCH_JUDGE_CMD=judge-stub   # on PATH: the command is a word list, and the sandbox path has a space
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
   export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
+  export DISPATCH_CANARY_FLOOR=0   # off unless a test is about it ("canary floor:"), so a canary starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
   printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
