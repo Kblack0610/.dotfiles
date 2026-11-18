@@ -4967,8 +4967,8 @@ canary_retire() {
     if out=$($BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: superseded by the $week set" 2>&1); then n=$((n + 1))
     else say "canary: could not cancel $slug: ${out##*$'\n'}"; rc=1; fi
   done < <(jq -r --arg w "$week" 'select(.from == "canary")
-    | [(.title // "") | match("^check\\(canary\\): [^ ]+ ([0-9]{4}w[0-9]{2})( |$)").captures[0].string][0] as $iw
-    | select($iw != null and $iw < $w) | .slug' <<<"$items" 2>/dev/null)
+    | ((.title // "") | capture("^check\\(canary\\): [^ ]+ (?<w>[0-9]{4}w[0-9]{2})( |$)").w) as $iw
+    | select($iw < $w) | .slug' <<<"$items" 2>/dev/null)
   [ "$n" = 0 ] || say "canary: retired $n queued item(s) of an earlier week than $week"
   return "$rc"
 }

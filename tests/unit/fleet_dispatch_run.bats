@@ -909,22 +909,22 @@ trainee_ready() {
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
 }
 
-@test "trainee: an item's points are its board row's now, which next_items joins; with neither row points nor #pts/N it is still refused" {
+@test "trainee: an item's points are its board row's now, which next_items --points joins; with neither row points nor #pts/N it is still refused" {
   trainee_ready
   agent-queue add --project game --slug t-row --priority low --tags tier1 "Fix the save title" >/dev/null
   agent-queue set t-row row=game:gm-9 >/dev/null
   # Negative control first: the row has no points, and the task carries no #pts/N.
-  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row")')" gotrain
+  run trainee_why "$(next_items --points | jq -c 'select(.slug == "t-row")')" gotrain
   assert_failure; assert_output 'it carries no #pts/N'
   # The row sized since the item was queued: one point, so a trainee takes it.
   echo '{"project":"game","id":"gm-9","points":1,"size":"s"}' > "$NOTES_FIXTURE/board.rows"
-  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row")')" gotrain
+  run trainee_why "$(next_items --points | jq -c 'select(.slug == "t-row")')" gotrain
   assert_success
   # The row's points now win over the #pts/N the task was queued with.
   agent-queue add --project game --slug t-row2 --priority low --tags tier1 "Fix the save footer #pts/1" >/dev/null
   agent-queue set t-row2 row=game:gm-9 >/dev/null
   echo '{"project":"game","id":"gm-9","points":3,"size":"m"}' > "$NOTES_FIXTURE/board.rows"
-  run trainee_why "$(next_items | jq -c 'select(.slug == "t-row2")')" gotrain
+  run trainee_why "$(next_items --points | jq -c 'select(.slug == "t-row2")')" gotrain
   assert_failure; assert_output 'it is 3 points, and a trainee takes 1 at most'
 }
 
