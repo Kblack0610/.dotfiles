@@ -117,6 +117,18 @@ in_landing() {
   [ -n "$esc" ] && [ -n "$edit" ] && [ "$esc" -lt "$edit" ]
 }
 
+@test "the pane leaves copy or view mode before any key is typed into it" {
+  # A failed run-shell left the hub pane in view mode, where `:` is goto-line: send-keys
+  # opened that prompt and blocked on it, and `tmx root hub` froze.
+  in_landing lab lab
+  STUB_PANE_CMD=nvim run "$TMX" land lab root
+  assert_success
+  run bash -c "grep -nE 'copy-mode|send-keys' '$NOTES_FIXTURE/calls.log'"
+  quit=$(printf '%s\n' "$output" | grep -n 'copy-mode -q' | head -1 | cut -d: -f1)
+  keys=$(printf '%s\n' "$output" | grep -n 'send-keys' | head -1 | cut -d: -f1)
+  [ -n "$quit" ] && [ -n "$keys" ] && [ "$quit" -lt "$keys" ]
+}
+
 # --- the shell case, unchanged ---
 
 @test "a pane back at a shell re-runs the manifest's startup command" {

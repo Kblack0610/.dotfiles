@@ -274,7 +274,7 @@ _refresh_landing() {
     sh|bash|zsh|fish)
       startup="$(_startup_cmd "$srv" "$sess")"
       [ -n "$startup" ] || return 0
-      tmux -L "$srv" send-keys -t "$sess:" "$startup" Enter
+      _type "$srv" "$sess:" "$startup" Enter
       return 0
       ;;
   esac
@@ -293,8 +293,18 @@ _refresh_landing() {
 # quotes. A vault path with a space in it is ordinary.
 _vim_edit() {
   local srv="$1" t="$2" file="$3" line="${4:-}"
-  tmux -L "$srv" send-keys -t "$t" Escape
-  tmux -L "$srv" send-keys -t "$t" ":e ${line:++$line }${file// /\\ }" Enter
+  _type "$srv" "$t" Escape
+  _type "$srv" "$t" ":e ${line:++$line }${file// /\\ }" Enter
+}
+
+# _type <server> <target> <key>... -- send-keys into a pane that already exists, taken out
+# of any tmux mode first. A failed run-shell leaves its error in view mode on the active
+# pane, and a pane in copy or view mode reads keys as mode commands: `:` opens a goto-line
+# prompt and send-keys blocks until someone answers it, which froze `tmx root`.
+_type() {
+  local srv="$1" t="$2"; shift 2
+  tmux -L "$srv" copy-mode -q -t "$t" 2>/dev/null
+  tmux -L "$srv" send-keys -t "$t" "$@"
 }
 
 # open <server> <file> [line] -- show a file in the world's landing editor and go there.
@@ -313,7 +323,7 @@ cmd_open() {
   cmd="$(tmux -L "$srv" display-message -p -t "$t" '#{pane_current_command}' 2>/dev/null)"
   case "$cmd" in
     nvim) _vim_edit "$srv" "$t" "$file" "$line" ;;
-    sh|bash|zsh|fish) tmux -L "$srv" send-keys -t "$t" "nvim +$line $(printf '%q' "$file")" Enter ;;
+    sh|bash|zsh|fish) _type "$srv" "$t" "nvim +$line $(printf '%q' "$file")" Enter ;;
     *) die "$t is running ${cmd:-nothing}, not nvim or a shell" ;;
   esac
   _enter "$srv" "$t"
