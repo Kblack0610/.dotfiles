@@ -225,7 +225,10 @@ mod tests {
         assert_eq!(rows[1]["target"], "hp@lab/s1:2");
         let no_pane = r#"{"at":1000,"ttl":180,"rows":[{"target":"hp@lab/s1:1","host":"hp"},
             {"target":"lab/s1:1","pane":"lab/%3"}]}"#;
-        assert!(rows_in(no_pane, 1100).is_empty(), "no pane, or not a worker's target");
+        assert!(
+            rows_in(no_pane, 1100).is_empty(),
+            "no pane, or not a worker's target"
+        );
     }
 
     #[test]

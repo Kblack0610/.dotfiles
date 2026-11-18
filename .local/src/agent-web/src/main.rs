@@ -954,7 +954,9 @@ fn worker_agent(r: &serde_json::Value) -> AgentOut {
     let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
     let target = s("target");
     AgentOut {
-        short: target.split_once('/').map_or(target.clone(), |(_, t)| t.to_string()),
+        short: target
+            .split_once('/')
+            .map_or(target.clone(), |(_, t)| t.to_string()),
         project: s("project"),
         repo: String::new(),
         status: s("status"),
