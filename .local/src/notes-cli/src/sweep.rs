@@ -225,7 +225,7 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
     for (n, l) in body.iter().enumerate() {
         let t = l.trim();
         // A sheet row's brief can hold a paragraph break: a blank with an indented line after
-        // it stays in the row's block (`md::row_block_end`), where any other blank goes.
+        // it stays in the row's block (`md::brief_end`), where any other blank goes.
         if t.is_empty() && layout == Layout::Tasks {
             let more = body[n + 1..]
                 .iter()

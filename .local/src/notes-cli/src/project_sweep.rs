@@ -146,19 +146,11 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
 
     let mut report: Vec<String> = Vec::new();
     let mut body: Vec<String> = Vec::new();
-    let in_span = &lines[span.clone()];
-    for (k, l) in in_span.iter().enumerate() {
-        // Blank lines and the generated `- [ ] ` placeholder are scaffold, not content: the
-        // rebuild re-emits the placeholder itself. A blank with an indented line after it is
-        // a break inside a row's brief, which `task_body` keeps or drops by the row above.
-        let in_brief = in_span[k + 1..]
-            .iter()
-            .find(|n| !n.trim().is_empty())
-            .is_some_and(|n| n.starts_with(char::is_whitespace));
+    for l in &lines[span.clone()] {
+        // The generated `- [ ] ` placeholder is scaffold, not content: the rebuild re-emits it.
+        // A blank goes to `task_body`, which keeps one inside a row's brief and drops the rest.
         if l.trim().is_empty() {
-            if in_brief {
-                body.push(String::new());
-            }
+            body.push(String::new());
             continue;
         }
         if md::is_empty_unchecked(l) {

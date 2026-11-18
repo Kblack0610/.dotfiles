@@ -154,7 +154,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         .map(|(n, l)| OpenRow {
             line: n,
             text: l.trim_end().to_string(),
-            details: md::row_details(&lines, n - 1),
+            details: md::brief_details(&lines, n - 1),
         })
         .collect();
     Some(OpenRows {
