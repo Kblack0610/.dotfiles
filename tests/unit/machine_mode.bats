@@ -23,7 +23,7 @@ setup() {
   export MACHINE_MODE_RUNNER_UNITS="$FX/actions.runner.*-unity-pool-*.service"
   ln -s "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
   # Never a real waybar: the switch goes through desk, which signals it by process name.
-  ln -s "$REPO_ROOT/.local/bin/desk" "$SANDBOX/bin/desk"
+  mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/pkill.log"\n' > "$SANDBOX/bin/pkill"
   cat > "$SANDBOX/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash

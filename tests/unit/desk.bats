@@ -85,3 +85,27 @@ setup() {
   run "$DESK" notify bogus
   assert_failure 2
 }
+
+@test "a restart that fails puts the old choice back and exits 1" {
+  mkdir -p "$(dirname "$STATE")" && printf 'bar=waybar-classic\nnotify=dunst\n' > "$STATE"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl"
+  run "$DESK" use bar waybar-classic
+  assert_failure 1
+  assert_output --partial "did not start"
+  assert_equal "$(cat "$STATE")" $'bar=waybar-classic\nnotify=dunst'
+}
+
+@test "start exits non-zero when a unit fails, so desk.service shows failed" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl"
+  run "$DESK" start
+  assert_failure
+  assert_output --partial "bar did not start"
+}
+
+@test "signal still signals the known chips when one id has no number" {
+  run "$DESK" signal custom/nonexistent custom/gungan
+  assert_failure 2
+  assert_output --partial "no signal for 'custom/nonexistent'"
+  run cat "$FX/calls.log"
+  assert_output 'pkill -RTMIN+9 -x waybar'
+}

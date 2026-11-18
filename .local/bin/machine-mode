@@ -249,7 +249,7 @@ switch() {
     echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and the level are set to $mode." >&2
   fi
   write_state "$mode" "$slots" "$burst" "$pinned" "$by" "$part" || die "could not write $STATE"
-  desk signal custom/machine-mode 2>/dev/null || true
+  "$HOME/.local/bin/desk" signal custom/machine-mode 2>/dev/null || true
   status
   return "$rc"
 }

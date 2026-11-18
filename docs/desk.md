@@ -19,15 +19,15 @@ The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.servi
 
 Scripts and binds never signal a part directly:
 
-- `desk signal custom/<chip>` re-runs a bar chip now. It reads the chip's `"signal"` from `.config/waybar/config.base` (or `config.pin-full`).
+- `desk signal custom/<chip>` re-runs that chip now, and every chip sharing its signal number. It reads the chip's `"signal"` from `.config/waybar/config.base` (or `config.pin-full`).
 - `desk notify close|close-all|history|dnd` drives the notifier (Super+N, Shift, Ctrl, Alt).
 
-desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, so that would dirty the tree. Parts of one slot carry `Conflicts=` on each other, so starting one stops the other.
+desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, so that would dirty the tree. A slot whose parts run as different units gets `Conflicts=` between them, so starting one stops the other.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No bar after login | `desk.service` failed or the graphical session target was not reached | `systemctl --user status desk.service waybar.service`, then `desk start` |
+| No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service waybar.service`, then `desk start` |
 | `desk use` says a part "needs X, which is not installed" | the part's package is missing | install it (`packages.conf` lists it), then rerun |
 | A chip does not refresh on a keybind | the chip has no `"signal"` key, so `desk signal` exits 2 | add `"signal": N` to the module in `config.base` |
