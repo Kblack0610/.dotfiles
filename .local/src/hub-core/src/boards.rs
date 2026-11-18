@@ -35,6 +35,12 @@ pub fn fleet_state() -> PathBuf {
     agent_panel::vocab::fleet_state_file()
 }
 
+/// Every worker's agent-panel rows, as the minute record publishes them (`fleet-hosts.sh`
+/// `fleet_panel_file`), beside the fleet state.
+pub fn worker_panel() -> PathBuf {
+    fleet_state().with_file_name("worker-panel.json")
+}
+
 /// `agent-usage fleet-cost`'s file, beside the fleet state.
 pub fn fleet_cost() -> PathBuf {
     fleet_state().with_file_name("fleet-cost.json")
