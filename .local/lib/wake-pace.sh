@@ -17,11 +17,13 @@
 : "${WAKE_SETTLE_MIN:=5}"   # minutes a wake counts against the batch: its load is not in the 1-minute average yet (DISPATCH_START_LOAD_MIN, measured 2026-11-07)
 WAKE_LEDGER="${WAKE_PACE_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/wake-pace/wakes}"
 
-# wake_recent -> the wakes in the ledger inside the settle window
-wake_recent() {
-  local since=$(( $(date +%s) - WAKE_SETTLE_MIN * 60 ))
-  awk -F'\t' -v s="$since" '$1 >= s { n++ } END { print n + 0 }' "$WAKE_LEDGER" 2>/dev/null || echo 0
+# wake_window -> the ledger's lines inside the settle window
+wake_window() {
+  awk -F'\t' -v s="$(( EPOCHSECONDS - WAKE_SETTLE_MIN * 60 ))" '$1 >= s' "$WAKE_LEDGER" 2>/dev/null
 }
+
+# wake_recent -> the wakes in the ledger inside the settle window
+wake_recent() { wake_window | wc -l; }
 
 # wake_room -> how many sessions may wake now: none while the machine reads HOLD (over the high mark,
 # or not yet back under the low one while a load hold is set, the CLEAR fleet-pace's go waits for),
@@ -36,17 +38,20 @@ wake_room() {
 }
 
 # wake_take <who> <what> -- take one wake from the budget, rc 1 when it has none. The ledger keeps
-# only the settle window, so it never grows.
+# only the settle window, so it never grows. Once refused, the rest of this process's wakes are
+# refused without asking again: a bulk walk's later items would read the same HOLD or spent batch.
+WAKE_REFUSED=0
 wake_take() {
-  local since rc=1 _wake_fd
+  local rc=1 _wake_fd
+  [ "$WAKE_REFUSED" = 0 ] || return 1
   mkdir -p "${WAKE_LEDGER%/*}" || return 1
   exec {_wake_fd}>"$WAKE_LEDGER.lock"
   flock "$_wake_fd" || { exec {_wake_fd}>&-; return 1; }
   if [ "$(wake_room)" -gt 0 ]; then
-    since=$(( $(date +%s) - WAKE_SETTLE_MIN * 60 ))
-    { awk -F'\t' -v s="$since" '$1 >= s' "$WAKE_LEDGER" 2>/dev/null
-      printf '%s\t%s\t%s\n' "$(date +%s)" "$1" "$2"; } > "$WAKE_LEDGER.tmp" && mv -f "$WAKE_LEDGER.tmp" "$WAKE_LEDGER" && rc=0
+    { wake_window; printf '%s\t%s\t%s\n' "$EPOCHSECONDS" "$1" "$2"; } > "$WAKE_LEDGER.tmp" &&
+      mv -f "$WAKE_LEDGER.tmp" "$WAKE_LEDGER" && rc=0
   fi
   exec {_wake_fd}>&-
+  [ "$rc" = 0 ] || WAKE_REFUSED=1
   return "$rc"
 }
