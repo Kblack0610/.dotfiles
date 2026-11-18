@@ -26,5 +26,5 @@ else
   note "RustDesk: compositor control → your Hyprland keybinds work locally."
 fi
 
-# Re-read waybar's custom/passthrough indicator (waybar/passthrough.sh).
-pkill -RTMIN+11 waybar || true
+# Re-read the bar's custom/passthrough indicator (waybar/passthrough.sh).
+"$HOME/.local/bin/desk" signal custom/passthrough || true

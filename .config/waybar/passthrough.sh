@@ -6,7 +6,7 @@
 #          keyboard-shortcuts-inhibit grab (RustDesk, Moonlight) get every key.
 #
 # No polling: Hyprland emits no event when an option changes, so whatever flips either
-# state fires SIGRTMIN+11 at waybar (the binds in hypr/conf/keybindings.lua, rustdesk-grab-toggle.sh,
+# state runs `desk signal custom/passthrough`, SIGRTMIN+11 under waybar (the binds in hypr/conf/keybindings.lua, rustdesk-grab-toggle.sh,
 # and the config.reloaded hook in hypr/conf/autostart.lua, since a reload resets both).
 
 out=()
