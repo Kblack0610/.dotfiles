@@ -4,17 +4,44 @@
 //! It also shows what the last check handed to a pass (`fleet-shepherd`'s `.due`, read by
 //! `hub_core::boards::due`); what a pass chose to leave is in its log, read by Log's Actions section.
 //! Its numbers and the pass running now are `fleet-shepherd stats`, the object the MQTT feed
-//! publishes, so the page and Home Assistant read one source.
+//! publishes, so the page and Home Assistant read one source. The files and the live session are
+//! read on every request; the stats, the one slow part (most of a second), are kept (`Cache`).
 
 use agent_core::agent;
+use axum::extract::State;
 use axum::Json;
 use hub_core::boards;
 use hub_core::layout::fold_rows;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::broadcast;
+
+use crate::cache::EventCache;
+use crate::Shared;
 
 /// Rundowns sent to the page. About two weeks at a few a day.
 const RUNDOWNS: usize = 60;
+
+/// The shepherd's files that reach the page as a `shepherd` event (main.rs `classify`: `.due`,
+/// `.lease`, `.pass`, `passes.tsv`, `log.md` and the rundowns), which `fleet-shepherd stats` counts.
+const KINDS: [&str; 1] = ["shepherd"];
+/// A change the stats count that pushes no event shows within this.
+const STATS_SECS: u64 = 30;
+
+/// The kept `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read. No stats
+/// (it failed or printed no object) is not kept, so the next request runs it again.
+pub struct Cache(EventCache<Option<Value>, STATS_SECS>);
+
+impl Cache {
+    pub fn new(events: broadcast::Receiver<String>) -> Self {
+        Cache(EventCache::new(events, &KINDS, "shepherd-stats"))
+    }
+
+    pub async fn stats(&self) -> Option<Value> {
+        let kept = self.0.get_if((), stats, Option::is_some).await;
+        kept.ok().and_then(|v| Option::clone(&v))
+    }
+}
 
 #[derive(Serialize)]
 pub struct Shepherd {
@@ -59,9 +86,9 @@ fn armed(agents: Vec<agent::Agent>, pass: Option<&str>) -> Option<agent::Agent> 
         .cloned()
 }
 
-pub async fn get() -> Json<Shepherd> {
-    let out = tokio::task::spawn_blocking(|| {
-        let stats = stats();
+pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
+    let stats = s.shepherd.stats().await;
+    let out = tokio::task::spawn_blocking(move || {
         let pass = stats.as_ref().and_then(|s| s["pass_id"].as_str());
         let a = armed(agent::collect(), pass);
         Shepherd {
