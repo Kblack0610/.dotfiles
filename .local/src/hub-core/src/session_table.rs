@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use agent_panel::chooser::Agent;
+use agent_core::agent::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -562,7 +562,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
 mod tests {
     use super::*;
     use crate::table::View;
-    use agent_panel::account::GATEWAY;
+    use agent_core::account::GATEWAY;
     use serde_json::json;
 
     fn item(line: Value) -> Item {

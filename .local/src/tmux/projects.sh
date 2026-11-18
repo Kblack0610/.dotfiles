@@ -263,8 +263,8 @@ _to_repo() {
     return
   fi
   case "$act" in
-  # The label agent-panel groups a row under (render::project_from_path): the basename,
-  # leading dot stripped. The leading ' makes it an exact match, so it is that group only.
+  # Open the panel searching this directory's basename, leading dot stripped: the panel matches
+  # it against each row's target, project and titles (agent-panel search.rs drops the ').
   agents)
     label="${dir##*/}"
     panel_need agent-panel && agent-panel --query "'${label#.}"

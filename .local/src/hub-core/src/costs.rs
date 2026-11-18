@@ -1624,7 +1624,7 @@ mod tests {
         Arc::make_mut(&mut c.spend_days[1].sessions)[0].harness = None;
         let gw = &mut Arc::make_mut(&mut c.spend_days[0].sessions)[0];
         gw.harness = Some(" ".into());
-        gw.account = Some(agent_panel::account::GATEWAY.into());
+        gw.account = Some(agent_core::account::GATEWAY.into());
         let b = board(
             &c,
             "harness",
