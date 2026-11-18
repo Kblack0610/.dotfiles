@@ -902,14 +902,13 @@ app urgent: fleet, #urgent, alpha"
 }
 
 @test "every brief that starts or resumes a Claude session has a line agent-panel reads as not the human" {
-  # agent-panel's human_at skips a prompt with a line that starts with DISPATCH_BRIEF; a brief
-  # without it reads as the human typing and holds the session open for the human keep.
-  local m b
-  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-core/src/jsonl.rs")
-  [ -n "$m" ]
+  # agent-panel's human_at skips a prompt typed-prefixes.conf calls fleet-typed; a brief without
+  # one reads as the human typing and holds the session open for the human keep.
+  local b
+  . "$REPO_ROOT/.local/lib/typed-prefixes.sh"
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"
-  marked() { [[ $'\n'"$1" == *$'\n'"$m"* ]] || { echo "no line starts with '$m' in: $1"; return 1; }; }
+  marked() { fleet_typed "$1" || { echo "no line of typed-prefixes.conf starts: $1"; return 1; }; }
   for b in \
     '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task"}' \
     '{"slug": "s", "mode": "oneshot", "project": "game", "title": "plain task", "task": "plain task", "tags": "ui"}' \
