@@ -245,7 +245,7 @@ EOF2
   assert_line --regexp '^FAIL +dev +An ignored file$'
 }
 
-@test "systems.md: the docs index passes only when it names each doc in docs/ and each subdirectory" {
+@test "systems.md: the docs index passes only when it names each doc and each subdirectory of the docs tree" {
   write_systems_doc
   { sed -n '1,/^## Criteria/p' "$SYSTEMS_DOC"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
     grep -F '| docs | base | A docs index' "$REPO_ROOT/.local/src/docs/systems.md"; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
