@@ -111,6 +111,8 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
+    /// Runners' and Log Judges' read (`fleet::files`).
+    fleet: fleet::Cache,
     /// `/api/agents` as served, the sidebar every page draws first.
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
@@ -162,6 +164,7 @@ async fn main() -> Result<()> {
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
+        fleet: fleet::Cache::new(events.subscribe()),
         agents: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::new(events.subscribe(), &HOME_KINDS, "home"),
         watch: cache::EventCache::new(events.subscribe(), &WATCH_KINDS, "watch"),
@@ -1569,10 +1572,12 @@ impl HomeParts {
     }
 }
 
-/// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
-/// the first visitor after a restart is answered from memory too.
+/// Read once at start what the first page draws (the sidebar, Home, its cards and briefing) and
+/// every kept read a tab blocks on when cold (Runners and Judges, Log's Work, Actions and Ranked,
+/// Deliverables, Builds and Tests), so the first visitor after a restart is answered from memory.
 async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let built = async { builds::current(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
@@ -1580,6 +1585,12 @@ async fn warm(s: Shared) {
         home_read(&s),
         cards::read(&s),
         briefing,
+        s.fleet.fleet(),
+        s.work.gathered(),
+        feed::kept(&s, None),
+        epics::chains(),
+        outcomes::kept(),
+        built,
     );
 }
 
@@ -1651,10 +1662,10 @@ async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
+async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        fleet::get(q).await,
+        fleet::get(&s.fleet, q).await,
     )
         .into_response()
 }

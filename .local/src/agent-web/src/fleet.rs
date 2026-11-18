@@ -1,5 +1,6 @@
-//! Sessions' Runners inner tab: hub-core's `fleet`, shared with the TUI. It is all files, read on
-//! every request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is
+//! Sessions' Runners inner tab: hub-core's `fleet`, shared with the TUI. The read is kept
+//! (`Cache`): judge-eval alone takes seconds, so a request answers from memory and a `fleet` file
+//! event outdates the read, whose refresh lands as a `ready` the page reads again. A runner's page (`/api/fleet/runner?name=`) is
 //! read only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
 //! The answer judge's verdicts are a table of their own under the `v` key prefix (`vq`, `vs`,
 //! `vsort`, `vdir`), on Log's Judges section and on the ask-judge runner page alike.
@@ -8,7 +9,39 @@ use hub_core::fleet::{self, who::Who, AskVerdict, Fleet, Paths};
 use hub_core::table::View;
 use serde::Deserialize;
 
-use crate::cache::off;
+use std::sync::Arc;
+use tokio::sync::broadcast;
+
+use crate::cache::{off, EventCache};
+
+/// The files that reach the page as a `fleet` event (main.rs `classify`): the run ledger and
+/// dispatch's verdicts and log.
+const KINDS: [&str; 1] = ["fleet"];
+/// The activity logs, holds, timers and judge-eval's ledgers push no event, so a read is not
+/// kept past this.
+const READ_FOR_SECS: u64 = 30;
+
+/// The one kept `fleet::files`, which Runners and Log's Judges both read.
+pub struct Cache(EventCache<Fleet, READ_FOR_SECS>);
+
+impl Cache {
+    pub fn new(events: broadcast::Receiver<String>) -> Self {
+        Cache(EventCache::new(events, &KINDS, "fleet"))
+    }
+
+    /// The kept read; a failure to read at all is the Fleet's one error.
+    pub async fn fleet(&self) -> Arc<Fleet> {
+        self.0
+            .get((), || fleet::files(&Paths::from_env()))
+            .await
+            .unwrap_or_else(|e| {
+                Arc::new(Fleet {
+                    errors: vec![e],
+                    ..Default::default()
+                })
+            })
+    }
+}
 
 /// The table view the page keeps in its URL. Runners shares `#sessions?...` with the Sessions
 /// table, so its keys carry the `r` prefix (`rq`, `rs`, `rsort`, `rdir`; table.js `pre`).
@@ -50,15 +83,9 @@ pub struct RunnerQuery {
     pub verdicts: VerdictQuery,
 }
 
-/// A runners read. The files are read afresh each time, so there is nothing to keep.
-pub async fn get(q: FleetQuery) -> String {
-    let f = off(|| fleet::files(&Paths::from_env()))
-        .await
-        .unwrap_or_else(|e| Fleet {
-            errors: vec![e],
-            ..Default::default()
-        });
-    render(f, &q)
+/// A runners read, from the kept one.
+pub async fn get(c: &Cache, q: FleetQuery) -> String {
+    render((*c.fleet().await).clone(), &q)
 }
 
 /// The Fleet with its `who` rows cut to the view, the controls that drew them (`table`), and the

@@ -15,7 +15,7 @@
 //!
 //! One runner's page (`#sessions/runners/<name>`, read only when opened) is `runner::read`.
 //!
-//! Every part is a file read, fresh each time (judge-eval takes about a second).
+//! Every part is a file read, fresh each time (judge-eval takes seconds, so agent-web keeps the read).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
