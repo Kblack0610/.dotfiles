@@ -357,3 +357,17 @@ sys.exit(1 if bad else 0)
   run "$DESK" notify show
   assert_failure 2
 }
+
+@test "notify show passes on the clicked action of a --wait popup, and a / in a tag stays out of the path" {
+  # notify-send -p --wait: the id, then the action once the popup closes.
+  printf '#!/usr/bin/env bash\necho 88; echo default\n' > "$SANDBOX/bin/notify-send"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { echo "(\x27:1.7\x27,)"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  run "$DESK" notify show "page:ci/main" -A default=Open --wait title body
+  assert_success
+  assert_output default
+  assert_equal "$(cat "$FX/run/desk/notify-page:ci%main.id")" "88 (':1.7',)"
+  run "$DESK" notify drop "page:ci/main"
+  assert_equal "$(cat "$FX/calls.log")" "gdbus 88"
+}
