@@ -282,7 +282,9 @@ file_gaps() {
     if [ $((filed + met)) -gt 0 ] && ! have="$(sheet_rows)"; then
       failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be read again"
     else
-      jq -c --arg have "$have" --arg seen "$seen" '
+      # $have is the whole sheet and can pass the kernel's 128 KB limit on one argument (a board of
+      # 600 KB did): it is read as a file, never put on argv.
+      jq -c --rawfile have <(printf '%s' "$have") --arg seen "$seen" '
         [$seen | split("\n")[] | select(length > 0)] as $t
         | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
         | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
