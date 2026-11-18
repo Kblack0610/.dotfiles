@@ -43,7 +43,7 @@ do not reinvent their logic.
 ├── inbox/            # dated human/agent captures only (`notes inbox`); _archive/ holds drained items
 ├── journal/
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
-│   ├── backlogs/     # standing fun.md + carryover.md (linked from daily footer)
+│   ├── backlog.md    # tasks with no date (footer-linked); 90 days there returns one to Focus at #low
 │   ├── refs/         # per-day reference material, auto-linked into daily ## Refs
 │   ├── permanent/    # zettelkasten atomic notes (`notes zettel new`)
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
@@ -91,8 +91,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes inbox` | Triage view of the dated-capture inbox (`inbox/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
 | `notes inbox add "<text>"` | Quick-capture from the terminal - append a timestamped bullet to today's `inbox/<date>.md` (creates it with a header if new). |
 | `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `inbox/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
-| `notes backlog <fun\|carryover>` | Tidy a backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path. Aliases: `fun`, `co`. |
-| `notes seed-backlogs [--from N] [--force]` | One-time migration of inline `## Fun`/`## Carry Over` sections into the backlog files. |
+| `notes backlog [--add]` | Tidy the backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path; `--add` files stdin task lines there (nvim `<leader>tb`). Shell alias `backlog` opens it in nvim. |
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
@@ -102,8 +101,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes projects ...` / `notes ptask ...` | Projects, versions and tasks. Do not restate them here: the cheatsheet (every verb, the project dir shape, the `<leader>np` keys) is `~/.dotfiles/.local/src/notes-cli/README.md` -> Projects cheatsheet. |
 
 Structured log: `~/.local/state/notes/journal.log`; `--verbose` echoes to stderr.
-Daily-note model: only fresh **Focus** + **Priority** inline; Fun/Carry Over live in
-`journal/backlogs/` (footer-linked); no separate done-log (history = git + `daily_archive/`).
+Daily-note model: one **Focus** list inline; undated tasks live in `journal/backlog.md` and dated ones in `journal/schedule.md` (both footer-linked); no separate done-log (history = git + `daily_archive/`).
 Wikilinks resolve in nvim via a vanilla-`gf` autocmd (path + suffixesadd) - no plugin.
 
 ## Task priority tags
@@ -112,7 +110,7 @@ Ad-hoc task lines (in any markdown: daily notes, plans, backlogs) carry priority
 
 - **Vocabulary (three levels):** `#low`, `#high`, `#urgent`. No `#medium`.
 - **Placement:** end of the task line, one space before the tag, e.g. `- [ ] fix token refresh race #urgent`. End-of-line keeps it clear of markdown `# headings` (which are line-start only) so the CLI never mistakes it for a heading.
-- **nvim keymap:** in a markdown buffer `<leader>tP` raises and `<leader>tp` lowers the current line (or a visual selection, converging to one level) along `#low -> #high -> #urgent`, stopping at either end; a task always has a priority, so there is no untagged step. Siblings: `<leader>ts` cycles the checkbox `[ ] -> [/] -> [x]`, `<leader>tS` resets it to `[ ]`; defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
+- **nvim keymap:** in a markdown buffer `<leader>tP` raises and `<leader>tp` lowers the current line (or a visual selection, converging to one level) along `#low -> #high -> #urgent`, stopping at either end; a task always has a priority, so there is no untagged step. Siblings: `<leader>ts` cycles the checkbox `[ ] -> [/] -> [x]`, `<leader>tS` resets it to `[ ]`, `<leader>tb` moves the task (or the selection) to the backlog; defined in `~/.dotfiles/.config/nvim/lua/kennethblack/plugins/markdown.lua`.
 - **Discovery:** because they are `#tags`, `notes tags` counts them and `<leader>nt` (the tag finder) drills into them, `<leader>nk` (`notes find`, also tmux Prefix+k) ranks notes by any words plus a `#tag`; `notes tags urgent` lists every tagged line. Greppable via `rg '#urgent'`.
 - **Two kinds of tag:** task tags (row state, end of the row) and topic tags (what a note is about, in frontmatter or prose); `notes tags --kind task|topic` splits them and typing `#` in nvim offers them. Rule: `.local/src/notes-cli/README.md`, "The task row".
 

@@ -40,12 +40,12 @@ const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = { q: "", state: "", sort: "", dir: "", total: 3, shown: 2, states: [{ name: "all", n: 2 }, { name: "done", n: 1 }], columns: ["state", "when", "project", "what", "kind", "pr", "cost"].map(col), facets: [] };
 const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60e3).toISOString().slice(0, 10);
 const row = (o = {}) => ({ state: "done", when: `${today}T09:30`, project: "notes", what: "fix <it>", kind: "fix", pr: "notes#7", url: "https://x/7", cost: 1.5, slug: "a", unproven: false, ...o });
-const data = { rows: [row(), row({ state: "failed", when: "2026-01-03T08:05", pr: null, url: null, cost: null })], more: 0, errors: [], today, items_from: "2026-11-04", prs_from: "2026-10-14", table };
+const data = { rows: [row(), row({ state: "failed", when: "2026-01-03T08:05", pr: null, url: null, cost: null })], errors: [], today, items_from: "2026-11-04", prs_from: "2026-10-14", table };
 
 const target = (attrs) => ({ dataset: attrs, closest: (sel) => { const k = /^\[data-(.*)\]$/.exec(sel)?.[1].replace(/-(.)/g, (m, c) => c.toUpperCase()); return k in attrs ? { dataset: attrs } : null; } });
 const click = (attrs, extra = {}) => on.click.forEach((f) => f({ target: Object.assign(target({ tbl: "w", ...attrs }), extra), type: "click" }));
 const settle = () => new Promise((r) => setImmediate(r));
-const fresh = (d = data) => { Object.assign(wrk, { data: d, err: null, all: false }); asked = []; body = d; run("st.tab = 'log'; st.views.log = ''; lst.hist = []"); };
+const fresh = (d = data) => { Object.assign(wrk, { data: d, err: null }); asked = []; body = d; run("st.tab = 'log'; st.views.log = ''; lst.hist = []"); };
 
 test("a row reads state, time, project, the work, its PR and cost, and escapes the text", () => {
   fresh();
@@ -95,11 +95,17 @@ test("a state chip keeps its own prefix beside the day", async () => {
   assert.match(asked.at(-1), /ws=done/);
 });
 
-test("+N more asks the server for every row rather than slicing what it has", async () => {
-  fresh();
-  click({ all: "1" });
+test("the server's page is drawn whole under its pager, and a page pick asks for that page", async () => {
+  const rows = Array.from({ length: 41 }, (_, i) => row({ what: `item-${i}` }));
+  fresh({ ...data, rows, table: { ...table, shown: 90, pager: { page: 1, pages: 3, per: 41 } } });
+  run("wrk.render()");
+  assert.match(box.innerHTML, /item-40</, "every row the server sent");
+  assert.match(box.innerHTML, /class="tpager"/);
+  assert.doesNotMatch(box.innerHTML, /data-all/);
+  click({ tpg: "2" });
   await settle();
-  assert.match(asked.at(-1), /all=1/);
+  assert.equal(run("st.views.log"), "wpg=2");
+  assert.match(asked.at(-1), /wpg=2/);
 });
 
 test("today is the server's, so a phone in another timezone reads the same clock", () => {
@@ -108,14 +114,13 @@ test("today is the server's, so a phone in another timezone reads the same clock
   assert.match(box.innerHTML, />08:05<\/td>/);
 });
 
-test("a view changed by a link or Back drops the +N more of the last one", async () => {
+test("a view changed by a link or Back reads its own page again", async () => {
   fresh();
-  wrk.all = true;
   wrk.read = "";
-  run("st.views.log = 'ws=done'; LOG_PARTS[LOG_PARTS.length - 1].show()");
+  run("st.views.log = 'ws=done&wpg=2'; LOG_PARTS[LOG_PARTS.length - 1].show()");
   await settle();
-  assert.equal(wrk.all, false);
-  assert.ok(asked.length && asked.every((u) => !u.includes("all=1")), asked.join(" "));
+  assert.match(asked.at(-1), /ws=done/);
+  assert.match(asked.at(-1), /wpg=2/);
 });
 
 test("stepping to a day writes wday, and stepping back to today writes the today window", async () => {
