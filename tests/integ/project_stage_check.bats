@@ -689,6 +689,16 @@ $LI"
   assert_success
   assert_line --regexp '^closed +beta +A changelog$'
   assert_not_called 'ptask'
+  # A dup cycle, and a row that is its own dup, hold nothing: the gap stays closed.
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->\n%s\n' \
+    "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->' 'add a CHANGELOG' docs
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->'
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_not_called 'ptask'
 }
 
 @test "file: a gap held by a row in progress, a parent, a human row or a row with no from line stays off the list, untouched" {
