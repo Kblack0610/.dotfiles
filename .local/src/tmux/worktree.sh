@@ -267,13 +267,42 @@ wt_submodule_pushed() {
 # commit on the trunk, so HEAD is never its ancestor, and the forge deletes the branch, so
 # there is no upstream left either. Without this every squash-merged worktree was held as
 # "not merged" forever (2026-10-23: unity-core-playground had several of those at 15-20 GB each).
+#
+# A fourth: HEAD is on any remote branch, whatever the local branch tracks. A tree cut with
+# `worktree add -b <b> origin/main` tracks origin/main, and a plain `git push origin <b>` never
+# moves that, so its pushed work read as "unpushed" (2026-11-18: 86 of 132 held trees, every
+# ref live on its server). Trusted only for a repo wt_fetch_pruned fetched with --prune in
+# this run, so a branch deleted on the server is never taken for pushed work; the picker
+# fetches nothing and so never applies it.
 wt_landed() {
   git -C "$1" merge-base --is-ancestor HEAD "$2" 2>/dev/null && return 0
   if git -C "$1" rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1 &&
     [ -z "$(git -C "$1" rev-list '@{upstream}..HEAD' 2>/dev/null)" ]; then
     return 0
   fi
+  local main
+  if main=$(wt_main_repo "$1" 2>/dev/null) && printf '%s\n' "${WT_PRUNED_REPOS-}" | grep -qxF "$main" &&
+    wt_submodule_pushed "$1"; then
+    return 0
+  fi
   wt_pr_merged_at_head "$1"
+}
+
+# wt_fetch_pruned <main>... -- fetch every remote of each repo with --prune, once per run, and
+# add each that fetched cleanly to WT_PRUNED_REPOS (exported, so the $(...) subshells the
+# reap policy runs in see it). A repo whose fetch fails stays off the list, so its trees are
+# judged without the remote-branch rule: offline only ever keeps a tree.
+wt_fetch_pruned() {
+  local main
+  for main in "$@"; do
+    printf '%s\n' "${WT_PRUNED_REPOS-}" | grep -qxF "$main" && continue
+    if timeout "${WT_FETCH_TIMEOUT:-120}" git -C "$main" fetch --all --prune --quiet >/dev/null 2>&1; then
+      WT_PRUNED_REPOS="${WT_PRUNED_REPOS:+$WT_PRUNED_REPOS$'\n'}$main"
+    else
+      panel_warn "fetch --prune failed in $main; its pushed-branch trees stay held this run"
+    fi
+  done
+  export WT_PRUNED_REPOS
 }
 
 # wt_pr_merged_at_head <path> -- true when GitHub has a MERGED PR whose head is this HEAD.
@@ -1198,6 +1227,10 @@ cmd_reap() {
   [ "${1:-}" = --after-kill ] && settle=1 && shift
   path="$(realpath "${1:-$PWD}" 2>/dev/null)" || panel_die "no such path: ${1:-$PWD}"
   [ "$settle" -eq 0 ] || wt_settle "$path"
+  # The same pruned fetch gc does, so the remote-branch rule in wt_landed applies here too.
+  if [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null); then
+    wt_fetch_pruned "$main"
+  fi
 
   if reason=$(wt_reap_reason "$path"); then
     :
@@ -1523,6 +1556,16 @@ cmd_gc() {
     fi
     return 0
   fi
+
+  # One pruned fetch per repo before any tree is judged, so wt_landed's remote-branch rule
+  # reads the servers' branches as they are now.
+  local -a fetch_mains=()
+  local main
+  for path in "${candidates[@]}"; do
+    [ -f "$path/.git" ] && main=$(wt_main_repo "$path" 2>/dev/null) || continue
+    [[ " ${fetch_mains[*]-} " == *" $main "* ]] || fetch_mains+=("$main")
+  done
+  [ "${#fetch_mains[@]}" -eq 0 ] || wt_fetch_pruned "${fetch_mains[@]}"
 
   # Each tree gets one state (wt_state) and one action. HELD is the tree nobody will come back
   # for: kept for its work (dirty, unlanded) by an owner that is gone, so gc names it every
