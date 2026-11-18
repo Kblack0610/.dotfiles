@@ -283,3 +283,15 @@ JSON
     assert_success
   done
 }
+
+@test "every Super+A d leaf runs desk use for the part it names, and every part has a leaf" {
+  load '../helpers/hypr'
+  local leaves parts
+  # Each leaf as "<slot> <part>" from the command it runs, kept only when its label says the same.
+  leaves="$(hypr_dump registry | jq -r '.[] | select(.submap == "pinbar-desk" and (.arg | test("desk use")))
+    | (.arg | capture("desk use (?<s>[^ ]+) (?<p>[^ )]+)")) as $c
+    | select(.description == "\($c.s): \($c.p)") | "\($c.s) \($c.p)"' | sort)"
+  parts="$("$DESK" parts | awk '{ print $1, $2 }' | sort)"
+  [ -n "$leaves" ]
+  assert_equal "$leaves" "$parts"
+}
