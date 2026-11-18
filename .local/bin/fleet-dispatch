@@ -117,6 +117,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_SANDBOX_GH_TOKEN_FILE:=}"   # the sandboxed session's own repo-scoped GitHub token file, as GH_TOKEN_FILE is for a runner; empty gives it no token
 : "${DISPATCH_REAP_GRACE:=600}"   # seconds after a start before reap may read a missing Claude as gone: a claude still booting has no registry entry yet
 : "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
+: "${DISPATCH_HOST_DEAD:=1800}"   # seconds a fleet worker with active items goes unanswered, on every reap in between, before reap reads it lost and re-queues its items elsewhere (host_lost). Provisional: two 15-minute passes, three misses in a row, where a reboot or container restart answers within one; low confidence; revisit on the first re-queue of a host that came back with its sessions alive
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped and holds no run unit
 : "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # Night items: the default notes profile's agent lanes of the dotfiles boards.
@@ -577,6 +578,16 @@ account_env() {
   local dir; if [ "$#" -gt 0 ]; then dir=$1; else dir=$(account_dir); fi
   if [ -n "$dir" ]; then printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"; else printf 'env -u CLAUDE_CONFIG_DIR '; fi
 }
+# token_env [dir]: the launch-line prefix handing that account's long-lived token to a claude
+# session (`claude-acct setup-token`), or nothing when it has none. The line carries a command
+# substitution its pane's shell runs at launch, never the token itself. Only the answer that starts
+# with the assignment counts. A claude-cloud-run pane takes none: a cloud session needs the login.
+token_env() {
+  local dir p; if [ "$#" -gt 0 ]; then dir=$1; else dir=$(account_dir); fi
+  p=$(claude-acct token-prefix "$dir" 2>/dev/null) || return 0
+  case "$p" in CLAUDE_CODE_OAUTH_TOKEN=*) printf '%s' "$p" ;; esac
+  return 0
+}
 
 # telemetry_env <cwd> [item]: the launch-line prefix claude-telemetry.sh's claude_launch_env gives:
 # a parent Claude session's identity dropped, the shared launch env and (on the LAN) the OTel export,
@@ -718,6 +729,39 @@ reap_confirm() {
   return 1
 }
 reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
+
+# host_lost <host> -- exit 0 when that fleet worker has gone unanswered (ssh 255) on every reap for
+# DISPATCH_HOST_DEAD seconds: a killed container or a dead box, whose sessions went with it, so its
+# items are re-dispatched (settle_item). Asked once a reap (REAP_HOST caches it). $DIR/host-miss/<host>
+# holds the first miss, and its mtime the last: a host that answers loses its mark, and a miss after a
+# gap longer than DISPATCH_HOST_DEAD with no reap asking (no item there) starts the count again.
+# An answer of any kind, even a failed command, is a live host, and a miss counts only while this
+# machine reaches the store's origin (store-sync-age): a dispatcher cut off reads every worker as down.
+declare -gA REAP_HOST=()
+host_lost() {
+  local h="$1" f="$DIR/host-miss/$1" now first last
+  if [ -z "${REAP_HOST[$h]+set}" ]; then
+    REAP_HOST[$h]=0
+    if fleet_host_run "$h" true >/dev/null 2>&1 || [ $? -ne 255 ]; then rm -f "$f"
+    elif ! store-sync-age >/dev/null 2>&1; then
+      # No witness of our own link: the store has not reached origin in 30 minutes (store-sync-age), so a
+      # worker that does not answer may be this machine cut off (2026-09-08: 21h of link loss): no miss is
+      # counted, and one past DISPATCH_HOST_DEAD after the last starts the run again.
+      logline "reap: fleet worker $h did not answer, and this machine has not synced the store in 30 minutes either: no miss counted"
+    else
+      now=$(date +%s)
+      first=$(cat "$f" 2>/dev/null) last=$(stat -c %Y "$f" 2>/dev/null) || last=0
+      if [ -z "$first" ] || [ $(( now - last )) -gt "$DISPATCH_HOST_DEAD" ]; then
+        mkdir -p "${f%/*}" && echo "$now" > "$f"
+        logline "reap: fleet worker $h did not answer; a reap ${DISPATCH_HOST_DEAD}s or more from now re-queues its items if it still has not"
+      else
+        touch "$f"
+        [ $(( now - first )) -lt "$DISPATCH_HOST_DEAD" ] || REAP_HOST[$h]=1
+      fi
+    fi
+  fi
+  [ "${REAP_HOST[$h]}" = 1 ]
+}
 
 # restoring <server> <tmux session> <session ids> -- exit 0 when a lost pane record (world_lost) still
 # holds a conversation in that tmux session, or one of those Claude sessions: restore has not reopened
@@ -2191,7 +2235,7 @@ cmd_start() {
       eff=$(claude_effort "$it") || return 2
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"${it:-null}")   # a resume keeps the model its start ran
       lane_sandbox "$cwd" || return 1
-      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
+      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(token_env)$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
     fi
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
@@ -2223,7 +2267,7 @@ cmd_start() {
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(token_env "$acct")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"
@@ -2576,6 +2620,7 @@ item_brief() {
   echo
   ask_decisions "$tags"
   salvage_line "$it"
+  lost_line "$it"
   pr_line "$it"
   [[ "$tags" != *" red "* ]] || echo "This is a red: read ~/.claude/skills/fix-red/SKILL.md first and work to it."
   [[ "$tags" == *" red "* || -n "$pr_only" || -n "$nopr" || "$(item_tier "$it")" != 3 ]] || echo "This is tier 3 (harness or tooling), and it merges only behind the red-fix gate: step 5 of ~/.claude/skills/fix-red/SKILL.md (/code-review high, each finding fixed or answered in the PR, the line \"Review: /code-review high, <what it found and what you did>\" in the PR body). agent-land refuses a tier-3 PR without that line or without checks that ran green. Before agent-land, run the bats files the Stop hook picks for the files you changed and put the result in the PR body."
@@ -2625,12 +2670,23 @@ plan_stage() {
   echo
 }
 
-# salvage_line <item json> -- an earlier run of the item pushed its unfinished work (agent-codex,
-# `salvage:`) and this start does not resume that run: the new session starts from that work.
+# salvage_line <item json> -- an earlier run of the item pushed its unfinished work (`salvage:`, from
+# agent-codex or, for a run lost with its host, settle_item) and this start does not resume that run:
+# the new session starts from that work.
 salvage_line() {
   local sv; sv=$(jq -r '.salvage // empty' <<<"$1")
   [ -n "$sv" ] || return 0
   echo "An earlier run of this item left its unfinished work on branch ${sv%@*} at ${sv##*@} on origin: start from it, not from the trunk (git fetch origin ${sv%@*} && git reset --keep ${sv##*@}, on this worktree's branch). If a PR is already open from ${sv%@*}, push to that branch instead of opening a second one."
+}
+
+# lost_line <item json> -- an earlier run of the item was lost with its host (settle_item, `lost:`):
+# the new session hears where it ran and the status note that run left, the only account of how far it
+# got past its last push. Its work is on salvage_line's branch or pr_line's PR, or nowhere.
+lost_line() {
+  local lost note; lost=$(jq -r '.lost // empty' <<<"$1")
+  [ -n "$lost" ] || return 0
+  note=$(jq -r '.note // ""' <<<"$1"); [[ "$note" == *"; was: "* ]] && note=${note#*; was: } || note=''
+  echo "An earlier run of this item on ${lost%% *} was lost when that machine stopped answering: anything it had not pushed is gone with it.${note:+ Its last note: $note}"
 }
 
 # pr_line <item json> -- an earlier run of the item opened its PR and stopped (on an ask, the usage
@@ -2987,6 +3043,25 @@ settle_item() {
       note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; held until the human answers it"
       logline "reaped $2: session gone, queue item $1 held on ask ${ask%%=*}"
       echo "held queue item $1 (ask ${ask%%=*} pending, $2 ended)"
+      return 0
+    fi
+    # Its host is lost (host_lost, the third argument): the run went with the machine, so a running or
+    # waiting item with its work unfinished goes back to queued/, and the next pass starts it on a node
+    # that answers. `salvage:` takes the branch the run's Stop hook last pushed (`branch:`), unless a PR
+    # holds the work (pr_line), and `lost:` names the host and the run's Claude sessions: the new brief
+    # says where the run was (lost_line), and a session it names that wakes with its host is told to stop
+    # (10-git-workflow.sh). A review item is parked, not running: own_parked_pr owns its PR.
+    if [ -n "${3:-}" ] && { [ "$st" = running ] || [ "$st" = waiting ]; }; then
+      local br sids
+      agent-queue move "$1" queued --if "$st" >/dev/null || return 0
+      br=$(jq -r 'select((.pr // "") == "") | .branch // empty' <<<"$it")
+      sids=$(jq -r '.sessions // ""' <<<"$it")
+      agent-queue set "$1" "lost=$3${sids:+ $sids}" ${br:+"salvage=$br"} >/dev/null ||
+        logline "reaped $2: queue item $1 requeued, but lost: and salvage: did not record: its next brief starts from the trunk"
+      note_add "$1" "$it" "session $2 lost with its host $3, unanswered for ${DISPATCH_HOST_DEAD}s; requeued from ${br:-${pr:-the trunk}}"
+      dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "host $3 lost" --item "$1" --why "item was $st"
+      logline "reaped $2: host $3 lost, queue item $1 requeued from ${br:-${pr:-the trunk}}"
+      echo "requeued queue item $1 (its host $3 is lost)"
       return 0
     fi
   fi
@@ -4305,8 +4380,8 @@ cmd_stats() {
 # stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live active=()
-  unset REAP_PANEL REAP_LOST
+  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
+  unset REAP_PANEL REAP_LOST; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
   for d in "$(date +%F)" "$(date -d yesterday +%F 2>/dev/null)"; do
@@ -4321,23 +4396,24 @@ cmd_reap() {
     if [ -z "$sess$sids" ]; then settle_sessionless "$slug" "$started"; continue; fi
     # A tmux session gone is its own witness; a Claude missing from agent-panel needs a second reap
     # (reap_confirm), and until then the item is left as it is: its Claude is not read as live either.
-    # A fleet worker that does not answer says nothing, so its item stays as it is (fleet-liveness
-    # pages a session that stops moving), and a live one there is beyond this agent-panel's sight:
-    # its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
+    # A fleet worker that does not answer says nothing on one reap, so its item stays as it is; one
+    # that has not answered for DISPATCH_HOST_DEAD (host_lost) is lost, its session with it, and its
+    # item is re-queued to a node that answers (settle_item). A live session on a worker is beyond this
+    # agent-panel's sight: its pane ends with its claude (wt's _prepare), so its tmux session is the witness.
     # A session or conversation a lost pane record still holds is owed a reopen by restore, so its
     # absence is no witness, and clears any miss, until restore consumes the record (ar-2140). One
     # whose tmux session is back is read as usual.
-    gone='' live=0
+    gone='' lost='' live=0
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
     if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then reap_seen "$slug"; continue
     elif [ "$live" = 1 ]; then gone=1
-    elif [ -n "$host" ]; then continue
+    elif [ -n "$host" ]; then host_lost "$host" || continue; gone=1 lost=$host
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1
     else reap_seen "$slug"
     fi
     if [ -n "$gone" ]; then
-      settle_item "$slug" "${sess:-${sids##* }}"
+      settle_item "$slug" "${sess:-${sids##* }}" "$lost"
       settle_row "$slug"
       # Closed, its mark goes at once: an item put back (agent-queue reopen) starts with no miss on record.
       [ "$(item_state "$slug")" != "done" ] || reap_seen "$slug"

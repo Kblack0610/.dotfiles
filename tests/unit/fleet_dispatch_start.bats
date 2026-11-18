@@ -291,6 +291,17 @@ load 'fleet_dispatch/common'
   assert_called "fix-crash -c $SANDBOX/repos/game ${LAUNCH_ENV}CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode bypassPermissions --resume abc-123"
 }
 
+@test "start hands the account's setup token to its claude as a substitution, never the token" {
+  project game beta "$SANDBOX/repos/game"
+  stub claude-acct '[ "$1" = token-prefix ] && { printf "CLAUDE_CODE_OAUTH_TOKEN=\"\$(claude-acct token x)\" "; exit 0; }; echo /home/u/.claude-personal'
+  stub wt 'echo "game-agent-1"'
+  : > "$NOTES_FIXTURE/tmux.sessions.default"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default \
+    --session fix-crash --cwd "$SANDBOX/repos/game" --resume abc-123
+  assert_success
+  assert_called 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token x)" CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --permission-mode'
+}
+
 @test "start --resume never lands in a session that already exists on that server" {
   project game beta "$SANDBOX/repos/game"
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.default"
