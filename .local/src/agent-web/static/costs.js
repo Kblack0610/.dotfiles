@@ -266,8 +266,8 @@ function burnRow(a, at, note, cols) {
   const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${cols.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
   if (a.state === "unreadable") return span("bad", "usage unreadable");
   if (a.state === "stale") return span("bad", note);
-  // burn::idle_note's words
-  if (a.state === "idle") return span("muted", a.kind === "claude" ? "idle, token refreshes on launch" : "no usage read yet");
+  // burn::IDLE_NOTE
+  if (a.state === "idle") return span("muted", "no usage read yet");
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
   const rate = (v) => (v == null || a.unpaced ? "-" : v.toFixed(2));
   const cells = {

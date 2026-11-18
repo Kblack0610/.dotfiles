@@ -658,7 +658,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
         let (text, style) = match a.state {
             "unreadable" => ("usage unreadable", p.bad()),
             "stale" => (burn::STALE_NOTE, p.bad()),
-            "idle" => (burn::idle_note(&a.kind), p.dim()),
+            "idle" => (burn::IDLE_NOTE, p.dim()),
             _ => return None,
         };
         Some(clip_line(
