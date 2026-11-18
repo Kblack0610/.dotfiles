@@ -1484,6 +1484,20 @@ activity_line() {
   echo "${status:--}"
 }
 
+# park_pane_gone <ledger> -> 0 when the ledger's tmux server answers and its pane is no longer in the
+# ledger's session. A park keeps its pane (held dead, or a shell), so a gone one means the server restarted:
+# pane ids restart with it, and the window may host a live claude now, so the row would read PARKED and the
+# pace line would send an unpark into it. A server that cannot be read, or a ledger with no pane or session,
+# decides nothing (a running server lists a pane, so an empty answer is no answer): the ledger stays.
+park_pane_gone() {
+  local srv pane sess rows
+  srv="$(sed -n 's/^server=//p;T;q' "$1")"; pane="$(sed -n 's/^pane=//p;T;q' "$1")"; sess="$(sed -n 's/^session=//p;T;q' "$1")"
+  [ -n "$srv" ] && [ -n "$pane" ] && [ -n "$sess" ] || return 1
+  rows="$(tmux -L "$srv" list-panes -a -F '#{pane_id} #{session_name}' 2>/dev/null)" || return 1
+  [ -n "$rows" ] || return 1
+  ! grep -qxF -- "$pane $sess" <<<"$rows"
+}
+
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
 # ledger whose tmux session (a session:%pane ledger: whose pane) has no live claude again, so a
 # parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
@@ -1497,6 +1511,7 @@ parked_lines() {
   panes="$(jq -r '.pane' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
     [ -f "$f" ] || continue
+    park_pane_gone "$f" && continue
     jq -cn --rawfile l "$f" --arg live "$live" --arg panes "$panes" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t

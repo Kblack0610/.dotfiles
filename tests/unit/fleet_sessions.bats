@@ -2315,6 +2315,33 @@ research_item() {
   [ "$(jq -sr 'map("\(.target) \(.bucket)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED,lab/s9:3 PARKED' ]
 }
 
+@test "end to end: a park whose pane is gone from its tmux session is no PARKED row; an unreadable server decides nothing (ar-2679)" {
+  # 2026-11-17: dotfiles-agent-2/4/6/16/17:1 and home-config-agent-10:1 ledgers outlived a lab restart (panes
+  # %1156-%1325 gone), so the pace line told the shepherd to unpark a second claude into a live window.
+  landed_fixture
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=s2 server=lab target=lab/s2:3 pane=%9 direct=1 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s2:3"
+  # the tmux stub lists the lab server's panes from this fixture, "<pane id> <session>" per line, and nothing without it
+  panes="$NOTES_FIXTURE/tmux.panes.lab"
+  # the server answers nothing: nothing says the pane is gone, so the park stays
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # its pane is still in its session
+  printf '%s\n' '%1 other' '%9 s2' > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # the server restarted: the pane id is gone, or now belongs to another session
+  printf '%s\n' '%1 other' '%2 s2' > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
+  printf '%s\n' '%9 other' > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
+}
+
 @test "end to end: the plan's checklist decides DONE, LANDED with next_phase, or null phases" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
