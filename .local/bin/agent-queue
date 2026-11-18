@@ -2611,10 +2611,10 @@ cmd_stats() {
 # not the task's), its markers are stripped, and a first line that is the row's own words is dropped.
 # A body that adds 20 characters or fewer to the row is skipped: measured 2026-11-18, each such body
 # was the row's earlier wording before the triager re-typed it, not a brief. An open item with no row
-# (canary and trainee items excepted: their config is their brief) gets a story row and its brief; a
-# brief whose write failed is filled by the next run, as the item is then linked. Rows are written
-# through `notes ptask` alone, matched by their exact line, so a row that changed since the read is
-# not written. --dry-run lists each row and its source.
+# (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
+# row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
+# Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
+# since the read is not written. --dry-run lists each row and its source.
 BRIEF_JQ='def norm: gsub("<!--[^>]*-->"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
     | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
   def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
@@ -2629,25 +2629,20 @@ BRIEF_JQ='def norm: gsub("<!--[^>]*-->"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_
       | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
           | sort_by(if .open then 0 else 1 end, (.queued // "" | explode | map(-.)))) as $good
       | if $good[0] then {kind: "row", key: $key, prof: .profile, proj: .project, text: .raw, slug: $good[0].slug,
-            stamp: ($good[0] | stamp), brief: ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end | join("\n"))}
+            stamp: ($good[0] | stamp), brief: (.details + ["from item \($good[0].slug) \($good[0] | stamp)"]
+              + ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end) | join("\n"))}
         else {kind: (if $all[0] then "bare" else "none" end), key: $key} end),
+    ($board.rows[] | select(.lane == "agent" and any(.details[]; startswith("brief: ")))
+      | {kind: "prefix", key: (.project + ":" + .id), prof: .profile, proj: .project, text: .raw,
+         brief: (.details | map(if startswith("brief: ") then .[7:] else . end) | join("\n"))}),
     ($items[] | select(.state != "done" and (.row | not) and (.from | IN("canary", "trainee") | not)
         and ((.tags // "") | test("(^| )canary( |$)") | not))
       | {kind: "new", key: .slug, proj: .project, slug: .slug, stamp: stamp, brief: (body | join("\n")), prio: .priority})
   | out'
 
-# brief_details <header> < body -> NUL-separated `--detail=<line>` arguments: the header, then each
-# body line (a blank inside it stays: `notes` keeps it since P1, #2397; BRIEF_JQ drops trailing ones).
-# The = form, since clap reads a line starting with `-` (a list item) as a flag.
-brief_details() {
-  printf -- '--detail=%s\0' "$1"
-  while IFS= read -r l || [ -n "$l" ]; do printf -- '--detail=%s\0' "$l"; done
-}
-
 cmd_backfill_briefs() {
-  local dry="" tmp kind key prof proj text slug stamp brief prio f title story srow lab code
-  local n=0 filed=0 failed=0 bare=0 none=0 nob=0
-  local -a det
+  local dry="" tmp kind key prof proj text slug stamp brief prio f title lab code srow
+  local n=0 filed=0 failed=0 bare=0 none=0 nob=0 unpre=0
   case "${1:-}" in --dry-run) dry=1 ;; '') ;; *) die "usage: agent-queue backfill-briefs [--dry-run]" ;; esac
   command -v notes >/dev/null || die "backfill-briefs: no notes on PATH"
   # Files, not arguments: the whole store is past the kernel's argument limit.
@@ -2663,13 +2658,16 @@ cmd_backfill_briefs() {
     case "$kind" in
     bare) bare=$((bare + 1)) ;;
     none) none=$((none + 1)) ;;
-    row)
+    row | prefix)
       if [ -n "$dry" ]; then
-        echo "$key <- $slug $stamp: $(grep -c '' <<<"$brief") lines"; n=$((n + 1)); continue
+        if [ "$kind" = row ]; then echo "$key <- $slug $stamp: $(grep -c '' <<<"$brief") lines"; n=$((n + 1))
+        else echo "$key: brief: prefix stripped"; unpre=$((unpre + 1)); fi
+        continue
       fi
-      mapfile -d '' det < <(brief_details "from item $slug $stamp" <<<"$brief")
-      if notes --profile "$prof" ptask "$proj" --agent --exact edit "${det[@]}" -- "$text" </dev/null >/dev/null 2>"$tmp/err"; then
-        n=$((n + 1))
+      # `--brief=` replaces the details whole (a row's own `full:`/`was:` lines are in it), and the
+      # = form keeps a brief that opens with a dash a value, not a flag.
+      if notes --profile "$prof" ptask "$proj" --agent --exact edit --brief="$brief" -- "$text" </dev/null >/dev/null 2>"$tmp/err"; then
+        if [ "$kind" = row ]; then n=$((n + 1)); else unpre=$((unpre + 1)); fi
       else
         failed=$((failed + 1)); echo "agent-queue: $key not written: $(tail -1 "$tmp/err")" >&2
       fi ;;
@@ -2679,22 +2677,17 @@ cmd_backfill_briefs() {
       if [ -z "$lab" ] || [ -z "$code" ]; then nob=$((nob + 1)); continue; fi
       title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(head -1 <<<"$brief")"
       if [ -n "$dry" ]; then echo "$slug: no row; would file one on the $proj board with its brief"; filed=$((filed + 1)); continue; fi
-      story="$(file_story "$proj" "$title" "$prio" "" "" </dev/null)"
-      [ -n "$story" ] || { echo "agent-queue: $slug: no story row filed" >&2; continue; }
-      IFS=$'\t' read -r proj prof srow <<<"$story"
-      "$0" set "$slug" row="$proj:$srow" lane=agent profile="$prof" </dev/null >/dev/null || continue
-      filed=$((filed + 1))
-      # The brief less its first line when that is the title the row was filed with.
-      mapfile -d '' det < <(T="$title" awk 'NR > 1 || $0 != ENVIRON["T"]' <<<"$brief" | brief_details "from item $slug $stamp")
-      notes --profile "$prof" ptask "$proj" --agent edit "${det[@]}" -- "$srow" </dev/null >/dev/null 2>"$tmp/err" ||
-        echo "agent-queue: $slug: row $srow filed, its brief not written (the next run fills it): $(tail -1 "$tmp/err")" >&2 ;;
+      # file_story writes the brief with the row, less a first line that is the title.
+      IFS=$'\t' read -r proj prof srow < <(file_story "$proj" "$title" "$prio" "" "" "$brief" </dev/null)
+      [ -n "$srow" ] || { echo "agent-queue: $slug: no story row filed" >&2; continue; }
+      "$0" set "$slug" row="$proj:$srow" lane=agent profile="$prof" </dev/null >/dev/null && filed=$((filed + 1)) ;;
     esac
   done 3<"$tmp/matches"
   rm -rf "$tmp"
   if [ -n "$dry" ]; then
-    printf 'would fill %s rows with a brief and file %s rows for items with none;' "$n" "$filed"
+    printf 'would fill %s rows with a brief, strip brief: from %s, and file %s rows for items with none;' "$n" "$unpre" "$filed"
   else
-    printf 'filled %s rows with a brief, filed %s rows for items with none; %s not written (why is above);' "$n" "$filed" "$failed"
+    printf 'filled %s rows with a brief, stripped brief: from %s, filed %s rows for items with none; %s not written (why is above);' "$n" "$unpre" "$filed" "$failed"
   fi
   echo " $bare linked only to items that repeat the row; $none never worked by an item; $nob row-less items on a project with no board"
 }
