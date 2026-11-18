@@ -252,6 +252,8 @@ EOF
   # The copies source ../lib/*.sh and the registry resolver relative to themselves, which
   # in a copy is $SANDBOX/lib. Point both at the repo's own.
   ln -sfn "$REPO_ROOT/.local/lib" "$SANDBOX/lib"
+  # And the panel palette, at ../src/tmux.
+  mkdir -p "$SANDBOX/src" && ln -sfn "$REPO_ROOT/.local/src/tmux" "$SANDBOX/src/tmux"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
 
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.

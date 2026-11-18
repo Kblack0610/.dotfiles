@@ -111,6 +111,9 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   assert_output --partial $'\033[2m'
   assert_output --partial $'\033[1;33mLIVE'
   refute_output --regexp $'\033\\[[0-9;]*(3[0456-7]|9[0-7])m'
+  # The one palette colour in the row is the tag's: none on the name or age.
+  assert_equal "$(grep -c -o $'\033\\[1;33m' <<<"$output")" 1
+  refute_output --regexp $'\033\\[[0-9;]*3[1-2]m'
 }
 
 # The card is read in a pane with no selection bar, so it takes the same palette (agent-ask's

@@ -182,10 +182,10 @@ cmd_rows() {
         # The tag alone carries a palette colour, as fleet.sh paints its glyph: LIVE needs you
         # (yellow), sending is on its way (green), failed did not go (red). The rest is bold and
         # faint, which take the selection bar white (a coloured name or age vanished there).
-        TC[2] = bold c_live; TC[4] = c_sending; TC[5] = bold c_failed
+        TC["LIVE"] = bold c_live; TC["sending"] = c_sending; TC["failed"] = bold c_failed
         for (i in W) if (length(G[M[i] + 1]) > tw) tw = length(G[M[i] + 1])
         for (i in W) {
-          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], (M[i] in TC) ? TC[M[i]] : faint, tw, G[M[i] + 1], off,
+          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], (G[M[i] + 1] in TC) ? TC[G[M[i] + 1]] : faint, tw, G[M[i] + 1], off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
           if (S[i] != "") printf "\037%*s%s", w + tw + 7, "", S[i]
           print ""
