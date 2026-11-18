@@ -87,6 +87,25 @@ row() {
   assert_output --partial 'restates: rules.md: under ten'
 }
 
+@test "rules --check: a copy read through \$HOME restates too, and a count of its own lines is a real bound" {
+  cp "$SANDBOX/rules.md" "$HOME/r.md"
+  printf 'CAP=10\n' >> "$HOME/r.md"
+  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "provisional", confidence: "low", measure: "sed -n '"'"'s/^CAP=//p'"'"' \"$HOME/r.md\"", max: 10}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "Never force push", kind: "provisional", confidence: "high", measure: "grep -c \"^- \" ~/r.md", max: 5}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["restates","ok"]'
+}
+
+@test "rules --json: each row carries the one state --check fails on, and a source elsewhere is absent, not a failure" {
+  row 'under ten' high 'echo 11' 10
+  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["moved","absent"]'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "${#lines[@]}" 1
+}
+
 @test "rules --check: a size read with wc is a real bound on its own source, and a reading has no bound to move" {
   row 'under ten' high "wc -c < '$SANDBOX/rules.md'" 100000
   printf 'CAP=10\n' >> "$SANDBOX/rules.md"
@@ -199,6 +218,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   # must not go red on a session here that only touched fleet-bench.
   run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead))
     | "\(.source): \(.anchor)"' <<<"$states"
+  assert_output ''
+  # A copied bound is the register's own fault wherever its source lives, so no row may carry one.
+  run jq -r '.[] | select(.restates) | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
   [ "$(jq '[.[] | select(.anchored == true)] | length' <<<"$states")" -gt 0 ]

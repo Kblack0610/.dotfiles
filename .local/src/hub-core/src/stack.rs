@@ -343,12 +343,13 @@ pub const OK: &str = "ok";
 pub const STALE: &str = "stale";
 pub const MOVED: &str = "moved";
 pub const RESTATES: &str = "restates";
+pub const ABSENT: &str = "absent";
 pub const DEAD: &str = "dead";
 
 impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
-    const STATES: &'static [&'static str] = &[ALL, STALE, MOVED, RESTATES, DEAD];
+    const STATES: &'static [&'static str] = &[ALL, STALE, MOVED, RESTATES, DEAD, ABSENT];
     const FACETS: &'static [&'static str] = &["kind", "confidence", "state"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "rule";
@@ -367,6 +368,10 @@ impl Row for Rule {
             "its bound is a copy of the number its measure reads from its own source; the reading is the number",
         ),
         (DEAD, "its measure printed no number"),
+        (
+            ABSENT,
+            "its source file is not on this machine, so nothing here checked it",
+        ),
     ];
 
     fn val(&self, col: &str) -> Val {
@@ -690,7 +695,10 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
         ),
         (
             "rules".to_string(),
-            rules.iter().filter(|r| r.state != OK).count(),
+            rules
+                .iter()
+                .filter(|r| r.state != OK && r.state != ABSENT)
+                .count(),
         ),
     ]);
     Stack {
@@ -1104,18 +1112,8 @@ fn read_rules(runner: &dyn Runner, errors: &mut Vec<String>) -> Vec<Rule> {
                 (n, true) => format!("{n} (now {})", s(&r["value"])),
             },
             confidence: s(&r["confidence"]),
-            state: if r["dead"] == true {
-                DEAD
-            } else if r["anchored"] != true {
-                STALE
-            } else if r["restates"] == true {
-                RESTATES
-            } else if r["moved"] == true {
-                MOVED
-            } else {
-                OK
-            }
-            .into(),
+            // fleet-bench decides the state, the one verdict `rules --check` fails on too.
+            state: s(&r["state"]),
             today: s(&r["today"]),
             revisit: s(&r["revisit"]),
             why: s(&r["why"]),
@@ -1238,7 +1236,7 @@ mod tests {
 
     const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
-    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","anchored":true,"moved":true,"dead":false},{"rule":"never force push","kind":"invariant","anchored":true,"moved":false,"dead":false},{"rule":"old","kind":"provisional","anchored":false,"moved":false,"dead":false},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","anchored":true,"value":2,"moved":false,"dead":false},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","anchored":true,"value":3,"restates":true,"moved":false,"dead":false},{"rule":"elsewhere","kind":"invariant","anchored":null,"moved":false,"dead":false}]"#;
+    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","state":"moved"},{"rule":"never force push","kind":"invariant","state":"ok"},{"rule":"old","kind":"provisional","state":"stale"},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","value":2,"state":"ok"},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","value":3,"state":"restates"},{"rule":"elsewhere","kind":"invariant","state":"absent"}]"#;
 
     #[test]
     fn each_part_is_read_from_its_own_store() {
@@ -1392,7 +1390,7 @@ mod tests {
         let p = fixture("rules");
         let s = read(&p, &Fixed(Ok(RULES.into())), 0);
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
-        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, STALE]);
+        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, ABSENT]);
         assert_eq!(
             s.rules[3].number, "max_live in sources (now 2)",
             "a reading shows what it read"
@@ -1401,7 +1399,10 @@ mod tests {
             s.rules[0].number, "50",
             "an unmeasured rule shows its number as recorded"
         );
-        assert_eq!(s.strip["rules"], 4, "every row not ok");
+        assert_eq!(
+            s.strip["rules"], 3,
+            "every row not ok, past one whose source is elsewhere"
+        );
     }
 
     /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
