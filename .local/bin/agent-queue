@@ -492,9 +492,9 @@ hold_for() {
       "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD="after $s closed $AST, dead: read who closed it and why in agent-queue show $s, then set after=<slug> or cancel this with --why"
+      *) HOLD="after $s closed $AST, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show $s"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
-        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+=" and --ask <an ask the human answered>"
+        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an ask the human answered>"
         return ;;
     esac
   done
@@ -1465,11 +1465,11 @@ add_plan() {
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
   # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
+  # Its items already active are checked against the chain below, once their slugs are known.
   local taken
   taken="$(collect_rows $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
     "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" ||
     die "could not check the queue for items of $planf, so nothing was added"
-  [ -z "$taken" ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
     to_entries | map(.value + {idx: .key,
@@ -1524,9 +1524,18 @@ add_plan() {
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
        "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
     | @tsv' <<<"$groups")"
-  local s dep ph text prev="$after" wait
+  # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
+  # this add keeps each under the slug it would give it and queues the rest after them. An item of
+  # the plan under any other slug, or a chain already whole, refuses it.
+  local s dep ph text prev="$after" wait mine
+  mine=" $(cut -f1 <<<"$rows" | paste -sd' ') "
+  for s in $taken; do
+    [[ "$mine" == *" $s "* ]] || die "the phases of $planf are already queued: $taken (nothing was added)"
+  done
+  [ -z "$taken" ] || [ "$(wc -w <<<"$taken")" -lt "$(wc -l <<<"$rows")" ] ||
+    die "the phases of $planf are already queued: $taken (nothing was added)"
   while IFS=$'\t' read -r s dep ph text _; do
-    [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"
+    [ -z "$(find_item "$s")" ] || [[ " $taken " == *" $s "* ]] || die "already in the queue: $s (nothing was added)"
   done <<<"$rows"
   check_after "$after"
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
@@ -1545,13 +1554,17 @@ add_plan() {
       echo "agent-queue: skipped $why; tick its box in $planf" >&2
       skipped=$((skipped + 1)); prev="$s"; continue
     fi
+    if [[ " $taken " == *" $s "* ]]; then
+      echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2
+      prev="$s"; continue
+    fi
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
     else
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text" ||
-        die "added $n of $total items from $planf; $s and the rest are not queued"
+        die "added $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
       added+=("$s")
     fi
     n=$((n + 1)); prev="$s"
@@ -2461,10 +2474,11 @@ settle_dead_one() {
   pend="$(ask_pending "$ask")"
   case "$pend" in
     "") ;;
-    cancelled | "no such ask")
-      cmd_return "$slug" --why "ask $ask on $root closing $st was $pend" >/dev/null || return 1
-      echo "returned $slug and the items after it: ask $ask was $pend"
+    cancelled)
+      cmd_return "$slug" --why "ask $ask on $root closing $st was cancelled" >/dev/null || return 1
+      echo "returned $slug and the items after it: ask $ask was cancelled"
       return 0 ;;
+    # Pending, the judge's answer, or an ask this tree cannot read: the human's work waits.
     *) return 0 ;;
   esac
   pick=""
@@ -2486,7 +2500,8 @@ settle_dead_one() {
 # dead_ask_post <file> <slug> <root> <status> <cause> -- the ask settle-dead holds the human's dead
 # item on. It names every item of the chain, so its answer guards their return (cancel_guard). It is
 # the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
-# session that has an ask of its own is not refused (one open question per session).
+# session that has an ask of its own is not refused (one open question per session). An approval:
+# the human's work is theirs to drop, so the judge never answers it (agent-ask post --kind).
 dead_ask_post() {
   local f=$1 slug=$2 root=$3 st=$4 cause=$5 chain plan rec why id tags
   chain="$(chain_of "$slug" "$f" | cut -f1 | paste -sd' ' | sed 's/ /, /g')"
@@ -2496,7 +2511,7 @@ dead_ask_post() {
   else
     rec=replan why="someone stopped that step on purpose, so the steps after it may no longer fit"
   fi
-  id="$(env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" post --project "$(fm_get "$f" project)" --task "$slug" \
+  id="$(env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" post --project "$(fm_get "$f" project)" --task "$slug" --kind approval \
     --options "retry=queue that step again; the waiting steps run once it lands|replan=send the waiting steps back to the board as rows, to plan again|drop=drop the waiting steps and their board rows" \
     --recommend "$rec" --why "$why" \
     --context "These are queue items, steps of your work that run one after another: $root is the step that closed $st ($cause), and $chain wait on it${plan:+, steps of the plan $(basename "$plan")}. Nothing starts them until you answer." \
@@ -2514,14 +2529,15 @@ dead_ask_post() {
 
 # dead_retry <file> <slug> <root> <ask> -- the human's retry: the closed item queued again under its
 # slug, its task, row, plan and phases, so the dead item's after: reads a live hold again; then the ask
-# comes off the dead item. A retry the cap holds is tried again on the next pass.
+# comes off the dead item. It is the human's answer, so it goes in as dispatch's pull does (pull_ok); a
+# retry the cap holds is tried again on the next pass.
 dead_retry() {
   local f=$1 slug=$2 root=$3 ask=$4 pf row tags out rc
   if [ -z "$(find_item "$root")" ]; then
     pf="$(latest_done "$root")"; [ -n "$pf" ] || die "$root has no finished item to queue again"
     row="$(item_row "$pf")"
     tags="$(fm_get "$pf" tags | tr ' ' '\n' | grep -vE '^(ask|hold|at|pr):' | paste -sd' ')"
-    out="$(fm_body "$pf" | AGENT_QUEUE_START=0 AQ_ITEM_PLAN="$(fm_get "$pf" plan)" AQ_ITEM_PHASES="$(fm_get "$pf" phases)" \
+    out="$(fm_body "$pf" | AGENT_QUEUE_START=0 AGENT_QUEUE_PULL=dispatch AQ_ITEM_PLAN="$(fm_get "$pf" plan)" AQ_ITEM_PHASES="$(fm_get "$pf" phases)" \
       cmd_add_one --project "$(fm_get "$pf" project)" --slug "$root" --priority "$(fm_get "$pf" priority)" --from human \
         ${row:+--row "${row#*:}"} ${tags:+--tags "$tags"} 2>&1)"; rc=$?
     [ "$rc" -ne "$AQ_EX_HELD" ] || { echo "agent-queue: the retry of $root (ask $ask) is held by the queue cap; the next pass tries again" >&2; return 0; }

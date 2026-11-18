@@ -2119,6 +2119,23 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
 }
 
+@test "end to end: a failed read of which queue items hold the plan's phases is named unreadable, not silent (ar-2905)" {
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: docs\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2 3\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-docs.md"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '.sessions[0].reason' "$SANDBOX/state.json")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
+  [ "$(jq -r '(.unreadable // []) | map(select(startswith("plan phases"))) | length' "$SANDBOX/state.json")" = 0 ]
+  # the read of which items hold the open phases fails
+  printf '#!/usr/bin/env bash\ncase "$*" in *names_me*) exit 5 ;; esac\nexec %q "$@"\n' "$(command -v jq)" > "$SANDBOX/bin/jq"
+  chmod +x "$SANDBOX/bin/jq"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  rm "$SANDBOX/bin/jq"
+  jq -e --arg p "plan phases of $SANDBOX/plan.md" '.unreadable | index($p)' "$SANDBOX/state.json" >/dev/null
+}
+
 @test "end to end: phase_runner names the session running the item that holds the open phase, and nothing else (ar-1497)" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
@@ -4106,8 +4123,12 @@ verdict() {
   # the item or drop the red's owner.
   [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
-  # One named step.
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
+  # One named step, while quiet under the timer.
+  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
+  # ar-2887: quiet past it, the step holds no slot: the shepherd sends it to wind-down, whose close --self
+  # still reads after (above) and queues them; a window gone leaves the plan to the reap.
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m with phases left: its wind-down queues them, else the reap files the plan (reconcile_plans)" ]
+  [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
