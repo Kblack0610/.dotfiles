@@ -106,7 +106,7 @@ const refreshHome = coalesce(async () => {
   await Promise.all([night, cards]);
 });
 
-// The status grid (/api/home/cards, hub_core::cards) reads eight tabs, so it is its own read:
+// The status grid (/api/home/cards, hub_core::cards) reads nine tabs, so it is its own read:
 // Needs you draws without it, and the last good grid stays up under a failed read.
 const refreshCards = async () => {
   try { hst.cards = await apiKept("/api/home/cards"); hst.cardsErr = null; landed("cards", true); } catch (e) { hst.cardsErr = e.message; landed("cards", false); }

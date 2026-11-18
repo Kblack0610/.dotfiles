@@ -582,8 +582,8 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     let today = f.today.as_str();
     let open = f.open_rows(None);
     let doing = |r: &Row| r.state == "doing";
-    // Where a row ranks among the places to look: late, then asked for and not started, then
-    // Now and Next not started; None is not a place to look.
+    // Where a row ranks among the places to look: late (started or not, it is still late), then
+    // asked for and not started, then Now and Next not started; None is not a place to look.
     let look_at = |r: &Row| {
         if r.due.as_deref().is_some_and(|d| d < today) {
             Some(Level::Red)
@@ -597,7 +597,8 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
             None
         }
     };
-    let at = |l: Level| open.iter().filter(|r| look_at(r) == Some(l)).count();
+    let looked: Vec<_> = open.iter().map(|r| (*r, look_at(r))).collect();
+    let at = |l: Level| looked.iter().filter(|(_, x)| *x == Some(l)).count();
     let n_doing = open.iter().filter(|r| doing(r)).count();
     let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
     let done = f
@@ -618,15 +619,17 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     .part("Done today", done, Level::Ok);
     c.big = open.len().to_string();
     c.unit = format!("open rows, {n_doing} doing");
-    if !f.errors.is_empty() {
-        c.error = Some(f.errors.join("; "));
-    }
-    if n_late + n_asked == 0 {
+    // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
+    // feed carries and the web's does not, and no count on this card uses them.
+    // Up next fills the list only when nothing is late or asked for, under its own head.
+    let urgent = n_late + n_asked > 0;
+    if !urgent {
         c.first_head = "Up next";
     }
-    let mut look: Vec<_> = open
-        .iter()
-        .filter_map(|r| look_at(r).map(|l| (*r, l)))
+    let mut look: Vec<_> = looked
+        .into_iter()
+        .filter_map(|(r, l)| l.map(|l| (r, l)))
+        .filter(|(_, l)| !urgent || *l != Level::Ok)
         .collect();
     // Stable, so each level keeps the sheet's order.
     look.sort_by_key(|(_, l)| match l {
@@ -948,16 +951,14 @@ mod tests {
                 ("Done today", "1")
             ]
         );
-        // Late, then requested, then Now and Next not started; the doing row is not a place to look.
+        // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
         let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
-        assert_eq!(
-            first,
-            [
-                ("row db-4", Level::Red),
-                ("row db-3", Level::Warn),
-                ("row db-2", Level::Ok)
-            ]
-        );
+        assert_eq!(first, [("row db-4", Level::Red), ("row db-3", Level::Warn)]);
+        assert_eq!(c.first_head, "Where to look first");
+        // A late row already started is still late.
+        f.rows[3].state = "doing".into();
+        assert_eq!(board(&f).first[0].text, "row db-4");
+        f.rows[3].state = "open".into();
         assert_eq!(c.first[0].sub, "db - backlog, due 11-17");
         assert_eq!(
             c.first[0].link.as_ref().unwrap().href(),
