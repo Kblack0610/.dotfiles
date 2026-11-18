@@ -47,7 +47,7 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
-  rules=$(grep -E '^(Scaling|Depth): ' "$DOC")
+  rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -114,6 +114,22 @@ while IFS=$'\t' read -r name must; do
     fi
   done < <(grep -oE '`[A-Z][a-z]+:`' <<<"$must" | tr -d '`')
 done < <(rows)
+
+# The doc's Chain: rule. Only a sentence that runs, does or takes the work in one session
+# counts, read outside code, quotes and backticks and never a negated one, so "answers given in
+# this session", "never run them in one session" or a quoted old rule passes, and so does a
+# plan with one open phase. Open phases are counted by the queue's own parser.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+open=0
+[ -n "${_PLAN_PHASES_AWK:-}" ] && open=$(awk -v mode=list "$_PLAN_PHASES_AWK" <<<"$plan" | grep -c '^open')
+if [ "$open" -gt 1 ]; then
+  re='(^|[^[:alpha:]])(run|runs|running|do|does|doing|take|takes|taking)[^[:alpha:]][^.]*[^[:alpha:]](in|within) (this|one|a single|the same) session([^[:alpha:]]|$)'
+  one=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | sed -E 's/"[^"]*"//g; s/`[^`]*`//g' \
+    | grep -oiE "[^.]*$re" | grep -viE "(^|[^[:alpha:]])(never|not|no|don't|nothing)[^[:alpha:]]" \
+    | grep -m1 -oiE "$re" | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
+  [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0
 reason="plan-standard: ${#gaps[@]} gap(s) for $label. Fix the plan file and call ExitPlanMode again."
