@@ -616,7 +616,8 @@ enum PtaskCmd {
         all: bool,
     },
     /// Add a task to the open version, or aim it at a later release with --to. Exit 3 and
-    /// write nothing when an open row with the same text is already on the sheet
+    /// write nothing when an open row on the sheet has the same text, nearly the same text,
+    /// or lands the same PR
     Add {
         /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
