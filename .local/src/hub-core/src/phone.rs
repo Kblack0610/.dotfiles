@@ -365,7 +365,8 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
+/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the sites summed, naming only what is down.
+/// Slots and busy are `cc:site_*`, a runner once: `cc:pool_*` counts it once per cap it takes.
 fn ci(infra: &Infra) -> Option<Row> {
     let v = infra.cc_values();
     let sum = |name: &str| -> f64 {
@@ -374,11 +375,11 @@ fn ci(infra: &Infra) -> Option<Row> {
             .map(|(_, x)| *x)
             .sum()
     };
-    let slots = sum("cc:pool_slots");
+    let slots = sum("cc:site_slots");
     if slots == 0.0 {
         return None;
     }
-    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
+    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:site_busy"))];
     let queued = sum("cc:pool_waiting");
     if queued > 0.0 {
         said.push(format!("{queued:.0} queued"));
@@ -499,6 +500,12 @@ mod tests {
                 metric("cc:pool_slots", json!({"pool": "unity"}), "10"),
                 metric("cc:pool_slots", json!({"pool": "light"}), "19"),
                 metric("cc:pool_busy", json!({"pool": "unity"}), "6"),
+                metric("cc:pool_busy", json!({"pool": "light"}), "6"),
+                // The same runners once each: the line's slots and busy.
+                metric("cc:site_slots", json!({"site": "local"}), "18"),
+                metric("cc:site_slots", json!({"site": "cloud"}), "2"),
+                metric("cc:site_busy", json!({"site": "local"}), "6"),
+                metric("cc:site_busy", json!({"site": "cloud"}), "0"),
                 metric("cc:pool_done_24h", json!({"pool": "unity"}), "100"),
                 metric("cc:pool_pass_ratio_24h", json!({"pool": "unity"}), "0.5"),
                 metric("cc:pool_done_24h", json!({"pool": "light"}), "300"),
@@ -823,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_sums_the_pools_and_names_only_what_is_down() {
+    fn ci_sums_the_sites_and_names_only_what_is_down() {
         let runners = vec![
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
@@ -833,7 +840,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6/20 busy, 80% passed, aws-burst-1 offline"]
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -843,7 +850,7 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6/29 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6/20 busy, 80% passed"]);
     }
 
     #[test]
@@ -862,7 +869,7 @@ mod tests {
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
                 "Queue: 1 running, 0 ready",
-                "CI: 6/29 busy, 80% passed",
+                "CI: 6/20 busy, 80% passed",
             ]
         );
     }
