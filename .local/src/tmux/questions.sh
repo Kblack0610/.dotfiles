@@ -56,7 +56,7 @@ QUESTIONS_PARKED="${QUESTIONS_PARKED:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P parked . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
 # A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, the judge
-# when it did not defer ("not judged", "judge would answer", "judge answers at HH:MM", "judge error";
+# when it did not defer ("not judged", "judge leans answer", "judge answers at HH:MM", "judge error";
 # a deferral, most asks, is bare, and its card says it) then what the session is (its registry
 # title): short enough for the list column beside the card (a third of
 # the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
@@ -167,12 +167,12 @@ cmd_rows() {
         # first, and its age column says how long until it comes back.
         if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("5\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
         # Under the question, what the judge did not defer ($17 judge, $22 its rule, $25 the armed
-        # deadline), then the session title: all from the list read, no extra call. A deferral is
-        # most asks, so it carries no mark (the card says it); an ask the judge would answer, one it
+        # deadline; only an armed ask is one the judge acts on, the rest are shadow), then the session title: all from the list read, no extra call. A deferral is
+        # most asks, so it carries no mark (the card says it); an ask the judge leans to answer, one it
         # failed on and one it never saw each do, so those read apart from a deferral.
         j = ""
         if ($17 == "") j = "not judged"
-        else if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge would answer" ($22 != "" ? " (" $22 ")" : "")
+        else if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge leans answer"
         else if ($17 != "human") j = "judge " $17
         t = T[$16]
         S[NR] = (j t != "") ? faint j (j != "" && t != "" ? "  " : "") t off : ""

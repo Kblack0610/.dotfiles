@@ -73,7 +73,7 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   assert_line --regexp "^$loose	none demo +[0-9]+m  headless[?]~ {15}not judged\$"
 }
 
-@test "a row marks an ask the judge would answer, errored on or never saw, and leaves a deferral bare" {
+@test "a row marks an ask the judge leans to answer, errored on or never saw, and leaves a deferral bare" {
   local deferred rec armed failed unjudged
   deferred="$(ask demo s 'a=the first|b=the second' 'deferred?')"
   rec="$(ask demo s 'a=the first|b=the second' 'recommended?')"
@@ -84,10 +84,15 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   printf 'judge: take-recommend\njudge_rule: proceed_or_hold\n' >>"$(ask_file "$rec")"
   printf 'judge: answer:a\nassume_at: 2026-11-18T14:05:00-0800\nassume_answer: a\n' >>"$(ask_file "$armed")"
   printf 'judge: error\n' >>"$(ask_file "$failed")"
+  # A verdict with no rule and no deadline.
+  local bare
+  bare="$(ask demo s 'a=the first|b=the second' 'bare?')"
+  printf 'judge: answer:a\n' >>"$(ask_file "$bare")"
   run rows
+  assert_line --regexp "^$bare	none demo +[0-9]+m  bare[?]~ {15}judge leans answer\$"
   assert_success
   assert_line --regexp "^$deferred	none demo +[0-9]+m  deferred[?]\$"
-  assert_line --regexp "^$rec	none demo +[0-9]+m  recommended[?]~ {15}judge would answer \(proceed_or_hold\)\$"
+  assert_line --regexp "^$rec	none demo +[0-9]+m  recommended[?]~ {15}judge leans answer\$"
   assert_line --regexp "^$armed	none demo +[0-9]+m  armed[?]~ {15}judge answers at 14:05\$"
   assert_line --regexp "^$failed	none demo +[0-9]+m  errored[?]~ {15}judge error\$"
   assert_line --regexp "^$unjudged	none demo +[0-9]+m  unjudged[?]~ {15}not judged\$"
