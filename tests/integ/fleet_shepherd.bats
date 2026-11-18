@@ -695,24 +695,25 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   [ ! -s "$FLEET_SHEPHERD_DIR/.remind" ]
 }
 
-@test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {
+@test "a parked session on a CLEAR machine with no hold is a pace line; a park its ledger gives an owner and a held machine are not" {
   doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
-  printf 'q3\t1\tparked\nq2\t1\textended\n' > "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_success
-  assert_output 'pace: parked lab/p:1, lab/q:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
   STUB_HOLDS=$'unity\tx' run "$SH" due
   refute_output --partial 'pace: parked'
   STUB_VERDICT=HOLD run "$SH" due
   assert_output 'pace: machine reads HOLD with no hold set'
-  # Negative control: with no budget park on record, q3's session is unparked too.
-  rm "$FLEET_SHEPHERD_DIR/.budget"
-  run "$SH" due
-  assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
-  # One fleet-dispatch preempted (why=preempt) is its pass's to resume, never a pace line; a why=park one still is.
+  # The ledger's why is its owner: fleet-dispatch resumes a preempt, and a budget park waits for the
+  # human it paged, so neither is a pace line; a why=park one still is, and so is r with no ledger.
   export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
   printf 'session=p\ntarget=lab/p:1\nwhy=preempt\n' > "$CLAUDE_ACCT_PARKED_DIR/p"
+  printf 'session=q\ntarget=lab/q:1\nwhy=budget\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  run "$SH" due
+  assert_output 'pace: parked lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  # Negative control: the shepherd's own checkpoint record is not the owner, the ledger is.
   printf 'session=q\ntarget=lab/q:1\nwhy=park\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  printf 'q2\t1\tparked\n' > "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_output 'pace: parked lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
 }
@@ -861,6 +862,21 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
+}
+
+@test "a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing" {
+  doc "[$(row a LANDED false false)]"
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  # flock holds the lock while the check inside it runs, as a run would.
+  FLEET_SHEPHERD_CHECK_WAIT=0 run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" check
+  [ "$status" -eq 75 ]
+  assert_output 'shepherd-test: a run held the run lock past 0s: no check; run it again once that run ends'
+  [ ! -e "$FLEET_SHEPHERD_DIR/.due" ]
+  # Negative control: the lock free, the same check samples and prints what is due.
+  run checked
+  assert_success
+  assert_output 'nudge LANDED: a f-a'
+  [ -e "$FLEET_SHEPHERD_DIR/.due" ]
 }
 
 @test "no world declares the session: run stops and says so, and touches no tmux" {
@@ -2146,8 +2162,8 @@ STUB
 budget_setup() {
   stub claude-acct 'case "$1" in
   cost) printf "%s" "${STUB_COST-}" ;;
-  park) echo "$2" >> "$HOME/park.calls"
-        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $2: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
+  park) shift; echo "$*" >> "$HOME/park.calls"
+        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $1: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
 esac'
   stub agent-queue '[ "$1 $2" = "show q1" ] || exit 1
 jq -n --arg t "${STUB_TASK:-a task}" "{slug: \"q1\", task: \$t, sessions: \"s-old1 s-old2\"}"'
@@ -2188,6 +2204,8 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run checked
   run checked
   assert_equal "$(parks)" 1
+  # The park names its owner, so unpark --all and the pace line leave it to the human it pages.
+  assert_equal "$(cat "$HOME/park.calls")" 'lab/w-agent-1:1 --why budget'
   grep -q 'budget: parked lab/w-agent-1:1 (q1 spent \$13, 1x its \$12 s budget, STALLED)' "$FLEET_SHEPHERD_DIR/log.md"
   assert_equal "$(grep -c 'lab/w-agent-1:1 parked at its budget' "$HOME/pages")" 1
   grep -q 'claude-acct unpark lab/w-agent-1:1' "$HOME/pages"
