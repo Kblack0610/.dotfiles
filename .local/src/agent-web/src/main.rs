@@ -75,6 +75,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::CompressionLayer;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -260,6 +262,7 @@ async fn main() -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
+        .layer(compression())
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -687,6 +690,14 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
         projects::GATHERED.clear();
     }
     res
+}
+
+/// Outermost, so every body leaves compressed: Cloudflare compresses off the LAN, and nothing
+/// did on it. SSE, images, fonts (woff2 is compressed already) and bodies under 32 bytes go as
+/// they are.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/")))
 }
 
 /// The app for a signed-in browser, the sign-in page otherwise.
@@ -1802,6 +1813,57 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
 
+    /// The response headers `path` gets from `app` when the browser takes br.
+    async fn headers_br(app: Router, path: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: t\r\nAccept-Encoding: br, gzip\r\nConnection: close\r\n\r\n"
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut c, req.as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        text.split("\r\n\r\n")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn json_and_scripts_leave_compressed_and_fonts_and_the_live_stream_do_not() {
+        let body = "x".repeat(4096);
+        let typed = |ctype: &'static str| {
+            let body = body.clone();
+            get(move || async move { ([(header::CONTENT_TYPE, ctype)], body) })
+        };
+        let app = Router::new()
+            .route("/json", typed("application/json"))
+            .route("/js", typed("text/javascript"))
+            .route("/font", typed("font/woff2"))
+            .route(
+                "/live",
+                get(|| async {
+                    let one = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+                        SseEvent::default().data("x".repeat(4096)),
+                    ));
+                    Sse::new(one)
+                }),
+            )
+            .layer(compression());
+        for path in ["/json", "/js"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(h.contains("content-encoding: br"), "{path}: {h}");
+        }
+        for path in ["/font", "/live"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(!h.contains("content-encoding"), "{path}: {h}");
+        }
+    }
     // The clock is paused only while the request is in its handler and no socket has bytes in
     // flight, so the timeout fires only once every task is idle: the server still running then is
     // a server waiting on the request, not one that was slow to be polled. It resumes before the
