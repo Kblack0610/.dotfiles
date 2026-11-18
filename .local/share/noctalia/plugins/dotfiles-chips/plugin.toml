@@ -11,7 +11,7 @@ license = "MIT"
 dependencies = []
 tags = ["bar"]
 icon = "puzzle"
-description = "Draws a waybar custom/* chip from config.base in the bar."
+description = "Draws a waybar custom/* chip from config.base in the bar, and its tooltip in colour on click."
 
 [[widget]]
 id = "chip"
@@ -27,3 +27,24 @@ entry = "chip.luau"
   label_key = "settings.module.label"
   description_key = "settings.module.description"
   default = "custom/ci"
+
+  [[widget.setting]]
+  key = "dropdown"
+  type = "bool"
+  label_key = "settings.dropdown.label"
+  description_key = "settings.dropdown.description"
+  default = true
+
+# A chip's dropdown in colour, opened by clicking the chip (Noctalia's own tooltip is plain
+# text capped at 280 px and three lines). Height fits the content up to max_height, then scrolls.
+# Floating, not attached: an attached panel takes the bar's background_opacity, which is 0 here
+# (the bar is clear, the chips sit in pods), so attached it would be see-through.
+[[panel]]
+id = "detail"
+entry = "detail.luau"
+width = 820
+height = "content"
+max_height = 900
+placement = "floating"
+position = "auto"
+open_near_click = true
