@@ -204,21 +204,20 @@ const LOCAL_CELLS = {
   failed: (f) => td("n", f.n),
 };
 
-// One table's rows from the read: `cap` rows until its "+N more".
-function infraBody(name, labels, cells, empty, o = {}) {
+// One table's rows from the read.
+function infraBody(name, labels, cells, empty) {
   const d = ist.data.tables[name], t = d.table, rows = d.rows;
   if (!rows.length) return `<div class="panel"><div class="empty">${t.total ? "No row matches." : empty}</div></div>`;
   const keys = t.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
-  const cap = o.cap && !INFRA_T[name].all ? o.cap : rows.length, shown = rows.slice(0, cap);
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${shown.map((r, i) =>
-    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table>${tblMore(rows.length - shown.length, "more")}</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${rows.map((r, i) =>
+    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table></div>`;
 }
 
 const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
   tab: "infra", id: "infra-" + INFRA_TABLES[name], el: "infra-main", pre: INFRA_TABLES[name], hint,
   refresh: () => refreshInfra(), render: () => renderInfra(), table: () => ist.data?.tables?.[name]?.table,
   wrap: (h) => `<div data-tbl="${INFRA_TABLES[name]}">${h}</div>`,
-  body: () => infraBody(name, labels, cells, empty, o), tiles: o && o.tiles,
+  body: () => infraBody(name, labels, cells, empty), tiles: o && o.tiles,
 });
 // A table's head count: its rows, or "N of M" while the view hides some.
 const infraN = (name) => { const t = ist.data?.tables?.[name]?.table; return t && tblCount(t); };
@@ -336,9 +335,8 @@ const INFRA_PAGES = [
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
-// The open page, by its hash (`machines/<host>`), and its last read; `all` unfolds a machine's
-// power history and lasts while the page stays open.
-const pgst = { page: "", data: null, err: null, all: false };
+// The open page, by its hash (`machines/<host>`), and its last read.
+const pgst = { page: "", data: null, err: null };
 // The row and name of the page the hash opens, or null on the tab's tables.
 const infraPage = () => {
   if (st.tab !== "infra") return null;
@@ -368,9 +366,6 @@ function infraPageHtml() {
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return h + o.p.body(d);
 }
-// Power changes shown before "+N older".
-const HIST_ROWS = 30;
-
 // Each pool one slot colour on the history chart, by name.
 function poolColors(d) {
   const names = new Set();
@@ -443,12 +438,12 @@ function pageTable(d, labels, cells, empty) {
   return `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${d.rows.map((r, i) => `<tr>${keys.map((k) => cells[k](r, tblLinks(d.table, i))).join("")}</tr>`).join("")}</table></div>`;
 }
 
+// A machine's power changes over the read's window, newest first, every one: a record page, and
+// the window bounds them.
 function powerHistory(p) {
-  const ch = [...p.changes].reverse(), shown = pgst.all ? ch : ch.slice(0, HIST_ROWS);
   const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
-  const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
-  const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
-  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+  const rows = [...p.changes].reverse().map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
+  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}`;
 }
 
 // The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
@@ -581,7 +576,6 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
-  if (e.target.closest("[data-hist-all]")) { pgst.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;
@@ -647,7 +641,7 @@ TABS.infra = {
   // (ci.js) read on show and again on each new ledger line (and Pipelines on a state.json write).
   show() {
     const page = infraPage() ? st.page : "";
-    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
+    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null }); if (page) refreshPage(); }
     showRunPage();
     renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); pipFeed.show(!pip.data || pip.moved()); tstFeed.show(!tst.data || tst.moved());
     // A section not read yet says so at once: its read paints it only when it answers (a cold
