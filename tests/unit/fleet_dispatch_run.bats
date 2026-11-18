@@ -381,37 +381,47 @@ bats_require_minimum_version 1.5.0
   fleet_state 3
   stub fleet-presence 'echo "here 0 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: what the Claude accounts carry, at most present 3, away 10)'
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 3, away 10)'
   assert_output --partial 'the present pace target is 3, starting nothing'
   stub fleet-presence 'echo "away 45 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: what the Claude accounts carry, at most present 3, away 10)'
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 3, away 10)'
   refute_output --partial 'pace target is'
 }
 
-@test "the pace target is what the Claude accounts carry at pace, present or away, at most its cap and never under the run floor" {
+@test "the pace target is the live sessions plus what the Claude accounts' spend has spare, at most its cap and never under the run floor" {
   export DISPATCH_TARGET_PRESENT=30 DISPATCH_TARGET_AWAY=10
   fleet_state 3
   stub fleet-presence 'echo "away 45 tmux"'
-  jq '.fleet = {keeps: 1, rate: 0.25, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  # 3 live and one more Opus session's spend spare: the target is 4.
+  jq '.fleet = {keeps: 1, rate: 0.25, burn: 0.75, spare: 1, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 4 live sessions (the human is away'
-  # A carry over the away target is held to it; the run floor is the least it drops to.
-  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  # A spare over the away target is held to it; the run floor is the least it drops to, and a burn
+  # past keeps (a spare below 0) holds the target at the live count, never under 0.
+  jq '.fleet.spare = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 10 live sessions (the human is away'
-  jq '.fleet.carries = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  jq '.fleet.spare = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is away'
+  jq '.fleet.spare = -9' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 0 live sessions (the human is away'
   DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 5 live sessions (the human is away'
-  # Here, the present target follows the carry the same way (2026-11-18: 30 present while the accounts
-  # carried 19), held to the present cap and the run floor.
+  # Here, the present target follows the spare the same way, held to the present cap and the run floor.
   stub fleet-presence 'echo "here 0 tmux"'
   DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 5 live sessions (the human is present'
-  jq '.fleet.carries = 19' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 19 live sessions (the human is present'
-  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  # 2026-11-18 (ar-3230): 37 live, 19 working, burn 0.7/h of 1.6/h at 0.084 a session carried 19,
+  # which the session count read as full; the spend has 10 Opus sessions spare.
+  fleet_state 37
+  jq '.fleet = {keeps: 1.6, rate: 0.084, burn: 0.7, spare: 10, carries: 19}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  DISPATCH_TARGET_PRESENT=50 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 37 of 47 live sessions (the human is present'
+  fleet_state 3
+  jq '.fleet.spare = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
   # Unread, the cap stands.
@@ -439,7 +449,7 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (what the Claude accounts carry, at most present 50, away 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
