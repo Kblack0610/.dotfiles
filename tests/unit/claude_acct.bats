@@ -603,6 +603,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
       *) printf 'A=1\0CLAUDE_CONFIG_DIR=%s/\0CLAUDE_CONFIG_DIR=/not-first\0' "$dir" ;;
     esac > "$SANDBOX/proc/$pid/environ"
   done
+  printf 'claude\0--model\0sonnet\0-p\0x\0' > "$SANDBOX/proc/3/cmdline"
   mkdir -p "$SANDBOX/proc/5"   # a process gone between the glob and the read: no comm, no environ
   echo claude > "$SANDBOX/proc/5/comm"; rm "$SANDBOX/proc/5/comm"
   mkdir -p "$SANDBOX/shim"
@@ -614,7 +615,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   PATH="$SANDBOX/shim:$PATH" run --separate-stderr live_of
   assert_success
   [ -z "$stderr" ]
-  [ "$(sort <<<"$output" | paste -sd' ')" = "@ @$ALT" ]
+  # each line ends in a tab and its model's weight: pid 3 runs --model sonnet, pid 1 has no cmdline (1)
+  [ "$(sort <<<"$output" | paste -sd' ')" = "@"$'\t'"1 @$ALT"$'\t'"0.6" ]
   [ ! -e "$SANDBOX/fork.log" ] || { cat "$SANDBOX/fork.log"; false; }
 }
 
@@ -674,7 +676,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   assert_output "$ALT"
 }
 
-# live <dir> <n> -- n claude processes running on that account (empty dir = main)
+# live <dir> <n> [model] -- n claude processes running on that account (empty dir = main), started
+# with --model <model> when one is given
 live() {
   local i pid
   for ((i = 0; i < $2; i++)); do
@@ -682,6 +685,7 @@ live() {
     mkdir -p "$CLAUDE_ACCT_PROC/$pid"
     echo claude > "$CLAUDE_ACCT_PROC/$pid/comm"
     if [ -n "$1" ]; then printf 'CLAUDE_CONFIG_DIR=%s\0' "$1"; else : ; fi > "$CLAUDE_ACCT_PROC/$pid/environ"
+    [ -z "${3:-}" ] || printf 'claude\0--model\0%s\0' "$3" > "$CLAUDE_ACCT_PROC/$pid/cmdline"
   done
 }
 
@@ -757,7 +761,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *working_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_cost*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -791,7 +795,7 @@ STUB
   assert_output 1
   run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -cF 'avg_over_time((max by (account) (claude_account_working_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_working_cost{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
@@ -1078,7 +1082,7 @@ seen_claude() {
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1109,6 +1113,33 @@ seen_claude() {
   run --separate-stderr "$ACCT" room --json
   # the status line's "carries ~2": 0.24 an hour over 0.1 a session
   assert_equal "$(jq -c '[.fleet.carries, .fleet.rate]' <<<"$output")" '[2,0.1]'
+}
+
+@test "a working session burns by its model: Sonnet and Haiku count less than Opus, so the spend has more spare" {
+  # 2026-11-18 (ar-3230): carries counted every working session at one averaged rate, so Sonnet and
+  # Haiku sessions held as much of the pace target as Opus ones.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.025
+  week main 80 84
+  week alt 80 84
+  live "" 1                         # no --model: counted as Opus
+  live "$ALT" 1 claude-sonnet-5-5   # pace.conf MODEL_WEIGHT_SONNET 0.6
+  live "$ALT" 1 haiku               # MODEL_WEIGHT_HAIKU 0.2
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .working_cost <<<"$output")" = 1 ]
+  [ "$(field alt .working <<<"$output")" = 2 ]
+  [ "$(field alt '.working_cost * 10 | round' <<<"$output")" = 8 ]
+  [ "$(field alt '.burn * 1000 | round' <<<"$output")" = 20 ]
+  run --separate-stderr "$ACCT" room --json
+  # keeps 0.24: (0.24 - 1.8 x 0.025) / 0.025 = 7.8
+  assert_equal "$(jq -c '[.fleet.spare, (.fleet.working_cost * 10 | round)]' <<<"$output")" '[7,18]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working, 1\.8 at Opus cost\), .*, room for ~7 more\)'
+  # negative control: the same three on Opus leave less spare, (0.24 - 0.075) / 0.025 = 6.6
+  find "$CLAUDE_ACCT_PROC" -name cmdline -delete
+  run --separate-stderr "$ACCT" room --json
+  assert_equal "$(jq -c '[.fleet.spare, .fleet.working_cost]' <<<"$output")" '[6,3]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working\), '
 }
 
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
@@ -1401,6 +1432,7 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   assert_line 'claude_fleet_working_sessions 5'
   assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
+  assert_line 'claude_account_working_cost{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
   assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
