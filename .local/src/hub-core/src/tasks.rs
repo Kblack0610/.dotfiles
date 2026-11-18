@@ -24,7 +24,11 @@ pub struct Project {
     pub dir: String,
     pub version: Option<String>,
     pub open: usize,
+    /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
+    /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
+    /// project's `agent_board_max`): still on the sheet, off the board dispatch reads.
+    pub agent_backlog: usize,
     pub playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     pub inbox: usize,
@@ -91,6 +95,9 @@ pub struct Row {
     /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
     /// `review`), set by `queue_states`.
     pub queue: Option<String>,
+    /// The agent row is on the backlog tier (`tier:backlog`): past its project's board budget, so
+    /// no Board count holds it, and `open_rows` lists it after its section's board rows.
+    pub backlog: bool,
 }
 
 /// The sections in sheet order, then a row in none (a playtest check).
@@ -338,7 +345,7 @@ pub struct FocusOpen {
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
 /// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Every number
 /// labelled Board (Home's card, the Projects strip, waybar's `B`) is `open`; no reader counts
-/// for itself.
+/// for itself. An agent row on the backlog tier is in `backlog` alone, never in the others.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {
@@ -347,6 +354,13 @@ pub struct Totals {
     pub human: usize,
     pub agent: usize,
     pub playtest: usize,
+    pub backlog: usize,
+}
+
+/// The board and backlog counts in the one form every surface shows: `Board 75 | Backlog 210`,
+/// the words `notes board` and `notes doctor` print.
+pub fn tiers(board: usize, backlog: usize) -> String {
+    format!("Board {board} | Backlog {backlog}")
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -395,8 +409,23 @@ impl Feed {
             .iter()
             .filter(|r| r.state != "done" && in_scope(r, scope))
             .collect();
-        rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.rank));
+        rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.backlog, r.rank));
         rows
+    }
+
+    /// The agent board and backlog counts in [`tiers`]'s words: every project's from `totals`,
+    /// one project's from its `projects` entry. None when the feed carries neither (an older
+    /// notes, or a project it does not list), so a view shows nothing rather than a 0.
+    pub fn agent_tiers(&self, scope: Option<(&str, &str)>) -> Option<String> {
+        let (board, backlog) = match scope {
+            None => self.totals.map(|t| (t.agent, t.backlog))?,
+            Some((profile, project)) => self
+                .projects
+                .iter()
+                .find(|p| p.profile == profile && p.project == project)
+                .map(|p| (p.agent_open, p.agent_backlog))?,
+        };
+        Some(tiers(board, backlog))
     }
 
     /// The board's rows: the open ones as `open_rows` orders them, then the closed ones newest
@@ -918,6 +947,34 @@ mod tests {
         assert_eq!(all, ["wire the bar #size/m", "water", "ship", "tidy"]);
         assert_eq!(f.open_rows(Some(("bnb", "garden"))).len(), 1);
         assert!(f.open_rows(Some(("personal", "garden"))).is_empty());
+        // A backlog-tier row follows its section's board rows, whatever its rank.
+        f.rows
+            .iter_mut()
+            .find(|r| r.text == "water")
+            .unwrap()
+            .backlog = true;
+        let all: Vec<&str> = f.open_rows(None).iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(all, ["wire the bar #size/m", "ship", "water", "tidy"]);
+        // The tiers line: the whole feed's from totals, a project's from its entry, else none.
+        assert_eq!(f.agent_tiers(None), None, "no totals, no line");
+        f.totals = Some(Totals {
+            agent: 3,
+            backlog: 1,
+            ..Default::default()
+        });
+        f.projects = vec![Project {
+            profile: "bnb".into(),
+            project: "demo".into(),
+            agent_open: 2,
+            agent_backlog: 1,
+            ..Default::default()
+        }];
+        assert_eq!(f.agent_tiers(None).as_deref(), Some("Board 3 | Backlog 1"));
+        assert_eq!(
+            f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
+            Some("Board 2 | Backlog 1")
+        );
+        assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();
         assert_eq!(f.open_rows(None).len(), 3);
     }
