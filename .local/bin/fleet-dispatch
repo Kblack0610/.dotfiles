@@ -160,6 +160,10 @@ read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS"
 # promoted it by hand (2026-11-09). Provisional: 4 is a guess at a pass or two of starts, confidence
 # low; revisit when requested items wait over a day with the floor met. 0 turns it off.
 : "${DISPATCH_REQUESTED_FLOOR:=4}"
+# A row's gate tags (#after/<row-id>, #at/, #rbw/, #ask/, #pr/, #hold/, #nightly/: agent-queue gate)
+# hold it on the board until each clears, and a row whose gates all cleared is committed work that
+# starts without the judge (load_gates). 0 reads none, so a gate tag is a tag like any other.
+: "${DISPATCH_ROW_GATES:=1}"
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
 # 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
@@ -265,6 +269,8 @@ def rank_fields($today; $pprio):
                 (.klabel // "" | select(. != "")),
                 .stage,
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
+# area_key: the area picks holds one row to; a gated row has no verdict to name one, so it is its own.
+def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
 def rank: sort_by((.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
@@ -493,12 +499,51 @@ def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "")
 # detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
 detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
 
-# load_extras -- fill the caller's `local -A DET PLN PAR RNK` from one board read, by "<project>\t<lane>\t<id>":
+# load_gates -- GATE_ST, GATE_WHY and GATE_Q by board gate tag: its state (clear, pending or dead),
+# hold_for's words and its queue form, for every gate an open row carries, from one
+# `agent-queue gate --json --all` (the one evaluator; it reads rbw and the board once). Once a pass:
+# each entry point calls it before its subshells, as fleet_hosts, and load_extras when none did. A
+# read that failed leaves GATES_FAILED, and then no board row starts (cmd_candidates, t3_rows): any
+# row could carry a gate that is not clear.
+load_gates() {
+  [ -z "${GATES_LOADED:-}" ] || return 0
+  declare -gA GATE_ST=() GATE_WHY=() GATE_Q=()
+  GATES_LOADED=1 GATES_FAILED=''
+  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
+  local out rc=0 t s w q
+  out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
+  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+    GATES_FAILED="agent-queue gate --all failed (exit $rc)"
+    say "$GATES_FAILED, so no board row starts this pass"
+    return 0
+  fi
+  # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
+  while IFS=$'\x1f' read -r t s w q; do
+    [ -n "$t" ] && GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)"' <<<"$out")
+}
+
+# gate_wait <gate tags> -> why the row may not start yet, one clause a gate that is not clear;
+# nothing when all are.
+gate_wait() {
+  local g out=''
+  for g in $1; do
+    case "${GATE_ST[$g]:-}" in
+      clear) ;;
+      dead) out+="${out:+; }gate #$g never clears: ${GATE_WHY[$g]}" ;;
+      *) out+="${out:+; }waits on ${GATE_WHY[$g]:-$g}" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# load_extras -- fill the caller's `local -A DET PLN PAR RNK GAT` from one board read, by "<project>\t<lane>\t<id>":
 # DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan, RNK its feed `rank`
-# (RANK_JQ's `frank`); PAR by id alone (a child may sit on another project's board), 1 for a parent:
-# an open row names it in `#of/`.
+# (RANK_JQ's `frank`), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
+# project's board), 1 for a parent: an open row names it in `#of/`.
 load_extras() {
   local board p l i r t g d
+  load_gates
   board=$(notes board --json 2>/dev/null)
   while IFS=$'\t' read -r p l i r t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
@@ -510,6 +555,12 @@ load_extras() {
   while read -r i; do
     [ -n "$i" ] && PAR[$i]=1
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
+  [ "${#GATE_ST[@]}" -gt 0 ] || return 0
+  while IFS=$'\t' read -r p l i t; do
+    for g in $t; do
+      [ -z "${GATE_ST[$g]+x}" ] || GAT["$p"$'\t'"$l"$'\t'"$i"]+="${GAT["$p"$'\t'"$l"$'\t'"$i"]:+ }$g"
+    done
+  done < <(jq -r '.rows[]? | select(.id != null and (.tags // [] | length) > 0) | "\(.project)\t\(.lane)\t\(.id)\t\(.tags | join(" "))"' <<<"$board")
 }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
@@ -1195,17 +1246,21 @@ judged_keys() {
 
 # cmd_candidates -> one JSON line per open row a worker takes (with SUGGEST=1, every agent row too)
 # that no verdict holds, with its details. A #plan row waits for inbox-plan and is left out; suggest
-# shows it as blocked. CLEANUP_ONLY and REQUESTED_ONLY (fill_day's floors) read only their rows
-# (floor_row).
+# shows it as blocked, and so a row with a gate not yet clear (gate_wait), shown as its `gate_wait`;
+# an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
+# (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
+# gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY and
+# REQUESTED_ONLY (fill_day's floors) read only their rows (floor_row).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
-  local x planned dj dsig plan off kind board
-  local -A DET=() PLN=() PAR=() RNK=()
+  local x planned dj dsig plan off kind board gates gwait
+  local -A DET=() PLN=() PAR=() RNK=() GAT=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
   [ -n "$table" ] || return 0
   load_extras
+  [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
@@ -1229,6 +1284,9 @@ cmd_candidates() {
           [ "$plan" = 0 ] || [ "${SUGGEST:-0}" = 1 ] || continue
           off=$(row_off "$name" "$stage" "$key" "$text")
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
+          gates=${GAT["$name"$'\t'"$lane"$'\t'"$key"]:-}
+          gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
+          [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
           [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
           nobody=''
@@ -1251,12 +1309,14 @@ cmd_candidates() {
             --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
+            --arg gates "$gates" --arg gwait "$gwait" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
+              + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done <<<"$board"
       done
@@ -1465,13 +1525,15 @@ plan_skips() {
 # carries `why`; `auto`, whether a worker in workers.json takes it (widening one is a line there);
 # `verdict`, the latest under this policy for this text, or `unjudged`; `held`, whether an active
 # queue item holds its area; and `blocked`, every counted reason it would not start (nobody_why,
-# size, the judge's skip, a held area), with `active` on a row no worker takes when its repo moved
+# a gate not yet clear (gate_wait), size, the judge's skip, a held area; a row whose gates cleared
+# reads neither size nor skip, as picks does not), with `active` on a row no worker takes when its repo moved
 # in the last day. Display only: it never judges, claims or queues. `--write` stores it for the hub
 # Candidates fold (candidates_write); each real `run` does that.
 cmd_suggest() {
   local profs cands
   profs=$(notes projects --stats --json 2>/dev/null | jq -r '[.[] | select(.automation != false) | .profile] | unique | join(" ")' 2>/dev/null)
   [ -n "$profs" ] || profs=$DISPATCH_PROFILES
+  load_gates
   cands=$(SUGGEST=1 DISPATCH_PROFILES="$profs" VERDICTS=/dev/null cmd_candidates)
   [ -n "$cands" ] || { [ "${1:-}" = --json ] || echo "suggest: no open agent row"; return 0; }
   jq -sc --arg sig "$(policy_sig)" --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) \
@@ -1483,9 +1545,9 @@ cmd_suggest() {
                        elif ($d | usable($prules) | not) or ($d | holds($c) | not) then "unjudged" else $d.verdict end)}
       | . + {held: (.area != "" and ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a)) != null),
              size: eff_size($d), reason: ($d.reason // "")})
-    | map(. + {blocked: [(.off // empty), (.nobody // empty), (if .plan then "waits on a plan" else empty end),
-        (if .size | IN("L", "XL") then "size/l: too big for a pick" else empty end),
-        (if .verdict == "skip" or .verdict == "failed" then "judge: \(.verdict)\(if .reason != "" then ", \(.reason)" else "" end)" else empty end),
+    | map(. + {blocked: [(.off // empty), (.nobody // empty), (if .plan then "waits on a plan" else empty end), (.gate_wait // empty),
+        (if (.gated | not) and (.size | IN("L", "XL")) then "size/l: too big for a pick" else empty end),
+        (if ((.gated | not) and .verdict == "skip") or .verdict == "failed" then "judge: \(.verdict)\(if .reason != "" then ", \(.reason)" else "" end)" else empty end),
         (if .held then "area held by a queue item" else empty end)]})
     | rank | .[]' <<<"$cands" |
     if [ "${1:-}" = --json ]; then cat; else
@@ -1534,6 +1596,9 @@ latest_verdicts() {
 # under a policy that still defines its rule, for its current text, S or M, clear, agent-only, naming one area, and
 # judged no higher a tier than the row counts as (all checked here too, so a lax verdict cannot
 # launch anything); never two on an area, held by an active item or picked now; in RANK_JQ order.
+# A `gated` row (cmd_candidates: its gates all cleared) is committed work: no verdict or size
+# is asked of it, only the tier ceiling, and a `failed` verdict (its session died) still holds it. It
+# keeps the area a verdict named, so the area rule still holds it; with none it is its own (area_key).
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
@@ -1542,13 +1607,16 @@ picks() {
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | map(. as $c | $by[[.project, .lane, .key] | tostring] as $d
-      | select($d != null and $d.verdict == "dispatch" and (eff_size($d) | IN("S", "M"))
-          and $d.clear == true and $d.agent_only == true and ($d | usable($prules)) and ($d | holds($c))
-          and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
-          and ($d.area | type) == "string" and $d.area != "")
-      | . + {area: ($d.area | ascii_downcase)})
-    | map(select("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
-    | rank | unique_by([.project, .area]) | rank
+      | if $c.gated == true then
+          select(($d == null or $d.verdict != "failed") and ($c.tier | type) == "number" and $c.tier <= $max) | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+        else
+          select($d != null and $d.verdict == "dispatch" and (eff_size($d) | IN("S", "M"))
+              and $d.clear == true and $d.agent_only == true and ($d | usable($prules)) and ($d | holds($c))
+              and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
+              and ($d.area | type) == "string" and $d.area != "")
+          | . + {area: ($d.area | ascii_downcase)} end)
+    | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
+    | rank | unique_by([.project, area_key]) | rank
     | .[:$room] | .[]' <<<"$cands"
 }
 
@@ -4573,6 +4641,7 @@ cmd_stopped() {
 # twice DISPATCH_STARVED_MIN (low_starved), which is a fill that has stopped filling.
 cmd_starved() {
   local items board low last cut started why stopped dead queue qrc human mine plans
+  load_gates   # once, for the picks and unjudged rows it counts
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   queue=$(runnable); qrc=$?
   # The human's urgent items and approved plan phases over the window: their standing rule keeps them
@@ -5258,6 +5327,9 @@ cmd_run() {
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
   [ "$DRY" = 1 ] || cmd_reap
+  # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
+  # write gates onto the rows they un-start (agent-queue return_gates).
+  GATES_LOADED=''; load_gates
   HUMAN_PASS=0 PLAN_PASS=0 PLANS_STARTED=''
   QUEUE_HELD='' LINE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
@@ -5415,8 +5487,9 @@ cmd_run() {
   start_items "$items" "$room"
 }
 
-# unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each.
-unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'unique_by([.project, .lane, .key])[]'; }
+# unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
+# gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
+unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
 
 # fill_now <room> -- `fill` by hand: up to <room> day picks (fill_day).
 fill_now() { fill_day "$1"; }
@@ -5439,7 +5512,7 @@ judge_once() {
 # cleanup row merges, any other stops at a PR), in RANK_JQ order, one an area, up to <room>.
 day_picks() {
   { picks "$(all_open)" 999; t3_picks "$(t3_rows '')"; } |
-    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, .area]) | rank | .[:$room] | .[]'
+    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, area_key]) | rank | .[:$room] | .[]'
 }
 
 # row_task <candidate row> -> the task promote gives its item: a tier-3 PR row (worker tier3-pr) its
@@ -5486,14 +5559,32 @@ floor_row() {
 # promote <row> <tags> <task> [repeat] [mode] -- claim the open row on its board, then add it to the queue
 # under its id, at the row's priority (as a plan item for mode plan); a row that cannot be added is un-started again. The start stamps an id
 # on a row with none; a row still without one (its project has no code) is refused, since nothing
-# could join an item to it. The new item's slug is left in PROMOTED.
+# could join an item to it. The new item's slug is left in PROMOTED. A row with a gate not yet clear
+# (load_gates) is refused before the start, the human's Start too: the gate is the row's own word that
+# it waits. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
+# reads), all but a time of day, which would hold the item again the next morning; once the item is
+# queued their hashtags come off the row.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
+  local g q gwait gates=() rm=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
   [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
+  load_gates
+  [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
+  for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
+    [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
+  done
+  if [ "${#gates[@]}" -gt 0 ]; then
+    gwait=$(gate_wait "${gates[*]}")
+    [ -z "$gwait" ] || { say "skip $project: $key $gwait"; return 1; }
+    for g in "${gates[@]}"; do
+      rm+=(--remove "$g")
+      for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done
+    done
+  fi
   out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
     { say "skip $project: could not start row: $key ($out)"; return 1; }
   id=$(sed -n 's/^  id://p' <<<"$out")
@@ -5545,13 +5636,15 @@ promote() {
   slug=$(awk '$3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   candidates_drop "$project" "$lane" "$key"
   agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
+  [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$id" >/dev/null 2>&1 ||
+    say "promote $id: queued, but its cleared gates (${gates[*]}) are still on its row"
   logline "filled queue item $slug from $project $lane row${tags:+ ($tags)}: $id"
   echo "queued $project: $id"
 }
 
 # cmd_promote --project P [--profile X] [--agent] [--tags T] --raw LINE -- queue one row as the human saw it: the
-# Board tab's Start. A row that changed since, or is already started, is refused. No gate: the item
-# starts like any board item: when the human is away, or within the present trickle.
+# Board tab's Start. A row that changed since, or is already started, is refused. No load gate: the item
+# starts like any board item (a row gate not yet clear refuses it, promote): when the human is away, or within the present trickle.
 cmd_promote() {
   local project='' prof='' lane=human raw='' tags='' board key
   while [ $# -gt 0 ]; do
@@ -5584,6 +5677,7 @@ cmd_fill() {
     case "$1" in --dry-run) dry=1 ;; --json) json=1 ;; *) say "fill: unknown argument: $1"; return 2 ;; esac
     shift
   done
+  load_gates   # once, so each subshell of the fill reads the same gates
   if [ "$dry" = 0 ]; then
     DRY=0; mkdir -p "$DIR"; exec 9>"$DIR/.lock"
     flock -n 9 || { say "fill: another pass is running"; return 0; }
@@ -5607,10 +5701,13 @@ cmd_fill() {
 # take because of tier alone: no tier tag below 3 and none of DISPATCH_T3_SKIP. `order` is the
 # row's place on its board, newest first; `rank` puts what the human asked for, then observer rows,
 # first (cleanup rows rank by kinds.json like any other, in t3_picks).
+# A row with a gate not yet clear is left out, as a #plan row is, and one whose gates all cleared is
+# `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED).
 t3_rows() {
-  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board
-  local -A DET=() PLN=() PAR=() RNK=()
+  local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board gates
+  local -A DET=() PLN=() PAR=() RNK=() GAT=()
   load_extras
+  [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
   for name in $DISPATCH_T3_PROJECTS; do
     sheet=$(np "$DISPATCH_T3_PROFILE" projects 2>/dev/null | awk -F'\t' -v p="$name" '$1 == p { print $2; exit }')
@@ -5632,6 +5729,8 @@ t3_rows() {
       [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
+      gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
+      [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
       line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}
@@ -5643,11 +5742,13 @@ t3_rows() {
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
         --arg profile "$DISPATCH_T3_PROFILE" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
         --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
+        --arg gates "$gates" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
           cleanup: $cleanup, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
-          rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}'
+          rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
+          + (if $gates != "" then {gated: true, gates: $gates} else {} end)'
     done <<<"$board"
   done
 }
@@ -5655,16 +5756,19 @@ t3_rows() {
 # t3_ready <rows> -> the t3_rows whose verdict, under a policy that still defines its rule and for the row's current
 # text, says tier 3 is the only reason a merging session may not take it, and that it is S or M,
 # clear, agent-only and in one area, with that area on the row.
+# A `gated` row needs no verdict, as in picks: only a `failed` one (its session died) holds it.
 t3_ready() {
   [ -n "$1" ] || return 0
   jq -sc --argjson prules "$(policy_rules)" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
     | .[] | . as $c | $by[[.project, .lane, .key] | tostring] as $d
-    | select($d != null and $d.tier3_only == true and $d.tier == 3
-        and (eff_size($d) | IN("S", "M")) and $d.clear == true and $d.agent_only == true
-        and ($d | usable($prules)) and ($d | holds($c))
-        and ($d.area | type) == "string" and $d.area != "")
-    | . + {area: ($d.area | ascii_downcase)}' <<<"$1"
+    | if $c.gated == true then select($d == null or $d.verdict != "failed") | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+      else
+        select($d != null and $d.tier3_only == true and $d.tier == 3
+          and (eff_size($d) | IN("S", "M")) and $d.clear == true and $d.agent_only == true
+          and ($d | usable($prules)) and ($d | holds($c))
+          and ($d.area | type) == "string" and $d.area != "")
+        | . + {area: ($d.area | ascii_downcase)} end' <<<"$1"
 }
 
 # t3_picks <rows> -> the t3_ready rows a session may take, in RANK_JQ order with the project's #prio
@@ -5675,9 +5779,9 @@ t3_ready() {
 t3_picks() {
   t3_ready "$1" | jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" "$RANK_JQ"'
-    map(select("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)
+    map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
       | . + {worker: (if .cleanup == 0 then "tier3-cleanup" else "tier3-pr" end), t3rank: [.rank, .prio, (0 - .order)]} | rank_fields($today; .project_prio // ""))
-    | rank | unique_by([.project, .area]) | rank | .[]'
+    | rank | unique_by([.project, area_key]) | rank | .[]'
 }
 
 # t3_brief <row> -- the task a tier-3 PR item runs with nobody to ask (item_brief adds --pr-only)
