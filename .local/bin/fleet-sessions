@@ -8,6 +8,7 @@
 #                                     .local/src/docs/fleet-states.md), each session with its
 #                                     eta from `fleet-bench eta`, and fleet_sessions.prom
 #   fleet-sessions mark <sid> <fact>  record that <fact> was nudged, so it is nudged once
+#   fleet-sessions mark --close <sid>  record that the session was typed its close, once for good
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #                                     (both refuse, exit 3, outside the pass holding the
 #                                     shepherd lease: fleet-shepherd holds)
@@ -642,30 +643,37 @@ ledger_write() {
 }
 # mark <sid> <fact>: the claim on a nudge, taken before the message goes out. Exit 1 when the fact
 # is already nudged, whichever pass nudged it, and the ledger is left as it is (a second mark would
-# clear the escalation the first one earned). A DONE or CHAT fact (every fact starts with its bucket)
-# is a close nudge, and a session is sent one for good: $CLOSED/<sid> is the claim, kept after the
-# ledger fact is overwritten by a LANDED or STALLED nudge. A coordinator that worked again after
+# clear the escalation the first one earned).
+# mark --close <sid>: the claim on the close, which only fleet-shepherd's close_sample sends (it
+# types /wind-down auto). A session is sent one for good: a coordinator that worked again after
 # /wind-down and went DONE again was typed the same close every half hour (2026-11-17:
-# hub/dotfiles:1, four times in 90 minutes). The row's `nudged` cell reads it (collect), so a
-# DONE or CHAT row with a claim is nudged: never typed to again, escalated once if it stays.
+# hub/dotfiles:1, four times in 90 minutes). $CLOSED/<sid> is the claim, apart from the fact
+# ledger: a LANDED or STALLED message held unseen for a session in another permission mode
+# (2026-11-18: hub/dotfiles:4 and :8) marked that fact, and a close keyed on it was never typed.
+# The row's `close_sent` reads the claim, and a DONE or CHAT row with one reads nudged (collect),
+# so it is escalated once if it stays.
 CLOSED="$LEDGER/.closed"
 mark() {
+  if [ "${1:-}" = --close ]; then
+    case "${2:-}" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
+    mkdir -p "$CLOSED"
+    ( flock 8
+      [ ! -e "$CLOSED/$2" ] || { echo "fleet-sessions: $2 already sent its close nudge" >&2; exit 1; }
+      : > "$CLOSED/$2" ) 8>"$LEDGER/mark.lock"
+    return
+  fi
   case "$1" in ''|*/*|.|..) echo "fleet-sessions: bad session id" >&2; return 2 ;; esac
   mkdir -p "$LEDGER"
   (
     flock 8
-    local closing=""
-    case "$2" in DONE\ *|CHAT\ *) closing=1 ;; esac
-    [ -z "$closing" ] || [ ! -e "$CLOSED/$1" ] || { echo "fleet-sessions: $1 already sent its close nudge" >&2; exit 1; }
     nudged "$1" "$2" && { echo "fleet-sessions: $1 already nudged for this fact" >&2; exit 1; }
     ledger_write "$1" fact "$2" || exit 1
-    [ -z "$closing" ] || { mkdir -p "$CLOSED" && : > "$CLOSED/$1"; }
   ) 8>"$LEDGER/mark.lock"
 }
 
 # release_left <rows>: a session that left NEEDS drops its NEEDS escalation, so its next ask or
-# dialog pages once. A session that left DONE keeps its entry: its next DONE is the same fact, and
-# the close claim in $CLOSED covers a ledger fact another nudge overwrote.
+# dialog pages once. A session that left DONE keeps its entry, and its close claim in $CLOSED is
+# never released: one typed close per session.
 release_left() {
   local b sid _
   while IFS=$'\t' read -r b _ sid _; do
@@ -1484,6 +1492,27 @@ activity_line() {
   echo "${status:--}"
 }
 
+# park_pane_gone <ledger> -> 0 when the ledger's tmux server answers and its pane is gone, or sits in a
+# session created after the park. A park keeps its pane (held dead, or a shell), so neither can be the
+# parked pane: the server restarted, and pane ids restart with it, so the same id may be a live claude's
+# window, the row would read PARKED and the pace line would send an unpark into it. Not the session's
+# name: a renamed session keeps its pane. A server that cannot be read, or a ledger with no pane, decides
+# nothing (a running server lists a pane, so an empty answer is no answer): the ledger stays. The server's
+# panes are read once per pass, in PARK_PANES.
+declare -A PARK_PANES=()
+park_pane_gone() {
+  local srv="" pane="" parked="" k v created
+  while IFS='=' read -r k v; do
+    case "$k" in server) srv="$v" ;; pane) pane="$v" ;; parked) parked="$v" ;; esac
+  done <"$1"
+  [ -n "$srv" ] && [ -n "$pane" ] || return 1
+  [ -n "${PARK_PANES[$srv]+x}" ] || PARK_PANES[$srv]="$(tmux -L "$srv" list-panes -a -F '#{pane_id} #{session_created}' 2>/dev/null)" || return 1
+  [ -n "${PARK_PANES[$srv]}" ] || return 1
+  created="$(awk -v p="$pane" '$1 == p { print $2; exit }' <<<"${PARK_PANES[$srv]}")"
+  [ -n "$created" ] || return 0
+  [[ "$parked" =~ ^[0-9]+$ && "$created" =~ ^[0-9]+$ ]] && [ "$created" -gt "$parked" ]
+}
+
 # parked_lines <agent-panel lines> -> one agent-panel-shaped line, status parked, per park
 # ledger whose tmux session (a session:%pane ledger: whose pane) has no live claude again, so a
 # parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
@@ -1493,10 +1522,12 @@ activity_line() {
 # has a pane id a tmux restart made unmatchable, so it dedupes on its session like a session ledger.
 parked_lines() {
   local f live panes
+  PARK_PANES=()
   live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
   panes="$(jq -r '.pane' <<<"$1" 2>/dev/null)"
   for f in "$PARKED_DIR"/*; do
     [ -f "$f" ] || continue
+    park_pane_gone "$f" && continue
     jq -cn --rawfile l "$f" --arg live "$live" --arg panes "$panes" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
@@ -1934,7 +1965,7 @@ collect() {
       fact="$fact base ${fork:0:12}"
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
-    case "$bucket" in DONE\ *|CHAT\ *) [ ! -e "$CLOSED/$sid" ] || n=1 ;; esac
+    [ ! -e "$CLOSED/$sid" ] || n=1
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
@@ -2337,8 +2368,11 @@ close_self() {
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
 # its close verdict (CLOSE_JQ).
 json_rows() {
-  jq -cR --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" \
+  local closed
+  closed="$(find "$CLOSED" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | jq -Rn '[inputs | {(.): true}] | add // {}')"
+  jq -cR --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson closed "$closed" \
     ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
+      close_sent: ($closed[.[2]] // false),
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
       owners: (if .[13] == "-" then [] else .[13] | split(",") end),
