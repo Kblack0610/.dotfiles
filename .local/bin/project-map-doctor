@@ -671,6 +671,28 @@ else
   skip "notes CLI, project-name.sh or git-release.sh unavailable; cannot compare sheets to release tags"
 fi
 
+# --- 7c. the exporter feed lists every Forgejo repo the map names --------------------------
+# The PR store reads Forgejo PRs only for the exporter feed's `forgejo_repos` (schedules-sync
+# read_repos), which is home-config's FORGEJO_REPOS: the in-cluster exporter cannot read this map,
+# so that list is a copy and this check holds it to the map. A slug it lacks stalls
+# agentctl-session-outcomes on the first session with a PR there (tilecast, 2026-11-18). Read from
+# the feed as schedules-sync last cached it, so a list merged but not yet deployed still fails.
+sync_json="$(dirname "${SCHEDULES_RUNS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/ci/runs.jsonl}")/sync.json"
+fj_mapped="$(jq -r '(.trackers // {})[] | objects | .forgejo // empty | ascii_downcase' "$MAP_FILE" 2>/dev/null | sort -u)"
+if [ -z "$fj_mapped" ]; then
+  skip "the map names no Forgejo repo; no exporter list to check"
+elif ! fj_fed="$(jq -er '.exporter.forgejo_repos | arrays | .[] | ascii_downcase' "$sync_json" 2>/dev/null)"; then
+  skip "no exporter feed with forgejo_repos in $sync_json (schedules-sync has not synced); cannot check the Forgejo repo list"
+else
+  missing=0
+  while IFS= read -r repo; do
+    grep -qxF -- "$repo" <<<"$fj_fed" && continue
+    fail "the map lists Forgejo repo $repo but the exporter feed's forgejo_repos lacks it (add it to FORGEJO_REPOS in home-config apps/github-runner-exporter/deployment.yaml)"
+    missing=$((missing + 1))
+  done <<<"$fj_mapped"
+  [ "$missing" -eq 0 ] && pass "the exporter feed lists all $(wc -l <<<"$fj_mapped") Forgejo repos the map names"
+fi
+
 printf '\n'
 if [ "$fails" -gt 0 ]; then
   printf '%s check(s) FAILED\n' "$fails"

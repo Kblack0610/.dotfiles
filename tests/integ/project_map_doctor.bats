@@ -30,7 +30,7 @@ setup() {
 }
 
 # write_map <json> -- the whole map, so each test states exactly the shape it is pinning.
-write_map() { cat > "$MAP" > /dev/null; }
+write_map() { cat > "$MAP"; }
 
 # A registry with one repo, one app, one other spelling, one forge slug, one repo-relation.
 # Everything resolves.
@@ -672,4 +672,33 @@ JSON
   run "$DOCTOR" "$MAP"
   assert_output --partial "SKIP  Gatus at $CC_GATUS_URL did not answer"
   refute_output --partial "Gatus group ("
+}
+
+# 7c: the exporter's forgejo_repos is a copy of the map's Forgejo slugs (home-config FORGEJO_REPOS).
+# NEGATIVE CONTROL: before it, a slug the feed lacked surfaced only as session-outcomes' nightly
+# STALLED (tilecast, 2026-11-18).
+fj_feed() {
+  mkdir -p "$HOME/.local/state/ci"
+  jq -n --argjson r "$1" '{exporter: {forgejo_repos: $r}}' > "$HOME/.local/state/ci/sync.json"
+  write_map <<'JSON'
+{ "trackers": { "infra": { "forgejo": "o/Infra" }, "game": { "forgejo": "o/game" }, "web": { "github": "o/web" } } }
+JSON
+}
+
+@test "forgejo feed: a map slug the exporter feed lacks fails and names it; a listed one passes" {
+  fj_feed '["o/infra"]'
+  run "$DOCTOR" "$MAP"
+  assert_output --partial "FAIL  the map lists Forgejo repo o/game but the exporter feed's forgejo_repos lacks it"
+  refute_output --partial "Forgejo repo o/infra"
+  fj_feed '["o/infra", "o/game"]'
+  run "$DOCTOR" "$MAP"
+  assert_output --partial "PASS  the exporter feed lists all 2 Forgejo repos the map names"
+}
+
+@test "forgejo feed: no synced feed is a SKIP, never a PASS" {
+  fj_feed '[]'
+  rm "$HOME/.local/state/ci/sync.json"
+  run "$DOCTOR" "$MAP"
+  assert_output --partial "SKIP  no exporter feed with forgejo_repos"
+  refute_output --partial "Forgejo repos the map names"
 }
