@@ -21,7 +21,7 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   id="$(add_queue)"
   run "$AP" accept "$id"
   assert_success
-  assert_equal "$(cat "$CALLS")" "agent-queue add --project dotfiles -- fix it"
+  assert_equal "$(cat "$CALLS")" "agent-queue add --project dotfiles --priority high -- fix it"
   assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$id.json")" "accepted human"
   run "$AP" accept "$id"
   assert_failure
@@ -73,7 +73,7 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
 @test "a title that reads as a flag stays the title, and optional flags may be empty" {
   id="$("$AP" add --stream s --project p --verb queue --arg "--running x" --why "" --evidence "" title)"
   "$AP" accept "$id"
-  assert_equal "$(cat "$CALLS")" "agent-queue add --project p -- --running x"
+  assert_equal "$(cat "$CALLS")" "agent-queue add --project p --priority high -- --running x"
 }
 
 @test "a missing id or an unknown status says so" {
@@ -128,7 +128,7 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   run bash -c "\"$AP\" list --json | jq -r 'sort_by(.verb) | .[].does'"
   assert_success
   assert_line --index 0 "nothing runs: the decision is recorded"
-  assert_line --index 1 "agent-queue add --project dotfiles -- fix it"
+  assert_line --index 1 "agent-queue add --project dotfiles --priority high -- fix it"
   assert_line --index 2 "notes ptask dotfiles --agent add a row"
 }
 

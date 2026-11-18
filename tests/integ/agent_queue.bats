@@ -3357,6 +3357,12 @@ already"
   [ "$(field "$(item queued s3)" priority)" = low ]
   CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --running --slug s4 "the session's own task"
   assert_success
+  # a human channel names its want, not a priority, and an emptied session env counts as none
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --want voice --slug s6 "a want said aloud"
+  assert_success
+  CLAUDE_CODE_SESSION_ID= AGENT_QUEUE_ITEM= run "$AQ" add --project game --slug s7 "a script that cleared the session"
+  assert_success
+  [ "$(field "$(item queued s7)" priority)" = high ]
   # negative control: the same bare add by hand, with no session around it, files high
   run "$AQ" add --project game --slug s5 "bare by hand"
   assert_success
