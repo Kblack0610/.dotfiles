@@ -3351,6 +3351,22 @@ explain_state() {
   [ "$(jq -c .unreadable "$doc")" = '[]' ]
 }
 
+@test "end to end: a clone whose origin is on neither GitHub nor a listed Forgejo host has no PRs, never an unreadable store (~/.agent)" {
+  landed_fixture
+  export SO_FORGEJO_HOSTS='git.example.lan'
+  git -C "$SANDBOX/wt" remote set-url origin ssh://git@forge-primary.example.lan:2222/o/.agent.git
+  touch "$LEDGER_DIR/PRS_UNLISTED"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
+  # NEGATIVE CONTROL: the same repo on github.com the store does not list is named
+  git -C "$SANDBOX/wt" remote set-url origin git@github.com:o/.agent.git
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  jq -e '.unreadable | index("PR store (o/.agent)")' "$doc" >/dev/null
+}
+
 @test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {
   printf 'a\ts1:1\told\nb\ts2:1\told\nc\ts3:1\told\n' > "$SANDBOX/prev"
   printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\n' > "$SANDBOX/cur"
