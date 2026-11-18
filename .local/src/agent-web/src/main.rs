@@ -226,6 +226,8 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
         .route("/api/stack", get(stack_list))
+        .route("/api/stack/flow", get(stack_flow))
+        .route("/api/stack/flow.svg", get(stack_flow_svg))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/releases/app", get(releases_app))
@@ -1792,6 +1794,44 @@ async fn stack_list(State(s): State<Shared>, Query(q): Query<stack::Query>) -> R
         s.stack.get(q).await,
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+struct FlowQuery {
+    name: String,
+}
+
+/// A Flows row opened: its doc section as markdown, and whether it has a picture.
+async fn stack_flow(State(s): State<Shared>, Query(q): Query<FlowQuery>) -> ApiResult<Response> {
+    let body = s
+        .stack
+        .flow(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// A flow's picture, served here because the page's CSP is `img-src 'self'`. The page draws it as
+/// an `<img>`; opened on its own, the sandbox CSP keeps any script in it from running here.
+async fn stack_flow_svg(
+    State(s): State<Shared>,
+    Query(q): Query<FlowQuery>,
+) -> ApiResult<Response> {
+    let bytes = s
+        .stack
+        .picture(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 async fn sessions_table(
