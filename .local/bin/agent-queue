@@ -38,6 +38,8 @@
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
+#   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
+#       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
@@ -2602,6 +2604,118 @@ cmd_stats() {
     (if .by_end == {} then empty else "ends:    \(.by_end | pairs)" end)' <<<"$stats"
 }
 
+# backfill-briefs [--dry-run | --check]: the board row is the task's one record and holds its brief (plan
+# holding-194-can-start-merry-whisper P3). A row whose details are empty, or only `full:`/`was:`
+# lines, gets the brief of the item that worked it: the newest open item first, else the newest done
+# one. A body is cut at the dispatch template (`Promoted by fleet-dispatch`: the run's instructions,
+# not the task's), its markers are stripped, and a first line that is the row's own words is dropped.
+# A body that adds 20 characters or fewer to the row is skipped: measured 2026-11-18, each such body
+# was the row's earlier wording before the triager re-typed it, not a brief. An open item with no row
+# (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
+# row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
+# Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
+# since the read is not written. --dry-run lists each row and its source; --check prints one doctor
+# line and fails when any row would be written, which after P2 is a writer losing a brief again.
+BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
+    | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
+  def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
+    | (if $c then .[:$c] else . end) | map(gsub("\\s*<!--.*?-->"; "") | gsub("\\s*<!--.*$"; "")) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
+  def stamp: "(\(.state), queued \((.queued // "-") | split("T")[0]))";
+  def out: [.kind, .key, .prof // "", .proj // "", .text // "", .slug // "", .stamp // "", .brief // "", .prio // ""]
+    | map(tostring + "\u0000") | add;
+  ($items | map(select(.row) | (body) as $b | . + {open: (.state != "done"), lines: $b, n: ($b | join("\n") | norm)})
+    | group_by(.row) | map({key: .[0].row, value: .}) | from_entries) as $by
+  | (($board.rows[] | select(.lane == "agent" and all(.details[]; test("^(full|was):"))))
+      | (.raw | norm) as $t | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
+      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
+          | sort_by(if .open then 0 else 1 end, (.queued // "0" | explode | map(-.)))) as $good
+      | if $good[0] then {kind: "row", key: $key, prof: .profile, proj: .project, text: .raw, slug: $good[0].slug,
+            stamp: ($good[0] | stamp), brief: (.details + ["from item \($good[0].slug) \($good[0] | stamp)"]
+              + ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end) | join("\n"))}
+        else {kind: (if $all[0] then "bare" else "none" end), key: $key} end),
+    ($board.rows[] | select(.lane == "agent" and any(.details[]; startswith("brief: ")))
+      | {kind: "prefix", key: (.project + ":" + .id), prof: .profile, proj: .project, text: .raw,
+         brief: (.details | map(if startswith("brief: ") then .[7:] else . end) | join("\n"))}),
+    ($items[] | select(.state != "done" and (.row | not)
+        and ((.from // "") | startswith("board:") or IN("canary", "trainee") | not)
+        and ((.tags // "") | test("(^| )canary( |$)") | not))
+      | {kind: "new", key: .slug, proj: .project, slug: .slug, stamp: stamp, brief: (body | join("\n")), prio: .priority})
+  | out'
+
+cmd_backfill_briefs() {
+  local dry="" check="" tmp kind key prof proj text slug stamp brief prio f title lab code srow
+  local n=0 filed=0 failed=0 bare=0 none=0 nob=0 unpre=0
+  case "${1:-}" in
+    --dry-run) dry=1 ;;
+    --check) dry=1 check=1 ;;
+    '') ;;
+    *) die "usage: agent-queue backfill-briefs [--dry-run | --check]" ;;
+  esac
+  # fd 4 takes the per-row lines: stdout, or nothing for --check. A dup, not a reopen of /dev/stdout,
+  # which would truncate a log the caller appends to.
+  if [ -n "$check" ]; then exec 4>/dev/null; else exec 4>&1; fi
+  command -v notes >/dev/null || die "backfill-briefs: no notes on PATH"
+  # Files, not arguments: the whole store is past the kernel's argument limit. One list: --since
+  # widens done to every day and leaves the open states whole.
+  tmp="$(mktemp -d)" || die "backfill-briefs: no temp dir"
+  if ! { "$0" list --json --state all --since 3650d | jq -sc . >"$tmp/items" &&
+    notes board --json >"$tmp/board" &&
+    jq -j -n --slurpfile i "$tmp/items" --slurpfile b "$tmp/board" '$i[0] as $items | $b[0] as $board | '"$BRIEF_JQ" >"$tmp/matches"; }; then
+    rm -rf "$tmp"
+    # The doctor's line still, so a busy lock reads as a FAIL that says so, not as no check at all.
+    [ -z "$check" ] || { echo "FAIL  briefs: could not read the queue or the board (a busy queue lock?), so not checked"; return 1; }
+    die "backfill-briefs: could not read the queue, the board, or match them"
+  fi
+  # One record is nine NUL-ended fields (BRIEF_JQ's out), read on fd 3 so no child eats the stream.
+  while IFS= read -r -d '' -u 3 kind && IFS= read -r -d '' -u 3 key && IFS= read -r -d '' -u 3 prof &&
+    IFS= read -r -d '' -u 3 proj && IFS= read -r -d '' -u 3 text && IFS= read -r -d '' -u 3 slug &&
+    IFS= read -r -d '' -u 3 stamp && IFS= read -r -d '' -u 3 brief && IFS= read -r -d '' -u 3 prio; do
+    case "$kind" in
+    bare) bare=$((bare + 1)) ;;
+    none) none=$((none + 1)) ;;
+    row | prefix)
+      if [ -n "$dry" ]; then
+        if [ "$kind" = row ]; then echo "$key <- $slug $stamp: $(grep -c '' <<<"$brief") lines"; n=$((n + 1))
+        else echo "$key: brief: prefix stripped"; unpre=$((unpre + 1)); fi
+        continue
+      fi
+      # `--brief=` replaces the details whole (a row's own `full:`/`was:` lines are in it), and the
+      # = form keeps a brief that opens with a dash a value, not a flag.
+      if notes --profile "$prof" ptask "$proj" --agent --exact edit --brief="$brief" -- "$text" </dev/null >/dev/null 2>"$tmp/err"; then
+        if [ "$kind" = row ]; then n=$((n + 1)); else unpre=$((unpre + 1)); fi
+      else
+        failed=$((failed + 1)); echo "agent-queue: $key not written: $(tail -1 "$tmp/err")" >&2
+      fi ;;
+    new)
+      f="$(find_item "$slug")"; [ -n "$f" ] || continue
+      IFS=$'\t' read -r _ lab code < <(project_board "$proj")
+      if [ -z "$lab" ] || [ -z "$code" ]; then nob=$((nob + 1)); continue; fi
+      title="$(fm_get "$f" title)"; [ -n "$title" ] || title="$(head -1 <<<"$brief")"
+      if [ -n "$dry" ]; then echo "$slug: no row; would file one on the $proj board with its brief"; filed=$((filed + 1)); continue; fi
+      # file_story writes the brief with the row, less a first line that is the title.
+      IFS=$'\t' read -r proj prof srow < <(file_story "$proj" "$title" "$prio" "" "" "$brief" </dev/null)
+      [ -n "$srow" ] || { failed=$((failed + 1)); echo "agent-queue: $slug: no story row filed" >&2; continue; }
+      if "$0" set "$slug" row="$proj:$srow" lane=agent profile="$prof" </dev/null >/dev/null; then filed=$((filed + 1))
+      else failed=$((failed + 1)); echo "agent-queue: $slug: row $proj:$srow filed but not linked; link it with agent-queue set $slug row=$proj:$srow" >&2; fi ;;
+    esac
+  done 3<"$tmp/matches" >&4
+  exec 4>&-
+  rm -rf "$tmp"
+  if [ -n "$check" ]; then
+    # The nightly doctor's line (agentctl-project-index): fleet-bench's doctor_fail counts a FAIL.
+    [ $((n + unpre + filed)) -eq 0 ] && { echo "PASS  briefs: every agent row holds the brief its item has"; return 0; }
+    echo "FAIL  briefs: $n rows lack the brief their item has, $unpre carry brief: lines, $filed open items have no row (agent-queue backfill-briefs writes them)"
+    return 1
+  fi
+  if [ -n "$dry" ]; then
+    printf 'would fill %s rows with a brief, strip brief: from %s, and file %s rows for items with none;' "$n" "$unpre" "$filed"
+  else
+    printf 'filled %s rows with a brief, stripped brief: from %s, filed %s rows for items with none; %s not written (why is above);' "$n" "$unpre" "$filed" "$failed"
+  fi
+  echo " $bare linked only to items that repeat the row; $none never worked by an item; $nob row-less items on a project with no board"
+  [ "$failed" -eq 0 ]
+}
+
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
@@ -2613,6 +2727,7 @@ case "${1:-}" in
   credit-of) shift; cmd_credit_of "$@" ;;
   settle-ask) shift; cmd_settle_ask "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
+  backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac
