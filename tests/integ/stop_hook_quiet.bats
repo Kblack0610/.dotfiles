@@ -301,6 +301,52 @@ run_session() {
   assert_output --partial "wind-down deferred"
 }
 
+@test "an armed session blocked once this turn gets a fresh verdict on its loop-guarded Stop" {
+  # 2026-11-17: home-config-agent-40 and -44 armed /wind-down, a check blocked the Stop, the
+  # session fixed it, and the loop-guarded Stop that ended the turn skipped everything, so the
+  # request kept the FAIL and never fired.
+  local spin="$HOME/.agent/spin-down"
+  mkdir -p "$spin" "$HOOK_DIR/stop-post.d"
+  cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
+  post 50-seen
+  echo 'target=%2' > "$spin/aaa.request"
+  dirty
+  check red 2
+  run_session aaa
+  assert_equal "$STATUS" 2
+  [ -e "$spin/aaa.request" ]
+  rm "$HOME/post.seen"
+  # Still failing on the loop-guarded Stop: no block, the request waits, no other post script runs.
+  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
+  [ -e "$spin/aaa.request" ]
+  [ ! -e "$HOME/post.seen" ]
+  run cat "$HOME/.cache/claude-stop-hook/ci-result-aaa.txt"
+  assert_output --partial "status=FAIL"
+  # Fixed within the turn: the loop-guarded Stop passes and fires the teardown.
+  check red 0
+  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
+  [ ! -e "$spin/aaa.request" ]
+  [ -e "$spin/aaa.fired" ]
+  [ ! -e "$HOME/post.seen" ]
+}
+
+@test "the loop guard runs no check for a session with nothing armed" {
+  # Negative control for the armed retry: another session's request does not count.
+  mkdir -p "$HOME/.agent/spin-down"
+  echo 'target=%2' > "$HOME/.agent/spin-down/bbb.request"
+  dirty
+  cat > "$HOOK_DIR/stop-checks.d/mark.sh" <<EOF
+#!/bin/bash
+touch "$HOME/check.ran"
+EOF
+  chmod +x "$HOOK_DIR/stop-checks.d/mark.sh"
+  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
+  [ ! -e "$HOME/check.ran" ]
+  # The same Stop not loop-guarded runs it.
+  run_session aaa
+  [ -e "$HOME/check.ran" ]
+}
+
 @test "no post script calls a model: the session eval is session-outcomes, not a Stop-time judge" {
   run grep -l -E 'claude -p|agentctl-run' "$REPO_ROOT"/.claude/hooks/stop-post.d/*.sh
   assert_failure

@@ -74,13 +74,23 @@ emit() {
 }
 
 # --- Phase 0: loop guard (before the log is truncated, so the blocking run's log survives) ---
+# A Stop after one that blocked this turn never blocks again. When this session armed /wind-down,
+# though, it is the last Stop of the turn, so it still runs the checks for a fresh verdict and then
+# 95-wind-down alone (ARMED_RETRY): the request otherwise kept the blocked run's FAIL and waited for
+# a Stop that never came (home-config-agent-40 and -44, 2026-11-17).
+ARMED_RETRY=""
 if command -v jq >/dev/null 2>&1 \
    && [ "$(echo "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
-  note "pre-stop-checks: loop guard - already blocked once this turn, exiting clean"
-  exit 0
+  if [ -n "$SID" ] && [ -f "$HOME/.agent/spin-down/$SID.request" ] && [ "${1:-}" != --checks-only ]; then
+    ARMED_RETRY=1
+    note "pre-stop-checks: loop guard - blocked once this turn, wind-down armed: verdict only"
+  else
+    note "pre-stop-checks: loop guard - already blocked once this turn, exiting clean"
+    exit 0
+  fi
 fi
 
-: >"$LOG" 2>/dev/null || true
+[ -n "$ARMED_RETRY" ] || : >"$LOG" 2>/dev/null || true
 note "=== stop-hook $(date -Is) proj=$PROJ cwd=$PWD ==="
 
 write_result() {
@@ -99,6 +109,8 @@ run_post() {
   [ -d "$dir" ] || return 0
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
+    # The armed retry fires the teardown only; the rest ran on the Stop that blocked.
+    [ -z "$ARMED_RETRY" ] || [ "${s##*/}" = 95-wind-down.sh ] || continue
     # Forward original stdin (the JSON payload) so post-checks can see stop_hook_active
     bash "$s" < <(printf '%s' "$PAYLOAD")
     rc=$?
@@ -282,6 +294,8 @@ run_post "$POST_DIR"
 POST_RC=$?
 
 # --- Phase 3: aggregated exit ---
+# The armed retry is still the loop guard's Stop: it never blocks.
+[ -z "$ARMED_RETRY" ] || exit 0
 if [ $CONTENT_BLOCKED -eq 1 ]; then exit 2; fi
 [ "$POST_RC" -gt 1 ] && exit "$POST_RC"
 exit 0
