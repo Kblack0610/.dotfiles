@@ -106,6 +106,112 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
+# plan_queued <name> <checklist> [agent-queue add flags] -- the plan's open phases queued as the human
+# queues an approved plan (agent-queue add --plan), slugs <name>-p<n>.
+plan_queued() {
+  local name=$1 body=$2; shift 2
+  printf '# %s\n\n## Phases\n\n%b\n' "$name" "$body" > "$SANDBOX/$name.md"
+  agent-queue add --plan "$SANDBOX/$name.md" --project game --priority high "$@" >/dev/null
+}
+
+# A fleet past its pace target, the floors that pass it off (red, canary, project, source): only urgent
+# items preempt, so a high item waits for room, as the 8 playground phases did from 11-13 (ar-2832).
+full_fleet() {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+}
+
+@test "human floor: a ready phase of an approved plan starts past a shut pace gate, the target or the weekly pace" {
+  full_fleet
+  plan_queued pa '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pa-p1 on the human floor, past the pace target: a ready phase of a plan the human approved'
+  assert_equal "$(outcome)" WORKED
+  # The weekly pace shut with room under the target: the same floor takes an account refused for its pace alone.
+  agent-queue move pa-p1 done --status cancelled --why test >/dev/null
+  fleet_state 0
+  acct alt:pace:/home/u/.claude-personal
+  plan_queued pb '- [ ] one'
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pb-p1 on the human floor'
+  assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
+@test "human floor: one phase of a plan a pass: a second ready phase of the same plan waits, another plan's starts" {
+  full_fleet
+  plan_queued pa '- [ ] one (independent)\n- [ ] two (independent)'
+  plan_queued pb '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pa-p1 on the human floor'
+  assert_output --partial 'started queue item pb-p1 on the human floor'
+  refute_output --partial 'started queue item pa-p2'
+}
+
+@test "human floor: a phase an after: or a tag holds does not start on it, nor one a machine filer queued" {
+  full_fleet
+  plan_queued pa '- [x] one\n- [ ] two\n- [ ] three'   # pa-p3 waits on pa-p2
+  agent-queue set pa-p2 "tags=at:$(date -d tomorrow +%F)T09:00" >/dev/null
+  plan_queued pm '- [ ] one' --from auto:plans --tags night
+  agent-queue set pm-p1 tags= >/dev/null
+  plan_queued pb '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pb-p1 on the human floor'
+  refute_output --partial 'started queue item pa-p'
+  refute_output --partial 'started queue item pm-p1'
+}
+
+@test "human floor: past the pace target a plain high item still waits while a plan phase queued after it starts" {
+  full_fleet
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  plan_queued pa '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pa-p1 on the human floor'
+  refute_output --partial 'started queue item p '
+  refute_output --partial 'started queue item p on'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+}
+
+@test "human floor: DISPATCH_PLAN_FLOOR live plan phases fill it, and 0 turns it off" {
+  full_fleet
+  export DISPATCH_PLAN_FLOOR=1
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a plan: $SANDBOX/pl.md" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  plan_queued pa '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  # The live phase gone, its slot opens; at 0 the floor is off all the same.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  DISPATCH_PLAN_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  # Negative control: at 1 with no live phase, pa-p1 starts.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pa-p1 on the human floor'
+}
+
+@test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
+  full_fleet
+  export DISPATCH_TARGET_PRESENT=6
+  local old; old=$(date -u -d '-3 hours' +%Y-%m-%dT%H:%M:%SZ)
+  queued_item p high "$old"
+  run cmd_starved
+  assert_success
+  assert_output --partial 'held by a full fleet'
+  plan_queued pa '- [ ] one'
+  sed -i "s/^queued: .*/queued: $old/" "$AGENT_QUEUE_DIR"/queued/*-pa-p1.md
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'pa-p1 (high'
+}
+
 @test "a floor start takes an account with room before a better-ranked one past its pace" {
   game_ready
   export DISPATCH_RUN_FLOOR=2
