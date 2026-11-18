@@ -27,6 +27,8 @@ setup() {
   usage main 30 100
   usage alt 5 10
   write_tmux_stub
+  # unpark --all draws on the wake budget (wake-pace.sh), which asks fleet-assess: the machine reads OK here.
+  printf '#!/usr/bin/env bash\n[ ! -e "$FIX/hot" ] || exit 1\necho OK\n' > "$SANDBOX/bin/fleet-assess"; chmod +x "$SANDBOX/bin/fleet-assess"
 }
 
 usage() {
@@ -942,6 +944,22 @@ trust_prompt() {
   assert_line --partial 'claude-acct: unparked a1 on alt'
   assert_line --partial 'claude-acct: unparked a2 on alt'
   [ -z "$(ls -A "$HOME/.agent/parked")" ]
+}
+
+@test "unpark --all wakes only what the wake budget has room for, and a hand unpark of one is never paced" {
+  session lab a1 %5 100 101 idle ""
+  "$ACCT" park a1 --server lab
+  session lab a2 %6 110 111 idle ""
+  "$ACCT" park a2 --server lab
+  WAKE_BATCH=1 run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked a1 on alt'
+  assert_output --partial 'claude-acct: unpark: 1 stay parked: the wake budget is 1 per 5 min'
+  [ -e "$(PARKED_LEDGER a2)" ] || fail "a2 woke past the budget"
+  touch "$FIX/hot"
+  run "$ACCT" unpark a2
+  assert_success
+  assert_line --partial 'claude-acct: unparked a2 on alt'
 }
 
 @test "unpark takes one session or --all and nothing else" {

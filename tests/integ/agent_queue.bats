@@ -1399,6 +1399,12 @@ notes --profile bnb ptask game --agent run gm-9"
   [ "$(field "$f" work_min)" = 30 ]
   [ "$(field "$f" report)" = https://example/report ]
   [ "$(field "$f" note)" = "a b c" ]
+  # ar-2707: a title is settable, on a done item too, written on one line as add --title writes it.
+  # NEGATIVE CONTROL: before ar-2707 this set failed "not a settable field: title".
+  run "$AQ" set s $'title=  P2: every machine\tis a peer\nclone  '
+  assert_success
+  [ "$(field "$f" title)" = "P2: every machine is a peer clone" ]
+  [ "$(sed -n '/^---$/,$p' "$f" | sed 1d)" = s ]
 }
 
 @test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {

@@ -1,0 +1,15 @@
+[Unit]
+Description=The next wake batch of a paced fleet-dispatch restore
+# Started without waiting by `fleet-dispatch record` (restore_tick) while a restore still owes wakes
+# and the wake budget has room. Its own unit, because fleet-state.service, where the record runs,
+# times out at 120s and kills its whole cgroup. A start while one runs folds into it.
+
+[Service]
+Type=oneshot
+# A tmux server the restore has to start lives in this unit's cgroup (tmux 3.8 scopes its panes,
+# not its server), so the default control-group kill would end every session it reopened.
+KillMode=process
+# Started from a timer's unit under linger, with no login PATH; restore calls tmx, agent-panel and claude by name.
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/fleet-dispatch restore --here
+TimeoutStartSec=600

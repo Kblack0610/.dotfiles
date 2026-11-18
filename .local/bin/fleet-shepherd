@@ -30,8 +30,8 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
-#                          close the window of each session already told to close whose verdict is still now
-#                          (close_refused_sample), type /wind-down into each session whose close verdict is now (close_sample),
+#                          type /wind-down into each session whose close verdict is now, and close the window
+#                          of one still closable an hour after its close was typed (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
@@ -228,31 +228,31 @@ tag_pane() {
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
-# manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
-# verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
-# question waits; DONE, LANDED and STALLED get the DONE close nudge once their verdict is now, CHAT its
-# own, and a LANDED or STALLED row not yet closable its bucket nudge once; a
-# NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
+# manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
+# close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
+# being where the question waits; a LANDED or STALLED row not yet closable gets its bucket nudge once; a
+# NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
-# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close nudge is owed to
-# (its close verdict now, not yet nudged, not manual; CLOSE when it holds an open ask it filed), null
-# otherwise. cmd_due turns it into a due line for a pass, close_sample types it; one rule for both.
+# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close is owed to (its close
+# verdict now, its close not yet sent, not manual; CLOSE when it holds an open ask it filed), null
+# otherwise. close_sample types it, and cmd_due gives a pass no line for it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
-  if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now") then null
+  if ((.labels // []) | index("manual")) or .close_sent or ((.close.verdict // "") != "now") then null
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif .bucket == "CHAT" then "CHAT"
   elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
   else null end;'
-# CLOSE_REFUSED_JQ: close_refused -> true for a session row told to close that is still open: nudged,
-# its close verdict still now (CLOSE_JQ in fleet-sessions keeps every fact that would lose work or a
-# prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), no open ask of its own, not manual. Since #2377
-# nothing else holds it open, so close_refused_sample closes its window rather than escalating it to
-# the human every day (2026-11-18: hub/dotfiles:3 turned down its nudges on a retired coordinator
-# keep, and the shepherd paged "close its window" instead).
+# CLOSE_REFUSED_JQ: close_refused -> true for a session row typed its close that is still open: its
+# close sent (close_sample's claim), its close verdict still now (CLOSE_JQ in fleet-sessions keeps
+# every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), no open ask
+# of its own, no phases left, not manual. Since #2377 nothing else holds it open, so close_sample
+# closes its window (WINDOW) rather than escalating it to the human every day
+# (2026-11-18: hub/dotfiles:3 turned down its close on a retired coordinator keep, and the shepherd
+# paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
-  ((.labels // []) | index("manual") | not) and .nudged and (.close.verdict // "") == "now"
+  ((.labels // []) | index("manual") | not) and .close_sent and (.close.verdict // "") == "now"
   and (.own_asks // 0) == 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
   and ((.bucket == "LANDED" and .next_phase != null) or any((.blockers // [])[]; startswith("next phase:")) | not);'
 
@@ -279,9 +279,7 @@ cmd_due() {
   , ( (.sessions // [])[]
       | select((.labels // []) | index("manual") | not)
       | ((.own_asks // 0) > 0) as $ask
-      | close_nudge as $close
-      | if $close then
-          "nudge \($close): \(.target)\(ptag) \(.fact // "")"
+      | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
           if ($ask | not) and (.bucket | IN("LANDED","STALLED"))
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
@@ -300,8 +298,11 @@ cmd_due() {
   local verdict holds parked preempt
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
-  if [ -n "$holds" ] && [ "$verdict" = CLEAR ]; then
-    out+="${out:+$'\n'}pace: hold $holds while the machine reads CLEAR"
+  # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
+  # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
+  local lift; lift="$(tr , '\n' <<<"$holds" | grep -vx restore | paste -sd, -)"
+  if [ -n "$lift" ] && [ "$verdict" = CLEAR ]; then
+    out+="${out:+$'\n'}pace: hold $lift while the machine reads CLEAR"
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
@@ -697,77 +698,65 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
-# close_sample: the close nudge without a model. Each row CLOSE_NUDGE_JQ names (the ones cmd_due
-# would give a pass as `nudge DONE|CHAT|CLOSE`) gets its close typed into its pane: /wind-down
-# auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT /wind-down,
-# the human's standing order to close a quiet chat. A pass could only send it by SendMessage,
-# and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the claude CLI has no
-# send, so typing is the one model-free way in, as claude-acct types /exit.
+# close_sample: the one closer. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
+# /wind-down auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT
+# /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
+# to a session in another permission mode is held for approval and expires unseen, and its mark
+# stopped this typing (2026-11-18: hub/dotfiles:4 and :8 left open overnight); the claude CLI has
+# no send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
-# cancelling the human's copy mode, and reads the screen again after the mark, just before the
-# keys; any other screen is left for the pass, which sends the message by SendMessage. The mark
-# claims the fact first, so the two never both send it; a send that fails after it reaches the
-# human through the row's escalation. Having typed, it refreshes the document, so cmd_due reads
-# those rows as nudged.
+# cancelling the human's copy mode, and reads the screen again after the claim, just before the
+# keys; any other screen waits for the next check. The close claim (mark --close) comes first, so
+# a session is typed one close for good; a send that fails after it reaches the human through the
+# row's escalation.
+# Its last step is the window (WINDOW, CLOSE_REFUSED_JQ): a session typed its close
+# FLEET_IDLE_CLOSE_MIN or more ago (the claim's mtime), so its own /wind-down, or its Stop hook
+# deferring on a red, has had its turn, and still closable now at the same idle prompt, has its
+# window closed by wind-down.sh close: scrollback, window, worktree reap (which refuses a dirty or
+# unpushed tree), the teardown /wind-down schedules. A failed close (a protected window) is logged
+# once per session in $LEDGER/.close-failed and left to the escalation and its reminder.
+# Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
+# closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact server cmd typed=""
+  local sid target pane close fact server cmd when now acted="" failed="$LEDGER/.close-failed"
+  local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
+  now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane close fact; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    if [ "$close" = WINDOW ]; then
+      when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
+      [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
+      grep -qxF "$sid" "$failed" 2>/dev/null && continue
+      pane_takes_keys "$server" "$pane" || continue
+      if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
+        acted=1
+        cmd_log "close: $target: closed its window, still quiet after its close ($fact)" >/dev/null
+      else
+        printf '%s\n' "$sid" >> "$failed"
+        cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
+      fi
+      continue
+    fi
     pane_takes_keys "$server" "$pane" || continue
-    fleet-sessions mark "$sid" "$fact" >/dev/null 2>&1 || continue
+    fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$server" "$pane"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
       continue
     fi
     cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
     if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
-      typed=1
+      acted=1
       cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null
     else
       cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
     fi
-  done < <(jq -r "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
-    | close_nudge as $close | select($close)
-    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
-    | [.session_id, .target, .pane, $close, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
-  [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
-}
-
-# close_refused_sample: each row CLOSE_REFUSED_JQ names is closed without a model: wind-down.sh
-# close saves its scrollback, closes its window and reaps its worktree (reap refuses a dirty or
-# unpushed tree), the teardown /wind-down would have run. Only an idle, empty prompt in no tmux mode
-# is closed, as close_sample types only into one; a draft, a busy pane or a protected window stays
-# for the escalation and its reminder.
-# A row with phases left is left out: its own /wind-down queues them, and a teardown would drop them.
-close_refused_sample() {
-  local sid target pane fact server at when closed="" now failed="$LEDGER/.close-failed"
-  local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
-  now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane fact; do
-    case "$sid" in */*|.|..) continue ;; esac
-    server="${target%%/*}"
-    [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
-    # A full quiet window since the nudge (the ledger's at:), so the session's own /wind-down, or
-    # its Stop hook deferring on a red, has had its turn. One failure per fact is enough: a
-    # protected window fails every check, and the escalation already carries it.
-    at="$(sed -n '/^at: /{s///p;q;}' "$LEDGER/$sid" 2>/dev/null)"
-    when="$(date -d "$at" +%s 2>/dev/null)" || continue
-    [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
-    grep -qxF "$sid"$'\t'"$fact" "$failed" 2>/dev/null && continue
-    pane_takes_keys "$server" "$pane" || continue
-    if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
-      closed=1
-      cmd_log "close: $target: closed its window, still quiet after its nudge ($fact)" >/dev/null
-    else
-      printf '%s\t%s\n' "$sid" "$fact" >> "$failed"
-      cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
-    fi
-  done < <(jq -r "$CLOSE_REFUSED_JQ"'(.sessions // [])[] | select(close_refused)
-    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
-    | [.session_id, .target, .pane, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
-  [ -z "$closed" ] || fleet-sessions --write >/dev/null || true
+  done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
+    | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
+    | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " "))] | @tsv' "$STATE_FILE" 2>/dev/null)
+  [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
 # pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
@@ -966,13 +955,11 @@ cmd_check() {
   cmd_holds 2>/dev/null && budget_sample
   # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
   cmd_holds 2>/dev/null && shared_sample
-  # And so is closing a session that was told to close and is still open: before the reminder, so
-  # a closed one is not paged, and before any typing, so one typed into this check is not closed.
-  cmd_holds 2>/dev/null && close_refused_sample
+  # And so is closing a session (typing its close, or closing its window once it stayed quiet after
+  # one): one writer of its claim, and before the reminder, so a closed window is not paged.
+  cmd_holds 2>/dev/null && close_sample
   # And so is a reminder: one writer of $REMINDED.
   cmd_holds 2>/dev/null && remind_sample
-  # And so is typing a close into a session: one writer of its nudge, beside the pass's mark.
-  cmd_holds 2>/dev/null && close_sample
   local due due_rc=0
   due="$(cmd_due)" || due_rc=$?
   [ "$due_rc" = 0 ] || [ "$due_rc" = 1 ] || return "$due_rc"
@@ -1297,7 +1284,7 @@ lane_cols() {
   model="$(head -n 1 "$LEDGER/.lane-$id" 2>/dev/null)"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
   while IFS= read -r k; do
-    [[ "$k" =~ ^nudge\ (DONE|LANDED|STALLED|CHAT):\ ([^ ]+) ]] || continue
+    [[ "$k" =~ ^nudge\ (LANDED|STALLED):\ ([^ ]+) ]] || continue
     grep -qxF -- "$k" <<<"$now_keys" && continue
     nudges=$((nudges + 1)); t="${BASH_REMATCH[2]}"
     awk -v t="$t" '$1 == "escalate" && $3 == t { f = 1 } END { exit !f }' <<<"$now_keys" &&
