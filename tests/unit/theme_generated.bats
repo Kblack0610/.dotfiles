@@ -76,6 +76,21 @@ is_ignored() {
   assert_success
 }
 
+@test "waybar's rendered palette.css is ignored" {
+  run is_ignored .config/waybar/palette.css
+  assert_success
+}
+
+@test "swaync's rendered stylesheet is ignored" {
+  run is_ignored .config/swaync/style.css
+  assert_success
+}
+
+@test "swaync's hand-authored config.json is tracked" {
+  run is_ignored .config/swaync/config.json
+  assert_failure
+}
+
 @test "hyprland's rendered theme.lua is ignored" {
   # Hyprland requires it (conf/look-and-feel.lua), so like sketchybar's colors.sh it is
   # also why the installers and the post-merge hook render it.
@@ -109,7 +124,7 @@ is_ignored() {
 
 # ── the canary ───────────────────────────────────────────────────────────────
 
-@test "theme-switch's write targets are still the eleven that were classified" {
+@test "theme-switch's write targets are still the thirteen that were classified" {
   # Tracked: hand-authored config with values patched in place. These still churn on a
   # switch; converting each to its tool's native include (lazygit LG_CONFIG_FILE, an nvim
   # palette module) is the unfinished half of the job.
@@ -130,6 +145,8 @@ is_ignored() {
     .config/nvim/lua/kennethblack/plugins/neo-tree.lua \
     .config/sketchybar/colors.sh \
     .config/starship.toml \
+    .config/swaync/style.css \
+    .config/waybar/palette.css \
     .config/waybar/style.css \
     .termux/colors.properties | sort -u)"
 

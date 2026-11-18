@@ -109,3 +109,51 @@ setup() {
   run cat "$FX/calls.log"
   assert_output 'pkill -RTMIN+9 -x waybar'
 }
+
+@test "notify under swaync maps each verb to swaync-client" {
+  printf '#!/usr/bin/env bash\necho "swaync-client $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/swaync-client"
+  chmod +x "$SANDBOX/bin/swaync-client"
+  mkdir -p "$(dirname "$STATE")" && echo "notify=swaync" > "$STATE"
+  for v in close close-all history dnd; do "$DESK" notify "$v"; done
+  run cat "$FX/calls.log"
+  assert_output $'swaync-client --hide-latest\nswaync-client --hide-all\nswaync-client -t -sw\nswaync-client -d -sw'
+}
+
+@test "switching the notifier restarts a waybar bar, so its notify chip rebinds" {
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/swaync" && chmod +x "$SANDBOX/bin/swaync"
+  run "$DESK" use notify swaync
+  assert_success
+  run grep -x -e 'systemctl --user restart swaync.service' -e 'systemctl --user restart waybar.service' "$NOTES_FIXTURE/calls.log"
+  assert_output $'systemctl --user restart swaync.service\nsystemctl --user restart waybar.service'
+  # Choosing the notifier already running leaves the bar alone.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$DESK" use notify swaync
+  assert_success
+  run grep -c 'restart waybar.service' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "waybar-modern signals waybar the same way as classic" {
+  mkdir -p "$(dirname "$STATE")" && echo "bar=waybar-modern" > "$STATE"
+  run "$DESK" signal custom/gungan
+  assert_success
+  run cat "$FX/calls.log"
+  assert_output 'pkill -RTMIN+9 -x waybar'
+}
+
+@test "launch.sh gives waybar the stylesheet of the bar part desk records" {
+  mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  export XDG_CONFIG_HOME="$BATS_TEST_TMPDIR" WAYBAR_BIN="$SANDBOX/bin/waybar"
+  run "$REPO_ROOT/.config/waybar/launch.sh"
+  assert_success
+  mkdir -p "$(dirname "$STATE")" && echo "bar=waybar-modern" > "$STATE"
+  run "$REPO_ROOT/.config/waybar/launch.sh"
+  assert_success
+  run grep -o -e '-s .*' "$FX/calls.log"
+  assert_output $'-s '"$BATS_TEST_TMPDIR"$'/waybar/style.css\n-s '"$BATS_TEST_TMPDIR"$'/waybar/style-modern.css'
+}
+
+@test "style-modern.css layers palette and modern layout after the theme" {
+  run grep '^@import' "$REPO_ROOT/.config/waybar/style-modern.css"
+  assert_output $'@import url("style.css");\n@import url("palette.css");\n@import url("layout-modern.css");'
+}
