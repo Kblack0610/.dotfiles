@@ -78,7 +78,7 @@ function renderShepherd() {
 }
 
 // Log's Rundowns section: the shepherd's kept sum-ups, newest first, the first `shown` (the
-// server's hub_core::layout::fold_rows("rundowns")) until "+N older" is asked for.
+// server's hub_core::layout::page_rows("rundowns")) until "+N older" is asked for.
 function renderLogRundowns() {
   const d = shst.data, list = d ? d.rundowns : [];
   const shown = shst.all || !d ? list : list.slice(0, d.shown);

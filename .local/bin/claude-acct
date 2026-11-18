@@ -52,7 +52,8 @@
 #                        # its use UNDERUSE_GAP_PCT points or more under its week gone (pace.conf)
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
-#   claude-acct link     # share the main ~/.claude setup into every other account dir
+#   claude-acct link     # share the main ~/.claude setup into every other account dir, and mark
+#                        # first-run done in each account (hasCompletedOnboarding)
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark.
@@ -433,9 +434,30 @@ scores() {
         | map(tostring) | join("\u001f")'
 }
 
+# first_run_done <name> <dir> -- mark Claude Code's first-run screens done for the account at <dir>
+# (empty: main, ~/.claude.json), so a session nobody watches (a fleet worker on a pushed setup token)
+# opens on its prompt, not the theme picker. Sets hasCompletedOnboarding and touches no other key:
+# never a token, oauthAccount or folder trust. A file that is not JSON is left alone.
+first_run_done() {
+    local f="$HOME/.claude.json" tmp
+    if [[ -n "$2" ]]; then [[ -d "$2" ]] || return 0; f="$2/.claude.json"; fi
+    # Write through a symlinked config, never over the link; an empty file is a config not made yet.
+    f=$(readlink -f "$f") || return 0
+    [[ -s "$f" ]] || { printf '{"hasCompletedOnboarding": true}\n' > "$f"; return 0; }
+    jq -e '.hasCompletedOnboarding == true' "$f" >/dev/null 2>&1 && return 0
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if jq '.hasCompletedOnboarding = true' "$f" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+        echo "claude-acct: $1: $f is not JSON, first-run left as is" >&2
+    fi
+}
+
 cmd_link() {
     local name dir e src dst bk
     while IFS=$'\037' read -r name dir; do
+        first_run_done "$name" "$dir"
         [[ -n "$dir" && -d "$dir" ]] || continue
         for e in "${SHARED[@]}"; do
             # One hop to the real file: Claude Code follows a single symlink and renames a
@@ -1643,8 +1665,8 @@ exited() {
 # the pane shows: the cursor on "No, exit" (the default) gets Down, on "Yes, I trust this folder"
 # gets Enter. One key a call, each sent only once the redraw of the last one shows: two keys
 # sent back to back can lose the first. An account that never opened a folder (or, for a
-# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json,
-# which claude-acct never writes. Fails when the pane shows no trust prompt.
+# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json, whose
+# trust keys claude-acct never writes. Fails when the pane shows no trust prompt.
 TRUST_CURSOR=$'\xe2\x9d\xaf'
 trust_step() {
     local screen

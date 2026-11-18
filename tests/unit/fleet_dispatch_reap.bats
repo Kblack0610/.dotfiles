@@ -1670,7 +1670,7 @@ OUT
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_output 'hp: did its own'
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch record --here'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''record'\'' '\''--here'\'''
   assert_called 'idle-worker PATH='
   assert_not_called ' state PATH='
   [ -f "$RECORD" ] || fail "this machine's own record was not kept"
@@ -1695,7 +1695,7 @@ OUT
   sandbox_fleet --self hp 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
   assert_success
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch restore --here --server hub --dry-run'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''restore'\'' '\''--here'\'' '\''--server'\'' '\''hub'\'' '\''--dry-run'\'''
   assert_not_called ' state PATH='
   assert_line 'hp: did its own'
   assert_output --partial 'restore: idle-worker did not answer; its own record stays there'

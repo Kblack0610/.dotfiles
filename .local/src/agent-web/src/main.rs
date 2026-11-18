@@ -226,6 +226,8 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
         .route("/api/stack", get(stack_list))
+        .route("/api/stack/flow", get(stack_flow))
+        .route("/api/stack/flow.svg", get(stack_flow_svg))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/releases/app", get(releases_app))
@@ -1580,8 +1582,9 @@ impl HomeParts {
 }
 
 /// Read once at start what the first page draws (the sidebar, Home, its cards and briefing) and
-/// every kept read a tab blocks on when cold (Runners and Judges, Log's Work, Actions and Ranked,
-/// Deliverables, Builds and Tests), so the first visitor after a restart is answered from memory.
+/// every kept read a tab blocks on when cold, so the first visitor after a restart is answered
+/// from memory. Which caches it fills, and why each other one may wait for its first open, is the
+/// test `every_cache_is_warmed_or_says_why_it_reads_on_open`.
 async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let built = async { builds::current(s.queue.items().await).await };
@@ -1598,6 +1601,7 @@ async fn warm(s: Shared) {
         feed::kept(&s, None),
         epics::chains(),
         outcomes::kept(),
+        s.stack.read(),
         built,
     );
 }
@@ -1792,6 +1796,44 @@ async fn stack_list(State(s): State<Shared>, Query(q): Query<stack::Query>) -> R
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct FlowQuery {
+    name: String,
+}
+
+/// A Flows row opened: its doc section as markdown, and whether it has a picture.
+async fn stack_flow(State(s): State<Shared>, Query(q): Query<FlowQuery>) -> ApiResult<Response> {
+    let body = s
+        .stack
+        .flow(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// A flow's picture, served here because the page's CSP is `img-src 'self'`. The page draws it as
+/// an `<img>`; opened on its own, the sandbox CSP keeps any script in it from running here.
+async fn stack_flow_svg(
+    State(s): State<Shared>,
+    Query(q): Query<FlowQuery>,
+) -> ApiResult<Response> {
+    let bytes = s
+        .stack
+        .picture(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn sessions_table(
     State(s): State<Shared>,
     Query(q): Query<sessions::TableQuery>,
@@ -1882,6 +1924,118 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
+
+    /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
+    /// costs, schedules, alerts and the session table).
+    const WARMED: [&str; 22] = [
+        "actions",
+        "agents",
+        "alerts",
+        "briefing",
+        "builds",
+        "costs",
+        "epics",
+        "home",
+        "infra",
+        "judge-eval",
+        "projects",
+        "queue",
+        "queue-since",
+        "queue-stats",
+        "ranked",
+        "releases-card",
+        "schedules",
+        "session-table",
+        "shepherd-stats",
+        "stack",
+        "watch",
+        "worklog",
+    ];
+    /// The caches read on their first open, and why that is fine. Times are each tab's first open
+    /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
+    /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
+    const ON_OPEN: [(&str, &str); 9] = [
+        ("departments", "Projects Coverage, 1492 ms cold"),
+        ("stages", "Projects Ladder, 678 ms cold"),
+        ("suites", "Infra Tests, 767 ms cold"),
+        ("jobs", "Infra Jobs, 619 ms cold"),
+        ("pipelines", "Infra Pipelines, 546 ms cold"),
+        (
+            "queue-candidates",
+            "Queue's Candidates fold, read when it opens",
+        ),
+        ("session-capacity", "Sessions' header, read with the table"),
+        ("session-page", "one per session, keyed by the one opened"),
+        (
+            "machine-page",
+            "one per name: nothing to warm before a name is opened",
+        ),
+    ];
+    /// Like `machine-page`: a page per name.
+    const PER_NAME: [&str; 2] = ["pool-page", "app-page"];
+
+    /// The name each `ReadCache::new`, `EventCache::new` and `infra::Pages::new` in `text` is
+    /// given: its last string literal before the `")` that closes it.
+    fn cache_names(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for pat in ["Cache::new(", "Pages::new("] {
+            for (at, _) in text.match_indices(pat) {
+                let rest = &text[at..];
+                let Some(end) = rest.find("\")") else {
+                    continue;
+                };
+                if rest[..end].contains(';') {
+                    continue; // no literal name before the statement ended
+                }
+                let Some(open) = rest[..end].rfind('"') else {
+                    continue;
+                };
+                out.push(rest[open + 1..end].to_string());
+            }
+        }
+        out
+    }
+
+    /// Stack's tab (#2455) shipped with a cache `warm` did not fill: 3.6 to 6.7 s on the first open
+    /// after each restart, and agent-web restarts on every landing. A new cache now lands in one of
+    /// the lists above, so whoever adds it decides.
+    #[test]
+    fn every_cache_is_warmed_or_says_why_it_reads_on_open() {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut found = std::collections::BTreeSet::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            // cache.rs's own tests name throwaway caches.
+            if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("cache.rs") {
+                found.extend(cache_names(&std::fs::read_to_string(&p).unwrap()));
+            }
+        }
+        assert!(found.len() > 25, "the scan found the caches: {found:?}");
+        let listed: std::collections::BTreeSet<String> = WARMED
+            .iter()
+            .chain(ON_OPEN.iter().map(|(n, _)| n))
+            .chain(PER_NAME.iter())
+            .map(|n| n.to_string())
+            .collect();
+        let unlisted: Vec<_> = found.difference(&listed).collect();
+        assert!(
+            unlisted.is_empty(),
+            "fill these in warm() and add them to WARMED, or say in ON_OPEN why the first open may wait: {unlisted:?}"
+        );
+        let gone: Vec<_> = listed.difference(&found).collect();
+        assert!(
+            gone.is_empty(),
+            "listed but no cache has that name: {gone:?}"
+        );
+        // Negative control: a new tab's cache, in each form, is found. `NEW` is spliced in at run
+        // time so this file's own text holds no cache for the scan above to find.
+        let new_tab = r#"static READ: ReadCache<Tab, 60> = ReadCache::NEW("new-tab");
+            Cache(EventCache::NEW(events.subscribe(), &KINDS, "new-feed"))
+            machines: infra::Pages::NEW("new-page"),
+            fleet: fleet::Cache::NEW(events.subscribe()),"#
+            .replace("NEW", "new");
+        assert_eq!(cache_names(&new_tab), ["new-tab", "new-feed", "new-page"]);
+    }
 
     /// The response headers `path` gets from `app` when the browser takes br.
     async fn headers_br(app: Router, path: &str) -> String {
