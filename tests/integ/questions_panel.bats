@@ -48,9 +48,9 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   ask demo hub 'a=the first|b=the second' 'no agent number?' >/dev/null
   run rows
   assert_success
-  assert_line --regexp $'\tnone ucp:60 +[0-9]+m  long project[?]$'
-  assert_line --regexp $'\tnone demo:1 +[0-9]+m  short project[?]$'
-  assert_line --regexp $'\tnone demo   +[0-9]+m  no agent number[?]$'
+  assert_line --regexp $'\tnone ucp:60 +[0-9]+m  long project[?]~ +not judged$'
+  assert_line --regexp $'\tnone demo:1 +[0-9]+m  short project[?]~ +not judged$'
+  assert_line --regexp $'\tnone demo   +[0-9]+m  no agent number[?]~ +not judged$'
 }
 
 @test "a row says LIVE, none or dead before the name, and what the session is under the question" {
@@ -66,11 +66,31 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
   run rows
   assert_success
   # The second line starts under the question: mark (4) + name column (4) + age (3) + four spaces.
-  assert_line --regexp "^$live	LIVE demo +[0-9]+m  live[?]~ {15}live-work\$"
-  assert_line --regexp "^$ended	dead demo +[0-9]+m  ended[?]~ {15}tidy-the-board\$"
-  assert_line --regexp "^$untitled	dead demo +[0-9]+m  untitled[?]\$"
+  assert_line --regexp "^$live	LIVE demo +[0-9]+m  live[?]~ {15}not judged  live-work\$"
+  assert_line --regexp "^$ended	dead demo +[0-9]+m  ended[?]~ {15}not judged  tidy-the-board\$"
+  assert_line --regexp "^$untitled	dead demo +[0-9]+m  untitled[?]~ {15}not judged\$"
   # An ask with no session (intake, headless) is none, not LIVE: its card says no session is waiting.
-  assert_line --regexp "^$loose	none demo +[0-9]+m  headless[?]\$"
+  assert_line --regexp "^$loose	none demo +[0-9]+m  headless[?]~ {15}not judged\$"
+}
+
+@test "a row marks an ask the judge would answer, errored on or never saw, and leaves a deferral bare" {
+  local deferred rec armed failed unjudged
+  deferred="$(ask demo s 'a=the first|b=the second' 'deferred?')"
+  rec="$(ask demo s 'a=the first|b=the second' 'recommended?')"
+  armed="$(ask demo s 'a=the first|b=the second' 'armed?')"
+  failed="$(ask demo s 'a=the first|b=the second' 'errored?')"
+  unjudged="$(ask demo s 'a=the first|b=the second' 'unjudged?')"
+  printf 'judge: human\njudge_rule: knowledge\n' >>"$(ask_file "$deferred")"
+  printf 'judge: take-recommend\njudge_rule: proceed_or_hold\n' >>"$(ask_file "$rec")"
+  printf 'judge: answer:a\nassume_at: 2026-11-18T14:05:00-0800\nassume_answer: a\n' >>"$(ask_file "$armed")"
+  printf 'judge: error\n' >>"$(ask_file "$failed")"
+  run rows
+  assert_success
+  assert_line --regexp "^$deferred	none demo +[0-9]+m  deferred[?]\$"
+  assert_line --regexp "^$rec	none demo +[0-9]+m  recommended[?]~ {15}judge would answer \(proceed_or_hold\)\$"
+  assert_line --regexp "^$armed	none demo +[0-9]+m  armed[?]~ {15}judge answers at 14:05\$"
+  assert_line --regexp "^$failed	none demo +[0-9]+m  errored[?]~ {15}judge error\$"
+  assert_line --regexp "^$unjudged	none demo +[0-9]+m  unjudged[?]~ {15}not judged\$"
 }
 
 @test "live asks come first oldest first, then the open dialogs, then the dead asks oldest first" {
