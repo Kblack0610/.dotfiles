@@ -13,9 +13,9 @@ Every boot records how the boot before it ended, so a reboot is never "no logs, 
 | --- | --- |
 | `clean-shutdown`, `clean-reboot` | the last 20 log lines hold the power-off, halt or reboot target |
 | `kernel-panic` | systemd-pstore saved a dump after the log stopped |
-| `out-of-memory`, `thermal-shutdown`, `gpu-fault`, `kernel-fault` | a matching line in the last 300 kernel lines |
-| `ups-on-battery` | the last sample read a UPS status with `OB` or `LB` |
-| `battery-exhausted` | the last sample was off AC at 5% or less |
+| `ups-on-battery` | the last sample (taken within 5 minutes of the log ending) read a UPS status of OB, LB, ONBATT or LOWBATT |
+| `battery-exhausted` | that sample was off AC at 5% or less |
+| `out-of-memory`, `thermal-shutdown`, `gpu-fault`, `kernel-fault` | a matching line in the last 40 kernel lines, ranked below the power evidence |
 | `house-power-event` | 3 or more other hosts' `node_boot_time_seconds` fall within 10 minutes of this boot |
 | `silent-death` | none of the above: a freeze, a hard reset or a power cut that took only this host |
 | `previous-boot-not-in-journal` | the journal has no previous boot; the record says the journal is not persistent |

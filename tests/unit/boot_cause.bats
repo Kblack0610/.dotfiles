@@ -24,7 +24,7 @@ esac' > "$BIN/journalctl"
 cat "$FIX/prom.json"' > "$BIN/curl"
   printf '%s\n' '#!/bin/bash
 [ -e "$FIX/ups" ] || exit 1
-case $1 in -l) echo myups ;; *) case $2 in ups.status) cut -d" " -f1 "$FIX/ups" ;; battery.charge) cut -d" " -f2 "$FIX/ups" ;; esac ;; esac' > "$BIN/upsc"
+case $1 in -l) echo myups ;; *) case $2 in ups.status) sed -n 1p "$FIX/ups" ;; battery.charge) sed -n 2p "$FIX/ups" ;; esac ;; esac' > "$BIN/upsc"
   chmod +x "$BIN"/*
   export FIX PATH="$BIN:$PATH"
   export BOOT_CAUSE_HOST=testhost BOOT_CAUSE_BOOT_ID=boot-now BOOT_CAUSE_BOOT_EPOCH=1795000600
@@ -103,7 +103,7 @@ cause() { last_row | jq -r .cause; }
 
 @test "a last sample with the UPS on battery is ups-on-battery" {
   journal_end 'app: working'
-  echo 'OB 61' > "$FIX/ups"
+  printf "OB DISCHRG\n61\n" > "$FIX/ups"
   "$BC" sample
   run env BOOT_CAUSE_BOOT_EPOCH=$(( $(date +%s) + 60 )) "$BC" record
   assert_equal "$(cause)" ups-on-battery
@@ -113,11 +113,11 @@ cause() { last_row | jq -r .cause; }
 @test "other hosts booting in the same window make it a house power event, and this host is not counted" {
   journal_end 'app: working'
   jq -n '{status:"success",data:{result:[
-    {metric:{host:"testhost",instance:"a:9100"},value:[0,"1795000590"]},
-    {metric:{host:"h1",instance:"b:9100"},value:[0,"1795000580"]},
-    {metric:{host:"h2",instance:"c:9100"},value:[0,"1795000610"]},
+    {metric:{instance:"self:9100"},value:[0,"1795000600"]},
+    {metric:{instance:"b:9100"},value:[0,"1795000580"]},
+    {metric:{instance:"c:9100"},value:[0,"1795000610"]},
     {metric:{instance:"10.0.0.4:9100"},value:[0,"1795000650"]},
-    {metric:{host:"old",instance:"d:9100"},value:[0,"1790000000"]}]}}' > "$FIX/prom.json"
+    {metric:{instance:"d:9100"},value:[0,"1790000000"]}]}}' > "$FIX/prom.json"
   run "$BC" record
   assert_equal "$(cause)" house-power-event
   assert_equal "$(last_row | jq -r .hosts_rebooted_with)" 3
@@ -126,10 +126,86 @@ cause() { last_row | jq -r .cause; }
 @test "two other hosts booting with it are not enough" {
   journal_end 'app: working'
   jq -n '{status:"success",data:{result:[
-    {metric:{host:"h1",instance:"b:9100"},value:[0,"1795000580"]},
-    {metric:{host:"h2",instance:"c:9100"},value:[0,"1795000610"]}]}}' > "$FIX/prom.json"
+    {metric:{instance:"self:9100"},value:[0,"1795000600"]},
+    {metric:{instance:"b:9100"},value:[0,"1795000580"]},
+    {metric:{instance:"c:9100"},value:[0,"1795000610"]}]}}' > "$FIX/prom.json"
   run "$BC" record
   assert_equal "$(cause)" silent-death
+}
+
+# samples.log line: sample_line <epoch> <ac true|false> <battery pct> [ups status]
+sample_line() {
+  mkdir -p "$BOOT_CAUSE_STATE"
+  jq -nc --argjson e "$1" --argjson ac "$2" --argjson p "$3" --arg u "${4-}" \
+    '{epoch:$e, ac_online:$ac, battery_pct:$p, ups:(if $u == "" then null else {status:$u} end)}' >> "$BOOT_CAUSE_STATE/samples.log"
+}
+
+@test "a clean shutdown whose last line is only the power-off target is still clean" {
+  journal_end 'Stopped target Basic System.' 'Reached target System Power Off.'
+  run "$BC" record
+  assert_equal "$(cause)" clean-shutdown
+}
+
+@test "the sample the new boot already wrote does not hide the dead boot's last one" {
+  journal_end 'app: working'
+  sample_line 1795000590 false 3
+  sample_line 1795000620 true 90   # this boot's first sample, after boot_epoch 1795000600
+  run "$BC" record
+  assert_equal "$(cause)" battery-exhausted
+}
+
+@test "a sample from long before the log stopped is not evidence" {
+  journal_end 'app: working'
+  sample_line 1794990000 false 3
+  run "$BC" record
+  assert_equal "$(cause)" silent-death
+  run jq -r '.gaps[]' <<<"$(last_row)"
+  assert_output --partial 'no power sample'
+}
+
+@test "apcupsd ONBATT and LOWBATT count as on battery, ONLINE does not" {
+  journal_end 'app: working'
+  sample_line 1795000590 true 100 'ONBATT'
+  run "$BC" record
+  assert_equal "$(cause)" ups-on-battery
+  rm "$BOOT_CAUSE_DIR/testhost.jsonl"; : > "$BOOT_CAUSE_STATE/samples.log"
+  sample_line 1795000590 true 100 'ONLINE'
+  run "$BC" record
+  assert_equal "$(cause)" silent-death
+}
+
+@test "an OOM kill in the log does not outrank a last sample on UPS battery" {
+  journal_end 'app: working'
+  echo 'Out of memory: Killed process 1 (x)' > "$FIX/kern"
+  sample_line 1795000590 true 100 'OB DISCHRG'
+  run "$BC" record
+  assert_equal "$(cause)" ups-on-battery
+}
+
+@test "a thermal zone that errors on read does not stop the sample" {
+  mkdir -p "$FIX/thermal/thermal_zone1"
+  : > "$FIX/thermal/thermal_zone1/temp"   # what a zone that answers EINVAL reads as
+  run "$BC" sample
+  assert_success
+  assert_equal "$(wc -l < "$BOOT_CAUSE_STATE/samples.log")" 1
+  assert_equal "$(jq -r .temp_c_max "$BOOT_CAUSE_STATE/samples.log")" 51
+}
+
+@test "a device battery and an offline USB port do not make the host look like it is on battery" {
+  mkdir -p "$FIX/power/mouse" "$FIX/power/usb0"
+  echo Battery > "$FIX/power/mouse/type"; echo 3 > "$FIX/power/mouse/capacity"; echo Device > "$FIX/power/mouse/scope"
+  echo USB > "$FIX/power/usb0/type"; echo 0 > "$FIX/power/usb0/online"
+  run "$BC" sample
+  assert_equal "$(jq -r .battery_pct "$BOOT_CAUSE_STATE/samples.log")" 90
+  assert_equal "$(jq -r .ac_online "$BOOT_CAUSE_STATE/samples.log")" true
+}
+
+@test "last on a previous-boot-not-in-journal record states no log end it does not have" {
+  touch "$FIX/noprev"
+  "$BC" record
+  run "$BC" last
+  assert_success
+  refute_output --partial 'previous log stopped'
 }
 
 @test "silent death keeps the last log and names what could not be checked" {
