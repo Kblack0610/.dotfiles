@@ -121,6 +121,48 @@ LAST='<https://sentry.io/x>; rel="previous"; results="true"; cursor="0:0:1", <ht
   assert_failure
 }
 
+# Under agentctl a pass that declares no outcome is promoted to STALLED and trips fleet-liveness.
+@test "under agentctl a published pass is WORKED with its unread slugs counted; one that wrote nothing or read nothing is FAILED" {
+  reply project.dodginballs 200 "$(project 11 2026-11-01T00:00:00Z)"
+  reply issues.u.11 200 "$(issues 2)"
+  reply issues.n.11 200 "$(issues 1)"
+  reply project.dodginballs-server 404 '{}'
+  reply project.shapecity 403 '{"detail": "no"}'
+  AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SI" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/sentry-issues/last-outcome")" WORKED
+  run grep -E 'outcome=WORKED 3 slugs, 1 unread' "$SANDBOX/astate/sentry-issues/activity.log"
+  assert_success
+  PROM_TEXTFILE_DIR="$SANDBOX/none" AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SI" publish
+  assert_equal "$(cat "$SANDBOX/astate/sentry-issues/last-outcome")" FAILED
+  run grep -F "no textfile directory $SANDBOX/none" "$SANDBOX/astate/sentry-issues/activity.log"
+  assert_success
+  RBW_LOCKED=1 AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/cstate" run "$SI" publish
+  assert_equal "$(cat "$SANDBOX/cstate/sentry-issues/last-outcome")" FAILED
+  run grep -F 'no Sentry project could be read (3 slugs)' "$SANDBOX/cstate/sentry-issues/activity.log"
+  assert_success
+  # negative control: outside agentctl nothing is declared
+  AGENTCTL_STATE_DIR="$SANDBOX/bstate" run env -u AGENTCTL_NAME "$SI" publish
+  assert_success
+  [ -s "$PROM_TEXTFILE_DIR/sentry_issues.prom" ]
+  [ ! -e "$SANDBOX/bstate" ]
+}
+
+@test "under agentctl a machine with no Sentry project visible is NOOP, and a die is one FAILED, declared once" {
+  printf '%s\n' '{"sentry_org": "testorg", "trackers": {"apociseum": {"type": "game"}}}' > "$PROJECT_MAP_FILE"
+  AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/astate" run "$SI" publish
+  assert_success
+  assert_equal "$(cat "$SANDBOX/astate/sentry-issues/last-outcome")" NOOP
+  # A die inside the slugs subshell leaves the outcome to its caller's die.
+  PROJECT_MAP_FILE="$SANDBOX/gone.json" AGENTCTL_NAME=sentry-issues AGENTCTL_STATE_DIR="$SANDBOX/dstate" run "$SI" publish
+  assert_failure
+  assert_equal "$(cat "$SANDBOX/dstate/sentry-issues/last-outcome")" FAILED
+  run grep -c 'outcome=' "$SANDBOX/dstate/sentry-issues/activity.log"
+  assert_output 1
+  run grep -F 'could not read the Sentry projects' "$SANDBOX/dstate/sentry-issues/activity.log"
+  assert_success
+}
+
 @test "more than the page bound is that slug's error, never a short count" {
   reply project.shapecity 200 "$(project 12 2026-11-01T00:00:00Z)"
   # every page answers a full page with a next cursor
