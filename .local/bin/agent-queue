@@ -1542,7 +1542,10 @@ cmd_add() {
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given"; then
-      local pproject="${project:-$(project_of_cwd)}" ptitle="plan $(basename "$planf" .md): run its open phases"
+      # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
+      # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
+      local pproject ptitle="plan $(basename "$planf" .md): run its open phases"
+      pproject="$(project_resolve "${project:-$(project_of_cwd)}")" || die "unknown project: ${project:-$(project_of_cwd)} (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
       overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." || exit 1

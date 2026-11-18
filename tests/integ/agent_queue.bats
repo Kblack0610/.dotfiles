@@ -3780,6 +3780,19 @@ a"
   assert_success
 }
 
+# The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
+# cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
+# tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).
+@test "a filer's --plan for a repo with an owner files its row on the owner's board" {
+  story_notes
+  jq '.trackers.cockpit.lab = "bnb" | .trackers.cockpit.code = "ck"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
+  unset AGENT_QUEUE_PULL
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/owned.md"
+  run "$AQ" add --plan "$SANDBOX/owned.md" --project tools --from auto:plans --priority low
+  assert_failure 5
+  assert_called "ptask cockpit --agent add --detail=Run the open phases of the approved plan $SANDBOX/owned.md in order"
+}
+
 @test "every queued item counts against the cap, one held to a time of day or a date too" {
   # The queue holds only work that can start (a gated add files a board row), so every queued item
   # counts: one left from before, held to a time of day or a date, too.
