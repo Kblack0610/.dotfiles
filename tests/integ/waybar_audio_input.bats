@@ -3,7 +3,8 @@
 # pin: the chip is on no waybar (Noctalia shows it from config.base), the desktop pulseaudio chip has no mic part; set resolves a glob to the live node and changes only the default; next and prev
 # wrap; a rig input with REAPER closed is amber; a failed set pages and leaves the default alone;
 # watch prints on a server or source event or REAPER's port coming or going, only when the line
-# changed, and never renders on a client event (its own pactl calls are clients). pactl and pw-link
+# changed, never renders on a client event (its own pactl calls are clients), and exits when either
+# monitor ends. pactl and pw-link
 # are stubs over files in $FX; `pactl subscribe` and `pw-link -m` read fifos, so each event is
 # driven by the test.
 
@@ -42,7 +43,7 @@ case "$*" in
   *) echo "pactl stub: $*" >> "$FX/pactl.log"; exit 1 ;;
 esac
 STUB
-  printf '#!/usr/bin/env bash\n[[ $1 == -m ]] && exec cat "$FX/links"\ncat "$FX/ports"\n' > "$SANDBOX/bin/pw-link"
+  printf '#!/usr/bin/env bash\n[[ $1 == -m ]] && { echo $$ > "$FX/monitor.pid"; exec cat "$FX/links"; }\ncat "$FX/ports"\n' > "$SANDBOX/bin/pw-link"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/notify.log"\n' > "$SANDBOX/bin/notify-send"
   chmod +x "$SANDBOX/bin/pactl" "$SANDBOX/bin/pw-link" "$SANDBOX/bin/notify-send"
 }
@@ -191,22 +192,57 @@ field() { jq -r ".$1" <<<"$LINE"; }
   [[ $(field text) == *" G+M" ]]
 }
 
-@test "a client event never renders, so its own pactl calls cannot loop it; REAPER's port does" {
+@test "a client event never renders, so its own pactl calls cannot loop it" {
+  start
+  next_line
+  rendered
+  echo "Event 'new' on client #9" >&5
+  echo "Event 'change' on client #9" >&5
+  echo "Event 'remove' on client #9" >&5
+  renders_after_eof
+  assert_equal "$RENDERS" 0
+}
+
+# The +/- port lines are pw-link -m's own format (`pw-link -m -o` prints `+node:port` on this rig).
+@test "REAPER's out1 port going and coming renders; another port does not" {
   echo rig_guitar > "$FX/default"
   start
   next_line
   rendered
   assert_equal "$(field class)" ok
   : > "$FX/ports"
-  echo "Event 'new' on client #9" >&5
-  echo "Event 'remove' on client #9" >&5
-  echo "Event 'change' on client #9" >&5
-  echo "Event 'change' on source #58" >&5
   echo "+other:out1" >&7
   echo "-REAPER:out1" >&7
   next_line
   assert_equal "$(field class)" warn
-  # One render for the source event and one for REAPER's port; none for the clients or other:out1.
+  echo 'REAPER:out1' > "$FX/ports"
+  echo "+REAPER:out1" >&7
+  next_line
+  assert_equal "$(field class)" ok
   renders_after_eof
   assert_equal "$RENDERS" 2
+}
+
+@test "watch exits when pactl's stream ends, though pw-link's is still open, so the bar restarts it" {
+  start
+  next_line
+  rendered
+  exec 5>&-
+  # EOF on its output is 1; still running past the guard is >128 (the -t timeout, not a wait).
+  local st=0
+  read -r -t 10 -u 4 _ || st=$?
+  assert_equal "$st" 1
+  wait "$MOD"
+  MOD=''
+}
+
+@test "a bar that stops watch stops its pw-link monitor too, so no restart leaks one" {
+  start
+  next_line
+  rendered
+  kill -TERM "$MOD"
+  wait "$MOD" || true
+  MOD=''
+  run kill -0 "$(cat "$FX/monitor.pid")"
+  assert_failure
 }
