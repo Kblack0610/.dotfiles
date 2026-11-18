@@ -379,6 +379,23 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.tripped, .stale]' <<< "$d")" '[false,true]'
 }
 
+# The command-center catch-all weights a tripped watch by this rank: a low watch warns,
+# any other goes red (ar-2795: a low fyi watch held cc:overall_status red for months).
+@test "a watch carries its manifest severity and a numeric rank; missing or unknown is normal" {
+  seed_watch low-one TRIP
+  printf 'severity: low\n' >> "$WATCH_DIR/low-one.yaml"
+  seed_watch urgent-one TRIP
+  printf 'severity: "urgent"\n' >> "$WATCH_DIR/urgent-one.yaml"
+  seed_watch odd-one TRIP
+  printf 'severity: medium\n' >> "$WATCH_DIR/odd-one.yaml"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/low_one)")" '["low",1]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/urgent_one)")" '["urgent",4]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/odd_one)")" '["normal",2]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["normal",2]'
+}
+
 @test "a scheduled runner whose last run STALLED, or any runner whose state is error, is failed" {
   seed_runner beta
   seed_status beta error dotfiles 'x' 1789700000

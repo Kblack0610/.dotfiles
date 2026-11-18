@@ -27,6 +27,14 @@ watch_interval_secs() {
   esac
 }
 
+# watch_severity <manifest> -> low|normal|high|urgent. Same default and mapping as
+# watch-companion-loop's notify: missing, `medium` or unknown reads as normal.
+watch_severity() {
+  local s
+  s="$(awk '/^severity:/ { sub(/^severity:[[:space:]]*/, ""); gsub(/["'\'' ]/, ""); print; exit }' "$1" 2>/dev/null)"
+  case "$s" in low|normal|high|urgent) printf '%s' "$s" ;; *) printf normal ;; esac
+}
+
 # watch_is_stale <manifest> <lastrun-epoch> [now] -> exit 0 when stale. A missing or
 # non-numeric lastrun is NOT stale: the watch was never polled, and its state says so.
 watch_is_stale() {
