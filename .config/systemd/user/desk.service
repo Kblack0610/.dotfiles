@@ -1,0 +1,13 @@
+[Unit]
+Description=Start the desktop parts desk picks (bar, notifier)
+Documentation=file://%h/.dotfiles/docs/desk.md
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/desk start
+
+[Install]
+WantedBy=graphical-session.target

@@ -12,7 +12,6 @@ PROFILE_START_HYPRLAND=true
 
 # Services to enable
 PROFILE_START_SUNSHINE=false
-PROFILE_START_WAYBAR=true
 
 # Additional options
 PROFILE_ENABLE_SSH=true
