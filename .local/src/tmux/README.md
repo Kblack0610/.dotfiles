@@ -354,7 +354,7 @@ breaking all three at once.
 | `wt archive <path>` | save a `held` tree to a verified bundle under `~/.agent/archive/worktrees/<repo>/`, its uncommitted work (untracked files too, ignored ones not) as one WIP commit, then remove it; refuses a landed, claimed or not-a-worktree tree and a submodule holding work of its own |
 | `wt revive <file.bundle>` | put an archived tree back at its old path, on its branch at the archived commit, with its uncommitted work back in the files; the bundle stays |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
-| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
+| `wt orphans [-n]` | end every orphan: a Unity project's daemons after a crashed or killed editor (`gamedev-mcp-server`, main checkout and clones included), and whatever a closed tmux pane left running in its `tmux-spawn-*.scope` (a bats suite, Playwright chrome), sparing tmux servers and `rbw-agent` and skipping a server that does not answer; it names each by pid, and the `orphan-gc` runner runs it every 15 minutes on every node |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
