@@ -12,6 +12,9 @@
 # The bar itself is clear and each group of chips sits in its own pod (a capsule group),
 # as on the CachyOS default. A group does not inherit the bar's capsule_* style, so each
 # one repeats fill, border and padding; desk.bats checks they all match.
+# A pod has no divider of its own, so a chip draws one (`divider = "after"`, or "before"
+# when the widget ahead of it is one of Noctalia's): after on every chip but the pod's last,
+# so a hidden chip takes its divider with it.
 [bar.default]
 position = "top"
 start = ["workspaces", "group:live", "group:fleet", "group:host"]
@@ -80,15 +83,18 @@ show_label = false
 [widget.passthrough]
 type = "dotfiles/chips:chip"
 module = "custom/passthrough"
+divider = "after"
 
 [widget.gungan]
 type = "dotfiles/chips:chip"
 module = "custom/gungan"
+divider = "after"
 dropdown = false
 
 [widget.webcam]
 type = "dotfiles/chips:chip"
 module = "custom/webcam"
+divider = "after"
 
 [widget.timebox]
 type = "dotfiles/chips:chip"
@@ -97,22 +103,27 @@ module = "custom/timebox"
 [widget.health]
 type = "dotfiles/chips:chip"
 module = "custom/health"
+divider = "after"
 
 [widget.fleet]
 type = "dotfiles/chips:chip"
 module = "custom/fleet"
+divider = "after"
 
 [widget.projects]
 type = "dotfiles/chips:chip"
 module = "custom/projects"
+divider = "after"
 
 [widget.ai-agents]
 type = "dotfiles/chips:chip"
 module = "custom/ai-agents"
+divider = "after"
 
 [widget.dispatch]
 type = "dotfiles/chips:chip"
 module = "custom/dispatch"
+divider = "after"
 
 [widget.ci]
 type = "dotfiles/chips:chip"
@@ -121,15 +132,18 @@ module = "custom/ci"
 [widget.printer]
 type = "dotfiles/chips:chip"
 module = "custom/printer"
+divider = "after"
 
 [widget.audio-input]
 type = "dotfiles/chips:chip"
 module = "custom/audio-input"
+divider = "before"
 dropdown = false
 
 [widget.load]
 type = "dotfiles/chips:chip"
 module = "custom/load"
+divider = "after"
 
 # waybar's built-in temperature, temperature#gpu, memory and idle_inhibitor have
 # Noctalia widgets of their own, so they are not chips.
@@ -151,15 +165,18 @@ type = "caffeine"
 [widget.storage]
 type = "dotfiles/chips:chip"
 module = "custom/storage"
+divider = "before"
 
 [widget.machine-mode]
 type = "dotfiles/chips:chip"
 module = "custom/machine-mode"
+divider = "before"
 dropdown = false
 
 [widget.notify]
 type = "dotfiles/chips:chip"
 module = "custom/notify"
+divider = "before"
 
 # .local/share/noctalia/plugins/dotfiles-chips, linked by stow.
 [plugins]
