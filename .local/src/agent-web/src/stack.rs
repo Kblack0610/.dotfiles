@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use hub_core::layout;
 use hub_core::session_actions::System;
 use hub_core::stack::{self, Agent, Hook, Rule, RuleFile, Skill, Stack};
-use hub_core::table::{Row, Summary, View};
+use hub_core::table::{self, Row, Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{off, ReadCache};
@@ -16,7 +17,7 @@ use crate::cache::{off, ReadCache};
 const CACHE_SECS: u64 = 120;
 
 /// The view keys, as the page keeps them in its URL: Skills' bare, Agents' `g`-prefixed, Hooks'
-/// `k`-prefixed and Rules' `r`-prefixed (static/stack.js `STACK_TABLES`).
+/// `k`-prefixed and Rules' `r`-prefixed (static/stack.js `STACK_TABLES`). `pg` is the page.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct Query {
@@ -24,29 +25,37 @@ pub struct Query {
     pub s: String,
     pub sort: String,
     pub dir: String,
+    pub pg: String,
     pub gq: String,
     pub gs: String,
     pub gsort: String,
     pub gdir: String,
+    pub gpg: String,
     pub kq: String,
     pub ks: String,
     pub ksort: String,
     pub kdir: String,
+    pub kpg: String,
     pub rq: String,
     pub rs: String,
     pub rsort: String,
     pub rdir: String,
+    pub rpg: String,
 }
 
-/// One table with the view applied: the rows it keeps and the controls that drew them.
+/// One table with the view applied: the rows of the page it is on and the controls that drew them.
 #[derive(Serialize)]
 struct Part<'a, T> {
     rows: Vec<&'a T>,
     table: Summary,
 }
 
-fn part<'a, T: Row>(rows: &'a [T], q: &str, s: &str, sort: &str, dir: &str) -> Part<'a, T> {
-    let (rows, table) = View::new::<T>(q, s, sort, dir).summary(rows);
+/// `section` is the table's inner tab, whose `layout::page_rows` is its page size.
+fn part<'a, T: Row>(rows: &'a [T], section: &str, q: [&str; 5]) -> Part<'a, T> {
+    let [q, s, sort, dir, pg] = q;
+    let (mut rows, mut table) = View::new::<T>(q, s, sort, dir).summary(rows);
+    let page = pg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows(section));
     Part { rows, table }
 }
 
@@ -76,14 +85,18 @@ impl Default for Cache {
 }
 
 fn render(s: &Stack, q: &Query) -> String {
-    let skills = part(&s.skills, &q.q, &q.s, &q.sort, &q.dir);
+    let skills = part(&s.skills, "skills", [&q.q, &q.s, &q.sort, &q.dir, &q.pg]);
     let out = Shown {
         at: s.at,
         rows: skills.rows,
         table: skills.table,
-        agents: part(&s.agents, &q.gq, &q.gs, &q.gsort, &q.gdir),
-        hooks: part(&s.hooks, &q.kq, &q.ks, &q.ksort, &q.kdir),
-        rules: part(&s.rules, &q.rq, &q.rs, &q.rsort, &q.rdir),
+        agents: part(
+            &s.agents,
+            "agents",
+            [&q.gq, &q.gs, &q.gsort, &q.gdir, &q.gpg],
+        ),
+        hooks: part(&s.hooks, "hooks", [&q.kq, &q.ks, &q.ksort, &q.kdir, &q.kpg]),
+        rules: part(&s.rules, "rules", [&q.rq, &q.rs, &q.rsort, &q.rdir, &q.rpg]),
         rule_files: &s.rule_files,
         runners: s.runners,
         drift_day: &s.drift_day,
@@ -105,8 +118,8 @@ impl Cache {
         self.read().await.map_or_else(failed, |s| render(&s, &q))
     }
 
-    /// The kept read the tab's views are cut from.
-    async fn read(&self) -> Result<Arc<Stack>, String> {
+    /// The kept read the tab's views are cut from; `warm` fills it at start (3.6 to 6.7 s cold).
+    pub async fn read(&self) -> Result<Arc<Stack>, String> {
         let read = off(|| stack::read(&stack::Paths::from_env(), &System, hub_core::jobs::now()));
         self.0.get((), read).await
     }
@@ -161,6 +174,45 @@ mod tests {
         assert_eq!(
             v["table"]["total"], 2,
             "a hooks view does not filter the skills"
+        );
+    }
+
+    #[test]
+    fn each_table_pages_under_its_own_key() {
+        let per = layout::page_rows("rules");
+        let s = Stack {
+            rules: (0..per * 2 + 5)
+                .map(|i| Rule {
+                    rule: format!("r{i:03}"),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let q = Query {
+            rpg: "2".into(),
+            rsort: "rule".into(),
+            rdir: "asc".into(),
+            ..Default::default()
+        };
+        let v: serde_json::Value = serde_json::from_str(&render(&s, &q)).unwrap();
+        let rules = &v["rules"];
+        assert_eq!(rules["rows"].as_array().unwrap().len(), per);
+        assert_eq!(
+            rules["rows"][0]["rule"],
+            format!("r{per:03}"),
+            "page 2 starts after page 1"
+        );
+        assert_eq!(rules["table"]["pager"]["page"], 2);
+        assert_eq!(rules["table"]["pager"]["pages"], 3);
+        assert_eq!(
+            rules["table"]["shown"],
+            per * 2 + 5,
+            "shown counts every page"
+        );
+        assert!(
+            v["table"].get("pager").is_none(),
+            "an empty skills table is unpaged"
         );
     }
 
