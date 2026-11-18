@@ -84,6 +84,14 @@ row() { # <pane> <target> [status] [idle_since]
   assert_output --partial 'queued said-it, but it did not start'
 }
 
+
+@test "a send held at the queue cap says its words wait on a board row and starts nothing" {
+  stub agent-queue 'cat > /dev/null; echo "agent-queue: held by admission" >&2; exit 5'
+  run -4 "$AV" send --to new:dotfiles "x"
+  assert_output --partial 'the queue is at its cap'
+  assert_not_called fleet-dispatch
+}
+
 @test "a queue add that names no item is a fault, not a queued take" {
   stub agent-queue 'cat > /dev/null'
   run -1 "$AV" send --to new:dotfiles "x"
