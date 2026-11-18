@@ -1,0 +1,15 @@
+[Unit]
+Description=Record how the previous boot ended (boot-cause record)
+
+[Service]
+Type=oneshot
+# The record asks Prometheus whether other hosts rebooted with this one, and a boot-time run before
+# the network is up would write "unreachable" into a record that never changes. Wait the way
+# session-snapshot-up.service does and says why; the leading - keeps a host without nm-online
+# recording anyway, with the gap named in the record.
+ExecStartPre=-/usr/bin/nm-online -q -x -t 60
+ExecStart=%h/.local/bin/boot-cause record
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

@@ -353,67 +353,50 @@ SH
   run env CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'second?'
   assert_failure
   assert_output --partial "already has pending ask $a"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go" --project demo "the next phase" >/dev/null
   b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'second?')"
   run "$AGENT_ASK" show "$b"
   assert_line 'claude_session: sid-1'
 }
 
-@test "card: an ask queue items hold says which ones its answer releases, and on what" {
+@test "card: an ask a board row or a queue item holds says which ones its answer releases, and on what" {
   local opts='go=run it now|later=run it later' a
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug one --tags "ask:$a=go+later" "first" >/dev/null
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug two --tags "ask:$a=go" "second" >/dev/null
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go/later"]}],"done":[]}\n' "$a" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy two "tags: ask:$a=go" --project demo "second" >/dev/null
   run "$AGENT_ASK" card "$a"
-  assert_output --partial 'answer releases: one (on go or later)'
+  assert_output --partial 'answer releases: dm-1 (on go or later)'
   assert_output --partial 'answer releases: two (on go)'
   refute_output --partial 'board'
 }
 
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
-@test "an answer fails the queued items it can no longer release, and only those; a cancel leaves them queued and flagged" {
-  local opts='go=run it now|later=run it later' a b c d e
+@test "a board row gated on an ask reads clear on the answer it waits for, dead on another answer or a cancel, pending until then" {
+  local opts='go=run it now|later=run it later' a b c d
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-later --tags "ask:$a=later" "runs on later" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-later
-  assert_line 'status: failed'
-  assert_line "note: dead hold: ask:$a=later (answered go, not later)"
-  # The answer released this one, so it stays queued for dispatch to start.
-  run "$AGENT_ASK_QUEUE_CMD" show on-go
-  assert_line 'state: queued'
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$a/go" "ask/$a/later"
+  assert_failure 3
+  assert_line --regexp "^clear +ask/$a/go\$"
+  assert_line --regexp "^dead +ask/$a/later: .*answered go, not later"
+  # 2026-11-13: a cancel decides nothing, so the row keeps its tag and reads dead until someone re-gates it.
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
-  # 2026-11-13: cancelling yaZGII closed consoles-p3 unfinished. A cancel decides nothing, so the item
-  # stays queued and held, its live hold the flag, and the canceller is told how to re-gate or close it.
-  run --separate-stderr "$AGENT_ASK" cancel "$b"
-  assert_success
-  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b: set its tags without ask:$b=go"*"--why <why>"* ]]
-  run "$AGENT_ASK_QUEUE_CMD" show on-b --json
-  [ "$(jq -r '"\(.state) \(.hold) \(.note // "none")"' <<<"$output")" = "queued ask:$b=go (cancelled) none" ]
-  # A judge answer is not the human's, who can still answer: the item stays queued.
-  c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
-  sed -i 's/^status: .*/status: answered/; s/^answer: .*/answer: later/; s/^answered_by: .*/answered_by: judge/' "$HOME/.agent/asks/demo/$c.md"
-  "$AGENT_ASK_QUEUE_CMD" settle-ask "$c"
-  run "$AGENT_ASK_QUEUE_CMD" show on-c
-  assert_line 'state: queued'
-  # 2026-11-12: a free-text answer from the human releases, so the item stays queued with its brief carrying it.
+  "$AGENT_ASK" cancel "$b" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$b/go"
+  assert_line --regexp "^dead +ask/$b/go: .*\(cancelled\)"
+  # 2026-11-12: a free-text answer from the human releases.
   d="$("$AGENT_ASK" post --project demo --options "$opts" 'how should it look?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-d --tags "ask:$d=go" "runs on go" >/dev/null
   "$AGENT_ASK" answer "$d" "Neither: make it slope toward every ramp" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-d --json
-  [ "$(jq -r '"\(.state) \(.hold // "released")"' <<<"$output")" = "queued released" ]
-  # Negative control: free text that names another option is a deliberate no, so settle-ask fails it.
-  e="$("$AGENT_ASK" post --project demo --options "$opts" 'and the last?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-e --tags "ask:$e=go" "runs on go" >/dev/null
-  "$AGENT_ASK" answer "$e" "No, run it later" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-e
-  assert_line 'status: failed'
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$d/go"
+  assert_success
+  # Negative control: a pending ask holds the row, neither clear nor dead.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$c/go"
+  assert_failure 3
+  assert_line --regexp "^pending +ask/$c/go"
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
@@ -423,7 +406,7 @@ SH
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local opts='go=run it now|later=run it later' a b c
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
   assert_not_called 'agentctl start'
   "$AGENT_ASK" deliver --all 2>/dev/null
@@ -436,7 +419,7 @@ SH
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug picky --tags "ask:$c=go" "the go phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy picky "tags: ask:$c=go" --project demo "the go phase" >/dev/null
   "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
@@ -447,7 +430,7 @@ SH
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local a
   a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agentctl start'
   assert_called "(the judge; to override: agent-ask answer $a <option>)"
@@ -474,7 +457,7 @@ SH
   local opts='go=run it now|later=run it later' a b
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'start the next phase?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug next-phase --tags "tier3 ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy next-phase "tags: tier3 ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" settle-session sid-1 answered "ok thanks, can you wind down"
   run "$AGENT_ASK" show "$a"
   assert_line 'status: pending'
@@ -484,7 +467,7 @@ SH
   assert_line 'answer: go'
   # Negative control: an item done with it no longer holds it, so the reply cancels as before.
   b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'and the one after?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug old --tags "ask:$b=go" "an old phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy old "tags: ask:$b=go" --project demo "an old phase" >/dev/null
   "$AGENT_ASK_QUEUE_CMD" move old done --status cancelled >/dev/null
   "$AGENT_ASK" settle-session sid-1 answered "ok thanks"
   run "$AGENT_ASK" show "$b"
@@ -1000,7 +983,7 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   local held free
   held="$("$AGENT_ASK" post --project demo --kind gate 'go?')"
   free="$("$AGENT_ASK" post --project other --kind gate 'go too?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --priority high --tags "ask:$held=approve" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project demo --priority high "the next phase" >/dev/null
   "$AGENT_ASK" park "$held" 2>/dev/null
   "$AGENT_ASK" park "$free" 2>/dev/null
   assert_equal "$(days_ahead "$("$AGENT_ASK" show "$held" | sed -n 's/^parked_until: //p')")" 3
@@ -1588,7 +1571,7 @@ SH
   local held free
   held="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   free="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake too?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug p3 --tags "ask:$held=fix tier3" "the live phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy p3 "tags: ask:$held=fix tier3" --project demo "the live phase" >/dev/null
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
   run "$AGENT_ASK" sweep --all
   assert_success

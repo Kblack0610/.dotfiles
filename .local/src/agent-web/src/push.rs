@@ -38,6 +38,11 @@ const CLIENT_MAX: usize = 40;
 /// Per endpoint: a distributor that does not answer in this long misses this push, and the
 /// app's 15 min backstop covers it.
 const SEND_TIMEOUT_S: &str = "10";
+/// After a 429 or 5xx with no Retry-After, the first wait; each further one doubles it.
+const BACKOFF_FIRST: Duration = Duration::from_secs(60);
+/// The longest wait we choose ourselves; a distributor's own Retry-After may ask up to a day.
+const BACKOFF_MAX: Duration = Duration::from_secs(3600);
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(86_400);
 
 /// Wakes `run`. A poke while `run` is busy is kept (one permit), so it is never lost.
 #[derive(Default)]
@@ -215,6 +220,39 @@ struct Sent {
     /// The first failure's reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// A distributor throttled (429 or 5xx): the Retry-After it sent, in seconds, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after: Option<u64>,
+    /// Throttled: no send before this unix time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_at: Option<i64>,
+    /// Set when a distributor throttled, so `run` backs off.
+    #[serde(skip)]
+    throttled: bool,
+}
+
+/// How long to hold sends after a throttle: the distributor's Retry-After when it sent one,
+/// else `BACKOFF_FIRST` doubling per throttle in a row up to `BACKOFF_MAX`. A send no
+/// distributor throttled resets it.
+#[derive(Debug, Default)]
+struct Backoff {
+    strikes: u32,
+}
+
+impl Backoff {
+    fn throttled(&mut self, retry_after: Option<u64>) -> Duration {
+        self.strikes = self.strikes.saturating_add(1);
+        match retry_after {
+            Some(s) => Duration::from_secs(s).min(RETRY_AFTER_MAX),
+            None => BACKOFF_FIRST
+                .saturating_mul(1u32 << (self.strikes - 1).min(16))
+                .min(BACKOFF_MAX),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.strikes = 0;
+    }
 }
 
 /// What a distributor's answer means for its endpoint.
@@ -223,12 +261,19 @@ enum Answer {
     Took,
     Gone,
     Failed(String),
+    /// 429 or 5xx: the distributor asks us to slow down, with its Retry-After seconds if sent.
+    Throttled(String, Option<u64>),
 }
 
-fn answer(code: Option<u16>, err: &str) -> Answer {
+/// `code` is curl's `%{http_code}`, `retry_after` its `%header{retry-after}`: only the
+/// delta-seconds form is read, an HTTP-date falls back to our own backoff.
+fn answer(code: Option<u16>, retry_after: &str, err: &str) -> Answer {
     match code {
         Some(200..=299) => Answer::Took,
         Some(404 | 410) => Answer::Gone,
+        Some(c @ (429 | 500..=599)) => {
+            Answer::Throttled(format!("HTTP {c}"), retry_after.trim().parse().ok())
+        }
         Some(c) if c > 0 => Answer::Failed(format!("HTTP {c}")),
         _ if err.trim().is_empty() => Answer::Failed("no answer".into()),
         _ => Answer::Failed(err.trim().chars().take(200).collect()),
@@ -239,7 +284,13 @@ fn answer(code: Option<u16>, err: &str) -> Answer {
 /// stays out of argv. No retry: a missed push is caught by the next one or the app's backstop.
 async fn post(endpoint: &str) -> Answer {
     let child = tokio::process::Command::new("curl")
-        .args(["-sS", "-o", "/dev/null", "-w", "%{http_code}"])
+        .args([
+            "-sS",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code} %header{retry-after}",
+        ])
         .args([
             "--max-time",
             SEND_TIMEOUT_S,
@@ -266,10 +317,15 @@ async fn post(endpoint: &str) -> Answer {
         }
     }
     match child.wait_with_output().await {
-        Ok(o) => answer(
-            String::from_utf8_lossy(&o.stdout).trim().parse().ok(),
-            &String::from_utf8_lossy(&o.stderr),
-        ),
+        Ok(o) => {
+            let out = String::from_utf8_lossy(&o.stdout);
+            let (code, retry_after) = out.trim().split_once(' ').unwrap_or((out.trim(), ""));
+            answer(
+                code.parse().ok(),
+                retry_after,
+                &String::from_utf8_lossy(&o.stderr),
+            )
+        }
         Err(e) => Answer::Failed(format!("curl: {e}")),
     }
 }
@@ -291,6 +347,12 @@ async fn send_all() -> Sent {
                 sent.failed += 1;
                 sent.error.get_or_insert(why);
             }
+            Answer::Throttled(why, retry_after) => {
+                sent.failed += 1;
+                sent.error.get_or_insert(why);
+                sent.throttled = true;
+                sent.retry_after = sent.retry_after.max(retry_after);
+            }
         }
     }
     sent.dropped = gone.len();
@@ -310,16 +372,18 @@ async fn send_all() -> Sent {
     sent
 }
 
-/// The sender, for the life of the server: waits for a poke, keeps `GAP` since the last send,
-/// then sends when the cards draw something new.
+/// The sender, for the life of the server: waits for a poke, keeps `GAP` since the last send
+/// (longer while a distributor throttles, see `Backoff`), then sends when the cards draw
+/// something new.
 pub async fn run(s: Shared) {
     let mut last_key: Option<String> = None;
-    let mut last_send: Option<Instant> = None;
+    let mut next_send: Option<Instant> = None;
+    let mut backoff = Backoff::default();
     loop {
         s.push.poke.notified().await;
-        if let Some(t) = last_send {
+        if let Some(t) = next_send {
             // A rate limit, not a wait for a signal: pokes that come meanwhile fold into this one.
-            tokio::time::sleep_until(t + GAP).await;
+            tokio::time::sleep_until(t).await;
         }
         // No phone registered: nothing to tell, so no card read either.
         if Endpoints::load(&endpoints_file()).endpoints.is_empty() {
@@ -330,16 +394,31 @@ pub async fn run(s: Shared) {
         if last_key.as_deref() == Some(key.as_str()) {
             continue;
         }
-        let sent = send_all().await;
-        last_send = Some(Instant::now());
+        let mut sent = send_all().await;
+        let wait = if sent.throttled {
+            backoff.throttled(sent.retry_after).max(GAP)
+        } else {
+            backoff.reset();
+            GAP
+        };
+        next_send = Some(Instant::now() + wait);
+        if sent.throttled {
+            sent.next_at = Some(sent.at + wait.as_secs() as i64);
+        }
         // A change no endpoint took goes again on the next poke, `GAP` later.
         if sent.sent > 0 {
             last_key = Some(key);
         }
         if let Some(why) = &sent.error {
             eprintln!(
-                "agent-web: push failed to {} of {}: {why}",
-                sent.failed, sent.endpoints
+                "agent-web: push failed to {} of {}: {why}{}",
+                sent.failed,
+                sent.endpoints,
+                if sent.throttled {
+                    format!(", next try in {} s", wait.as_secs())
+                } else {
+                    String::new()
+                }
             );
         }
         let value = serde_json::to_value(&sent).unwrap_or_default();
@@ -418,17 +497,46 @@ mod tests {
 
     #[test]
     fn a_distributors_answer_says_whether_the_endpoint_stays() {
-        assert_eq!(answer(Some(200), ""), Answer::Took);
-        assert_eq!(answer(Some(201), ""), Answer::Took);
-        assert_eq!(answer(Some(404), ""), Answer::Gone);
-        assert_eq!(answer(Some(410), ""), Answer::Gone);
-        assert_eq!(answer(Some(429), ""), Answer::Failed("HTTP 429".into()));
+        assert_eq!(answer(Some(200), "", ""), Answer::Took);
+        assert_eq!(answer(Some(201), "", ""), Answer::Took);
+        assert_eq!(answer(Some(404), "", ""), Answer::Gone);
+        assert_eq!(answer(Some(410), "", ""), Answer::Gone);
+        assert_eq!(
+            answer(Some(429), "", ""),
+            Answer::Throttled("HTTP 429".into(), None)
+        );
+        assert_eq!(
+            answer(Some(429), "120", ""),
+            Answer::Throttled("HTTP 429".into(), Some(120))
+        );
+        assert_eq!(
+            answer(Some(503), "Wed, 21 Oct 2026 07:28:00 GMT", ""),
+            Answer::Throttled("HTTP 503".into(), None)
+        );
+        assert_eq!(answer(Some(400), "", ""), Answer::Failed("HTTP 400".into()));
         // curl prints 000 when it got no answer at all; the reason is on stderr.
         assert_eq!(
-            answer(Some(0), "curl: (28) timed out\n"),
+            answer(Some(0), "", "curl: (28) timed out\n"),
             Answer::Failed("curl: (28) timed out".into())
         );
-        assert_eq!(answer(None, ""), Answer::Failed("no answer".into()));
+        assert_eq!(answer(None, "", ""), Answer::Failed("no answer".into()));
+    }
+
+    #[test]
+    fn a_throttle_honors_retry_after_else_doubles_to_the_cap_and_a_success_resets() {
+        let mut b = Backoff::default();
+        assert_eq!(b.throttled(None), Duration::from_secs(60));
+        assert_eq!(b.throttled(None), Duration::from_secs(120));
+        assert_eq!(b.throttled(None), Duration::from_secs(240));
+        // The distributor's own ask wins over the doubling, up to a day.
+        assert_eq!(b.throttled(Some(7)), Duration::from_secs(7));
+        assert_eq!(b.throttled(Some(999_999)), RETRY_AFTER_MAX);
+        for _ in 0..40 {
+            b.throttled(None);
+        }
+        assert_eq!(b.throttled(None), BACKOFF_MAX);
+        b.reset();
+        assert_eq!(b.throttled(None), Duration::from_secs(60));
     }
 
     #[test]

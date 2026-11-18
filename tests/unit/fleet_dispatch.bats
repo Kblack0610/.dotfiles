@@ -252,6 +252,34 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output ''
 }
 
+@test "pull-after promotes the open rows gated #after/<id>, that row counted clear: high starts at once, low waits its turn, another pending gate holds" {
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #high #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): the paint $T #low #after/ga-1 <!-- id:ga-3 -->"
+  row game agent ga-4 "- [ ] feat(game): the keys $T #after/ga-1 #rbw/infra/x <!-- id:ga-4 -->"
+  row game agent ga-5 "- [ ] feat(game): unrelated $T <!-- id:ga-5 -->"
+  cmd_start() { echo "start $*" >> "$NOTES_FIXTURE/started"; }
+  run cmd_pull_after ga-1
+  assert_success
+  assert_output --partial "pull-after ga-1: ga-3 is low priority, so a pass starts it in its turn"
+  assert_equal "$(cat "$NOTES_FIXTURE/started")" "start --item ga-2"
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | sort | paste -sd,)" "ga-2,ga-3"
+  assert_output --partial "skip game: ga-4 waits on rbw infra/x"
+  run grep -c 'ptask game --agent tag --remove after/ga-1 ga-2' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # Negative controls: no id is usage, and under the dispatch hold nothing is pulled.
+  run cmd_pull_after
+  assert_failure 2
+  row game agent ga-6 "- [ ] feat(game): the roof $T #after/ga-1 <!-- id:ga-6 -->"
+  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
+  run cmd_pull_after ga-1
+  assert_success
+  assert_output --partial "dispatch is held"
+  [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
+}
+
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
   echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
@@ -1363,21 +1391,21 @@ EOF
   assert_equal "$(cat "$NOTES_FIXTURE/room.n")" 1
 }
 
-@test "starved names an item held on a cancelled ask, which no answer can release" {
+@test "starved names a board row gated on a cancelled ask, which no answer can release" {
+  project game beta "$SANDBOX/repos/game"
   mkdir -p "$HOME/.agent/asks/game"
-  printf 'id: dead1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
-  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
-  agent-queue add --project game --slug k8 --tags 'ask:dead1' "kalshi p8" >/dev/null
-  agent-queue add --project game --slug k9 --tags 'ask:live1' "waits on the human" >/dev/null
-  # The ask is cancelled after the item queued behind it (add refuses a dead one).
   printf 'id: dead1\nstatus: cancelled\nquestion: q?\n' > "$HOME/.agent/asks/game/dead1.md"
-  # A machine held by load still names the dead hold and fails.
+  printf 'id: live1\nstatus: pending\nquestion: q?\n' > "$HOME/.agent/asks/game/live1.md"
+  # The queue holds no gated item (agent-queue add files it on its row), so a dead gate is a row's.
+  row game agent gm-8 "- [ ] feat(game): kalshi p8 $T #ask/dead1 <!-- id:gm-8 -->"
+  row game agent gm-9 "- [ ] feat(game): waits on the human $T #ask/live1 <!-- id:gm-9 -->"
+  # A machine held by load still names the dead gate and fails.
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   run cmd_starved
   assert_failure
-  assert_output --partial 'held on an ask that can never be answered:'
-  assert_output --partial 'k8 (game, ask:dead1 (cancelled))'
-  refute_output --partial 'k9'
+  assert_output --partial 'board rows gated on what can never clear:'
+  assert_output --partial 'gm-8 (game, #ask/dead1: '
+  refute_output --partial 'gm-9'
 }
 
 @test "run starts nothing when account usage cannot be read" {

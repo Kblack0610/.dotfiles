@@ -154,8 +154,9 @@ full_fleet() {
 
 @test "human floor: a phase an after: or a tag holds does not start on it, nor one a machine filer queued" {
   full_fleet
-  plan_queued pa '- [x] one\n- [ ] two\n- [ ] three'   # pa-p3 waits on pa-p2
-  agent-queue set pa-p2 "tags=at:$(date -d tomorrow +%F)T09:00" >/dev/null
+  plan_queued pa '- [x] one\n- [ ] two\n- [ ] three (independent)'
+  legacy_hold pa-p3 "after: pa-p2"   # an item queued before G2, waiting on pa-p2
+  legacy_hold pa-p2 "tags: at:$(date -d tomorrow +%F)T09:00"
   plan_queued pm '- [ ] one' --from auto:plans --tags ui
   agent-queue set pm-p1 tags= >/dev/null
   plan_queued pb '- [ ] one'
@@ -350,7 +351,7 @@ full_fleet() {
   agent-queue add --project game --slug w1 --tags 'red watch cause:c' "check(watch): w1 tripped" >/dev/null
   agent-queue add --project game --slug r1 --tags 'red cause:a' "fix r1" >/dev/null
   agent-queue add --project game --slug p1 --tags 'watch' "plain p1" >/dev/null
-  agent-queue add --project game --slug w2 --after r1 --tags 'red watch cause:d' "check(watch): w2 tripped" >/dev/null
+  legacy w2 "after: r1" --project game --tags 'red watch cause:d' "check(watch): w2 tripped"
   run watch_reds
   assert_output 1
   agent-queue() { echo 'agent-queue: the queue is locked by another writer' >&2; return 1; }
