@@ -62,7 +62,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" '
   | (("MACHINE" | pad($mw)) + "  BUSY  " + ("DOING" | pad($dw)) + "  SPACE") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
-     + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) hosts off"] else [] end)
+     + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)
      + (if ($g.down | length) > 0 then ["", "DOWN:"] + [$g.down[] | "  \(.host | esc)  \(.n) \(.state | esc)"] else [] end)
      + (if ($g.long | length) > 0 then ["", ("long runs: " + ([$g.long[] | "\(.what | esc) \(.ran | dur)"] | join(", ")) | paint($yel))] else [] end)
     ) as $body

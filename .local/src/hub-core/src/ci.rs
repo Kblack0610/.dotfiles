@@ -209,6 +209,16 @@ impl Glance {
         }
         s
     }
+
+    /// `cloud: 4 hosts off`: the cloud hosts the governor holds off, one line in place of a
+    /// row each (agent-web's `offLine` and the waybar chip say the same).
+    pub fn off_line(&self) -> Option<String> {
+        match self.off.len() {
+            0 => None,
+            1 => Some("cloud: 1 host off".into()),
+            n => Some(format!("cloud: {n} hosts off")),
+        }
+    }
 }
 
 /// The glance, from the board `infra` has built (`Infra::derive`): its machines and pools.
@@ -1645,6 +1655,9 @@ mod tests {
             ]
         );
         assert_eq!(g.off, ["aws-burst-1"]);
+        // The Machines table folds it to that line; its page still finds it.
+        assert!(i.machine_rows().iter().all(|m| m.host != "aws-burst-1"));
+        assert!(i.machines.iter().any(|m| m.host == "aws-burst-1"));
         assert!(g.down.is_empty(), "{:?}", g.down);
         let kinds: Vec<&str> = g.kinds.iter().map(|k| k.kind.as_str()).collect();
         assert_eq!(kinds, ["unity", "gates", "macos"]);

@@ -79,7 +79,8 @@ pub struct Machine {
     /// running.
     pub state: String,
     /// CI slots, each physical slot once (`ci::slots_by_host`): a running runner, or an idle
-    /// one not withheld; local gate slots fold in. `off`: runners offline or missing.
+    /// one not withheld; local gate slots fold in. `off`: its runners on the Down list
+    /// (`Infra::runners_down`, filled by `Infra::derive`).
     pub busy: u32,
     pub slots: u32,
     pub off: u32,
@@ -444,9 +445,11 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         if let Some(v) = mem.get(s.label("name")) {
             mm.runner_mem.push((s.label("name").into(), *v));
         }
-        if !matches!(s.label("state"), "running" | "idle") {
-            mm.off += 1;
-        }
+    }
+    // Off is the Down list's count here, so a held, lent, stopped-cloud or stale runner the
+    // Down list leaves out never reads `+N off` on its machine.
+    for s in &infra.down {
+        at(&mut by, host(s)).off += 1;
     }
     for (h, (b, n)) in crate::ci::slots_by_host(infra) {
         let mm = at(&mut by, h);
@@ -852,7 +855,13 @@ pub(crate) mod tests {
             (burst.place.as_str(), burst.state.as_str()),
             ("cloud", "stopped")
         );
-        assert_eq!((burst.busy, burst.slots, burst.off), (0, 0, 1));
+        // Its runner is offline because the governor stopped the host: not down, so not off.
+        assert_eq!((burst.busy, burst.slots, burst.off), (0, 0, 0));
+        // A runner on the Down list is its machine's off.
+        let mut f = fleet();
+        f.down = series(vec![json!({"__name__": "github_runner_state",
+            "host": "mac-mini", "name": "mini-2", "state": "offline", "v": "1"})]);
+        assert_eq!(machine(&build(&f).0, "mac-mini").off, 1);
         let p = burst.power.as_ref().unwrap();
         assert_eq!(
             (p.reason.as_str(), p.hours, p.max),

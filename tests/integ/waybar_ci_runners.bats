@@ -99,9 +99,10 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 @test "one row per machine: busy/slots, what its slots do, space last; no WHERE, no pool names" {
   run "$MODULE"
   run plain
-  assert_line "MACHINE        BUSY  DOING                     SPACE"
-  assert_line "workstation     2/2  1 gates, 1 unity, 1 held  12/60G 1.5T free"
-  assert_line "mac-mini        0/1  1 free                    482G free"
+  assert_line "MACHINE      BUSY  DOING                     SPACE"
+  assert_line "workstation   2/2  1 gates, 1 unity, 1 held  12/60G 1.5T free"
+  assert_line "mac-mini      0/1  1 free                    482G free"
+  assert_line "cloud: 1 host off"
   refute_output --partial "WHERE"
   refute_output --partial "local:workstation"
   refute_output --partial "other"

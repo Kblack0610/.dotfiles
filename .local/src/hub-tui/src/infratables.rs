@@ -96,7 +96,7 @@ impl InfraTables {
             };
             let v = &mut t.view;
             match i {
-                0 => v.cycle_shown(&r.machines),
+                0 => v.cycle_shown(&r.machine_rows()),
                 1 => v.cycle_shown(&r.pools),
                 2 => v.cycle_shown(&r.ci.rows),
                 3 => v.cycle_shown(&r.ci.queue),
@@ -118,7 +118,7 @@ impl InfraTables {
     fn shown_len(&self, infra: &Infra, i: usize) -> usize {
         let v = &self.views[i].view;
         match i {
-            0 => v.apply(&infra.machines).len(),
+            0 => v.apply(&infra.machine_rows()).len(),
             1 => v.apply(&infra.pools).len(),
             2 => v.apply(&infra.ci.rows).len(),
             3 => v.apply(&infra.ci.queue).len(),
@@ -163,7 +163,7 @@ impl InfraTables {
             DataTable::opens(*t.view.apply(rows).get(t.sel)?)
         }
         match i {
-            0 => sel(t, &infra.machines),
+            0 => sel(t, &infra.machine_rows()),
             1 => sel(t, &infra.pools),
             2 => sel(t, &infra.ci.rows),
             3 => sel(t, &infra.ci.queue),
@@ -194,7 +194,11 @@ impl InfraTables {
             w,
         };
         match i {
-            0 => machines(&d, &infra.machines, now),
+            0 => {
+                let mut out = machines(&d, &infra.machine_rows(), now);
+                out.extend(infra.ci.glance.off_line().map(|l| Line::styled(l, p.dim())));
+                out
+            }
             1 => pools(&d, &infra.pools),
             2 => runners(&d, &infra.ci.rows),
             3 => queued(&d, &infra.ci.queue),
@@ -579,6 +583,16 @@ mod tests {
         for host in i.machines.iter().map(|m| m.host.as_str()) {
             assert!(m.contains(host), "{host}: {m}");
         }
+        assert!(!m.contains("hosts off"), "{m}");
+        // A cloud host the governor holds off folds into one line under the table.
+        let mut off = i.clone();
+        let gone = off.machines[0].host.clone();
+        off.ci.glance.off = vec![gone.clone()];
+        let o = text(&t, &off, "machines", "machines", 200);
+        assert!(
+            o.ends_with("cloud: 1 host off") && !o.contains(&format!("\n{gone} ")),
+            "{o}"
+        );
         let p = text(&t, &i, "pools", "machines", 200);
         assert!(
             p.starts_with("JOB KINDS  all ") && !p.contains("[/ f"),

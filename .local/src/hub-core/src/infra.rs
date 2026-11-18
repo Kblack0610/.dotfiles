@@ -376,6 +376,18 @@ impl Infra {
         down
     }
 
+    /// The Machines table's rows on both surfaces: every machine but a cloud host the governor
+    /// holds off, which the glance counts on one line (`cloud: N hosts off`). Its page still
+    /// opens from `machines`.
+    pub fn machine_rows(&self) -> Vec<Machine> {
+        let off = &self.ci.glance.off;
+        self.machines
+            .iter()
+            .filter(|m| !off.contains(&m.host))
+            .cloned()
+            .collect()
+    }
+
     /// Why the runner rows may be short, worst first: a missed exporter scrape, GitHub's rate
     /// limit spent, or GitHub not answering the exporter. Every CI surface says this one line.
     pub fn feed(&self) -> Option<&'static str> {
