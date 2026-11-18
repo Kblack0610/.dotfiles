@@ -61,7 +61,7 @@ def is_github(url):
 def origin(path):
     """(owner, repo, origin url, path relative to the checkout root) for the checkout holding path.
 
-    1 s per git call plus ssh -G's 2 s stays under the hook's 5 s timeout."""
+    1 s per git call, ssh -G 2 s and public() 2 s stay under the hook's 8 s timeout."""
     d = os.path.dirname(path)
     while d and not os.path.isdir(d):
         d = os.path.dirname(d)

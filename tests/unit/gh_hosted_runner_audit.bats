@@ -13,6 +13,8 @@ setup() {
           {nameWithOwner: "acme/dorm", visibility: "PRIVATE"}, {nameWithOwner: "acme/bare", visibility: "PRIVATE"}]' >"$BATS_TEST_TMPDIR/acme.repos"
   wf() { mkdir -p "$FIX/$1/wf"; cat >"$FIX/$1/wf/$2"; }
   wf acme/priv ci.yml <<'EOF'
+x-defaults: &d
+  runs-on: ubuntu-22.04
 jobs:
   hosted:
     runs-on: ubuntu-latest
@@ -21,7 +23,19 @@ jobs:
   home:
     runs-on: [self-hosted, linux] # was ubuntu-latest
   matrix:
+    runs-on: ${{ inputs.runner }}
+  oses:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+  merged:
+    <<: *d
+  seq:
+    runs-on:
+      - self-hosted
+      - linux
+    name: Build on ubuntu-latest
   call:
     uses: acme/shared/.github/workflows/lint.yml@main
 EOF
@@ -29,9 +43,11 @@ EOF
   wf acme/priv off.yml <<<$'jobs:\n  old:\n    runs-on: ubuntu-latest'
   wf acme/priv broken.yml <<<$'jobs:\n  x: [unclosed'
   echo off.yml >"$FIX/acme/priv/disabled"
+  wf acme/priv fork.yml <<<$'jobs:\n  t:\n    runs-on: ubuntu-latest'
+  echo fork.yml >"$FIX/acme/priv/unregistered"
   echo "$recent" >"$FIX/acme/priv/last"
   wf acme/pub apk.yml <<<$'jobs:\n  build:\n    runs-on:\n      - self-hosted\n      - macOS'
-  wf acme/pub ci.yml <<<$'jobs:\n  t:\n    runs-on: ubuntu-latest'
+  wf acme/pub ci.yml <<<$'jobs:\n  t:\n    runs-on: ubuntu-latest\n  v:\n    runs-on: ${{ fromJSON(vars.LINUX_RUNNER_LIGHT) }}'
   wf acme/dorm ci.yml <<<$'jobs:\n  t:\n    runs-on: ubuntu-22.04'
   echo 2025-01-01T00:00:00Z >"$FIX/acme/dorm/last"
   # gh stub: answers the audit's calls from $AUDIT_FIX; a repo with no wf dir has no workflows (404).
@@ -47,12 +63,13 @@ rest = rest.removeprefix("contents/")
 d = f"{fix}/{o}/{r}"
 names = sorted(os.listdir(d + "/wf")) if os.path.isdir(d + "/wf") else None
 off = open(d + "/disabled").read().split() if os.path.exists(d + "/disabled") else []
+unreg = open(d + "/unregistered").read().split() if os.path.exists(d + "/unregistered") else []
 if rest == ".github/workflows":
     if names is None:
         sys.exit(print("gh: Not Found (HTTP 404)", file=sys.stderr) or 1)
     print(json.dumps([{"type": "file", "name": n, "path": ".github/workflows/" + n} for n in names]))
 elif rest.startswith("actions/workflows"):
-    print(json.dumps([{"workflows": [{"path": ".github/workflows/" + n, "state": "disabled_manually" if n in off else "active"} for n in names or []]}]))
+    print(json.dumps([{"workflows": [{"path": ".github/workflows/" + n, "state": "disabled_manually" if n in off else "active"} for n in names or [] if n not in unreg]}]))
 elif rest.startswith("actions/runs"):
     last = open(d + "/last").read().strip() if os.path.exists(d + "/last") else None
     print(json.dumps({"workflow_runs": [{"created_at": last}] if last else []}))
@@ -68,29 +85,35 @@ EOF
   assert_failure
   assert_line --partial $'MOVE\tacme/priv (private)\t.github/workflows/ci.yml\thosted\tubuntu-latest'
   assert_line --partial $'MOVE\tacme/priv (private)\t.github/workflows/ci.yml\tfallback'
-  assert_line --partial '3 job(s) to fix'
+  assert_line --partial $'MOVE\tacme/priv (private)\t.github/workflows/ci.yml\toses\t${{ matrix.os }}'
+  assert_line --partial $'MOVE\tacme/priv (private)\t.github/workflows/ci.yml\tmerged\tubuntu-22.04'
+  assert_line --partial '6 job(s) to fix'
 }
 
-@test "a public repo's self-hosted job is UNSAFE; its hosted job is fine" {
+@test "a public repo's self-hosted job and runner var are UNSAFE; its hosted job is fine" {
   run "$AUDIT"
-  assert_line --partial $'UNSAFE\tacme/pub (public)\t.github/workflows/apk.yml\tbuild\t- self-hosted - macOS'
-  refute_line --partial 'acme/pub (public)	.github/workflows/ci.yml'
+  assert_line --partial $'UNSAFE\tacme/pub (public)\t.github/workflows/apk.yml\tbuild\t[self-hosted, macOS]'
+  assert_line --partial $'UNSAFE\tacme/pub (public)\t.github/workflows/ci.yml\tv\t'
+  refute_line --partial $'acme/pub (public)\t.github/workflows/ci.yml\tt\t'
 }
 
-@test "a dormant repo is IDLE, an expression is EXPR, broken YAML is PARSE" {
+@test "a dormant repo is IDLE, an input expression is EXPR, broken YAML is PARSE" {
   run "$AUDIT"
   assert_line --partial $'IDLE\tacme/dorm (private)'
   assert_line --partial $'EXPR\tacme/priv (private)\t.github/workflows/ci.yml\tmatrix'
   assert_line --partial $'PARSE\tacme/priv\t.github/workflows/broken.yml'
 }
 
-@test "self-hosted with a comment naming ubuntu-latest, an allowlisted workflow and a disabled one are not findings" {
+@test "self-hosted with a comment or a later key naming ubuntu-latest, an allowlisted workflow, a disabled one and an unregistered one are not findings" {
   run "$AUDIT"
   refute_line --partial $'\thome\t'
+  refute_line --partial $'\tseq\t'
   refute_line --partial 'rel.yml'
   refute_line --partial 'off.yml'
+  refute_line --partial 'fork.yml'
   run "$AUDIT" --all
   assert_line --partial $'ok\tacme/priv (private)\t.github/workflows/ci.yml\thome\t[self-hosted, linux]'
+  assert_line --partial $'ok\tacme/priv (private)\t.github/workflows/ci.yml\tseq\t[self-hosted, linux]'
   assert_line --partial $'ok\tacme/priv (private)\t.github/workflows/rel.yml\tmac\tmacos-14'
 }
 

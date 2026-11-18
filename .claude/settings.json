@@ -183,7 +183,7 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/hosted-runner-guard.py || true",
-            "timeout": 5
+            "timeout": 8
           }
         ]
       },

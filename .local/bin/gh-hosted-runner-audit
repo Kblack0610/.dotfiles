@@ -13,14 +13,15 @@ Each active workflow on each repo's default branch, per job with a runs-on:
           Public repos stay hosted, where minutes are free.
   IDLE    a MOVE in a repo with no run for --idle-days: it bills nothing, and a runner per
           dormant repo would be a standing process for no minutes. It reads MOVE once it runs.
-  EXPR    an expression with no hosted label (`${{ matrix.os }}`): set elsewhere, not judged.
+  EXPR    an expression whose value the workflow does not hold (`${{ inputs.runner }}`): not judged.
+          A `matrix.*` is judged by the job matrix, `vars.LINUX_RUNNER_*` with no fallback is self-hosted.
   PARSE   a workflow that is not valid YAML.
 
   gh-hosted-runner-audit                  exit 1 on any MOVE or UNSAFE
   gh-hosted-runner-audit --all            also print the jobs that are fine
   gh-hosted-runner-audit --idle-days N    dormant after N days without a run (default 30)
 
-Reads through `gh` (repo scope). Disabled workflows bill nothing and are skipped.
+Reads through `gh` (repo scope). Disabled workflows, and ones GitHub never registered (a fork's, until its Actions tab is enabled), run nothing and are skipped.
 """
 import argparse
 import base64
@@ -53,24 +54,36 @@ def gh(*args):
     return json.loads(p.stdout) if p.stdout.strip() else None
 
 
-def jobs_in(text):
-    """(job, runs-on text, kind) per job with a runs-on; kind is hosted, self-hosted or expr.
+def labels(value):
+    """runs-on as one line: a string, a list as [a, b], a {group, labels} mapping as its values."""
+    if isinstance(value, list):
+        return "[" + ", ".join(map(str, value)) + "]"
+    if isinstance(value, dict):
+        return labels([v for vs in value.values() for v in (vs if isinstance(vs, list) else [vs])])
+    return str(value)
 
-    The runs-on text is its source lines with comments dropped, so a hosted label named only in a
-    comment does not count, the same reading as the guard's."""
-    root = yaml.compose(text)
-    jobs = next((v for k, v in root.value if k.value == "jobs"), None) if isinstance(root, yaml.MappingNode) else None
-    if not isinstance(jobs, yaml.MappingNode):
-        return []
-    lines, found = text.splitlines(), []
-    for key, job in jobs.value:
-        for k, v in job.value if isinstance(job, yaml.MappingNode) else []:
-            if k.value != "runs-on":
-                continue
-            span = lines[k.start_mark.line:max(v.end_mark.line, k.start_mark.line) + 1]
-            src = " ".join(guard.COMMENT.sub("", line) for line in span).split("runs-on:", 1)[-1].strip()
-            kind = "hosted" if guard.HOSTED.search(src) else "expr" if "${{" in src else "self-hosted"
-            found.append((key.value, " ".join(src.split()), kind))
+
+def jobs_in(text):
+    """(job, runs-on, kind) per job with a runs-on; kind is hosted, self-hosted or expr.
+
+    Parsed, not grepped: comments drop out and merge keys (`<<: *defaults`) resolve. An expression
+    is judged where its value is known: `matrix.*` by the job's matrix (hosted when the matrix names
+    a hosted label), `vars.LINUX_RUNNER_*` with no hosted fallback as self-hosted."""
+    doc = yaml.safe_load(text)
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    found = []
+    for name, job in (jobs or {}).items() if isinstance(jobs, dict) else []:
+        if not isinstance(job, dict) or "runs-on" not in job:
+            continue
+        src = labels(job["runs-on"])
+        matrix = json.dumps((job.get("strategy") or {}).get("matrix") or {}) if "matrix." in src else ""
+        if guard.HOSTED.search(src) or guard.HOSTED.search(matrix):
+            kind = "hosted"
+        elif "${{" not in src or ("vars.LINUX_RUNNER_" in src and "||" not in src):
+            kind = "self-hosted"
+        else:
+            kind = "expr"
+        found.append((str(name), src, kind))
     return found
 
 
@@ -94,7 +107,7 @@ def workflows(repo):
     for entry in listing or []:
         if entry["type"] != "file" or not entry["name"].endswith((".yml", ".yaml")):
             continue
-        if states.get(entry["path"], "active") != "active":
+        if states.get(entry["path"]) != "active":  # disabled, or never registered (a fork whose Actions tab was never enabled)
             continue
         blob = gh("api", f"repos/{repo}/contents/{entry['path']}")
         yield entry["path"], base64.b64decode(blob["content"]).decode("utf-8", "replace")
@@ -102,7 +115,10 @@ def workflows(repo):
 
 def idle(repo, days):
     """True when the repo's newest workflow run is older than `days`, or it has none."""
-    runs = gh("api", f"repos/{repo}/actions/runs?per_page=1")["workflow_runs"]
+    try:
+        runs = gh("api", f"repos/{repo}/actions/runs?per_page=1")["workflow_runs"]
+    except NotFound:  # Actions disabled on the repo: nothing runs, nothing bills
+        return True
     if not runs:
         return True
     last = dt.datetime.fromisoformat(runs[0]["created_at"].replace("Z", "+00:00"))
@@ -118,7 +134,7 @@ def main():
     allow = {k.lower() for k in cfg.get("allow", {})}
     bad = 0
     for owner in cfg.get("self_hosted_only", []):
-        for r in gh("repo", "list", owner, "--limit", "1000", "--no-archived", "--source", "--json", "nameWithOwner,visibility"):
+        for r in gh("repo", "list", owner, "--limit", "1000", "--no-archived", "--json", "nameWithOwner,visibility"):
             name, private, dormant = r["nameWithOwner"], r["visibility"] != "PUBLIC", None
             for path, text in workflows(name):
                 try:
