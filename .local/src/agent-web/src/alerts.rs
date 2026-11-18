@@ -60,7 +60,7 @@ pub struct Cache(EventCache<Result<Reds, String>, REDS_SECS>);
 
 impl Cache {
     pub fn new(events: broadcast::Receiver<String>) -> Self {
-        Cache(EventCache::named(events, &KINDS, "alerts"))
+        Cache(EventCache::new(events, &KINDS, "alerts"))
     }
 
     /// The read, or why it panicked. A failed fixes read is shown and not kept.

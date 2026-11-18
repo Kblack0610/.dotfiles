@@ -21,7 +21,7 @@ use crate::{bad, ApiResult};
 
 const COSTS_SECS: u64 = 120;
 
-static LAST: ReadCache<Costs, COSTS_SECS> = ReadCache::named("costs");
+static LAST: ReadCache<Costs, COSTS_SECS> = ReadCache::new("costs");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
