@@ -15,8 +15,22 @@ setup() {
   cat >"$HOME/bin/rbw" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
-  list) printf 'dev\tacme\n\tplain-key\n\tmulti\n' ;;
-  get) shift; [ "$1" = --folder ] && shift 2; case "$1" in acme | plain-key) echo s3cret-value ;; multi) printf 's3cret\nline2\n' ;; *) exit 1 ;; esac ;;
+  list) printf 'dev\tacme\n\tplain-key\n\tmulti\ndev\tnotes-mail\ndev\tno-pass\ndev\tno-name\ndev\tblank-name\ndev\tgarbled\ndev\tnull-json\ndev\tbroken\n' ;;
+  get) shift; raw=; [ "$1" = --raw ] && raw=1 && shift; [ "$1" = --folder ] && shift 2
+    if [ -n "$raw" ]; then
+      case "$1" in
+        acme) echo '{"data":{"username":"me@acme.test","password":"s3cret-value"},"notes":null}' ;;
+        notes-mail) echo '{"data":{"username":null,"password":"s3cret-value"},"notes":"email: me@acme.test"}' ;;
+        no-pass) echo '{"data":{"username":"me@acme.test","password":""},"notes":null}' ;;
+        no-name) echo '{"data":{"username":null,"password":"s3cret-value"},"notes":"ask @ken for the code"}' ;;
+        blank-name) echo '{"data":{"username":" ","password":"s3cret-value"},"notes":null}' ;;
+        garbled) echo 's3cret-value not json' ;;
+        null-json) echo null ;;
+        *) exit 1 ;;
+      esac
+      exit 0
+    fi
+    case "$1" in acme | plain-key) echo s3cret-value ;; multi) printf 's3cret\nline2\n' ;; *) exit 1 ;; esac ;;
   code) shift; [ "$1" = --folder ] && shift 2; [ "$1" = acme ] && echo 123456 || exit 1 ;;
 esac
 EOF
@@ -42,6 +56,46 @@ vendors() { printf '%s\n' "$@" >"$VENDORS_FILE"; }
   assert_line 'acme OK probe=totp'
   assert_line "plain NO_CREDS probe=totp detail='no TOTP seed'"
   refute_output --partial 123456
+}
+
+@test "login is OK for a password plus a username or an email in notes, and prints neither" {
+  vendors 'acme dev pays=free cred=rbw:dev/acme probe=login twofa=none' \
+    'mail dev pays=free cred=rbw:dev/notes-mail probe=login twofa=none'
+  run "$VC"
+  assert_success
+  assert_line 'acme OK probe=login'
+  assert_line 'mail OK probe=login'
+  refute_output --partial s3cret
+  refute_output --partial me@acme
+}
+
+@test "login names the missing part: no password, or no account name (a blank username, a bare @handle)" {
+  vendors 'nopass dev pays=free cred=rbw:dev/no-pass probe=login twofa=none' \
+    'noname dev pays=free cred=rbw:dev/no-name probe=login twofa=none' \
+    'blank dev pays=free cred=rbw:dev/blank-name probe=login twofa=none'
+  run "$VC"
+  assert_equal "$status" 2
+  assert_line "nopass NO_CREDS probe=login detail='no password'"
+  assert_line "noname NO_CREDS probe=login detail='no account name'"
+  assert_line "blank NO_CREDS probe=login detail='no account name'"
+}
+
+@test "login: an entry rbw cannot read is NO_CREDS, output that is not an entry is LOW, and neither is quoted" {
+  vendors 'broken dev pays=free cred=rbw:dev/broken probe=login twofa=none' \
+    'garbled dev pays=free cred=rbw:dev/garbled probe=login twofa=none' \
+    'nulljson dev pays=free cred=rbw:dev/null-json probe=login twofa=none'
+  run "$VC"
+  assert_equal "$status" 2
+  assert_line "broken NO_CREDS probe=login detail=unreadable"
+  assert_line "garbled LOW probe=login detail='rbw output unreadable'"
+  assert_line "nulljson LOW probe=login detail='rbw output unreadable'"
+  refute_output --partial s3cret
+}
+
+@test "login needs an rbw cred" {
+  vendors 'x dev pays=free cred=cli:gh probe=login twofa=none'
+  run "$VC"
+  assert_equal "$status" 3
 }
 
 @test "cmd gets the secret in its env, exit 0 is OK and a failure is EXPIRED; the secret is never printed" {

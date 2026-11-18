@@ -12,6 +12,9 @@ cred:  rbw:[<folder>/]<entry>  an rbw entry (the secret is its password)
        cli:<tool>              the tool's own login; the probe runs it
        none
 probe: listed                  the cred exists (a console login has no read-only API)
+       login                   the rbw entry holds the parts of a console login: a password and an account
+                               name (its username, or an email in its notes). It never contacts the vendor,
+                               so a wrong password still reads OK
        totp                    the rbw entry exists and yields a TOTP code
        http url=<url> [auth=bearer|token|raw|x-api-key]   2xx is OK, 401/403 EXPIRED
        cmd run='<command>'     exit 0 is OK, 124 (timeout) or 127 LOW, any other EXPIRED
@@ -23,6 +26,7 @@ contract, and never a secret: values stay in this process or go to a child on st
 LOW means the probe could not tell (network, 5xx, timeout, rbw locked). Exit 0 all OK, 1 some LOW, 2 any
 EXPIRED or NO_CREDS, 3 a registry line it cannot parse.
 """
+import json
 import os
 import re
 import shlex
@@ -34,7 +38,7 @@ import urllib.request
 
 PAYS = ("free", "client", "self")
 TWOFA = ("phone-google", "phone-steam", "phone-msauth", "mac-apple", "rbw-totp", "none", "unknown")
-PROBES = ("listed", "totp", "http", "cmd")
+PROBES = ("listed", "login", "totp", "http", "cmd")
 AUTH = {
     "bearer": ("Authorization", "Bearer "),
     "token": ("Authorization", "token "),
@@ -42,6 +46,7 @@ AUTH = {
     "x-api-key": ("x-api-key", ""),
 }
 TIMEOUT = 20  # seconds per probe; a slower vendor reads LOW, never a hang
+EMAIL = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")  # an address in an entry's notes, not a bare @handle
 RANK = {"OK": 0, "LOW": 1, "EXPIRED": 2, "NO_CREDS": 2}
 
 
@@ -99,8 +104,8 @@ def parse(path):
             kind = row["cred"].split(":", 1)[0]
             if kind not in ("rbw", "sops", "cli", "none"):
                 raise Bad("%s:%d: cred=%s is not rbw:|sops:|cli:|none" % (path, n, row["cred"]))
-            if row["probe"] == "totp" and kind != "rbw":
-                raise Bad("%s:%d: probe=totp needs an rbw cred" % (path, n))
+            if row["probe"] in ("totp", "login") and kind != "rbw":
+                raise Bad("%s:%d: probe=%s needs an rbw cred" % (path, n, row["probe"]))
             rows.append((n, row))
     return rows
 
@@ -145,11 +150,12 @@ def cannot_tell(code, what):
     return None
 
 
-def secret(cred):
-    """(value, None), or (None, (state, detail)) when it cannot be read. The value is never printed."""
+def secret(cred, raw=False):
+    """(value, None), or (None, (state, detail)) when it cannot be read. The value is never printed.
+    raw: an rbw entry's whole JSON (`rbw get --raw`) instead of its password."""
     kind, _, ref = cred.partition(":")
     if kind == "rbw":
-        code, out = run(["rbw", "get"] + rbw_args(ref))
+        code, out = run(["rbw", "get"] + (["--raw"] if raw else []) + rbw_args(ref))
         failed = ("NO_CREDS", "unreadable")
     else:
         path, _, key = ref.partition("#")
@@ -188,6 +194,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
+def login(cred):
+    """(state, detail): does the rbw entry hold a password and an account name? Read once, in this process."""
+    out, failed = secret(cred, raw=True)
+    if failed:
+        return failed
+    try:
+        entry = json.loads(out)
+        data = entry.get("data") or {}
+        password, username = (str(data.get(k) or "").strip() for k in ("password", "username"))
+        notes = str(entry.get("notes") or "")
+    except (ValueError, AttributeError):
+        return "LOW", "rbw output unreadable"  # never the message: it can quote the entry
+    if not password:
+        return "NO_CREDS", "no password"
+    if not (username or EMAIL.search(notes)):
+        return "NO_CREDS", "no account name"
+    return "OK", ""
+
+
 def probe(row):
     """(state, detail) for one vendor."""
     cred, kind = row["cred"], row["cred"].split(":", 1)[0]
@@ -205,6 +230,8 @@ def probe(row):
         if code == 0 and out.strip():
             return "OK", ""
         return cannot_tell(code, "rbw") or ("NO_CREDS", "no TOTP seed")
+    if row["probe"] == "login":
+        return login(cred)
     if kind in ("rbw", "sops"):
         value, failed = secret(cred)
         if failed:
