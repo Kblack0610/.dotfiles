@@ -93,10 +93,10 @@ check_shepherd() { # <doc> <fleet-shepherd>
   run check_cells "$t/no-actor.md"
   assert_failure
   assert_output 'LANDED: no actor'
-  sed -E '/^\| CHAT \|/ s/is due only on/is due on/' "$DOC" > "$t/dead.md"
+  sed -E '/^\| CHAT \|/ s/gets no pass line/gets a pass line/' "$DOC" > "$t/dead.md"
   run check_pinned "$t/dead.md"
   assert_failure
-  assert_output --partial 'CHAT: no @test "a CHAT row is due on'
+  assert_output --partial 'CHAT: no @test "a CHAT row gets a pass line'
   sed -E 's/"CHAT"/"CHATTY"/g' "$SHEPHERD" > "$t/shepherd"
   run check_shepherd "$DOC" "$t/shepherd"
   assert_failure
