@@ -1285,7 +1285,7 @@ MD
 panel() {
   local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - 3 * 3600 - 300 ))
   printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"manual_mode\":${PANEL_MANUAL_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"sid-9\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\"}" \
+    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"manual_mode\":${PANEL_MANUAL_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"human_at\":${PANEL_HUMAN_AT:-null},\"attached\":${PANEL_ATTACHED:-false}}" \
     > "$SANDBOX/bin/agent-panel"
   chmod +x "$SANDBOX/bin/agent-panel"
 }
@@ -1353,12 +1353,19 @@ SH
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
   grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
+  snap="$XDG_STATE_HOME/fleet/worker-panel.json"
+  assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
+  assert_equal "$(jq '(now - .at) < 60' "$snap")" true
   # An unreachable worker has no rows; state.json names it silent, not an unreadable source,
   # so the Sessions table says its rows are missing instead of showing fewer as all there is.
   printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r .target <<<"$output")" 'lab/s1:1'
+  # A worker that did not answer has no row in the published snapshot, which is still fresh.
+  # It names that worker silent, so a reader asks it live instead of reading no rows as no sessions.
+  assert_equal "$(jq -c '[.rows, .silent]' "$snap")" '[[],["razer-laptop"]]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
@@ -2144,6 +2151,53 @@ research_item() {
   sed -i "s|^plan: .*|plan: $SANDBOX/alias.md|" "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+}
+
+@test "end to end: a plan's coordinator stays open while its queued phases run; a phase session on it closes" {
+  # 2026-11-17: capability-tagged-ci-runners' session queued its phases, read DONE and was closed while
+  # the human steered the plan from it. Its Coordinator: line keeps it until every phase lands.
+  landed_fixture
+  phases_plan 'Coordinator: d4e8f86f-7eb9-4aba-ab31-65ffb6089a82' '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  mkdir -p "$HOME/.agent/queue/queued"
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
+  PANEL_SID=d4e8f86f-7eb9-4aba-ab31-65ffb6089a82 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .finished <<<"$output")" = false ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'keep: coordinator: its phases run as items rollout, it stays until they land' ]
+  # Negative controls: another session on the same plan, or a plan with no Coordinator: line, reads DONE and closes.
+  PANEL_SID=0e06059f-1111-2222-3333-444455556666 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .close.verdict <<<"$output")" = now ]
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  PANEL_SID=d4e8f86f-7eb9-4aba-ab31-65ffb6089a82 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .close.verdict <<<"$output")" = now ]
+  # Every phase landed: the coordinator closes too.
+  phases_plan 'Coordinator: d4e8f86f' '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#876)'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'DONE now' ]
+}
+
+@test "end to end: the human's last typed prompt and their screen reach the row and keep it" {
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  PANEL_HUMAN_AT=$(( $(date +%s) - 600 )) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.human_ago_min) \(.on_screen)"' <<<"$output")" = 'DONE 10 false' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'keep: the human is on it: typed 10m ago (keep 30m)' ]
+  PANEL_HUMAN_AT=$(( $(date +%s) - 3000 )) PANEL_ATTACHED=true panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'keep: the human is on it: the window on their screen' ]
+  # Negative control: typed 50 minutes ago and off screen, the finished row closes.
+  PANEL_HUMAN_AT=$(( $(date +%s) - 3000 )) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.human_ago_min) \(.close.verdict)"' <<<"$output")" = '50 now' ]
 }
 
 @test "end to end: the requeued case: an own item whose plan is all ticked by other items reads after, close the item (ucp-agent-82)" {
@@ -4028,74 +4082,89 @@ main_change() {
   jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
 }
 
-# verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the rule table in
-# fleet-states.md). base is a hand-started lab session, finished, idle an hour, nothing open. SELF names
-# the session asking about itself (close --self).
+# verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the close flow in
+# fleet-states.md). base is a lab session, finished, idle an hour, nothing open, the human last typed
+# in it 90 minutes ago, not on their screen. SELF names the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson chat 1440 --arg self "${SELF:-}" \
+  jq -nr --argjson chat 1440 --argjson human_keep 30 --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
-      blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
+      blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null,
+      human_ago_min: 90, on_screen: false} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
 }
 
-@test "close verdict: each rule of the fleet-states.md close table, first match wins" {
-  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
-  # Manual permission mode keeps it too, after the rules that name what to do first (land it, plan mode).
-  [ "$(verdict '{manual_mode: true}')" = "keep: manual permission mode: the human keeps it" ]
-  [ "$(verdict '{manual_mode: true, blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
-  [ "$(verdict '{manual_mode: true, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{bucket: "PARKED"}')" = "keep: parked: its claude is gone" ]
+@test "close verdict: each step of the fleet-states.md close flow, first match wins" {
+  # A. Not ours to judge.
+  [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
   [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
-  # Negative control: finished and dispatched, but its work is not on main.
-  [ "$(verdict '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
-  [ "$(verdict '{blockers: ["commits after merged PR #7"]}')" = "keep: land it: commits after merged PR #7" ]
+  # B. The human is on it.
+  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(verdict '{in_plan_mode: true, manual_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
+  [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
+  [ "$(verdict '{manual_mode: true, blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: manual permission mode: the human keeps it" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
+  [ "$(verdict '{on_screen: true}')" = "keep: the human is on it: the window on their screen" ]
+  [ "$(verdict '{human_ago_min: 10}')" = "keep: the human is on it: typed 10m ago (keep 30m)" ]
+  # C. It is working.
   [ "$(verdict '{bucket: "WORKING"}')" = "keep: working" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging"]}')" = "keep: stalled: PR #9 closed without merging" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission"}')" = "keep: a dialog waits on the human" ]
-  # A dialog in the pane keeps it even when an ask of its own is also open.
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
-  # Plan mode keeps it whether or not its approval dialog is open (ask 4RSfMg).
-  [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  # No keep on time since the human was here: a finished hand-started row idle 30 closes (2026-11-12).
-  [ "$(verdict '{target: "hub/dotfiles:3", idle_min: 30}')" = "now: plan finished, nothing open" ]
+  # D. Work left here.
+  [ "$(verdict '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
+  [ "$(verdict '{blockers: ["commits after merged PR #7"]}')" = "keep: land it: commits after merged PR #7" ]
+  [ "$(verdict '{bucket: "WORKING", finished: false, blockers: ["coordinating its plan while its phases run as items: p2,p3"]}')" = "keep: coordinator: its phases run as items p2,p3, it stays until they land" ]
+  # E. Done.
   [ "$(verdict '{}')" = "now: plan finished, nothing open" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
   [ "$(verdict '{bucket: "LANDED", finished: false, target: "hub/r:1", dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: its item s moved on: the queue holds the rest" ]
+  [ "$(verdict '{bucket: "DONE", finished: false, target: "hub/dotfiles:1", item: {slug: "f", is: "moved", origin: "hand"}}')" = "now: its item f moved on: the queue holds the rest" ]
   # ar-2452: an item it queued --running and handed to another session keeps its id in sessions:,
   # but holds none of its own plan's phases; with one open, the queue does not hold the rest.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, target: "hub/dotfiles:1", next_phase: "P3", item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "keep: next phase: P3" ]
-  [ "$(verdict '{bucket: "DONE", finished: false, target: "hub/dotfiles:1", item: {slug: "f", is: "moved", origin: "hand"}}')" = "now: its item f moved on: the queue holds the rest" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer reopens it" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["1 open ask(s)"]}')" = "now: only its own ask is open: the answer reopens it" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
-  # Only a STALLED row: a NEEDS row with its own ask open waits on the human (the ask rule).
-  [ "$(verdict '{bucket: "NEEDS", reason: "1 pending ask(s)", asks: 1, own_asks: 1, finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "after: the human answers its ask" ]
   # Negative control: anything else open beside the item is still STALLED's.
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging", "its item s is still open with every phase done or queued"]}')" = "keep: stalled: PR #9 closed without merging" ]
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 1500, age_min: 2000, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 25h with no plan, PR or item" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, target: "hub/d:4", idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "after: quiet 24h (now 300m)" ]
-  [ "$(verdict '{target: "hub/d:5", own_asks: 1, blockers: ["open ask Cd34"]}')" = "after: the human answers its ask" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", dispatch: "p: s", own_asks: 1, blockers: ["1 open ask(s)"]}')" = "now: only its own ask is open: the answer carries on without this window" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12", "next phase: 2"]}')" = "after: the human answers its ask" ]
-}
-
-@test "close verdict: dispatched is the window flag or the item origin, never the world" {
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "now: plan finished, nothing open" ]
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30}')" = "now: plan finished, nothing open" ]
-  # Being on lab is not dispatch: the human's own worktree sessions live there too. A hand-started
-  # row waits for the answer to its own ask; a dispatched one closes over it.
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "after: the human answers its ask" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"], dispatch: "p: s"}')" = "now: only its own ask is open: the answer carries on without this window" ]
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "moved"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan), then close" ]
-  # What waits on the human keeps a hand-started row idle 30; time alone does not (negative controls).
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
-  [ "$(verdict '{target: "hub/r:1", idle_min: 30, bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission"}')" = "keep: a dialog waits on the human" ]
   # An unknown age is quiet 0 (as fleet-shepherd reads it), so a CHAT row never closes on quiet.
   [ "$(verdict '{target: "hub/d:4", bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 24h (now 0m)" ]
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12", "next phase: 2"]}')" = "after: the human answers its ask" ]
+  [ "$(verdict '{bucket: "NEEDS", reason: "1 pending ask(s)", asks: 1, own_asks: 1, finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "after: the human answers its ask" ]
+}
+
+@test "close verdict: one chain whoever started the session" {
+  # 2026-11-17: no step reads who started it. A row reads the same with or without a dispatch flag
+  # or an item origin, own ask included (the old chain kept a hand-started one open for the answer).
+  local row hand
+  # Each row read hand-started, then with a dispatch flag, then with a queue item that has an origin.
+  for hand in '{}' '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}' \
+              '{bucket: "LANDED", finished: false, next_phase: "3", blockers: ["next phase: 3"]}' \
+              '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}'; do
+    for row in "$hand + {dispatch: \"p: s\"}" "$hand + {item: {slug: \"s\", is: \"own\", origin: \"run\"}}"; do
+      [ "$(verdict "$hand")" = "$(verdict "$row")" ]
+    done
+  done
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, dispatch: "p: s"}')" = "$(verdict '{target: "hub/r:1", idle_min: 30}')" ]
+  [ "$(verdict '{target: "hub/r:1", idle_min: 30, item: {slug: "s", is: "own", origin: "hand"}}')" = "now: plan finished, nothing open" ]
   [ "$(jq -r --argjson chat 1440 \
        '{bucket: "DONE", target: "work/r:1", idle_min: 30, age_min: 30, finished: true, own_asks: 0, blockers: [], labels: []} | '"$CLOSE_JQ"' | .close.verdict' <<<'null')" = now ]
+}
+
+@test "close verdict: the human keep is FLEET_HUMAN_KEEP_MIN since they typed, or their screen" {
+  # The 2026-11-17 closes: finished hand sessions the human had typed in 0 to 59 minutes before.
+  [ "$(verdict '{human_ago_min: 0}')" = "keep: the human is on it: typed 0m ago (keep 30m)" ]
+  [ "$(verdict '{human_ago_min: 29}')" = "keep: the human is on it: typed 29m ago (keep 30m)" ]
+  # Negative controls: past the keep, never typed, or the knob unset, a finished row closes.
+  [ "$(verdict '{human_ago_min: 30}')" = "now: plan finished, nothing open" ]
+  [ "$(verdict '{human_ago_min: 40}')" = "now: plan finished, nothing open" ]
+  [ "$(verdict '{human_ago_min: null}')" = "now: plan finished, nothing open" ]
+  [ "$(jq -nr --argjson chat 1440 '{bucket: "DONE", finished: true, blockers: [], human_ago_min: 5} | '"$CLOSE_JQ"' | .close.verdict')" = now ]
+  # The keep holds a chat and a stalled row too, and the screen holds a row the human never typed in.
+  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 1500, age_min: 2000, human_ago_min: 5}')" = "keep: the human is on it: typed 5m ago (keep 30m)" ]
+  [ "$(verdict '{on_screen: true, human_ago_min: null}')" = "keep: the human is on it: the window on their screen" ]
+  # A session asking about itself is not held by the human: they told it to wind down.
+  [ "$(SELF=s1 verdict '{session_id: "s1", human_ago_min: 1, on_screen: true}')" = "now: plan finished, nothing open" ]
 }
 
 @test "close verdict: a session asking about itself reads as at the end of its turn" {

@@ -20,7 +20,7 @@ use crate::cache::{off, ReadCache};
 
 /// Quick reloads and each keystroke in the search share one read of a 7 MB ledger.
 const CACHE_SECS: u64 = 5;
-static READ: ReadCache<Builds, CACHE_SECS> = ReadCache::new();
+static READ: ReadCache<Builds, CACHE_SECS> = ReadCache::named("builds");
 
 /// The table view, under the section's own key prefix.
 #[derive(Deserialize, Default)]
@@ -100,9 +100,9 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     current(items).await.map_or_else(failed, |b| render(&b, &q))
 }
 
-/// Drop the kept read, so the page's refetch after a ledger append sees the append.
-pub async fn forget() {
-    READ.clear().await;
+/// A ledger append: the kept read is answered once more and refreshed behind it.
+pub fn outdate() {
+    READ.outdate();
 }
 
 /// The log tail of the run `key` names. The outer error is a request that names no run; the

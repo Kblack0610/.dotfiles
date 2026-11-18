@@ -53,9 +53,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, parked, session, tmux};
+use agent_panel::{chooser, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
+use axum::body::Bytes;
 use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -74,6 +75,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::CompressionLayer;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -107,11 +110,24 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
+    /// `/api/agents` as served, the sidebar every page draws first.
+    agents: cache::EventCache<Bytes, AGENTS_SECS>,
+    /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
+    home: cache::EventCache<HomeParts, HOME_SECS>,
 }
 
 type Shared = Arc<AppState>;
 /// The events a slow subscriber may fall behind by before it lags (see `main`).
 const EVENT_BACKLOG: usize = 4096;
+/// The sidebar's sources: the session registry and park ledgers, the fleet state's phases, asks.
+const AGENTS_KINDS: [&str; 3] = ["sessions", "watch", "asks"];
+/// A session's status moves without a file event (tmux, a transcript's last line), so the
+/// sidebar is not kept past this.
+const AGENTS_SECS: u64 = 15;
+/// Home's own sources (`HomeParts`); the queue and infra parts are their own caches.
+const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
+/// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
+const HOME_SECS: u64 = 30;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -125,6 +141,7 @@ async fn main() -> Result<()> {
     // Transcripts alone write about four events a second; a cache read less often than the
     // channel holds takes a lag as a change and reads again, so it holds about a quarter hour.
     let (events, _) = broadcast::channel(EVENT_BACKLOG);
+    cache::announce_to(events.clone());
     let watch_off = WatchOff::default();
     watch(events.clone(), watch_off.clone())?;
     let (stop, stopping) = watch::channel(false);
@@ -136,6 +153,8 @@ async fn main() -> Result<()> {
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
+        agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
+        home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -147,6 +166,7 @@ async fn main() -> Result<()> {
         session_table: sessions::Cache::default(),
         briefing: briefing::Cache::default(),
     });
+    tokio::spawn(warm(state.clone()));
 
     let api = Router::new()
         .route("/api/agents", get(agents))
@@ -223,6 +243,7 @@ async fn main() -> Result<()> {
         .route("/api/actions", get(feed::get))
         .route("/api/log/work", get(worklog::get))
         .route("/api/events", get(events_stream))
+        .layer(middleware::from_fn_with_state(state.clone(), wrote))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let app = Router::new()
@@ -236,10 +257,12 @@ async fn main() -> Result<()> {
         // with no cookie; every read of data stays behind sign-in or the widget key.
         .route("/static/{name}", get(static_file))
         .route("/widget", get(widget::page))
+        .route("/widget.json", get(widget::doc))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
+        .layer(compression())
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -503,13 +526,13 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 }
                 Some(msg) = cached_rx.recv() => {
                     if msg == BUILDS_EVENT {
-                        builds::forget().await;
+                        builds::outdate();
                     } else if msg == PIPELINES_EVENT {
-                        pipelines::forget().await;
+                        pipelines::outdate();
                     } else if msg == STAGES_EVENT {
-                        stages::forget().await;
+                        stages::outdate();
                     } else {
-                        costs::forget().await;
+                        costs::outdate();
                     }
                     let _ = tx.send(msg);
                 }
@@ -652,6 +675,29 @@ async fn require_auth(
         Some(_) => next.run(req).await,
         None => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
+}
+
+/// After a write through this server (an answer, a park, a board or session action), the first
+/// paint's own caches are dropped, so the page's next read waits for the fresh answer and shows
+/// the write before its file event lands. A module with its own cache clears it in its handler
+/// (`queue`, `epics`). Typing into a pane (`/api/send`) writes no ledger they read.
+async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
+    let write = req.method() == axum::http::Method::POST && req.uri().path() != "/api/send";
+    let res = next.run(req).await;
+    if write && res.status().is_success() {
+        s.agents.clear();
+        s.home.clear();
+        projects::GATHERED.clear();
+    }
+    res
+}
+
+/// Outermost, so every body leaves compressed: Cloudflare compresses off the LAN, and nothing
+/// did on it. SSE, images, fonts (woff2 is compressed already) and bodies under 32 bytes go as
+/// they are.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/")))
 }
 
 /// The app for a signed-in browser, the sign-in page otherwise.
@@ -873,40 +919,36 @@ async fn collect() -> Vec<chooser::Agent> {
         .unwrap_or_default()
 }
 
-/// A live agent: on a pane here, or on a fleet worker (`remote`).
-enum Live {
-    Here(Box<chooser::Agent>),
-    There(remote::Remote),
-}
-
-/// A failed call to a worker, as the error the page shows.
-fn worker_err(host: &str, e: remote::Failed) -> (StatusCode, String) {
-    match e {
-        remote::Failed::Unreachable(why) => bad(StatusCode::BAD_GATEWAY, why),
-        remote::Failed::Exit(c, why) => bad(
-            StatusCode::BAD_GATEWAY,
-            format!("on {host}, exit {c}: {why}"),
-        ),
+/// A failed call to a pane, as the error the page shows.
+fn pane_err(host: Option<&str>, e: remote::Failed) -> (StatusCode, String) {
+    match (e, host) {
+        (remote::Failed::Unreachable(why), _) => bad(StatusCode::BAD_GATEWAY, why),
+        (remote::Failed::Exit(c, why), Some(h)) => {
+            bad(StatusCode::BAD_GATEWAY, format!("on {h}, exit {c}: {why}"))
+        }
+        (remote::Failed::Exit(_, why), None) => bad(StatusCode::BAD_GATEWAY, why),
     }
 }
 
-/// The live agent behind a target, here or on the fleet worker a `<host>@...` target names (that
-/// worker's own agent-panel says). Only targets that are agents right now are accepted, so the API
-/// cannot be pointed at an arbitrary tmux pane.
-async fn find(target: &str) -> ApiResult<Live> {
+/// The live agent behind a target, here or on the fleet worker a `<host>@...` target names. Only
+/// targets that are agents right now are accepted, so the API cannot be pointed at an arbitrary
+/// tmux pane. A worker's is read from the snapshot the minute record publishes, never over ssh.
+async fn find(target: &str) -> ApiResult<remote::Live> {
     let gone = || bad(StatusCode::NOT_FOUND, format!("no live agent at {target}"));
-    if let Some((host, local)) = remote::split(target) {
-        return remote::find(host, local)
+    if let Some((host, _)) = remote::split(target) {
+        return remote::find(&boards::worker_panel(), target)
             .await
-            .map_err(|e| worker_err(host, e))?
-            .map(Live::There)
+            .map_err(|e| pane_err(Some(host), e))?
             .ok_or_else(gone);
     }
     collect()
         .await
         .into_iter()
         .find(|a| a.target == target)
-        .map(|a| Live::Here(Box::new(a)))
+        .map(|a| remote::Live {
+            host: None,
+            pane: a.pane,
+        })
         .ok_or_else(gone)
 }
 
@@ -920,9 +962,21 @@ async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no session at {target}")))
 }
 
-async fn agents() -> Json<Vec<AgentOut>> {
-    // Blocking: the dialog is a transcript read, done only for agents that have one open.
-    let out = tokio::task::spawn_blocking(|| {
+/// The sidebar every page draws first, from memory: a session event outdates it, and it is
+/// refreshed behind the answer.
+async fn agents(State(s): State<Shared>) -> Response {
+    let body = s
+        .agents
+        .get((), read_agents)
+        .await
+        .map_or_else(|_| Bytes::from_static(b"[]"), |b| (*b).clone());
+    ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+/// `/api/agents`' body. Blocking: the dialog is a transcript read, done only for agents that have
+/// one open.
+fn read_agents() -> Bytes {
+    let out: Vec<AgentOut> = {
         let state = std::fs::read_to_string(boards::fleet_state())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -964,10 +1018,8 @@ async fn agents() -> Json<Vec<AgentOut>> {
                 tags: a.tags,
             })
             .collect()
-    })
-    .await
-    .unwrap_or_default();
-    Json(out)
+    };
+    serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
 }
 
 #[derive(Deserialize)]
@@ -1011,19 +1063,10 @@ struct TargetQuery {
 }
 
 async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
-    match find(&q.t).await? {
-        Live::Here(agent) => capture(agent.pane).await,
-        Live::There(r) => r
-            .capture(SCREEN_LINES)
-            .await
-            .map_err(|e| worker_err(&r.host, e)),
-    }
-}
-
-async fn capture(pane: String) -> ApiResult<String> {
-    tokio::task::spawn_blocking(move || tmux::capture_pane(&pane, false, SCREEN_LINES))
+    let live = find(&q.t).await?;
+    live.capture(SCREEN_LINES)
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| pane_err(live.host.as_deref(), e))
 }
 
 #[derive(Deserialize)]
@@ -1097,42 +1140,18 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
             "the session did not take the Enter; the text is in its input box",
         )
     };
-    let agent = match find(&b.t).await? {
-        Live::Here(agent) => *agent,
-        // A worker's session: that worker's agent-panel types the text, its tmux sends the key.
-        Live::There(r) => {
-            let taken = r
-                .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
-                .await
-                .map_err(|e| worker_err(&r.host, e))?;
-            return if taken {
-                Ok(StatusCode::NO_CONTENT)
-            } else {
-                Err(not_taken())
-            };
-        }
-    };
-    let (server, pane) = tmux::split(&agent.pane);
-    let server =
-        server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
-
-    if !b.text.is_empty() {
-        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
-        // drawn before Enter, and the check that the Enter was taken.
-        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
-        let sent =
-            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
-                .await
-                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if sent == agent_panel::send::Sent::NotSubmitted {
-            return Err(not_taken());
-        }
+    let live = find(&b.t).await?;
+    // agent-panel send owns typing into a pane: the bracketed paste, waiting for it to be drawn
+    // before Enter, and the check that the Enter was taken. tmux sends the key.
+    let taken = live
+        .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
+        .await
+        .map_err(|e| pane_err(live.host.as_deref(), e))?;
+    if taken {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_taken())
     }
-    if let Some(k) = b.key.as_deref() {
-        run_tmux(server, &["send-keys", "-t", pane, k], None).await?;
-    }
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Run `prog` with plain arguments (never a shell), `stdin` piped in when given: its stdout on
@@ -1160,37 +1179,6 @@ async fn run_cmd(prog: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<St
         Err(bad(
             StatusCode::BAD_REQUEST,
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ))
-    }
-}
-
-async fn run_tmux(server: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<()> {
-    let mut cmd = tokio::process::Command::new("tmux");
-    cmd.args(["-L", server])
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let err = |e: std::io::Error| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("tmux: {e}"));
-    let mut child = cmd.spawn().map_err(err)?;
-    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(text.as_bytes()).await.map_err(err)?;
-    }
-    let out = child.wait_with_output().await.map_err(err)?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(bad(
-            StatusCode::BAD_GATEWAY,
-            format!(
-                "tmux {}: {}",
-                args[0],
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
         ))
     }
 }
@@ -1503,23 +1491,56 @@ async fn home_board(
 
 /// Home as `/api/home` builds it, before a view narrows it; the widget counts its needs too.
 async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
-    let (infra, queue) = tokio::join!(s.infra.infra(), s.queue.queue());
-    tokio::task::spawn_blocking(move || {
-        let state = boards::state(&boards::fleet_state(), &actions::System);
-        let board = hub_core::tasks::feed(&actions::System);
-        let open = hub_core::proposals::read(&actions::System);
+    let (infra, queue, parts) = tokio::join!(
+        s.infra.infra(),
+        s.queue.queue(),
+        s.home.get((), HomeParts::read)
+    );
+    let p = parts?;
+    // The build walks every row of the state, board and queue: off the async workers.
+    cache::off(move || {
         let mut home = hub_core::home::build(
-            Some(&state),
+            Some(&p.state),
             Some(&queue),
-            Some(&board),
+            Some(&p.board),
             Some(&infra),
             hub_core::jobs::now(),
         );
-        home.set_proposals(&open);
+        home.set_proposals(&p.open);
         home
     })
     .await
-    .map_err(|e| e.to_string())
+}
+
+/// Home's reads that no other tab keeps: the fleet state with its live asks, the board and the
+/// open proposals. `home_read` joins them with the queue and infra caches on each request, so
+/// Home is as fresh as the freshest of them and never caches another cache.
+struct HomeParts {
+    state: serde_json::Value,
+    board: Result<hub_core::tasks::Feed, String>,
+    open: Result<Vec<hub_core::proposals::Proposal>, String>,
+}
+
+impl HomeParts {
+    fn read() -> Self {
+        HomeParts {
+            state: boards::state(&boards::fleet_state(), &actions::System),
+            board: hub_core::tasks::feed(&actions::System),
+            open: hub_core::proposals::read(&actions::System),
+        }
+    }
+}
+
+/// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
+/// the first visitor after a restart is answered from memory too.
+async fn warm(s: Shared) {
+    let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let _ = tokio::join!(
+        s.agents.get((), read_agents),
+        home_read(&s),
+        cards::read(&s),
+        briefing,
+    );
 }
 
 /// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
@@ -1550,7 +1571,7 @@ async fn infra_machine(
     State(s): State<Shared>,
     Query(q): Query<MachineQuery>,
 ) -> ApiResult<Response> {
-    let json = s.machines.machine(&s.infra, &s.alerts, q.host).await?;
+    let json = s.machines.machine(s.clone(), q.host).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1572,7 +1593,7 @@ struct PoolQuery {
 
 /// One pool's page, read only when `#infra/pools/<pool>` opens. An unknown name is a 404.
 async fn infra_pool(State(s): State<Shared>, Query(q): Query<PoolQuery>) -> ApiResult<Response> {
-    let json = s.pools.pool(&s.infra, q.name).await?;
+    let json = s.pools.pool(s.clone(), q.name).await?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
@@ -1792,6 +1813,57 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
 
+    /// The response headers `path` gets from `app` when the browser takes br.
+    async fn headers_br(app: Router, path: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: t\r\nAccept-Encoding: br, gzip\r\nConnection: close\r\n\r\n"
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut c, req.as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        text.split("\r\n\r\n")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn json_and_scripts_leave_compressed_and_fonts_and_the_live_stream_do_not() {
+        let body = "x".repeat(4096);
+        let typed = |ctype: &'static str| {
+            let body = body.clone();
+            get(move || async move { ([(header::CONTENT_TYPE, ctype)], body) })
+        };
+        let app = Router::new()
+            .route("/json", typed("application/json"))
+            .route("/js", typed("text/javascript"))
+            .route("/font", typed("font/woff2"))
+            .route(
+                "/live",
+                get(|| async {
+                    let one = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+                        SseEvent::default().data("x".repeat(4096)),
+                    ));
+                    Sse::new(one)
+                }),
+            )
+            .layer(compression());
+        for path in ["/json", "/js"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(h.contains("content-encoding: br"), "{path}: {h}");
+        }
+        for path in ["/font", "/live"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(!h.contains("content-encoding"), "{path}: {h}");
+        }
+    }
     // The clock is paused only while the request is in its handler and no socket has bytes in
     // flight, so the timeout fires only once every task is idle: the server still running then is
     // a server waiting on the request, not one that was slow to be polled. It resumes before the

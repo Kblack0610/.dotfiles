@@ -292,7 +292,6 @@ PROFILE_DESCRIPTION="Full desktop with Hyprland and remote access (Sunshine)"
 PROFILE_AUTOLOGIN=true
 PROFILE_START_HYPRLAND=true      # true, false, or "ask"
 PROFILE_START_SUNSHINE=true
-PROFILE_START_WAYBAR=true
 PROFILE_ENABLE_SSH=true
 ```
 

@@ -351,6 +351,9 @@ __pycache__/
 # colors.sh -- so the installer's setup_theme() renders them at install time.
 .config/kitty/current-theme.conf
 .config/waybar/style.css
+.config/waybar/palette.css
+.config/swaync/style.css
+.config/noctalia/palettes/
 .config/sketchybar/colors.sh
 .config/dunst/dunstrc.d/
 .config/hypr/conf/theme.lua

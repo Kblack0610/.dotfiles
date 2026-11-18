@@ -44,6 +44,29 @@
         "tooltip-format": "{:%H:%M:%S}",
         "format-alt": "{:%I:%M %p}"
     },
+    // The notification panel: shown only while desk's notify part is swaync (docs/desk.md),
+    // because swaync-client would D-Bus start swaync, which stops dunst. Click opens the
+    // panel, right click toggles do-not-disturb.
+    "custom/notify": {
+        "format": "{icon}",
+        "format-icons": {
+            "notification": "󰂞",
+            "none": "󰂚",
+            "dnd-notification": "󰂛",
+            "dnd-none": "󰂛",
+            "inhibited-notification": "󰂞",
+            "inhibited-none": "󰂚",
+            "dnd-inhibited-notification": "󰂛",
+            "dnd-inhibited-none": "󰂛"
+        },
+        "return-type": "json",
+        "exec-if": "[ \"$($HOME/.local/bin/desk get notify)\" = swaync ]",
+        "exec": "swaync-client -swb",
+        "on-click": "$HOME/.local/bin/desk notify history",
+        "on-click-right": "$HOME/.local/bin/desk notify dnd",
+        "escape": true,
+        "tooltip": false
+    },
     // Labelled like the CPU pill, so CPU and RAM read at a glance.
     "memory": {
         "format": "RAM {}%",

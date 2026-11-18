@@ -253,9 +253,12 @@ return {
       vim.api.nvim_set_hl(0, "TaskPriorityUrgent", { link = "DiagnosticError", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
+      -- The project tag `#p:<name>` (tag_source.lua): green, a colour no priority uses.
+      vim.api.nvim_set_hl(0, "TaskProjectTag", { link = "DiagnosticOk", default = true })
 
       -- Task status = the checkbox state. `<leader>ts` cycles it:
       --   [ ] todo -> [/] in progress -> [x] done -> [ ] todo
+      -- `<leader>tS` sets it straight back to `[ ]` todo from any state.
       -- `[/]` is a SAME-DAY signal: the `notes` CLI resets it to `[ ]` on the next
       -- daily carry (stamp_line/reset_status), so only the open todo + its priority
       -- tag survive overnight. Finishing a Focus task also files it under a
@@ -263,6 +266,7 @@ return {
       -- Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
       local STATUS_PAT = "%[[ /xX]%]"
+      local STATUS_TODO = "[ ]"
 
       -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (md::PRIORITIES, the
       -- shared source of truth) so the on-save sweep here and `notes focus sweep` produce
@@ -806,12 +810,14 @@ return {
       -- line and applied to every line, so a visual selection converges to one state.
       -- The edit is applied in place; the Focus sweep (regroup into lanes / Done)
       -- runs on save, so tasks don't jump around under the cursor as you cycle.
-      local function cycle_status(line1, line2)
+      -- `to` sets that state on every task in the range instead (`<leader>tS`), so the
+      -- first line need not be a task.
+      local function cycle_status(line1, line2, to)
         local first = vim.fn.getline(line1):match(STATUS_PAT)
-        if not first then
+        local nxt = to or STATUS_NEXT[first]
+        if not nxt then
           return
         end
-        local nxt = STATUS_NEXT[first]
         for lnum = line1, line2 do
           local line = vim.fn.getline(lnum)
           if line:match(STATUS_PAT) then
@@ -894,6 +900,7 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
+          --   tS  status reset    back to [ ] todo, from any state
           --   tt  convert line to task, or add an indented subtask if already one;
           --       the cursor lands in insert where the text goes. Visual: convert the lines.
           --   tP  raise priority  low -> high -> urgent, stops at urgent
@@ -903,15 +910,21 @@ return {
           -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
           -- from every markdown buffer -- the one place you most want it.
           -- Current line (normal) / selection (visual).
-          vim.keymap.set("n", "<leader>ts", function()
-            local lnum = vim.api.nvim_win_get_cursor(0)[1]
-            cycle_status(lnum, lnum)
-          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
-          vim.keymap.set("x", "<leader>ts", function()
-            -- Leave visual mode so '< and '> marks are set, then cycle the range.
-            vim.cmd "normal! \27"
-            cycle_status(vim.fn.line "'<", vim.fn.line "'>")
-          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
+          for _, m in ipairs {
+            { "s", nil, "Cycle task status ([ ]/[/]/[x])" },
+            { "S", STATUS_TODO, "Reset task status to todo ([ ])" },
+          } do
+            local key, to, desc = m[1], m[2], m[3]
+            vim.keymap.set("n", "<leader>t" .. key, function()
+              local lnum = vim.api.nvim_win_get_cursor(0)[1]
+              cycle_status(lnum, lnum, to)
+            end, { buffer = buf, desc = desc, silent = true })
+            vim.keymap.set("x", "<leader>t" .. key, function()
+              -- Leave visual mode so '< and '> marks are set, then apply to the range.
+              vim.cmd "normal! \27"
+              cycle_status(vim.fn.line "'<", vim.fn.line "'>", to)
+            end, { buffer = buf, desc = desc, silent = true })
+          end
 
           -- Convert current line to a task, or add an indented subtask if it's
           -- already one.
@@ -1073,7 +1086,7 @@ return {
       vim.api.nvim_create_autocmd("FileType", { pattern = "markdown", callback = read_board })
       vim.api.nvim_create_autocmd("BufWritePost", { pattern = "README.md", callback = read_board })
 
-      -- Color the priority tags. matchadd is window-local, so (re)apply it once
+      -- Color the priority and project tags. matchadd is window-local, so (re)apply it once
       -- per window showing a markdown buffer; a window flag prevents duplicates.
       -- BufWinEnter fires whenever the buffer is displayed in a window (open,
       -- split), which is exactly when a fresh window needs its matches.
@@ -1090,6 +1103,8 @@ return {
           for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
             vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
+          -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
+          vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])
         end,
       })
     end,
