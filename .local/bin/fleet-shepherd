@@ -126,6 +126,11 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
 : "${FLEET_SHEPHERD_LANDING_WAIT_MIN:=120}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
+# A skip lasts while its line is due, and at most this long; then the line goes to the next pass
+# plain, with the old why in the log, to act on or skip again. Provisional, 2026-11-18: %247 sat
+# 10h unnudged on a skip whose blocker item finished an hour after the skip. Revisit if the same
+# key is re-skipped more than 3 times a day.
+: "${FLEET_SHEPHERD_SKIP_MAX_MIN:=240}"
 # A run starts a pass only when something is due, and then only this long after the last pass
 # started, unless a due line is urgent. Measured 2026-11-07: a median pass cost $0.89, $0.54 of it
 # the fresh start's 68K cache-write tokens, and 40 of 275 scored passes were given nothing.
@@ -1093,6 +1098,7 @@ receipts() {
   touch "$DUE_LAST" "$SKIPPED" "$PAGED" "$HANDED"
   now="$(date +%s)"
   ! last_working || early=1
+  expire_skips "$now"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     key="$(due_key "$line")"
@@ -1198,7 +1204,26 @@ skip_known() {
   return 1
 }
 
-# skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due.
+# expire_skips <now>: drop each skip older than FLEET_SHEPHERD_SKIP_MAX_MIN, its key from $PAGED, and from $HANDED,
+# so the line comes back plain and is handed afresh; kept in $HANDED it would come back unhandled,
+# aged from its first handing, and page the human high at once. The log keeps the old why.
+expire_skips() {
+  local cut=$(( $1 - FLEET_SHEPHERD_SKIP_MAX_MIN * 60 )) gone k why t
+  gone="$(awk -F'\t' -v c="$cut" '$3 != "" && $3 < c' "$SKIPPED")"
+  [ -n "$gone" ] || return 0
+  awk -F'\t' -v c="$cut" '!($3 != "" && $3 < c)' "$SKIPPED" > "$SKIPPED.tmp" && mv -f "$SKIPPED.tmp" "$SKIPPED"
+  awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($1 in g)' <(printf '%s\n' "$gone") "$HANDED" > "$HANDED.tmp" \
+    && mv -f "$HANDED.tmp" "$HANDED"
+  # and from $PAGED: a line paged before its skip may page again if it is left once more
+  awk -F'\t' 'NR == FNR { g[$1] = 1; next } !($0 in g)' <(printf '%s\n' "$gone") "$PAGED" > "$PAGED.tmp" \
+    && mv -f "$PAGED.tmp" "$PAGED"
+  while IFS=$'\t' read -r k why t; do
+    cmd_log "skip expired after $(( ($1 - t) / 3600 ))h: $k (was: $why)"
+  done <<<"$gone"
+}
+
+# skip <due line> <why>: answer a due line by leaving it, with the reason, until it stops being due
+# or FLEET_SHEPHERD_SKIP_MAX_MIN passes (expire_skips), whichever comes first.
 # It logs the skip, so a pass whose only answer was a skip did something and is not STALLED.
 cmd_skip() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ] || die 'usage: fleet-shepherd skip "<due line>" "<why>"'

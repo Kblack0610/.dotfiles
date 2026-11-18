@@ -471,6 +471,15 @@ pub(crate) fn add_via(
         );
         return Ok(3);
     }
+    if let Some((open, pr)) = pr_twin(&content, text) {
+        eprintln!(
+            "already open on {}: {} already lands PR #{pr}: {}",
+            path.display(),
+            md::row_id(open).unwrap_or_else(|| "a row".into()),
+            open.trim()
+        );
+        return Ok(3);
+    }
     let mut block = new_rows(
         name,
         &proj_dir,
@@ -631,6 +640,60 @@ const MIN_SIMILAR: usize = 20;
 
 /// The share of title words, in percent of both titles' words, that makes a near-duplicate.
 const NEAR_DUP: usize = 80;
+
+/// The open row on `content` that lands the same PR as `text`, with that PR's number. Two
+/// rows that land one PR are one piece of work whatever their type, area or wording
+/// (unity-core-playground PR #2539 had four open rows, #2827 two). A row lands a PR when its
+/// title says so ([`landed_pr`]); a row that only cites a PR, or is gated on one by a
+/// `#pr/` tag (agent-queue's gate form), never matches. The qualifier must be equal too, so
+/// `land platform PR #1594` and `land PR #1594` stay two rows: a false twin exits 3, which
+/// callers read as already filed, and so drops a row.
+fn pr_twin<'a>(content: &'a str, text: &str) -> Option<(&'a str, u64)> {
+    let want = landed_pr(&format!("- [ ] {text}"))?;
+    content
+        .lines()
+        .find(|l| md::is_open_task(l) && landed_pr(l).as_ref() == Some(&want))
+        .map(|l| (l, want.1))
+}
+
+/// The PR a row's title lands, `(qualifier, number)`: a landing verb (`land`, `re-land`,
+/// `reland`, `re-gate`, `regate`), an optional `pr` or `train`, then `#N`, `PR#N`, `repo#N`,
+/// `owner/repo#N`, or a bare number after `pr`. The qualifier is the ref's repo, or the one
+/// word between the verb and `pr` (`land platform PR #1594`), lower-cased; None when neither.
+fn landed_pr(line: &str) -> Option<(Option<String>, u64)> {
+    const VERBS: [&str; 5] = ["land", "re-land", "reland", "re-gate", "regate"];
+    let text = md::task_text(line).to_lowercase();
+    let title = projects::row_prefix(&text).map_or(text.as_str(), |(_, _, t)| t);
+    let words: Vec<&str> = title
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | ':' | ';' | '.')))
+        .collect();
+    let at = |j: usize| words.get(j).copied().unwrap_or("");
+    words.iter().enumerate().find_map(|(i, w)| {
+        if !VERBS.contains(w) {
+            return None;
+        }
+        let mut j = i + 1;
+        let mut qual = None;
+        if at(j + 1) == "pr" && at(j) != "pr" {
+            qual = Some(at(j).to_string());
+            j += 1;
+        }
+        let pr = at(j) == "pr";
+        if pr || at(j) == "train" {
+            j += 1;
+        }
+        let w = at(j);
+        if let Some((repo, n)) = w.split_once('#') {
+            let repo = repo
+                .rsplit('/')
+                .next()
+                .filter(|r| !r.is_empty() && *r != "pr");
+            return Some((repo.map(str::to_string).or(qual), n.parse().ok()?));
+        }
+        pr.then(|| w.parse().ok().map(|n| (qual, n))).flatten()
+    })
+}
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
 /// as needed) and wake the triager. Lines already in the inbox are not written twice, so a
@@ -3663,6 +3726,109 @@ Version: v1.2.0
         );
         // No code, no id: the row still starts, and the caller decides what that means.
         assert_eq!(started("- [ ] a", None), "- [/] a");
+    }
+
+    #[test]
+    fn a_second_row_landing_the_same_pr_is_a_twin_whatever_its_type_and_words() {
+        let board = "## Tasks\n\
+            - [ ] feat(gameplay): land PR #2539 (branch agent-1-261113-225413, plan #size/m <!-- id:ucp-2190 -->\n\
+            - [ ] feat(netcode): Re-gate and land PR #2827 (branch agent-4, Net3DPlayTests ping #pts/3 <!-- id:ucp-2524 -->\n\
+            - [ ] feat(gameplay): Land acme/game#2630 (branch agent-5 <!-- id:ucp-2337 -->\n\
+            - [ ] fix(ci): train.py has no path for a green-gated train (#2620 on 11-14: a flake) <!-- id:ucp-2333 -->\n\
+            - [ ] chore(ci): verify the nightly after the merge #pr/acme/game/2700 <!-- id:ucp-2340 -->\n\
+            - [ ] fix(git): merge #812 conflict markers left in the README <!-- id:ucp-2341 -->\n\
+            - [x] chore(ci): land PR #1000 <!-- id:ucp-9 -->\n";
+        let twin = |t: &str| pr_twin(board, t).map(|(l, n)| (md::row_id(l).unwrap(), n));
+        let id = |s: &str, n: u64| Some((s.to_string(), n));
+        assert_eq!(
+            twin("feat(ci): land PR #2539 (branch agent-1, plan"),
+            id("ucp-2190", 2539)
+        );
+        assert_eq!(
+            twin("fix(ci): re-gate and land PR #2539 (worktree"),
+            id("ucp-2190", 2539)
+        );
+        assert_eq!(
+            twin("fix(netcode): Land #2827 (Net3D ping fix)"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("chore(ci): regate #2827 after aws-burst-1"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("feat(look): Re-gate and land acme/game#2630"),
+            id("ucp-2337", 2630)
+        );
+        assert_eq!(
+            twin("chore(ci): land PR 2827, held by the slot"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("chore(ci): land PR#2539"),
+            id("ucp-2190", 2539),
+            "PR glued to its number"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #2630"),
+            None,
+            "one row names a repo and the other does not: kept apart"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #2700"),
+            None,
+            "a #pr/ tag gates a row on the PR; it does not land it"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #812"),
+            None,
+            "merge is not a landing verb"
+        );
+        assert_eq!(
+            twin("fix(ci): re-gate and land PR #2620"),
+            None,
+            "#2620 is only cited"
+        );
+        assert_eq!(twin("chore(ci): land PR #1000"), None, "a closed row");
+        assert_eq!(
+            twin("feat(ci): land other-repo#2630"),
+            None,
+            "another repo's #2630: both rows name a repo and they differ"
+        );
+        assert_eq!(
+            twin("fix(ci): the gate reads #2539 as stale"),
+            None,
+            "does not land it"
+        );
+    }
+
+    #[test]
+    fn landed_pr_reads_the_landing_phrases() {
+        let pr = |l: &str| landed_pr(&format!("- [ ] {l}"));
+        assert_eq!(
+            pr("feat(ci): Land platform PR #1594 (branch x)"),
+            Some((Some("platform".into()), 1594))
+        );
+        assert_eq!(
+            pr("chore(ci): land train #2230: #2217 #2218"),
+            Some((None, 2230))
+        );
+        assert_eq!(
+            pr("fix(ci): re-land #440 KillMode=mixed"),
+            Some((None, 440))
+        );
+        assert_eq!(
+            pr("chore(ci): land ucp-1777 (PR #2266), Checks refused"),
+            Some((Some("ucp-1777".into()), 2266)),
+            "the word before PR qualifies it"
+        );
+        assert_eq!(pr("docs(ci): land the ci.md note (#1997)"), None);
+        assert_eq!(
+            pr("chore(ci): land #12 #pr/owner/repo/12"),
+            Some((None, 12))
+        );
+        assert_eq!(pr("feat(x): y #pr/owner/repo/12"), None, "a gate tag alone");
+        assert_eq!(pr("chore(ci): land PR #abc then #5"), None);
     }
 
     #[test]

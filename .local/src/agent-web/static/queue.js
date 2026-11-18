@@ -197,8 +197,8 @@ function qState(i) {
     if (s === "cancelled") return `<td class="muted"${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>cancelled</td>`;
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${esc(s)}</td>`;
   }
-  // Not started is ready or held (hub_core::vocab::QUEUE, the table's legend); a held cell names its hold.
-  if (i.state === "queued") return i.hold ? `<td class="warn" title="held: ${esc(i.hold)}">held</td>` : `<td>ready</td>`;
+  // Not started is ready (hub_core::vocab::QUEUE, the table's legend): work with a gate is a board row.
+  if (i.state === "queued") return `<td>ready</td>`;
   return `<td>${esc(i.state)}</td>`;
 }
 
@@ -210,14 +210,10 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
-// What an item waits on (hub-core `Item::waits_for`): a hold, an ask, a merge; a hold whole on hover, an item it
-// waits after opens that item's row.
+// What a waiting or review item waits on (hub-core `Item::waits_for`): an ask, a merge, a report.
 function qHoldCell(i) {
   if (!i.waits_for) return `<td class="muted">-</td>`;
-  // `after a b`: each slug it waits on opens that item.
-  const m = /^after (.+)$/.exec(i.waits_for);
-  const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.waits_for);
-  return `<td title="${esc(i.hold || i.waits_for)}">${text}</td>`;
+  return `<td title="${esc(i.waits_for)}">${esc(i.waits_for)}</td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
@@ -287,7 +283,7 @@ function qDetail(i) {
   return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
     cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) + qLinks(i) +
     (line ? `<div class="cline">${line}</div>` : "") +
-    (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
+    (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
     (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
     cfold(`task:${i.slug}`, "Full task and details", facts([
       ["state", i.state === "done" ? `done, ${i.status || "ok"}` : i.state], ["in state", qMin(t.in_state)], ["wait", qMin(t.wait)], ["run", qMin(t.run)],
