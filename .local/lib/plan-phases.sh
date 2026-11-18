@@ -47,6 +47,16 @@ plan_phase_key() {
 PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
   | (((.plan // "") | split("/") | last) == $b) or ((.task // "") | contains("/" + $b));'
 
+# plan_gated_rows -> each open board row that waits on a gate (after/, at/, ask/, pr/, hold/, rbw/, nightly/), one
+# queue-item-shaped JSON line ({slug: the row id, task: its brief}) for PLAN_ITEMS_JQ: agent-queue add --plan
+# files a phase whose wait is not met on its row, its brief naming the plan, so the row holds that phase as
+# a queued item did. Nothing when the board cannot be read. Why: the queue holds no gated work (ar-3121).
+plan_gated_rows() {
+  notes board --json 2>/dev/null | jq -c '.rows[]? | select(.state == "open")
+    | select(any(.tags[]?; test("^(after|at|ask|pr|hold|rbw|nightly)/")))
+    | {slug: .id, task: ((.details // []) | if type == "array" then join("\n") else tostring end)}' 2>/dev/null || true
+}
+
 # plan_pointer <plan file> -> "<canonical plan path> TAB <N>" when the file is a pointer stub, whose
 # opening lines say `Phase N of <path>.md` (a phase plan agent-queue wrote into ~/.claude*/plans/),
 # and that plan exists; else nothing. The queue items name the canonical plan, not the stub, and

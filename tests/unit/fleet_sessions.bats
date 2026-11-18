@@ -2193,6 +2193,24 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
+@test "end to end: a session whose next phase add --plan filed on its board row behind a gate reads DONE; an ungated row is no phase (ar-3121)" {
+  # The queue holds no gated work: add --plan files a phase that waits on another as its board row,
+  # gated #after/<row>, its brief naming the plan. A plan read through the queue alone read LANDED,
+  # next phase, and the shepherd would have asked the session to queue it again.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-7","state":"open","tags":["after/apo-6"],"details":["Phase 2 of the plan %s: rollout."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-7' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
+  sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
 @test "end to end: a session whose plan's phases are queued reads DONE, whatever its plan says about a coordinator" {
   # 2026-11-17: critical work is queued and run by dispatch; no window stays to watch it, so a
   # `Coordinator:` line left in a plan changes nothing.
