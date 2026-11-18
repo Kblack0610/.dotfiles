@@ -459,7 +459,7 @@ load 'fleet_dispatch/common'
 
 # 2026-11-18: canary and night work filled the workstation first while razer-laptop sat idle.
 @test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
-  game_ready
+  project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
   worker '2.0 16 1 50' true '[canary, night]'
   agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -468,7 +468,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "fleet_first: a canary starts here when the worker that lists canary does not take a session" {
-  game_ready
+  project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
   worker '2.0 16 1 12' true '[canary, night]'
   agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -478,7 +478,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "fleet_first: a canary starts here when no worker lists its class" {
-  game_ready
+  project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
   worker '2.0 16 1 50' true '[night-only]'
   agent-queue add --project game --slug c --from canary --tags canary "Canary eval c: run fleet-bench canary start c" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -488,7 +488,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "fleet_first: a plain item starts here even when a worker lists canary and night" {
-  game_ready
+  project game beta "$SANDBOX/repos/game"   # no board row: the queue item is the only one
   worker '2.0 16 1 50' true '[canary, night]'
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
