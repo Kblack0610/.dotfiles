@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""close-flow-svg [--doc <fleet-states.md>] [--out <svg>|-]: draw the close flow from its one source.
+"""close-flow-svg [--doc <fleet-states.md>] [--out <svg>|-]: draw the close flow from its table.
 
-Reads the Step | Group | Facts | Verdict table under "## Close verdict" in fleet-states.md and
-writes fleet-close-flow.svg beside it (--out elsewhere, - for stdout): the chain top to bottom,
-first match wins, one box per step with its facts (parentheticals dropped, wrapped; the doc row
-keeps the full text) and its verdict, coloured keep, after or now, in one lane per group. House
+Reads the Step | Group | Facts | Verdict table under "## Close verdict" in fleet-states.md (by
+default the one in the git checkout of the current directory) and writes fleet-close-flow.svg
+beside it (--out elsewhere, - for stdout): the chain top to bottom, first match wins, one box per
+step with its facts and its verdict (parentheticals dropped, wrapped; the doc row keeps the full
+text), coloured keep, after or now, in one lane per group. House
 theme: the svg-diagram skill's process-flow style, on a transparent canvas, so every word sits on
 a filled shape and reads on a light or a dark page. tests/unit/fleet_states_doc.bats fails when
 the committed SVG differs from this output: change the table, rerun this, never edit the SVG.
@@ -12,6 +13,7 @@ Exit: 0 written, 2 on a usage error or a table it cannot read.
 """
 import os
 import re
+import subprocess
 import sys
 
 HEADER = "| Step | Group | Facts | Verdict |"
@@ -23,7 +25,7 @@ BOX_X, BOX_W = 130, 430
 V_X, V_W = 600, 250
 LINE = 16
 PAD = 14
-FACT_CHARS, VERDICT_CHARS = 70, 42
+FACT_CHARS, VERDICT_CHARS = 70, 40
 STEP_GAP, LANE_GAP, LANE_HEAD, LANE_FOOT = 24, 22, 36, 14
 
 STYLE = """      .lane { fill:#eef2f8; stroke:#2f4d7a; stroke-width:2; }
@@ -35,7 +37,6 @@ STYLE = """      .lane { fill:#eef2f8; stroke:#2f4d7a; stroke-width:2; }
       .now { fill:#fffaf0; stroke:#b9791f; stroke-width:2; }
       .label { font-size:14px; fill:#1a2233; text-anchor:middle; dominant-baseline:middle; }
       .label.sm { font-size:12px; }
-      .label.strong { font-weight:600; }
       .step { font-size:11.5px; fill:#33415c; dominant-baseline:middle; font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       .edge { fill:none; stroke:#667085; stroke-width:1.6; marker-end:url(#arrow); }
       .elabel { font-size:11.5px; fill:#33415c; text-anchor:start; }"""
@@ -104,8 +105,8 @@ def steps(rows):
         step = step.strip("`")
         if not re.fullmatch(r"[a-z][a-z0-9-]*", step):
             die(f"step id '{step}' is not kebab case")
-        short = plain(verdict).split(";")[0].strip()
-        word = re.split(r"[:\s]", short, maxsplit=1)[0]
+        full = plain(verdict)
+        word = re.split(r"[:;\s]", full, maxsplit=1)[0]
         if word not in VERDICTS:
             die(f"step {step}: verdict '{word}' is not one of {', '.join(VERDICTS)}")
         if group:
@@ -116,7 +117,7 @@ def steps(rows):
             "id": step,
             "verdict": word,
             "facts": wrap(plain(facts), FACT_CHARS),
-            "vtext": wrap(word.upper() + short[len(word):], VERDICT_CHARS),
+            "vtext": wrap(word.upper() + full[len(word):], VERDICT_CHARS),
         })
     return groups
 
@@ -159,8 +160,7 @@ def render(groups):
             if not final:
                 body.append(f'  <text class="elabel" x="{BOX_X + BOX_W + 9}" y="{cy - 6:g}">yes</text>')
             body.append(f'  <rect class="{s["verdict"]}" x="{V_X}" y="{y}" width="{V_W}" height="{h}" rx="{min(h / 2, 20):g}"/>')
-            strong = "label sm strong" if s["verdict"] == "now" else "label sm"
-            text_lines(body, strong, vmid, cy, s["vtext"])
+            text_lines(body, "label sm", vmid, cy, s["vtext"])
             prev = y + h
             y = prev + STEP_GAP
         lane_h = prev + LANE_FOOT - lane_top
@@ -182,9 +182,20 @@ def render(groups):
     return height, out
 
 
+def repo_root():
+    """The git checkout the command runs in, so a stowed copy on PATH reads and writes the worktree
+    it is run from; outside a git tree, the checkout this script lives in."""
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True).stdout.strip()
+        if top:
+            return top
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..")
+
+
 def main(argv):
-    here = os.path.dirname(os.path.realpath(__file__))
-    doc = os.path.join(here, "..", "src", "docs", "fleet-states.md")
+    doc = os.path.join(repo_root(), ".local", "src", "docs", "fleet-states.md")
     out_path = None
     args = list(argv)
     while args:

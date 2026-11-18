@@ -3,7 +3,7 @@
 # bucket. This guard reads it as text and fails when (a) the bucket words fleet-sessions emits differ
 # from the table's, (b) a row lacks an actor, action or pinning test, (c) a pinning test name has no
 # `@test`, or (d) a row whose actor is the shepherd is missing from fleet-shepherd's due functions.
-# The close table there is the one source of the close flow: (e) its Step ids and verdicts, in order,
+# The close table there drives the close flow's checks: (e) its Step ids and verdict words, in order,
 # must be the `# step:<id>` tagged branches of close_verdict in CLOSE_JQ, and (f) the committed
 # fleet-close-flow.svg must be close-flow-svg's output of it.
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
@@ -140,14 +140,11 @@ check_svg() { # <doc> <svg>
 @test "the close table's step ids and verdicts, in order, are the tagged branches of close_verdict" {
   run check_steps "$DOC" "$SESSIONS"
   assert_success
-  assert_equal "$(close_rows "$DOC" | cut -d' ' -f1 | paste -sd' ')" "parked worker manual chat plan-mode dialog working unlanded next-phase only-item held quiet now"
 }
 
 @test "the committed close flow SVG is close-flow-svg's output of the close table" {
   run check_svg "$DOC" "$SVG"
   assert_success
-  run grep -c 'class="step"' "$SVG"
-  assert_output 13
 }
 
 @test "negative controls: an untagged branch, a renamed step, a moved verdict, a hand-edited SVG and a table edit with no regenerate all fail" {

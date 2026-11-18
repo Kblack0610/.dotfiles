@@ -2288,12 +2288,13 @@ explain() {
 # CLOSE_JQ: a row -> its `pct` (phases ticked, of the checklist) and `close` {verdict, why}:
 # whether the session may close now, after one named step, or must stay (keep). The one
 # definition of when a session closes, one chain for every session, first match wins, as the
-# close flow of .local/src/docs/fleet-states.md, each branch tagged `# step:<id>` with the Step of
-# its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays only while closing it would lose
-# something (its claude is elsewhere, the human labelled it manual, a prompt in its pane, a turn
-# under way, unlanded work) or until one named step (queue its next phases, close its item);
-# otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN, or FLEET_CHAT_CLOSE_H when labelled chat. A next phase is the queue's, not this
-# window's, when the window was dispatched for an item that has moved on.
+# close flow of .local/src/docs/fleet-states.md, each branch tagged `# step:<id>` with the Step
+# of its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays
+# only while closing it would lose something (its claude is elsewhere, the human labelled it
+# manual, a prompt in its pane, a turn under way, unlanded work) or until one named step (queue
+# its next phases, close its item); otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN, or
+# FLEET_CHAT_CLOSE_H when labelled chat. A next phase is the queue's, not this window's, when the
+# window was dispatched for an item that has moved on.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
 # stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
 # named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
