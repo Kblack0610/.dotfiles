@@ -112,19 +112,16 @@ impl Cache {
     /// list, so the last one is kept as the list's read is; a None is not kept.
     pub async fn page(&self, id: String) -> Result<Arc<Option<SessionPage>>, String> {
         let key = id.clone();
-        let read = async {
-            let read = self.read().await?;
-            off(move || {
-                session_page::read(
-                    &System,
-                    &boards::shepherd_dir(),
-                    &id,
-                    &read.rows,
-                    &read.state,
-                )
-            })
-            .await
-        };
+        let table = self.read().await?;
+        let read = off(move || {
+            session_page::read(
+                &System,
+                &boards::shepherd_dir(),
+                &id,
+                &table.rows,
+                &table.state,
+            )
+        });
         self.page.get_if(key, read, Option::is_some).await
     }
 

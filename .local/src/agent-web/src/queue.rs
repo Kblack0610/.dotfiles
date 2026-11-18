@@ -41,9 +41,9 @@ pub struct Cache {
 impl Cache {
     pub fn new(events: &broadcast::Sender<String>) -> Self {
         Cache {
-            all: EventCache::new(events.subscribe(), &KINDS),
-            since: EventCache::new(events.subscribe(), &KINDS),
-            stats: EventCache::new(events.subscribe(), &KINDS),
+            all: EventCache::named(events.subscribe(), &KINDS, "queue"),
+            since: EventCache::named(events.subscribe(), &KINDS, "queue-since"),
+            stats: EventCache::named(events.subscribe(), &KINDS, "queue-stats"),
         }
     }
 
