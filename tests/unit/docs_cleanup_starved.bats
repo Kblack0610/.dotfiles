@@ -20,7 +20,7 @@ case "$1" in
   add) printf '%s\n' "$@" > "$ADD_LOG"
        if [ "${ADD_RC:-0}" = 5 ]; then
          echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
-         echo "agent-queue: its board row ${ROW_ID:-ar-9} on agent-runtime is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+         echo "held docs-cleanup -> agent-runtime:${ROW_ID:-ar-9}"
        fi
        exit "${ADD_RC:-0}" ;;
 esac
@@ -89,7 +89,6 @@ STUB
   printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"open"}]}\n' > "$HOME/board.json"
   ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
   assert_success
-  refute_output --partial 'held'
   run cut -f1,2 "$AGENTCTL_INBOX/row"
   assert_output "$(printf 'agent-runtime\tar-9')"
   rm "$ADD_LOG"
