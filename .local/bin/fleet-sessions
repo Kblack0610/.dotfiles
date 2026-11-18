@@ -853,11 +853,12 @@ prs_key() {
   printf '%s\n' "$CACHE/${slug}_$(canonical_remote "$1")"
 }
 
-# no_pr_host <dir> - rc 0 when the origin is on no PR host: neither github.com nor a listed Forgejo host.
+# no_pr_host <dir> - rc 0 when the origin is on no PR host: neither github.com (or an ssh alias of it) nor a listed Forgejo host; a path origin has none.
 no_pr_host() {
   local h
   h="$(origin_host "$1")" || return 1
-  [ -n "$h" ] && [[ "$h" != github.com* ]] && [[ " $(so_forgejo_hosts) " != *" $h "* ]]
+  case "$h" in github.com|github.com-*) return 1 ;; esac
+  [ -z "$h" ] || [[ " $(so_forgejo_hosts) " != *" $h "* ]]
 }
 
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
@@ -870,8 +871,7 @@ no_pr_host() {
 # One the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass), as
 # has a mirror-only clone of a Forgejo-canonical repo; any other GitHub repo it does not list is
 # unreadable (`schedules-sync repos` is the list). So has a repo whose origin is on no PR host at all
-# (~/.agent, a store on a bare git endpoint plus a GitHub backup): neither github.com nor a listed Forgejo
-# host, so close --self no longer held every session that wrote a lesson at "after" (ar-3283).
+# (no_pr_host: ~/.agent, a store on a bare git endpoint or a path), so close --self reads it as no PRs (ar-3283).
 prs_for() {
   local dir="$1" key repo out rc=0
   key="$(prs_key "$dir")" || return 0

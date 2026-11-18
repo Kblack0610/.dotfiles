@@ -3360,6 +3360,11 @@ explain_state() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
   [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
+  # a path origin is on no PR host either
+  git -C "$SANDBOX/wt" remote set-url origin "$SANDBOX/bare-store.git"
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
   # NEGATIVE CONTROL: the same repo on a GitHub ssh alias is a store gap, and is named
   git -C "$SANDBOX/wt" remote set-url origin git@github.com-work:o/store.git
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
