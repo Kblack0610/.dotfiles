@@ -1602,6 +1602,7 @@ cmd_add() {
     local HOLD HOLD_DEAD
     check_after "$after" "$slug"
     hold_for "$after" ""
+    [ -z "$HOLD_DEAD" ] || die "$slug cannot start --running: $HOLD"
     [ -z "$HOLD" ] || die "$slug waits on $HOLD, so it cannot start --running: add it without --running, and it starts once that clears"
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
@@ -2641,8 +2642,10 @@ cmd_move() {
   fi
   # A start waits on what holds it, as the queue does: a queued item whose after: is live or dead, or
   # whose tag gate is not clear, is not started by hand ahead of it (ar-3260). A waiting or review item
-  # already started, so its move back to running is a resume and reads no gate.
-  if [ "$to" = running ] && [ "$from" = queued ]; then
+  # already started, so its move back to running is a resume and reads no gate. Nor does a queued item
+  # that records a session: fleet-dispatch start set it after the launch, and judged the hold before it,
+  # so a gh or rbw blip read here would leave that live session on an item still queued.
+  if [ "$to" = running ] && [ "$from" = queued ] && [ -z "$(fm_get "$f" session)" ]; then
     local HOLD HOLD_DEAD
     hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
     [ -z "$HOLD_DEAD" ] || die "$slug cannot start: $HOLD"

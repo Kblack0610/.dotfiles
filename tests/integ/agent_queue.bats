@@ -554,6 +554,12 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   "$AQ" set clock "tags=at:23:00"
   run "$AQ" move clock running
   assert_success
+  # A queued item that records a session is fleet-dispatch start's launch, judged before it: the move
+  # records it whatever the hold reads now.
+  legacy late "tags: at:23:00" --project game "d"
+  "$AQ" set late session=game-agent-3
+  run "$AQ" move late running
+  assert_success
 }
 
 @test "add --running --after refuses until every named slug closed ok (ar-3260)" {
@@ -566,6 +572,11 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   assert_failure
   assert_output --partial "--after nosuch: no item has that slug"
   "$AQ" move first running
+  "$AQ" move first done --status failed
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_failure
+  assert_output --partial "second cannot start --running: after first closed failed, dead"
+  "$AQ" add --project game --slug first --repeat "again"
   "$AQ" move first done --status ok
   run "$AQ" add --project game --slug second --running --after first "b"
   assert_success
