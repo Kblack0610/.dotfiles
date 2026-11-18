@@ -12,8 +12,8 @@ const STACK_REFRESH_MS = 120e3;
 const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["source"], picture: ["picture"], checked: ["checked"], state: ["state"] };
 const SKILL_COLS = { skill: ["skill"], category: ["category"], repo: ["repo"], calls: ["calls", "n"], runners: ["runners"], drift: ["drift"] };
 const AGENT_COLS = { agent: ["agent"], model: ["model"], tools: ["tools"], repo: ["repo"] };
-const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"] };
-const RULE_COLS = { rule: ["rule"], kind: ["kind"], number: ["number", "n"], confidence: ["confidence"], state: ["state"], source: ["source"] };
+const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"], rules: ["rules", "n"] };
+const RULE_COLS = { rule: ["rule"], kind: ["kind"], number: ["number"], confidence: ["confidence"], state: ["state"], source: ["source"] };
 
 const stk = tblTab({
   tab: "stack", id: "stk", el: "stack", api: "/api/stack", hint: "search, or category:ops drift:deadpath -repo:private",
@@ -136,11 +136,15 @@ const agentRow = (r) => `<tr title="${esc(r.description)}"><td>${esc(r.name)}</t
 const agentsBody = (d) => stackList("Subagents", d.agents, AGENT_COLS, agentRow, "No subagents match.", "No subagents are defined.");
 
 const hookRow = (r) => `<tr title="${esc(r.command)}">${stackCell(r.harness, "muted")}${stackCell(r.event)}${stackCell(r.matcher || "*", "wrap muted")}` +
-  `<td class="${r.found ? "" : "bad"}">${esc(r.script)}${r.found ? "" : " (missing)"}</td>${stackCell(r.from, "muted")}</tr>`;
+  `<td class="${r.found ? "" : "bad"}">${esc(r.script)}${r.found ? "" : " (missing)"}</td>${stackCell(r.from, "muted")}${hookRules(r)}</tr>`;
+// A hook's mechanism rows in the ledger, linked to Rules filtered to exactly their source.
+const hookRules = (r) => r.rules
+  ? `<td class="n"><a href="#stack/rules?rs=mechanisms&rq=${encodeURIComponent(`source:=${r.source}`)}" title="its rows in the rules ledger">${r.rules}</a></td>`
+  : stackCell("-", "n muted");
 const hooksBody = (d) => stackList("Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
 
-const RULE_HUE = { ok: "", stale: "warn", moved: "warn", dead: "bad" };
-const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "n")}` +
+const RULE_HUE = { ok: "", stale: "warn", moved: "warn", restates: "warn", dead: "bad", absent: "muted" };
+const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "wrap")}` +
   `${stackCell(r.confidence, "muted")}${stackCell(r.state, RULE_HUE[r.state] ?? "")}${stackCell(r.source, "wrap muted")}</tr>`;
 
 const rulesBody = (d) => stackList("Rules", d.rules, RULE_COLS, ruleRow, "No rules match.", "No rules are recorded.");

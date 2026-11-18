@@ -2372,7 +2372,7 @@ resume_thread() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
   local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -2466,6 +2466,10 @@ cmd_start() {
     else
       [ -z "$key$session" ] || { say "start: --item is a launch of its own: no --row or --session"; return 2; }
       [ "$st" = queued ] || { say "start: $item is $st, not queued"; return 1; }
+      # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
+      # refused start leaves no session working an item still queued.
+      hold=$(jq -r '.hold // empty' <<<"$it")
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
