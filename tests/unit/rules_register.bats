@@ -8,9 +8,10 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
-  # sandbox_init moves HOME, so the real register and the ~ sources in it are read from here.
-  REAL_HOME="$HOME" REAL_PATH="$PATH"
-  REAL="${RULES_PRIVATE_REPO:-$HOME/.dotfiles-private}/.config/agentctl/rules.jsonl"
+  # The suite and sandbox_init both move HOME, so the ~ sources the register names are read from the
+  # account home (ACCOUNT_HOME, helpers/suite_home.bash). Test 16 only reads there.
+  REAL_HOME="${ACCOUNT_HOME:-$HOME}" REAL_PATH="$PATH"
+  REAL="${RULES_PRIVATE_REPO:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private}/.config/agentctl/rules.jsonl"
   sandbox_init basic
   SUBJECT="$REPO_ROOT/.local/bin/fleet-bench"
   export FLEET_BENCH_DIR="$HOME/.agent/bench" BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
