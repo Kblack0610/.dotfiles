@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""vendor-check: does every dev vendor's credential still work? One read-only probe per vendor.
+
+    vendor-check [--file <vendors>] [name...]
+
+Reads the vendor registry (VENDORS_FILE, else ~/.config/agentctl/vendors), one vendor per line:
+
+    <name> <area> pays=<ledger:<budget line>|free|client|self> cred=<cred> probe=<probe> twofa=<method> [key=value...] # purpose
+
+cred:  rbw:[<folder>/]<entry>  an rbw entry (the secret is its password)
+       sops:<file>#<key>       a key of a SOPS file
+       cli:<tool>              the tool's own login; the probe runs it
+       none
+probe: listed                  the cred exists (a console login has no read-only API)
+       totp                    the rbw entry exists and yields a TOTP code
+       http url=<url> [auth=bearer|token|raw|x-api-key]   2xx is OK, 401/403 EXPIRED
+       cmd run='<command>'     exit 0 is OK
+twofa: phone-google phone-steam phone-msauth mac-apple rbw-totp imap:<account> none unknown
+gap=<owner>                    a known gap with an owner (a queue slug): printed, not counted in the exit
+
+Prints `<name> OK|LOW|EXPIRED|NO_CREDS probe=<probe> [detail=...]` per vendor, the cred-status
+contract, and never a secret: values stay in this process or go to a child on stdin or env.
+LOW means the probe could not tell (network, 5xx, timeout, rbw locked). Exit 0 all OK, 1 some LOW, 2 any
+EXPIRED or NO_CREDS, 3 a registry line it cannot parse.
+"""
+import os
+import shlex
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+PAYS = ("free", "client", "self")
+TWOFA = ("phone-google", "phone-steam", "phone-msauth", "mac-apple", "rbw-totp", "none", "unknown")
+PROBES = ("listed", "totp", "http", "cmd")
+AUTH = {
+    "bearer": ("Authorization", "Bearer "),
+    "token": ("Authorization", "token "),
+    "raw": ("Authorization", ""),  # the stored value carries its own scheme
+    "x-api-key": ("x-api-key", ""),
+}
+TIMEOUT = 20  # seconds per probe; a slower vendor reads LOW, never a hang
+RANK = {"OK": 0, "LOW": 1, "EXPIRED": 2, "NO_CREDS": 2}
+
+
+class Bad(Exception):
+    pass
+
+
+def parse(path):
+    """[(lineno, fields)] for each vendor line; Bad names the first line it cannot read."""
+    rows = []
+    with open(path) as f:
+        for n, line in enumerate(f, 1):
+            try:
+                words = shlex.split(line, comments=True)
+            except ValueError as e:
+                raise Bad("%s:%d: %s" % (path, n, e))
+            if not words:
+                continue
+            if len(words) < 2 or "=" in words[0] or "=" in words[1]:
+                raise Bad("%s:%d: a line starts with <name> <area>" % (path, n))
+            row = {"name": words[0], "area": words[1]}
+            for w in words[2:]:
+                k, eq, v = w.partition("=")
+                if not eq:
+                    raise Bad("%s:%d: %r is not key=value" % (path, n, w))
+                row[k] = v
+            for k in ("pays", "cred", "probe", "twofa"):
+                if k not in row:
+                    raise Bad("%s:%d: %s has no %s=" % (path, n, row["name"], k))
+            if row["pays"] not in PAYS and not (row["pays"].startswith("ledger:") and len(row["pays"]) > 7):
+                raise Bad("%s:%d: pays=%s is not ledger:<line>|%s" % (path, n, row["pays"], "|".join(PAYS)))
+            if row["twofa"] not in TWOFA and not (row["twofa"].startswith("imap:") and len(row["twofa"]) > 5):
+                raise Bad("%s:%d: twofa=%s is not one of %s|imap:<account>" % (path, n, row["twofa"], "|".join(TWOFA)))
+            if row["probe"] not in PROBES:
+                raise Bad("%s:%d: probe=%s is not one of %s" % (path, n, row["probe"], "|".join(PROBES)))
+            if row["probe"] == "http" and "url" not in row:
+                raise Bad("%s:%d: probe=http needs url=" % (path, n))
+            if row["probe"] == "http" and row.get("auth", "bearer") not in AUTH:
+                raise Bad("%s:%d: auth=%s is not one of %s" % (path, n, row["auth"], "|".join(AUTH)))
+            if row["probe"] == "cmd" and not row.get("run"):
+                raise Bad("%s:%d: probe=cmd needs run=" % (path, n))
+            kind = row["cred"].split(":", 1)[0]
+            if kind not in ("rbw", "sops", "cli", "none"):
+                raise Bad("%s:%d: cred=%s is not rbw:|sops:|cli:|none" % (path, n, row["cred"]))
+            if row["probe"] == "totp" and kind != "rbw":
+                raise Bad("%s:%d: probe=totp needs an rbw cred" % (path, n))
+            rows.append((n, row))
+    return rows
+
+
+def run(argv, stdin=None, env=None):
+    """(exit code, stdout) of argv; 124 on timeout, 127 when it is not installed. Stderr is dropped."""
+    try:
+        p = subprocess.run(argv, input=stdin, capture_output=True, text=True, timeout=TIMEOUT, env=env)
+        return p.returncode, p.stdout
+    except subprocess.TimeoutExpired:
+        return 124, ""
+    except FileNotFoundError:
+        return 127, ""
+
+
+_rbw = None
+
+
+def rbw_listed():
+    """{(folder, name)} rbw lists; None when rbw is locked or missing, so no row reads as absent."""
+    global _rbw
+    if _rbw is None:
+        code, out = run(["rbw", "list", "--fields", "folder,name"])
+        _rbw = {tuple(l.partition("\t")[::2]) for l in out.splitlines()} if code == 0 else False
+    return _rbw if _rbw is not False else None
+
+
+def rbw_ref(ref):
+    folder, slash, name = ref.rpartition("/")
+    return (folder, name) if slash else ("", ref)
+
+
+def rbw_args(ref):
+    folder, name = rbw_ref(ref)
+    return (["--folder", folder] if folder else []) + [name]
+
+
+def secret(cred):
+    """The cred's value, or None. Never printed."""
+    kind, _, ref = cred.partition(":")
+    if kind == "rbw":
+        code, out = run(["rbw", "get"] + rbw_args(ref))
+    elif kind == "sops":
+        path, _, key = ref.partition("#")
+        code, out = run(["sops", "-d", "--extract", '["%s"]' % key, os.path.expanduser(path)])
+    else:
+        return None
+    out = out.strip()
+    return out if code == 0 and out else None
+
+
+def present(cred):
+    """True, False, or None when rbw cannot answer."""
+    kind, _, ref = cred.partition(":")
+    if kind == "rbw":
+        listed = rbw_listed()
+        return None if listed is None else rbw_ref(ref) in listed
+    if kind == "sops":
+        return secret(cred) is not None
+    return True
+
+
+def probe(row):
+    """(state, detail) for one vendor."""
+    cred, kind = row["cred"], row["cred"].split(":", 1)[0]
+    if kind in ("rbw", "sops"):
+        have = present(cred)
+        if have is None:
+            return "LOW", "rbw locked"
+        if not have:
+            return "NO_CREDS", "not in %s" % kind
+    if row["probe"] == "listed":
+        return "OK", ""
+    if row["probe"] == "totp":
+        code, out = run(["rbw", "code"] + rbw_args(cred.partition(":")[2]))
+        return ("OK", "") if code == 0 and out.strip() else ("NO_CREDS", "no TOTP seed")
+    if row["probe"] == "cmd":
+        env = dict(os.environ)
+        if kind in ("rbw", "sops"):
+            value = secret(cred)
+            if value is None:
+                return "NO_CREDS", "unreadable"
+            env["VENDOR_SECRET"] = value
+        code, _ = run(["sh", "-c", row["run"]], env=env)
+        if code == 0:
+            return "OK", ""
+        if code in (124, 127):
+            return "LOW", "timeout" if code == 124 else "not installed"
+        return "EXPIRED", "exit %d" % code
+    # http
+    req = urllib.request.Request(row["url"], headers={"User-Agent": "vendor-check"})
+    if kind in ("rbw", "sops"):
+        value = secret(cred)
+        if value is None:
+            return "NO_CREDS", "unreadable"
+        header, prefix = AUTH[row.get("auth", "bearer")]
+        req.add_header(header, prefix + value)
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return "OK", ""
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return "EXPIRED", "http %d" % e.code
+        return "LOW", "http %d" % e.code
+    except (urllib.error.URLError, OSError):
+        return "LOW", "unreachable"
+
+
+def main(argv):
+    path = os.environ.get("VENDORS_FILE") or os.path.expanduser("~/.config/agentctl/vendors")
+    names = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--file" and i + 1 < len(argv):
+            path = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        names.append(argv[i])
+        i += 1
+    try:
+        rows = parse(path)
+    except (Bad, OSError) as e:
+        print("vendor-check: %s" % e, file=sys.stderr)
+        return 3
+    known = {r["name"] for _, r in rows}
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        print("vendor-check: not in %s: %s" % (path, " ".join(unknown)), file=sys.stderr)
+        return 3
+    worst = 0
+    for _, row in rows:
+        if names and row["name"] not in names:
+            continue
+        state, detail = probe(row)
+        if state != "OK" and row.get("gap"):
+            detail = (detail + "; " if detail else "") + "gap: " + row["gap"]
+        else:
+            worst = max(worst, RANK[state])
+        print("%s %s probe=%s%s" % (row["name"], state, row["probe"], " detail=" + shlex.quote(detail) if detail else ""))
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
