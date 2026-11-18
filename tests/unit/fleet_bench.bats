@@ -635,7 +635,7 @@ AR
   cat >> "$SCHEDULES_SYNC" <<'SS'
 echo "schedules-sync $*" >> "$D/calls.log"
 if [ "$1" = sync-prs ]; then
-  [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $2: HTTP 502" >&2; exit 1; }
+  [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $3: HTTP 502" >&2; exit 1; }
   rm -f "$D/prs-stale"; exit 0
 fi
 if [ "$1" = prs ]; then
@@ -977,7 +977,7 @@ GH
   run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[7]'
   grep -q "^schedules-sync prs o/r --state merged --since $(iso $((T0 - 86400)))\$" "$GHD/calls.log"
-  grep -q "^schedules-sync sync-prs o/r\$" "$GHD/calls.log"
+  grep -q "^schedules-sync sync-prs --wait o/r\$" "$GHD/calls.log"
   # a boot catch-up: the store is hours stale, and the refresh brings it current
   touch "$GHD/prs-stale"
   BENCH_NOW=$T0 run "$SUBJECT" review
