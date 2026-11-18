@@ -407,7 +407,7 @@ pub fn gather(runner: &dyn Runner) -> Snapshot {
     with_items(&mut sessions, &items);
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
-        if a.mode == agent_core::jsonl::Mode::Plan
+        if a.mode == agent_core::transcript::Mode::Plan
             && !s.parked
             && is_word(&s.server)
             && is_id(&s.pane, '%')
