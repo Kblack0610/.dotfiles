@@ -17,6 +17,19 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)" status)" ok
 }
 
+@test "reap returns a chain held dead behind an item that closed failed, and logs it; a live hold stays (ar-2943 P5)" {
+  agent-queue add --project game --from shepherd --slug da --priority low "a" >/dev/null
+  agent-queue add --project game --from shepherd --slug db --priority low --after da "b" >/dev/null
+  agent-queue add --project game --from shepherd --slug la --priority low "live root" >/dev/null
+  agent-queue add --project game --from shepherd --slug lb --priority low --after la "waits on a live item" >/dev/null
+  agent-queue move da done --status failed >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-db.md)" end_reason)" returned
+  grep -q 'settle-dead: returned db and the items after it: after da closed failed' "$FLEET_DISPATCH_DIR/log.md"
+  assert_equal "$(agent-queue show lb --json | jq -r .hold)" "after la"
+}
+
 @test "unpark: a preempt ledger is resumed when its units are free and no urgent item waits; a budget park is not" {
   five_of_six_units
   park_stub
