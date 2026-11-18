@@ -3391,6 +3391,7 @@ retro_guard_rows() {
       "$key" "$key" "$claim" "$file" "$since" "$n" "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
   done
 }
+
 # retro reads each live improvement claim (improve_check), queues no canary (fleet-dispatch
 # tops the canary floor up, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
 # (`check(lesson): guard <hash>:`). A KPI past its threshold gets
@@ -4967,9 +4968,6 @@ canary_slug() {
   printf 'canary-%s%s' "$id" "$tail"
 }
 
-# canary_queue [--harness h [--model m [--effort e]]] [--max N]: the CLI. With a lane it queues that lane's
-# missing tasks (at most N when given); with --max alone it tops up across the claude lane and every lane
-# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together.
 # canary_lane_why <harness> <model> <effort> -> says what is wrong with the lane and returns 1, or nothing and 0
 canary_lane_why() {
   [ -z "$2" ] || [ -n "$1" ] || { echo "--model needs --harness"; return 1; }
@@ -4977,6 +4975,9 @@ canary_lane_why() {
   [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
 }
 
+# canary_queue [--harness h [--model m [--effort e]]] [--max N]: the CLI. With a lane it queues that lane's
+# missing tasks (at most N when given); with --max alone it tops up across the claude lane and every lane
+# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together.
 canary_queue() {
   local why harness="" model="" effort="" max=""
   while [ $# -gt 0 ]; do
