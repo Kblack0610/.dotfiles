@@ -2195,7 +2195,8 @@ research_item() {
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'DONE now' ]
   # Negative control: with no item holding Phase 2, the same session must queue it first.
   rm "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  # quiet under FLEET_IDLE_CLOSE_MIN: past it the verdict is now (ar-2887)
+  FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'LANDED after' ]
 }
 
@@ -2214,7 +2215,7 @@ research_item() {
   [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'after: close its item fix-wave-save (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued' ]
   # negative control: a phase left that no item holds is this session's work, not a close step
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'next phase: Phase 2: rollout; its item fix-wave-save is running here' ]
   [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan --priority <p>), then close' ]
