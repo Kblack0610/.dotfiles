@@ -258,9 +258,8 @@ return {
 
       -- Task status = the checkbox state. `<leader>ts` cycles it:
       --   [ ] todo -> [/] in progress -> [x] done -> [ ] todo
-      -- `[/]` is a SAME-DAY signal: the `notes` CLI resets it to `[ ]` on the next
-      -- daily carry (stamp_line/reset_status), so only the open todo + its priority
-      -- tag survive overnight. Finishing a Focus task also files it under a
+      -- `[/]` carries across days until you flip it, and sorts below the `[ ]` rows of
+      -- its lane (in_progress_last below). Finishing a Focus task also files it under a
       -- `--- / ### Done` block at the foot of the section (see sweep_focus below).
       -- Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
@@ -278,7 +277,7 @@ return {
       -- Any `### `-heading / `---` rule this sweep owns (stripped, re-emitted only where a
       -- lane is non-empty). An unrelated authored heading is preserved as content.
       local function is_scaffold(l)
-        if l:match "^%-%-%-%s*$" or l:match "^###%s+Done%s*$" or l:match "^###%s+In progress%s*$" then
+        if l:match "^%-%-%-%s*$" or l:match "^###%s+Done%s*$" then
           return true
         end
         for _, lane in ipairs(LANES) do
@@ -333,7 +332,7 @@ return {
       end
 
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
-      -- (`---`, `### Done`, `### In progress`) that closes the priority region.
+      -- (`---`, `### Done`) that closes the priority region.
       local function scaffold_lane(l)
         for i, lane in ipairs(LANES) do
           if l:lower():match("^###%s+" .. lane[1] .. "%s*$") then
@@ -343,9 +342,38 @@ return {
         return nil
       end
 
+      -- One lane with its in-progress `[/]` rows moved below its open `[ ]` rows, each kind in
+      -- its own order, inside every group a break (a blank or a `---`) marks off. A row's
+      -- indented lines move with it. Mirrors sweep::in_progress_last.
+      local function in_progress_last(lane)
+        local out, open, started, cur = {}, {}, {}, nil
+        local function flush()
+          for _, blocks in ipairs { open, started } do
+            for _, b in ipairs(blocks) do
+              vim.list_extend(out, b)
+            end
+          end
+          open, started, cur = {}, {}, nil
+        end
+        for _, l in ipairs(lane) do
+          if l == "" or l == "---" then
+            flush()
+            out[#out + 1] = l
+          elseif l:match "^%s" and cur then
+            cur[#cur + 1] = l
+          else
+            cur = { l }
+            local into = l:match "^%s*%- %[/%]" and started or open
+            into[#into + 1] = cur
+          end
+        end
+        flush()
+        return out
+      end
+
       -- Pure rebuild of the `## Focus` body, grouped by priority + status:
       -- `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
-      -- an in-progress `[/]` keeps its mark inside its lane. ALL lane headers + Done are emitted
+      -- an in-progress `[/]` keeps its mark and sorts below the open rows of its lane. ALL lane headers + Done are emitted
       -- even when empty, so the columns stay put as stable drop targets, and the empty `- [ ]`
       -- slot goes. A task's #tag is the source of truth, but an untagged task sitting under a
       -- lane header inherits that lane's tag (drop-to-tag) when `inherit` is set. Inherit is ON
@@ -468,9 +496,7 @@ return {
             out[#out + 1] = ""
           end
           out[#out + 1] = lane[2]
-          for _, l in ipairs(open[i]) do
-            out[#out + 1] = l
-          end
+          vim.list_extend(out, in_progress_last(open[i]))
         end
         out[#out + 1] = "" -- Done placeholder is always present too
         out[#out + 1] = "---"
