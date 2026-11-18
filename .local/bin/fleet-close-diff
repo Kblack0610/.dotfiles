@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-close-diff [--self] <rev-a> <rev-b|path>: every live session whose close verdict differs
-# between two versions of the close flow (fleet-sessions CLOSE_JQ and its FLEET_CHAT_CLOSE_H and
-# FLEET_HUMAN_KEEP_MIN defaults), read over the same facts: the fleet state document's sessions.
+# between two versions of the close flow (fleet-sessions CLOSE_JQ and its FLEET_IDLE_CLOSE_MIN
+# default), read over the same facts: the fleet state document's sessions.
 # A revision is any git rev of this repo; a path is a checkout or worktree, read as it is on disk.
 # --self reads each row as that session asking about itself (close --self, what /wind-down auto
 # runs). Prints one tab-separated line per changed session: target, bucket, verdict a -> verdict b,
@@ -44,17 +44,16 @@ default() {
 
 # verdicts <rev|path>: one {id, target, bucket, v, why} per session in the document.
 verdicts() {
-  local src prog chat keep out sid
+  local src prog idle out sid
   src="$(source_of "$1")" || { echo "fleet-close-diff: cannot read fleet-sessions at $1" >&2; return 2; }
   prog="$(close_jq <<<"$src")" || { echo "fleet-close-diff: no CLOSE_JQ in $1" >&2; return 2; }
-  chat="$(default "$src" FLEET_CHAT_CLOSE_H)" && keep="$(default "$src" FLEET_HUMAN_KEEP_MIN)" || return 2
-  chat=$((chat * 60))
+  idle="$(default "$src" FLEET_IDLE_CLOSE_MIN)" || return 2
   out='.close = null | '"$prog"' | {id: (.session_id // .target), target, bucket, v: (.close.verdict // "-"), why: (.close.why // "-")}'
   if [ "$self" = 0 ]; then
-    jq -c --argjson chat "$chat" --argjson human_keep "$keep" ".sessions[] | $out" "$state"
+    jq -c --argjson idle_close "$idle" ".sessions[] | $out" "$state"
   else
     jq -r '.sessions[].session_id // empty' "$state" | while read -r sid; do
-      jq -c --argjson chat "$chat" --argjson human_keep "$keep" --arg self "$sid" \
+      jq -c --argjson idle_close "$idle" --arg self "$sid" \
         ".sessions[] | select(.session_id == \$self) | $out" "$state"
     done
   fi

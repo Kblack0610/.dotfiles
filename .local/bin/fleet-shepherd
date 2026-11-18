@@ -229,7 +229,8 @@ tag_pane() {
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
 # manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
 # verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
-# question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
+# question waits; DONE, LANDED and STALLED get the DONE close nudge once their verdict is now, CHAT its
+# own, and a LANDED or STALLED row not yet closable its bucket nudge once; a
 # NEEDS row, or a nudged row whose fact survived, is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
@@ -240,7 +241,8 @@ tag_pane() {
 CLOSE_NUDGE_JQ='def close_nudge:
   if ((.labels // []) | index("manual")) or .nudged or ((.close.verdict // "") != "now") then null
   elif (.own_asks // 0) > 0 then "CLOSE"
-  elif (.bucket | IN("DONE","CHAT")) then .bucket
+  elif .bucket == "CHAT" then "CHAT"
+  elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
   else null end;'
 
 # ptag: a session row's tmux pane id as " [%37]", beside its target. The target's window index
@@ -687,7 +689,7 @@ remind_sample() {
 # close_sample: the close nudge without a model. Each row CLOSE_NUDGE_JQ names (the ones cmd_due
 # would give a pass as `nudge DONE|CHAT|CLOSE`) gets its close typed into its pane: /wind-down
 # auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT /wind-down,
-# the human's standing order to close a chat quiet 24h. A pass could only send it by SendMessage,
+# the human's standing order to close a quiet chat. A pass could only send it by SendMessage,
 # and the debounce held it up to an hour (2026-11-12: gaps of 75 minutes); the claude CLI has no
 # send, so typing is the one model-free way in, as claude-acct types /exit.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
