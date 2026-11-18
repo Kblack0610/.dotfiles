@@ -100,6 +100,7 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
+| `tmx goto <host>@<server>/<session>[:<window>]` | attach to a fleet session on another machine: a `fleet-sessions` or agent-panel row target, over the one ssh path in `.local/lib/fleet-hosts.sh`. Inside tmux this client detaches and the ssh attach takes its terminal, so the worker's tmux never nests in a pane. A host not in the fleet roster is refused before anything dials |
 | `tmx client` | `<server> <client>` of the terminal you typed in last, for `display-popup -c` from outside tmux |
 | `tmx popup <cmd>` | run `<cmd>` in a popup on that terminal and focus it (what the Super+A agents keys use) |
 
@@ -126,6 +127,8 @@ Enter or a click on any row goes there: a world resumes where you were on it (st
   hub           ~/.notes                2 win  nvim, hub
        1* master           nvim        2026-11-06.md (~/.notes/journal/daily)
 ```
+
+A **fleet worker** shows as one more world per server, `razer-laptop@lab  3 agents  (fleet worker)`, with a row per agent on it (`<session>:<window>`, state, idle time, topic), read from the same fleet state document, so the picker dials nothing. Enter on a session row runs `tmx goto <host>@<server>/<session>:<window>`; Enter on the world row attaches its most recent session. Either way this client detaches and the ssh attach takes the terminal, so the worker's tmux never nests in a pane and its own prefix and keys work as they do there. Detaching on the worker (`Prefix+d`) lands you back on the local session and window you came from; so does a dropped link or a session that is gone, after Enter on the error it prints.
 
 A **stranded** row is a session with no agent in the fleet state that no manifest declares, or a live server with no manifest. Nothing will come back for those, so a stranded session shows only under `STRANDED`. Close one by hand once you have looked at it. A session newer than the fleet state is not stranded yet.
 
