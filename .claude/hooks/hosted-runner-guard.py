@@ -12,18 +12,23 @@ Denied: an edit or write of `.github/workflows/*.yml|yaml` in a checkout whose o
 in project-map.json `github_runners.self_hosted_only`, when the text it writes names a GitHub-hosted
 image label (`ubuntu-*`, `windows-*`, `macos-*` with latest, slim or a version) outside a comment.
 Passed: owners not listed (work orgs), a workflow listed in `github_runners.allow` as
-`<owner>/<repo>:<path>` (each with why), and every other file. Not covered: Bash writes (sed, cat >)
-and other agents; the org's Actions budget at $0 with prevent-further-usage is the backstop GitHub
-enforces. Fail-open: any error allows the edit.
+`<owner>/<repo>:<path>` (each with why), an origin that is not github.com (a Forgejo
+`ubuntu-latest` is that forge's own runner label, not a bill), and every other file. An edit that
+keeps a label already in the file is denied too: touching a hosted job means moving it. Not covered:
+Bash writes (sed, cat >) and other agents; the org's Actions budget at $0 with prevent-further-usage
+is the backstop GitHub enforces. Fail-open, like the sibling guards: any error allows the edit.
 """
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 WORKFLOW = re.compile(r"(^|/)\.github/workflows/[^/]+\.ya?ml$")
-HOSTED = re.compile(r"(?<![\w.-])(?:ubuntu|windows|macos)-(?:latest|slim|\d[\w.]*)(?:-arm)?(?![\w.-])")
+# Larger and suffixed images too: macos-14-large, macos-13-xlarge, ubuntu-24.04-arm, ubuntu-latest-4-cores.
+HOSTED = re.compile(r"(?<![\w.-])(?:ubuntu|windows|macos)-(?:latest|slim|\d[\w.]*)(?:-\w+)*(?![\w.-])")
 COMMENT = re.compile(r"(^|\s)#.*$")
 OWNER = re.compile(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?/?$")
 
@@ -43,17 +48,27 @@ def config():
         return json.load(f).get("github_runners") or {}
 
 
+def is_github(url):
+    """forge-guard's host check, which resolves an ssh Host alias (ssh -G, 2 s)."""
+    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.is_github(url)
+
+
 def origin(path):
-    """(owner, repo, path relative to the checkout root) for the checkout holding path."""
+    """(owner, repo, origin url, path relative to the checkout root) for the checkout holding path.
+
+    1 s per git call plus ssh -G's 2 s stays under the hook's 5 s timeout."""
     d = os.path.dirname(path)
     while d and not os.path.isdir(d):
         d = os.path.dirname(d)
-    top = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=3)
-    url = subprocess.run(["git", "-C", d, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=3)
+    top = subprocess.run(["git", "-C", d, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=1)
+    url = subprocess.run(["git", "-C", d, "config", "--get", "remote.origin.url"], capture_output=True, text=True, timeout=1)
     m = OWNER.search(url.stdout.strip())
     if top.returncode or not m:
         return None
-    return m.group(1), m.group(2), os.path.relpath(path, top.stdout.strip())
+    return m.group(1), m.group(2), url.stdout.strip(), os.path.relpath(path, top.stdout.strip())
 
 
 def written(tool, ti):
@@ -75,11 +90,11 @@ def main():
     if not hit:
         return
     cfg = config()
-    where = origin(os.path.abspath(path))
+    where = origin(os.path.realpath(path))
     if not where:
         return
-    owner, repo, rel = where
-    if owner.lower() not in {o.lower() for o in cfg.get("self_hosted_only", [])}:
+    owner, repo, url, rel = where
+    if owner.lower() not in {o.lower() for o in cfg.get("self_hosted_only", [])} or not is_github(url):
         return
     if f"{owner}/{repo}:{rel}".lower() in {k.lower() for k in cfg.get("allow", {})}:
         return

@@ -14,6 +14,7 @@ setup() {
   }
   mkrepo app git@github.com:acme-personal/app.git
   mkrepo work https://github.com/acme-work/svc.git
+  mkrepo forge git@git.example.org:acme-personal/forged.git
 }
 
 # decision <tool> <file> <text>: allow, or the deny reason. The hook prints nothing to allow.
@@ -37,7 +38,7 @@ decision() {
 }
 
 @test "a versioned image, a fallback and a matrix entry are hosted labels too" {
-  for t in 'runs-on: ubuntu-24.04' "runs-on: \${{ fromJSON(vars.LINUX_RUNNER_LIGHT || '\"ubuntu-latest\"') }}" 'os: [macos-14, windows-2022]' 'runs-on: ubuntu-24.04-arm'; do
+  for t in 'runs-on: ubuntu-24.04' "runs-on: \${{ fromJSON(vars.LINUX_RUNNER_LIGHT || '\"ubuntu-latest\"') }}" 'os: [macos-14, windows-2022]' 'runs-on: ubuntu-24.04-arm' 'runs-on: macos-14-large' 'runs-on: macos-13-xlarge' 'runs-on: ubuntu-latest-4-cores'; do
     run decision Write "$BATS_TEST_TMPDIR/app/.github/workflows/ci.yml" "$t"
     assert_output --partial 'hosted-runner-guard:'
   done
@@ -56,6 +57,17 @@ decision() {
   run decision Write "$BATS_TEST_TMPDIR/app/.github/workflows/mac.yml" 'runs-on: macos-14'
   assert_output allow
   run decision Write "$BATS_TEST_TMPDIR/app/docs/ci.md" 'runs-on: ubuntu-latest'
+  assert_output allow
+}
+
+@test "a listed owner on another forge passes: there ubuntu-latest is that forge's own runner label" {
+  run decision Write "$BATS_TEST_TMPDIR/forge/.github/workflows/ci.yml" 'runs-on: ubuntu-latest'
+  assert_output allow
+}
+
+@test "an allowlisted workflow reached through a symlinked checkout still matches its key" {
+  ln -s "$BATS_TEST_TMPDIR/app" "$BATS_TEST_TMPDIR/app-link"
+  run decision Write "$BATS_TEST_TMPDIR/app-link/.github/workflows/mac.yml" 'runs-on: macos-14'
   assert_output allow
 }
 
