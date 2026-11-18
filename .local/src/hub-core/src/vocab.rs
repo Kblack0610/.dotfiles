@@ -1,10 +1,10 @@
 //! The words the hub uses for state. The bucket vocabulary of state.json lives in agent-panel
-//! (`agent_panel::vocab`); hub-core re-exports it. The waiting states are worded here, one line
+//! (`agent_core::vocab`); hub-core re-exports it. The waiting states are worded here, one line
 //! per state, and each table under them carries its own as its legend (`Row::LEGEND`). Three
 //! things wait to start, each under its own word: a queue item is `ready` or `held`, a job and a
 //! CI job are `waiting`.
 
-pub use agent_panel::vocab::Vocab;
+pub use agent_core::vocab::Vocab;
 use serde::Serialize;
 
 /// The Queue table's STATE words that need saying: an item not started (`queue::State::Queued`),

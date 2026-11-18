@@ -20,7 +20,7 @@ server   one per socket   hub, lab, ...      .config/tmux-servers/<world>.conf, 
 - `worlds.sh` (`tmux-world`) is the only reader of the manifests. It never asks tmux, so the answer to "where does this directory belong" is the same whether the world is up or not. First match wins: a manifest-named directory, then any linked worktree (the `@agents` world), then the deepest `@repos`, then the caller's own world. Format and rules: `.config/tmux-servers/README.md`.
 - `panel-lib.sh` is the floor every panel sources: palette, fzf dialect, geometry classes, `panel_fail` vs `panel_die`, `$TMUX` handling. `_skeleton.sh` is a runnable template.
 - `tests/panels.manifest` has one row per `display-popup` bind (key, kind, geometry, path). Closure with `.tmux.conf` is checked both ways, so a panel without a row fails the fast tier.
-- Rust parts are separate crates under `.local/src/`: `agent-panel`, `hub-tui` (the `hub` binary), `muxpoon` (a submodule). They are built into `~/.local/bin` by the installer.
+- Rust parts are separate crates under `.local/src/`: `agent-core` (the session layer, a library with no UI), `agent-panel` (the chooser), `hub-core` (view readers), `hub-tui` (the `hub` binary), `agent-web`, `web-kit`, `project-map`, `muxpoon` (a submodule). Every view reads sessions through `agent-core`. The binaries are built into `~/.local/bin` by the installer.
 - State that outlives a session stays out of this tree: tags are server-lifetime options, and `fleet-dispatch record` keeps the pane map under `~/.agent/dispatch/panes/`.
 
 ## Data flow for a key
@@ -75,7 +75,7 @@ How agent work is run, recorded and read. The fleet-wide picture with its diagra
 
 ## Where it is split
 
-- Public repo: the code above, `routes/subscription.route`, the Rust crates (`agent-panel`, `agent-web`, `hub-core`, `hub-tui`) and the tests.
+- Public repo: the code above, `routes/subscription.route`, the Rust crates (`agent-core`, `agent-panel`, `agent-web`, `hub-core`, `hub-tui`) and the tests.
 - Private overlay: runner confs, roles, the unit template `agentctl@.service`, site routes, prompts and the runbooks. Both are stowed into `$HOME`. A change that touches both is two PRs.
 - Runtime state stays out of both trees: `~/.agent/`, `~/.local/state/agentctl/`, `~/.local/state/fleet/`.
 
