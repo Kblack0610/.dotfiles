@@ -139,7 +139,7 @@ printf '%s\n' "$#" "${!#}" > "$CALLS"
 STUB
   id="$("$AP" add --stream s --project p --verb queue --arg $'two  words\nand a line' "Keep it whole")"
   "$AP" accept "$id"
-  assert_equal "$(sed -n 1p "$CALLS")" 5
+  assert_equal "$(sed -n 1p "$CALLS")" 7
   assert_equal "$(sed -n '2,$p' "$CALLS")" $'two  words\nand a line'
 }
 
