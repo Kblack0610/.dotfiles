@@ -312,8 +312,8 @@ fn tag_verb(
 /// A move up the ladder runs the stage gate first and refuses when it blocks; a move down or
 /// sideways never does, since a project claiming less than it meets is no risk. A move up that
 /// lands then files the new stage's work: `project-stage-check <name> --file` opens the next
-/// stage's epic and a story per failing row, so the work arrives the moment the stage does. A
-/// hand edit of the tag skips both, and the nightly project-index pass files it.
+/// stage's epic and one row listing its failing rows, so the work arrives the moment the stage
+/// does. A hand edit of the tag skips both, and the nightly project-index pass files it.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     stage_via(p, log, name, value, STAGE_GATE_BIN)
 }

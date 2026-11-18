@@ -17,6 +17,7 @@
 #   prios                       name  prio, what `notes projects --prios` prints
 #   board.json                  what `notes board --json` prints
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
+#   ptask.agent.added           what `notes ptask <name> --agent add` prints
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
 set -uo pipefail
@@ -98,6 +99,8 @@ case "${1:-}" in
                   [ -f "$FIX/playtest.${profile:-personal}.${proj}" ] || exit 1
                   emit "playtest.${profile:-personal}.${proj}" ;;
       add) emit ptask.added ;;     # the row the real verb prints; recorded too
+      # `notes ptask <name> --agent add`: the agent row it prints, from ptask.agent.added
+      --agent) [ "${4:-}" != add ] || emit ptask.agent.added ;;
       *) : ;;                      # done/rm: recorded only
     esac
     ;;

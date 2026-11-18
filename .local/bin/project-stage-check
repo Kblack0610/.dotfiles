@@ -17,16 +17,18 @@
 # Systems mode runs the Criteria rows of systems.md for every system the project's type has (or
 # one, with --system): the same lines, then met/total per system; --json prints those counts and
 # each row instead. Exit 1 when any row FAILs, 2 on usage or an unknown project or system.
-# --file reconciles the project's agent board with the check: each FAIL row becomes a story under
-# the open epic for its target, and each open board row whose title is a row that now PASSes is
-# closed with the check as proof. A stage's target is --stage, else the highest of the
-# stage after the declared one and the stages open `epic(stage):` rows name; with no open epic for
-# it, `epic(stage): <stage> to standard` is filed on the human sheet first. A system's row goes
-# under `epic(<system>): ...`, which `notes ptask add` files when it is missing (standing.rs). A
-# row already on either sheet under the same title, open or closed or dropped, is never filed
-# again. Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout
-# gets the check's own --json (`stage` is the target) plus filed_open and filed_closed: the agent
-# rows titled as one of its PASS or FAIL rows, as the sheets read after the pass.
+# --file reconciles the project's agent board with the check. A stage's FAIL rows go on one
+# rollup row under the open epic for its target, `chore(stage): meet the <target> stage
+# standard`, one brief line per gap, rewritten in place each run and closed when no gap is left
+# (file_rollup); each FAIL row of a system becomes a story of its own under `epic(<system>): ...`,
+# which `notes ptask add` files when it is missing (standing.rs). A stage's target is --stage,
+# else the highest of the stage after the declared one and the stages open `epic(stage):` rows
+# name; with no open epic for it, `epic(stage): <stage> to standard` is filed on the human sheet
+# first. A row held on either sheet under the same title or from line is never filed again when
+# closed by hand; each open agent row of a row that now PASSes is closed with the check as proof.
+# Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout gets
+# the check's own --json (`stage` is the target) plus filed_open and filed_closed: the gaps the
+# agent sheet holds open (a rollup line or a row of its own) and the agent rows of its rows closed.
 # --list prints the project's systems (which ones: ~/.local/src/docs/systems.md, "The layers"),
 # one `id<TAB>doc|own<TAB>aliases (comma-separated)<TAB>what it is` line each (--json: an array of
 # {id, source, aliases, is}). A malformed `systems` entry exits 2.
@@ -127,27 +129,75 @@ requirements() {
   exit 0
 }
 
-# sheet_rows: one `state<TAB>title` line per task row on both lanes' sheets and their frozen
-# version notes, the title from `notes row parse` (the grammar's home, so it reads as
-# `projects::row_title` does: marker, stamps, `#` words and the `type(area): ` prefix dropped,
-# spaces collapsed), then the lane (`agent` for the agent sheet and its notes, else `human`) and
-# the row's id. State is `open`, or `closed` for a ticked row, done or dropped. The
-# roadmap leaves dropped rows out, so it cannot be this reader. Fails, saying so, when the
-# verb does or answers short.
+# sheet_rows: one line per task row on both lanes' sheets and their frozen version notes, its
+# fields tab-separated: state, title, lane, id, mark, close, kids, prio, from. State is `open`,
+# or `closed` for a ticked row, done or dropped; the title is from `notes row parse` (the
+# grammar's home, so it reads as `projects::row_title` does: marker, stamps, `#` words and the
+# `type(area): ` prefix dropped, spaces collapsed); the lane is `agent` for the agent sheet and
+# its notes, else `human`. Mark is `todo`, `doing` (`[/]`) or `done`; close says how a ticked row
+# closed: `dup:<id>`, `dropped`, `met` (closed with this check's own PASS proof) or `done`. Kids
+# is 1 for a row with child rows (indented under it, or naming it in `#of/`), prio its `#urgent`,
+# `#high` or `#low`, and from the rest of its `from project-stage-check <name> --file` detail
+# line, which a reworded row keeps. An empty field is `-`: tab is IFS whitespace, so `read` would
+# shift the rest. The roadmap leaves dropped rows out, so it cannot be this reader. Fails, saying
+# so, when the verb does or answers short.
 sheet_rows() {
   local f files=() rows titles
   for f in "$LAB/README.md" "$LAB/agent/README.md" "$LAB"/versions/*.md "$LAB"/agent/versions/*.md; do
     [ -f "$f" ] && files+=("$f")
   done
   [ "${#files[@]}" -gt 0 ] || return 0
-  rows="$(awk -v agent="$LAB/agent/" '/^[ \t]*- \[.\] / {
-      id = ""; if (match($0, /id:[a-z0-9]+-[0-9]+/)) id = substr($0, RSTART + 3, RLENGTH - 3)
-      print (($0 ~ /^[ \t]*- \[[xX]\] /) ? "closed" : "open") "\t" (index(FILENAME, agent) == 1 ? "agent" : "human") "\t" id "\t" $0
+  rows="$(awk -v agent="$LAB/agent/" '
+    FNR == 1 { sp = 0; cur = 0 }
+    /^[ \t]*- \[.\] / {
+      n++; txt[n] = $0; ln[n] = (index(FILENAME, agent) == 1 ? "agent" : "human")
+      ind = match($0, /[^ \t]/) - 1
+      while (sp > 0 && si[sp] >= ind) sp--
+      if (sp > 0) kid[sk[sp]] = 1
+      sp++; si[sp] = ind; sk[sp] = n
+      m = substr($0, ind + 4, 1); mk[n] = (m == " ") ? "todo" : (m == "/") ? "doing" : (m ~ /[xX]/) ? "done" : "todo"
+      id[n] = "-"; if (match($0, /id:[a-z0-9]+-[0-9]+/)) id[n] = substr($0, RSTART + 3, RLENGTH - 3)
+      s = $0; while (match(s, /#of\/[a-z0-9]+-[0-9]+/)) { of[substr(s, RSTART + 4, RLENGTH - 4)] = 1; s = substr(s, RSTART + RLENGTH) }
+      pr[n] = "-"; if (match($0, /#(urgent|high|low)([ \t]|$)/)) { pr[n] = substr($0, RSTART + 1, RLENGTH - 1); sub(/[ \t]$/, "", pr[n]) }
+      cl[n] = "-"
+      if (mk[n] == "done") {
+        cl[n] = "done"
+        if (match($0, /dup:[a-z0-9]+-[0-9]+/)) cl[n] = substr($0, RSTART, RLENGTH)
+        else if ($0 ~ /dropped:/) cl[n] = "dropped"
+        else if ($0 ~ /check:project-stage-check /) cl[n] = "met"
+      }
+      fr[n] = "-"; cur = n; next
+    }
+    cur && fr[cur] == "-" && /^[ \t]+from project-stage-check [^ ]+ --file[,:] / {
+      s = $0; sub(/^[ \t]+from project-stage-check [^ ]+ --file[,:] /, "", s); fr[cur] = s; next
+    }
+    /^[^ \t]/ { cur = 0; sp = 0 }
+    END {
+      for (i = 1; i <= n; i++)
+        print (mk[i] == "done" ? "closed" : "open") "\t" ln[i] "\t" id[i] "\t" mk[i] "\t" cl[i] "\t" \
+          ((kid[i] || (id[i] in of)) ? 1 : 0) "\t" pr[i] "\t" fr[i] "\t" txt[i]
     }' "${files[@]}")"
   [ -n "$rows" ] || return 0
-  titles="$(cut -f4- <<<"$rows" | notes row parse | cut -f3)" && [ "$(wc -l <<<"$titles")" = "$(wc -l <<<"$rows")" ] \
+  titles="$(cut -f9- <<<"$rows" | notes row parse | cut -f3)" && [ "$(wc -l <<<"$titles")" = "$(wc -l <<<"$rows")" ] \
     || { echo "project-stage-check: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)" >&2; return 1; }
-  paste <(cut -f1 <<<"$rows") - <(cut -f2,3 <<<"$rows") <<<"$titles"
+  paste <(cut -f1 <<<"$rows") - <(cut -f2-8 <<<"$rows") <<<"$titles"
+}
+
+# twins <title> <key>: the rows of $have that hold one check row: its title, or a from line
+# naming its stage or system and check (`key`), which a row the triager reworded keeps. A rollup
+# row, and a row folded into one (`dup:` a rollup id, from $ROLLUP_IDS), is never a twin.
+twins() {
+  awk -F'\t' -v t="$1" -v k="$2" -v r=" $ROLLUP_IDS " '
+    ($2 == t || $9 == k) && !index(r, " " $4 " ") && !($6 ~ /^dup:/ && index(r, " " substr($6, 5) " "))' <<<"$have"
+}
+
+# brief_of <id>: the detail lines under the agent-sheet row with this id, their indent and
+# trailing blanks dropped, up to its first child row.
+brief_of() {
+  awk -v id="$1" '
+    on && (/^[ \t]*- \[.\] / || /^[^ \t]/) { exit }
+    on && /[^ \t]/ { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print; next }
+    /^[ \t]*- \[.\] / && match($0, "id:" id "([^0-9]|$)") { on = 1 }' "$LAB/agent/README.md" 2>/dev/null
 }
 
 # title_of <text>: the title as the sheet stores it (`projects::row_title`): words that start
@@ -171,26 +221,32 @@ stage_epic() {
 
 # file_gaps: the --file mode. It reads this script's own --json, the open epics from `notes
 # projects --stats --json` (the roadmap lists only epics with work in a version, so never a
-# fresh one) and the rows already on the sheets, and writes only through `notes ptask --agent
-# add`, whose twin check holds a concurrent run off an open row. With --json it runs with stdout on
-# stderr and writes its one JSON object to $JSON_OUT, never to an fd a child (a detached notes
-# refresh) could hold open under the caller's `$(...)`.
+# fresh one) and the rows already on the sheets, and writes only through `notes ptask`, whose
+# twin check holds a concurrent run off an open row. A stage's gaps go on one rollup row
+# (file_rollup), a system's each on its own row (file_systems). With --json it runs with stdout
+# on stderr and writes its one JSON object to $JSON_OUT, never to an fd a child (a detached
+# notes refresh) could hold open under the caller's `$(...)`.
 file_gaps() {
   local epics ladder check rc gaps passes have n=0 filed=0 had=0 closed=0 failed=0 met=0 opened=0
-  local target area text full chk epic title row state declared lane id today seen=""
+  local fopen=0 fclosed=0 folded=0 listed_says="" full key title state lane id declared today
   [ -n "$LAB" ] || { echo "project-stage-check: \"$NAME\" has no lab sheet to file rows on" >&2; exit 2; }
   epics="$(notes projects --stats --json 2>/dev/null | jq -c --arg n "$NAME" \
     '[.[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .epics[]?]')" \
     || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
   have="$(sheet_rows)" || exit 2
+  ROLLUP_IDS="$(awk -F'\t' '$9 ~ /^the stages\.md rows / { printf "%s ", $4 }' <<<"$have")"
+  # gaps and passes: one `target<TAB>area<TAB>text<TAB>check<TAB>key` line per FAIL or PASS row,
+  # the key what its from line reads after `--file, `.
   if [ -n "$SYSTEMS" ]; then
     check="$("$0" "$NAME" --systems ${ONLY:+--system "$ONLY"} --json)"; rc=$?
     [ "$rc" -le 1 ] || exit "$rc"
     gaps="$(jq -r '.systems[] | .id as $id | .criteria[] | select(.result == "FAIL")
-      | [$id, $id, .criterion, .check] | @tsv' <<<"$check")"
-    passes="$(jq -r '.systems[].criteria[] | select(.result == "PASS") | .criterion' <<<"$check")"
+      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | @tsv' <<<"$check")"
+    passes="$(jq -r '.systems[] | .id as $id | .criteria[] | select(.result == "PASS")
+      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | @tsv' <<<"$check")"
   else
     ladder="$(notes projects --stages 2>/dev/null)"
+    LAB_STAGES="${LAB_STAGES:-$ladder}"
     # With no --stage, the target is the highest of the stage after the declared one and the stages
     # the open `epic(stage):` rows name: an epic opened by hand for a later stage keeps its work
     # coming, and a leftover epic for a stage already passed never pins the target below the next.
@@ -210,59 +266,78 @@ file_gaps() {
     [ "$rc" -le 1 ] || exit "$rc"
     TARGET="$(jq -r .stage <<<"$check")"
     gaps="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "FAIL")
-      | [$t, .stage, .requirement, .check] | @tsv' <<<"$check")"
-    passes="$(jq -r '.requirements[] | select(.result == "PASS") | .requirement' <<<"$check")"
+      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | @tsv' <<<"$check")"
+    passes="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "PASS")
+      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | @tsv' <<<"$check")"
   fi
-  # A title that also fails (two rows or systems sharing a text) is a gap, never met.
-  passes="$(grep -vxF -f <(cut -f3 <<<"$gaps" | grep .) <<<"$passes" || true)"
+  # A text that also fails (two rows or systems sharing a text) is a gap, never met.
+  passes="$(awk -F'\t' 'FILENAME == ARGV[1] { f[$3]; next } $3 != "" && !($3 in f)' <(printf '%s\n' "$gaps") <(printf '%s\n' "$passes"))"
   today="$(date +%F)"
 
-  # A row this check filed closes once its check passes: an open agent-sheet row whose title is
-  # a PASS row's, closed by its id with the check as proof. A regression files it again.
-  while IFS= read -r full; do
+  # A row of its own closes once its check passes: an open agent-sheet twin of a PASS row, closed
+  # by its id with the check as proof.
+  while IFS=$'\t' read -r _ _ full _ key; do
     [ -n "$full" ] || continue
-    title="$(title_of "$full")"; seen+="$title"$'\n'
-    while IFS=$'\t' read -r state _ lane id; do
-      [ "$state" = open ] && [ "$lane" = agent ] && [ -n "$id" ] || continue
-      if notes ptask "$NAME" --agent done "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
-        met=$((met + 1)); printf 'met     %-10s  %s\n' "$id" "$title"
+    title="$(title_of "$full")"
+    while IFS=$'\t' read -r state _ lane id _; do
+      [ "$lane" = agent ] || continue
+      if [ "$state" = closed ]; then fclosed=$((fclosed + 1)); continue; fi
+      [ "$id" != - ] || continue
+      if notes ptask "$NAME" --agent "done" "$id" --proof "check:project-stage-check $NAME${SYSTEMS:+ --systems} PASS $today" >/dev/null; then
+        met=$((met + 1)) fclosed=$((fclosed + 1)); printf 'met     %-10s  %s\n' "$id" "$title"
       else
         failed=$((failed + 1)); printf 'error   %-10s  %s (ptask done failed)\n' "$id" "$title"
       fi
-    done < <(awk -F'\t' -v t="$title" '$2 == t' <<<"$have")
+    done < <(twins "$title" "$key")
   done <<<"$passes"
 
-  # Each row's priority is its own (no writer defaults one): #high while the gate it fails blocks
-  # the stage, #low for a report-only gap and for a system's.
-  local prio=low
-  [ -z "$SYSTEMS" ] && [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
-  while IFS=$'\t' read -r target area full chk; do
+  if [ -n "$SYSTEMS" ]; then file_systems; else file_rollup; fi
+
+  if [ -n "$JSON" ]; then
+    jq -c --argjson o "$fopen" --argjson c "$fclosed" '. + {filed_open: $o, filed_closed: $c}' <<<"$check" > "$JSON_OUT" \
+      || { failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be counted"; }
+  fi
+  if [ -n "$SYSTEMS" ]; then
+    printf 'file: %s systems%s: %s failing, %s filed, %s already open, %s closed or dropped, %s met and closed' \
+      "$NAME" "${ONLY:+ $ONLY}" "$n" "$filed" "$had" "$closed" "$met"
+  else
+    printf 'file: %s #%s: %s failing, %s, %s held by their own row, %s closed or dropped, %s met and closed' \
+      "$NAME" "$TARGET" "$n" "$listed_says" "$had" "$closed" "$met"
+    [ "$folded" -eq 0 ] || printf ', %s folded' "$folded"
+  fi
+  [ "$opened" -eq 0 ] || printf ', %s epic opened' "$opened"
+  [ "$failed" -eq 0 ] || printf ', %s failed' "$failed"
+  printf '\n'
+  [ "$failed" -eq 0 ]
+  exit $?
+}
+
+# held <twins>: how its open and closed twins hold a gap, as `<state> <agent open> <agent closed>`.
+# A twin closed by hand wins (`closed`): a gap the human dropped stays dropped. One this check
+# closed on a PASS is no twin, so a regression is filed again.
+held() {
+  awk -F'\t' '$1 == "closed" && $6 != "met" { c = 1; if ($3 == "agent") ac++ }
+    $1 == "open" { o = 1; if ($3 == "agent") ao++ }
+    END { print (c ? "closed" : o ? "open" : "new"), ao + 0, ac + 0 }' <<<"$1"
+}
+
+# file_systems: each failing systems.md row on its own agent row, under its system's epic, or
+# bare for `notes ptask add` to link the standing epic (standing.rs). Uses file_gaps' locals.
+file_systems() {
+  local target area full chk key t ao ac epic row text
+  while IFS=$'\t' read -r target area full chk key; do
     [ -n "$target" ] || continue
     n=$((n + 1))
-    title="$(title_of "$full")"; seen+="$title"$'\n'
-    # A closed twin wins over an open one: a gap the human dropped stays dropped.
-    state="$(awk -F'\t' -v t="$title" '$2 == t { s = (s == "closed" || $1 == "closed") ? "closed" : "open" } END { print s }' <<<"$have")"
-    if [ -n "$SYSTEMS" ]; then
-      epic="$(jq -r --arg s "$target" '[.[] | select(.system == $s) | .id][0] // empty' <<<"$epics")"
-    else
-      epic="$(jq -r --arg s "$target" '[.[] | select(.system == "stage")
-        | select(.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":") == $s) | .id][0] // empty' <<<"$epics")"
-    fi
+    title="$(title_of "$full")"; t="$(twins "$title" "$key")"
+    read -r state ao ac < <(held "$t")
+    fopen=$((fopen + ao)) fclosed=$((fclosed + ac))
     case "$state" in
       closed) closed=$((closed + 1)); printf 'closed  %-10s  %s\n' "$area" "$title"; continue ;;
-      ?*) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title"; continue ;;
+      open) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title"; continue ;;
     esac
-    # No open epic: a stage's is opened here, once a run; a system's is filed by `notes ptask add`
-    # itself when the row carries no #of/ (standing.rs).
-    if [ -z "$epic" ] && [ -z "$SYSTEMS" ]; then
-      if ! epic="$(stage_epic "$target")"; then
-        failed=$((failed + 1)); printf 'error   %-10s  %s (could not file the stage epic)\n' "$area" "$title"; continue
-      fi
-      opened=$((opened + 1))
-      epics="$(jq -c --arg id "$epic" --arg s "$target" '. + [{id: $id, system: "stage", title: "\($s) to standard"}]' <<<"$epics")"
-    fi
-    row="chore($area): $title${epic:+ #of/$epic} #size/s #$prio"
-    text="from project-stage-check $NAME --file, $( [ -n "$SYSTEMS" ] && echo "systems.md $target" || echo "stages.md #$area" ), check: $chk"
+    epic="$(jq -r --arg s "$target" '[.[] | select(.system == $s) | .id][0] // empty' <<<"$epics")"
+    row="chore($area): $title${epic:+ #of/$epic} #size/s #low"
+    text="from project-stage-check $NAME --file, $key"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then
       notes ptask "$NAME" --agent add "$row" --detail "$text" >/dev/null
@@ -271,34 +346,169 @@ file_gaps() {
     fi
     rc=$?
     case "$rc" in
-      0) filed=$((filed + 1)); printf 'filed   %-10s  %s\n' "$area" "$title" ;;
+      0) filed=$((filed + 1)) fopen=$((fopen + 1)); printf 'filed   %-10s  %s\n' "$area" "$title" ;;
       3) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title" ;;
       *) failed=$((failed + 1)); printf 'error   %-10s  %s (ptask add exit %s)\n' "$area" "$title" "$rc" ;;
     esac
   done <<<"$gaps"
+}
 
-  # The rows this check filed, open and closed, read again once this pass wrote any.
-  if [ -n "$JSON" ]; then
-    if [ $((filed + met)) -gt 0 ] && ! have="$(sheet_rows)"; then
-      failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be read again"
-    else
-      # $have is the whole sheet, so it is read as a file: one argv string is capped at 128 KB.
-      jq -c --rawfile have <(printf '%s' "$have") --arg seen "$seen" '
-        [$seen | split("\n")[] | select(length > 0)] as $t
-        | [$have | split("\n")[] | split("\t") | select(.[2] == "agent" and (.[1] | IN($t[]))) | .[0]] as $s
-        | . + {filed_open: ($s | map(select(. == "open")) | length), filed_closed: ($s | map(select(. == "closed")) | length)}' \
-        <<<"$check" > "$JSON_OUT" \
-        || { failed=$((failed + 1)); printf 'error   %-10s  %s\n' sheets "the filed rows could not be counted"; }
-    fi
+# target_epic: set epic to the open stage epic of TARGET, filing it first when there is none.
+target_epic() {
+  epic="$(jq -r --arg s "$TARGET" '[.[] | select(.system == "stage")
+    | select(.title | split(" ")[0] | rtrimstr(",") | rtrimstr(":") == $s) | .id][0] // empty' <<<"$epics")"
+  [ -z "$epic" ] || return 0
+  if ! epic="$(stage_epic "$TARGET")"; then
+    failed=$((failed + 1)); printf 'error   %-10s  %s (could not file the stage epic)\n' rollup "meet the $TARGET stage standard"
+    return 1
   fi
-  local what="#$TARGET"; [ -z "$SYSTEMS" ] && [ -n "$TARGET" ] || what="systems${ONLY:+ $ONLY}"
-  printf 'file: %s %s: %s failing, %s filed, %s already open, %s closed or dropped, %s met and closed' \
-    "$NAME" "$what" "$n" "$filed" "$had" "$closed" "$met"
-  [ "$opened" -eq 0 ] || printf ', %s epic opened' "$opened"
-  [ "$failed" -eq 0 ] || printf ', %s failed' "$failed"
-  printf '\n'
-  [ "$failed" -eq 0 ]
-  exit $?
+  opened=$((opened + 1))
+}
+
+# gap_title <line>: the title of a rollup's `#<stage>: <text>, check: <check>` line.
+gap_title() { local r="${1#\#*: }"; title_of "${r%%, check: *}"; }
+
+# file_rollup: a stage's gaps on one agent row, `chore(stage): meet the <target> stage standard`,
+# its brief a from line and one `#<stage>: <requirement>, check: <check>` line per gap. A run
+# rewrites that list in place, retitles a rollup of a lower stage when the target rises, folds
+# into it each open row this check filed for one of its gaps (`drop --dup`, undone by `reopen`),
+# and closes it once no gap is left to list. A gap closed by hand, or held by an open row this
+# check cannot fold (in progress, with children, on the human sheet, or with no from line), stays
+# off the list. A rollup closed by hand is not filed again for its stage. Uses file_gaps' locals.
+file_rollup() {
+  local target area full chk key t ao ac lines="" pass_lines="" folds="" f l id s mark prio=low
+  local rid="" rstage="" rmark="" rprio="" rprio_ others="" by_hand old="" brief args=() out epic ok=1 news=0
+  local head="the stages.md rows this project fails for #$TARGET, one a line; a met row leaves the list and the row closes when none is left"
+  [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
+  while IFS=$'\t' read -r _ area full chk _; do
+    [ -n "$full" ] && pass_lines+="#$area: $full, check: $chk"$'\n'
+  done <<<"$passes"
+  while IFS=$'\t' read -r target area full chk key; do
+    [ -n "$target" ] || continue
+    n=$((n + 1))
+    title="$(title_of "$full")"; t="$(twins "$title" "$key")"
+    read -r state ao ac < <(held "$t")
+    if [ "$state" = closed ]; then
+      closed=$((closed + 1)) fopen=$((fopen + ao)) fclosed=$((fclosed + ac)); printf 'closed  %-10s  %s\n' "$area" "$title"; continue
+    fi
+    id="$(awk -F'\t' '$1 == "open" && !($3 == "agent" && $5 == "todo" && $7 == 0 && $9 != "-") { print ($4 == "-" ? "a row with no id" : $4); exit }' <<<"$t")"
+    if [ -n "$id" ]; then
+      had=$((had + 1)) fopen=$((fopen + ao)); printf 'open    %-10s  %s (held by %s)\n' "$area" "$title" "$id"; continue
+    fi
+    lines+="#$area: $full, check: $chk"$'\n'
+    f="$(awk -F'\t' -v t="$title" '$1 == "open" { print $4 "\t" t }' <<<"$t")"
+    [ -z "$f" ] || folds+="$f"$'\n'
+  done <<<"$gaps"
+
+  # The open rollups at or below the target: the target's own is kept, else the highest below it.
+  while IFS=$'\t' read -r id s mark rprio_; do
+    lab_stage_at_least "$TARGET" "$s" || continue
+    if [ -z "$rid" ] || { [ "$rstage" != "$TARGET" ] && lab_stage_at_least "$s" "$rstage"; }; then
+      [ -z "$rid" ] || others+="$rid"$'\t'"$rmark"$'\n'
+      rid="$id" rstage="$s" rmark="$mark" rprio="$rprio_"
+    else
+      others+="$id"$'\t'"$mark"$'\n'
+    fi
+  done < <(awk -F'\t' '$1 == "open" && $3 == "agent" && $9 ~ /^the stages\.md rows / {
+      s = $9; sub(/^[^#]*#/, "", s); sub(/,.*/, "", s); print $4 "\t" s "\t" $5 "\t" $8 }' <<<"$have")
+
+  if [ -z "$lines" ]; then
+    listed_says="0 listed"
+    [ -n "$rid" ] || return 0
+    # Nothing left to list: each open rollup closes, with the check as its proof.
+    local proof="check:project-stage-check $NAME PASS $today"
+    [ "$n" -eq 0 ] || proof="check:project-stage-check $NAME --file, each gap left is held or closed by its own row, $today"
+    old="$(brief_of "$rid" | grep '^#')"
+    while IFS=$'\t' read -r id _; do
+      [ -n "$id" ] || continue
+      if notes ptask "$NAME" --agent "done" "$id" --proof "$proof" >/dev/null; then
+        printf 'row     %-10s  meet the %s stage standard, closed: no gap left to list\n' "$id" "$TARGET"
+        listed_says="0 listed, $id closed"
+      else
+        failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask done failed)\n' "$id" "$TARGET"
+      fi
+    done <<<"$rid"$'\n'"$others"
+  else
+    brief="from project-stage-check $NAME --file: $head"$'\n'"${lines%$'\n'}"
+    if [ -z "$rid" ]; then
+      by_hand="$(awk -F'\t' -v r=" $ROLLUP_IDS " -v want="#$TARGET," '$1 == "closed" && $3 == "agent" &&
+        $9 ~ /^the stages\.md rows / && index($9, want) && $6 != "met" && !($6 ~ /^dup:/ && index(r, " " substr($6, 5) " ")) { print $4; exit }' <<<"$have")"
+      if [ -n "$by_hand" ]; then
+        printf 'closed  %-10s  meet the %s stage standard was closed by hand, so it is not filed again (notes ptask %s reopen %s)\n' \
+          "$by_hand" "$TARGET" "$NAME" "$by_hand"
+        listed_says="0 listed, $by_hand closed by hand"
+        return 0
+      fi
+      target_epic || { listed_says="0 listed"; return 0; }
+      while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
+      out="$(notes ptask "$NAME" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}")"; rc=$?
+      rid="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR == 1')"; rid="${rid#id:}"
+      if [ "$rc" -ne 0 ] || [ -z "$rid" ]; then
+        failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask add exit %s%s)\n' rollup "$TARGET" "$rc" "$([ "$rc" -ne 0 ] || echo ', no id')"
+        listed_says="0 listed"; return 0
+      fi
+      printf 'row     %-10s  meet the %s stage standard, filed\n' "$rid" "$TARGET"
+    else
+      if [ "$rstage" != "$TARGET" ]; then
+        if target_epic && notes ptask "$NAME" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
+          printf 'row     %-10s  meet the %s stage standard, retitled from #%s\n' "$rid" "$TARGET" "$rstage"
+        else
+          failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask edit --text failed)\n' "$rid" "$TARGET"
+        fi
+      fi
+      old="$(brief_of "$rid")"
+      if [ "$old" != "$brief" ] && ! notes ptask "$NAME" --agent edit "$rid" --brief "$brief" >/dev/null; then
+        failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
+      fi
+      old="$(grep '^#' <<<"$old")"
+      # The priority follows the gate, as a new rollup's does; one set by hand (#urgent) stays.
+      case "$rprio" in
+        low|high|-)
+          args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
+          [ "$rprio" = "$prio" ] || notes ptask "$NAME" --agent tag "$rid" "${args[@]}" >/dev/null \
+            || { failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"; } ;;
+      esac
+    fi
+    if [ "$ok" = 1 ]; then
+      while IFS= read -r l; do
+        [ -n "$l" ] || continue
+        area="${l#\#}"; area="${area%%: *}"
+        if grep -qxF -- "$l" <<<"$old"; then printf 'open    %-10s  %s\n' "$area" "$(gap_title "$l")"
+        else news=$((news + 1)) filed=$((filed + 1)); printf 'filed   %-10s  %s\n' "$area" "$(gap_title "$l")"; fi
+      done <<<"$lines"
+      fopen=$((fopen + $(grep -c . <<<"$lines")))
+      listed_says="$(grep -c . <<<"$lines") listed on $rid ($news new)"
+    else
+      listed_says="the list on $rid not written"
+    fi
+    while IFS=$'\t' read -r id title; do
+      [ -n "$id" ] || continue
+      if notes ptask "$NAME" --agent drop "$id" --dup "$rid" >/dev/null; then
+        folded=$((folded + 1)); printf 'folded  %-10s  %s (into %s)\n' "$id" "$title" "$rid"
+      else
+        failed=$((failed + 1)); printf 'error   %-10s  %s (ptask drop --dup %s failed)\n' "$id" "$title" "$rid"
+      fi
+    done <<<"$folds"
+    while IFS=$'\t' read -r id mark; do
+      [ -n "$id" ] || continue
+      if [ "$mark" = doing ]; then printf 'open    %-10s  another stage rollup, in progress, left as it is\n' "$id"; continue; fi
+      if notes ptask "$NAME" --agent drop "$id" --dup "$rid" >/dev/null; then
+        folded=$((folded + 1)); printf 'folded  %-10s  another stage rollup (into %s)\n' "$id" "$rid"
+      else
+        failed=$((failed + 1)); printf 'error   %-10s  another stage rollup (ptask drop --dup %s failed)\n' "$id" "$rid"
+      fi
+    done <<<"$others"
+    [ "$ok" = 1 ] || return 0
+  fi
+  # The lines the list lost: met when that row passes now, else gone (closed or held by its own row).
+  while IFS= read -r l; do
+    [ -n "$l" ] && ! grep -qxF -- "$l" <<<"$lines" || continue
+    if grep -qxF -- "$l" <<<"$pass_lines"; then
+      met=$((met + 1)); printf 'met     %-10s  %s\n' "$rid" "$(gap_title "$l")"
+    else
+      printf 'gone    %-10s  %s\n' "$rid" "$(gap_title "$l")"
+    fi
+  done <<<"$old"
 }
 
 STAGES_DOC="${STAGES_DOC:-$HOME/.local/src/docs/stages.md}"
