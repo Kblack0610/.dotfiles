@@ -81,7 +81,8 @@ The session readers (`procmap`, `tmux`, `session`, `jsonl`, `dialog` parsing, `a
 - `sort.rs` - the sort keys, their order, the saved sort and the custom order
 - `help.rs` - the shortcuts page (`agent-panel keys`)
 - `fzf.rs` — spawn fzf with the rows + preview/next callbacks, and the shared preview layout from `panel-layout.sh`
-- `chooser.rs` — orchestration for the three entry points
+- `chooser.rs` - the CLI verbs: the interactive chooser, `next`, `list`, `jump`
+- `callbacks.rs` - what the open chooser calls back through `agent-panel <verb>`: `rows`, `match`, `move` (the S-Tab grab), `preview`, `new-agent` (ctrl-n)
 - `main.rs` — clap dispatch
 
 ## Build & install
