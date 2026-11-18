@@ -295,3 +295,18 @@ JSON
   [ -n "$leaves" ]
   assert_equal "$leaves" "$parts"
 }
+
+@test "every widget noctalia's config.toml defines sits in a lane or a pod" {
+  # A widget left out of every lane and capsule_group never draws, and nothing else says so.
+  run python3 -c '
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+bar = c["bar"]["default"]
+placed = {w for lane in ("start", "center", "end") for w in bar.get(lane, []) if not w.startswith("group:")}
+placed |= {m for g in bar.get("capsule_group", []) for m in g["members"]}
+missing = sorted(set(c["widget"]) - placed)
+print("not on the bar:", *missing) if missing else None
+sys.exit(1 if missing else 0)
+' "$REPO_ROOT/.config/noctalia/config.toml"
+  assert_success
+}

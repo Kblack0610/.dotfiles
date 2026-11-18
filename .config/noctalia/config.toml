@@ -8,18 +8,67 @@
 # config.desktop's left-to-right order; Noctalia's own widgets stand in for waybar's
 # built-ins. Noctalia clips each side to half the bar, so the order is split at ci: with
 # every chip in end, timebox through ci fell off a 1920 px screen.
+# The bar itself is clear and each group of chips sits in its own pod (a capsule group),
+# as on the CachyOS default. A pod whose chips are all empty draws nothing. A group does
+# not inherit the bar's capsule_* style, so each one repeats fill and border.
 [bar.default]
 position = "top"
-start = [
-  "workspaces", "passthrough", "gungan", "webcam",
-  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci",
-]
+start = ["workspaces", "group:live", "group:fleet"]
 center = ["clock"]
-end = [
-  "printer", "caffeine", "volume", "audio-input", "bluetooth", "network",
-  "load", "cpu-temp", "gpu-temp", "memory", "storage", "machine-mode",
-  "notify", "tray", "control-center",
-]
+end = ["group:sound", "group:sys", "group:host", "group:tray"]
+background_opacity = 0.0
+shadow = false
+capsule = true
+capsule_fill = "surface_container_high"
+capsule_border = "outline_variant"
+capsule_padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "live"
+members = ["passthrough", "gungan", "webcam", "timebox"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "fleet"
+members = ["health", "fleet", "projects", "ai-agents", "dispatch", "ci"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "sound"
+members = ["volume", "audio-input", "bluetooth", "network"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "sys"
+members = ["load", "cpu-temp", "gpu-temp", "memory", "storage"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "host"
+members = ["printer", "caffeine", "machine-mode", "notify"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "tray"
+members = ["tray", "control-center"]
+fill = "surface_container_high"
+border = "outline_variant"
+padding = 10.0
+
+# The interface name (enp16s0) crowds the right half; the icon says connected or not.
+[widget.network]
+type = "network"
+show_label = false
 
 [widget.passthrough]
 type = "dotfiles/chips:chip"
