@@ -230,13 +230,35 @@ chip_run() {
     # {icon} looks up format-icons by the chip's alt, then "default". --unbuffered: a
     # streaming chip's lines reach the bar as they come.
     sh -c "$cmd" | jq -R -c --unbuffered --argjson m "$conf" '
-        def plain: gsub("<[^>]*>"; "") | gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"")
+        def ents: gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"")
             | gsub("&apos;"; "'"'"'") | gsub("&amp;"; "&");
+        def plain: gsub("<[^>]*>"; "") | ents;
+        # The pango subset the chip scripts write, as lines of styled runs for the detail panel:
+        # t text, c colour, a alpha (0..1), b bold, m monospace (<tt>), i italic. Only known tags
+        # are markup, so a stray "<" in a line stays text.
+        def tagstyle: if test("^<b>") then {b: true} elif test("^<tt>") then {m: true}
+            elif test("^<i>") then {i: true}
+            elif test("^<span") then
+                ((capture("(?:fg)?(?:color|foreground)=[\\x22\\x27](?<c>[^\\x22\\x27]+)").c // null) as $c
+                | (capture("alpha=[\\x22\\x27](?<a>[0-9]+)%").a // null) as $a
+                | (if $c then {c: $c} else {} end) + (if $a then {a: ($a | tonumber / 100)} else {} end)
+                + (if test("weight=[\\x22\\x27]bold") then {b: true} else {} end))
+            else {} end;
+        def detail: reduce scan("</?(?:b|i|u|s|tt|big|small|span)(?:\\s[^>]*)?>|[^<]+|<") as $tok
+            ({lines: [[]], st: [{}]};
+             if ($tok | test("^</[a-z]")) then (if (.st | length) > 1 then .st |= .[:-1] else . end)
+             elif ($tok | test("^<[a-z]")) then .st += [.st[-1] + ($tok | tagstyle)]
+             else .st[-1] as $s | ($tok | ents | split("\n")) as $parts
+                 | reduce range(0; $parts | length) as $i (.;
+                     (if $i > 0 then .lines += [[]] else . end)
+                     | if $parts[$i] == "" then . else .lines[-1] += [$s + {t: $parts[$i]}] end)
+             end) | .lines;
         ((fromjson? | objects) // {text: .})
         | ((.text // "") | tostring) as $t | ((.alt // "") | tostring) as $alt
         | (if ($m."format-icons" | type) == "object" then ($m."format-icons"[$alt] // $m."format-icons".default // "") else "" end) as $icon
         | {text: (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt) | plain),
            tooltip: ((.tooltip // "") | tostring | plain),
+           detail: ((.tooltip // "") | tostring | if . == "" then [] else detail end),
            class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}'
 }
 

@@ -199,6 +199,7 @@ chip_fixture() {
     "custom/gated": { "exec": "echo shown", "exec-if": "false" },
     "custom/icon": { "exec": "printf '{\"text\":\"3\",\"alt\":\"dnd\"}\\n{\"text\":\"4\"}\\n'", "format": "{icon} {}", "format-icons": { "dnd": "D", "default": "N" } },
     "custom/blank": { "exec": "true" },
+    "custom/rich": { "exec": "cat \"$DESK_WAYBAR_DIR/rich.json\"" },
     "custom/again": { "exec": "echo tick", "restart-interval": 0 },
     "bluetooth": { "format": "x" }
 }
@@ -219,11 +220,27 @@ JSON
   chip_fixture
   run "$DESK" chip custom/poll run
   assert_success
-  assert_output '{"text":"ci & ok","tooltip":"2 down","class":"warn"}'
+  assert_output '{"text":"ci & ok","tooltip":"2 down","detail":[[{"t":"2 down"}]],"class":"warn"}'
   run "$DESK" chip custom/once run
-  assert_output '{"text":"plain text","tooltip":"","class":""}'
+  assert_output '{"text":"plain text","tooltip":"","detail":[],"class":""}'
   run "$DESK" chip custom/stream run
-  assert_output $'{"text":"a","tooltip":"","class":""}\n{"text":"b","tooltip":"","class":""}'
+  assert_output $'{"text":"a","tooltip":"","detail":[],"class":""}\n{"text":"b","tooltip":"","detail":[],"class":""}'
+}
+
+@test "chip run parses the tooltip's pango into styled runs per line for the detail panel" {
+  chip_fixture
+  # A bold title, a coloured span with alpha, a <tt> table row with a nested colour, entities,
+  # and a stray "<" that is text, not a tag (the negative control).
+  jq -cn '{text: "ci", tooltip: "<b>CI runners</b> <span color='"'"'#ffcc2f'"'"' alpha='"'"'60%'"'"'>busy</span>\n<tt>pool  <span foreground=\"#ef5734\">2/2</span></tt>\na < b &amp; c"}' \
+    > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  assert_success
+  local d
+  d=$(jq -c '.detail' <<<"$output")
+  run jq -c 'map(map(.t) | join(""))' <<<"$d"
+  assert_output '["CI runners busy","pool  2/2","a < b & c"]'
+  run jq -c '[.[0][0].b, .[0][2].c, .[0][2].a, .[1][0].m, .[1][1].m, .[1][1].c, ([.[2][] | keys[]] | unique)]' <<<"$d"
+  assert_output '[true,"#ffcc2f",0.6,true,true,"#ef5734",["t"]]'
 }
 
 @test "chip run on a failing exec-if prints an empty chip and never runs the exec" {
@@ -237,7 +254,7 @@ JSON
   chip_fixture
   run "$DESK" chip custom/icon run
   assert_success
-  assert_output $'{"text":"D 3","tooltip":"","class":""}\n{"text":"N 4","tooltip":"","class":""}'
+  assert_output $'{"text":"D 3","tooltip":"","detail":[],"class":""}\n{"text":"N 4","tooltip":"","detail":[],"class":""}'
 }
 
 @test "chip run on an exec that prints nothing prints nothing, which hides the chip" {
@@ -253,7 +270,7 @@ JSON
   # stream that never noticed the closed pipe would end 124, not 0.
   run bash -c "set -o pipefail; timeout 10 '$DESK' chip custom/again stream | head -n 3"
   assert_success
-  assert_output $'{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}'
+  assert_output $'{"text":"tick","tooltip":"","detail":[],"class":""}\n{"text":"tick","tooltip":"","detail":[],"class":""}\n{"text":"tick","tooltip":"","detail":[],"class":""}'
 }
 
 @test "chip exits 2 on an unknown module and on one with no exec" {

@@ -8,6 +8,8 @@ local home = noctalia.getenv("HOME") or ""
 local desk = home .. "/.local/bin/desk"
 local spec = nil
 local busy = false
+local hasDetail = false
+local PANEL = "dotfiles/chips:detail"
 
 -- A chip's class picks a palette role, so a theme switch recolours it. The classes are
 -- the ones the chip scripts print (pango.sh LEVEL_CLASS, timebox, audio_input).
@@ -37,11 +39,16 @@ local function show(line)
   local text = chip.text or ""
   barWidget.setVisible(text ~= "")
   barWidget.setText(text)
-  if (chip.tooltip or "") ~= "" then
-    barWidget.setTooltip(chip.tooltip)
+  -- Noctalia's tooltip is plain text, 280 px wide and three lines at most, so hover shows the
+  -- tooltip's first line and a click opens the whole of it in colour (detail.luau).
+  local title = string.match(chip.tooltip or "", "[^\n]+")
+  if title then
+    barWidget.setTooltip(title)
   else
     barWidget.clearTooltip()
   end
+  hasDetail = type(chip.detail) == "table" and #chip.detail > 0
+  noctalia.state.set("dotfiles.detail:" .. module, { lines = chip.detail or {}, click = spec and spec.click or "" })
   barWidget.setColor(ROLE[chip.class or ""] or "on_surface")
 end
 
@@ -91,8 +98,17 @@ function update()
   end
 end
 
+-- A chip with a dropdown opens it (its on-click is the panel's Open button); clicking the
+-- chip whose panel is open closes it, and another chip's click switches the panel to it.
+-- A chip with no tooltip runs its on-click, as on waybar.
 function onClick()
-  if spec ~= nil and spec.click ~= "" then
+  if hasDetail then
+    local shown = noctalia.state.get("dotfiles.detail.shown")
+    noctalia.state.set("dotfiles.detail.want", module)
+    if shown == nil or shown == module then
+      noctalia.togglePanel(PANEL)
+    end
+  elseif spec ~= nil and spec.click ~= "" then
     noctalia.runAsync(spec.click)
   end
 end
