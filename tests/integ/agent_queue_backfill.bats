@@ -20,7 +20,7 @@ setup() {
   printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
   printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
   # gm-1: bare, worked by a done item with a real brief. gm-2: bare, its item only repeats the row.
-  # gm-3: already has a brief. gm-4: bare, never worked.
+  # gm-3: already has a brief. gm-4: bare, never worked. gm-1's body starts with its row line, which the brief drops.
   printf '%s\n' '# game agent' '' '## Tasks' '' \
     '- [ ] feat(menu): the title screen #size/s <!-- id:gm-1 -->' \
     '- [ ] fix(menu): the back button #size/s <!-- id:gm-2 -->' \
@@ -30,7 +30,7 @@ setup() {
   export AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP_FILE"
   unset NOTES_PROFILE CLAUDE_CODE_SESSION_ID
   jq -n '{paths: {"/x/game": "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$PROJECT_MAP_FILE"
-  item done/2026-11-10 title gm-1 'feat(menu): the title screen' \
+  item done/2026-11-10 title gm-1 'feat(menu): the title screen' 'feat(menu): the title screen #size/s <!-- id:gm-1 -->' \
     'Build the title screen.' '' '```sh' 'make menu' '```' '' '- start' '  - nested'
   item done/2026-11-10 back gm-2 'fix(menu): the back button' 'fix(menu): the back button #size/s <!-- id:gm-2 -->'
   item done/2026-11-10 sound gm-3 'feat(menu): sound' 'A much longer brief for sound that must not replace the one on the row.'
@@ -74,7 +74,7 @@ details() { notes board --json | jq -r --arg id "$1" '.rows[] | select(.id == $i
 }
 
 @test "backfill-briefs: an open item with no row gets a story row with its brief; a canary item does not" {
-  item queued menu-art - 'feat(menu): new art' 'Paint the menu.' 'Use the house palette.'
+  item queued menu-art - 'feat(menu): new art' 'feat(menu): new art' 'Paint the menu.' 'Use the house palette.'
   printf '%s\n' 'slug: probe' 'project: game' 'mode: oneshot' 'priority: low' 'title: canary probe' 'from: canary' 'queued: 2026-11-10T00:00:00Z' --- 'probe body' \
     >"$AGENT_QUEUE_DIR/queued/20261110-000000-probe.md"
   run "$AQ" backfill-briefs

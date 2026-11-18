@@ -2607,7 +2607,8 @@ cmd_stats() {
 # backfill-briefs [--dry-run]: the board row is the task's one record and holds its brief (plan
 # holding-194-can-start-merry-whisper P3). A row whose details are empty, or only `full:`/`was:`
 # lines, gets the brief of the item that worked it: the newest open item first, else the newest done
-# one, skipping a body that only repeats the row (a promoted item's body is its row line). An open
+# one, skipping a body that only repeats the row (a promoted item's body is its row line) and dropping a first
+# line that is the row's own words, as file_story's row_brief does. An open
 # item with no row (canary and trainee items excepted: their config is their brief) gets a story row
 # with its brief. Rows are written through `notes ptask` alone, matched by their exact line, so a row
 # that changed since the read is skipped, not guessed at. --dry-run lists each row and its source.
@@ -2621,7 +2622,8 @@ BRIEF_JQ='def norm: gsub("<!--[^>]*-->"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_
   | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
       | sort_by(if .open then 0 else 1 end, (.queued // "" | explode | map(-.)))) as $good
   | {key: $key, project, profile, raw, linked: ($all | length),
-     src: ($good[0] // null | if . then {slug, state, queued, task} else null end)}'
+     src: ($good[0] // null | if . then {slug, state, queued,
+       task: (.task | split("\n") | if (.[0] | norm) == $t then .[1:] else . end | join("\n"))} else null end)}'
 
 # brief_details <header> < body -> NUL-separated `--detail=<line>` arguments: the header, then the
 # body with its trailing blank lines dropped (a blank inside it stays: `notes` keeps it since P1,
@@ -2678,7 +2680,8 @@ cmd_backfill_briefs() {
     [ -n "$story" ] || { echo "agent-queue: $s: no story row filed" >&2; continue; }
     IFS=$'\t' read -r sboard sprof srow <<<"$story"
     "$0" set "$s" row="$sboard:$srow" lane=agent profile="$sprof" >/dev/null || continue
-    mapfile -d '' det < <(fm_body "$f" | brief_details "from item $s ($(state_of "$f"), queued $(fm_get "$f" queued | cut -dT -f1))")
+    # The body less its first line when that is the title the row was filed with.
+    mapfile -d '' det < <(fm_body "$f" | T="$title" awk 'NR > 1 || $0 != ENVIRON["T"]' | brief_details "from item $s ($(state_of "$f"), queued $(fm_get "$f" queued | cut -dT -f1))")
     notes --profile "$sprof" ptask "$sboard" --agent edit "${det[@]}" -- "$srow" >/dev/null 2>&1 ||
       echo "agent-queue: $s: row $srow filed, but its brief was not written" >&2
     filed=$((filed + 1))
