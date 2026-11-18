@@ -11,7 +11,7 @@ position = "top"
 start = ["workspaces", "passthrough", "gungan", "webcam"]
 center = ["clock"]
 end = [
-  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci",
+  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci", "printer",
   "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
   "memory", "storage", "machine-mode",
   "notify", "tray", "control-center",
@@ -56,6 +56,10 @@ module = "custom/dispatch"
 [widget.ci]
 type = "dotfiles/chips:chip"
 module = "custom/ci"
+
+[widget.printer]
+type = "dotfiles/chips:chip"
+module = "custom/printer"
 
 [widget.audio-input]
 type = "dotfiles/chips:chip"
