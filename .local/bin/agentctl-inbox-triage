@@ -852,7 +852,7 @@ size_batch() {
   local p="$1" lane="$2" batch="$3" listing prompt n pts
   local -a ids
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
-  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)" + (if (.value.details | length) > 0 then "\n   " + (.value.details[:4] | join("\n   ")) else "" end)' <<<"$batch" | cut -c1-300)"
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)" + (([.value.details[] | select(. != "")]) as $d | if ($d | length) > 0 then "\n   " + ($d[:4] | join("\n   ")) else "" end)' <<<"$batch" | cut -c1-300)"
   prompt="You estimate the effort of each row on one board of a person's project task list, in points. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
 
 $(size_rule)
