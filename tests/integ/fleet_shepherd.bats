@@ -32,6 +32,9 @@ case "$*" in
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
+  # The window close close_sample runs last: wind-down.sh close is tested in tests/unit/wind_down.bats.
+  stub wind-down 'echo "$*" >> "$HOME/wind-down.calls"; [ -z "${STUB_WD_FAIL:-}" ]'
+  export FLEET_WIND_DOWN="$SANDBOX/bin/wind-down"
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
@@ -548,6 +551,97 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   printf 'other-pass %s 1 %%9\n' "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
   CLAUDE_CODE_SESSION_ID=me STUB_PANE="$IDLE" "$SH" check >/dev/null 2>&1 || true
   [ -z "$(typed)" ]
+}
+
+closes() { cat "$HOME/wind-down.calls" 2>/dev/null; }
+# nudged_ago <hours> <sid>...: each session was typed its close (the .closed claim) and escalated
+# (the ledger remind_sample reads) <hours> ago
+nudged_ago() {
+  local h="$1" s; shift; mkdir -p "$FLEET_SHEPHERD_DIR/.closed"
+  for s in "$@"; do
+    printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d "$h hours ago")" > "$FLEET_SHEPHERD_DIR/$s"
+    touch -d "$h hours ago" "$FLEET_SHEPHERD_DIR/.closed/$s"
+  done
+}
+
+@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
+  # Escalated hours ago: without the close, remind_sample would page "close its window".
+  nudged_ago 30 1 2
+  # The refresh drops a closed session's row, as the real collect does once its window is gone.
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
+[ "$1" = --write ] && [ -s "$HOME/wind-down.calls" ] || exit 0
+jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \$c | contains(\"--pane \(\$p) \") | not))" \
+  "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.n" && mv "$FLEET_STATE_FILE.n" "$FLEET_STATE_FILE"'
+  row1="$(crow 1 DONE now '{"nudged":true,"close_sent":true,"escalated":true,"idle_min":2000}')"
+  doc "[$row1, $(crow 2 CHAT now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
+  assert_line 'close --server lab --pane %2 --sid 2'
+  grep -q 'close: lab/1:1: closed its window, still quiet after its close (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  [ -z "$(typed)" ]
+  # Closed before the reminder runs, so the human is not paged to close it.
+  [ -z "$(grep 'one decision closes it' "$HOME/pages")" ]
+  # Negative control: a close that fails (a protected window) is logged once per fact, and the
+  # escalation pages the human as before.
+  : > "$HOME/wind-down.calls"; doc "[$row1]"
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
+  grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
+}
+
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, with phases left, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 3 4 5 6 7 8 9
+  nudged_ago 0 10
+  doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
+        $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'), $(crow 4 LANDED now '{"nudged":true,"close_sent":true,"next_phase":"P2"}'),
+        $(crow 5 STALLED now '{"nudged":true,"close_sent":true,"blockers":["next phase: P3 of x.md"]}'),
+        $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
+        $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The un-nudged row is typed into instead: close_sample owns the first nudge.
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  # A draft, a busy screen or copy mode holds the close too.
+  doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
+  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
+  for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" ''; do
+    STUB_PANE="$screen" "$SH" check >/dev/null || true
+  done
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The same row at an idle prompt is closed: only the screen held it.
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -n "$(closes)" ]
+}
+
+@test "check types one more close, not a window close, to a session that worked after its close was typed (ar-2947)" {
+  # Typed its close 3h ago, but quiet only 90m: it did something since (its wind-down was stopped).
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The claim is spent, and the document is refreshed so the next check reads close_sent false.
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  grep -q 'close: lab/1:1: worked after its close was typed; it gets one more (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  # The next check types it again, through the one claim.
+  doc "[$(crow 1 DONE now '{"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  grep -qx 'mark --close 1' "$HOME/sessions.calls"
+  # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":200}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
 }
 
 @test "check's re-page for a LANDED row with no next phase names no phase, and no plan when it has none" {
