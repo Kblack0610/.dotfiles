@@ -31,6 +31,8 @@ case "$*" in
   *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
+  # The one typer: close_sample's keystrokes go through it (agent-core send, under the pane lock).
+  stub agent-panel 'echo "$*" >> "$HOME/panel.calls"; exit "${STUB_PANEL_RC:-0}"'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
   # The window close close_sample runs last: wind-down.sh close is tested in tests/unit/wind_down.bats.
   stub wind-down 'echo "$*" >> "$HOME/wind-down.calls"; [ -z "${STUB_WD_FAIL:-}" ]'
@@ -310,12 +312,12 @@ esac'
 }
 
 @test "a board-only add leaves a board row that owns the shared red until dispatch starts it, then the item does (P1, #2419)" {
-  # since #2419 only the board fills the queue: the shepherd's add exits 5 with its board row, and check logged "could not file an owner"
+  # since #2419 only the board fills the queue: the shepherd's add exits 5 and prints its board row on stdout, and check logged "could not file an owner"
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
 case "$1" in
   list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
   add) echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
-       echo "agent-queue: its board row ucp-77 on unity-core-playground is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+       echo "held shared-red-FooTests.Bar -> unity-core-playground:ucp-77"
        exit 5 ;;
 esac'
   stub notes '[ "$*" = "board --json" ] || exit 2; cat "$HOME/board.json"'
@@ -452,7 +454,8 @@ crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}"
     own_asks:0, fact:"\($b) f-\($s)", reason:"r-\($s)", close:{verdict:$v, why:"w"}} + $x'; }
 # An idle Claude prompt: the top rule carries the session name, the box holds the glyph and an NBSP.
 IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
-typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
+# typed: what close_sample typed, as agent-panel send's arguments (the one typer, with its pane lock)
+typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 
 @test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
   doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
@@ -460,16 +463,37 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   # Typed, it writes the document again, so cmd_due reads those rows as close_sent.
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   run typed
-  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
-  assert_line '-L lab send-keys -t %2 -l /wind-down'
-  assert_line '-L lab send-keys -t %3 -l /wind-down auto'
-  [ "$(grep -c 'send-keys -t %. Enter' "$HOME/tmux.calls")" = 3 ]
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%2 /wind-down'
+  assert_line 'send --wait 0 --pane lab/%3 /wind-down auto'
+  [ "$(typed | wc -l)" = 3 ]
+  # No keys of its own: agent-panel send presses the Enter once the paste is drawn.
+  run grep -c 'send-keys' "$HOME/tmux.calls"
+  assert_output 0
   # Each is claimed through the one-per-session close claim first, never the fact ledger.
   grep -qx 'mark --close 1' "$HOME/sessions.calls"
   grep -qx 'mark --close 3' "$HOME/sessions.calls"
   ! grep -q '^mark [^-]' "$HOME/sessions.calls"
   grep -q 'close: lab/1:1 DONE: typed /wind-down auto (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   grep -q 'close: lab/3:1 CLOSE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "a close whose pane another send holds (agent-panel send exit 75) types no keys of its own and gives its claim back" {
+  doc "[$(crow 1 DONE now)]"
+  # The claim fleet-sessions mark --close takes (a stub here).
+  mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/1"
+  STUB_PANEL_RC=75 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  grep -q 'close: lab/1:1 DONE: another send held its pane; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  ! grep -q 'typed /wind-down' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c 'send-keys' "$HOME/tmux.calls"
+  assert_output 0
+  # An Enter the pane did not take (exit 3) leaves the text in its box: logged as such.
+  doc "[$(crow 2 DONE now)]"
+  STUB_PANEL_RC=3 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
 @test "check types nothing into a draft, copy mode, a busy or unreadable screen, and waits for the next check, handing a pass no line" {
@@ -514,7 +538,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   # Cleared, the next check types the close as for any empty box.
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
 }
 
@@ -571,9 +595,9 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   doc "[$(crow 4 LANDED now '{"nudged":true}'), $(crow 8 STALLED now '{"nudged":true, "escalated":true}'), $(crow 9 DONE now '{"fact":null}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line '-L lab send-keys -t %4 -l /wind-down auto'
-  assert_line '-L lab send-keys -t %8 -l /wind-down auto'
-  assert_line '-L lab send-keys -t %9 -l /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%4 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%9 /wind-down auto'
   grep -qx 'mark --close 4' "$HOME/sessions.calls"
 }
 
@@ -649,7 +673,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -z "$(closes)" ]
   # The un-nudged row is typed into instead: close_sample owns the first nudge.
   run typed
-  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   # A draft, a busy screen or copy mode holds the close too.
   doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
@@ -677,7 +701,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   doc "[$(crow 1 DONE now '{"idle_min":90}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   grep -qx 'mark --close 1' "$HOME/sessions.calls"
   # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
   nudged_ago 3 1

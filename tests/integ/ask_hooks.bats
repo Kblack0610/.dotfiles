@@ -218,6 +218,20 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box"
 }
 
+@test "an answer whose pane another send holds (agent-panel send exit 75) records that nothing was typed" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  : > "$NOTES_FIXTURE/agent-panel.busy"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  assert_success
+  refute_output --partial 'input box'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: failed'
+  assert_line "delivery_note: another send held dotfiles's pane, so the answer was not typed into it"
+}
+
 @test "an answer to a session live on a fleet worker is typed in there, through that worker's agent-panel send" {
   local a
   sandbox_fleet hp
