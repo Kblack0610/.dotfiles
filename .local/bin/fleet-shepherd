@@ -33,7 +33,8 @@
 #                          type /wind-down into each session whose close verdict is now, and close the window
 #                          of one still closable an hour after its close was typed (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
-#                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
+#                          once, when nothing is working), 2 if it could not refresh, 75 if a run held the run lock
+#                          past FLEET_SHEPHERD_CHECK_WAIT seconds (a check and a run never sample at once). Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
 #                          and ends the turn on 1, so a quiet pass costs one call
 #   fleet-shepherd route "<due line>"
@@ -89,6 +90,10 @@
 set -uo pipefail
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
+: "${FLEET_SHEPHERD_CHECK_WAIT:=120}" # seconds a check waits for a run that holds the run lock; past it the check exits 75
+# Set only for the child the run-lock holder starts (run_locked). Unset at once, so nothing that
+# child starts (a pass, a tmux server it makes) inherits it and skips the lock.
+RUN_LOCKED="${FLEET_SHEPHERD_RUN_LOCKED:-}"; unset FLEET_SHEPHERD_RUN_LOCKED
 NAME="${AGENTCTL_NAME:-shepherd}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
@@ -290,12 +295,12 @@ cmd_due() {
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
   # hold is a hold decision; both are the shepherd's step 1. So is a parked session on a CLEAR
-  # machine with no hold: nothing else ever resumes it. One the budget checkpoint parked is left
-  # out, since that park pages the human and only they resume it, and so is one fleet-dispatch
-  # preempted for an urgent item (ledger why=preempt): its own pass resumes it once units free.
+  # machine with no hold: nothing else ever resumes it. A park that has an owner (its ledger
+  # why) is left out: a budget park (why=budget) paged the human, who decides when it resumes, and
+  # fleet-dispatch resumes its preempts (why=preempt) once their run units free.
   # Only load holds count: a resource hold (bad RAM until a memtest) or a desktop claim is not
   # about load, so a CLEAR machine is no reason to lift it (ar-2605).
-  local verdict holds parked preempt
+  local verdict holds parked owned
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
@@ -306,16 +311,15 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
-    local f; preempt=""
+    # The pace line owns only why=park parks (a missing why is a park); any other why's owner resumes it.
+    local f; owned=""
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
-      [ -f "$f" ] && grep -qx 'why=preempt' "$f" && preempt+="$(sed -n 's/^target=//p' "$f")"$'\n'
+      [ -f "$f" ] && owned+="$(awk -F= '$1=="why"{w=$2} $1=="target"{t=$2} END{if (w!="" && w!="park") print t}' "$f")"$'\n'
     done
-    parked="$(jq -r --rawfile b <(cat "$BUDGETS" 2>/dev/null) --arg pre "$preempt" "$PANE_TAG_JQ"'
-      ($b | split("\n") | map(split("\t")) | map(select(.[2] == "parked") | .[0])) as $budget
-      | ($pre | split("\n")) as $pre
+    parked="$(jq -r --arg owned "$owned" "$PANE_TAG_JQ"'
+      ($owned | split("\n")) as $owned
       | [(.sessions // [])[] | select(.bucket == "PARKED" and ((.labels // []) | index("manual") | not)
-          and (.target as $t | $pre | index($t) | not)
-          and (((.dispatch // "") | sub("^[^:]*: "; "")) as $slug | $budget | all(. != $slug)))
+          and (.target as $t | $owned | index($t) | not))
         | "\(.target)\(ptag)"] | join(", ")' "$STATE_FILE" 2>/dev/null)"
     [ -z "$parked" ] || out+="${out:+$'\n'}pace: parked $parked while the machine reads CLEAR with no hold; then: claude-acct unpark each"
   fi
@@ -647,7 +651,7 @@ budget_sample() {
         *) budget_mark "$slug" "$n" left "budget: $target ($why), $bucket: not parked, it is not spending"; continue ;;
       esac
     fi
-    if out="$(claude-acct park "$target" 2>&1)"; then
+    if out="$(claude-acct park "$target" --why budget 2>&1)"; then
       budget_mark "$slug" "$n" parked "budget: parked $target ($why, $bucket)"
       [ "$st" = pending ] || budget_page "$target parked at its budget" "$why, $bucket. Resume it with claude-acct unpark $target; it runs one more budget before the next checkpoint."
     elif [[ "$out" == *"busy mid-turn"* || "$out" == *"background shells"* ]]; then
@@ -1639,20 +1643,29 @@ hand_due() {
   [ ! -e "$LEDGER/.lane-$1" ] || printf '%s\n' "$keys" >> "$LEDGER/.lane-$1"
 }
 
-# run_locked: cmd_run, one at a time. Two runs (the timer and a hand run) would each read the same
-# .pass and start a pass. flock -o holds the lock in flock itself, so nothing the run starts (a tmux
-# server, a page sent in the background) inherits it and holds it past the run. The loser starts
-# nothing; a run that hangs holding it shows as `stuck` (no pass started in STUCK_MIN).
+# run_locked <run|check>: cmd_run or cmd_check_routed, one at a time. Two runs (the timer and a hand
+# run) would each read the same .pass and start a pass, and a check beside a run (a fleet-lead
+# pass's check while the runner samples) rewrites the samples' ledgers (.budget, .remind,
+# $SHARED_ITEMS, the close claims) under it and can park or page twice. flock -o holds the lock in
+# flock itself, so nothing the run starts (a tmux server, a page sent in the background) inherits
+# it and holds it past the run. A run that loses starts nothing; a check waits CHECK_WAIT for it,
+# since its caller wants the due lines, then exits 75. A run that hangs holding it shows as `stuck`
+# (no pass started in STUCK_MIN).
 run_locked() {
   require_table
-  [ -z "${FLEET_SHEPHERD_RUN_LOCKED:-}" ] || { cmd_run; return; }
-  [ -n "$SERVER" ] || die "no world declares session $SESSION"
+  local fn=cmd_run wait=(-n) rc=0
+  [ "$1" = run ] || { fn=cmd_check_routed; wait=(-w "$FLEET_SHEPHERD_CHECK_WAIT"); }
+  if [ -n "$RUN_LOCKED" ]; then "$fn"; return; fi
+  [ "$fn" = cmd_check_routed ] || [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
-  local rc=0
-  FLEET_SHEPHERD_RUN_LOCKED=1 flock -n -o -E 75 "$LEDGER/.run.lock" "$0" run || rc=$?
+  FLEET_SHEPHERD_RUN_LOCKED=1 flock "${wait[@]}" -o -E 75 "$LEDGER/.run.lock" "$0" "$1" || rc=$?
   [ "$rc" = 75 ] || return "$rc"
-  echo "$NAME: another run is starting a pass now: no second one"
-  publish WORKED "another run held the run lock: no second pass"
+  if [ "$fn" = cmd_check_routed ]; then
+    echo "$NAME: a run held the run lock past ${FLEET_SHEPHERD_CHECK_WAIT}s: no check; run it again once that run ends" >&2
+    return 75
+  fi
+  echo "$NAME: a run or a check holds the run lock now: no second pass"
+  publish WORKED "a run or a check held the run lock: no second pass"
 }
 
 cmd_run() {
@@ -1820,13 +1833,13 @@ cmd_budget() {
 }
 
 case "${1:-}" in
-  run)   run_locked ;;
+  run)   run_locked run ;;
   stats) cmd_stats ;;
   budget) shift; cmd_budget "$@" ;;
   stuck) cmd_stuck ;;
   open)  shift; cmd_open "$@" ;;
   passes) shift; cmd_passes "$@" ;;
-  check) cmd_check_routed ;;
+  check) run_locked check ;;
   route) shift; line_route "${1:-}" ;;
   due)   cmd_due ;;
   infra) cmd_infra ;;

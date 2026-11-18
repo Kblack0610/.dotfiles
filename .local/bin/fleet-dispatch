@@ -1713,10 +1713,16 @@ resume_mode() {
   if [ -n "$m" ]; then echo "$m"; elif [ "$2" = plan ]; then echo plan; else echo bypassPermissions; fi
 }
 
-# start_ready <server> <session> <pane> <ready text> -- an account that never opened this folder asks "Do you
+# start_ready <server> <session> <pane> <ready text> [host] -- an account that never opened this folder asks "Do you
 # trust this folder?" first, defaulting to "No, exit". claude-acct trust answers it once and waits
-# for claude's mode footer.
+# for claude's mode footer, on the machine whose tmux holds the pane: a worker's own, over ssh. Run
+# here for a worker pane, it waited on a session this machine does not have, and every razer-laptop
+# start sat on the prompt (2026-11-18).
 start_ready() {
+  if [ -n "${5:-}" ]; then
+    fleet_host_run "$5" claude-acct trust "$1" "$3" "$4" >/dev/null || say "$2: claude on $5 did not show \"$4\"; look at its pane there"
+    return 0
+  fi
   command -v claude-acct >/dev/null 2>&1 || return 0
   claude-acct trust "$1" "$3" "$4" >/dev/null || say "$2: claude did not show \"$4\"; look at its pane"
 }
@@ -2560,7 +2566,7 @@ cmd_start() {
     dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
     exec 7>&-
   fi
-  [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready"
+  [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready" "$host"
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
@@ -4055,7 +4061,7 @@ preempt_items() {
 
 # unpark_preempted -- resume the sessions preempt_for parked (ledger why=preempt), oldest park first,
 # while their run units fit and no urgent item waits to preempt (preempt_items, which must read). A
-# budget or hand park (why=park) stays the human's. It runs before a pass picks, so a victim gets
+# budget park (why=budget) or hand park (why=park) is never this pass's to resume. It runs before a pass picks, so a victim gets
 # its units back ahead of any new start; a dispatch hold holds it too.
 unpark_preempted() {
   [ "$DISPATCH_PREEMPT" = 1 ] || return 0

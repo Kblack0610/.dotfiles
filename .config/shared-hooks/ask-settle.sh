@@ -19,10 +19,8 @@ sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
 prompt=$(jq -r '.prompt // empty' <<<"$payload" 2>/dev/null)
 # The harness submits these as prompts too, and neither is the human: 29 asks closed that way by 2026-11-01.
 case "$prompt" in '<task-notification>'* | '<cross-session-message '*) exit 0 ;; esac
-# /wind-down ends the session, so its asks stay pending like any session ending. fleet-shepherd
-# types it to close a finished window: on 2026-11-16 that keystroke cancelled an ask before the
-# human saw it, and the red the ask was the fix for came back.
-[[ "$prompt" =~ ^[[:space:]]*/wind-down([[:space:]]|$) ]] && exit 0
+# A prompt the fleet typed (/wind-down, a restore, a dispatch brief, a resume) is not the human
+# either; settle-session reads .config/agent-panel/typed-prefixes.conf and settles nothing on one.
 # A /loop or cron prompt is not the human either. The payload carries no origin, so it is the
 # text of a prompt the transcript records as scheduled: on 2026-11-04 a /loop shepherd's own next
 # tick closed its ask about dispatch starting nothing, and nobody saw it.
