@@ -761,6 +761,20 @@ real_depts() {
   assert_line --regexp '^PASS +prod +An incident runbook'
 }
 
+@test "stages.md: privacy and terms are met by files of those names or by an app-router page route" {
+  real_row 'beta | app | Published privacy and terms'
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$HOME/map.json" && mv "$HOME/map.json" "$PROJECT_MAP_FILE"
+  d="$REPO/Assets/Games/Shooter/web/src/app"; mkdir -p "$d/privacy" "$d/terms"
+  printf 'export default function P() {}\n' > "$d/privacy/page.tsx"
+  printf 'export default function T() {}\n' > "$d/terms/layout.tsx"
+  run "$CHECK" shooter --stage beta
+  # NEGATIVE CONTROL: a terms route with no page, only a layout, is not a published page.
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  printf 'export default function T() {}\n' > "$d/terms/page.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
+}
+
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
   real_row 'beta | base | A STATUS line under 14 days old'
   jq -n --arg d "$(date -d '3 days ago' +%F)" '[{name: "shooter", status_date: $d}]' > "$NOTES_FIXTURE/stats.json"
