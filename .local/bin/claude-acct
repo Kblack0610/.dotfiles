@@ -97,6 +97,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 # shellcheck source=../lib/tmux-pane.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh"   # leave_mode
+# shellcheck source=../lib/wake-pace.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"   # wake_take: unpark --all is a bulk wake
 
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
@@ -1999,6 +2001,7 @@ park_flow() {
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
     local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base item to name note b cmd got scope
+    local created parked
     what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
     session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
@@ -2031,6 +2034,15 @@ unpark_ledger() {
     fi
     tmux -L "$server" has-session -t "=$session" 2>/dev/null ||
         { refuse "its tmux session is gone from server $server; resume it by hand in $cwd with $base"; return; }
+    # A park keeps its pane, so a pane that is gone, or whose session was made after the park, is a
+    # server restart: pane ids restart with it, and resuming into that id would reach a live window
+    # (ar-2679; fleet-sessions park_pane_gone is the same test).
+    created=$(tmux -L "$server" display-message -p -t "$pane" '#{session_created}' 2>/dev/null) ||
+        { refuse "its pane $pane is gone from session $session since the server restarted; resume it by hand in $cwd with $base"; return; }
+    parked=$(ledger_get "$file" parked)
+    if [[ "$created" =~ ^[0-9]+$ && "$parked" =~ ^[0-9]+$ ]] && ((created > parked)); then
+        refuse "its tmux session was made after the park, so pane $pane is not the parked one; resume it by hand in $cwd with $base"; return
+    fi
     # A session ledger owns the session's panes; a window ledger only its own pane, since the
     # rest of a shared session runs other claudes.
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
@@ -2094,12 +2106,16 @@ cmd_unpark() {
         --all)
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
             drop_legacy_ledgers
+            # A bulk wake, so it takes each from the shared budget (wake-pace.sh); the rest stay parked.
+            local left=0
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
                 ((n++))
+                wake_take unpark "${f##*/}" || { ((left++)); continue; }
                 unpark_ledger unpark "$f" || rc=1
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"
+            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BATCH per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
             return "$rc" ;;
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac

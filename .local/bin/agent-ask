@@ -10,6 +10,9 @@
 #                       It opens with one plain-words line defining every session term the
 #                       question, options and --why use; post refuses a term it never names
 #     --session s       the asking session; default the caller's tmux session
+#     --blocker r:c     what stops it outside the session, <owner/repo>:<cause> (billing, quota,
+#                       outage, auth): a pending ask on the same blocker takes this session instead
+#                       of a new ask, and post prints its id (see "A BLOCKER IS ONE ASK")
 #     --audit-of <id>   the live judge answer this ask audits (audit_sample posts these); its
 #                       answer is that answer's review, not a decision of its own
 #     --preview <file>  an image the card shows above the answers, repeatable; agent-web serves
@@ -23,9 +26,9 @@
 #                                       jump target; fails saying why (ended, live on a fleet
 #                                       worker, or no session).
 #                                       --reopen starts an ended one again first
-#   agent-ask reopen-on-answer <id>     set a pending ask's `resume` to reopen its session with the
-#                                       answer: the session may close before it comes (/wind-down auto)
-#   agent-ask reopen <id>               that resume: start the ended session again with the answer
+#   agent-ask reopen-on-answer <id>     set a pending ask's `resume` to reopen the calling session
+#                                       with the answer: it may close before it comes (/wind-down auto)
+#   agent-ask reopen <id>               that resume: start each such ended session again with the answer
 #                                       as its first message, unless it still runs or a queue item
 #                                       holds the ask (the queue restarts that one)
 #   agent-ask live-sessions             the Claude session ids running now, one per line
@@ -412,7 +415,7 @@ render_ask() {
 
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
-        options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews=""
+        options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews="" blocker=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="$2"; shift 2 ;;
@@ -427,6 +430,8 @@ cmd_post() {
       --resume)  resume="$2"; shift 2 ;;
       --context) context="$2"; shift 2 ;;
       --audit-of) audit_of="$2"; shift 2 ;;
+      --blocker) blocker="$(blocker_key "${2:-}")"; shift 2
+                 [[ "$blocker" == ?*/?*:?* ]] || { echo "agent-ask post: --blocker is <owner/repo>:<cause>, e.g. kblack0610/.dotfiles-private:billing" >&2; return 2; } ;;
       --preview) [ $# -ge 2 ] && [ -f "$2" ] && [[ "$2" != *[$'|\t\n']* ]] || { echo "agent-ask post: no preview file ${2:-} (or its path has a |, tab or newline)" >&2; return 2; }
                  previews+="${previews:+|}$(realpath "$2")"; shift 2 ;;
       --wait)    wait=1; shift ;;
@@ -502,6 +507,11 @@ cmd_post() {
       mine="$(basename "$f" .md)"
       # An ask a queue item holds is handed over: the item waits on it, the session does not.
       ! queue_waits "$mine" || continue
+      # A blocker ask is shared by every session it stops, not this session's own question: it leaves
+      # room for one question of the session's own, and the same blocker attaches below. A second,
+      # different blocker is a second question.
+      local b; b="$(field "$f" blocker)"
+      [ -z "$b" ] || { [ -n "$blocker" ] && [ "$b" != "$blocker" ]; } || continue
       echo "agent-ask post: this session already has pending ask $mine: \"$(field "$f" question)\"" >&2
       echo "One open question per session. Fold this decision into that one: agent-ask cancel $mine superseded, then post one question that covers both (several decisions -> options like 'take-all=<each recommendation>|one-by-one=go through them here', the per-decision detail in --context). If $mine is moot, cancel it and post this one." >&2
       return 2
@@ -529,6 +539,32 @@ cmd_post() {
   fi
   [ -z "$why" ] || [ -n "$recommend" ] ||
     { echo "agent-ask post: --why says why the --recommend option is the one; give --recommend too" >&2; return 2; }
+
+  # One blocker, one ask: a pending ask on the same blocker takes this session as another
+  # `claude_session:` line and post prints its id, so the answer reaches every session waiting on
+  # it. 2026-11-16: GitHub billing on .dotfiles-private drew 9 pending asks, one per session. A post
+  # with its own --resume stays apart: that command is its poster's. The blocker lock spans the
+  # lookup and the new file, so sessions that hit the blocker at once file one ask between them.
+  local blk=""
+  if [ -n "$blocker" ] && [ -z "$resume" ]; then
+    mkdir -p "$ASKS_ROOT" 2>/dev/null
+    exec {blk}>"$ASKS_ROOT/.blocker.lock"
+    command -v flock >/dev/null 2>&1 && flock "$blk"
+    local shared; shared="$(blocker_ask "$blocker")"
+    if [ -n "$shared" ] && { [ -z "$owner" ] || attach_session "$shared" "$owner"; }; then
+      exec {blk}>&-
+      local sid_of; sid_of="$(basename "$shared" .md)"
+      if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
+        { render_ask "$shared"
+          echo "This blocker is already ask $sid_of; this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
+        } >&2
+      else
+        echo "agent-ask post: blocker $blocker is already ask $sid_of; this session waits on it too" >&2
+      fi
+      if [ "$wait" -eq 1 ]; then wait_answer "$shared"; else printf '%s\n' "$sid_of"; fi
+      return
+    fi
+  fi
 
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
@@ -568,7 +604,9 @@ cmd_post() {
     printf 'resumed_at: \n'
     [ -z "$audit_of" ] || printf 'audit_of: %s\n' "$(oneline "$audit_of")"
     [ -z "$previews" ] || printf 'previews: %s\n' "$(oneline "$previews")"
+    [ -z "$blocker" ] || printf 'blocker: %s\n' "$blocker"
   } > "$file"
+  [ -z "$blk" ] || exec {blk}>&-
   queue_changed
 
   # The judge runs before the asker is told anything: a type it answers live comes back as the
@@ -596,20 +634,83 @@ cmd_post() {
     } >&2
   fi
 
-  if [ "$wait" -eq 1 ]; then
-    # SECONDARY path: block until answered, then print the answer to stdout.
-    # Producers that are headless must NOT use this.
-    local st
-    while :; do
-      st="$(field "$file" status)"
-      [ "$st" = answered ] && { field "$file" answer; return 0; }
-      [ "$st" = cancelled ] && { echo "agent-ask: $id cancelled" >&2; return 1; }
-      sleep 5
-    done
-  fi
+  # SECONDARY path: block until answered, then print the answer to stdout.
+  # Producers that are headless must NOT use this.
+  [ "$wait" -eq 0 ] || { wait_answer "$file"; return; }
 
   # async default: just print the id (the producer records it, then exits)
   printf '%s\n' "$id"
+}
+
+# wait_answer <file>: post --wait's poll until the ask is answered (print the answer) or cancelled.
+wait_answer() {
+  local st
+  while :; do
+    st="$(field "$1" status)"
+    [ "$st" = answered ] && { field "$1" answer; return 0; }
+    [ "$st" = cancelled ] && { echo "agent-ask: $(field "$1" id) cancelled" >&2; return 1; }
+    sleep 5
+  done
+}
+
+# --- blockers --------------------------------------------------------------
+#
+# A BLOCKER IS ONE ASK. `post --blocker <owner/repo>:<cause>` names something outside the session
+# that stops every session it touches (an account's billing, a quota, an outage). The first post
+# files the ask with `blocker:`; each later post on the same key, from any project, adds its
+# session to that ask as another `claude_session:` line, the first line staying the asker. Every
+# reader that matches `claude_session: <sid>` lines (agent-panel, fleet-sessions, 88-ask-filed)
+# then sees the ask as that session's too, the boards show one row, and the answer goes to them
+# all: deliver types it into each live one, and `reopen` restarts each one that closed with
+# reopen-on-answer (its `reopen: <sid>` line).
+
+# blocker_key <text>: the key as stored: lowercase, no github URL or git@ prefix, no .git or trailing
+# slash on the repo, spaces as dashes.
+blocker_key() {
+  oneline "$1" | tr '[:upper:] ' '[:lower:]-' |
+    sed -E 's#^((https?://)?(www\.)?github\.com/|git@github\.com:)##; s#/*:#:#; s#\.git:#:#'
+}
+
+# blocker_ask <key>: the oldest pending ask on that blocker that can take another session: one with
+# no resume of its own command.
+blocker_ask() {
+  local f
+  while IFS= read -r f; do
+    load_ask "$f"
+    [ "${ASK[status]:-}" = pending ] || continue
+    [ -z "${ASK[resume]:-}" ] || [ "${ASK[resume]}" = "$REOPEN_RESUME" ] || continue
+    printf '%s\t%s\n' "${ASK[created]:-}" "$f"
+  done < <(grep -lxF "blocker: $1" "$ASKS_ROOT"/*/*.md 2>/dev/null) | sort | awk -F'\t' 'NR == 1 { print $2 }'
+}
+
+# ask_sessions <file>: every session waiting on the ask, the asker first, one per line.
+ask_sessions() { sed -n 's/^claude_session: \(..*\)$/\1/p' "$1" 2>/dev/null; }
+
+# attach_session <file> <sid>: one more session waits on the ask, once. Fails, writing nothing, when
+# the ask was answered or cancelled since it was found.
+attach_session() {
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    [ "$(field "$1" status)" = pending ] || exit 1
+    grep -qxF "claude_session: $2" "$1" || printf 'claude_session: %s\n' "$2" >> "$1"
+  ) 9>"$(dirname "$1")/.lock" || return 1
+  queue_changed
+}
+
+# detach_session <file> <sid>: the session no longer waits on the ask; when it was the asker, the
+# next session becomes it.
+detach_session() {
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    local tmp had; tmp="$(mktemp)"; had="$(grep -c '^reopen: ' "$1")"
+    grep -vxF -e "claude_session: $2" -e "reopen: $2" "$1" > "$tmp" && mv "$tmp" "$1"
+    # The last session that asked to be reopened left: nothing is left to reopen, and a resume still
+    # set would read as an ask from before the reopen: lines and reopen whichever session is first.
+    if [ "$had" -gt 0 ] && ! grep -q '^reopen: ' "$1" && [ "$(field "$1" resume)" = "$REOPEN_RESUME" ]; then
+      write_fields "$1" resume ""
+    fi
+  ) 9>"$(dirname "$1")/.lock"
+  queue_changed
 }
 
 # --- list / count ----------------------------------------------------------
@@ -855,7 +956,16 @@ deliver_one() {
   answer="$(field "$f" delivery_answer)"
   if [ -n "$answer" ]; then by=human beside=1
   else answer="$(field "$f" answer)"; by="$(field "$f" answered_by)"; fi
-  row="$(live_row "$(field "$f" claude_session)")"; said="$(answer_said "$f" "$answer" "$by")"
+  said="$(answer_said "$f" "$answer" "$by")"
+  # Every session waiting on the ask: the asker, and each one a shared blocker attached.
+  # delivery_skip: the asker read the judge's live answer at post; a later human answer reaches it too.
+  local sid rows=() r skip=""
+  [ -n "$beside" ] || [ "$by" != judge ] || skip="$(field "$f" delivery_skip)"
+  while IFS= read -r sid; do
+    [ "$sid" != "$skip" ] || continue
+    r="$(live_row "$sid")"; [ -z "$r" ] || rows+=("$r")
+  done < <(ask_sessions "$f")
+  row="${rows[0]:-}"
   # A human answer that releases queue items held on the ask is their restart (start_held), so it files
   # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
   # releases nothing and still files one. A judge's answer does not release them
@@ -865,8 +975,14 @@ deliver_one() {
   local went=() resume=""
   [ -n "$beside" ] || resume="$(field "$f" resume)"
   if [ -n "$row" ]; then
-    note="$(deliver_to_session "$f" "$said" "$row")"
-    went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")
+    local n
+    for r in "${rows[@]}"; do
+      n="$(deliver_to_session "$f" "$said" "$r")"; [ -z "$n" ] || note+="${note:+; }$n"
+    done
+    if [ "${#rows[@]}" -gt 1 ]; then went+=("typed into the ${#rows[@]} live sessions waiting on its blocker")
+    elif [ "$(jq -r .session_id <<< "$row")" = "$(field "$f" claude_session)" ]; then
+      went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")
+    else went+=("typed into $(jq -r '(.target // .session_id) + (.host // "" | if . == "" then "" else " on " + . end)' <<< "$row"), waiting on its blocker"); fi
   elif [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; then
     answer_row "$f" "$answer" "$by"; went+=("a board row: no live session, resume or held item takes it")
   fi
@@ -1037,6 +1153,13 @@ answer_live() {
   local f="$1" ans
   ans="$(live_answer "$f")" && live_due "$f" "$ans" && record_answer "$f" judge "$ans" || return 1
   judge_said "$f" "$ans" >&2; echo >&2
+  # A session that joined the blocker ask during the judge's call reads the answer from no stderr:
+  # it goes out through delivery, past the asker, who has it here. No session attaches once it is
+  # answered (attach_session), so the count read now is final.
+  if [ "$(ask_sessions "$f" | wc -l)" -gt 1 ]; then
+    set_field "$f" delivery queued delivery_at "$(now_iso)" delivery_skip "$(field "$f" claude_session)"
+    delivery_changed
+  fi
   start_resume "$(field "$f" id)"
 }
 
@@ -1233,6 +1356,8 @@ reopen_session() {
   [ "$world" != here ] || { world="${TMUX%%,*}"; world="${world##*/}"; }
   [ -n "$world" ] && [ -n "$sess" ] || { echo "no world to reopen $cwd in; resume with claude --resume $sid" >&2; return 1; }
   win="ask-$(field "$f" id)"
+  # A session a shared blocker attached gets its own window: several can reopen in one world session.
+  [ "$sid" = "$(field "$f" claude_session)" ] || win+="-${sid:0:6}"
   out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
     --window "$win" --cwd "$cwd" --resume "$sid" ${prompt:+--prompt "$prompt"} </dev/null 2>&1)" ||
     { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
@@ -1252,11 +1377,31 @@ cmd_reopen_on_answer() {
   load_ask "$f"
   [ "${ASK[status]:-}" = pending ] || { echo "agent-ask: $id is ${ASK[status]:-}, not pending" >&2; return 1; }
   [ -n "${ASK[claude_session]:-}" ] || { echo "agent-ask: $id names no session to reopen" >&2; return 1; }
+  # The closing session is the caller; one not on the ask (a hand run) means the asker.
+  local sid="${CLAUDE_CODE_SESSION_ID:-}"
+  grep -qxF "claude_session: $sid" "$f" || sid="${ASK[claude_session]}"
   r="${ASK[resume]:-}"
-  [ "$r" = "$REOPEN_RESUME" ] && return 0
-  [ -z "$r" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
-  set_field "$f" resume "$REOPEN_RESUME"
+  [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
+  (
+    command -v flock >/dev/null 2>&1 && flock 9
+    # An ask set to reopen before `reopen:` lines existed reopened its asker; keep that one.
+    [ "$(field "$f" resume)" != "$REOPEN_RESUME" ] || grep -q '^reopen: ' "$f" ||
+      printf 'reopen: %s\n' "${ASK[claude_session]}" >> "$f"
+    grep -qxF "reopen: $sid" "$f" || printf 'reopen: %s\n' "$sid" >> "$f"
+    [ "$(field "$f" resume)" = "$REOPEN_RESUME" ] || write_fields "$f" resume "$REOPEN_RESUME"
+  ) 9>"$(dirname "$f")/.lock"
+  [ "$r" = "$REOPEN_RESUME" ] && [ "$sid" = "${ASK[claude_session]}" ] && return 0
   echo "$id reopens its session on the answer" >&2
+}
+
+# reopen_sessions <file>: the sessions the answer restarts, one per line: each `reopen:` line still
+# waiting on the ask, or the asker on an ask set before those lines were written.
+reopen_sessions() {
+  if grep -q '^reopen: ' "$1"; then
+    sed -n 's/^reopen: \(..*\)$/\1/p' "$1"
+  else
+    ask_sessions "$1" | head -1
+  fi
 }
 
 # cmd_reopen <id>: the reopen-on-answer resume. A live session already had the answer typed in
@@ -1269,11 +1414,20 @@ cmd_reopen() {
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   load_ask "$f"
   [ "${ASK[status]:-}" = answered ] || { echo "agent-ask: $id is not answered" >&2; return 1; }
-  sid="${ASK[claude_session]:-}" answer="${ASK[answer]:-}" by="${ASK[answered_by]:-}"
-  [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; return 0; }
+  answer="${ASK[answer]:-}" by="${ASK[answered_by]:-}"
   [ -z "$(queue_holders "$id")" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
-  session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && return 0
-  answer_row "$f" "$answer" "$by" "its session ended and did not reopen: claude --resume $sid"
+  # Each session that closed over it (one, unless a shared blocker attached others); a failed
+  # reopen files one row naming every conversation left to resume.
+  local failed=()
+  while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; continue; }
+    session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && continue
+    failed+=("$sid")
+  done < <(reopen_sessions "$f")
+  [ "${#failed[@]}" -gt 0 ] || return 0
+  local word="its session ended"; [ "${#failed[@]}" -eq 1 ] || word="${#failed[@]} of its sessions ended"
+  answer_row "$f" "$answer" "$by" "$word and did not reopen: $(printf 'claude --resume %s, ' "${failed[@]}" | sed 's/, $//')"
   return 1
 }
 
@@ -1656,7 +1810,7 @@ cmd_settle_session() {
   case "$text" in "Answer to ask "*) return 0 ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    [ "$(field "$f" claude_session)" = "$owner" ] || continue
+    grep -qxF "claude_session: $owner" "$f" || continue
     review_judge_answer "$f" "$text" "in session"
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
@@ -1671,6 +1825,10 @@ cmd_settle_session() {
       record_answer "$f" human "in session: ${text:-(no text)}"
     elif queue_waits "$(field "$f" id)"; then
       continue
+    elif [ "$(ask_sessions "$f" | wc -l)" -gt 1 ]; then
+      # A shared blocker ask: other sessions still wait on it, so the reply only takes this one off.
+      detach_session "$f" "$owner"
+      echo "agent-ask: this session no longer waits on blocker ask $(field "$f" id) (\"$(field "$f" question | cut -c1-120)\"); it stays pending for the other sessions on it. If you still need its answer here, post it again with the same --blocker."
     else
       # stdout is what ask-settle.sh hands the session: without it the session keeps saying "this
       # is still ask X" and waits on the human (2026-11-17, ask qAlEej, hub %75).

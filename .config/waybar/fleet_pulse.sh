@@ -7,12 +7,12 @@
 # success AND newer than $FLEET_STALE_AFTER seconds. That way a pusher that dies
 # leaves a stale last-result and correctly shows amber.
 #
-# The roster ($FLEET_ROSTER) is what makes that honest. Gatus only materializes an
-# external-endpoint once it receives its FIRST push, so a machine that has never
-# enrolled is absent from the API entirely - not stale, just missing. Counting the
-# API's own rows would take the denominator from the same set as the numerator and
-# render green while half the fleet was never heard from. The roster is the
-# independent list of who SHOULD be reporting; absent from the API means amber.
+# The roster is what makes that honest. Gatus only materializes an external-endpoint
+# once it receives its FIRST push, so a machine that has never enrolled is absent
+# from the API entirely - not stale, just missing. Counting the API's own rows would
+# take the denominator from the same set as the numerator and render green while
+# half the fleet was never heard from. The roster is the independent list of who
+# SHOULD be reporting; absent from the API means amber.
 #
 #   green  = every roster host fresh + success: no chip (empty text), custom/health says it
 #   amber  = >=1 host never-reported/stale/failing (but API reachable)
@@ -21,45 +21,30 @@
 # Emits waybar JSON {text, tooltip, class} with Pango-colored glyph (Catppuccin).
 
 set -u
+here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../../.local/lib/fleet-pulse-roster.sh
+. "$here/../../.local/lib/fleet-pulse-roster.sh"
 
-# Endpoint + roster are machine-local (this repo is public - keep them out of it).
-# Set both in ~/.config/fleet-pulse/env:
-#   GATUS_BASE=https://fleet.your.lan
-#   FLEET_ROSTER="linux-cachyos mac windows"
+# The endpoint is machine-local (this repo is public - keep it out of it):
+#   GATUS_BASE=https://fleet.your.lan   in ~/.config/fleet-pulse/env
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
-ROSTER="${FLEET_ROSTER:-}"              # machines expected to report; empty = infer from API
 
-# How the bar renders the fleet (the tooltip always lists everyone). A healthy fleet
-# is the icon alone; a token that is not up adds its labeled dot. Only the unhappy
-# ones, because four dots cost 180px and pushed the clock off a 1920 screen. Ordered,
-# space-separated tokens, left to right:
+# Who is counted (ROSTER) and how the bar draws it (FLEET_PULSE_DISPLAY) both come from
+# $GATUS_BASE/roster, rendered from the home-config inventory (fleet-pulse-roster.sh).
+# The tooltip always lists everyone. A healthy fleet is the icon alone; a token that
+# is not up adds its labeled dot. Only the unhappy ones, because four dots cost 180px
+# and pushed the clock off a 1920 screen. Ordered, space-separated tokens:
 #   <name>=<label>    ONE machine (gp-mac=gp). A box that stops reporting goes red
 #                     here instead of silently vanishing.
 #   @<group>=<label>  a gatus group as a single dot: amber when some members are up,
 #                     red only when NONE are (@k3s=k3s -> one dot for the pi cluster).
-#   ~<name>=<label>   a machine that is OFF by design (a laptop): it never draws a
-#                     dot, up or not. Keep it OFF FLEET_ROSTER - the roster is "who
-#                     should always be reporting", and a closed laptop is not a fault.
-#                     It still shows in the tooltip, and a name gatus has never heard
-#                     of is still a `?`.
+#   ~<name>=<label>   a machine off the roster (a phone): it never draws a dot, up or
+#                     not. It still shows in the tooltip, and a name gatus has never
+#                     heard of is still a `?`.
 # A rostered host with no token turns the icon amber with no dot, and the tooltip
-# names it. Groups not named here stay in the tooltip only. Gatus group names are the key
-# (workplace / homelab / k3s / android). Override in ~/.config/fleet-pulse/env;
-# a future settings submenu just rewrites this line and signals the module.
-# The two personal CachyOS boxes lead: they were reporting fine but were named in
-# no token, so they rendered only in the tooltip - the bar showed work + k3s and
-# said nothing about the machine you were sitting at.
-#
-# THIS LINE IS A FOURTH COPY OF THE ROSTER and the only one a human looks at all
-# day, so a name retired everywhere else rots here in silence. `lazer-machine=lzr`
-# (a retired work VDI) was dropped on 2026-08-17 when that contract ended; it had
-# been rendering a red `lzr○` that was indistinguishable from a machine that was
-# merely down. `~cachy-laptop=lap` went the same way on 2026-10-26: that laptop
-# is razer-laptop now, a k3s node, so `@k3s` draws it. Hence the ghost check below: a token naming a host that is in
-# NEITHER the roster NOR the API is a config bug, and now says so.
-: "${FLEET_DISPLAY:=linux-cachyos=main windows-media=win gp-mac=gp @k3s=k3s}"
+# names it. Groups with no token stay in the tooltip only.
 
 # Written as a \U escape, not the raw glyph: the literal character has been
 # silently stripped from this file once already (it was ICON="", which rendered
@@ -97,7 +82,7 @@ fi
 #
 # No group filter: GATUS_BASE points at the machines-only instance, so the whole
 # instance IS the fleet and groups (workplace/homelab/k3s/android/iot) are just
-# presentation. $FLEET_ROSTER does the selecting - which also means this works
+# presentation. The roster does the selecting - which also means this works
 # uniformly for pushed hosts and polled ones, since both surface a `name` here.
 rows="$(echo "$json" | jq -r '
     .[] | . as $e
@@ -105,14 +90,16 @@ rows="$(echo "$json" | jq -r '
     | [$e.name, ($e.group // ""), (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"
 
-# Without a roster, fall back to whoever the API knows about - the pre-roster
-# behaviour, kept so an unconfigured machine still renders something. It cannot
-# see a never-enrolled host, so say as much in the tooltip rather than quietly
-# reporting on a subset.
+# The roster is fetched only once the API answers, so an unreachable host costs one
+# timeout, not two. With no roster ever fetched, fall back to whoever the API knows
+# about. That cannot see a never-enrolled host, so the tooltip says as much rather
+# than quietly reporting on a subset.
 note=""
-if [[ -z "$ROSTER" ]]; then
+if fleet_pulse_roster_load "$GATUS_BASE"; then
+    ROSTER="$FLEET_PULSE_ROSTER"
+else
     ROSTER="$(cut -f1 <<< "$rows" | tr '\n' ' ')"
-    note="\\n  (FLEET_ROSTER unset: reporting hosts only)"
+    note="\\n  (no roster from ${GATUS_BASE}/roster: reporting hosts only)"
 fi
 
 if [[ -z "${ROSTER// /}" ]]; then
@@ -220,17 +207,17 @@ for m in $ROSTER; do
 done
 if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degraded"; icon_col="$C_YEL"; fi
 
-# --- bar text: the pulse icon, then a dot per FLEET_DISPLAY token not up ------
+# --- bar text: the pulse icon, then a dot per display token not up -----------
 #
 # Every token is checked for EXISTENCE before it is checked for health, because
 # those two failures are visually identical otherwise (both were a red ○) and
 # only one of them is about a machine. A ghost token is collected so the tooltip
 # can name it - a `?` on the bar tells you something is wrong, the tooltip tells
-# you which line of FLEET_DISPLAY to go delete.
+# you which token to look at.
 ghosts=()
 text="$(printf "<span color='%s'>%s</span>" "$icon_col" "$ICON")"
 transient=()
-for tok in $FLEET_DISPLAY; do
+for tok in $FLEET_PULSE_DISPLAY; do
     lbl="${tok#*=}"; key="${tok%%=*}"
     if [[ "$key" == "~"* ]]; then
         key="${key#"~"}"; transient+=("$key")
@@ -284,7 +271,7 @@ done
 # Display tokens that name nothing. Last, and labelled as config rather than
 # fleet, so it never reads as another machine being down.
 if ((${#ghosts[@]})); then
-    tooltip="${tooltip}\\nFLEET_DISPLAY names hosts that no longer exist:"
+    tooltip="${tooltip}\\nDisplay tokens that name nothing:"
     for g in "${ghosts[@]}"; do tooltip="${tooltip}\\n  ${g}: not on the roster, unknown to gatus"; done
 fi
 
