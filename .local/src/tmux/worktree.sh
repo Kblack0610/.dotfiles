@@ -1804,13 +1804,71 @@ cmd_gc() {
     "$([ "$dry" -eq 1 ] && printf ' (dry run, nothing removed)')"
 }
 
-# cmd_orphans [-n] -- end every orphan daemon whose Unity editor is gone, wherever its project
-# lives. The plugin stops its gamedev-mcp-server only when its editor quits cleanly; after a
-# crash or a kill the server ran on, holding its port, until someone killed it by hand (ar-228).
-# reap ends one only in a landed tree, so the main checkout, a clone or an unlanded tree kept
-# theirs. A dir counts as a project when it has ProjectSettings/. The unity-orphan-gc runner
-# runs this on a cadence: nothing signals the exit of a process that is not our child.
-# rc 1 when a daemon outlived SIGTERM, named by pid and project.
+# WT_ORPHAN_KEEP -- what a closed pane's scope may hold that is not left over, matched against
+# /proc/<pid>/comm: a tmux server started from a pane (its own panes have their own scopes, so
+# ending it would end every session on it) and rbw's agent, which holds the unlocked vault that
+# every session reads, and the ssh and gpg agents, which hold keys other sessions use.
+WT_ORPHAN_KEEP="${WT_ORPHAN_KEEP:-tmux: server|rbw-agent|ssh-agent|gpg-agent}"
+WT_SYSTEMCTL="${WT_SYSTEMCTL:-systemctl}"
+WT_TMUX="${WT_TMUX:-tmux}"
+
+# wt_live_panes -- "<server pid> <pane pid>" for each pane of each of this user's tmux servers that
+# answers. One call a server, so a server lists every pane or none: one that does not answer lists
+# none, and wt_closed_pane_scopes skips its scopes rather than read them as closed.
+wt_live_panes() {
+  local sock
+  for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+    [ -e "$sock" ] || continue
+    timeout 5 "$WT_TMUX" -S "$sock" list-panes -a -F '#{pid} #{pane_pid}' 2>/dev/null
+  done
+}
+
+# wt_closed_pane_scopes -- "<unit> <cgroup>" for each pane scope whose pane is gone. tmux puts each
+# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and what the
+# pane started stays in it after the pane closes, whatever it is: a test run, a build, a browser.
+# A scope is closed when its server answered without that pane, or its server has exited; one whose
+# server is alive but did not answer is skipped, and so is the scope this process runs in. Scopes are
+# listed before panes, so a pane opened in between is live, not closed. No systemctl (macOS): none.
+wt_closed_pane_scopes() {
+  local proc="${WT_PROC_ROOT:-/proc}" scopes live own unit pane spid cg
+  command -v "$WT_SYSTEMCTL" >/dev/null 2>&1 || return 0
+  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" 2>/dev/null |
+    awk -F= '$1 == "Id" { id = $2 } $1 == "ControlGroup" { cg = $2 }
+      $1 == "Description" { n = split($2, w, " "); if (w[1] == "tmux" && w[3] == "pane") { pane = w[4]; spid = w[n] } }
+      /^$/ { if (pane != "") print id, pane, spid, cg; id = cg = pane = spid = "" }
+      END { if (pane != "") print id, pane, spid, cg }')
+  live=$(wt_live_panes)
+  own=$(sed -n "s/^0:://p" "$proc/$$/cgroup" 2>/dev/null)
+  while read -r unit pane spid cg; do
+    [ -n "$unit" ] || continue
+    [ "$cg" = "$own" ] && continue
+    grep -qx "$spid $pane" <<<"$live" && continue
+    if ! grep -q "^$spid " <<<"$live"; then
+      case "$(cat "$proc/$spid/comm" 2>/dev/null)" in tmux*) continue ;; esac # alive but silent
+    fi
+    printf '%s %s\n' "$unit" "$cg"
+  done <<<"$scopes"
+}
+
+# wt_scope_leftovers <cgroup> -- the live pids in a closed pane's scope, but for WT_ORPHAN_KEEP. A
+# zombie is already dead, waiting on its parent, so it is not one.
+wt_scope_leftovers() {
+  local proc="${WT_PROC_ROOT:-/proc}" pid comm stat
+  while read -r pid; do
+    comm=$(cat "$proc/$pid/comm" 2>/dev/null) stat=$(cat "$proc/$pid/stat" 2>/dev/null)
+    [[ "$comm" =~ ^($WT_ORPHAN_KEEP)$ ]] && continue
+    [[ "${stat##*) }" == Z* ]] && continue
+    printf '%s\n' "$pid"
+  done < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" 2>/dev/null
+}
+
+# cmd_orphans [-n] -- end what nobody owns any more on this node: a Unity daemon whose editor is
+# gone, in any project with ProjectSettings/ (the plugin stops its gamedev-mcp-server only on a
+# clean quit, and reap ends one only in a landed tree, ar-228), and whatever a closed tmux pane
+# left running, of any kind (wt_closed_pane_scopes; bats runs of ended sessions ran 25 hours,
+# ar-3269). Each gets SIGTERM and WT_SETTLE_SECS to exit. The orphan-gc runner runs this on a
+# cadence: nothing signals the exit of a process that is not our child, and a pane can end with
+# its whole server. rc 1 when one outlived SIGTERM, named by pid and project or scope.
 cmd_orphans() {
   local dry=0 arg root pids rc=0 n=0
   for arg in "$@"; do
@@ -1837,7 +1895,30 @@ cmd_orphans() {
   # project, so one under a dir named Library is still found.
   done < <(find "${WT_PROC_ROOT:-/proc}"/[0-9]*/exe -maxdepth 0 -lname '*/Library/*' -printf '%l\n' 2>/dev/null |
     awk -F'/Library/' '{ p = $1; print p; for (i = 2; i < NF; i++) { p = p "/Library/" $i; print p } }' | sort -u)
-  [ "$n" -gt 0 ] || panel_hint 'no orphan daemons'
+  local unit cg what pid left
+  while read -r unit cg; do
+    pids=$(wt_scope_leftovers "$cg")
+    [ -n "$pids" ] || continue
+    n=$((n + 1))
+    what=$(for pid in $pids; do cat "${WT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null; done | sort | uniq -c |
+      awk '{ c = $1; $1 = ""; sub(/^ /, ""); printf "%s%s x%d", sep, $0, c; sep = ", " }')
+    if [ "$dry" -eq 1 ]; then
+      printf 'would end %s  %s (%s)\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
+      continue
+    fi
+    # shellcheck disable=SC2086 # one pid per word
+    kill -TERM $pids 2>/dev/null
+    # shellcheck disable=SC2086
+    wt_await_exit $pids
+    left=$(wt_scope_leftovers "$cg")
+    if [ -z "$left" ]; then
+      printf 'ended %s  %s (%s)\n' "$(paste -sd, - <<<"$pids")" "$unit" "$what"
+    else
+      printf 'failed %s  %s: outlived SIGTERM\n' "$(paste -sd, - <<<"$left")" "$unit"
+      rc=1
+    fi
+  done < <(wt_closed_pane_scopes)
+  [ "$n" -gt 0 ] || panel_hint 'no orphans'
   return "$rc"
 }
 
