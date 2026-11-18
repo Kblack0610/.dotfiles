@@ -1,22 +1,13 @@
-//! agent-panel as a library: the pane x `~/.claude/sessions` join and the tmux
-//! wrappers, shared by the `agent-panel` chooser and the `agent-web` server so
-//! neither re-implements session discovery and drifts.
+//! agent-panel as a library: the chooser's own modules (fzf wiring, rows, sorts, the dialog
+//! card). Every session fact it shows comes from `agent_core`, the layer hub-core and agent-web
+//! read too, so the panel only renders.
 
-pub mod account;
-pub mod asks;
+pub mod card;
 pub mod chooser;
-pub mod dialog;
 pub mod dispatched;
 pub mod fzf;
 pub mod help;
-pub mod jsonl;
 pub mod md;
-pub mod parked;
-pub mod procmap;
 pub mod render;
 pub mod search;
-pub mod send;
-pub mod session;
 pub mod sort;
-pub mod tmux;
-pub mod vocab;

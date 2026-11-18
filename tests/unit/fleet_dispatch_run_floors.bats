@@ -461,6 +461,38 @@ full_fleet() {
   [ -n "$(qitem queued ci-first)" ] || fail "a tier-3 item left the queue on the source floor"
 }
 
+# 2026-11-18: 34 Claude sessions past a target of 30 held every item while codex, go and ocfree sat
+# idle with room: the target is Claude's budget, so another source's item waits on its own room only.
+@test "other sources: past a full Claude pace target, an item routed to another source with room starts; a Claude-only one waits" {
+  route_ready
+  acct main:ok
+  cpu 10 5 0 85
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_FLOOR=0 DISPATCH_SOURCE_FLOOR=0 DISPATCH_PER_PASS=3
+  fleet_state 8
+  # Negative control: no other source has room, so the full target starts nothing and asks model-lane nothing.
+  srcs codex:reserve:5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  assert_not_called 'model-lane classify'
+  # A Claude-only verdict: claude is refused at the full target, the item stays queued, the pass is NOOP.
+  srcs codex:ok:5
+  LANE=haiku run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial '1 slot(s) free on other sources'
+  assert_output --partial 'claude: the Claude pace target is full'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+  assert_not_called 'agent-codex'
+  [ -n "$(qitem queued fix-menu)" ] || fail "a Claude-only item left the queue past a full Claude target"
+  assert_equal "$(outcome)" NOOP
+  # The verdict names codex, which has room: it starts there, past the Claude target.
+  rm -f "$FLEET_DISPATCH_DIR/lane-cache"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-menu on codex (sol)'
+  assert_equal "$(qfield "$(qitem running fix-menu)" agent)" codex
+  assert_equal "$(outcome)" WORKED
+}
+
 @test "project floor: an idle project's first item starts past real idle; a busy project's waits" {
   idle_held_machine
   agent-queue add --project game --slug busy "game work" >/dev/null
