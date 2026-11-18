@@ -10,8 +10,8 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::chooser::Agent;
-use crate::vocab::Vocab;
+use agent_core::agent::Agent;
+use agent_core::vocab::Vocab;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Key {

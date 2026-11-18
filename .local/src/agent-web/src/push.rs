@@ -66,12 +66,12 @@ struct Endpoints {
 
 /// The endpoints, written only by agent-web.
 fn endpoints_file() -> PathBuf {
-    agent_panel::session::home().join(".local/state/agent-web/push-endpoints.json")
+    agent_core::session::home().join(".local/state/agent-web/push-endpoints.json")
 }
 
 /// The last send's result, for the push watch and for troubleshooting.
 fn result_file() -> PathBuf {
-    agent_panel::session::home().join(".local/state/agent-web/push.json")
+    agent_core::session::home().join(".local/state/agent-web/push.json")
 }
 
 /// One read-modify-write of the endpoints file at a time.
