@@ -423,7 +423,8 @@ install_agent_harnesses() {
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
     else
-        curl -fsSL https://claude.ai/install.sh | bash || { log_error "claude install failed"; return 1; }
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
     fi
     local entry bin pkg
     for entry in codex:@openai/codex opencode:opencode-ai; do

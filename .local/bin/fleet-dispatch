@@ -4167,7 +4167,7 @@ host_why() {
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   read -r load cores ready mem <<<"$p"
-  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, a store that is not a peer clone (store-sync join), or an account with no setup token (fleet-node signin there)"; return; }
+  [ "$ready" = 1 ] || { echo "$1 has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)"; return; }
   [[ "$mem" =~ ^[0-9]+$ ]] || { echo "$1 did not report its free memory (/proc/meminfo)"; return; }
   [ "$mem" -ge "$DISPATCH_HOST_MEM_MIN_PCT" ] || { echo "$1: ${mem}% memory free is under the ${DISPATCH_HOST_MEM_MIN_PCT}% floor"; return; }
   over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"

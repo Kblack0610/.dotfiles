@@ -60,7 +60,7 @@ Every step of an installer's `install_all` belongs to a module (`step <module> <
 ./install.sh --without printing,mail    # full install minus these
 ```
 
-Opt-in modules (`INSTALL_OPTIONAL_MODULES` in `packages.conf`: music, streaming, avd, fingerprint) only run when named. An unknown module name stops the install before anything runs. Running an OS script directly takes the same choices as env vars: `INSTALL_ONLY=music ./linux/install_arch.sh` (also `INSTALL_WITH`, `INSTALL_WITHOUT`, `INSTALL_MODE=list|dry-run`).
+Opt-in modules (`INSTALL_OPTIONAL_MODULES` in `packages.conf`: music, streaming, avd, fingerprint, llm, fleet) only run when named. An unknown module name stops the install before anything runs. Running an OS script directly takes the same choices as env vars: `INSTALL_ONLY=music ./linux/install_arch.sh` (also `INSTALL_WITH`, `INSTALL_WITHOUT`, `INSTALL_MODE=list|dry-run`).
 
 New optional thing? Put its packages in `packages.conf` as `PACKAGES_<NAME>[_<OS>]`, write an `install_<name>` function in the OS installer, add `step <name> install_<name>` to `install_all`, and add the name to `INSTALL_OPTIONAL_MODULES` if it should be opt-in.
 

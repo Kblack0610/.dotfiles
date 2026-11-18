@@ -650,6 +650,11 @@ setup_profile() {
         return 0
     fi
 
+    # --yes asks nothing, and skip is the default.
+    if [[ "${INSTALL_YES:-}" == 1 ]]; then
+        log_info "--yes: profile left as it is (run profile-switch <profile> to set one)"
+        return 0
+    fi
     echo ""
     echo -e "${GREEN}Available profiles:${NC}"
     echo "  1) desktop  - Full desktop with Hyprland + Sunshine (auto-login)"
@@ -657,11 +662,6 @@ setup_profile() {
     echo "  3) terminal - TTY-only, no GUI (auto-login)"
     echo "  4) secure   - Manual login, prompts for Hyprland"
     echo "  5) headless - Server mode, SSH-only (auto-login)"
-    # --yes asks nothing, and skip is the default.
-    if [[ "${INSTALL_YES:-}" == 1 ]]; then
-        log_info "--yes: profile left as it is (run profile-switch <profile> to set one)"
-        return 0
-    fi
 
     echo "  6) Skip     - Don't set a profile now"
     echo ""
