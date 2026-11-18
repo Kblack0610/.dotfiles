@@ -870,8 +870,13 @@ gate_rbw() {
 
 @test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from the open board" {
   gate_rbw
-  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
-                 {id: "ar-9", state: "open", tags: ["after/ar-4"]}],
+  # .tags is what notes lower-cases for grouping; .tags_cased is as written. A gate reads tags_cased, so
+  # the ask id keeps its case (2026-11-18: every #ask/ gate on the board read "no agent-ask has that id").
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  printf 'id: AbC12x\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/AbC12x.md"
+  jq -n '{rows: ([{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
+                 {id: "ar-9", state: "open", tags: ["after/ar-4"]},
+                 {id: "ar-7", state: "open", tags: ["ask/abc12x/a"], tags_cased: ["ask/AbC12x/a"]}]),
           done: [{id: "ar-3", state: "done", marker: "id:ar-3 done:2026-11-01", tags: ["rbw/infra/gone"]},
                  {id: "ar-4", state: "done", marker: "id:ar-4 done:2026-11-01 dropped: a duplicate"}]}' > "$NOTES_FIXTURE/board.json"
   run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-404
@@ -886,7 +891,8 @@ gate_rbw() {
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" gate --json --all
   assert_failure 3
-  [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 rbw/infra/x" ]
+  [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 ask/AbC12x/a rbw/infra/x" ]
+  [ "$(st ask/AbC12x/a)" = "pending|ask AbC12x=a (pending)" ]
   [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 1 ]
   # Every after/ there names a row the open board lists, so no closed row is read.
   [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 0 ]
