@@ -5742,7 +5742,7 @@ STUB
   assert_output --partial 'canary greet: fail (exit 1)'
 }
 
-@test "canary queue: one night canary item per task a week, from canary with its own brief; a second pass queues nothing" {
+@test "canary queue: one canary item per task a week, from canary with its own brief; a second pass queues nothing" {
   canary_fixture
   QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
   printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
@@ -5759,7 +5759,6 @@ STUB
   assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week"
   run cat "$QLOG"
   assert_line 'canary'
-  assert_line 'night canary'
   assert_line "canary-greet-$week"
   assert_line --partial 'Run `fleet-bench canary start greet` here'
   assert_line --partial "agent-queue move canary-greet-$week done --status ok"

@@ -606,20 +606,19 @@ real_epic_board() {
   [ -z "$(qitem running hub-work)" ] || fail "kept a gone hub conversation after restore finished"
 }
 
-@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and night rows are not" {
-  night_ready
-  export AGENT_QUEUE_NIGHT=01:00-06:00 AGENT_QUEUE_NOW=12:00
+@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and tier-3 PR rows are not" {
+  pr_lane_ready
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3 #low'
   row agent-runtime agent 'prune the hooks' '- [ ] refactor(hooks): prune the dead hooks #tier/3'
   row agent-runtime agent 'add a panel' '- [ ] feat(panel): add a timer panel #tier/3'
   # A chore that bumps a dependency is shared infrastructure (DISPATCH_CLEANUP_NOT), not cleanup.
   row agent-runtime agent 'bump jq' '- [ ] chore(deps): bump jq to 1.8 #tier/3'
-  night_verdict 'drop the dead timer' timer; night_verdict 'prune the hooks' hooks true L; night_verdict 'add a panel' panel; night_verdict 'bump jq' jq
+  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks true L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
-  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
-  fill
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-cleanup") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
+  DISPATCH_PER_PASS=5 fill
   assert_success
   f=$(agent-queue list --json --state queued | jq -r 'select(.title | test("drop the dead timer")) | .slug')
   [ -n "$f" ] || fail "the cleanup row was not queued"
@@ -629,17 +628,17 @@ real_epic_board() {
   refute_output --partial -- '--pr-only'
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
   assert_output --partial 'Merge with agent-land'
-  # The L cleanup row is neither merging nor night: plan_skips sends it to inbox-plan.
+  # The L cleanup row is neither merging nor a PR row: plan_skips sends it to inbox-plan.
   [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
-  assert_equal "$(night_keys)" 'add a panel,bump jq'
+  assert_equal "$(pr_lane_keys)" 'add a panel,bump jq'
 }
 
 @test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
-  night_ready
+  pr_lane_ready
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
-  night_verdict 'drop the dead timer' timer
-  run t3_cleanup_picks "$(night_rows '')"
+  pr_lane_verdict 'drop the dead timer' timer
+  run t3_picks "$(t3_rows '')"
   assert_success
   assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
 }
@@ -1216,7 +1215,7 @@ OUT
 }
 
 @test "reap: an agent row started with no queue item is un-started only once it stays orphaned DISPATCH_ORPHAN_HOURS" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 '- [/] fix x <!-- id:gm-1 -->'
   run cmd_reap
@@ -1232,7 +1231,7 @@ OUT
 }
 
 @test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
   jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
@@ -1372,7 +1371,7 @@ OUT
 }
 
 @test "reap: a row an active item names, and a human-lane row, are never orphans" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-2 '- [/] linked <!-- id:gm-2 -->'
   row game human 'mine' '- [/] the human is on it'
@@ -1389,7 +1388,7 @@ OUT
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
   # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
   # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   # The real `ptask list` key is the row's text with its tags, not its id: rows() must read the id off the marker.
   row game agent 'fix(core): slots #tier/3 #size/m' '- [/] fix(core): slots #tier/3 #size/m #c1028 #low <!-- id:gm-4 run:1112 -->'
@@ -1408,7 +1407,7 @@ OUT
 }
 
 @test "reap: a queue it cannot read un-starts no orphan" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-3 '- [/] fix y <!-- id:gm-3 -->'
   orphan_seen game gm-3 96

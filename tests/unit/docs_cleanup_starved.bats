@@ -50,7 +50,7 @@ STUB
   assert_output --partial 'still running'
 }
 
-@test "the pass is queued at high, tagged night and cleanup" {
+@test "the pass is queued at high, tagged cleanup" {
   run "$BIN/agentctl-docs-cleanup"
   assert_success
   run cat "$ADD_LOG"
@@ -58,7 +58,7 @@ STUB
   assert_line --index 8 --  '--priority'
   assert_line --index 9 high
   assert_line --index 10 -- '--tags'
-  assert_line --index 11 'night cleanup'
+  assert_line --index 11 cleanup
 }
 
 @test "a queued pass with no readable queued time is a failure, not a fresh pass" {
@@ -73,8 +73,8 @@ STUB
   assert_output --partial 'still queued'
 }
 
-@test "a pass held only by the night window still starves" {
-  ITEM_JSON="{\"state\":\"queued\",\"hold\":\"night (01:00-06:00)\",\"queued\":\"$(date -u -d '3 days ago' +%FT%TZ)\"}" run "$BIN/agentctl-docs-cleanup"
+@test "a queued pass nothing holds still starves" {
+  ITEM_JSON="{\"state\":\"queued\",\"queued\":\"$(date -u -d '3 days ago' +%FT%TZ)\"}" run "$BIN/agentctl-docs-cleanup"
   assert_failure 1
   assert_output --partial 'starved: queued since'
 }

@@ -493,16 +493,16 @@ codex_run() {
   stub pgrep "[ \"\$*\" = \"-u $(id -u) -f agent-codex (run|resume)\" ] || exit 2; for p in $pids; do echo \$p; done"
 }
 
-# --- night: tier 3 to an open PR ---------------------------------------------------------
+# --- tier 3 to an open PR (t3_picks) ---
 
-# night_ready: the agent-runtime board in the default profile, every gate passing.
-night_ready() {
-  export DISPATCH_NIGHT_PROFILE='' DISPATCH_NIGHT_PROJECTS=agent-runtime
+# pr_lane_ready: the agent-runtime board in the default profile, every gate passing.
+pr_lane_ready() {
+  export DISPATCH_T3_PROFILE='' DISPATCH_T3_PROJECTS=agent-runtime
   project agent-runtime alpha "$SANDBOX/repos/app"
 }
 
-# night_verdict <key> [area] [tier3_only] [size] -- a tier-3 skip under the current policy for the row's text
-night_verdict() {
+# pr_lane_verdict <key> [area] [tier3_only] [size] -- a tier-3 skip under the current policy for the row's text
+pr_lane_verdict() {
   mkdir -p "$FLEET_DISPATCH_DIR"
   jq -cn --arg k "$1" --arg a "${2-$1}" --argjson t3 "${3:-true}" --arg s "${4:-S}" --arg sig "$(policy_sig)" \
     --arg line "$(line_of agent-runtime agent "$1")" \
@@ -513,10 +513,10 @@ night_verdict() {
 
 state_of() { awk -F'\t' -v k="$1" '$1 == k { print substr($2, 1, 5) }' "$NOTES_FIXTURE/rows.agent-runtime.agent"; }
 
-# night_keys -> the fixture names of the rows behind the queued night items, sorted.
-night_keys() {
+# pr_lane_keys -> the fixture names of the rows behind the queued tier-3 PR items (not the cleanup ones), sorted.
+pr_lane_keys() {
   local id
-  agent-queue list --json --state queued | jq -r 'select((" " + (.tags // "") + " ") | contains(" night ")) | .from | ltrimstr("board:agent-runtime:")' |
+  agent-queue list --json --state queued | jq -r 'select(((" " + (.tags // "") + " ") as $t | ($t | contains(" tier3 ")) and (($t | contains(" cleanup ")) | not))) | .from | ltrimstr("board:agent-runtime:")' |
     while read -r id; do awk -F'\t' -v q="id:$id " 'index($2, q) { print $1 }' "$NOTES_FIXTURE/rows.agent-runtime.agent"; done | sort | paste -sd, -
 }
 
@@ -632,7 +632,7 @@ orphan_seen() {
 # the row stays started and no active item names it. The row file and calls.log are put back after the
 # move, which now closes the row of an ok close with no PR.
 landed_item() {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   pr_item "$1"
   agent-queue set fix-crash pr= >/dev/null
   cp "$NOTES_FIXTURE/rows.game.agent" "$SANDBOX/rows.kept"
@@ -851,7 +851,7 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
 # four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
-# first is its fleet_first, a YAML list such as "[canary, night]".
+# first is its fleet_first, a YAML list such as "[canary]".
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF

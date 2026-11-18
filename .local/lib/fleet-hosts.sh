@@ -117,7 +117,7 @@ fleet_roster_fresh() {
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass). first is
-# fleet_first, the item classes (canary, night) this worker takes ahead of the dispatching machine.
+# fleet_first, the item classes (canary) this worker takes ahead of the dispatching machine.
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
 # over its parent), then the host's own entries over every group, a later entry winning among
 # equals, so ansible_host may sit in another group. Nothing when the

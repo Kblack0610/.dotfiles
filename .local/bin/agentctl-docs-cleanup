@@ -76,9 +76,9 @@ fi
 # Each night's pass is new work under that slug, so it is queued --repeat.
 item="$(agent-queue show "$SLUG" --json 2>/dev/null)"
 state="$(jq -r '.state // empty' <<<"$item" 2>/dev/null)"
-# Starved: queued past STARVED_DAYS with nothing holding it but the night window. Another hold
+# Starved: queued past STARVED_DAYS with nothing holding it. Another hold
 # (after, focus, ask) is the queue's own choice, not starvation.
-if [ "$state" = queued ] && jq -e '(.hold // "") | . == "" or startswith("night")' <<<"$item" >/dev/null; then
+if [ "$state" = queued ] && jq -e '(.hold // "") == ""' <<<"$item" >/dev/null; then
     queued_at="$(jq -r '.queued // empty' <<<"$item")"
     queued_s="$(date -d "$queued_at" +%s 2>/dev/null)" && [ -n "$queued_at" ] \
         || fail "pass $SLUG has no readable queued time ('$queued_at'), cannot judge starvation"
@@ -102,7 +102,7 @@ fi
 # An automated filer: a queue already at its cap holds the pass (agent-queue exit 5), and
 # tomorrow's run counts again; held since HELD_SINCE for STARVED_DAYS is starved too. High plus `cleanup` is where the queue orders the fleet's own
 # housekeeping (agent-queue ORDER); at low it never reached the front.
-agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags "night cleanup" "$task"
+agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task"
 rc=$?
 HELD_SINCE="$INBOX/held-since"
 if [ "$rc" -eq 5 ]; then

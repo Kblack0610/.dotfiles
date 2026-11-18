@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# fleet-dispatch, a `run` pass against its floors and pacing: the run, red, project and requested floors, presence, the night.
+# fleet-dispatch, a `run` pass against its floors and pacing: the run, red, project and requested floors, presence, the tier-3 PR lane.
 # One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
@@ -156,7 +156,7 @@ full_fleet() {
   full_fleet
   plan_queued pa '- [x] one\n- [ ] two\n- [ ] three'   # pa-p3 waits on pa-p2
   agent-queue set pa-p2 "tags=at:$(date -d tomorrow +%F)T09:00" >/dev/null
-  plan_queued pm '- [ ] one' --from auto:plans --tags night
+  plan_queued pm '- [ ] one' --from auto:plans --tags ui
   agent-queue set pm-p1 tags= >/dev/null
   plan_queued pb '- [ ] one'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -842,22 +842,17 @@ full_fleet() {
   assert_equal "$(outcome)" ''
 }
 
-@test "night: a night item waits outside the night window, then starts --pr-only on the account room names" {
-  night_ready
+@test "tier3 lane: a tier-3 row is pulled by the day fill, and its item starts --pr-only on the account room names" {
+  pr_lane_ready
   row agent-runtime agent 'fix it' '- [ ] fix it #tier/3'
-  night_verdict 'fix it' hooks
+  pr_lane_verdict 'fix it' hooks
   acct alt:ok:/acct/alt
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "app-agent-1"'
-  export AGENT_QUEUE_NIGHT=01:00-06:00
-  AGENT_QUEUE_NOW=12:00 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'no row qualifies'
-  [ -n "$(qitem queued gm-1)" ] || fail "not queued for the night"
-  assert_not_called 'wt new'
-  AGENT_QUEUE_NOW=02:00 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called 'CLAUDE_CONFIG_DIR=/acct/alt claude'
   assert_called '/one-shot --pr-only fix it'
-  [ -n "$(qitem running gm-1)" ] || fail "night item not started in its window"
+  [ -n "$(qitem running gm-1)" ] || fail "tier3 item not started"
 }
 
 @test "a run start logs its model-lane pick and stamps lane_run on the item, at the dispatch floor" {
