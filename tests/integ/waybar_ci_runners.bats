@@ -24,6 +24,7 @@ case "$*" in
   *github_runner_withheld*) cat "$FX/withheld.json" ;;
   *ci_governor_lent*) cat "$FX/lent.json" ;;
   *ci_governor_power_state*) cat "$FX/power.json" ;;
+  *node_uname_info*) cat "$FX/uname.json" ;;
   *) exit 22 ;;
 esac
 STUB
@@ -108,6 +109,9 @@ out("withheld", [({"name": "hp-unity-3"}, "1")])
 # LENT names runners the governor says are lent to their pair; one not withheld stays a slot.
 out("lent", [({"name": n, "to": "tests"}, "1") for n in os.environ.get("LENT", "").split()])
 power = os.environ.get("POWER", "stopped" if mode == "cloud-off" else "running")
+# razer-laptop's node calls itself razer-node; two Pis share raspberrypi, so neither is aliased.
+out("uname", [({"host": h, "nodename": n}, "1") for h, n in [("razer-laptop", "razer-node"), ("hp-victus", "hp-victus"),
+                                                           ("pi-a", "raspberrypi"), ("pi-b", "raspberrypi")]])
 out("power", [({"host": "aws-burst-1", "state": power}, "1")] if power != "running" else [])
 PY
 }
@@ -277,6 +281,37 @@ PY
   assert_line --index 12 --regexp "^razer-laptop +local +2/3  mem 39/64G, disk 190G free +light 0/1 unity 2/2$"
   assert_line --index 13 --regexp "^workstation +local +2/4  mem 20/128G, disk 4.5G free +gates 2/4$"
   assert_line --index 14 --regexp "^hp-victus +local +1/3  mem no data, disk 50G free +light 0/1 unity 1/2 unity withheld 0/1$"
+}
+
+# A runner's host label can be its node's hostname, while the cc:host_* rules use the host's
+# name: node_uname_info joins them, as hub-core's Infra::aliases does.
+@test "a runner named by its node's hostname reads its host's space" {
+  python3 - "$FX/runners.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    if r["metric"]["host"] == "razer-laptop":
+        r["metric"]["host"] = "razer-node"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$MODULE"
+  run tip
+  assert_line --regexp "^razer-node +local +2/3  mem 39/64G, disk 190G free +light 0/1 unity 2/2$"
+}
+
+# Negative control for the alias: a nodename two hosts share names neither of them.
+@test "a nodename two hosts share is not aliased to either" {
+  python3 - "$FX/runners.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["data"]["result"]:
+    if r["metric"]["host"] == "razer-laptop":
+        r["metric"]["host"] = "raspberrypi"
+json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$MODULE"
+  run tip
+  assert_line --regexp "^raspberrypi +local +2/3  no data +light 0/1 unity 2/2$"
 }
 
 # Negative control for the space cell: no cc:host_*_bytes series at all reads no data on

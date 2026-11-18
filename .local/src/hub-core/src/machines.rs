@@ -595,6 +595,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 mm.core_busy = c.into_iter().map(|(_, v)| v).collect();
             }
             mm.runner_cores.sort_by(|a, b| b.1.total_cmp(&a.1));
+            mm.runner_mem.sort_by(|a, b| b.1.total_cmp(&a.1));
             mm.state = match mm.power.as_ref().map(|p| p.state.as_str()) {
                 Some(s) if !s.is_empty() && s != "running" => s.to_string(),
                 _ if [mm.cpu, mm.load, mm.cores, mm.mem]

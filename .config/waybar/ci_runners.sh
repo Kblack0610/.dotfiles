@@ -57,6 +57,16 @@ while read -r name; do [ -n "${WITHHELD[$name]:-}" ] && WITHHELD[$name]=lent; do
 powered_off="$(prom_q "$W (ci_governor_power_state{state!=\"running\"}) == 1")" || fail "cannot read $PROM_URL"
 declare -A POWERED_OFF=()
 while read -r h; do [ -n "$h" ] && POWERED_OFF[$h]=1; done < <(jq -r '.data.result[].metric.host' <<< "$powered_off")
+# A runner's host label can be its node's hostname (cachyos-x8664-main), while the cc:host_*
+# rules use the host's name (workstation): nodename -> host, hub-core's Infra::aliases rule,
+# only for a nodename one host alone has and that is no host's own name.
+uname="$(prom_q 'group by (host, nodename) (node_uname_info * on (instance) group_left (host) cc:host_instance)')" \
+  || fail "cannot read $PROM_URL"
+declare -A ALIAS=()
+while IFS='|' read -r n h; do [ -n "$n" ] && ALIAS[$n]=$h; done < <(jq -r '.data.result | map(.metric)
+    | (map(.host) | unique) as $hosts
+    | map(select(.host != "" and .nodename != "" and .host != .nodename)) | group_by(.nodename)
+    | map(select(length == 1 and (.[0].nodename | IN($hosts[]) | not)) | "\(.[0].nodename)|\(.[0].host)")[]' <<< "$uname")
 
 # name/key -> value, key = pool, host, component or site. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
@@ -163,7 +173,8 @@ gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; printf (g < 10 ? "%.1fG" : "%.
 # page's Space line reads; a missing reading says no data, never 0, and none at all (a host
 # with no node exporter) is one "no data".
 space() {
-  local u="${V[cc:host_mem_used_bytes/$1]:-}" t="${V[cc:host_mem_total_bytes/$1]:-}" f="${V[cc:host_disk_avail_bytes/$1]:-}"
+  local h="${ALIAS[$1]:-$1}"
+  local u="${V[cc:host_mem_used_bytes/$h]:-}" t="${V[cc:host_mem_total_bytes/$h]:-}" f="${V[cc:host_disk_avail_bytes/$h]:-}"
   [ -n "$u$f" ] || { printf 'no data'; return; }
   local mem="mem no data" disk="disk no data"
   if [ -n "$u" ] && [ -n "$t" ]; then mem="mem $(gb "$u" | sed 's/G$//')/$(gb "$t")"

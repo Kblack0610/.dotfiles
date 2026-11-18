@@ -56,22 +56,39 @@ pub struct SlotUse {
     pub runner: bool,
 }
 
-/// `0`, `2.8`, `140`: a reading as the slots table and the Space line say it.
+/// `0`, `2.8`, `140`: a reading as the slots table and the Space line say it. Halves round up,
+/// as the web's `toFixed` and `Math.round` do (Rust's `{:.0}` rounds a tie to even).
 fn short(v: f64) -> String {
     if v == 0.0 {
         "0".into()
     } else if v < 100.0 {
-        format!("{v:.1}")
+        format!("{:.1}", (v * 10.0).round() / 10.0)
     } else {
-        format!("{v:.0}")
+        whole(v)
     }
+}
+
+/// A whole number, a half rounded up: `12.5` is `13` on both surfaces.
+fn whole(v: f64) -> String {
+    format!("{:.0}", v.round())
+}
+
+/// The Space line's amber: free disk under this share (the Machines disk cell's amber line),
+/// memory at or past this share used.
+const DISK_LOW: f64 = 0.2;
+const MEM_HIGH: f64 = 0.9;
+
+/// `ws-unity-2` before `ws-unity-10`: a name's trailing number sorts as a number.
+fn natural(name: &str) -> (&str, u64) {
+    let head = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    (head, name[head.len()..].parse().unwrap_or(0))
 }
 
 /// `2.8/3`, `11.2/14G`; `2.8` with no limit; no data with no reading.
 pub fn used_of(used: Option<f64>, max: Option<f64>, scale: f64, unit: &str) -> String {
     match (used, max) {
         (None, _) => crate::reading::NO_DATA.into(),
-        (Some(u), Some(m)) => format!("{}/{:.0}{unit}", short(u / scale), m / scale),
+        (Some(u), Some(m)) => format!("{}/{}{unit}", short(u / scale), whole(m / scale)),
         (Some(u), None) => format!("{}{unit}", short(u / scale)),
     }
 }
@@ -463,14 +480,16 @@ fn space(m: &Machine) -> Option<Part> {
         _ => format!("cores {no}"),
     };
     let mem = match (m.mem_used, m.mem_total) {
-        (Some(u), Some(t)) => format!("mem {:.0} of {:.0}G", u / GIB, t / GIB),
+        (Some(u), Some(t)) => format!("mem {} of {}G", whole(u / GIB), whole(t / GIB)),
         _ => format!("mem {no}"),
     };
     let disk = match (m.disk_avail, m.disk_size) {
-        (Some(a), Some(s)) => format!("disk {:.0} of {:.0}G free", a / GIB, s / GIB),
+        (Some(a), Some(s)) => format!("disk {} of {}G free", whole(a / GIB), whole(s / GIB)),
         _ => format!("disk {no}"),
     };
-    let low = m.disk.is_some_and(|f| f < 0.2) || m.mem.is_some_and(|u| u >= 0.9);
+    // Amber on the disk and memory it prints, so the colour and the numbers are one reading.
+    let low = matches!((m.disk_avail, m.disk_size), (Some(a), Some(s)) if s > 0.0 && a / s < DISK_LOW)
+        || matches!((m.mem_used, m.mem_total), (Some(u), Some(t)) if t > 0.0 && u / t >= MEM_HIGH);
     Some(Part::new("Space", format!("{cores}, {mem}, {disk}")).warn(low))
 }
 
@@ -515,7 +534,11 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             }
         })
         .collect();
-    out.sort_by(|a, b| a.slot.cmp(&b.slot));
+    out.sort_by(|a, b| {
+        natural(&a.slot)
+            .cmp(&natural(&b.slot))
+            .then_with(|| a.slot.cmp(&b.slot))
+    });
     if let (Some(cores), Some(busy)) = (m.cores, busy_cores(m)) {
         for (what, c) in [(OTHER, busy - ci_cores(m)), (IDLE, (cores - busy).max(0.0))] {
             out.push(SlotUse {
@@ -800,6 +823,36 @@ mod tests {
         // No reading at all: Now says why, and there is no Space part.
         let p = page(&i, "mac-mini", "", &[]);
         assert!(p.parts.iter().all(|x| x.label != "Space"));
+    }
+
+    #[test]
+    fn a_half_rounds_up_as_the_web_does_and_slot_ten_sorts_after_slot_two() {
+        assert_eq!(used_of(Some(2.8), Some(2.5), 1.0, ""), "2.8/3");
+        assert_eq!(used_of(Some(2.25), None, 1.0, ""), "2.3");
+        assert_eq!(whole(12.5), "13");
+        let mut names = ["ws-unity-10", "ws-unity-2", "ws-light-1", "ws-unity-1"];
+        names.sort_by(|a, b| natural(a).cmp(&natural(b)));
+        assert_eq!(
+            names,
+            ["ws-light-1", "ws-unity-1", "ws-unity-2", "ws-unity-10"]
+        );
+    }
+
+    #[test]
+    fn space_is_amber_on_the_disk_it_prints_not_another_disk() {
+        let m = |avail: f64, fullest: f64| Machine {
+            host: "h".into(),
+            cpu: Some(0.1),
+            cores: Some(4.0),
+            disk_avail: Some(avail * GIB),
+            disk_size: Some(100.0 * GIB),
+            disk: Some(fullest),
+            ..Machine::default()
+        };
+        // 38% free on the printed disk while another disk is at 5%: plain.
+        assert!(!space(&m(38.0, 0.05)).unwrap().warn);
+        // 10% free on the printed disk: amber, whatever the fullest one says.
+        assert!(space(&m(10.0, 0.5)).unwrap().warn);
     }
 
     #[test]
