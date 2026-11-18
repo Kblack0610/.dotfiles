@@ -125,7 +125,7 @@ rc=$?
 printf '%s\n' "$out" >&2
 case "$rc" in
     0) report WORKED "queued $SLUG ($summary)" ;;
-    5) read -r rboard rid < <(sed -n '/.*its board row \([^ ]*\) on \([^ :]*\)[ :].*/{s//\2 \1/p;q;}' <<<"$out")
+    5) IFS=: read -r rboard rid < <(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//\1/p;q;}' <<<"$out")
        [ -n "${rid:-}" ] || fail "the board took pass $SLUG but named no row: ${out##*$'\n'} ($summary)"
        printf '%s\t%s\t%s\n' "$rboard" "$rid" "$(date +%s)" > "$ROWF"
        report WORKED "filed $SLUG as board row $rid on $rboard ($summary)" ;;

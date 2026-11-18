@@ -1385,10 +1385,10 @@ row_brief() {
   if [ "$(bare_words <<<"$first")" = "$(bare_words <<<"$1")" ]; then printf '%s' "$rest"; else printf '%s' "$body"; fi
 }
 
-# overflow_row <project> <title> <priority> <epic> <want> <task> [<gates> <slug>] -- an add the queue does
+# overflow_row <project> <title> <priority> <epic> <want> <task> <gates> <name> -- an add the queue does
 # not take leaves its board row un-started, ranked as filed (`#requested` first) with the whole task under
-# it as its brief, carrying <gates> (board gate tags, no #) when it waits on any, and says so on stderr;
-# given a slug, `held <slug> -> <board>:<id>` on stdout, the line a caller reads the row from. A project
+# it as its brief, carrying <gates> (board gate tags, no #) when it waits on any, and says so on stderr, and
+# prints `held <name> -> <board>:<id>` on stdout, the line every caller reads the row from (never stderr). A project
 # with no board to file on gets the command to run by hand and a non-zero return: the caller still holds
 # the task, and nothing was written.
 overflow_row() {
@@ -1401,7 +1401,7 @@ overflow_row() {
     else
       echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
     fi
-    [ -z "${8:-}" ] || echo "held $8 -> $board:$id${gates:+ (#${gates// / #})}"
+    echo "held $8 -> $board:$id${gates:+ (#${gates// / #})}"
   else
     echo "agent-queue: $1 has no board row to file this on: notes ptask $1 --agent add \"<type(area): title> #size/s${gates:+ #${gates// / #}}\"" >&2
     return 1
@@ -1544,7 +1544,7 @@ cmd_add() {
       local pproject="${project:-$(project_of_cwd)}" ptitle="plan $(basename "$planf" .md): run its open phases"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
-      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." || exit 1
+      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 add_plan; return
@@ -1626,7 +1626,7 @@ cmd_add() {
       :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
         echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
       :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
-        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" || exit 1 ;;
+        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" || exit 1 ;;
       :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" || exit 1 ;;
       *) if [ -n "$GATES" ]; then
            local rboard rlab
@@ -1644,7 +1644,7 @@ cmd_add() {
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
     if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
-    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text"; fi
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug"; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"
