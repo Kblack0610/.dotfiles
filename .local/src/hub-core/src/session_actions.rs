@@ -16,7 +16,6 @@
 //! account. Every step is an argv run without a shell; a `Runner` runs it, which tests fake.
 
 use std::process::{Command, Stdio};
-use std::sync::{Arc, LazyLock, OnceLock};
 
 /// The agent row a `Snapshot` carries, so a caller needs no agent-panel dependency of its own.
 pub use agent_panel::chooser::Agent;
@@ -305,8 +304,8 @@ pub trait Runner {
 /// (`crate::audit::AUDITED_ENV`).
 pub struct System;
 
-impl System {
-    fn spawn_run(argv: &[String]) -> Result<String, String> {
+impl Runner for System {
+    fn run(&self, argv: &[String]) -> Result<String, String> {
         let (cmd, args) = argv.split_first().ok_or("empty command")?;
         let out = Command::new(cmd)
             .args(args)
@@ -326,7 +325,7 @@ impl System {
         }
     }
 
-    fn spawn_output(argv: &[String]) -> Result<(i32, String), String> {
+    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
         let (cmd, args) = argv.split_first().ok_or("empty command")?;
         let out = Command::new(cmd)
             .args(args)
@@ -339,86 +338,6 @@ impl System {
             .code()
             .ok_or_else(|| format!("{cmd}: {}", out.status))?;
         Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
-    }
-}
-
-impl Runner for System {
-    fn run(&self, argv: &[String]) -> Result<String, String> {
-        shared(&RUNS, argv, || System::spawn_run(argv))
-    }
-
-    fn output(&self, argv: &[String]) -> Result<(i32, String), String> {
-        shared(&OUTPUTS, argv, || System::spawn_output(argv))
-    }
-}
-
-/// Reads that several readers make at once, by argv prefix: one queue event has an open Home
-/// refresh its queue, projects, briefing and session caches together, and each ran
-/// `agent-queue list` (2 to 4 s) on its own. Only commands that write nothing belong here: a
-/// caller that joins a run gets that run's answer, so a write must never be shared.
-const SHARED_READS: &[&[&str]] = &[
-    &["agent-queue", "list"],
-    &["agent-queue", "stats"],
-    &["fleet-bench", "reds"],
-    &["agent-ask", "list"],
-    &["agent-propose", "list"],
-    &["notes", "board"],
-    &["notes", "projects"],
-    &["project-stage-check"],
-];
-
-/// The runs in flight, by argv; an entry lives only while its run does, so nothing is kept.
-type Calls<R> = std::sync::Mutex<std::collections::HashMap<Vec<String>, Arc<OnceLock<Option<R>>>>>;
-static RUNS: LazyLock<Calls<Result<String, String>>> = LazyLock::new(Default::default);
-static OUTPUTS: LazyLock<Calls<Result<(i32, String), String>>> = LazyLock::new(Default::default);
-
-fn is_shared(argv: &[String]) -> bool {
-    SHARED_READS
-        .iter()
-        .any(|p| argv.len() >= p.len() && argv.iter().zip(p.iter()).all(|(a, b)| a == b))
-}
-
-/// `run` for `argv`, or, when the same shared read is already running, that run's answer: a
-/// burst of readers costs one run, and no answer is older than the run that made it.
-fn shared<R: Clone>(calls: &Calls<R>, argv: &[String], run: impl FnOnce() -> R) -> R {
-    if !is_shared(argv) {
-        return run();
-    }
-    let (cell, leads) = {
-        let mut m = calls.lock().unwrap_or_else(|e| e.into_inner());
-        match m.get(argv) {
-            Some(c) => (c.clone(), false),
-            None => {
-                let c = Arc::new(OnceLock::new());
-                m.insert(argv.to_vec(), c.clone());
-                (c, true)
-            }
-        }
-    };
-    if !leads {
-        // None: the run it joined panicked, so this caller runs its own.
-        return cell.wait().clone().unwrap_or_else(run);
-    }
-    let lead = Lead { calls, argv, cell };
-    let r = run();
-    let _ = lead.cell.set(Some(r.clone()));
-    r
-}
-
-/// The run's entry, removed however the run ends; a run that panicked releases its waiters.
-struct Lead<'a, R> {
-    calls: &'a Calls<R>,
-    argv: &'a [String],
-    cell: Arc<OnceLock<Option<R>>>,
-}
-
-impl<R> Drop for Lead<'_, R> {
-    fn drop(&mut self) {
-        self.calls
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(self.argv);
-        let _ = self.cell.set(None);
     }
 }
 
@@ -855,104 +774,5 @@ mod tests {
         let mut parked_plan = parked();
         parked_plan.approve_key = Some('1');
         assert_eq!(available(&parked_plan), [Action::Unpark]);
-    }
-
-    mod shared_reads {
-        use super::super::{is_shared, shared, Calls};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::{mpsc, Arc};
-
-        fn argv(a: &[&str]) -> Vec<String> {
-            a.iter().map(|s| s.to_string()).collect()
-        }
-
-        /// Whether `n` callers came to hold the run for `argv`: the map entry, the leader and each
-        /// joiner keep one count. A thread joining has no event to send, so this spins on the
-        /// count itself under a timeout guard, and a caller that never joins fails, never hangs.
-        fn joined(calls: &Calls<usize>, argv: &[String], n: usize) -> bool {
-            let start = std::time::Instant::now();
-            while start.elapsed() < std::time::Duration::from_secs(5) {
-                if calls.lock().unwrap().get(argv).map_or(0, Arc::strong_count) >= n {
-                    return true;
-                }
-                std::thread::yield_now();
-            }
-            false
-        }
-
-        #[test]
-        fn a_read_asked_for_while_it_runs_joins_that_run() {
-            let calls: Calls<usize> = Default::default();
-            let list = argv(&["agent-queue", "list", "--json", "--state", "all"]);
-            let runs = AtomicUsize::new(0);
-            let (go, wait) = mpsc::channel::<()>();
-            let (calls, list, runs) = (&calls, &list, &runs);
-            std::thread::scope(|s| {
-                let lead = s.spawn(move || {
-                    shared(calls, list, || {
-                        wait.recv().unwrap();
-                        runs.fetch_add(1, Ordering::SeqCst) + 1
-                    })
-                });
-                let led = joined(calls, list, 2);
-                let join =
-                    s.spawn(|| shared(calls, list, || runs.fetch_add(1, Ordering::SeqCst) + 1));
-                let both = led && joined(calls, list, 3);
-                go.send(()).unwrap();
-                assert!(both, "the second ask joined the run in flight");
-                assert_eq!(lead.join().unwrap(), 1);
-                assert_eq!(
-                    join.join().unwrap(),
-                    1,
-                    "the joiner got the leader's answer"
-                );
-            });
-            assert_eq!(runs.load(Ordering::SeqCst), 1);
-            assert!(
-                calls.lock().unwrap().is_empty(),
-                "nothing is kept after the run"
-            );
-            assert_eq!(shared(calls, list, || 7), 7, "the next ask runs again");
-        }
-
-        #[test]
-        fn only_listed_reads_are_shared_and_never_a_write() {
-            assert!(is_shared(&argv(&["agent-queue", "list", "--json"])));
-            assert!(is_shared(&argv(&[
-                "fleet-bench",
-                "reds",
-                "--json",
-                "--days",
-                "7"
-            ])));
-            assert!(!is_shared(&argv(&["agent-queue", "add", "x"])));
-            assert!(!is_shared(&argv(&["agent-queue", "cancel", "x"])));
-            assert!(!is_shared(&argv(&["notes", "ptask", "add"])));
-            assert!(!is_shared(&argv(&["agent-queue"])));
-        }
-
-        #[test]
-        fn a_run_that_panics_lets_its_joiner_run_its_own() {
-            let calls: Calls<usize> = Default::default();
-            let list = argv(&["agent-queue", "stats", "--json"]);
-            let (go, wait) = mpsc::channel::<()>();
-            let (calls, list) = (&calls, &list);
-            std::thread::scope(|s| {
-                let lead = s.spawn(move || {
-                    shared(calls, list, || {
-                        wait.recv().unwrap();
-                        panic!("read failed")
-                    })
-                });
-                let led = joined(calls, list, 2);
-                let join = s.spawn(move || shared(calls, list, || 5));
-                let both = led && joined(calls, list, 3);
-                go.send(()).unwrap();
-                assert!(both, "the second ask joined the run in flight");
-                assert!(lead.join().is_err());
-                assert_eq!(join.join().unwrap(), 5);
-            });
-            assert!(calls.lock().unwrap().is_empty());
-        }
     }
 }

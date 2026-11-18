@@ -113,7 +113,7 @@ struct AppState {
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
     /// `/api/watch` as served: the fleet state with its asks, and the shepherd's transitions.
-    watch: cache::EventCache<Bytes, WATCH_SECS>,
+    watch: cache::EventCache<(Bytes, bool), WATCH_SECS>,
 }
 
 type Shared = Arc<AppState>;
@@ -690,6 +690,7 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     if write && res.status().is_success() {
         s.agents.clear();
         s.home.clear();
+        s.watch.clear();
         projects::GATHERED.clear();
     }
     res
@@ -1449,26 +1450,35 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
 }
 
 async fn watch_board(State(s): State<Shared>) -> ApiResult<Response> {
-    let body = s
+    let read = s
         .watch
-        .get((), read_watch)
+        .get_if((), read_watch, |(_, keep)| *keep)
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok((
-        [(header::CONTENT_TYPE, "application/json")],
-        (*body).clone(),
-    )
-        .into_response())
+    Ok(([(header::CONTENT_TYPE, "application/json")], read.0.clone()).into_response())
 }
 
-/// `/api/watch`'s body. Blocking: the fleet state read runs `agent-ask list`.
-fn read_watch() -> Bytes {
+/// `/api/watch`'s body, and whether it may be kept: a failed `agent-ask list` is named in the
+/// state's `unreadable` and served, never kept. Blocking: the fleet state read runs it.
+fn read_watch() -> (Bytes, bool) {
     let watch = boards::watch(
         &boards::fleet_state(),
         &boards::shepherd_dir().join("watch.log"),
         &actions::System,
     );
-    serde_json::to_vec(&watch).map_or_else(|_| Bytes::new(), Bytes::from)
+    let asks_read = !watch.state["unreadable"]
+        .as_array()
+        .is_some_and(|u| u.iter().any(|s| s == "agent-ask"));
+    match serde_json::to_vec(&watch) {
+        Ok(b) => (Bytes::from(b), asks_read),
+        Err(e) => {
+            eprintln!("agent-web: watch: {e}");
+            (
+                Bytes::from_static(br#"{"state":null,"transitions":[]}"#),
+                false,
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1610,7 +1620,7 @@ async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
-        s.watch.get((), read_watch),
+        s.watch.get_if((), read_watch, |(_, keep)| *keep),
         s.queue.recent(),
         home_read(&s),
         cards::read(&s),
@@ -1792,7 +1802,7 @@ async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.schedules.get(q).await,
+        s.schedules.get(&s.alerts, q).await,
     )
         .into_response()
 }
