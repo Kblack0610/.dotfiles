@@ -75,4 +75,5 @@ pub mod tokens;
 pub mod transcript;
 pub mod vitals;
 pub mod vocab;
+pub mod widget_doc;
 pub mod worklog;
