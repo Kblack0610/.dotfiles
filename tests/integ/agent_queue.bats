@@ -4060,6 +4060,7 @@ already"
   run cat "$NOTES_FIXTURE/calls.log"
   assert_output --partial "store-sync fd8=closed"
   refute_output --partial "store-sync fd8=open"
+}
 
 @test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
