@@ -15,7 +15,8 @@ setup() {
   STOP="$REPO_ROOT/.config/hypr/scripts/gungan-force-stop.sh"
   T="$BATS_TEST_TMPDIR"
   export XDG_RUNTIME_DIR="$T/run" GUNGAN_REC="$T/gungan_recording"
-  mkdir -p "$XDG_RUNTIME_DIR" "$T/fake"
+  mkdir -p "$XDG_RUNTIME_DIR" "$T/fake" "$HOME/.local/bin"
+  ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
   for n in gungan pw-record whisper-cpp; do ln -s "$(command -v bash)" "$T/fake/$n"; done
   mkfifo "$T/hold" "$T/ready"
   REAL_PKILL="$(command -v pkill)"
