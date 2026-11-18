@@ -1,8 +1,8 @@
 # Noctalia, the third bar part (`desk use bar noctalia`; docs/desk.md, "Noctalia").
 # Noctalia reads every *.toml here. Its settings window writes
-# ~/.local/state/noctalia/settings.toml, which wins over this file, so this sets only what
-# the dotfiles own: the bar's chips, the plugin that draws them, the palette, and leaving
-# notifications to desk's notify slot.
+# ~/.local/state/noctalia/settings.toml, a stow link into ~/.dotfiles-private, which wins
+# over this file, so this sets only what the dotfiles own: the bar's chips, the plugin
+# that draws them, the palette, and leaving notifications to desk's notify slot.
 
 # The waybar chips, each a dotfiles-chips widget naming its module in config.base. The
 # order follows config.desktop; Noctalia's own widgets stand in for waybar's built-ins.

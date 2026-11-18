@@ -288,6 +288,9 @@ test_notifications.sh
 .local/bin/opencode-binks
 .local/bin/opencode-binks-bootstrap
 .local/bin/watch-companion-loop
+# Noctalia's settings window writes this through its stow link; it can hold a home
+# location or a plugin key, so it is tracked in the private overlay (docs/desk.md).
+.local/state/noctalia/settings.toml
 # fleet-pulse identity is PER-MACHINE and must never be shared. ~/.config/systemd
 # is a whole-directory symlink into this repo, so a drop-in written at runtime
 # lands here rather than staying local. fleet-pulse.service itself is tracked and
