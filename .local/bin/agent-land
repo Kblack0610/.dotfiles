@@ -652,7 +652,7 @@ close_plan_rows() {
   ids=$(plan_rows "$plan")
   [ -n "$ids" ] || return 0
   plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 == $2 { ok = 1 } END { exit !ok }' || return 0
-  if grep -q '^- \[-\]' "$plan"; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
+  if plan_phase_list "$plan" | jq -e 'any(.[]; .state == "deferred")' >/dev/null; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
     hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
