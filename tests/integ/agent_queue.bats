@@ -3682,6 +3682,37 @@ already"
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
 }
 
+# ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and
+# 108 dispatch starts failed with no holder on record.
+@test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
+  "$AQ" add --project game "one item" >/dev/null
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  # 9>&-: the taker is not the holder's child here, so it must not inherit the holder's fd.
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" add --project game "two item" 9>&-
+  assert_failure 75
+  assert_output --partial "lock-miss.jsonl"
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  assert_failure 75
+  flock -u 9
+  exec 9>&-
+  log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  [ "$(wc -l < "$log")" = 2 ]
+  run jq -r --argjson me "$BASHPID" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
+    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
+  assert_line --index 0 "exclusive true true true true"
+  assert_line --index 1 "shared true true true true"
+  # Past 1 MB the log moves to .1 and starts again.
+  head -c 1048576 /dev/zero > "$log"
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  assert_failure 75
+  [ "$(stat -c %s "$log.1")" = 1048576 ]
+  [ "$(wc -l < "$log")" = 1 ]
+}
+
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
 # is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
 # and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
