@@ -20,7 +20,7 @@ Each Claude account in `~/.config/claude-acct/accounts` can hold one long-lived 
 
 ## Usage reads
 
-`claude-acct status`, `room` and `check usage` read the usage endpoint with the `/login` credentials, as before. A setup token carries only the inference scope, so the endpoint is expected to refuse it; `setup-token` probes it once and records the answer in the entry's `usage_endpoint:` note (`rbw get --raw claude-oauth-<account>`). The token is tried for the usage read only when the account has no usable login. Until someone runs `setup-token` the answer is unverified. If the endpoint refuses it, a wiped `.credentials.json` keeps sessions running but that account reads as unread in `status`; fix it with `/login` on that account.
+`claude-acct status`, `room` and `check usage` read each account's usage with its setup token, never `.credentials.json`. The usage endpoint refuses a setup token (HTTP 403, recorded by `setup-token` in the entry's `usage_endpoint:` note), so `fetch` makes one 1-token Haiku call and reads the plan's windows from its `anthropic-ratelimit-unified-7d-*` and `-5h-*` headers. The call carries Claude Code's system line and user agent; without them the API answers 429 with no headers. Each answer is cached `CLAUDE_ACCT_TTL` seconds (300), so the fleet pays about 12 such calls an hour per account. An account with no token, or a locked rbw with no pushed copy, reads unread.
 
 ## Expiry
 
@@ -42,4 +42,4 @@ Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any 
 | Session still stops with a login error | The account has no entry (`claude-acct check tokens` names it) or the token expired; run `setup-token --renew`. |
 | `check tokens` exits 2 | rbw is missing or locked on this machine. |
 | `token push: <host>: <acct> failed` | ssh to the host failed, or its dotfiles are too old to read the copy: pull them there, re-run. |
-| Account reads unread after `.credentials.json` was wiped | Expected when the usage endpoint refuses setup tokens; `/login` on that account restores the read. |
+| An account reads unread (`fetch failed` in `status`, "usage unreadable" on the Costs tab) | It has no token (`claude-acct check tokens`), or rbw is locked with no pushed copy; `rbw unlock`. If both are fine, the probe call was refused without rate-limit headers: check `USAGE_PROBE`'s model id in `claude-acct`. |
