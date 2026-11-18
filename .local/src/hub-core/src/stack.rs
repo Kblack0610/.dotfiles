@@ -475,7 +475,7 @@ pub fn section(md: &str, anchor: &str) -> Option<String> {
     let mut out = Vec::new();
     for line in md.lines() {
         let t = line.trim_start();
-        if t.starts_with("```") {
+        if t.starts_with("```") || t.starts_with("~~~") {
             fence = !fence;
         }
         let depth = t.chars().take_while(|c| *c == '#').count();
@@ -516,7 +516,9 @@ fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
         errors.push(format!("{}: no ## Flows", paths.architecture.display()));
         return Vec::new();
     };
-    let mut rows = table.lines().filter(|l| l.trim_start().starts_with('|'));
+    // The first table under the heading, and only it: a later table or subsection is prose.
+    let is_row = |l: &&str| l.trim_start().starts_with('|');
+    let mut rows = table.lines().skip_while(|l| !is_row(l)).take_while(is_row);
     let head: Vec<String> = rows
         .next()
         .map(cells)
@@ -542,21 +544,35 @@ fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
         Some(rest) => paths.home.join(rest),
         None => PathBuf::from(p),
     };
-    let blank = |c: &str| c.is_empty() || c == "-" || c == "none";
+    let blank = |c: &str| c.is_empty() || c == "-" || c.eq_ignore_ascii_case("none");
+    // Several flows share one doc, so each is read once per pass.
+    let mut docs: std::collections::HashMap<PathBuf, Option<String>> = Default::default();
     rows.skip(1)
         .map(cells)
-        .filter(|c| c.len() >= head.len())
-        .map(|c| {
+        .map(|mut c| {
             let mut why = Vec::new();
+            // A short row is shown broken, never dropped: losing a flow silently is the drift this
+            // table exists to catch.
+            if c.len() < head.len() {
+                why.push(format!(
+                    "the row has {} cells, the header {}",
+                    c.len(),
+                    head.len()
+                ));
+                c.resize(head.len(), String::new());
+            }
             let (file, anchor) = c[di].split_once('#').unwrap_or((&c[di], ""));
             let doc = home(file);
-            match std::fs::read_to_string(&doc) {
-                Err(_) => why.push(format!("{file} is gone")),
-                Ok(_) if anchor.is_empty() => why.push(format!("{file}: no #anchor")),
-                Ok(text) if section(&text, anchor).is_none() => {
+            let text = docs
+                .entry(doc.clone())
+                .or_insert_with(|| std::fs::read_to_string(&doc).ok());
+            match text {
+                None => why.push(format!("{file} is gone")),
+                Some(_) if anchor.is_empty() => why.push(format!("{file}: no #anchor")),
+                Some(text) if section(text, anchor).is_none() => {
                     why.push(format!("{file}: no heading #{anchor}"))
                 }
-                Ok(_) => {}
+                Some(_) => {}
             }
             let picture = if blank(&c[pi]) {
                 String::new()
@@ -1156,7 +1172,7 @@ mod tests {
         p
     }
 
-    const ARCH: &str = "# map\n\n## Flows\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Close verdict | may it close? | `~/docs/states.md#close-verdict` | `~/docs/close.svg` | `tests/states.bats` |\n| Chain | what runs after what? | `~/docs/states.md#the-chain-a---b` | - | none |\n| Gone | ? | `~/docs/states.md#nope` | `~/docs/gone.svg` | `tests/gone.bats` |\n\n## Instruments\n\n| a | b |\n";
+    const ARCH: &str = "# map\n\n## Flows\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Close verdict | may it close? | `~/docs/states.md#close-verdict` | `~/docs/close.svg` | `tests/states.bats` |\n| Chain | what runs after what? | `~/docs/states.md#the-chain-a---b` | - | None |\n| Gone | ? | `~/docs/states.md#nope` | `~/docs/gone.svg` | `tests/gone.bats` |\n| Short | ? |\n\n### Notes\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Bogus | ? | - | - | - |\n\n## Instruments\n\n| a | b |\n";
 
     const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
@@ -1215,11 +1231,13 @@ mod tests {
             [
                 ("Close verdict", OK),
                 ("Chain", UNCHECKED),
-                ("Gone", BROKEN)
+                ("Gone", BROKEN),
+                ("Short", BROKEN)
             ],
-            "the table stops at the next heading"
+            "only the first table counts, a short row is broken not dropped"
         );
-        assert_eq!(s.strip["flows"], 2, "unchecked and broken both count");
+        assert_eq!(s.flows[3].why[0], "the row has 2 cells, the header 5");
+        assert_eq!(s.strip["flows"], 3, "unchecked and broken both count");
         assert_eq!(
             s.flows[2].why,
             [

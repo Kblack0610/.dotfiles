@@ -156,6 +156,10 @@ impl StackView {
             _ => self.skills.key::<Skill>(k.code),
         };
         if took != Took::No {
+            // A view change can move the selection onto another flow.
+            if let Some(s) = s {
+                self.read_doc(s);
+            }
             return true;
         }
         let n = s.map_or(0, |s| self.rows(s));

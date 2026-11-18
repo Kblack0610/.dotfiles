@@ -13,7 +13,7 @@ const STACK_REFRESH_MS = 120e3;
 const STACK_OPEN_ROWS = 30;
 
 // A column key as its header, the TUI's words (stacktab.rs); [text, class].
-const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["defined in"], picture: ["picture"], checked: ["checked by"], state: ["state"] };
+const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["source"], picture: ["picture"], checked: ["checked"], state: ["state"] };
 const SKILL_COLS = { skill: ["skill"], category: ["category"], repo: ["repo"], calls: ["calls", "n"], runners: ["runners"], drift: ["drift"] };
 const AGENT_COLS = { agent: ["agent"], model: ["model"], tools: ["tools"], repo: ["repo"] };
 const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"] };

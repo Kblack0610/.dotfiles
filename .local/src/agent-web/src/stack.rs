@@ -115,7 +115,11 @@ impl Cache {
     /// whether it has a picture. A name the table does not list is an error.
     pub async fn flow(&self, name: String) -> Result<String, String> {
         let f = self.find(&name).await?;
-        let picture = f.svg.is_some();
+        // Only a picture the route will serve, so the page never draws a broken image.
+        let picture = f
+            .svg
+            .as_ref()
+            .is_some_and(|p| p.is_file() && p.extension().is_some_and(|e| e == "svg"));
         let text = off(move || stack::flow_section(&f)).await?;
         let text = text.ok_or_else(|| format!("{name}: its doc section is gone"))?;
         Ok(serde_json::json!({ "flow": name, "text": text, "picture": picture }).to_string())

@@ -1809,8 +1809,8 @@ async fn stack_flow(State(s): State<Shared>, Query(q): Query<FlowQuery>) -> ApiR
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
 }
 
-/// A flow's picture, served here because the page's CSP is `img-src 'self'`; drawn as an `<img>`,
-/// so no script in it runs.
+/// A flow's picture, served here because the page's CSP is `img-src 'self'`. The page draws it as
+/// an `<img>`; opened on its own, the sandbox CSP keeps any script in it from running here.
 async fn stack_flow_svg(
     State(s): State<Shared>,
     Query(q): Query<FlowQuery>,
@@ -1823,7 +1823,9 @@ async fn stack_flow_svg(
     Ok((
         [
             (header::CONTENT_TYPE, "image/svg+xml"),
-            (header::CACHE_CONTROL, "private, max-age=120"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
         ],
         bytes,
     )
