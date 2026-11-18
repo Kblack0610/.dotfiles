@@ -414,7 +414,7 @@ return {
           end
           for k = n + 1, #body do
             if body[k]:match "%S" and not is_rule(body[k]) then
-              return not body[k]:match "^## " and not is_scaffold(vim.trim(body[k]))
+              return not body[k]:match "^## " and not is_scaffold(body[k])
             end
           end
           return false

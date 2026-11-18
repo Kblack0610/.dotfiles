@@ -44,6 +44,10 @@ SECONDARY convenience for an attended agent only; producers never use it.
 
 `post` refuses a second pending ask from the same Claude session (`claude_session`), names the one already open, and exits 2. Several decisions become one question: options such as `take-all=<each recommendation>|one-by-one=go through them here`, with the per-decision detail in `--context`. To replace the open one, `agent-ask cancel <id> superseded` first. So every board reads one row per asking session. A post with no session id (a bare shell) is not checked. Why: by 2026-11-05, 22 sessions had posted bursts of 2 to 6 asks minutes apart, 54 extra rows, one trader session 6 in the same second. Test: `tests/integ/agent_ask.bats`.
 
+## One ask per blocker
+
+An ask that waits on something outside the session that stops other sessions too (an account's billing, a quota, an outage) names it: `--blocker <owner/repo>:<cause>`, the cause one word (`billing`, `quota`, `outage`, `auth`), stored lowercase with any github URL, `git@github.com:` or `.git` taken off the repo. When a pending ask already carries that `blocker:`, from any project, `post` files nothing (one lock spans the lookup and the new file, so sessions that hit it at once file one ask): it adds the session to that ask as another `claude_session:` line (the first stays the asker), prints that ask's id, and shows its card to an attended session. Every reader of `claude_session:` lines (agent-panel, fleet-sessions, `88-ask-filed.sh`) then counts the ask as that session's too, and the boards show one row. The answer goes to every one of them: `deliver` types it into each live session (a live judge answer at post goes out the same way to every session but the asker, which reads it at post), `reopen-on-answer` records the calling session as a `reopen:` line, and `reopen` restarts each such ended session (an attached one in window `ask-<id>-<sid prefix>`). A reply in one session that names an option answers it for all; a reply that would cancel it only takes that session off while others still wait. A blocker ask leaves room for one question of the session's own, but a second, different blocker is a second question; a post with `--resume` stays its own ask. When the last session that asked for a reopen leaves, the reopen resume is cleared. Why: on 2026-11-16 GitHub billing on `.dotfiles-private` drew 9 pending asks, one per session. Test: `tests/integ/agent_ask.bats`.
+
 ## Verbs
 
 ```
@@ -58,6 +62,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --context TEXT  why it is asked and what it blocks (the card's why: line)
   --recommend O   the option you would pick; must be one of --options
   --why TEXT      why you recommend it, one sentence (the card's because: line); needs --recommend
+  --blocker R:C   <owner/repo>:<cause> outside the session; a pending ask on it takes this session instead (One ask per blocker)
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
@@ -122,6 +127,9 @@ judge_override_at:
 resume: /captain resume
 parked_until:             # set by `park`: UTC, the ask is off the boards until then
 parked_at:
+blocker:                  # set by post --blocker: <owner/repo>:<cause>, shared by every session it stops
+claude_session:           # one line per session waiting on it, the asker first (a shared blocker adds the rest)
+reopen:                   # one line per session reopen-on-answer restarts with the answer
 ```
 
 ## The answer judge

@@ -4663,3 +4663,83 @@ fire_line() {   # <ts> <task id>
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
   run live_cron "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; assert_output ''
 }
+
+@test "landed_named keeps only the PRs a plan's Phases section names" {
+  phases_plan '- [x] Phase 1: scoring (#875)' '- [x] Phase 2: docs (o/r#42, #43)' '- [ ] Phase 3: rollout'
+  printf '# Plan\n\nIgnored prose names #2118.\n' > "$SANDBOX/other.md"
+  run landed_named '#2118' "$SANDBOX/plan.md"; [ "$output" = - ]
+  run landed_named '#2118,#875,#42' "$SANDBOX/plan.md"; assert_output '#875'   # a cross-repo o/r#42 is not this repo's #42
+  run landed_named '#87' "$SANDBOX/plan.md"; [ "$output" = - ]   # #875 is not #87
+  run landed_named '#43' - "$SANDBOX/missing.md" "$SANDBOX/plan.md"; assert_output '#43'
+  run landed_named '#2118' "$SANDBOX/other.md"; [ "$output" = - ]
+}
+
+@test "end to end: a merged PR no phase of the plan names is not claimed by the row (ar-2606)" {
+  # 2026-11-16 hub/dotfiles:1 read "its PRs #2118 merged, next phase: P3": #2118 was a chore item of the
+  # session, named by no phase, so the row said a phase landed that did not.
+  landed_fixture
+  local d="$HOME/.agent/queue/done/$(date +%F)"
+  : > "$LEDGER_DIR/prs.tsv"
+  mkdir -p "$d"
+  printf 'slug: chore-x\nproject: p\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2118\nmerged: abc\nstatus: ok\nfinished: %s\n---\nchore\n' \
+    "$(date -u +%FT%TZ)" > "$d/20261108-025157-chore-x.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [[ "$(jq -r .reason <<<"$output")" != *2118* ]]
+  # the plan naming it makes it the phase's landing
+  phases_plan '- [x] Phase 1: fleet-sessions (#875, #2118)' '- [ ] Phase 2: rollout'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [[ "$(jq -r .reason <<<"$output")" == *"its PRs #2118 merged"* ]]
+}
+
+@test "submodule_pin: a submodule is unlanded only when off both its default branch and the superproject's pin (ar-2606)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always); CACHE="$SANDBOX/cache"; mkdir -p "$CACHE"
+  git init -q --bare "$SANDBOX/sub.git"; git init -q --bare "$SANDBOX/super.git"
+  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0; "${g[@]}" -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+  git clone -q "$SANDBOX/super.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" commit -q --allow-empty -m init
+  "${g[@]}" -C "$SANDBOX/wt" submodule -q add "$SANDBOX/sub.git" External/core 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" commit -q -m pin; "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
+  local sm="$SANDBOX/wt/External/core"
+  # a pin-merge commit off master that the superproject's main pins: HEAD is the pin, so nothing is unlanded
+  git -C "$sm" checkout -q -b pin-merge; echo 1 > "$sm/f"; "${g[@]}" -C "$sm" add f; "${g[@]}" -C "$sm" commit -q -m pm
+  "${g[@]}" -C "$SANDBOX/wt" add External/core; "${g[@]}" -C "$SANDBOX/wt" commit -q -m 'pin the pin-merge'
+  "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null; "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
+  run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  unlanded() { git_facts "$1" | cut -d' ' -f3; }
+  run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
+  [ "$(unlanded "$sm")" = 0 ]
+  # a commit past the pin that is on neither branch is unlanded work
+  echo 2 > "$sm/g"; "${g[@]}" -C "$sm" add g; "${g[@]}" -C "$sm" commit -q -m extra
+  [ "$(unlanded "$sm")" = 1 ]
+  # merged to the submodule's master but not yet pinned: landed, not unlanded
+  "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
+  run ahead_files "$sm" "$(submodule_pin "$sm")"; assert_output 1
+  [ "$(unlanded "$sm")" = 0 ]
+  # outside a submodule there is no pin and the base is the base
+  run submodule_pin "$SANDBOX/wt"; assert_output ''
+}
+
+@test "an open PR whose red jobs ran no steps is WORKING, waiting on billing; a job with a step is a real red (ar-2606)" {
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'
+  printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_90.json"; printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_91.json"
+  job 92 'Run tests:failure'
+  printf '{"conclusion":"cancelled","steps":[]}\n' > "$SANDBOX/job_93.json"
+  open_pr FAIL 90,91
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .ci <<<"$output")" = NOSTART ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI never started (its jobs ran no steps), waiting on billing' ]
+  # negative controls: one job that ran a step, a cancelled job, a check that is not a job, no job ids at all
+  for red in 90,92 90,93 90,- - 92; do
+    open_pr FAIL "$red"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  done
+}
