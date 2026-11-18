@@ -18,7 +18,9 @@
 # so every pass also runs `cargo build --release` for each Rust tool linked into ~/.local/bin and
 # restarts a running unit named after one whose binary is newer than the unit (agent-web). A
 # persistent agentctl runner is one long-lived process that keeps the code it parsed at start, so
-# every pass also restarts a running one whose script is newer than its unit (inbox-triage).
+# every pass also restarts a running one whose script is newer than its unit (inbox-triage). A
+# scheduled runner fires only once `agentctl reload` writes its timer, so every pass runs one when a
+# timer lags its conf (missing, older, or left with no scheduled conf).
 # `git merge --ff-only` refuses rather than overwrite a dirty or untracked file, so local work is
 # never touched; a refused or diverged checkout stays put and says why (logged too). A file that
 # differs from HEAD only in JSON key order or spacing holds no local work, so when every file in the
@@ -191,12 +193,32 @@ attach_runners() {
   done
 }
 
+# attach_timers -> one line when agentctl armed a lagging timer or failed to. A conf that lands is
+# not armed until `agentctl reload` writes its timer, and nothing else in a landing runs one:
+# mkt-drafts and store-sales merged and never fired (2026-11-17). `reload --if-stale` owns the rule
+# of which timer lags and is silent when none does. Runs after attach_missing, which links a conf
+# the pull added. Its whole report goes to the log.
+attach_timers() {
+  local out rc
+  command -v agentctl >/dev/null 2>&1 || return 0
+  out=$(capped "$DEPLOY_SECS" agentctl reload --if-stale 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || [ -n "$out" ] || return 0
+  log_report "agentctl reload --if-stale" "$rc" "$out"
+  if [ "$rc" -eq 0 ]; then
+    say "~: $(printf '%s\n' "$out" | sed -n '1s/^agentctl: //p'), reloaded"
+  else
+    say "~: agentctl reload --if-stale failed (exit $rc), a timer may lag its conf; report in ${LOG/#"$HOME"/\~}"
+  fi
+}
+
 # attach_all: what every pass runs once, moved or not
 attach_all() {
   attach_missing
   attach_skills
   attach_rust
   attach_runners
+  attach_timers
 }
 
 # run_locked <flock wait flag...> -- <args...>: run this script again with <args> under the pass lock,

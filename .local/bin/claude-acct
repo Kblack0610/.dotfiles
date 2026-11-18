@@ -14,6 +14,8 @@
 #                        # it in rbw as claude-oauth-<name>. Never echoes the token. An account that
 #                        # already has a token is skipped without --renew
 #   claude-acct token [name|dir]     # print that account's token (empty arg = main); exit 1 when it has none
+#   claude-acct token push <host...> # copy every token from this rbw to each host (0600, over ssh stdin),
+#                        # for a machine with no unlocked rbw; it reads that copy
 #   claude-acct token-prefix [dir]   # the launch-line prefix that hands a pane its account's token, or
 #                        # nothing; the token is read when the pane's shell runs it, never typed into it
 #   claude-acct status [--json]   # every source: window used, window gone, run-out, live sessions,
@@ -104,6 +106,10 @@ MAIN_DIR="$HOME/.claude"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
 # rbw entry per account: the token is the password, the notes carry email, minted, expires.
 TOKEN_ENTRY="claude-oauth-"
+# A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
+# a 0600 copy here, written only by `claude-acct token push` from a machine whose rbw is unlocked.
+TOKEN_DIR="${CLAUDE_ACCT_TOKEN_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens}"
+TOKEN_LEN=108   # sk-ant-oat01- and 95 more; a shorter scrape is a wrapped line, so setup-token asks for a paste
 
 # What every account shares with the main one. Everything else (.credentials.json,
 # .claude.json, stats, other runtime dirs) stays per account. sessions/ is the machine's
@@ -493,7 +499,7 @@ cmd_pick() {
 
 # --- long-lived tokens ------------------------------------------------------------------
 # `claude setup-token` mints a token that lasts about a year; rbw holds one per account, and the
-# one reader is acct_token. No lasting copy lands on disk (setup-token holds one in a 0700 temp dir for the length of its run) and none is ever put on a command line: a pane's
+# one reader is acct_token. A machine without an unlocked rbw reads the 0600 copy `token push` wrote in TOKEN_DIR; none is ever put on a command line: a pane's
 # launch line carries `$(claude-acct token ...)`, which its shell runs at the moment of launch.
 
 # acct_name <name|dir> -> the account's name ('' when it is none); empty arg and "-" are main
@@ -513,9 +519,11 @@ acct_name() {
 # start cannot answer), and the session then runs on the account's login credentials as before.
 acct_token() {
     local t
-    command -v rbw >/dev/null 2>&1 || return 1
-    if ! rbw unlocked >/dev/null 2>&1; then
-        echo "claude-acct: rbw is locked, so $1 starts on its login credentials, not its setup token" >&2
+    if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
+        t=$(cat "$TOKEN_DIR/$1" 2>/dev/null) || t=''
+        if [[ "$t" == sk-ant-oat* ]]; then printf '%s' "$t"; return 0; fi
+        command -v rbw >/dev/null 2>&1 &&
+            echo "claude-acct: rbw is locked, so $1 starts on its login credentials, not its setup token" >&2
         return 1
     fi
     t=$(rbw get "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
@@ -530,9 +538,47 @@ cmd_token() {
     acct_token "$name"
 }
 
+# token push <host...>: copy every account's token from this machine's unlocked rbw to each host's
+# TOKEN_DIR (0600), over ssh stdin: never an argument, never a pane. Then ask the host's own
+# claude-acct for each, so a host whose dotfiles predate the copy reads as failed. Exit 1 when any
+# host failed, 2 when rbw cannot be read here.
+cmd_token_push() {
+    (($#)) || { echo "usage: claude-acct token push <host...>" >&2; return 2; }
+    command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1 ||
+        { echo "claude-acct token push: rbw is locked or missing here; rbw unlock, then re-run" >&2; return 2; }
+    local host n dir t sum fail=0 ok
+    # the host's TOKEN_DIR, expanded there; on its own line so the headless-launch scan reads no `claude -p`
+    local rdir='${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens'
+    local -a have=()
+    while IFS=$'\037' read -r n dir; do
+        if [[ "$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null)" == sk-ant-oat* ]]; then have+=("$n")
+        else echo "claude-acct token push: $n has no token in rbw: claude-acct setup-token $n" >&2; fail=1; fi
+    done < <(accounts)
+    for host in "$@"; do
+        [[ "$host" == -* ]] && { echo "claude-acct token push: '$host' is not a host" >&2; fail=1; continue; }
+        ok=()
+        for n in "${have[@]}"; do
+            t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
+            sum=$(printf '%s' "$t" | cksum)
+            # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
+            # host's claude-acct is new enough to read a copy
+            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+                "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
+                ok+=("$n")
+            else
+                echo "claude-acct token push: $host: $n failed (ssh, a short write, or its claude-acct does not read the copy: pull its dotfiles)" >&2
+                fail=1
+            fi
+        done
+        t=''
+        echo "$host: ${ok[*]:-none} read back"
+    done
+    return "$fail"
+}
+
 # token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
-# token now, else nothing: an account without one keeps its login. This reads rbw once to decide;
-# the pane's shell reads it again at launch.
+# token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
+# keeps its login. The pane's shell reads the token again at launch.
 cmd_token_prefix() {
     local name
     name=$(acct_name "${1:-}") || return 0
@@ -591,9 +637,11 @@ setup_one() {
     echo "   claude setup-token opens a browser: sign in as ${email:-that account}, approve, and the token prints."
     # claude runs on a scratch config dir: minting a token must not touch the account's login state.
     if command -v script >/dev/null 2>&1; then
-        script -qf -c "stty cols 4000 2>/dev/null; env CLAUDE_CONFIG_DIR=$(printf %q "$tmp/cfg") claude setup-token" "$pty" || true
+        # claude draws at the terminal's own width, so a token it wraps is cut short in the capture:
+        # only a whole one (TOKEN_LEN) is taken, else the hidden paste below asks for it.
+        script -qf -c "env CLAUDE_CONFIG_DIR=$(printf %q "$tmp/cfg") claude setup-token" "$pty" || true
         tok=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$pty" 2>/dev/null | tr -d '\r' |
-            grep -oE 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]+' | awk 'length($0) > n { n = length($0); t = $0 } END { print t }')
+            grep -oE 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]+' | awk -v n="$TOKEN_LEN" 'length($0) == n { t = $0 } END { print t }')
     else
         CLAUDE_CONFIG_DIR="$tmp/cfg" claude setup-token || true
     fi
@@ -614,8 +662,9 @@ setup_one() {
         echo "   $name: the token did not run a call; nothing stored" >&2; rm -rf "$tmp"; return 1
     fi
     echo "   verified: one haiku call ran on the token"
-    code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$USAGE_URL" \
-        -H "Authorization: Bearer $tok" -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || code=000
+    # The header goes in on stdin (-K -): argv is readable by every process on the machine.
+    code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" |
+        curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' "$USAGE_URL" -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || code=000
     if [[ "$code" == 200 ]]; then note=accepted; else note="rejected (HTTP $code)"; fi
     echo "   usage endpoint: $note"
     exp=$(date -d '+365 days' +%F)
@@ -2104,7 +2153,7 @@ case "${1:-}" in
     auth)   shift; cmd_auth "$@" ;;
     wake)   shift; cmd_wake "$@" ;;
     setup-token) shift; cmd_setup_token "$@" ;;
-    token)  shift; cmd_token "$@" ;;
+    token)  shift; if [[ "${1:-}" == push ]]; then shift; cmd_token_push "$@"; else cmd_token "$@"; fi ;;
     token-prefix) shift; cmd_token_prefix "$@" ;;
     cost)   cmd_cost ;;
     link)   cmd_link ;;

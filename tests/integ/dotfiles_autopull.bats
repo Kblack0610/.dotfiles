@@ -561,3 +561,39 @@ runner() {
   assert_line '~: restarted agentctl@triage.service on the new triage'
   refute_line --partial 'on the new old'
 }
+
+# reload_says <rc> <line>... -> the agentctl stub answers `reload --if-stale` with these lines and <rc>
+reload_says() {
+  local rc="$1"; shift
+  { printf '#!/bin/sh\nprintf "agentctl %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n'
+    printf 'echo %q\n' "$@"
+    printf 'exit %s\n' "$rc"; } >"$SANDBOX/bin/agentctl"
+}
+
+@test "a pass runs agentctl reload --if-stale and says the timers it armed, its report in the log" {
+  reload_says 0 'agentctl: timers lag their confs: landed edited' 'agentctl: loaded 3 agent(s)'
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called 'agentctl reload --if-stale'
+  assert_line '~: timers lag their confs: landed edited, reloaded'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'loaded 3 agent(s)'
+}
+
+@test "negative control: a reload with no timer lagging adds no line" {
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called 'agentctl reload --if-stale'
+  refute_line --partial 'reload'
+}
+
+@test "a failed reload is named on the line and logged, and the pull still succeeds" {
+  reload_says 3 'agentctl: bad conf'
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --regexp '^~/\.dotfiles: fast-forwarded main '
+  assert_line --partial '~: agentctl reload --if-stale failed (exit 3)'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'agentctl: bad conf'
+}
