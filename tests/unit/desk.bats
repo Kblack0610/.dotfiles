@@ -199,6 +199,7 @@ chip_fixture() {
     "custom/gated": { "exec": "echo shown", "exec-if": "false" },
     "custom/icon": { "exec": "printf '{\"text\":\"3\",\"alt\":\"dnd\"}\\n{\"text\":\"4\"}\\n'", "format": "{icon} {}", "format-icons": { "dnd": "D", "default": "N" } },
     "custom/blank": { "exec": "true" },
+    "custom/rich": { "exec": "cat \"$DESK_WAYBAR_DIR/rich.json\"" },
     "custom/again": { "exec": "echo tick", "restart-interval": 0 },
     "bluetooth": { "format": "x" }
 }
@@ -219,11 +220,41 @@ JSON
   chip_fixture
   run "$DESK" chip custom/poll run
   assert_success
-  assert_output '{"text":"ci & ok","tooltip":"2 down","class":"warn"}'
+  assert_output '{"text":"ci & ok","tooltip":"2 down","detail":[[{"t":"2 down"}]],"class":"warn"}'
   run "$DESK" chip custom/once run
-  assert_output '{"text":"plain text","tooltip":"","class":""}'
+  assert_output '{"text":"plain text","tooltip":"","detail":[],"class":""}'
   run "$DESK" chip custom/stream run
-  assert_output $'{"text":"a","tooltip":"","class":""}\n{"text":"b","tooltip":"","class":""}'
+  assert_output $'{"text":"a","tooltip":"","detail":[],"class":""}\n{"text":"b","tooltip":"","detail":[],"class":""}'
+}
+
+@test "chip run parses the tooltip's pango into styled runs per line for the detail panel" {
+  chip_fixture
+  # A bold title, a coloured span with alpha, a <tt> table row with a nested colour, entities,
+  # and a stray "<" that is text, not a tag (the negative control).
+  jq -cn '{text: "ci", tooltip: "<b>CI runners</b> <span color='"'"'#ffcc2f'"'"' alpha='"'"'60%'"'"'>busy</span>\n<tt>pool  <span foreground=\"#ef5734\">2/2</span></tt>\na < b &amp; c"}' \
+    > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  assert_success
+  local d
+  d=$(jq -c '.detail' <<<"$output")
+  run jq -c 'map(map(.t) | join(""))' <<<"$d"
+  assert_output '["CI runners busy","pool  2/2","a < b & c"]'
+  run jq -c '[.[0][0].b, .[0][2].c, .[0][2].a, .[1][0].m, .[1][1].m, .[1][1].c, ([.[2][] | keys[]] | unique)]' <<<"$d"
+  assert_output '[true,"#ffcc2f",0.6,true,true,"#ef5734",["t"]]'
+}
+
+@test "chip run detail keeps only a #rrggbb text colour and drops a tooltip with no text" {
+  chip_fixture
+  # bgcolor is not the text colour, and a named colour is not one the panel can draw.
+  jq -cn '{text: "x", tooltip: "<span bgcolor=\"#000000\" foreground=\"#ff0000\">a</span><span color=\"red\">b</span>"}' \
+    > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.detail' <<<"$output"
+  assert_output '[[{"c":"#ff0000","t":"a"},{"t":"b"}]]'
+  jq -cn '{text: "x", tooltip: "<b></b>\n<tt></tt>"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.detail' <<<"$output"
+  assert_output '[]'
 }
 
 @test "chip run on a failing exec-if prints an empty chip and never runs the exec" {
@@ -237,7 +268,7 @@ JSON
   chip_fixture
   run "$DESK" chip custom/icon run
   assert_success
-  assert_output $'{"text":"D 3","tooltip":"","class":""}\n{"text":"N 4","tooltip":"","class":""}'
+  assert_output $'{"text":"D 3","tooltip":"","detail":[],"class":""}\n{"text":"N 4","tooltip":"","detail":[],"class":""}'
 }
 
 @test "chip run on an exec that prints nothing prints nothing, which hides the chip" {
@@ -253,7 +284,7 @@ JSON
   # stream that never noticed the closed pipe would end 124, not 0.
   run bash -c "set -o pipefail; timeout 10 '$DESK' chip custom/again stream | head -n 3"
   assert_success
-  assert_output $'{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}'
+  assert_output $'{"text":"tick","tooltip":"","detail":[],"class":""}\n{"text":"tick","tooltip":"","detail":[],"class":""}\n{"text":"tick","tooltip":"","detail":[],"class":""}'
 }
 
 @test "chip exits 2 on an unknown module and on one with no exec" {
@@ -318,4 +349,56 @@ print(*bad, sep="\n")
 sys.exit(1 if bad else 0)
 ' "$REPO_ROOT/.config/noctalia/config.toml"
   assert_success
+}
+
+@test "notify show sends the replace hint and keeps the server id; drop closes it once" {
+  printf '#!/usr/bin/env bash\necho "notify-send $*" >> "$FX/calls.log"; echo 77\n' > "$SANDBOX/bin/notify-send"
+  # GetNameOwner answers with $FX/owner (the notifier process); any other call is a close.
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { cat "$FX/owner"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  echo "(':1.7',)" > "$FX/owner"
+  # show and drop never look at the slot: the same under swaync.
+  mkdir -p "$(dirname "$STATE")" && echo "notify=swaync" > "$STATE"
+  run "$DESK" notify show hint -t 100 title body
+  assert_success
+  assert_equal "$(cat "$FX/run/desk/notify-hint.id")" "77 (':1.7',)"
+  run "$DESK" notify drop hint
+  assert_success
+  run "$DESK" notify drop hint
+  assert_success
+  run cat "$FX/calls.log"
+  assert_output $'notify-send -p -h string:x-canonical-private-synchronous:hint -t 100 title body\ngdbus 77'
+  [ ! -e "$FX/run/desk/notify-hint.id" ]
+}
+
+@test "notify drop leaves alone an id a restarted notifier may have handed to another popup" {
+  printf '#!/usr/bin/env bash\necho 77\n' > "$SANDBOX/bin/notify-send"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { cat "$FX/owner"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  echo "(':1.7',)" > "$FX/owner"
+  run "$DESK" notify show hint title
+  assert_success
+  echo "(':1.9',)" > "$FX/owner"
+  run "$DESK" notify drop hint
+  assert_success
+  [ ! -e "$FX/calls.log" ]
+  [ ! -e "$FX/run/desk/notify-hint.id" ]
+  run "$DESK" notify show
+  assert_failure 2
+}
+
+@test "notify show passes on the clicked action of a --wait popup, and a / in a tag stays out of the path" {
+  # notify-send -p --wait: the id, then the action once the popup closes.
+  printf '#!/usr/bin/env bash\necho 88; echo default\n' > "$SANDBOX/bin/notify-send"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { echo "(\x27:1.7\x27,)"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  run "$DESK" notify show "page:ci/main" -A default=Open --wait title body
+  assert_success
+  assert_output default
+  assert_equal "$(cat "$FX/run/desk/notify-page:ci%main.id")" "88 (':1.7',)"
+  run "$DESK" notify drop "page:ci/main"
+  assert_equal "$(cat "$FX/calls.log")" "gdbus 88"
 }
