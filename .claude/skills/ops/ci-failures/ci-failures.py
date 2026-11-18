@@ -107,7 +107,8 @@ class Source:
 
     def __init__(self, repo, cache, offline):
         self.repo, self.cache, self.offline = repo, cache, offline
-        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = 0, None, None, 0, []
+        # partial: the first reason a read failed (the counts are low from there on), else None
+        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = None, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
 
     def gh(self, *args):
@@ -117,10 +118,11 @@ class Source:
             return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
         except (subprocess.CalledProcessError, OSError) as e:
             err = (getattr(e, "stderr", "") or str(e)).strip()
-            print(f"gh {' '.join(args[:3])}: {err[:200]}", file=sys.stderr)
+            why = f"gh {' '.join(args[:3])}: {err[:200]}"
+            print(why, file=sys.stderr)
             if err.startswith("log not found"):
                 raise Missing()
-            self.partial = 1
+            self.partial = why
             raise Partial()
 
     def cached(self, name, fetch, as_json=True):
@@ -165,7 +167,7 @@ class Source:
             why = str(e)
         if why:
             print(f"{label}: {why}", file=sys.stderr)
-            self.partial = 1
+            self.partial = self.partial or f"{label}: {why}"
             return None
         return json.loads(got.stdout)
 
@@ -409,6 +411,7 @@ def main(argv):
     a = analyse(runs, records, args.base, set(args.branch))
     if args.json:
         json.dump({"repo": args.repo, "since": stamp(since), "until": stamp(until), "partial": bool(src.partial),
+                   "partial_why": src.partial,
                    "jobs_from_gh": src.from_gh, "logs_missing": src.logs_missing, **a, "records": records}, sys.stdout, indent=1, default=str)
         print()
     else:

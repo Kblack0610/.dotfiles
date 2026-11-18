@@ -119,6 +119,8 @@ sig() { field "[s for s in d['signatures'] if '$1' in s['signature']][0]['$2']";
   assert_failure 3
   assert_output --partial 'not yet past 2026-11-04T00:00:00Z'
   assert_output --partial 'PARTIAL'
+  run --separate-stderr field "d['partial_why']"
+  assert_output 'run ledger: o/r last synced 2026-11-03T23:59:00Z, not yet past 2026-11-04T00:00:00Z'
 }
 
 @test "SENTINEL_SINCE starts the window at a watch's fix: the runs before it are not read; one before the window changes nothing (negative control)" {
@@ -169,8 +171,14 @@ online() {
   assert_equal "$(python3 -c "import json,sys; print([r['line'] for r in json.loads(sys.argv[1])['records'] if r['run'] == 106][0])" "$output")" "(no log on GitHub)"
 }
 
-@test "negative control: any other gh error on a log is PARTIAL, exit 3" {
+@test "negative control: any other gh error on a log is PARTIAL, exit 3, and partial_why names the call" {
   run --separate-stderr online "HTTP 502: Bad Gateway"
   assert_failure 3
-  assert_equal "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['partial'])" "$output")" "True"
+  assert_equal "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['partial'], d['partial_why'])" "$output")" "True gh run view -R: HTTP 502: Bad Gateway"
+}
+
+@test "a full read has no partial_why" {
+  run --separate-stderr online "log not found: 1061"
+  assert_success
+  assert_equal "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['partial_why'])" "$output")" "None"
 }
