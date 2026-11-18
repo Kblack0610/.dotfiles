@@ -44,17 +44,21 @@ load 'fleet_dispatch/common'
   assert_not_called 'claude-acct unpark'
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
+@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+  # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
+  unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
   run reconcile_plans
   assert_success
-  run agent-queue list --json --state queued
-  assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
-  assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
-  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
-  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
-  grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  # the row itself (overflow_row, its brief) is agent_queue.bats's; here: one filing, its title
+  log="$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_equal "$(jq -r 'select(.why == "board-only") | "\(.from) \(.project) \(.title)"' "$log")" 'auto:plans game plan orphan: run its open phases'
+  grep -q 'filed orphan.md on the board' "$FLEET_DISPATCH_DIR/log.md"
+  run reconcile_plans
+  assert_success
+  assert_equal "$(jq -c 'select(.why == "board-only")' "$log" | wc -l)" 1
 }
 
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {

@@ -122,6 +122,8 @@ echo "cpu  $((u + a)) $((n + b)) $((s + c)) $((i + d)) 0 0 0 0 0 0" > "$DISPATCH
   export LAB_STAGES="draft dev alpha beta prod"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$DISPATCH_PROJECT_MAP" AGENT_QUEUE_START=0
+  # Fixtures seed the queue as dispatch's pull would; a test of the board-only rule unsets it.
+  export AGENT_QUEUE_PULL=dispatch
   # The launch env as stow deploys it, off the LAN (getent fails), so a start reads its defaults
   # (dropped_tools) and adds no telemetry unless a test stubs getent to say it is on the LAN.
   mkdir -p "$HOME/.config/shared-hooks"
