@@ -9,6 +9,9 @@
 # line leaves the outbox (`notes outbox answer`), so it is never a row.
 # `#p:` outbox lines naming a project exactly, `<id>: <words>` answers and typed inbox lines need no model; the rest of a sweep goes to ONE model
 # call (the conf's MODEL; it also gets a `#p:` word that names no project, as a hint), which only proposes rows, a dup, a skip, and whether to plan first.
+# A session line (`#agent ... #from/<by>`, a session's own follow-up) never takes the typed path: the model call also gets
+# the open rows closest to it (`notes ptask <p> --agent similar`) and answers file, dup or skip; a skip drops the line
+# (`dropped` in the ingest record, with the reason), and a filed one never gets `#requested`.
 # An outbox line it cannot place becomes one question to the human (`agent-ask post --kind approval`, which
 # the judge never answers): which project, or drop it. The answer runs `--answer <id>`, which moves the
 # line to that project's inbox (the next sweep files it) or takes it out of the outbox.
@@ -65,7 +68,7 @@ LIB="$HERE/../lib"
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""
-OUT=""; ANSWER_ID=""; DEFERRED='[]'
+OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
 STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
 PAUSED="$STATE/PAUSED"
@@ -265,6 +268,50 @@ move_out() {
 # shellcheck disable=SC2016 # jq source, not shell
 ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
 
+# A session's follow-up carries `#from/<writer>` (the writer adds it): not the person's words, so
+# it is never typed-and-filed with no model, never #requested, and a skip drops it.
+# One pattern for bash (is_session) and jq (`test`): POSIX classes work in both.
+SESSION_RE='(^|[[:space:]])#from/[^[:space:]]'
+is_session() { [[ "$1" =~ $SESSION_RE ]]; }
+
+# INBOX_SIMILAR_TOP: how many of the closest open rows a session line is shown (`notes ptask similar`).
+: "${INBOX_SIMILAR_TOP:=10}"
+
+# similar_rows <n> <project> <text>: the open rows closest to a session line, as
+# `n<TAB>id<TAB>percent<TAB>lane<TAB>text`, best first, from both boards of the project (a follow-up
+# may repeat a row on either lane). A failed read fails the call: a session line shown no
+# candidates would be filed with no dedupe.
+similar_rows() {
+  local n="$1" p="$2" text="$3" out="" got lane
+  local -a on
+  for lane in human agent; do
+    on=(); [ "$lane" = agent ] && on=(--agent)
+    got="$(notes ptask "$p" "${on[@]}" similar --top "$INBOX_SIMILAR_TOP" -- "$text" 2>&1)" || {
+      say "$p: notes ptask similar failed (an old notes? notes-bootstrap --build-only): $(tail -n 1 <<<"$got")"
+      proof_why "$p: notes ptask similar failed"; return 1
+    }
+    [ -z "$got" ] || out+="$(awk -F'\t' -v n="$n" -v l="$lane" '{ printf "%s\t%s\t%s\t%s\t%s\n", n, $1, $2, l, $3 }' <<<"$got")"$'\n'
+  done
+  sort -s -t $'\t' -k3,3nr <<<"$out" | sed '/^$/d' | head -n "$INBOX_SIMILAR_TOP"
+}
+
+# drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
+# inbox, recorded `dropped` with the reason, so a follow-up nobody reads never waits there.
+drop_session() {
+  local from="$1" raw="$2" text="$3" why="$4"
+  if [ "$DRY" = 1 ]; then printf 'would drop [%s] %s (%s)\n' "$from" "$raw" "$why"; LINES_DROPPED=$((LINES_DROPPED + 1)); return 0; fi
+  if [ "$from" = outbox ]; then
+    notes outbox drop --why "$why" -- "$raw" >/dev/null
+  else
+    notes ptask "$from" --exact file --skip --why "$why" -- "$raw" >/dev/null
+  fi || {
+    say "$from: not dropped, left: $raw"
+    note refused "$from" "the skip could not be applied" "$text"
+    FAILED=$((FAILED + 1)); return 1
+  }
+  LINES_DROPPED=$((LINES_DROPPED + 1))
+}
+
 # answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
 # join the open row as a dup does (moved to the row's project, then `file --dup`, which keeps them
 # as the row's `was:` line), and a decide row is closed by it. No open row is `left`, with why.
@@ -317,13 +364,18 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide batch open epics systems prompt out types agent_run
+  local lines="$1" board="$2" names homes srcs wide osrcs owide batch open epics systems prompt out types agent_run
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   agent_run="$(agent_run_rule)"
+  lines="$(jq -c '[.[] | .listed = ((.session // false) and .from != "outbox")]' <<<"$lines")"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
   wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
+  # A session line is shown its own shortlist (similar_rows), so its inbox's whole list and the
+  # newest rows of the other projects are for the rest of the batch only.
+  osrcs="$(jq -c '[.[] | select(.listed | not) | .from] | unique' <<<"$lines")"
+  owide="$(jq 'any(.[] | select(.listed | not); .from == "outbox")' <<<"$lines")"
   local -a froms=() raws=() texts=() nears=()
   mapfile -d '' -t froms < <(jq -j '.[] | .from, "\u0000"' <<<"$lines")
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$lines")
@@ -332,10 +384,23 @@ route() {
   batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end) + (if (.value.near // []) != [] then " (asked before: the lines written beside it went to \(.value.near | join(" and ")))" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
   # Every open row of a project a line waits in, for dups. An outbox line can go anywhere, so
   # with one in the batch each other project shows its newest rows too, which is what it is for.
-  open="$(jq -r --argjson src "$srcs" --argjson wide "$wide" '
+  open="$(jq -r --argjson src "$osrcs" --argjson wide "$owide" '
     [.rows[] | select(.project != null and .state != "done" and .id != null)] | group_by(.project)[]
     | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
+  # A session line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
+  local closest="" k sess=0
+  for k in "${!froms[@]}"; do
+    is_session "${texts[k]}" || continue
+    sess=1
+    [ "$(jq -r --argjson k "$k" '.[$k].listed' <<<"$lines")" = true ] || continue
+    closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || return 1
+    closest+=$'\n'
+  done
+  closest="$(sed '/^$/d' <<<"$closest" | cut -c1-200)"
+  local session_rule=""
+  [ "$sess" = 0 ] || session_rule="
+A line tagged #from/<writer> is a follow-up an agent session left, not the person's words: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); file only what no listed row covers. A session line is never asked about."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -346,7 +411,7 @@ route() {
 
 A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 The priority, by this rule. A row you put on lane agent is filed #requested, so the person asked for it: it is #high, or #urgent when it breaks or blocks them now, and never goes without one. A lane human row is not #requested; omit its priority only when the rule leaves it open: a later pass with the whole board gives it one.
-$(priority_rule)
+$(priority_rule)${session_rule}
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
@@ -369,7 +434,9 @@ $systems
 ## Open epics (id, project, title)
 $epics
 ## Open rows (id, project, lane, text)
-$open"
+$open${closest:+
+## Closest open rows to each session line (line, id, percent shared, lane, text)
+$closest}"
   ask "$prompt" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
@@ -442,7 +509,8 @@ $open"
           [ "${#asv[@]}" -gt 0 ] || { leave "no row"; continue; }
           [ "$lane" = agent ] && args+=(--lane agent)
           # A routed line is a want: the writer stamps it, so no row text here carries #requested.
-          args+=(--want "$(want_channel "$from")")
+          # A session's follow-up is no one's want, so it carries no channel and the row no stamp.
+          is_session "$text" || args+=(--want "$(want_channel "$from")")
         fi
         if [ "$from" = outbox ]; then
           [ -n "$dest" ] || { leave "no project"; continue; }
@@ -483,6 +551,11 @@ $open"
           ctx+=". Written $([ "$k" -lt "$n" ] && echo before || echo after) it: ${texts[k - 1]}"
         done
         ask_project "$text" "$why" "$(clean 600 <<<"$ctx")" "${cv[@]}"
+        ;;
+      skip)
+        # A session's follow-up that asks for no work leaves, with the reason; anyone else's stays.
+        if is_session "$text"; then drop_session "$from" "$raw" "$text" "$how" || continue
+        else leave "${why:-skipped}"; fi
         ;;
       *) leave "${why:-skipped}" ;;
     esac
@@ -1151,15 +1224,16 @@ pass() {
     lines="$(notes ptask "$p" inbox --json 2>/dev/null)" || { say "$p: cannot read the inbox"; proof_why "$p: cannot read the inbox"; rc=1; continue; }
     all="$(jq -c --arg p "$p" --argjson all "$all" '$all + [.[] | {from: $p, raw, text, details, typed}]' <<<"$lines")"
   done < <(jq -r '.projects[] | select(.inbox > 0) | .project' <<<"$board" | sort -u)
-  all="$(jq -c --argjson seen "$seen" "[.[] | $fresh]" <<<"$all")"
+  all="$(jq -c --argjson seen "$seen" --arg re "$SESSION_RE" "[.[] | $fresh | .session = (.text | test(\$re))]" <<<"$all")"
 
   # Typed already (the CLI reads the row grammar, so this script holds no copy of it): `file`
-  # with no --as files it as written.
+  # with no --as files it as written. A session's follow-up is never filed this way: the typed
+  # path skips the twin check, so it goes to the model with the rows closest to it.
   while IFS=$'\x1f' read -r -d '' from raw text; do
     file_line "$from" "$raw" "$text" --want "$(want_channel "$from")" --why "typed"
-  done < <(jq -j '.[] | select(.typed) | .from, "\u001f", .raw, "\u001f", .text, "\u0000"' <<<"$all")
+  done < <(jq -j '.[] | select(.typed and (.session | not)) | .from, "\u001f", .raw, "\u001f", .text, "\u0000"' <<<"$all")
   size="$(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
-  all="$(jq -c --argjson max "$size" '[.[] | select(.typed | not)] | {take: .[:$max], over: (.[$max:] | length)}' <<<"$all")"
+  all="$(jq -c --argjson max "$size" '[.[] | select((.typed | not) or .session)] | {take: .[:$max], over: (.[$max:] | length)}' <<<"$all")"
   local over; over="$(jq .over <<<"$all")"
   [ "$over" -gt 0 ] && { KEPT=$((KEPT + over)); OVER=1; }
   [ "$(jq '.take | length' <<<"$all")" -gt 0 ] || return "$rc"
@@ -1187,7 +1261,7 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'; LINES_DROPPED=0
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
@@ -1197,14 +1271,14 @@ sweep() {
   done
   [ "$CAPPED" = 0 ] || rc=1
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
-  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, dropped $LINES_DROPPED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
-  local handled=$((FILED + ROUTED + ANSWERED + ASKED))
+  local handled=$((FILED + ROUTED + ANSWERED + ASKED + LINES_DROPPED))
   [ "$handled" -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
