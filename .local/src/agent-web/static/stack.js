@@ -93,9 +93,10 @@ function skillRow(r) {
 function skillDetail(r) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const finds = (r.drift || []).map((f) => `<div><span class="warn">${esc(f.kind)}</span> ${esc(f.item)} <span class="muted">${esc(f.detail)}</span></div>`).join("");
+  const ran = (r.ran || []).map((x) => `<div><a href="${esc(x.link)}">${esc(x.title || x.session_id.slice(0, 8))}</a> <span class="muted">${esc(x.project)}, ${x.calls} call${x.calls === 1 ? "" : "s"}, ${esc(x.updated)}</span></div>`).join("");
   return `<tr class="wdet"><td colspan="${Object.keys(SKILL_COLS).length}"><div class="sdet">` +
     `<div>${esc(r.description || "no description")}</div>` +
-    line("Loads on", esc((r.paths || []).join(", "))) + line("Drift", finds) +
+    line("Loads on", esc((r.paths || []).join(", "))) + line("Drift", finds) + line("Ran in", ran) +
     line("Spend", `<a href="#costs?by=skill&q=${encodeURIComponent(r.name)}">Costs, Spend by skill</a>`) + `</div></td></tr>`;
 }
 

@@ -1618,7 +1618,14 @@ impl App {
         std::thread::spawn(move || {
             use hub_core::{boards, session_page};
             let ledger = boards::shepherd_dir();
-            let page = session_page::read(runner.as_ref(), &ledger, &id, &rows, &state);
+            let page = session_page::read(
+                runner.as_ref(),
+                &ledger,
+                &id,
+                &rows,
+                &state,
+                &hub_core::session_table::registry(),
+            );
             let _ = tx.send(Msg::SessionPage(Box::new((id, page))));
         });
     }
@@ -2858,10 +2865,16 @@ impl App {
                     self.seek = Some(sec);
                 }
             }
-            // An inner tab's name (`hooks`, `rules`) shows it.
+            // An inner tab's name (`hooks`, `rules`) shows it; words after it are that table's query
+            // (`skills skill:=one-shot`).
             (Tab::Stack, Some(q)) => {
-                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), q.trim()) {
-                    self.stv.inner = id;
+                let q = q.trim();
+                let (name, rest) = q.split_once(char::is_whitespace).unwrap_or((q, ""));
+                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), name) {
+                    match rest.trim() {
+                        "" => self.stv.inner = id,
+                        words => self.stv.open_query(id, words),
+                    }
                 }
             }
             (Tab::Queue, Some(q)) => self.open_queue(&q),
@@ -8002,6 +8015,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_skill_link_opens_stack_skills_on_that_skill() {
+        let (t, q) = crate::tabreq::parse("stack skills skill:=shepherd").unwrap();
+        assert_eq!(t, Tab::Stack);
+        let mut a = ci_app();
+        a.tab = Tab::Stack;
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "skills");
+        assert_eq!(a.stv.skills.view.q, "skill:=shepherd");
+        // An inner tab's bare name still just shows it.
+        let (_, q) = crate::tabreq::parse("stack hooks").unwrap();
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "hooks");
+    }
     #[test]
     fn a_ledger_append_rereads_builds_only_while_the_tab_is_shown() {
         // `busy` is set on the calling thread when the read is started, so it says a read began

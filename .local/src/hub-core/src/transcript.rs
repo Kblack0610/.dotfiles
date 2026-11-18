@@ -5,8 +5,9 @@
 //! client can ask for the page `before` the oldest line it holds, or for everything
 //! `after` the newest one when the file grows.
 
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::Serialize;
@@ -224,6 +225,57 @@ fn tool_question(b: &Value) -> Question {
     )
 }
 
+/// What a session used, counted from its transcript: each skill it called and each model that
+/// answered, by name. A live session has no outcome row yet, so this is its only source.
+#[derive(Debug, Default, PartialEq)]
+pub struct Uses {
+    pub skills: BTreeMap<String, u64>,
+    pub models: BTreeMap<String, u64>,
+}
+
+/// Stream the whole file once, parsing only assistant lines. A streamed reply is written as one
+/// line per content block, so a message id and a tool call id each count once. A line that is not
+/// JSON is skipped.
+pub fn uses(path: &Path) -> std::io::Result<Uses> {
+    const ASSISTANT: &[u8] = br#""type":"assistant""#;
+    let mut out = Uses::default();
+    let (mut messages, mut calls) = (HashSet::new(), HashSet::new());
+    for line in BufReader::new(File::open(path)?).split(b'\n') {
+        let line = line?;
+        if !line.windows(ASSISTANT.len()).any(|w| w == ASSISTANT) {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&line) else {
+            continue;
+        };
+        if v["type"] != "assistant" {
+            continue;
+        }
+        let m = &v["message"];
+        if let Some(model) = m["model"].as_str().filter(|m| !m.starts_with('<')) {
+            if fresh(&mut messages, &m["id"]) {
+                *out.models.entry(model.to_string()).or_default() += 1;
+            }
+        }
+        for b in m["content"].as_array().into_iter().flatten() {
+            if b["type"] != "tool_use" || b["name"] != "Skill" {
+                continue;
+            }
+            if let Some(skill) = b["input"]["skill"].as_str().filter(|s| !s.is_empty()) {
+                if fresh(&mut calls, &b["id"]) {
+                    *out.skills.entry(skill.to_string()).or_default() += 1;
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// True the first time `id` is seen; a block with no id always counts.
+fn fresh(seen: &mut HashSet<String>, id: &Value) -> bool {
+    id.as_str().is_none_or(|id| seen.insert(id.to_string()))
+}
+
 /// Pull `end` back to just after the last newline, so a line Claude is still
 /// writing is never parsed half-done.
 fn complete_end(f: &mut File, end: u64) -> std::io::Result<u64> {
@@ -392,6 +444,36 @@ mod tests {
         assert!(parse_line(b"not json").is_empty());
     }
 
+    #[test]
+    fn uses_counts_skill_calls_and_models_once_per_message() {
+        let body = concat!(
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"x"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"shepherd"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m2","model":"claude-sonnet-5-5","content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"shepherd"}},{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"debug"}},{"type":"tool_use","id":"t4","name":"Bash","input":{"skill":"no"}},{"type":"tool_use","id":"t5","name":"Skill","input":{}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"id":"m3","model":"<synthetic>","content":[]}}"#,
+            "\n",
+            "not json with \"type\":\"assistant\"\n",
+            r#"{"type":"user","message":{"model":"claude-haiku-5-5","content":"Skill"}}"#,
+            "\n",
+        );
+        let u = uses(&write("uses", body)).unwrap();
+        assert_eq!(
+            u.skills.into_iter().collect::<Vec<_>>(),
+            [("debug".into(), 1), ("shepherd".into(), 2)]
+        );
+        assert_eq!(
+            u.models.into_iter().collect::<Vec<_>>(),
+            [
+                ("claude-opus-5-5".into(), 1),
+                ("claude-sonnet-5-5".into(), 1)
+            ],
+            "a streamed message counts once, a synthetic one and a user line not at all"
+        );
+        assert!(uses(Path::new("/no/such/transcript.jsonl")).is_err());
+    }
     #[test]
     fn a_tool_result_names_the_call_it_answers() {
         let call = br#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/a"}}]}}"#;
