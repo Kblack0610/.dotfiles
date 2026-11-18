@@ -95,9 +95,12 @@ repo_of() {
   github_over_https
   run git -C "$CLONE" remote get-url origin
   assert_output https://github.com/o/r.git
-  git -C "$CLONE" remote set-url origin ssh://git@github.com/o/r.git
-  run git -C "$CLONE" remote get-url origin
-  assert_output https://github.com/o/r.git
+  local url
+  for url in ssh://git@github.com/o/r.git ssh://git@github.com:22/o/r.git; do
+    git -C "$CLONE" remote set-url origin "$url"
+    run git -C "$CLONE" remote get-url origin
+    assert_output https://github.com/o/r.git
+  done
   run git -C "$CLONE" config user.name
   assert_output kept
   # Another host is left alone.

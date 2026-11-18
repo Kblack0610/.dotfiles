@@ -52,7 +52,7 @@ forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-githu
 # gh token has no `workflow` scope, so a push of a workflow file over HTTPS is refused.
 github_over_https() {
   local n=${GIT_CONFIG_COUNT:-0} from
-  for from in git@github.com: ssh://git@github.com/; do
+  for from in git@github.com: ssh://git@github.com/ ssh://git@github.com:22/; do
     export "GIT_CONFIG_KEY_$n=url.https://github.com/.insteadOf" "GIT_CONFIG_VALUE_$n=$from"
     n=$((n + 1))
   done
