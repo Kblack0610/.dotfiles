@@ -44,13 +44,14 @@ default() {
 
 # verdicts <rev|path>: one {id, target, bucket, v, why} per session in the document.
 verdicts() {
-  local src prog out sid args
+  local src prog out sid args chat
   src="$(source_of "$1")" || { echo "fleet-close-diff: cannot read fleet-sessions at $1" >&2; return 2; }
   prog="$(close_jq <<<"$src")" || { echo "fleet-close-diff: no CLOSE_JQ in $1" >&2; return 2; }
   args=(--argjson idle_close "$(default "$src" FLEET_IDLE_CLOSE_MIN)") || return 2
-  # The chat threshold is read only by a version whose CLOSE_JQ names it (before 2026-11-18, none).
-  if grep -qF '$chat_close_h' <<<"$prog"; then
-    args+=(--argjson chat_close_h "$(default "$src" FLEET_CHAT_CLOSE_H)") || return 2
+  # The chat threshold exists only in a version that sets its default (before 2026-11-18, none);
+  # an unused --argjson is harmless, so it is passed whenever there is a value.
+  if chat="$(default "$src" FLEET_CHAT_CLOSE_H 2>/dev/null)"; then
+    args+=(--argjson chat_close_h "$chat")
   fi
   out='.close = null | '"$prog"' | {id: (.session_id // .target), target, bucket, v: (.close.verdict // "-"), why: (.close.why // "-")}'
   if [ "$self" = 0 ]; then

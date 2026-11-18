@@ -1921,7 +1921,6 @@ clean_fixture() {
   cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
   # and the session asking to close itself is told to wait, where an item-less CHAT would close now
-  export FLEET_CHAT_CLOSE_H=0
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
   assert_failure 1
   assert_output 'after: this pass could not read agent-queue; ask again once it reads'

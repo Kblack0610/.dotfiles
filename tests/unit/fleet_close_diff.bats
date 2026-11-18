@@ -79,7 +79,7 @@ version() {
   refute_output --partial 'lab/b:1'
 }
 
-@test "fleet-close-diff: a version whose CLOSE_JQ names the chat threshold reads its own FLEET_CHAT_CLOSE_H" {
+@test "fleet-close-diff: a version that sets FLEET_CHAT_CLOSE_H reads its own chat threshold" {
   unset FLEET_CHAT_CLOSE_H
   local chat='.close = (if .idle_min < $chat_close_h * 60 then {verdict: "keep", why: "quiet"} else {verdict: "now", why: "done"} end)'
   version "$BATS_TEST_TMPDIR/a" "$KEEP"
@@ -92,9 +92,9 @@ version() {
   FLEET_CHAT_CLOSE_H=2 run --separate-stderr "$DIFF" "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/b"
   assert_failure 1
   assert_output $'lab/b:1\tDONE\tnow -> keep\tdone -> quiet'
-  # Negative control: a version that names it with no default is a read error, not a guess.
+  # Negative control: a version that reads the threshold with no default is a read error, not a guess.
   version "$BATS_TEST_TMPDIR/c" "$chat"
   run --separate-stderr "$DIFF" "$BATS_TEST_TMPDIR/a" "$BATS_TEST_TMPDIR/c"
   assert_failure 2
-  [[ "$stderr" == *"no FLEET_CHAT_CLOSE_H default"* ]]
+  [[ "$stderr" == *chat_close_h* ]]
 }
