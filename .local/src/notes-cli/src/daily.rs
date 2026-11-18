@@ -6,7 +6,8 @@
 //!     no second list: `## Due` ("on deck", formerly `## Priority`) was removed because two
 //!     lists in one note make every glance a merge, and anything a schedule surfaces IS
 //!     today's work. A pre-migration note's Due items fold into Focus so nothing strands.
-//!   - **backlog** (`fun.md`) = no time trigger. A someday list you pull from by hand.
+//!   - **backlog** (`backlog.md`) = no time trigger. A someday list you pull from by hand;
+//!     a task left there `backlog::MAX_DAYS` returns to Focus at `#low`.
 //!   - **schedule** (`schedule.md`) = a time trigger. `[YYYY-MM-DD]` fires ONCE within
 //!     `LEAD_DAYS` and the master line is consumed; `(every:…)` fires each matching day and
 //!     the master line is kept. Tagging a surfaced task with a far-future date pushes it
@@ -60,7 +61,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "refs-today" => today_refs_dir(p),
         "root" => p.root.clone(),
         // `backlog` is the name that describes it: the standing list with NO time trigger.
-        "backlog" | "fun" => p.fun.clone(),
+        "backlog" => p.backlog.clone(),
         // `scheduled`/`recurring`/`carryover` are back-compat aliases. Both files merged
         // into the one schedule, so every old name resolves there rather than to a path
         // that no longer exists — an editor alias pointing at a dead file fails silently.
@@ -187,6 +188,12 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // open from yesterday must not land twice.
     focus_keep.extend(unseen(promoted, &mut focus_keys));
 
+    // The BACKLOG returns what sat there `MAX_DAYS`, at #low, so a someday list cannot bury a task.
+    let backlog_before = fs::read_to_string(&p.backlog).unwrap_or_default();
+    let (returned, backlog_after) = crate::backlog::stale(&backlog_before, today);
+    let n_returned = returned.iter().filter(|l| md::is_task(l)).count();
+    focus_keep.extend(unseen(returned, &mut focus_keys));
+
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str(&format!("date: {today_s}\n"));
@@ -209,6 +216,20 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             "today",
             &format!("surfaced {n_promoted} scheduled item(s) into Focus"),
         );
+    }
+    // Written after the note, so a crash between the two leaves a task in both, never in neither.
+    if backlog_after != backlog_before {
+        md::write_atomic(&p.backlog, &backlog_after)
+            .with_context(|| format!("writing {}", p.backlog.display()))?;
+        if n_returned > 0 {
+            log.info(
+                "today",
+                &format!(
+                    "returned {n_returned} backlog item(s) to Focus after {} days",
+                    crate::backlog::MAX_DAYS
+                ),
+            );
+        }
     }
 
     // Persist the schedule: pruned (consumed dates removed) + newly deferred items.
@@ -1523,13 +1544,7 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
 
 /// Create the standing backlog files from templates if missing.
 fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
-    ensure_backlog_file(
-        &p.fun,
-        "Fun",
-        "fun",
-        "Standing backlog of fun / personal / creative tasks.",
-        log,
-    )?;
+    ensure_backlog_file(&p.backlog, "Backlog", "backlog", crate::backlog::DESC, log)?;
     // One-time migration: the carryover backlog became the scheduled holding pen.
     // Rename it in place so existing items are preserved (only when scheduled is absent).
     if !p.scheduled.exists() && p.carryover.exists() {
@@ -1985,8 +2000,8 @@ mod tests {
         );
         assert_eq!(resolve_path(&p, "root").unwrap(), PathBuf::from("/vault"));
         assert_eq!(
-            resolve_path(&p, "fun").unwrap(),
-            PathBuf::from("/vault/journal/backlogs/fun.md")
+            resolve_path(&p, "backlog").unwrap(),
+            PathBuf::from("/vault/journal/backlog.md")
         );
         // refs-today is under refs; daily note is under daily-dir
         assert!(resolve_path(&p, "refs-today")

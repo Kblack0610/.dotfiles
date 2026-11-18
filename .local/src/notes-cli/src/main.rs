@@ -84,7 +84,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -128,19 +128,14 @@ enum Cmd {
         #[arg(long)]
         backfill: bool,
     },
-    /// Open + tidy a standing backlog file (`fun`, `scheduled`, or `recurring`); prints its path
+    /// Open + tidy a standing list (`backlog`, `scheduled`, or `recurring`); prints its path
     Backlog {
-        /// Backlog name: fun | scheduled | recurring
+        /// List name: backlog (default) | scheduled | recurring
+        #[arg(default_value = "backlog")]
         name: String,
-    },
-    /// One-time migration: lift Fun + Carry Over out of a daily note into backlogs
-    SeedBacklogs {
-        /// Source daily note (defaults to the latest one)
+        /// File the task lines on stdin into the backlog, stamped with today (nvim `<leader>tb`)
         #[arg(long)]
-        from: Option<String>,
-        /// Overwrite a backlog that already has Active items
-        #[arg(long)]
-        force: bool,
+        add: bool,
     },
     /// Today's cockpit: the daily note's `## Focus` active-task list (list / add / done).
     /// No subcommand = list. Same items the session-start hook surfaces.
@@ -1151,7 +1146,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
                 );
                 2
             }
@@ -1172,12 +1167,8 @@ fn main() -> Result<()> {
             archive::run(&prof, &log, month.as_deref(), dry_run, backfill)?;
             0
         }
-        Cmd::Backlog { name } => {
-            backlog::run(&prof, &log, &name)?;
-            0
-        }
-        Cmd::SeedBacklogs { from, force } => {
-            backlog::seed(&prof, &log, from.as_deref(), force)?;
+        Cmd::Backlog { name, add } => {
+            backlog::run(&prof, &log, &name, add)?;
             0
         }
         Cmd::Focus { all, sub } => {
