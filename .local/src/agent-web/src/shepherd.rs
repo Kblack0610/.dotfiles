@@ -11,7 +11,7 @@ use agent_core::agent;
 use axum::extract::State;
 use axum::Json;
 use hub_core::boards;
-use hub_core::layout::fold_rows;
+use hub_core::layout::page_rows;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::broadcast;
@@ -51,7 +51,7 @@ pub struct Shepherd {
     session: Option<String>,
     status: Option<String>,
     rundowns: Vec<boards::Rundown>,
-    /// How many rundowns Log lists before "+N older" (`layout::fold_rows("rundowns")`), sent so
+    /// How many rundowns Log lists before "+N older" (`layout::page_rows("rundowns")`), sent so
     /// the page holds no copy.
     shown: usize,
     ledger: boards::Due,
@@ -96,7 +96,7 @@ pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
             session: a.as_ref().map(|a| a.session_id.clone()),
             status: a.map(|a| a.status),
             rundowns: boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS),
-            shown: fold_rows("rundowns"),
+            shown: page_rows("rundowns"),
             ledger: boards::due(&boards::shepherd_dir()),
             stats,
         }
@@ -107,7 +107,7 @@ pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
         session: None,
         status: None,
         rundowns: Vec::new(),
-        shown: fold_rows("rundowns"),
+        shown: page_rows("rundowns"),
         ledger: boards::Due::default(),
         stats: None,
     });

@@ -7,8 +7,9 @@
 
 // The view keys, in the tab's URL query (`#infra?q=source:unity&s=failed&sort=started&dir=asc`)
 // and in the API's, so a filtered view is a link. A tab's second table names its keys with a
-// prefix (`pre`, Home's Needs you: nq, ns, nsort, ndir), the same in the URL and the API.
-const TBL_KEYS = ["q", "s", "sort", "dir"];
+// prefix (`pre`, Home's Needs you: nq, ns, nsort, ndir), the same in the URL and the API. `pg` is
+// the page a paged table is on (hub_core::table::page), bare on page 1.
+const TBL_KEYS = ["q", "s", "sort", "dir", "pg"];
 
 // One table's view keys of a tab's URL query, as the API's query string.
 function tblParams(query, pre = "") {
@@ -18,9 +19,10 @@ function tblParams(query, pre = "") {
 }
 
 // The URL query with the patch (tblPatch's plain keys) applied to one table's keys; a blank value
-// drops its key, so the plain view is bare.
+// drops its key, so the plain view is bare. Any change but a page pick opens page 1, whoever sets it.
 function tblSet(query, patch, pre = "") {
   const p = new URLSearchParams(query || "");
+  if (!("pg" in patch)) p.delete(pre + "pg");
   for (const [k, v] of Object.entries(patch)) { if (v) p.set(pre + k, v); else p.delete(pre + k); }
   return p.toString();
 }
@@ -123,6 +125,19 @@ function tblHead(t, labels) {
 
 // The button a capped body ends in; tblTab's listener answers `data-all` (t.all, reset by a view change).
 const tblMore = (n, word = "older") => (n > 0 ? `<button class="btn sm" data-all="1">+${n} ${word}</button>` : "");
+// The pager under a paged body (the summary's `pager`, hub_core::table::page): prev, the first,
+// last and nearby pages, next, and which rows are on screen. Each button is a view patch {pg}
+// (tblPatch); page 1 is the bare view. Nothing when every row came.
+function tblPager(v) {
+  const g = v?.pager;
+  if (!g || g.pages < 2) return "";
+  const btn = (n, label, on = false) => `<button type="button" class="btn sm${on ? " on" : ""}" data-tpg="${n > 1 ? n : ""}"${on ? ' aria-current="page"' : ""}${n < 1 || n > g.pages ? " disabled" : ""}>${label}</button>`;
+  const near = [...new Set([1, g.page - 1, g.page, g.page + 1, g.pages])].filter((n) => n >= 1 && n <= g.pages).sort((a, b) => a - b);
+  const nums = near.map((n, i) => (i && n - near[i - 1] > 1 ? `<span class="muted">...</span>` : "") + btn(n, String(n), n === g.page)).join("");
+  const from = (g.page - 1) * g.per + 1, to = Math.min(g.page * g.per, v.shown);
+  return `<nav class="tpager" aria-label="pages">${btn(g.page - 1, "prev")}${nums}${btn(g.page + 1, "next")}<span class="muted" aria-live="polite">rows ${from}-${to} of ${v.shown}</span></nav>`;
+}
+
 // The record each cell names (hub_core::links, `Row::link`): the summary sends `links`, one
 // column -> href map per row it sent, in the same order, so the page builds no `#...` itself.
 const tblLinks = (t, i) => t?.links?.[i] || {};
@@ -149,6 +164,8 @@ function tblPatch(e) {
   if (sort) return { sort: sort.dataset.tsort, dir: sort.dataset.tsort && sort.dataset.tdir === "asc" ? "asc" : "" };
   const chip = t.closest("[data-ts]");
   if (chip) return { s: chip.dataset.ts };
+  const pg = t.closest("[data-tpg]");
+  if (pg) return pg.disabled ? null : { pg: pg.dataset.tpg };
   const win = t.closest("[data-tval]");
   if (win) return { [win.dataset.twin]: win.dataset.tval };
   return null;
@@ -169,6 +186,7 @@ const tblDropdown = (el) => el?.dataset?.tsv !== undefined || (el?.dataset?.twin
 //   hint   the search box's placeholder; wait: what shows before the first read, under lead(), the
 //          html that leads the tab on that path too (an inner strip); tiles(t): the tab's own
 //          tiles after the state tiles; days(t): what tblDays draws in the bar
+//   (a paged summary draws tblPager under the body, and any view change but a page pick opens page 1)
 //   pages  the server caps the rows, so "+N more" reads them again with params asking for all
 //   head, body, tail (t)  the html above the bar, the rows and below them; wrap(html): around the bar and rows (Costs' inner tab); table(t): the summary
 //          (data.table); shown(): whether it is on screen (the tab is open)
@@ -187,6 +205,7 @@ function tblTab(o) {
   const extra = () => (o.tiles ? o.tiles(t) : "");
   const tiles = (v) => tblTiles(v, extra());
   const facets = (v) => tblFacets(v) + days();
+  const body = o.body && (() => o.body(t) + tblPager(table()));
   const around = () => { if (o.head) paint($(id + "-head"), o.head(t), open()); if (o.tail) paint($(id + "-tail"), o.tail(t), open()); };
   t.refresh = o.refresh || coalesce(async () => {
     const p = tblParams(st.views[o.tab], pre);
@@ -204,7 +223,7 @@ function tblTab(o) {
     const v = table(), f = document.activeElement;
     if (!v || !$(id + "-body")) return false;
     if (f?.id !== id + "-q" && (!tblDropdown(f) || !f.closest?.(`#${id}-facets`))) return false;
-    paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
+    paint($(id + "-body"), tblBodyFirst(v, body));
     if (f.id === id + "-q") paint($(id + "-facets"), facets(v));
     if ($(id + "-tiles")) paint($(id + "-tiles"), tiles(v));
     around();
@@ -213,7 +232,7 @@ function tblTab(o) {
   // The same parts repainted with focus elsewhere: the dropdowns too, with their new counts.
   t.redraw = () => {
     const v = table();
-    paint($(id + "-body"), tblBodyFirst(v, () => o.body(t)));
+    paint($(id + "-body"), tblBodyFirst(v, body));
     if ($(id + "-facets")) paint($(id + "-facets"), facets(v));
     if ($(id + "-tiles")) paint($(id + "-tiles"), tiles(v));
     around();
@@ -222,7 +241,7 @@ function tblTab(o) {
   // What the table's state words mean (the summary's `legend`, hub_core::vocab), folded shut under
   // it (rule 3): a phone has no hover for a tile's meaning.
   const legend = (v) => (v.legend ? cfold(id + "-legend", "Legend", `<div class="muted">${esc(v.legend)}</div>`, open()) : "");
-  t.html = () => { const v = table(), body = tblBodyFirst(v, () => part("body", o.body)); return part("head", o.head) + wrap(tblBar(id, v, o.hint, extra(), days()) + body + legend(v)) + part("tail", o.tail); };
+  t.html = () => { const v = table(), rows = tblBodyFirst(v, () => part("body", body)); return part("head", o.head) + wrap(tblBar(id, v, o.hint, extra(), days()) + rows + legend(v)) + part("tail", o.tail); };
   t.render = o.render || (() => {
     const el = $(elId), m = open();
     if (!el || !shown()) return;
@@ -241,11 +260,14 @@ function tblTab(o) {
     seekSection();
   });
   // The view changed: the URL follows it and the server applies it.
+  // A page pick keeps the view and brings the table's top back on screen once the page is drawn.
   t.view = (patch) => {
+    const paged = "pg" in patch;
     setQuery(tblSet(st.views[o.tab], patch, pre));
     t.all = false;
     if (o.reset) o.reset(t);
-    t.refresh();
+    const read = t.refresh();
+    if (paged) Promise.resolve(read).then(() => { const b = $(id + "-body"); if (b && b.getBoundingClientRect().top < 0) b.scrollIntoView({ block: "start" }); $(elId)?.querySelector(`[data-tbl="${pre}"] .tpager [aria-current]`)?.focus({ preventScroll: true }); });
   };
   // The bar's, the headers' and the more button's events from this table's own block. A picked
   // sort or day dropdown lets go of focus, so the answer redraws it; a facet's menu is reopened.

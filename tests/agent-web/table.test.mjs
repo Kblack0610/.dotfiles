@@ -2,7 +2,7 @@
 // shared table draws with, run by `node --test` from tests/unit/agent_web_queue.bats. The page's
 // real scripts load into one vm context with a stub DOM; the tabs' own tests check what each draws,
 // this checks what they all share: the placeholder, the repaint around a control in use, the more
-// button, the scroll a whole draw keeps, and which of two tables in one block an event belongs to.
+// button, the pager, the scroll a whole draw keeps, and which of two tables in one block an event belongs to.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -92,6 +92,45 @@ test("an event in the second table's block moves only that table's keys", () => 
   fire("click", { type: "click", target: target({ all: "1" }, "n") });
   assert.equal(run("two.all"), true);
   assert.equal(run("one.all"), false);
+});
+
+test("the pager shows the ends, the pages around this one and which rows are on screen; one page draws none", () => {
+  assert.equal(run("tblPager(null) + tblPager({ shown: 3 }) + tblPager({ shown: 3, pager: { page: 1, pages: 1, per: 30 } })"), "");
+  const html = run("tblPager({ shown: 260, pager: { page: 5, pages: 9, per: 30 } })");
+  const pages = [...html.matchAll(/data-tpg="(\d*)"[^>]*>(\d+)</g)].map((m) => m[2]);
+  assert.deepEqual(pages, ["1", "4", "5", "6", "9"]);
+  assert.equal((html.match(/\.\.\./g) || []).length, 2, "a gap each side");
+  assert.match(html, /data-tpg=""[^>]*>1</, "page 1 is the bare view");
+  assert.match(html, /aria-current="page"[^>]*>5</);
+  assert.match(html, /rows 121-150 of 260/);
+  const first = run("tblPager({ shown: 61, pager: { page: 1, pages: 3, per: 30 } })");
+  assert.match(first, /data-tpg=""[^>]*disabled>prev/, "no page before the first");
+  assert.match(run("tblPager({ shown: 61, pager: { page: 3, pages: 3, per: 30 } })"), /disabled>next.*rows 61-61 of 61/);
+});
+
+test("a page pick reads that page into the URL, a disabled one does nothing, and any other view change opens page 1", async () => {
+  const page = (tpg, disabled = false) => ({ type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tpg]" ? { dataset: { tpg }, disabled } : null) } });
+  run(`st.views.tt = ""`);
+  body = { table: { ...summary, pager: { page: 3, pages: 4, per: 1 } }, rows: ["c"] };
+  fire("click", page("3"));
+  await tick();
+  assert.equal(run("st.views.tt"), "pg=3");
+  assert.equal(asked.at(-1), "/api/one?pg=3");
+  assert.match(box("tt").innerHTML, /class="tpager"/, "the body draws the pager");
+  asked.length = 0;
+  fire("click", page("", true));
+  assert.equal(asked.length, 0, "a disabled page asked for nothing");
+  fire("click", { type: "click", target: target({ tsort: "name", tdir: "asc" }) });
+  await tick();
+  assert.equal(run("st.views.tt"), "sort=name&dir=asc");
+  run(`st.views.tt = ""`);
+  body = { table: summary, rows: ["a", "b", "c"] };
+});
+
+test("a tab that sets its view keys itself opens page 1 too, and leaves another table's page alone", () => {
+  assert.equal(run(`tblSet("pg=3&q=a&npg=2", { q: "b" })`), "q=b&npg=2");
+  assert.equal(run(`tblSet("pg=3&npg=2", { q: "b" }, "n")`), "pg=3&nq=b");
+  assert.equal(run(`tblSet("q=a", { pg: "2" })`), "q=a&pg=2");
 });
 
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
