@@ -17,6 +17,10 @@ description = "Draws a waybar custom/* chip from config.base in the bar."
 id = "chip"
 entry = "chip.luau"
 
+  # middle: the chip's on-click-middle (timebox done), not Noctalia's default settings-open-widget.
+  [widget.actions]
+  middle = "none"
+
   [[widget.setting]]
   key = "module"
   type = "string"

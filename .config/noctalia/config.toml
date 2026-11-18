@@ -12,7 +12,8 @@ start = ["workspaces", "passthrough", "gungan", "webcam"]
 center = ["clock"]
 end = [
   "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci",
-  "volume", "audio-input", "bluetooth", "network", "load", "storage", "machine-mode",
+  "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
+  "memory", "storage", "machine-mode",
   "notify", "tray", "control-center",
 ]
 
@@ -63,6 +64,23 @@ module = "custom/audio-input"
 [widget.load]
 type = "dotfiles/chips:chip"
 module = "custom/load"
+
+# waybar's built-in temperature, temperature#gpu, memory and idle_inhibitor have
+# Noctalia widgets of their own, so they are not chips.
+[widget.cpu-temp]
+type = "sysmon"
+stat = "cpu_temp"
+
+[widget.gpu-temp]
+type = "sysmon"
+stat = "gpu_temp"
+
+[widget.memory]
+type = "sysmon"
+stat = "ram_pct"
+
+[widget.caffeine]
+type = "caffeine"
 
 [widget.storage]
 type = "dotfiles/chips:chip"

@@ -53,7 +53,8 @@ local function refresh()
   busy = true
   noctalia.runAsync(desk .. " chip " .. quote(module) .. " run", function(res)
     busy = false
-    show(lastLine(res.stdout))
+    -- No output is an empty chip: waybar hides one that prints nothing (fleet_pulse when all is well).
+    show(lastLine(res.stdout) or "{}")
   end, 30000)
 end
 
@@ -75,7 +76,7 @@ noctalia.runAsync(desk .. " chip " .. quote(module), function(res)
   end
   spec = s
   if spec.mode == "stream" then
-    noctalia.runStream(desk .. " chip " .. quote(module) .. " run", show)
+    noctalia.runStream(desk .. " chip " .. quote(module) .. " stream", show)
   else
     if spec.mode == "poll" then
       noctalia.setUpdateInterval(math.max(1, spec.interval) * 1000)
@@ -106,5 +107,12 @@ end
 function onIpc(event, payload)
   if event == "refresh" and spec ~= nil and spec.mode ~= "stream" and tostring(spec.signal) == payload then
     refresh()
+  end
+end
+
+-- Fires because plugin.toml binds middle to "none" (Noctalia's default opens settings).
+function onMiddleClick()
+  if spec ~= nil and (spec.middle_click or "") ~= "" then
+    noctalia.runAsync(spec.middle_click)
   end
 end

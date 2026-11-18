@@ -31,13 +31,13 @@ Both read the same chips from `config.base`; they differ only in stylesheet. `la
 
 ## Noctalia
 
-`desk use bar noctalia` runs the Noctalia shell (`noctalia.service`, which conflicts with `waybar.service`). Its bar is laid out in the tracked `.config/noctalia/config.toml`: Noctalia's own workspaces, clock, volume, network, Bluetooth, tray and control center, plus our chips.
+`desk use bar noctalia` runs the Noctalia shell (`noctalia.service`, which conflicts with `waybar.service`). Its bar is laid out in the tracked `.config/noctalia/config.toml`: Noctalia's own workspaces, clock, volume, network, Bluetooth, tray and control center, `sysmon` for CPU and GPU temperature and memory, and `caffeine` for waybar's idle inhibitor, plus our chips.
 
-Each chip is the `dotfiles/chips` plugin (`.local/share/noctalia/plugins/dotfiles-chips/`) with a `module` setting such as `custom/ci`. The plugin holds no chip logic: `desk chip <id>` reads that module from `config.base` (stream, poll interval or run once, signal, click commands) and `desk chip <id> run` runs its exec and prints plain JSON (pango stripped, one class). So a chip changes in `config.base` and shows the same on all three bars. A module with no exec (Bluetooth, the clock) has a Noctalia widget of its own instead.
+Each chip is the `dotfiles/chips` plugin (`.local/share/noctalia/plugins/dotfiles-chips/`) with a `module` setting such as `custom/ci`. The plugin holds no chip logic: `desk chip <id>` reads that module from `config.base` (stream, poll interval or run once, signal, left, right and middle click), and `desk chip <id> run` runs its exec and prints plain JSON: pango stripped, one class, and the module's `format` applied with `{icon}` from `format-icons`. A streaming chip runs as `desk chip <id> stream`, which restarts the exec after its `restart-interval` (5 s by default) like waybar, and kills the exec when Noctalia closes the stream. So a chip changes in `config.base` and shows the same on all three bars. A module with no exec (Bluetooth, the clock) has a Noctalia widget of its own instead.
 
 Notifications stay with the notify slot: `config.toml` sets `[notification] enable_daemon = false`. Noctalia ignores dunst's `x-dunst-stack-tag`, so fleet pages would stack instead of replacing each other; it is not offered as a notifier.
 
-`theme-switch` writes `.config/noctalia/palettes/dotfiles.json`, which `config.toml` selects (`custom_palette = "dotfiles"`), and reloads Noctalia. Settings changed in Noctalia's own settings window go to `~/.local/state/noctalia/settings.toml` and win over `config.toml`; delete a line there to get the tracked value back.
+`theme-switch` writes `.config/noctalia/palettes/dotfiles.json`, which `config.toml` selects (`custom_palette = "dotfiles"`), and reloads Noctalia. Settings changed in Noctalia's own settings window go to `~/.local/state/noctalia/settings.toml` and win over `config.toml`; delete a line there to get the tracked value back. Leave Noctalia's built-in Hyprland template off: it writes `~/.config/hypr/noctalia.lua` and edits `hyprland.lua` to source it, a second writer of the colours `theme-switch` already puts in `hypr/conf/theme.lua`.
 
 ## The control panel
 

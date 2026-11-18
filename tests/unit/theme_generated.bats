@@ -257,3 +257,16 @@ hypr_read_keys() {
   assert_success
   [ ! -e "$HOME/.config/swaync" ]
 }
+
+@test "the noctalia palette is JSON whose every colour is a hex value from the theme" {
+  local root="$BATS_TEST_TMPDIR/dotfiles" out
+  mkdir -p "$root"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only noctalia
+  assert_success
+  out="$root/.config/noctalia/palettes/dotfiles.json"
+  # 16 dark roles, 6 terminal keys and 16 ANSI colours, each "#rrggbb": an unset palette
+  # variable would leave "" or "#" and fail here.
+  run jq -r '[.dark | .. | strings] | length, all(test("^#[0-9a-fA-F]{6}$"))' "$out"
+  assert_success
+  assert_output $'38\ntrue'
+}

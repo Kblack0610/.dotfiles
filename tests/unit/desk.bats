@@ -185,17 +185,21 @@ setup() {
   assert_output $'noctalia msg plugin dotfiles/chips:chip all refresh 9\nnoctalia msg plugin dotfiles/chips:chip all refresh 10\nnoctalia msg plugin dotfiles/chips:chip all refresh 11'
 }
 
-# A config.base of four chips, one per way a chip runs, for `desk chip`.
+# A config.base with a chip per way one runs (poll, once, stream, gated), plus format
+# icons, an empty exec and a stream that ends, for `desk chip`.
 chip_fixture() {
   export DESK_WAYBAR_DIR="$BATS_TEST_TMPDIR/waybar"
   mkdir -p "$DESK_WAYBAR_DIR"
   cat > "$DESK_WAYBAR_DIR/config.base" <<'JSON'
 {
     // a comment line, as the real config.base has
-    "custom/poll": { "exec": "printf '{\"text\":\"<b>ci</b> &amp; ok\",\"tooltip\":\"<span>2 down</span>\",\"class\":[\"warn\",\"x\"]}\\n'", "interval": 60, "signal": 10, "on-click": "hub --tab ci" },
+    "custom/poll": { "exec": "printf '{\"text\":\"<b>ci</b> &amp; ok\",\"tooltip\":\"<span>2 down</span>\",\"class\":[\"warn\",\"x\"]}\\n'", "interval": 60, "signal": 10, "on-click": "hub --tab ci", "on-click-middle": "hub --tab runners" },
     "custom/once": { "exec": "echo plain text", "interval": "once", "signal": 9 },
     "custom/stream": { "exec": "printf 'a\\nb\\n'", "return-type": "json" },
     "custom/gated": { "exec": "echo shown", "exec-if": "false" },
+    "custom/icon": { "exec": "printf '{\"text\":\"3\",\"alt\":\"dnd\"}\\n{\"text\":\"4\"}\\n'", "format": "{icon} {}", "format-icons": { "dnd": "D", "default": "N" } },
+    "custom/blank": { "exec": "true" },
+    "custom/again": { "exec": "echo tick", "restart-interval": 0 },
     "bluetooth": { "format": "x" }
 }
 JSON
@@ -204,7 +208,7 @@ JSON
 @test "chip prints how each module runs: poll, once or stream" {
   chip_fixture
   run "$DESK" chip custom/poll
-  assert_output '{"mode":"poll","interval":60,"signal":10,"click":"hub --tab ci","right_click":""}'
+  assert_output '{"mode":"poll","interval":60,"signal":10,"click":"hub --tab ci","right_click":"","middle_click":"hub --tab runners"}'
   run "$DESK" chip custom/once
   assert_output --partial '"mode":"once"'
   run "$DESK" chip custom/stream
@@ -227,6 +231,29 @@ JSON
   run "$DESK" chip custom/gated run
   assert_success
   assert_output '{"text":"","tooltip":"","class":""}'
+}
+
+@test "chip run applies the module's format, {icon} by alt and else the default icon" {
+  chip_fixture
+  run "$DESK" chip custom/icon run
+  assert_success
+  assert_output $'{"text":"D 3","tooltip":"","class":""}\n{"text":"N 4","tooltip":"","class":""}'
+}
+
+@test "chip run on an exec that prints nothing prints nothing, which hides the chip" {
+  chip_fixture
+  run "$DESK" chip custom/blank run
+  assert_success
+  assert_output ''
+}
+
+@test "chip stream runs the exec again when it ends, and exits 0 once the reader closes" {
+  chip_fixture
+  # One line per run, so three lines are two restarts. timeout is the hang guard: a
+  # stream that never noticed the closed pipe would end 124, not 0.
+  run bash -c "set -o pipefail; timeout 10 '$DESK' chip custom/again stream | head -n 3"
+  assert_success
+  assert_output $'{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}\n{"text":"tick","tooltip":"","class":""}'
 }
 
 @test "chip exits 2 on an unknown module and on one with no exec" {
