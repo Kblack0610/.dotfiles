@@ -124,12 +124,13 @@ callers() {
 # the Claude session id, else the working directory's basename.
 default_by() {
   local t
-  t="$(tmux_names | head -n 1)"
+  t="$(tmux_names)"; t="${t%%$'\n'*}"
   printf '%s' "${t:-${CLAUDE_CODE_SESSION_ID:-${PWD##*/}}}"
 }
 
-# is_caller <name>: true when the caller answers to that name.
-is_caller() { [ -n "$1" ] && callers | grep -qxF -- "$1"; }
+# is_caller <name>: true when the caller answers to that name. A here-string, not a pipe: under
+# pipefail, grep -q exiting at its match can SIGPIPE callers and fail the match.
+is_caller() { [ -n "$1" ] && grep -qxF -- "$1" <<<"$(callers)"; }
 
 # owns_claim <file>: the caller holds this claim, by any of its names or by the Claude session
 # id the claim recorded.
