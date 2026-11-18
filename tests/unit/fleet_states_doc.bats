@@ -123,7 +123,7 @@ check_svg() { # <doc> <svg>
   run check_words "$t/no-chat.md" "$SESSIONS"
   assert_failure
   assert_output --partial '> CHAT'
-  sed '/^| LANDED |/ s/| The session, nudged once by the shepherd |/| |/' "$DOC" > "$t/no-actor.md"
+  sed '/^| LANDED |/ s/| The quiet timer, then fleet-dispatch reap |/| |/' "$DOC" > "$t/no-actor.md"
   run check_cells "$t/no-actor.md"
   assert_failure
   assert_output 'LANDED: no actor'
