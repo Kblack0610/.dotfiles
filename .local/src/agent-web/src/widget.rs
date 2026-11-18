@@ -49,10 +49,11 @@ fn refusal(t: Option<&str>, key: Option<&str>) -> &'static str {
 
 /// The request's user agent, capped at `UA_MAX` characters.
 fn user_agent(headers: &HeaderMap) -> String {
+    // Lossy, so a client sending bytes past ASCII is kept as itself, never as "-".
     let ua = headers
         .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok());
-    ua.unwrap_or("-").chars().take(UA_MAX).collect()
+        .map(|v| String::from_utf8_lossy(v.as_bytes()));
+    ua.as_deref().unwrap_or("-").chars().take(UA_MAX).collect()
 }
 
 /// The client's address as the tunnel gives it: Cloudflare's `CF-Connecting-IP`, else the first
@@ -141,12 +142,13 @@ fn keep_hit(headers: &HeaderMap, route: &str, hit: serde_json::Value) {
     line["route"] = route.into();
     line["ip"] = client_ip(headers).into();
     tokio::task::spawn_blocking(move || {
-        let (last, hits) = (last_hit_file(), hits_file());
-        for (f, wrote) in [(&last, record(&last, &hit)), (&hits, append(&hits, &line))] {
+        let said = |f: PathBuf, wrote: std::io::Result<()>| {
             if let Err(e) = wrote {
                 eprintln!("agent-web: widget hit not recorded: {}: {e}", f.display());
             }
-        }
+        };
+        said(last_hit_file(), record(&last_hit_file(), &hit));
+        said(hits_file(), append(&hits_file(), &line));
     });
 }
 
@@ -381,6 +383,15 @@ mod tests {
         assert_eq!(client_ip(&h), "-");
         h.insert("x-forwarded-for", "9".repeat(500).parse().unwrap());
         assert_eq!(client_ip(&h).len(), IP_MAX);
+    }
+
+    #[test]
+    fn a_user_agent_past_ascii_is_kept_not_dropped() {
+        let mut h = HeaderMap::new();
+        assert_eq!(user_agent(&h), "-");
+        let ua = header::HeaderValue::from_bytes(b"Bot\xc3\xa9/1").unwrap();
+        h.insert(header::USER_AGENT, ua);
+        assert_eq!(user_agent(&h), "Bot\u{e9}/1");
     }
 
     #[test]
