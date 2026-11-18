@@ -5826,9 +5826,12 @@ STUB
   # Scored, the tree is back at base and clean, so wt reaps it; the run's diff waits beside its log.
   assert_equal "$(git rev-parse HEAD)" "$CBASE"
   assert_equal "$(git status --porcelain)" ''
-  # A second session does the work and passes.
+  # It is the session's own diff, taken before the oracle was laid over it: its gamed copy, not the PR's.
+  grep -qx '+exit 0' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the run's diff was not kept"
+  ! grep -q 'hello' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the oracle's overlay leaked into the run's diff"
+  # A second session does the work and passes; a repo it made inside the tree goes too.
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt2" "$CBASE"
-  cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh
+  cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh; git init -q nested; git -C nested -c user.email=t@t -c user.name=t commit -q --allow-empty -m n
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: pass (exit 0)'
@@ -5855,6 +5858,16 @@ STUB
   assert_output --partial 'canary greet: pass (exit 0)'
   assert_output --partial 'is no linked worktree, so it stays as the run left it'
   assert_equal "$(cat greet.sh)" 'echo hello'
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w5.patch" ] || fail "a main checkout's diff was staged and saved"
+  assert_equal "$(git diff --cached --name-only -- greet.sh)" ''
+  # Nor a linked worktree on a branch, whose commits a reset to base would drop.
+  git -C "$CREPO" worktree add -q -b b6 "$SANDBOX/wt6" "$CBASE"
+  cd "$SANDBOX/wt6"; echo 'echo hello' > greet.sh
+  git -c user.email=t@t -c user.name=t commit -qam work; head=$(git rev-parse HEAD)
+  AGENT_QUEUE_ITEM=canary-greet-w6 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'is on a branch, not detached by canary start, so it stays as the run left it'
+  assert_equal "$(git rev-parse b6)" "$head"
 }
 
 @test "canary queue: one canary item per task a week, from canary with its own brief; a second pass queues nothing" {
