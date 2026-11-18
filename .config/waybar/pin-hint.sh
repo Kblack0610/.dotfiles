@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # which-key style popup for the pin leader submaps (see hypr/conf/leader.lua).
-# Replace-in-place via a fixed notification id so nested levels swap the popup
-# rather than stacking. Auto-expires as a safety net if a submap is left open.
+# One popup that nested levels replace rather than stack, under any notifier (`desk notify
+# show|drop`). Auto-expires as a safety net if a submap is left open.
 #
 # The legend is the submap's described binds (the description on each bind in leader.lua), read live from
 # `hyprctl binds -j`, so a key added there with a description shows here with no edit. Keys
@@ -10,17 +10,11 @@
 # Usage: pin-hint.sh {main|agents|keys|input|mode|desk|utils|settings|sync|git|timebox|close}
 set -u
 
-ID=990011
+DESK="$HOME/.local/bin/desk"
 TIMEOUT=8000
 
-show() {
-    if command -v dunstify >/dev/null 2>&1; then
-        dunstify -r "$ID" -t "$TIMEOUT" -u low "$1" "$2"
-    else
-        notify-send -t "$TIMEOUT" "$1" "$2"
-    fi
-}
-close() { command -v dunstify >/dev/null 2>&1 && dunstify -C "$ID" 2>/dev/null || true; }
+show() { "$DESK" notify show pin-hint -t "$TIMEOUT" -u low "$1" "$2" >/dev/null; }
+close() { "$DESK" notify drop pin-hint; }
 
 # legend <submap>: its described binds, two to a line.
 legend() {

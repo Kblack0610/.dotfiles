@@ -33,7 +33,6 @@ CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
 REGISTRY="$CONF_DIR/modules.registry"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/waybar"
 OFF="$STATE_DIR/modules.off"
-NOTIFY_ID=990012
 PIN_SHOWN="${XDG_RUNTIME_DIR:-/tmp}/waybar-pin.shown"
 
 # --- gate ---------------------------------------------------------------------
@@ -97,9 +96,7 @@ refresh() {
 }
 
 notify() {
-    command -v dunstify >/dev/null 2>&1 \
-        && dunstify -r "$NOTIFY_ID" -t 2000 -u low "waybar" "$1" >/dev/null 2>&1 \
-        || true
+    "$HOME/.local/bin/desk" notify show waybar-modules -t 2000 -u low "waybar" "$1" >/dev/null 2>&1 || true
 }
 
 set_state() {  # set_state <key> <on|off>
