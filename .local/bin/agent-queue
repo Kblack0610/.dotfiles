@@ -1704,7 +1704,7 @@ cmd_bump() {
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
 # settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2463,12 +2463,6 @@ cmd_stats() {
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0
 
-# The queue lives on the fleet home; anywhere else this runs there (state_forward, fleet-hosts.sh).
-if [ -z "${AGENT_STATE_LOCAL:-}" ]; then
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  state_forward agent-queue "add retask attribute credit-of" "$@"
-fi
 # A write here reaches the other machines at once: store-sync pushes the queue and asks (it does
 # nothing when they are clean, or when this queue is not the store's).
 [[ "$AQ_DIR/" != "${AGENT_STORE_DIR:-$HOME/.agent}/"* ]] || trap 'store-sync --now --bg 2>/dev/null' EXIT

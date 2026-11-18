@@ -35,6 +35,15 @@
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
 #   claude-acct check tokens # one line, exit 1 when a token is expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
+#   claude-acct auth [--json]    # each account's sign-in state: logged in (a refresh token in its
+#                                # credentials file), access token end, login end, last write, busy
+#                                # sessions, sessions stopped on "Not logged in"
+#   claude-acct check auth   # one line, exit 1 when an account is signed out, is not refreshing, or
+#                            # holds sessions that wake could not move; names `cl --acct <name>`, /login
+#   claude-acct check expiry # one line, exit 1 when a refresh token ends within AUTH_WARN_DAYS
+#   claude-acct wake [--dry-run]
+#                        # type a continue line into each session stopped on "Not logged in" whose
+#                        # account is signed in again: WAKE_BATCH a run, one under load (pace.conf)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
 #                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
@@ -689,6 +698,9 @@ PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
+# shellcheck source=../lib/claude-acct-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/claude-acct-auth.sh"   # auth, wake, check auth|expiry
+
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
     local f="$HOME/.claude.json"
@@ -1065,6 +1077,9 @@ cmd_textfile() {
     local dir tmp
     dir=$(prom_textfile_target "${1:-}") || return 0
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
+    # the sign-in lines come first: they read the credential files and the panes, not the usage endpoint
+    # a failed read of them drops only their lines, never the usage ones
+    auth_prom > "$tmp" || { : > "$tmp"; echo "claude-acct: the sign-in lines were not written" >&2; }
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):
             .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\",kind=\"\(.kind)\"} \($v)";
@@ -1098,7 +1113,7 @@ cmd_textfile() {
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
         (rows("claude_account_cost_24h_usd"; .usd_24h)),
         (rows("claude_account_usd_used"; .usd_used)),
-        (rows("claude_account_usd_budget"; .usd_max))' > "$tmp" &&
+        (rows("claude_account_usd_budget"; .usd_max))' >> "$tmp" &&
         chmod 0644 "$tmp" && mv -f "$tmp" "$dir/claude_acct.prom"; then
         return 0
     fi
@@ -1318,8 +1333,10 @@ cmd_check() {
                 elif .under != [] then "under-used near its reset: \(.under | join("; "))"
                 else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
             [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
+        auth) auth_check ;;
+        expiry) expiry_check ;;
         tokens) check_tokens ;;
-        *) echo "usage: claude-acct check usage|pace|underuse|tokens [source...]" >&2; return 2 ;;
+        *) echo "usage: claude-acct check usage|auth|expiry|pace|underuse|tokens [source...]" >&2; return 2 ;;
     esac
 }
 
@@ -2047,6 +2064,8 @@ case "${1:-}" in
     gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
+    auth)   shift; cmd_auth "$@" ;;
+    wake)   shift; cmd_wake "$@" ;;
     setup-token) shift; cmd_setup_token "$@" ;;
     token)  shift; cmd_token "$@" ;;
     token-prefix) shift; cmd_token_prefix "$@" ;;
