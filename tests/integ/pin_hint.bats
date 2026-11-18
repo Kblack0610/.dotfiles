@@ -27,6 +27,7 @@ echo 41
 EOF
   cat > "$SANDBOX/bin/gdbus" <<'EOF'
 #!/usr/bin/env bash
+[[ "$*" == *GetNameOwner* ]] && { echo "(':1.7',)"; exit; }
 echo "gdbus ${*: -1}" >> "$FX/closed"
 EOF
   chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"

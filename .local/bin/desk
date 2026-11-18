@@ -133,19 +133,34 @@ signal() {
 # show and drop work the same under every notifier. x-canonical-private-synchronous is the
 # replace hint dunst and swaync both honour; swaync ignores x-dunst-stack-tag and a -r id it
 # did not hand out. The server's id is kept so drop can close the popup over D-Bus.
-NOTIFY_IDS="${XDG_RUNTIME_DIR:-/tmp}/desk"
+# show keeps "<id> <bus owner>": an id is unique only within one notifier process, so drop
+# closes it only while the same process owns the notification name. A restarted or switched
+# notifier counts from 1 again, and the old id could be someone else's page.
+notify_ids() { echo "${XDG_RUNTIME_DIR:?desk notify needs XDG_RUNTIME_DIR}/desk"; }
+notify_owner() {
+    gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.GetNameOwner org.freedesktop.Notifications 2>/dev/null
+}
 notify_show() {
-    local tag="${1:?usage: desk notify show <tag> <notify-send args>}" id
+    [[ -n "${1:-}" ]] || die "usage: desk notify show <tag> <notify-send args>" 2
+    local tag="$1" dir id
     shift
+    dir="$(notify_ids)" || exit 1
+    mkdir -p "$dir"
+    rm -f "$dir/notify-$tag.id"
     id="$(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")" || return
-    mkdir -p "$NOTIFY_IDS" && printf '%s\n' "$id" > "$NOTIFY_IDS/notify-$tag.id"
+    printf '%s %s\n' "$id" "$(notify_owner)" > "$dir/notify-$tag.id"
 }
 notify_drop() {
-    local f="$NOTIFY_IDS/notify-${1:?usage: desk notify drop <tag>}.id"
+    [[ -n "${1:-}" ]] || die "usage: desk notify drop <tag>" 2
+    local f id owner
+    f="$(notify_ids)/notify-$1.id" || exit 1
     [[ -s "$f" ]] || return 0
-    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
-        --method org.freedesktop.Notifications.CloseNotification "$(<"$f")" >/dev/null 2>&1 || true
+    read -r id owner < "$f"
     rm -f "$f"
+    [[ "$id" =~ ^[0-9]+$ && "$owner" == "$(notify_owner)" ]] || return 0
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.CloseNotification "$id" >/dev/null 2>&1 || true
 }
 
 notify() {
