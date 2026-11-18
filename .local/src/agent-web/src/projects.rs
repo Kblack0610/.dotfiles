@@ -15,8 +15,13 @@ use hub_core::table::View;
 use hub_core::{page, projects};
 use serde_json::{json, Value};
 
+use crate::cache::{off, ReadCache};
 use crate::sessions::TableQuery;
 use crate::{bad, ApiResult};
+
+/// The one kept `projects::gather`, which the tab and Home's Projects card both read: a minute,
+/// Home's cadence, answered stale and refreshed behind like every kept read.
+pub static GATHERED: ReadCache<Projects, 60> = ReadCache::named("projects");
 
 /// The cards the view keeps, in its order, with the controls that drew them. What no card
 /// claims and what failed are the whole tab's, so no view narrows them.
@@ -34,10 +39,11 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
 }
 
 pub async fn get(Query(q): Query<TableQuery>) -> ApiResult<Json<Value>> {
-    tokio::task::spawn_blocking(move || shown(&projects::gather(), &q))
+    GATHERED
+        .get((), off(projects::gather))
         .await
-        .map(Json)
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|p| Json(shown(&p, &q)))
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 /// The page's chain comes from the one kept `fleet-bench epics` read (`crate::epics`), started
