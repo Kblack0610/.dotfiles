@@ -494,7 +494,7 @@ pub(crate) mod tests {
                 verdict: "hand".into(),
                 reviewed_by: "human".into(),
                 url: "https://bsky.app/x".into(),
-                results: "9 wishlist adds".into(),
+                results: "9 wishlist adds 7d".into(),
                 state: "sent",
                 sent: Some(1_794_650_000),
                 ..Default::default()

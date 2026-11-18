@@ -45,12 +45,8 @@ pub struct Item {
     pub sent: Option<i64>,
     /// draft, review, approved, revise, skipped or sent: the last step it reached.
     pub state: &'static str,
-    /// What mkt-metrics last measured for a sent item (docs/operations/mkt.md "Metrics"): each
-    /// number summed from the send day through `measured_to`, final once that is the window's end.
-    pub metrics: BTreeMap<String, f64>,
-    pub measured_to: String,
-    pub measured_final: bool,
-    /// The numbers as the tab shows them, one line for the web and the TUI.
+    /// What mkt-metrics last measured for a sent item (docs/operations/mkt.md "Metrics"), one line
+    /// for the web and the TUI: "4 search clicks 7d, 9 wishlist adds 7d", "so far" until its week is read.
     pub results: String,
 }
 
@@ -79,19 +75,20 @@ impl Item {
             Some("review") => self.asked = at,
             Some("sent") => self.sent = at,
             Some("metrics") => {
-                self.metrics = e
+                let w = |k: &str| e.get("window").and_then(|w| w.get(k));
+                let mut r = e
                     .get("metrics")
                     .and_then(Value::as_object)
                     .into_iter()
                     .flatten()
-                    .filter_map(|(k, v)| Some((k.clone(), v.as_f64()?)))
-                    .collect();
-                let w = |k: &str| e.get("window").and_then(|w| w.get(k));
-                self.measured_to = w("to")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                self.measured_final = w("final").and_then(Value::as_bool).unwrap_or(false);
+                    .filter_map(|(k, v)| Some(format!("{} {}", v.as_f64()?, k.replace('_', " "))))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !r.is_empty() && w("final").and_then(Value::as_bool) != Some(true) {
+                    let to = w("to").and_then(Value::as_str).unwrap_or_default();
+                    r.push_str(&format!(", so far to {to}"));
+                }
+                self.results = r;
             }
             _ => {}
         }
@@ -109,17 +106,6 @@ impl Item {
                 _ => "approved",
             }
         };
-        // "4 search clicks, 9 wishlist adds", from the metric names, and "so far" until the week is read
-        let mut r = self
-            .metrics
-            .iter()
-            .map(|(k, v)| format!("{v} {}", k.trim_end_matches("_7d").replace('_', " ")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !r.is_empty() && !self.measured_final {
-            r.push_str(&format!(", so far to {}", self.measured_to));
-        }
-        self.results = r;
     }
 
     /// Days it has waited on its review ask, at `now`.
@@ -332,20 +318,14 @@ mod tests {
         assert_eq!(items[0].waited_days(T0), Some(14));
         assert_eq!(b.waited_days(T0), None, "only an item in review waits");
         // the last metrics event replaces the numbers, it does not merge into them
-        assert_eq!(
-            (&b.metrics, b.measured_to.as_str(), b.measured_final),
-            (
-                &BTreeMap::from([("wishlist_adds_7d".to_string(), 9.0)]),
-                "2026-11-16",
-                false
-            )
-        );
-        assert_eq!(b.results, "9 wishlist adds, so far to 2026-11-16");
-        assert!(items[0].metrics.is_empty() && items[0].results.is_empty());
+        assert_eq!(b.results, "9 wishlist adds 7d, so far to 2026-11-16");
+        assert!(items[0].results.is_empty());
         let mut done = b.clone();
-        done.measured_final = true;
-        done.settle();
-        assert_eq!(done.results, "9 wishlist adds");
+        done.apply(
+            &serde_json::json!({"event": "metrics", "metrics": {"wishlist_adds_7d": 9},
+            "window": {"from": "2026-11-15", "to": "2026-11-21", "final": true}}),
+        );
+        assert_eq!(done.results, "9 wishlist adds 7d");
     }
 
     #[test]

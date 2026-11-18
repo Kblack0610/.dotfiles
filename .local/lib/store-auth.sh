@@ -34,10 +34,10 @@ STORE_RETRIES=2
 STORE_RETRY_BASE="${STORE_RETRY_BASE:-2}"
 STORE_RETRY_MAX=30
 
-# store_fetch <url> <bearer-token> <out-file> [json-body-file] -> the HTTP status on stdout, the
+# store_fetch <url> <bearer-token> <out-file> [query-body-file] -> the HTTP status on stdout, the
 # body (an error's too) in out-file. An empty token sends no Authorization header (Steam's key
 # rides in the URL, which reaches curl on stdin too). Only for reads, since a 429 or 5xx is
-# retried: a GET, or with a body file a POST that is a query (Search Console's searchAnalytics),
+# retried: a GET, or with a query body file a POST that is a query (Search Console's searchAnalytics),
 # never a write. Exit 1 when curl could not get an answer at all. With STORE_KEEP_HEADERS=1 the
 # response headers stay in <out-file>.h.
 store_fetch() {

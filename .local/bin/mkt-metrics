@@ -40,8 +40,8 @@ GSC_API=https://searchconsole.googleapis.com/webmasters/v3/sites
 GSC_SCOPE=https://www.googleapis.com/auth/webmasters.readonly
 # The API's largest page. A product with this many rows in its range is not read, never cut short.
 GSC_ROWS=25000
-# An item's numbers are its send day and the 6 after; the product's own day count reaches back
-# this far so Search Console's last complete day (it lags about 2 days) is in the range.
+# An item's numbers are its send day and the days after, WINDOW_DAYS in all; the Search Console
+# range also reaches back this far so Search Console's last complete day (it lags about 2 days) is in the range.
 WINDOW_DAYS=7
 # A send older than this is not measured again (the Marketing tab's 30 days, outbound.rs SENT_DAYS).
 SENT_DAYS=30
@@ -101,30 +101,30 @@ APPS="$(store_apps | jq -sc 'map(select(.store == "steam"))')" || die "could not
 
 # Steam: one JSON line per app and day read, or per app the error that stopped it.
 steam() {
-  local key project app d code todo
-  todo="$(jq -r --argjson pend "$PENDING" --arg day "$DAY" "$DAYS_JQ"'
+  local key bad project app d code todo
+  todo="$(jq -r --argjson pend "$PENDING" --arg day "$DAY" --argjson w "$WINDOW_DAYS" "$DAYS_JQ"'
     .[] | . as $a
-    | ([$day] + [$pend[] | select(.project == $a.project) | span(.from; ([(.from | addd(6)), $day] | min))[]] | unique)
+    | ([$day] + [$pend[] | select(.project == $a.project) | span(.from; ([(.from | addd($w - 1)), $day] | min))[]] | unique)
     | "\($a.project)\t\($a.app)\t\(join(" "))"' <<<"$APPS")"
   [ -n "$todo" ] || return 0
-  if ! store_rbw_ready; then key=""; else key="$(rbw_read "$RBW_STEAM")"; fi
+  serr() { jq -nc --arg p "$project" --arg a "$app" --arg w "$1" '{project: $p, app: $a, error: $w}'; }
+  key="" bad=""
+  if ! store_rbw_ready; then bad="$STORE_WHY"
+  elif ! key="$(rbw_read "$RBW_STEAM")" || [ -z "$key" ]; then bad="no rbw entry $RBW_STEAM"
+  elif [[ ! "$key" =~ ^[0-9A-Za-z]+$ ]]; then bad="rbw entry $RBW_STEAM is not a bare Web API key"
+  fi
   while IFS=$'\t' read -r project app days; do
-    if [ -z "$key" ]; then
-      jq -nc --arg p "$project" --arg a "$app" --arg w "${STORE_WHY:-no rbw entry $RBW_STEAM}" '{project: $p, app: $a, error: $w}'; continue
-    fi
-    [[ "$key" =~ ^[0-9A-Za-z]+$ ]] || { jq -nc --arg p "$project" --arg a "$app" --arg w "rbw entry $RBW_STEAM is not a bare Web API key" '{project: $p, app: $a, error: $w}'; continue; }
+    [ -z "$bad" ] || { serr "$bad"; continue; }
     for d in $days; do
-      code="$(store_fetch "$STEAM_WISH_API?key=$key&appid=$app&date=$d" "" "$TMP/w.json")" \
-        || { jq -nc --arg p "$project" --arg a "$app" '{project: $p, app: $a, error: "wishlist request failed"}'; break; }
-      [ "$code" = 200 ] || { jq -nc --arg p "$project" --arg a "$app" --arg w "HTTP $code" '{project: $p, app: $a, error: $w}'; break; }
+      code="$(store_fetch "$STEAM_WISH_API?key=$key&appid=$app&date=$d" "" "$TMP/w.json")" || { serr "wishlist request failed"; break; }
+      [ "$code" = 200 ] || { serr "HTTP $code"; break; }
       # A day outside the app's range answers only app_min_date: no number, never a 0. Steam leaves
       # a zero count out of the summary, so a summary with no adds is 0 adds.
       jq -c --arg p "$project" --arg a "$app" --arg d "$d" '.response | {project: $p, app: $a, day: $d}
         + if (.wishlist_summary | type) == "object"
           then (.wishlist_summary | {adds: (.wishlist_adds // 0), deletes: (.wishlist_deletes // 0),
                 purchases: (.wishlist_purchases // 0), gifts: (.wishlist_gifts // 0)})
-          else {missing: true} end' "$TMP/w.json" 2>/dev/null \
-        || { jq -nc --arg p "$project" --arg a "$app" '{project: $p, app: $a, error: "wishlist answer is not JSON"}'; break; }
+          else {missing: true} end' "$TMP/w.json" 2>/dev/null || { serr "wishlist answer is not JSON"; break; }
     done
   done <<<"$todo"
 }
@@ -132,6 +132,7 @@ steam() {
 # Search Console: one JSON line per product with a site.
 search() {
   local project prop start code
+  gerr() { jq -nc --arg p "$project" --arg s "$prop" --arg w "$1" '{project: $p, property: $s, error: $w}'; }
   [ "$SITES" != "{}" ] || return 0
   if ! store_rbw_ready || ! store_google_token "$RBW_GSC" "$GSC_SCOPE"; then
     jq -c --arg w "$STORE_WHY" 'to_entries[] | {project: .key, property: .value, error: $w}' <<<"$SITES"; return 0
@@ -140,19 +141,18 @@ search() {
     jq -nc --arg s "$start" --arg e "$DAY" --argjson n "$GSC_ROWS" \
       '{startDate: $s, endDate: $e, dimensions: ["date", "page"], rowLimit: $n, dataState: "all"}' > "$TMP/q.json"
     code="$(store_fetch "$GSC_API/$(jq -rn --arg p "$prop" '$p | @uri')/searchAnalytics/query" "$STORE_TOKEN" "$TMP/s.json" "$TMP/q.json")" \
-      || { jq -nc --arg p "$project" --arg s "$prop" '{project: $p, property: $s, error: "search query failed"}'; continue; }
+      || { gerr "search query failed"; continue; }
     if [ "$code" != 200 ]; then
-      jq -nc --arg p "$project" --arg s "$prop" --arg w "HTTP $code$(d="$(store_api_error "$TMP/s.json")"; [ -z "$d" ] || printf ': %s' "$d")" \
-        '{project: $p, property: $s, error: $w}'; continue
+      gerr "HTTP $code$(d="$(store_api_error "$TMP/s.json")"; [ -z "$d" ] || printf ': %s' "$d")"; continue
     fi
     # Days from firstIncompleteDate on are still being counted; the ones before are final, and a
     # final day with no row had no search traffic.
     jq -c --arg p "$project" --arg s "$prop" --arg day "$DAY" --argjson n "$GSC_ROWS" "$DAYS_JQ"'
-      if (.rows // [] | length) >= $n then {project: $p, property: $s, error: "\($n) rows or more in the range"}
+      if (.rows | length) >= $n then {project: $p, property: $s, error: "\($n) rows or more in the range"}
       else {project: $p, property: $s,
             complete: (if .metadata.firstIncompleteDate then (.metadata.firstIncompleteDate | addd(-1)) else $day end),
             rows: [.rows[]? | {day: .keys[0], page: .keys[1], clicks, impressions}]} end' "$TMP/s.json" 2>/dev/null \
-      || jq -nc --arg p "$project" --arg s "$prop" '{project: $p, property: $s, error: "search answer is not JSON"}'
+      || gerr "search answer is not JSON"
   done < <(jq -r --argjson pend "$PENDING" --arg day "$DAY" --argjson w "$WINDOW_DAYS" "$DAYS_JQ"'
     to_entries[] | .key as $p
     | "\($p)\t\(.value)\t\(([$day | addd(-$w)] + [$pend[] | select(.project == $p) | .from]) | min)"' <<<"$SITES")
@@ -165,7 +165,7 @@ search > "$TMP/search.jsonl"
 # item's numbers over its window. An item is measured only by sources that apply to it (Steam: the
 # product has an app; Search Console: the item's URL is a page of the product's site), through the
 # last day every one of them read; a source that did not read leaves the item as it was.
-doc="$(jq -n --arg day "$DAY" --argjson now "$(now_epoch)" --argjson pend "$PENDING" --argjson apps "$APPS" \
+doc="$(jq -n --arg day "$DAY" --argjson w "$WINDOW_DAYS" --argjson now "$(now_epoch)" --argjson pend "$PENDING" --argjson apps "$APPS" \
   --slurpfile steam "$TMP/steam.jsonl" --slurpfile search "$TMP/search.jsonl" "$DAYS_JQ"'
   def page: sub("#.*$"; "") | sub("\\?.*$"; "") | sub("/+$"; "");
   def host: capture("^[a-z]+://(?<h>[^/:?#]+)").h // "" | ascii_downcase;
@@ -179,9 +179,8 @@ doc="$(jq -n --arg day "$DAY" --argjson now "$(now_epoch)" --argjson pend "$PEND
   # The last day from $from that every app of $p read, contiguous.
   | def steam_end($p; $from; $to):
       [$apps[] | select(.project == $p) | .app] as $ids
-      | reduce span($from; $to)[] as $d ({end: ($from | addd(-1)), ok: true};
-          if .ok and ([$ids[] as $a | $sday[] | select(.app == $a and .day == $d)] | length) == ($ids | length)
-          then .end = $d else .ok = false end) | .end;
+      | first(span($from; $to)[] | select(. as $d | all($ids[]; . as $a | any($sday[]; .app == $a and .day == $d)) | not)
+          | addd(-1)) // $to;
     def steam_sum($p; $f; $from; $to): [$sday[] | select(.project == $p and .day >= $from and .day <= $to) | .[$f]] | add // 0;
   {date: $day, generated_epoch: $now,
    sources: (
@@ -191,21 +190,20 @@ doc="$(jq -n --arg day "$DAY" --argjson now "$(now_epoch)" --argjson pend "$PEND
         errors: [$search[] | select(.error) | {project, property, error}]}] else [] end)),
    products: (
      [$apps[].project] + [$search[].project] | unique | map(. as $p | {project: $p}
-       + (if ([$apps[] | select(.project == $p)] | length) > 0 and ([$serr[] | select(.project == $p)] | length) == 0
-             and steam_end($p; $day; $day) == $day
-          then {steam: {wishlist_adds: steam_sum($p; "adds"; $day; $day), wishlist_deletes: steam_sum($p; "deletes"; $day; $day),
-                        wishlist_purchases: steam_sum($p; "purchases"; $day; $day), wishlist_gifts: steam_sum($p; "gifts"; $day; $day)}}
+       + (if any($apps[]; .project == $p) and (any($serr[]; .project == $p) | not) and steam_end($p; $day; $day) == $day
+          then {steam: ([("adds", "deletes", "purchases", "gifts") as $f
+                         | {key: "wishlist_\($f)", value: steam_sum($p; $f; $day; $day)}] | from_entries)}
           else {} end)
        + ([$gok[] | select(.project == $p)][0] as $g
           | if $g and $gday then {search: {clicks: ([$g.rows[] | select(.day == $gday) | .clicks] | add // 0),
                                            impressions: ([$g.rows[] | select(.day == $gday) | .impressions] | add // 0)}}
             else {} end))),
-   items: [$pend[] | . as $it | ($it.from | addd(6)) as $last
-     | ([$apps[] | select(.project == $it.project)] | length > 0) as $use_steam
+   items: [$pend[] | . as $it | ($it.from | addd($w - 1)) as $last
+     | any($apps[]; .project == $it.project) as $use_steam
      | ([$search[] | select(.project == $it.project)][0]) as $g
      | ($g != null and ($it.url | onsite($g.property))) as $use_search
      | select($use_steam or $use_search)
-     | select(($use_steam | not) or ([$serr[] | select(.project == $it.project)] | length == 0))
+     | select(($use_steam | not) or (any($serr[]; .project == $it.project) | not))
      | select(($use_search | not) or ($g.error | not))
      | ([ (if $use_steam then steam_end($it.project; $it.from; ([$last, $day] | min)) else empty end),
          (if $use_search then ([$last, $g.complete] | min) else empty end) ] | min) as $to
