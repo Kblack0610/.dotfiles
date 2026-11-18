@@ -132,6 +132,23 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 
 Runner and watch state are not in the document: each already has one contract file (`~/.local/state/agentctl/<name>/last-outcome`, `~/.local/state/watch-companion/<name>.state`).
 
+## Owners
+
+Each fact the fleet's scripts share has one writer, and every other script reads its home or calls that writer. `tests/unit/fleet_states_doc.bats` reads this table. A row fails when:
+- its forbidden copy (a `grep -E` regex, `\|` for alternation) matches a line outside the writer's file in `.local/bin`, `.local/lib`, `.local/src`, `.config/shared-hooks`, `.claude/hooks` or, where it is checked out, the private repo's `.local/bin`;
+- the writer function is missing;
+- a lock names a function that takes no `flock` or that the writer does not call;
+- a pinning test does not exist.
+
+A fix that deletes a copy adds its row in the same PR, so the copy cannot come back unseen.
+
+| Fact | Writer | Home | Forbidden copy | Lock | Pinned by |
+| --- | --- | --- | --- | --- | --- |
+| A plan's phases: done, deferred, open, the next one | `.local/lib/plan-phases.sh:plan_phases` (also `plan_phase_list`) | the plan's `## Phases` checklist | `\\\[-\\\]\|\[xX-\]` (a second parse of the tick marks) | - | `plan_phases counts the ## Phases checklist: [x] and [-] done, the first [ ] is next`, `the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase` |
+| The pace numbers: claude-acct's verdict, the auth wake, the bulk-wake budget | `.local/lib/pace-conf.sh:pace_get` | `.config/claude-acct/pace.conf` | `\{(PACE_SLACK_PCT\|RESERVE_PCT\|SESSION_RATE\|UNDERUSE_HOURS\|UNDERUSE_GAP_PCT\|TOKEN_WARN_DAYS\|AUTH_REFRESH_GRACE_MIN\|AUTH_WARN_DAYS\|WAKE_BATCH\|WAKE_LOAD_PCT\|WAKE_GAP_MIN\|WAKE_TRIES\|WAKE_SETTLE_MIN):[-=]` (a default beside the conf) | - | `the batch is data: WAKE_BATCH in pace.conf moves it, and a missing number wakes nobody` |
+| Who parked a session and why (`why=` is the owner: `park`, `preempt`, `budget`) | `.local/bin/claude-acct:park_flow` (also `cmd_unpark`) | `~/.agent/parked/<key>` | `["']resume=` (a second ledger writer) | `park_lock` | `a park or unpark of a session another one holds the lock for waits, then is refused and types nothing` |
+| One shepherd pass, a run or a check, at a time | `.local/bin/fleet-shepherd:run_locked` | `~/.agent/shepherd/.run.lock` | `FLEET_SHEPHERD_RUN_LOCKED=` (a pass that skips the lock) | `run_locked` | `a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing`, `a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass` |
+
 ## Labels and stages on screen
 
 Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowhere else. The window options are a copy for display: nothing reads them back as fact.

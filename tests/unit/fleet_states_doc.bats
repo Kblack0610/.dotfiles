@@ -6,6 +6,8 @@
 # The close table there drives the close flow's checks: (e) its Step ids and verdict words, in order,
 # must be the `# step:<id>` tagged branches of close_verdict in CLOSE_JQ, and (f) the committed
 # fleet-close-flow.svg must be close-flow-svg's output of it.
+# The Owners table names one writer per shared fact: (g) its forbidden copy matches nothing outside the
+# writer file, (h) the writer functions exist and take the lock the row names, and (i) its pins exist.
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
 
 setup() {
@@ -17,6 +19,7 @@ setup() {
   SHEPHERD="$REPO_ROOT/.local/bin/fleet-shepherd"
   SVG="$REPO_ROOT/.local/src/docs/fleet-close-flow.svg"
   GEN="$REPO_ROOT/.local/bin/close-flow-svg"
+  PRIVATE="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
 }
 
 # rows <doc> -> bucket, actor, action and pinned, one row of the bucket table per line, split by
@@ -95,6 +98,71 @@ check_svg() { # <doc> <svg>
   diff <("$GEN" --doc "$1" --out -) "$2" > /dev/null || { echo "$2 is not close-flow-svg's output of $1: run close-flow-svg"; return 1; }
 }
 
+# owner_rows <doc> -> fact, writer, home, copy, lock and pinned, one row of the Owners table per line,
+# split by \037. `\|` in a cell is the regex's alternation, not a cell border.
+owner_rows() {
+  awk '/^\| Fact \| Writer \| Home \| Forbidden copy \|/ {t = 1; next}
+    t && /^\| ---/ {next}
+    t && !/^\|/ {exit}
+    t { gsub(/\\\|/, "\036"); n = split($0, c, "|"); out = ""
+        for (i = 2; i < n; i++) { gsub(/^ +| +$/, "", c[i]); gsub(/\036/, "|", c[i]); out = out (i > 2 ? "\037" : "") c[i] }
+        print out }' "$1"
+}
+
+# spans <cell> -> its code spans, one per line
+spans() { awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }' <<<"$1"; }
+
+# fn_body <file> <function> -> the function's lines, from `name() {` to the first unindented `}`
+fn_body() {
+  awk -v f="$2" 'index($0, f "() {") == 1 || index($0, f "()  {") == 1 {on = 1} on {print} on && /^}/ {exit}' "$1"
+}
+
+# owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
+# where it is checked out, the private repo's bin
+owned_files() {
+  git -C "$REPO_ROOT" ls-files -- .local/bin .local/lib .local/src .config/shared-hooks .claude/hooks |
+    grep -vE '\.(md|svg|bats)$' | sed "s|^|$REPO_ROOT/|"
+  [ ! -d "$PRIVATE/.git" ] || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
+}
+
+check_owner_cells() { # <doc>
+  local fact writer home copy lock pinned c file fn lk bad=0 fns
+  [ "$(owner_rows "$1" | wc -l)" -gt 0 ] || { echo "no Owners table in $1"; return 1; }
+  while IFS=$'\037' read -r fact writer home copy lock pinned; do
+    for c in writer home copy lock pinned; do [ -n "${!c}" ] || { echo "$fact: no $c"; bad=1; }; done
+    mapfile -t fns < <(spans "$writer")
+    file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
+    [ -f "$REPO_ROOT/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
+    for fn in "${fns[@]}"; do
+      [ -n "$(fn_body "$REPO_ROOT/$file" "$fn")" ] || { echo "$fact: $file has no function $fn"; bad=1; }
+    done
+    [ "$lock" != - ] || continue
+    lk=$(spans "$lock")
+    fn_body "$REPO_ROOT/$file" "$lk" | grep -qw flock || { echo "$fact: its lock $lk takes no flock"; bad=1; }
+    [ "$lk" = "${fns[0]}" ] || fn_body "$REPO_ROOT/$file" "${fns[0]}" | grep -qw "$lk" ||
+      { echo "$fact: ${fns[0]} does not take its lock $lk"; bad=1; }
+  done < <(owner_rows "$1")
+  return "$bad"
+}
+
+check_owner_copies() { # <doc> <file>...
+  local doc=$1 fact writer home copy lock pinned file re hits bad=0; shift
+  while IFS=$'\037' read -r fact writer home copy lock pinned; do
+    file=$(spans "$writer" | head -1); file="$REPO_ROOT/${file%%:*}"; re=$(spans "$copy" | head -1)
+    hits=$(printf '%s\0' "$@" | xargs -0 grep -nIE -e "$re" -- 2>/dev/null | awk -v w="$file:" 'index($0, w) != 1')
+    [ -z "$hits" ] || { printf '%s: a copy outside its writer:\n%s\n' "$fact" "$hits"; bad=1; }
+  done < <(owner_rows "$doc")
+  return "$bad"
+}
+
+check_owner_pins() { # <doc>
+  local name bad=0
+  while IFS= read -r name; do
+    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "no @test \"$name\""; bad=1; }
+  done < <(owner_rows "$1" | cut -d$'\037' -f6 | while IFS= read -r c; do spans "$c"; done)
+  return "$bad"
+}
+
 @test "the bucket table names exactly the buckets fleet-sessions emits" {
   run check_words "$DOC" "$SESSIONS"
   assert_success
@@ -171,4 +239,47 @@ check_svg() { # <doc> <svg>
   run "$GEN" --doc "$t/empty.md" --out -
   assert_failure 2
   assert_output --partial 'no close table'
+}
+
+@test "every Owners row names a writer that exists, a lock it takes, and pinning tests that exist" {
+  run check_owner_cells "$DOC"
+  assert_success
+  assert_equal "$(owner_rows "$DOC" | wc -l)" 4
+  run check_owner_pins "$DOC"
+  assert_success
+}
+
+@test "no Owners row's forbidden copy appears outside its writer" {
+  mapfile -t files < <(owned_files)
+  run check_owner_copies "$DOC" "${files[@]}"
+  assert_success
+}
+
+@test "negative controls: a planted copy, a missing writer, a lock the writer skips and a dead pin all fail" {
+  local t="$BATS_TEST_TMPDIR"
+  mapfile -t files < <(owned_files)
+  printf ': "${WAKE_BATCH:=3}"\n' > "$t/wake-pace.sh"
+  printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/agent-land"
+  assert_failure
+  assert_output --partial "The pace numbers"
+  assert_output --partial "$t/wake-pace.sh:"
+  assert_output --partial "A plan's phases"
+  assert_output --partial "$t/agent-land:1:"
+  sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
+  run check_owner_cells "$t/no-writer.md"
+  assert_failure
+  assert_output --partial '.local/bin/claude-acct has no function park_flown'
+  sed '/^| Who parked/ s/| `park_lock` |/| `park_unlock` |/' "$DOC" > "$t/no-lock.md"
+  run check_owner_cells "$t/no-lock.md"
+  assert_failure
+  assert_output --partial 'its lock park_unlock takes no flock'
+  sed '/^| Who parked/ s/(also `cmd_unpark`)//; /^| Who parked/ s/:park_flow`/:record`/' "$DOC" > "$t/skips.md"
+  run check_owner_cells "$t/skips.md"
+  assert_failure
+  assert_output --partial 'record does not take its lock park_lock'
+  sed '/^| One shepherd pass/ s/exits 75 having sampled nothing/exits 75/' "$DOC" > "$t/dead.md"
+  run check_owner_pins "$t/dead.md"
+  assert_failure
+  assert_output --partial 'past FLEET_SHEPHERD_CHECK_WAIT exits 75"'
 }
