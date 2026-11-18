@@ -118,10 +118,8 @@ fi
 
 # --- PROBE: the go/no-go, BEFORE anything is written ----------------------
 # Probe through a TEMP token file so a failed/--probe-only run leaves the machine
-# exactly as it found it. Writing config first meant --probe-only clobbered a
-# live env file - and since that file also carries FLEET_ROSTER, it silently
-# knocked the glyph back into the API-derived mode this whole system exists to
-# avoid. Touch nothing until the heartbeat is proven.
+# exactly as it found it: writing config first meant --probe-only clobbered a
+# live env file. Touch nothing until the heartbeat is proven.
 say "probing as ${GROUP}_${NAME} (nothing is written until this succeeds)"
 PROBE_TOKEN="$(mktemp "${TMPDIR:-/tmp}/fleet-probe.XXXXXX")"
 chmod 600 "$PROBE_TOKEN"
@@ -143,7 +141,7 @@ esac
 # identical everywhere, so a name here would make every host claim to be the same
 # one. Identity goes in the per-machine launcher below.
 #
-# UPDATE IN PLACE, never overwrite: this file may also carry FLEET_ROSTER and
+# UPDATE IN PLACE, never overwrite: this file may also carry FLEET_NAME_MAP and
 # other fleet-wide settings this script knows nothing about.
 if [ ! -e "$CFG_DIR/env" ]; then
     printf '# written by fleet-pulse enroll.sh\n: "${GATUS_BASE:=%s}"\n' "$GATUS" > "$CFG_DIR/env"
@@ -198,7 +196,7 @@ BOOT_EOF
 
     # Every 15 min, not 60s: Android Doze pauses cron while the phone sleeps, so a
     # tighter interval buys nothing. Liveness is best-effort-while-awake by design -
-    # the phone shows last-seen on the board and is kept OUT of FLEET_ROSTER.
+    # the phone shows last-seen on the board and is kept off the roster.
     CRON_LINE="*/15 * * * * FLEET_NAME=$NAME FLEET_GROUP=$GROUP $SRC_DIR/push.sh >/dev/null 2>&1"
     existing="$(crontab -l 2>/dev/null || true)"
     if printf '%s\n' "$existing" | grep -Fq "$SRC_DIR/push.sh"; then
@@ -369,7 +367,7 @@ printf '\n\033[32mEnrolled as %s_%s\033[0m -> %s\n' "$GROUP" "$NAME" "$GATUS"
 if [ "$OS" = termux ]; then
     # A phone sleeps (Doze pauses cron), so rostering it would pin the desktop glyph
     # amber forever. It shows on the board with last-seen instead. See docs/mobile-fleet.md.
-    printf 'Phone enrolled: it shows on the board with last-seen. Do NOT add "%s" to FLEET_ROSTER (it sleeps).\n' "$NAME"
+    printf 'Phone enrolled: it shows on the board with last-seen. Declare "%s" in fleet_pulse_devices in home-config ansible/inventory.yml with roster: false (it sleeps), then run scripts/render-fleet-pulse.py.\n' "$NAME"
 else
-    printf 'Add "%s" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted.\n' "$NAME"
+    printf 'Add "%s" to the fleet_pulse group in home-config ansible/inventory.yml and run scripts/render-fleet-pulse.py, or it will not be counted.\n' "$NAME"
 fi
