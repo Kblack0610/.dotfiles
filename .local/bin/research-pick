@@ -99,7 +99,7 @@ queue() {
     --slug "research-$1" --title "research($1)" -- "$task" 2>&1 >/dev/null)
   case $? in
     0) return 0 ;;
-    5) say "$1: held by queue admission, nothing queued; the next run tries again"; return 1 ;;
+    5) say "$1: filed on its board, nothing queued: only the board fills the queue, and dispatch pulls it under the cap"; return 1 ;;
   esac
   say "$1: nothing queued, agent-queue add failed: $(tail -n 1 <<<"$err")"
   return 1

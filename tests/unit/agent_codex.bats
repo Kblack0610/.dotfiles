@@ -20,7 +20,7 @@ setup() {
   cd "$SANDBOX/wt"
   git remote add origin "$SANDBOX/origin.git"
   echo one > a && git add a && git commit -q -m one && git push -q origin main && git fetch -q origin
-  agent-queue add --project game --slug cx --priority high "Fix the menu" >/dev/null
+  AGENT_QUEUE_PULL=dispatch agent-queue add --project game --slug cx --priority high "Fix the menu" >/dev/null
   agent-queue move cx running >/dev/null
 }
 
