@@ -269,11 +269,17 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str, vault: &Path) -> Op
             let base = root.join(sub);
             let mut items: Vec<(String, Option<String>)> = Vec::new();
             items.extend(link(&base.join("README.md")).map(|t| ("readme".to_string(), Some(t))));
-            items.extend(
-                doc_entries(&base.join("docs"), &[])
-                    .into_iter()
-                    .filter_map(|(label, f)| Some((label, Some(link(&f)?)))),
-            );
+            items.extend(doc_entries(&base.join("docs"), &[]).into_iter().filter_map(
+                |(label, f)| {
+                    // The lab's own docs/README.md is `docs` too: two links, one label.
+                    let label = if label == "docs" {
+                        "repo docs".to_string()
+                    } else {
+                        label
+                    };
+                    Some((label, Some(link(&f)?)))
+                },
+            ));
             Some(RepoDocs {
                 items,
                 fixed: false,
@@ -391,14 +397,16 @@ fn export_path(checkout: &Path, root: &Path, path: &str) -> bool {
         && fs::write(&stamp, format!("{id}\n")).is_ok()
 }
 
-/// Mark `path`, or every file under it, read-only.
+/// Mark `path`, or every file under it, read-only. Symlinks are skipped.
 fn read_only(path: &Path) -> std::io::Result<()> {
-    if path.is_dir() {
+    // A symlink is left alone: following it would chmod a file outside the export, or loop.
+    let meta = fs::symlink_metadata(path)?;
+    if meta.is_dir() {
         for e in fs::read_dir(path)? {
             read_only(&e?.path())?;
         }
-    } else {
-        let mut perm = fs::metadata(path)?.permissions();
+    } else if !meta.is_symlink() {
+        let mut perm = meta.permissions();
         perm.set_readonly(true);
         fs::set_permissions(path, perm)?;
     }
@@ -852,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_docs_export_origin_main_read_only_and_link_into_the_export() {
+    fn a_game_repo_docs_export_the_default_branch_read_only_and_link_into_the_export() {
         let checkout = tree(
             "repo",
             &["docs/games/shapecity.md", "docs/games/shapecity-look.md"],
@@ -988,6 +996,7 @@ mod tests {
                 "apps/binks/docs/review-2026-11.md",
                 "apps/binks/src/main.ts",
                 "apps/other/docs/notes.md",
+                "apps/late/docs/new.md",
             ],
         );
         let vault = tree("approotvault", &[]);
@@ -1025,6 +1034,7 @@ mod tests {
                   "plat": {{"type": "infra"}},
                   "binks": {{"type": "app", "repo": "plat", "path": "apps/binks"}},
                   "other": {{"type": "app", "repo": "plat", "path": "apps/other/"}},
+                  "late": {{"type": "app", "repo": "plat", "path": "apps/late"}},
                   "lost": {{"type": "app", "repo": "elsewhere", "path": "apps/binks"}}
                 }}}}"#,
             checkout.display()
@@ -1043,7 +1053,7 @@ mod tests {
             want(&[
                 ("readme", "apps/binks/README"),
                 ("architecture", "apps/binks/docs/architecture"),
-                ("docs", "apps/binks/docs/README"),
+                ("repo docs", "apps/binks/docs/README"),
             ]),
             "README, then docs/*.md by name; a dated report and a dir with no README stay off"
         );
@@ -1092,13 +1102,14 @@ mod tests {
         );
         assert!(!dest.join("apps/binks/docs/README.md").exists());
 
-        // NEGATIVE CONTROL: with no default branch the export is left as it was and nothing
-        // new appears, rather than falling back to the working tree.
+        // NEGATIVE CONTROL: with no default branch an earlier export stays, and a project never
+        // exported gets no links from the working tree, where apps/late/docs/new.md exists.
         git(&["update-ref", "-d", "refs/remotes/origin/HEAD"]);
         git(&["rm", "-q", "-f", "-r", "apps/other"]);
         git(&["commit", "-qm", "gone"]);
         let other = repo_docs(&reg, "other", &vault).unwrap();
         assert_eq!(other.items, want(&[("notes", "apps/other/docs/notes")]));
+        assert_eq!(repo_docs(&reg, "late", &vault).unwrap().items, vec![]);
         assert!(
             repo_docs(&reg, "lost", &vault).is_none(),
             "no checkout here"

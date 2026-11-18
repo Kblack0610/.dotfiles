@@ -137,7 +137,7 @@ The repo docs stay in the repo (the code cites them and PRs change them with it)
 | Agent plans, lessons, sessions, asks, queue | `~/.agent/<kind>/<name>` | agents |
 | Agent key facts at session start | `~/.agent/anchors/<name>.md` | project-index |
 
-A repo doc has one home, the repo, and the sheet's `Docs:` list opens it (read-only). To change one, put the rough lines in the project's lab `ideas.md` under a `Doc notes` heading, one bullet per point and the doc it belongs to; an agent folds them into the repo doc (a PR, written by `docs-write`) and clears them from `ideas.md`. A doc is never edited in the export.
+A repo doc has one home, the repo, and the sheet's `Docs:` list opens it (read-only). To change one, put the rough lines in the project's lab `ideas.md` under a `Doc notes` heading, one bullet per point and the doc it belongs to; an agent folds them into the repo doc (a PR, written by `docs-write`) and clears them from `ideas.md`; no job does this on a schedule, so ask for it. A doc is never edited in the export.
 
 The session preflight reads the anchor and the agent board, not `summary.md`. The `## -> For the agents` section and the `<!-- canonical: -->`, `<!-- cockpit: -->` and `<!-- tagglob: -->` markers are retired (wiring is the registry entry); to ask an agent for something, add a row to the board.
 
