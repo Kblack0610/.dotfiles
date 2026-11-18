@@ -1712,6 +1712,7 @@ PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 # would type two resumes into one pane. A holder runs at most two awaits (a move), so a wait of
 # three sees its result; past that the caller is refused. A dot file, so ledger readers skip it.
 park_lock() {
+    park_unlock
     mkdir -p "$PARKED" && exec {PARK_FD}>"$PARKED/.lock.$1" || { refuse "cannot write to $PARKED"; return; }
     flock -w "$((3 * MOVE_TIMEOUT))" "$PARK_FD" && return 0
     park_unlock
@@ -2129,18 +2130,21 @@ cmd_unpark() {
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
             drop_legacy_ledgers
             # A bulk wake, so it takes each from the shared budget (wake-pace.sh); the rest stay parked.
-            # A park's why is its owner: fleet-dispatch resumes its preempts once their run units fit
-            # (unpark_preempted), and a budget park waits for an unpark by name, a choice to spend more.
-            local left=0 owned=()
+            # A park's why is its owner, and --all owns only why=park: fleet-dispatch resumes its
+            # preempts once their run units fit (unpark_preempted), and any other owner (budget: a choice
+            # to spend more) waits for an unpark by name.
+            local left=0 owned=() k why
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
-                ((n++))
-                case "$(ledger_get "$f" why)" in
-                    preempt) owned+=("${f##*/} (preempt: fleet-dispatch resumes it)"); continue ;;
-                    budget) owned+=("${f##*/} (budget: claude-acct unpark ${f##*/})"); continue ;;
+                ((n++)); k="${f##*/}"; why=$(ledger_get "$f" why)
+                case "${why:-park}" in
+                    park) ;;
+                    preempt) owned+=("$k (preempt: fleet-dispatch resumes it)"); continue ;;
+                    *) owned+=("$k ($why: claude-acct unpark $k)"); continue ;;
                 esac
-                what="${f##*/}"; park_lock "$(ledger_session "$f")" || { rc=1; continue; }
-                if wake_take unpark "${f##*/}"; then unpark_ledger unpark "$f" || rc=1; else ((left++)); fi
+                ((WAKE_REFUSED == 0)) || { ((left++)); continue; }
+                what="$k"; park_lock "$(ledger_session "$f")" || { rc=1; continue; }
+                if wake_take unpark "$k"; then unpark_ledger unpark "$f" || rc=1; else ((left++)); fi
                 park_unlock
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"

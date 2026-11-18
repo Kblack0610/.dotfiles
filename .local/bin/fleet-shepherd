@@ -311,9 +311,10 @@ cmd_due() {
   elif [ -z "$holds" ] && [ "$verdict" = HOLD ]; then
     out+="${out:+$'\n'}pace: machine reads HOLD with no hold set"
   elif [ -z "$holds" ] && [ "$verdict" = CLEAR ]; then
+    # The pace line owns only why=park parks (a missing why is a park); any other why's owner resumes it.
     local f; owned=""
     for f in "${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"/*; do
-      [ -f "$f" ] && grep -qxE 'why=(preempt|budget)' "$f" && owned+="$(sed -n 's/^target=//p' "$f")"$'\n'
+      [ -f "$f" ] && owned+="$(awk -F= '$1=="why"{w=$2} $1=="target"{t=$2} END{if (w!="" && w!="park") print t}' "$f")"$'\n'
     done
     parked="$(jq -r --arg owned "$owned" "$PANE_TAG_JQ"'
       ($owned | split("\n")) as $owned
@@ -1652,17 +1653,14 @@ hand_due() {
 # (no pass started in STUCK_MIN).
 run_locked() {
   require_table
-  if [ -n "$RUN_LOCKED" ]; then
-    if [ "$1" = run ]; then cmd_run; else cmd_check_routed; fi
-    return
-  fi
-  [ "$1" = check ] || [ -n "$SERVER" ] || die "no world declares session $SESSION"
+  local fn=cmd_run wait=(-n) rc=0
+  [ "$1" = run ] || { fn=cmd_check_routed; wait=(-w "$FLEET_SHEPHERD_CHECK_WAIT"); }
+  if [ -n "$RUN_LOCKED" ]; then "$fn"; return; fi
+  [ "$fn" = cmd_check_routed ] || [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
-  local rc=0 wait=(-n)
-  [ "$1" = run ] || wait=(-w "$FLEET_SHEPHERD_CHECK_WAIT")
   FLEET_SHEPHERD_RUN_LOCKED=1 flock "${wait[@]}" -o -E 75 "$LEDGER/.run.lock" "$0" "$1" || rc=$?
   [ "$rc" = 75 ] || return "$rc"
-  if [ "$1" = check ]; then
+  if [ "$fn" = cmd_check_routed ]; then
     echo "$NAME: a run held the run lock past ${FLEET_SHEPHERD_CHECK_WAIT}s: no check; run it again once that run ends" >&2
     return 75
   fi
