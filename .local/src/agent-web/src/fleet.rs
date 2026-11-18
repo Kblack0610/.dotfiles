@@ -95,7 +95,7 @@ pub async fn get(c: &Cache, q: FleetQuery) -> String {
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let cap = match q.verdicts.vall {
         Some(_) => usize::MAX,
-        None => hub_core::layout::fold_rows("verdicts"),
+        None => hub_core::layout::page_rows("verdicts"),
     };
     f.judge.view(&q.verdicts.view(), cap);
     let view = View::new::<Who>(&q.rq, &q.rs, &q.rsort, &q.rdir);
@@ -105,7 +105,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         v["who"] = serde_json::json!(rows);
         v["table"] = serde_json::json!(table);
         // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
-        v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
+        v["verdicts_shown"] = hub_core::layout::page_rows("verdicts").into();
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
@@ -200,7 +200,7 @@ mod tests {
         let v = read(&FleetQuery::default());
         assert_eq!(v["who"].as_array().unwrap().len(), 2);
         assert_eq!(v["table"]["shown"], 2);
-        assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
+        assert_eq!(v["verdicts_shown"], hub_core::layout::page_rows("verdicts"));
         assert_eq!(
             v["table"]["links"],
             serde_json::json!([{"who": "#sessions/runners/shepherd"}, {"who": "#sessions/runners/briefing"}])
@@ -218,7 +218,7 @@ mod tests {
             score: "wrong".into(),
             ..Default::default()
         };
-        let cap = hub_core::layout::fold_rows("verdicts");
+        let cap = hub_core::layout::page_rows("verdicts");
         let mut f = fleet();
         f.judge.verdicts = (0..cap + 5).map(|_| wrong("ship it?")).collect();
         f.judge.verdicts.push(wrong("which login?"));
