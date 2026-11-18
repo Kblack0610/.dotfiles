@@ -1610,7 +1610,7 @@ OUT
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
 }
 
-@test "record on the fleet home runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
+@test "record on the lease holder runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
   record_setup
   world '10 1000' "$PANE1"
   sandbox_fleet --self hp 0
@@ -1626,9 +1626,9 @@ OUT
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
   assert_success
   assert_not_called 'ssh'
-  # A machine that is not the fleet home keeps its own record and asks no one: the home fans out.
+  # A machine that does not hold the fleet lease keeps its own record and asks no one: the holder fans out.
   : > "$NOTES_FIXTURE/calls.log"
-  FLEET_HOST=hp run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_not_called 'ssh'
   sandbox_fleet --self hp 4

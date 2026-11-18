@@ -40,12 +40,11 @@ MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
 # The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
 PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
-# The fleet worker roster and state forwarding agent-queue, agent-ask, wt and fleet-dispatch share.
-# No suite reads the real roster or forwards to a real state host: a test that wants workers
-# writes its own inventory and points FLEET_INVENTORY at it.
+# The fleet worker roster wt and fleet-dispatch share. No suite reads the real roster: a test
+# that wants workers writes its own inventory and points FLEET_INVENTORY at it.
 FLEET_HOSTS_LIB="$REPO_ROOT/.local/lib/fleet-hosts.sh"
 FLEET_INVENTORY=/nonexistent/fleet-inventory.yml
-unset AGENT_STATE_HOST FLEET_HOSTS_JSON
+unset FLEET_HOSTS_JSON
 export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB FLEET_HOSTS_LIB FLEET_INVENTORY
 
 # sandbox_init [fixture-name]
@@ -60,10 +59,9 @@ sandbox_worlds() {
 }
 
 # sandbox_fleet [--self] [<worker> [<rc>]] -- the fleet roster and the one ssh stub every test of a verb
-# that asks the workers (record, restore, an ask's live session) shares. The roster names this machine
-# (FLEET_HOST=state) the fleet home, state.lan, with one worker it never places or probes, idle-worker,
-# so a fleet-dispatch verb that writes the store runs (home_guard); with no roster it stands down. ssh
-# logs each call to calls.log and, by default, does not answer (255), so nothing leaves the sandbox.
+# that asks the workers (record, restore, an ask's live session) shares. The roster names one worker
+# this machine (FLEET_HOST=state) never places or probes, idle-worker. ssh logs each call to calls.log
+# and, by default, does not answer (255), so nothing leaves the sandbox.
 # <worker> adds a worker at 192.0.2.40, the only address ssh reaches; --self also lists this machine
 # (state), which a walk of the workers must skip. Without <rc> that worker runs the call as it would:
 # the stubs there read and log to $SANDBOX/<worker>/, its own fixture, and it does not answer while
@@ -75,9 +73,9 @@ sandbox_fleet() {
   w="${1:-}" rc="${2:-}"
   export FLEET_HOST=state FLEET_INVENTORY="$SANDBOX/inventory.yml"
   {
-    printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n          fleet_state_host: state.lan\n'
-    [ -z "$w" ] || printf '        %s:\n          ansible_host: 192.0.2.40\n          fleet_state_host: state.lan\n' "$w"
-    [ -z "$self" ] || printf '        state:\n          fleet_state_host: state.lan\n'
+    printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n'
+    [ -z "$w" ] || printf '        %s:\n          ansible_host: 192.0.2.40\n' "$w"
+    [ -z "$self" ] || printf '        state:\n          fleet_place: false\n'
   } > "$FLEET_INVENTORY"
   {
     echo '#!/usr/bin/env bash'
@@ -106,6 +104,15 @@ sandbox_init() {
   # exact-path lookup. `pwd -P` is a no-op on Linux, where /tmp is a real directory.
   SANDBOX="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)/sb space"   # the space is intentional
   mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
+  # No suite reaches the real fleet lease: fleet-dispatch's guard (lease_guard) reads this stub,
+  # which says this machine holds it. A test of the guard sets FLEET_LEASE_STUB_RC and _OUT;
+  # tests/unit/fleet_lease.bats runs the real one by path.
+  cat > "$SANDBOX/bin/fleet-lease" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FLEET_LEASE_STUB_OUT:-}" ] || echo "$FLEET_LEASE_STUB_OUT" >&2
+exit "${FLEET_LEASE_STUB_RC:-0}"
+EOF
+  chmod +x "$SANDBOX/bin/fleet-lease"
 
   export HOME="$SANDBOX/home"
   # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with

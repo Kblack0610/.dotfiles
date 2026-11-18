@@ -176,14 +176,6 @@ item_session() {
   assert_success
 }
 
-@test "a worker's session reads its item from the state host and runs no store sync" {
-  item_session
-  export AGENT_STATE_HOST=state.lan
-  check "$S1"
-  assert_success
-  ! grep -q 'store-sync' "$SANDBOX/calls.log"
-}
-
 @test "a queue item's branch cut from origin/main, tracking main, pushes to origin under its own name, never to main" {
   item_session
   main=$(git -C "$SANDBOX/origin.git" rev-parse main)

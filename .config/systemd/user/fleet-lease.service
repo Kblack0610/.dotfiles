@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew or take the fleet lease, and start or stop the persistent singletons to match (fleet-lease renew)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/fleet-lease renew
+TimeoutStartSec=120
