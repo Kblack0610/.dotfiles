@@ -573,7 +573,7 @@ load 'fleet_dispatch/common'
   assert_called "AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
-@test "start --resume refuses a conversation still running, and one two items list without --item" {
+@test "start --resume refuses a conversation still running, and takes the newest of two items that list one (ar-2676)" {
   project game beta "$SANDBOX/repos/game"
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   mkdir -p "$HOME/.claude/sessions"
@@ -585,14 +585,13 @@ load 'fleet_dispatch/common'
 
   CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug one "one" >/dev/null
   CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug two "two" >/dev/null
+  touch -d '1 hour ago' "$(qitem running one)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
-  assert_failure
-  assert_output --partial 'more than one item'
-  assert_output --partial 'pass --item'
-  assert_not_called 'new-session'
+  assert_success
+  assert_called "AGENT_QUEUE_ITEM=two "
 
-  # Only an ambiguous lookup refuses: a queue that cannot answer (none installed) resumes with no item.
+  # A queue that cannot answer (none installed) resumes with no item.
   stub agent-queue 'echo "agent-queue: command not found" >&2; exit 127'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s3 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
