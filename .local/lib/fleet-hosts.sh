@@ -113,11 +113,13 @@ fleet_roster_fresh() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class]}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class], harnesses: [name]}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass). first is
 # fleet_first, the item classes (canary) this worker takes ahead of the dispatching machine.
+# harnesses is fleet_harnesses, the headless harnesses (nim) it runs besides claude, each only
+# while its probe says it is ready (fleet-dispatch harness-ready).
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
 # over its parent), then the host's own entries over every group, a later entry winning among
 # equals, so ansible_host may sit in another group. Nothing when the
@@ -169,6 +171,9 @@ def walk(name, node, chain):
 
 walk("all", root, [])
 
+def aslist(f):
+    return [str(c) for c in (f if isinstance(f, list) else [f] if f else [])]
+
 for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
@@ -184,7 +189,8 @@ for h in members.get(group, []):
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
         "power": str(v.get("fleet_power", "")),
-        "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
+        "first": aslist(v.get("fleet_first")),
+        "harnesses": aslist(v.get("fleet_harnesses")),
     }))
 PY
 }

@@ -890,6 +890,30 @@ trainee_start_ready() {
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
 }
 
+@test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
+  trainee_start_ready
+  worker '2.0 16 1 50'
+  # The worker's state dir is not this one's: its ssh runs the worker's command under its own FLEET_DISPATCH_STATE.
+  stub ssh "echo \"ssh \$*\" >> \"\$NOTES_FIXTURE/calls.log\"; eval \"set -- \${*: -1}\"; FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") \"\$@\""
+  for s in t-one t-here; do
+    [ "$s" = t-one ] || agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
+    agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+  done
+  agent-queue set t-one host=razer-laptop >/dev/null
+  # Negative control: the worker holds no patch yet, so neither row waits.
+  run trainee_waiting
+  assert_output ''
+  mkdir -p "$SANDBOX/remote/trainee"
+  printf 'abc123\n' > "$SANDBOX/remote/trainee/t-one.base"
+  printf -- '--- a/menu.txt\n+++ b/menu.txt\n@@ -1 +1 @@\n-a\n+b\n' > "$SANDBOX/remote/trainee/t-one.patch"
+  run trainee_waiting
+  assert_equal "$(jq -r .slug <<<"$output")" t-one
+  local d="$HOME/.local/state/agentctl/dispatch/trainee"
+  assert_equal "$(cat "$d/t-one.base")" abc123
+  assert_equal "$(cat "$d/t-one.patch")" "$(cat "$SANDBOX/remote/trainee/t-one.patch")"
+  [ ! -e "$d/t-here.patch" ] || fail "a row run here fetched a patch"
+}
+
 @test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
   trainee_start_ready
   # Negative control: the verdict lists no direct pair, so the same start is a trainee run.
@@ -1303,7 +1327,28 @@ trainee_start_ready() {
   run cmd_start --host nope --item x
   assert_failure 2
   assert_output --partial 'nope is not in the fleet roster'
-  assert_not_called 'wt new'
+  # A harness the worker does not list in fleet_harnesses; claude needs no listing.
+  harness_ready
+  agent-queue set x agent=paid model=glm >/dev/null
+  run cmd_start --host razer-laptop --item x --harness paid --model glm
+  assert_failure 2
+  assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
+    assert_not_called 'wt new'
+}
+
+@test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex nope
+  assert_success
+  assert_output "$(printf '%s\n' paid 'codex: it is no opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  rm "$SANDBOX/paid.key"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its key file $SANDBOX/paid.key is not readable"
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"; rm "$SANDBOX/eval-paid.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its config $SANDBOX/eval-paid.json is not readable"
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
