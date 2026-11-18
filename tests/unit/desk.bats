@@ -402,3 +402,51 @@ sys.exit(1 if bad else 0)
   run "$DESK" notify drop "page:ci/main"
   assert_equal "$(cat "$FX/calls.log")" "gdbus 88"
 }
+
+@test "panel toggles a chip's dropdown or a Noctalia panel, and sends the letters to every chip" {
+  printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
+  mkdir -p "$(dirname "$STATE")" && echo "bar=noctalia" > "$STATE"
+  "$DESK" panel custom/ci
+  "$DESK" panel control-center audio
+  "$DESK" panel letters 'custom/ci=c custom/fleet=f'
+  "$DESK" panel letters off
+  run cat "$FX/calls.log"
+  assert_output "noctalia msg panel-toggle dotfiles/chips:detail custom/ci
+noctalia msg panel-toggle control-center audio
+noctalia msg plugin dotfiles/chips:chip all letters custom/ci=c custom/fleet=f
+noctalia msg plugin dotfiles/chips:chip all letters off"
+}
+
+@test "panel under waybar exits 2 and names the bar, without calling noctalia" {
+  printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
+  run "$DESK" panel custom/ci
+  assert_failure 2
+  assert_output --partial 'the bar is waybar-classic'
+  [ ! -e "$FX/calls.log" ]
+}
+
+@test "every Super+A b key is used once, and each chip it opens is on the noctalia bar with a dropdown" {
+  load '../helpers/hypr'
+  local leaves
+  leaves="$(hypr_dump registry | jq -r '.[] | select(.submap == "pinbar-panels" and (.arg | test("desk panel")))
+    | "\(.key) \(.arg | capture("desk panel (?<t>[^ ]+)").t)"')"
+  [ "$(wc -l <<<"$leaves")" -gt 10 ]
+  run bash -c 'cut -d" " -f1 | sort | uniq -d' <<<"$leaves"
+  assert_output ''
+  run python3 -c '
+import sys, tomllib
+w = tomllib.load(open(sys.argv[1], "rb"))["widget"]
+chips = {v["module"] for v in w.values() if v.get("module") and v.get("dropdown", True)}
+want = {l.split()[1] for l in sys.argv[2].splitlines() if l.split()[1].startswith("custom/")}
+print(*sorted(want - chips), sep="\n")
+sys.exit(1 if want - chips else 0)
+' "$REPO_ROOT/.config/noctalia/config.toml" "$leaves"
+  assert_success
+}
+
+@test "every chip divider is before or after" {
+  run grep -E '^divider = ' "$REPO_ROOT/.config/noctalia/config.toml"
+  assert_success
+  run grep -vE '^divider = "(before|after)"$' <<<"$output"
+  assert_failure
+}

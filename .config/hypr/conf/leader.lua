@@ -47,6 +47,28 @@ end
 local function float(cmd) return "kitty --class floating-term -e " .. cmd end
 local function paused(script) return float("sh -c '" .. script .. " ; echo ; read -r _'") end
 
+-- The bar's panels by key (Super+A b; docs/desk.md, "Panel keys"): a custom/* chip opens its
+-- dropdown, anything else is a Noctalia panel id and its context. While the submap is open
+-- each of these chips shows its key in the bar.
+local PANELS = {
+    { "h", "health", "custom/health" }, { "f", "fleet", "custom/fleet" },
+    { "p", "projects", "custom/projects" }, { "a", "agents", "custom/ai-agents" },
+    { "d", "dispatch", "custom/dispatch" }, { "c", "ci", "custom/ci" },
+    { "t", "timebox", "custom/timebox" }, { "w", "webcam", "custom/webcam" },
+    { "x", "passthrough", "custom/passthrough" }, { "r", "printer", "custom/printer" },
+    { "l", "load", "custom/load" }, { "s", "storage", "custom/storage" },
+    { "n", "notifications", "custom/notify" },
+    { "space", "control center", "control-center" }, { "v", "audio", "control-center audio" },
+    { "i", "network", "control-center network" }, { "b", "bluetooth", "control-center bluetooth" },
+    { "m", "media", "control-center media" }, { "k", "calendar", "control-center calendar" },
+    { "o", "session", "session" }, { "y", "tray", "tray-drawer" },
+}
+local letters = {}
+for _, p in ipairs(PANELS) do
+    if p[3]:match("^custom/") then letters[#letters + 1] = p[3] .. "=" .. p[1] end
+end
+local LETTERS_ON = BIN .. "desk panel letters '" .. table.concat(letters, " ") .. "'"
+
 -- Entry: Super+A, and Ctrl+Shift+A for when a client grabs Super.
 k.bind("SUPER + A", "pin leader", open("pinbar"), "submap pinbar")
 k.bind("CTRL + SHIFT + A", "pin leader", open("pinbar"), "submap pinbar", through)
@@ -62,7 +84,20 @@ k.submap("pinbar", function()
     branch("u", "utils >", "pinbar-utils")
     branch("s", "settings >", "pinbar-settings")
     branch("d", "desk parts >", "pinbar-desk")
+    k.bind("b", "bar panels >", k.run(dsp.exec_cmd(LETTERS_ON), dsp.exec_cmd(hint("pinbar-panels")),
+        dsp.submap("pinbar-panels")), "submap pinbar-panels", through)
     exits(nil)
+end)
+
+-- Every way out clears the letters from the chips.
+k.submap("pinbar-panels", function()
+    local off = dsp.exec_cmd(BIN .. "desk panel letters off")
+    for _, p in ipairs(PANELS) do
+        local cmd = "out=$(" .. BIN .. "desk panel " .. p[3] .. ' 2>&1) || notify-send -t 3000 desk "$out"'
+        k.bind(p[1], p[2], leave(off, dsp.exec_cmd(cmd)), "exec " .. cmd, through)
+    end
+    k.bind("escape", "back", k.run(off, dsp.exec_cmd(hint("pinbar")), dsp.submap("pinbar")), "submap pinbar", through)
+    k.bind("q", "exit", leave(off), "submap reset", through)
 end)
 
 k.submap("pinbar-agents", function()
