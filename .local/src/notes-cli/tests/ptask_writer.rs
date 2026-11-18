@@ -823,6 +823,107 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
     assert_eq!(h.sheet().matches("check(playtest)").count(), 2);
 }
 
+#[test]
+fn closing_a_play_build_row_closes_the_checks_its_pass_covered() {
+    let h = Home::new("played");
+    let pt = |verb: &[&str]| {
+        let mut args = vec!["ptask", "demo", "--playtest"];
+        args.extend_from_slice(verb);
+        h.run(&args)
+    };
+    let file = h.0.join("notes/projects/current/demo/playtest.md");
+    ok(&pt(&[
+        "add",
+        "--pr",
+        "7",
+        "lobby: two pads join: both spawn",
+    ]));
+    ok(&pt(&[
+        "add",
+        "--game",
+        "Arena",
+        "arena: throw: the ball arcs",
+    ]));
+    ok(&pt(&[
+        "add",
+        "--",
+        "ball clips the wall (playtest Nov 21, sam)",
+    ]));
+
+    // The pass counts and stamps the two checks, not the tester's feedback.
+    ok(&pt(&["pass", "--build", "b1"]));
+    assert!(
+        h.sheet().contains("play build b1, 2 checks in playtest.md"),
+        "{}",
+        h.sheet()
+    );
+    let id = h
+        .sheet()
+        .lines()
+        .find(|l| l.contains("play build b1"))
+        .and_then(|l| l.split("id:").nth(1))
+        .and_then(|r| r.split_whitespace().next())
+        .unwrap()
+        .to_string();
+    let laid = fs::read_to_string(&file).unwrap();
+    assert_eq!(laid.matches(&format!("pass:{id}")).count(), 2, "{laid}");
+    // A pass for one game stamps only that game's checks.
+    ok(&pt(&["pass", "--build", "b2", "--game", "Arena"]));
+
+    // NEGATIVE CONTROL: dropping a play row (never played) closes nothing.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "drop",
+        "play Arena build b2",
+        "--why",
+        "build broke",
+    ]));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap().matches("- [ ]").count(),
+        3
+    );
+
+    // The play row closing done is the event: its checks close with it, the feedback stays.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "done",
+        "play build b1",
+        "--unverified",
+        "played Nov 21",
+    ]));
+    let laid = fs::read_to_string(&file).unwrap();
+    assert_eq!(laid.matches(&format!("played:{id}")).count(), 2, "{laid}");
+    assert!(
+        laid.contains("- [ ] ball clips the wall (playtest Nov 21, sam)"),
+        "{laid}"
+    );
+    assert_eq!(laid.matches("- [ ]").count(), 1, "{laid}");
+    // Idempotent: the next sweep finds nothing left to close.
+    ok(&h.run(&["projects", "--sweep"]));
+    assert_eq!(fs::read_to_string(&file).unwrap(), laid);
+
+    // A play row ticked by hand closes its checks on the next sheet sweep.
+    ok(&pt(&["add", "menu: back exits: you land on the title"]));
+    ok(&pt(&["pass", "--build", "b3"]));
+    let sheet = h.0.join("notes/projects/current/demo/README.md");
+    let hand = h.sheet().replace(
+        "- [ ] check(playtest): play build b3",
+        "- [x] check(playtest): play build b3",
+    );
+    fs::write(&sheet, hand).unwrap();
+    let out = h.run(&["projects", "--sweep"]);
+    ok(&out);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("1 playtest check(s) played in"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let laid = fs::read_to_string(&file).unwrap();
+    assert!(laid.contains("- [x] menu: back exits"), "{laid}");
+}
+
 /// A real plan brief: a paragraph break, a nested list, a fenced block with its own indent.
 const BRIEF: &str = "goal: every row keeps its brief\n\nsteps:\n- add writes the full body\n  - not only the title\n    - and not a `full:` line\n\n```sh\nif [ -n \"$X\" ]; then\n    agent-queue return \"$X\"\nfi\n```\ncheck: the board prints it back";
 

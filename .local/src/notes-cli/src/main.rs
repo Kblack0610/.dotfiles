@@ -730,7 +730,8 @@ enum PtaskCmd {
         query: Vec<String>,
     },
     /// With --playtest: a build is cut, so file one `check(playtest): play build <build>, N
-    /// checks` row on the human sheet, N the open checks. The same build again is exit 3
+    /// checks` row on the human sheet, N the open checks, each stamped with the row's id so
+    /// closing the row done closes them. The same build again is exit 3
     Pass {
         /// The build to play: a Steam build id, a branch, a tag
         #[arg(long)]
