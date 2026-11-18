@@ -282,7 +282,7 @@ test("an account claude-acct could not read is named, and no data says so", () =
   assert.match(h, /<td>old<\/td><td colspan="16" class="bad">usage unreadable<\/td>/);
   assert.match(h, /<td>new<\/td><td colspan="16" class="muted">no usage read yet<\/td>/);
   const key = show(board({ burn: burn({ accounts: [acct("reserve", { kind: "litellm-key", state: "idle" })] }) }));
-  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
+  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key reads the same idle note as an account");
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });
 

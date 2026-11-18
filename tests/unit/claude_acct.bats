@@ -32,7 +32,6 @@ usage() {
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
 
-
 @test "the account whose fuller window is lower wins when resets are unknown" {
   usage main 10 80   # weekly nearly spent
   usage alt 50 50
@@ -125,13 +124,13 @@ ratelimit_curl() {
   grep -qF 'v1/messages' "$SANDBOX/curl.argv"
 }
 
-@test "usage read: a week header alone is a fresh answer, with no 5h window" {
+@test "usage read: a week header alone is a fresh answer, with no 5h window, its fraction read to the point" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
-  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.29' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +65%'
+  assert_line --regexp '^main +- +29%'
   refute_line --regexp '^main .*fetch failed'
 }
 
@@ -139,9 +138,11 @@ ratelimit_curl() {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
   ratelimit_curl 'content-type: application/json'
-  run "$ACCT" status
+  run --separate-stderr "$ACCT" status
   assert_line --regexp '^main .*fetch failed'
   [[ ! -e "$XDG_CACHE_HOME/claude-acct/main.json" ]]
+  # it says what answered, so a refused probe does not read as a dead network
+  [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
 }
 
 @test "usage read: a call refused at the limit still reads its windows, and is capped" {

@@ -210,7 +210,7 @@ usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]];
 # Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
 # A call refused at the limit still carries them, so only the headers are read.
 fetch() {
-    local name="$1" cache="$CACHE/$1.json" token ver tmp
+    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
@@ -220,29 +220,31 @@ fetch() {
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
     # The header goes in on stdin (-K -): argv is readable by every process on the machine.
-    if printf 'header = "Authorization: Bearer %s"\n' "$token" |
+    hdrs=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
         curl -sS -m 10 -K - -D - -o /dev/null "$MESSAGES_URL" \
             -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-cli/${ver:-2} (external, cli)" -H "x-app: cli" \
-            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null |
-        ratelimit_usage > "$tmp"; then
+            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null)
+    if ratelimit_usage <<<"$hdrs" > "$tmp"; then
         mv "$tmp" "$cache"
         cat "$cache"
         return 0
     fi
     rm -f "$tmp"
+    # say why, so a refused probe (no headers) and a dead network do not read alike
+    printf "claude-acct: %s usage read failed: %s\n" "$name" "$(head -n 1 <<<"$hdrs" | tr -d "\r" | grep . || echo "no answer")" >&2
     return 1
 }
 
 # ratelimit_usage < response headers -> {five_hour, seven_day, reached}: each window's utilization
 # (a fraction in the header, a percent here) and resets_at (ISO), null when its header is absent;
-# reached when the plan refuses calls now. Exit 1 with no weekly window.
+# reached when the plan refuses calls now. Exits non-zero (jq -e) with no weekly window.
 ratelimit_usage() {
     tr -d '\r' | jq -Rnce '
         [inputs | capture("^anthropic-ratelimit-unified-(?<k>[^:]+):\\s*(?<v>.*)$"; "i")
          | {key: (.k | ascii_downcase), value: .v}] | from_entries as $h
         | def win($w): if $h["\($w)-utilization"] == null then null
-              else {utilization: ($h["\($w)-utilization"] | tonumber * 100),
+              else {utilization: ($h["\($w)-utilization"] | tonumber * 1000 | round / 10),
                     resets_at: ($h["\($w)-reset"] | if . == null then null else tonumber | todate end)} end;
         {five_hour: win("5h"), seven_day: win("7d"), reached: ($h.status == "rejected")}
         | select(.seven_day != null)'
