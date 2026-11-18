@@ -347,6 +347,7 @@ breaking all three at once.
 | `wt new [-c <dir>]` | take the next agent-N of `<dir>`'s repo and land in its session at once; the fetch and checkout run visibly in that session's first pane |
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
+| `wt revive <path> [--branch <b>]` | put a reaped worktree back at its old path, on its branch when it is still here or on origin, else a new branch off the trunk, so `claude --resume` finds its conversation there (agent-ask reopen); refuses a path or session name another tree holds now |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
 | `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
 | `wt --list` | every worktree on the machine, TSV |

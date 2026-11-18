@@ -1601,3 +1601,64 @@ make_unity_tree() {
   kill -0 "$pid"
   kill "$pid"
 }
+
+# ── revive: a reaped tree put back for a conversation to resume in ───────────
+# agent-ask reopen: claude --resume finds a session only in the directory it ran in.
+
+@test "revive puts a reaped tree back on its branch, from origin when reap took the local one" {
+  make_repo
+  local wt="$WT_ROOT/repo-agent-2"
+  git -C "$MAIN" worktree add --quiet "$wt" -b agent-2-x
+  git -C "$wt" commit --quiet --allow-empty -m work
+  git -C "$wt" push --quiet -u origin agent-2-x
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1-y # discovery finds the repo by it
+  git -C "$MAIN" worktree remove "$wt"
+  git -C "$MAIN" branch --quiet -D agent-2-x
+  run cmd_revive "$wt" --branch agent-2-x
+  assert_success
+  assert_output --partial 'revived repo-agent-2 on agent-2-x'
+  assert_equal "$(git -C "$wt" log -1 --format=%s)" work
+  # Held like any tree new cuts, so a bare git worktree remove refuses it.
+  run git -C "$MAIN" worktree remove "$wt"
+  assert_failure
+}
+
+@test "revive cuts a new branch off the trunk when the session's branch is gone or the trunk" {
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  run cmd_revive "$WT_ROOT/repo-agent-4" --branch agent-4-gone
+  assert_success
+  assert_output --regexp 'revived repo-agent-4 on agent-4-[0-9]{6}-[0-9]{6}$'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-4" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  run cmd_revive "$WT_ROOT/repo-agent-5" --branch main
+  assert_success
+  assert_output --regexp 'on agent-5-'
+  # A cwd in a subdirectory revives the whole tree; a hold left by an rm -rf does not block it.
+  rm -rf "$WT_ROOT/repo-agent-5"
+  run cmd_revive "$WT_ROOT/repo-agent-5/sub/dir"
+  assert_success
+  assert_output --regexp 'revived repo-agent-5 on agent-5-'
+  assert [ -e "$WT_ROOT/repo-agent-5/.git" ]
+}
+
+@test "revive refuses a slot another tree or session holds now, and a path outside WT_ROOT" {
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1-other
+  run cmd_revive "$WT_ROOT/repo-agent-1" --branch agent-1-mine
+  assert_failure
+  assert_output --partial 'repo-agent-1 is taken: another tree is there now'
+  # Negative control: the same tree on the session's own branch is kept as it is.
+  run cmd_revive "$WT_ROOT/repo-agent-1" --branch agent-1-other
+  assert_success
+  assert_output 'kept repo-agent-1'
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-6\n' >> "$NOTES_FIXTURE/tmux.sessions"
+  run cmd_revive "$WT_ROOT/repo-agent-6"
+  assert_failure
+  assert_output --partial 'a live session holds the name'
+  [ ! -e "$WT_ROOT/repo-agent-6" ]
+  run cmd_revive "$SANDBOX/elsewhere/repo-agent-7"
+  assert_failure
+  assert_output --partial 'is not directly under'
+}
