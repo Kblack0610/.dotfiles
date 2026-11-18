@@ -248,8 +248,8 @@ impl Keys for send::TmuxPane<'_> {
     }
 }
 
-/// Sample panes of each dialog, for tests in this crate and the views that read it.
-#[doc(hidden)]
+/// Sample panes of each dialog, for tests here and, behind the `fixtures` feature, in the views.
+#[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures {
     pub const PLAN_PANE: &str = "\
 \u{25cf} I wrote a 2-line plan.

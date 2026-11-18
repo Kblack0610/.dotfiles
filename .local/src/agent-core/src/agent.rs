@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn a_codex_row_is_read_from_its_process_item_and_rollout() {
-        let root = std::env::temp_dir().join(format!("agent-panel-codex-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("agent-core-codex-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let fd = root.join("300").join("fd");
         fs::create_dir_all(&fd).unwrap();

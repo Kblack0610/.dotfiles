@@ -12,3 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 project-map = { path = "../project-map" }
+
+[features]
+# The sample dialog panes (`dialog::fixtures`), for a dependent crate's tests.
+fixtures = []

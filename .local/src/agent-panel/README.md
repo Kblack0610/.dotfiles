@@ -44,7 +44,7 @@ Linux. Two reasons they broke on macOS:
 - They used bash 4 associative arrays (`declare -A`); macOS ships bash 3.2.
 - They mapped tmux panes to Claude sessions by walking `/proc`, which macOS lacks.
 
-The session reading moved to `agent-core`, which uses `ps` and pure Rust, so behaviour is identical on both. **fzf and tmux remain the UI**: only the fragile core was rewritten.
+Session reading is in `agent-core`, which uses `ps` and pure Rust, so behaviour is identical on both. **fzf and tmux are the UI.**
 
 ## Subcommands
 
