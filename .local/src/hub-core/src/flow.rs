@@ -1,11 +1,11 @@
 //! The flow strip: where work sits between a captured thought and a landed PR, as one row of
-//! chips (`inbox | board | up next | running | on a PR | needs you | done 24h | drain`). The Queue
+//! chips (`inbox | agent backlog | up next | running | on a PR | needs you | done 24h | drain`). The Queue
 //! tab leads with it as a `Rail` and Home's Queue card takes its bottleneck (`cards::queue`), from
 //! this one builder, so the hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
 //! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
-//! and its chip opens the Queue's done chip, which lists today's finished items); inbox and board are fleet-bench's
+//! and its chip opens the Queue's done chip, which lists today's finished items); inbox and agent backlog are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
 //! past its age bound is the one amber chip (`hot`).
@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::pipeline::{Pipeline, Problem, Step};
 use crate::queue::{Queue, Recent, State};
 
-/// The tab a chip opens, as a tab or `tab/inner` (`projects/all`, the board chip's All rows), and,
+/// The tab a chip opens, as a tab or `tab/inner` (`projects/all`, the agent backlog chip's Board), and,
 /// for the Queue, the state chip it filters to (`""` for none).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Target {
@@ -49,11 +49,11 @@ pub struct Strip {
     pub chips: Vec<Chip>,
     /// `bottleneck: waiting, age p90 9h (bound 4h)`, when a step is past its bound.
     pub bottleneck: Option<String>,
-    /// When fleet-bench last wrote the snapshot the inbox and board chips read.
+    /// When fleet-bench last wrote the snapshot the inbox and agent backlog chips read.
     pub as_of: Option<String>,
     /// Why the snapshot could not be read, if it could not.
     pub error: Option<String>,
-    /// The read answered but fleet-bench has written no snapshot, so inbox and board are `-`.
+    /// The read answered but fleet-bench has written no snapshot, so inbox and agent backlog are `-`.
     pub absent: bool,
 }
 
@@ -86,7 +86,7 @@ pub fn drain(r: &Recent) -> String {
 }
 
 impl Strip {
-    /// The strip from the queue; inbox and board wait for `set_pipeline`. With no queue read the
+    /// The strip from the queue; inbox and agent backlog wait for `set_pipeline`. With no queue read the
     /// queue chips read `-`.
     pub fn build(queue: Option<&Queue>) -> Strip {
         let n = |s: State| queue.filter(|q| q.list_read()).map(|q| q.count(s));
@@ -101,9 +101,10 @@ impl Strip {
         Strip {
             chips: vec![
                 chip("inbox", "inbox", None, None),
+                // Agent rows no item has picked up yet: a slice of Board, not Board's count.
                 chip(
-                    "board",
-                    "board",
+                    "backlog",
+                    "agent backlog",
                     None,
                     Some(Target {
                         tab: "projects/all",
@@ -141,7 +142,7 @@ impl Strip {
         }
     }
 
-    /// The snapshot's read: the inbox and board counts, the one amber step, the bottleneck line
+    /// The snapshot's read: the inbox and agent backlog counts, the one amber step, the bottleneck line
     /// and the stamp. No snapshot or a failed read leaves those chips `-`; the failure is kept.
     pub fn set_pipeline(&mut self, read: &Result<Option<Pipeline>, String>) {
         let p = match read {
@@ -159,7 +160,7 @@ impl Strip {
         for c in &mut self.chips {
             match c.key {
                 "inbox" => c.value = wip("inbox"),
-                "board" => c.value = wip("backlog"),
+                "backlog" => c.value = wip("backlog"),
                 _ => {}
             }
         }
@@ -172,7 +173,7 @@ impl Strip {
         self.as_of = p.as_of_label();
     }
 
-    /// `inbox 4 | board 312 | up next 27 ready, 56 held | ...`, the plain words of the chips.
+    /// `inbox 4 | agent backlog 312 | up next 27 ready, 56 held | ...`, the plain words of the chips.
     pub fn line(&self) -> String {
         self.chips
             .iter()
@@ -195,7 +196,6 @@ pub fn step_label(step: &str) -> String {
 
 fn chip_key(step: &str) -> &str {
     match step {
-        "backlog" => "board",
         "waiting" => "needs",
         s => s,
     }
@@ -476,7 +476,7 @@ pub(crate) mod tests {
         st.set_pipeline(&Ok(Some(pipe(0.5))));
         assert_eq!(
             st.line(),
-            "inbox 4 | board 312 | up next 1 ready, 1 held | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
+            "inbox 4 | agent backlog 312 | up next 1 ready, 1 held | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
         );
         let to: Vec<_> = st
             .chips
@@ -521,15 +521,15 @@ pub(crate) mod tests {
         let mut st = Strip::build(None);
         assert_eq!(
             st.line(),
-            "inbox - | board - | up next - | running - | on a PR - | needs you - | done 24h - | drain -"
+            "inbox - | agent backlog - | up next - | running - | on a PR - | needs you - | done 24h - | drain -"
         );
-        // No snapshot: the queue's chips stand and inbox and board stay `-`.
+        // No snapshot: the queue's chips stand and inbox and agent backlog stay `-`.
         let mut q = Strip::build(Some(&queue()));
         q.set_pipeline(&Ok(None));
         assert!(q.absent);
         assert!(q
             .line()
-            .starts_with("inbox - | board - | up next 1 ready, 1 held"));
+            .starts_with("inbox - | agent backlog - | up next 1 ready, 1 held"));
         // A failed read is kept for the surface to show, and is not a zero.
         st.set_pipeline(&Err("no prom".into()));
         assert_eq!(st.error.as_deref(), Some("no prom"));
@@ -582,7 +582,7 @@ pub(crate) mod tests {
         let keys: Vec<_> = r.nodes.iter().map(|n| n.key).collect();
         assert_eq!(
             keys,
-            ["inbox", "board", "queued", "running", "review", "needs", "done"]
+            ["inbox", "backlog", "queued", "running", "review", "needs", "done"]
         );
         let q = node_at(&r, "queued");
         assert_eq!(

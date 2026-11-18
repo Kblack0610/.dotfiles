@@ -237,6 +237,21 @@ toggle_repo() {
   assert_output --partial 'PR #77 is still open'
 }
 
+# NEGATIVE CONTROL: before ar-3025 the fail line said only "agent-queue add <slug> failed", and the
+# runner's red named no cause.
+@test "a refused agent-queue add is FAILED with agent-queue's own reason" {
+  toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
+  mkdir -p "$SANDBOX/ghbin"
+  printf '#!/usr/bin/env bash\n:\n' > "$SANDBOX/ghbin/gh"
+  printf '#!/usr/bin/env bash\necho "agent-queue: the queue is locked by another writer" >&2\nexit 75\n' > "$SANDBOX/ghbin/agent-queue"
+  chmod +x "$SANDBOX"/ghbin/*
+  rm -f "$HOME/.local/lib/agent-proof.sh"
+  printf 'proof_outcome() { echo "verdict $2 $3"; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  PATH="$SANDBOX/ghbin:$PATH" run "$TOGGLE"
+  assert_failure
+  assert_output --partial "verdict FAILED agent-queue add skill-toggle-$(date +%F) failed: agent-queue: the queue is locked by another writer"
+}
+
 @test "a new change stops at its open PR: BLOCKED, the worktree gone, the item queued for a session, agent-land never called" {
   toggle_repo '{"skillOverrides":{"beta":"name-only"}}'
   mkdir -p "$SANDBOX/ghbin"
