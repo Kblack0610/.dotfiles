@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Prometheus for the burn fixture: s1 billed $4 and h1 $1 in the window, nothing before it, no fits,
 # no gateway. Tests point PROM_LIB here.
 prom_q() {
