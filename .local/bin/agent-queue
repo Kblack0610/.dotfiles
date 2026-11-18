@@ -50,10 +50,11 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
 #   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
-# Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, an urgent
-# oneshot from the human, and each phase of an urgent or high --plan whose wait is met; an urgent or high
-# item `after:` one that closes ok starts then. A low one waits for a dispatch pass, which starts the
-# queue in priority order; one held (night, at:, ask:) starts when that releases. AGENT_QUEUE_START=0 only queues.
+# Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
+# the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
+# wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
+# filer's, waits for a dispatch pass, which starts the queue in priority order; one held (night, at:,
+# ask:) waits for the pass after that releases. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
@@ -1270,14 +1271,19 @@ cmd_add() {
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
-  [ "$mode" = plan ] || { [ "$priority" = urgent ] && [ "$from" = human ]; } || return 0
+  [ "$mode" = plan ] || { [ "$priority" = urgent ] && human_at_hand "$from"; } || return 0
   start_at_add "$f" "$slug" "$priority"
 }
 
+# human_at_hand <from> -- the human filed this, by hand or through a session they sit in: from human,
+# and no dispatched session's $AGENT_QUEUE_ITEM. A hand start skips the load and run-unit gates, so a
+# machine filer, or an unattended session that took the default from, waits for a dispatch pass.
+human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
+
 # start_at_add <file> <slug> <priority> -- start a just-queued item now, as start_next starts a released
-# one: a plan session, the human's urgent ask (it waited up to a dispatch pass, ar-2943), and each
-# phase of an urgent or high --plan whose wait is already met. Not a low one (waits_turn), not one an
-# item hold keeps (an after: hold is start_next's to release), not under the dispatch hold.
+# one: a plan session, the human's urgent ask (it waited up to a dispatch pass, ar-2944), and each
+# phase of the human's urgent or high --plan whose wait is already met. Not a low one (waits_turn), not
+# one an item hold keeps (an after: hold is start_next's to release), not under the dispatch hold.
 start_at_add() {
   local h
   ! waits_turn "$2" "$3" || return 0
@@ -1285,7 +1291,7 @@ start_at_add() {
   case "$h" in
     '') ;;
     "after "*) return 0 ;;
-    *) echo "agent-queue: $2 is held ($h), so it starts when that releases"; return 0 ;;
+    *) echo "agent-queue: $2 is held ($h), so a dispatch pass starts it once that releases"; return 0 ;;
   esac
   ! dispatch_held "$2" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
@@ -1419,8 +1425,12 @@ add_plan() {
   done <<<"$rows"
   [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
-  [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
-  for s in "${added[@]}"; do start_at_add "$(find_item "$s")" "$s" "$priority"; done
+  [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
+  # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase.
+  ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  ! dispatch_held "${added[*]}" || return 0
+  local f
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
 }
 # One item through cmd_add, in a subshell so its die stops only that item.
 cmd_add_one() { (cmd_add "$@"); }

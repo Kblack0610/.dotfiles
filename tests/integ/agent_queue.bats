@@ -1542,7 +1542,7 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -f "$(item queued held)" ]
 }
 
-@test "an urgent oneshot from the human starts at add; high, a machine filer's urgent and a held urgent do not (ar-2943)" {
+@test "an urgent oneshot from the human starts at add; high, a machine filer's urgent, a dispatched session's urgent and a held urgent do not (ar-2944)" {
   run "$AQ" add --project game --priority urgent --slug u1 "fix it now"
   assert_success
   assert_called 'fleet-dispatch start --item u1'
@@ -1551,6 +1551,10 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item h1'
   run "$AQ" add --project game --priority urgent --from shepherd --slug s1 "shepherd red"
   assert_not_called 'start --item s1'
+  # an unattended session took the default from: a hand start would skip the load gates
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --priority urgent --slug d1 "a session's urgent"
+  assert_success
+  assert_not_called 'start --item d1'
   run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
   assert_success
   assert_output --partial 'n1 is held'
@@ -1561,7 +1565,7 @@ notes --profile bnb ptask game --agent run gm-9"
   refute_output --partial 'a1 is held'
 }
 
-@test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan and AGENT_QUEUE_START=0 only queue (ar-2943)" {
+@test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
   run "$AQ" add --plan "$SANDBOX/ch.md" --project game --slug ch
   assert_success
@@ -1573,6 +1577,15 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --plan "$SANDBOX/lo.md" --project game --priority low --slug lo
   assert_success
   assert_not_called 'start --item lo-p1'
+  assert_line 'agent-queue: lo.md is low priority, so a dispatch pass starts it in its turn'
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two (independent)' > "$SANDBOX/rs.md"
+  run "$AQ" add --plan "$SANDBOX/rs.md" --project game --from research:x --slug rs
+  assert_success
+  assert_not_called 'start --item rs-p'
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/dr.md"
+  run "$AQ" add --plan "$SANDBOX/dr.md" --project game --slug dr --dry-run
+  assert_success
+  assert_not_called 'start --item dr-p1'
   printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/q0.md"
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/q0.md" --project game --slug q0
   assert_not_called 'start --item q0-p1'
