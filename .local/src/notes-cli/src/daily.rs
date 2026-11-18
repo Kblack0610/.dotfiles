@@ -2103,6 +2103,27 @@ mod tests {
         assert_eq!(keep, v(&["- [ ] a", "", "- [ ] b"]));
     }
 
+    // A `[/]` row, and a `[/]` child under an open row, stay in progress across the carry
+    // (human, 2026-11-17: in progress lasts until I flip it).
+    #[test]
+    fn carry_focus_keeps_in_progress_rows() {
+        let lines = v(&[
+            "### Urgent",
+            "- [/] trader #c1117 #urgent",
+            "    - [/] lot size #c1116",
+            "- [ ] garage #c1117 #urgent",
+        ]);
+        let out = carry_focus(&lines, d("2026-11-18"), d("2026-11-17"));
+        assert_eq!(
+            out,
+            v(&[
+                "- [/] trader #c1117 #urgent",
+                "    - [/] lot size #c1116",
+                "- [ ] garage #c1117 #urgent",
+            ])
+        );
+    }
+
     #[test]
     fn carry_focus_keeps_the_humans_rules_not_the_sweeps() {
         let lines = v(&[
