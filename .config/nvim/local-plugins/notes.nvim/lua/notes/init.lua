@@ -294,7 +294,7 @@ local function new_note_menu()
         end
       end)
     end },
-    { label = "🎯 Fun backlog", action = function() notes_run_open({ "backlog", "fun" }) end },
+    { label = "🎯 Backlog", action = function() notes_run_open({ "backlog" }) end },
     { label = "↪️  Carryover backlog", action = function() notes_run_open({ "backlog", "carryover" }) end },
   }
 

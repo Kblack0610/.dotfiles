@@ -46,8 +46,8 @@ const AGENTS: Fit = Fit {
     none: "no subagents are defined",
 };
 const HOOKS: Fit = Fit {
-    head: &["HARNESS", "EVENT", "MATCHER", "SCRIPT", "FROM"],
-    keep: &[3, 1, 0, 2, 4],
+    head: &["HARNESS", "EVENT", "MATCHER", "SCRIPT", "FROM", "RULES"],
+    keep: &[3, 1, 0, 2, 4, 5],
     flex: None,
     cap: &[(2, 20), (3, 30), (4, 24)],
     none: "no hooks are configured",
@@ -490,6 +490,11 @@ fn hook_row(r: &Hook, p: Palette) -> Vec<Cell> {
             cell(format!("{} (missing)", r.script), p.bad())
         },
         cell(r.from.clone(), p.dim()),
+        if r.rules == 0 {
+            cell("-", p.dim())
+        } else {
+            Cell::from(r.rules.to_string())
+        },
     ]
 }
 
