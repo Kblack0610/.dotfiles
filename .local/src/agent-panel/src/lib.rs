@@ -6,6 +6,7 @@ pub mod account;
 pub mod asks;
 pub mod chooser;
 pub mod dialog;
+pub mod dispatched;
 pub mod fzf;
 pub mod help;
 pub mod jsonl;

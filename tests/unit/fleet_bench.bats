@@ -647,7 +647,7 @@ fi
 [ -e "$D/unsynced" ] && { echo "$2 is not in the run ledger" >&2; exit 3; }
 [ -e "$D/later" ] && { echo "$2 not yet past $6" >&2; exit 4; }
 [ "$1 $3 $5" = "runs --branch --until" ] || exit 2
-jq -c 'map({workflow: .workflowName, sha: .headSha, status: "completed", conclusion,
+jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
@@ -831,24 +831,25 @@ forgejo_outcome() {
   assert_output --partial '1 PRs left out: their repos are not in the run ledger (schedules-sync repos)'
 }
 
-# sections_map: o/r has sections, its gate is the Tests workflow
+# sections_map: o/r has sections, its gate is the workflow file test.yml
 sections_map() {
   export BENCH_PROJECT_MAP="$SANDBOX/project-map.json"
   jq -cn '{trackers: {_comment_wiring: "a string, not a tracker", plain: {lab: "x"},
-    r: {sections: {repo: "o/r", gate: "Tests", roots: ["Assets/Games/*", "docs"]}}}}' > "$BENCH_PROJECT_MAP"
+    r: {sections: {repo: "o/r", gate: ".github/workflows/test.yml", roots: ["Assets/Games/*", "docs"]}}}}' > "$BENCH_PROJECT_MAP"
   echo '[]' > "$GHD/repo-prs.json"
 }
 
-# gate_runs_of <pr> <t offset>: a red Tests run and a green one on head a, a green one on head
-# b after main moved, and a red lint run, which is not the gate
+# gate_runs_of <pr> <t offset>: on test.yml, a red run and a green one on head a and a green one on
+# head b after main moved, each titled by its run-name; a red lint run titled "Tests", which is not the gate
 gate_runs_of() {
   local s e; s=$(iso $((T0 - 3500))); e=$(iso $((T0 - 2900)))
   jq -cn --arg s "$s" --arg e "$e" '
     {createdAt: $s, startedAt: $s, updatedAt: $e} as $r
-    | [$r + {workflowName: "Tests", conclusion: "failure", headSha: "a"},
-       $r + {workflowName: "Tests", conclusion: "success", headSha: "a"},
-       $r + {workflowName: "Tests", conclusion: "success", headSha: "b"},
-       $r + {workflowName: "Lint", conclusion: "failure", headSha: "b"}]' > "$GHD/runs-b$1.json"
+    | ".github/workflows/test.yml" as $t
+    | [$r + {workflowName: "Tests (affected)", path: $t, conclusion: "failure", headSha: "a"},
+       $r + {workflowName: "Tests (delta of 42)", path: $t, conclusion: "success", headSha: "a"},
+       $r + {workflowName: "Tests (all)", path: $t, conclusion: "success", headSha: "b"},
+       $r + {workflowName: "Tests", path: ".github/workflows/lint.yml", conclusion: "failure", headSha: "b"}]' > "$GHD/runs-b$1.json"
 }
 
 @test "review: a repo the run ledger does not sync is left out with a count, and one merged after its last sync waits" {
