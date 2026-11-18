@@ -99,7 +99,7 @@ extract_tickets() {
     | awk '/^#/{pr=pr" "$0; next}{print} END{if(pr){n=split(pr,a," ");for(i=1;i<=n;i++)print a[i]}}')"
   [ -n "$all" ] || return 0
   n="$(printf '%s\n' "$all" | grep -c .)"
-  head="$(printf '%s\n' "$all" | head -n "$cap" | awk '{a=a sep $0; sep=", "} END{print a}')"
+  head="$(printf '%s\n' "$all" | awk -v n="$cap" 'NR<=n {a=a sep $0; sep=", "} END{print a}')"
   if [ "$n" -gt "$cap" ]; then
     printf '%s (+%d more)' "$head" "$((n - cap))"
   else

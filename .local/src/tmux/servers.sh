@@ -267,7 +267,7 @@ _startup_page() {
 _refresh_landing() {
   local srv="$1" sess="$2" pane cmd page startup
 
-  pane="$(tmux -L "$srv" list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null | head -1)"
+  pane="$(tmux -L "$srv" list-panes -t "$sess" -F '#{pane_id}' 2>/dev/null | awk 'NR==1')"
   [ -n "$pane" ] || return 0
   cmd="$(tmux -L "$srv" display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null)"
 

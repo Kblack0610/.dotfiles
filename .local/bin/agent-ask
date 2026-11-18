@@ -252,7 +252,7 @@ load_ask() {
 # path of an ask id, searching every project dir; prints nothing if not found
 find_ask() {
   local id="$1" f
-  f="$(find "$ASKS_ROOT" -mindepth 2 -maxdepth 2 -name "${id}.md" 2>/dev/null | head -1)"
+  f="$(find "$ASKS_ROOT" -mindepth 2 -maxdepth 2 -name "${id}.md" -print -quit 2>/dev/null)"
   [ -n "$f" ] && printf '%s\n' "$f"
 }
 
@@ -1276,7 +1276,7 @@ cmd_reopen() {
 
 # session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
 # any copy will do.
-session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | head -1; }
+session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | awk 'NR==1'; }
 
 # session_resumable <session id>: claude --resume can open it, because it has a Claude
 # transcript. A headless run that owns an ask under another harness's id (a Codex thread) has
@@ -1346,7 +1346,7 @@ file_board_row() {
   local f="$1" text="$2" project profile board q
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
   [ -n "$project" ] || return 0
-  board="$(project_lab_names "$project" 2>/dev/null | head -1)"
+  board="$(project_lab_names "$project" 2>/dev/null | awk 'NR==1')"
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
@@ -1758,7 +1758,7 @@ park_days() {
 # else normal.
 ask_priority() {
   local slug p=""
-  slug="$(queue_holders "$(field "$1" id)" | head -1 | cut -f1)"
+  slug="$(queue_holders "$(field "$1" id)" | awk 'NR==1' | cut -f1)"
   [ -n "$slug" ] || slug="$(field "$1" task)"
   [ -n "$slug" ] && p="$($AGENT_ASK_QUEUE_CMD show "$slug" --json 2>/dev/null | jq -r '.priority // empty' 2>/dev/null)"
   echo "${p:-normal}"

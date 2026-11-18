@@ -1630,7 +1630,7 @@ lane_sandbox() {
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
 last_mode() {
   local t
-  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | head -1)
+  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
   [ -n "$t" ] || return 0
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
@@ -3154,7 +3154,7 @@ item_rollout() {
   local id f
   [ "$(harness_launcher "$(jq -r '.agent // "claude"' <<<"$1")")" = codex ] || return 0
   for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
-    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f 2>/dev/null | head -n 1)
+    f=$(find "$CODEX_SESSIONS" -name "rollout-*-$id.jsonl" -type f -print -quit 2>/dev/null)
     [ -z "$f" ] || { echo "$id $f"; return 0; }
   done
 }
