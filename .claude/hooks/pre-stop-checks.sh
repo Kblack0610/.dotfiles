@@ -104,16 +104,29 @@ POST_DIR="$HOOK_DIR/stop-post.d"
 [ "${1:-}" != --checks-only ] || POST_DIR=""   # run_post finds no dir and runs nothing
 
 # --- run_post: sequential, stdout/stderr passed through. Returns max exit code. ---
+# A post script that blocks (exit 2 or a "decision": "block" on stdout, as 86 and 88 do) holds the
+# teardown for the rest of the turn (HELD_FILE): the model was just told to act, an ask to file,
+# so closing the window would drop it. The armed retry runs nothing else, so it reads the hold
+# the blocked Stop left. Each turn's first Stop clears it.
+HELD_FILE="$CACHE_DIR/post-held-${SID:-${PROJ}-${DATE}}"
 run_post() {
-  local dir="$1" worst=0 rc
+  local dir="$1" worst=0 rc out
   [ -d "$dir" ] || return 0
+  [ -n "$ARMED_RETRY" ] || rm -f "$HELD_FILE"
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
-    # The armed retry fires the teardown only; the rest ran on the Stop that blocked.
-    [ -z "$ARMED_RETRY" ] || [ "${s##*/}" = 95-wind-down.sh ] || continue
+    if [ "${s##*/}" = 95-wind-down.sh ]; then
+      [ ! -e "$HELD_FILE" ] || { note "wind-down held: a post script blocked this turn"; continue; }
+    else
+      # The armed retry fires the teardown only; the rest ran on the Stop that blocked.
+      [ -z "$ARMED_RETRY" ] || continue
+    fi
     # Forward original stdin (the JSON payload) so post-checks can see stop_hook_active
-    bash "$s" < <(printf '%s' "$PAYLOAD")
+    out=$(bash "$s" < <(printf '%s' "$PAYLOAD"))
     rc=$?
+    [ -z "$out" ] || printf '%s\n' "$out"
+    case "$out" in *'"decision":'*'"block"'*) rc=$((rc > 2 ? rc : 2)) ;; esac
+    [ "$rc" -lt 2 ] || : >"$HELD_FILE"
     [ "$rc" -gt "$worst" ] && worst=$rc
   done
   return "$worst"

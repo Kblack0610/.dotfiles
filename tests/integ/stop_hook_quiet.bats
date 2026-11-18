@@ -317,6 +317,8 @@ run_session() {
   [ -e "$spin/aaa.request" ]
   rm "$HOME/post.seen"
   # Still failing on the loop-guarded Stop: no block, the request waits, no other post script runs.
+  # The verdict file is removed first, so the FAIL read below is this Stop's, not the first one's.
+  rm "$HOME/.cache/claude-stop-hook/ci-result-aaa.txt"
   bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
   [ -e "$spin/aaa.request" ]
   [ ! -e "$HOME/post.seen" ]
@@ -328,6 +330,29 @@ run_session() {
   [ ! -e "$spin/aaa.request" ]
   [ -e "$spin/aaa.fired" ]
   [ ! -e "$HOME/post.seen" ]
+}
+
+@test "a post script that blocks holds an armed wind-down for the rest of the turn" {
+  # 88-ask-filed blocks with "file the ask"; firing the teardown on that Stop, or on the
+  # loop-guarded one after it, closed the window the ask was for.
+  local spin="$HOME/.agent/spin-down"
+  mkdir -p "$spin" "$HOOK_DIR/stop-post.d"
+  cp "$REPO_ROOT/.claude/hooks/stop-post.d/95-wind-down.sh" "$HOOK_DIR/stop-post.d/"
+  printf '#!/bin/bash\njq -n %s\n' "'{decision: \"block\", reason: \"file the ask\"}'" >"$HOOK_DIR/stop-post.d/88-block.sh"
+  chmod +x "$HOOK_DIR/stop-post.d/88-block.sh"
+  echo 'target=%2' > "$spin/aaa.request"
+  run_session aaa
+  run cat "$OUTF"
+  assert_output --partial '"decision": "block"'
+  [ -e "$spin/aaa.request" ]
+  bash "$HOOK" <<< '{"stop_hook_active":true,"session_id":"aaa"}' >"$OUTF" 2>"$ERRF"
+  [ -e "$spin/aaa.request" ]
+  [ ! -e "$spin/aaa.fired" ]
+  # The next turn's Stop, with nothing blocking, fires it.
+  rm "$HOOK_DIR/stop-post.d/88-block.sh"
+  run_session aaa
+  [ ! -e "$spin/aaa.request" ]
+  [ -e "$spin/aaa.fired" ]
 }
 
 @test "the loop guard runs no check for a session with nothing armed" {
