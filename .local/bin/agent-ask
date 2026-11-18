@@ -179,6 +179,8 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
 # shellcheck source=../src/tmux/panel-palette.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
+# shellcheck source=../lib/typed-prefixes.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/typed-prefixes.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -1788,14 +1790,17 @@ not_an_answer() {
 # cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
 # "I already clicked that" kept a session on every board after the human had answered it
 # (2026-11-06). An ask a queue item waits on (queue_waits) is not cancelled: it stays pending
-# for the human. An answer a board typed in ("Answer to ask <id>: ...") is not the human typing:
-# `answer` already settled that ask and the session's other asks stay pending.
+# for the human. A prompt the fleet typed (fleet_typed: a board's "Answer to ask <id>: ...", the
+# shepherd's /wind-down, a restore, a dispatch brief, a park or wake resume) is not the human
+# typing, so every ask stays as it was: on 2026-11-16 a /wind-down cancelled an ask unseen. With
+# no table to tell, it settles nothing and fails, the side that loses no ask.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && [ "$to" = answered ] ||
     { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
+  fleet_typed "$*" && return 0
+  [ $? -eq 1 ] || return 1
   local full text f opts pick; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
-  case "$text" in "Answer to ask "*) return 0 ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qxF "claude_session: $owner" "$f" || continue

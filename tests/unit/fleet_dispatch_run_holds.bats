@@ -417,6 +417,9 @@ load 'fleet_dispatch/common'
   link=$(grep -n "exec env 'claude-acct' 'link'" "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
   wtnew=$(grep -n '^wt new --host razer-laptop' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
   [ -n "$link" ] && [ "$link" -lt "$wtnew" ] || fail "claude-acct link did not run on the worker before wt new (link=$link wt=$wtnew)"
+  # Its trust prompt is answered on the worker, whose tmux holds the pane, not on this machine.
+  grep -qF "exec env 'claude-acct' 'trust' 'lab' '=game-agent-1:' 'bypass permissions on'" "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust did not run on the worker"
+  ! grep -q '^claude-acct trust' "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust ran on this machine for a worker pane"
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
   f=$(qitem running fix-menu)
   [ -n "$f" ] || fail "fix-menu is not running"
