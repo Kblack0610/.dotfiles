@@ -280,9 +280,9 @@ test("an account claude-acct could not read is named, and no data says so", () =
   const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
   const h = show(board({ burn: b }));
   assert.match(h, /<td>old<\/td><td colspan="16" class="bad">usage unreadable<\/td>/);
-  assert.match(h, /<td>new<\/td><td colspan="16" class="muted">idle, token refreshes on launch<\/td>/);
+  assert.match(h, /<td>new<\/td><td colspan="16" class="muted">no usage read yet<\/td>/);
   const key = show(board({ burn: burn({ accounts: [acct("reserve", { kind: "litellm-key", state: "idle" })] }) }));
-  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
+  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key reads the same idle note as an account");
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });
 
@@ -397,7 +397,7 @@ test("a burn row carries the 5h window, when it resets and the day's dollars", (
   const h = show(board({ burn: burn({ accounts: [acct("main", { five_hour: 61.4, five_hour_resets: 1794007200, cost_24h: 12.5 }), acct("alt", { state: "idle" })] }) }));
   assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">\$24h<\/th><\/tr>/);
   assert.match(h, /<td class="n">61%<\/td><td>[^<-][^<]*<\/td><td class="n">\$12\.50<\/td><\/tr>/);
-  assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">idle/, "a note row spans every column");
+  assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">no usage read yet/, "a note row spans every column");
   const none = show(board({ burn: burn({ accounts: [acct("main", {})] }) }));
   assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/, "the control: no figures, no numbers");
 });
