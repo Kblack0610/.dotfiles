@@ -84,6 +84,7 @@ module = "custom/passthrough"
 [widget.gungan]
 type = "dotfiles/chips:chip"
 module = "custom/gungan"
+dropdown = false
 
 [widget.webcam]
 type = "dotfiles/chips:chip"
@@ -124,6 +125,7 @@ module = "custom/printer"
 [widget.audio-input]
 type = "dotfiles/chips:chip"
 module = "custom/audio-input"
+dropdown = false
 
 [widget.load]
 type = "dotfiles/chips:chip"
@@ -153,6 +155,7 @@ module = "custom/storage"
 [widget.machine-mode]
 type = "dotfiles/chips:chip"
 module = "custom/machine-mode"
+dropdown = false
 
 [widget.notify]
 type = "dotfiles/chips:chip"

@@ -6,6 +6,7 @@
   "base": "4a74511d38eeb8e0e1e66d013a437e1136b9b71b",
   "merge": "7e52b874ea3f5d687588ea8a34b22d1966b747ba",
   "task": "test(tmux): put the kill-decision path under test - tags.sh and servers.sh",
+  "pts": 5,
   "accept": [
     "PROTECT_TAGS is exactly pinned and important",
     "every protect tag is a real tag in the vocabulary",
