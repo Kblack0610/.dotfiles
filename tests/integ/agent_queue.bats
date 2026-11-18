@@ -2112,22 +2112,40 @@ EOF2
   [ -z "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nd.md)" cancel_cause)" ]
 }
 
-@test "a session returns the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
+@test "a session returns the human's work to its board row with no ask, but not an item with no row" {
+  "$AQ" add --project game --from shepherd --slug ga "a"
+  "$AQ" add --project game --slug gb --after ga "b"
+  # gb has no board row: returning it would leave the human's work nowhere, so the guard holds the chain
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "drain the queue under its cap"
+  assert_failure; assert_output --partial "gb is work the human asked for"
+  [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
+  "$AQ" set gb row=game:gm-7
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "drain the queue under its cap"
+  assert_success
+  [ -z "$(item queued ga)" ] && [ -z "$(item queued gb)" ]
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gb.md)" end_reason)" = returned ]
+  assert_called "ptask game --agent unstart gm-7"
+}
+
+@test "a session drops the human's work only on an ask the human answered that names the whole chain, and closes nothing otherwise" {
   export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
   ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
   "$AQ" add --project game --slug gb --after ga "b"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus"
+  "$AQ" set gb row=game:gm-8
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --drop
   assert_failure; assert_output --partial "gb is work the human asked for"
   [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
   ask h1 answered a human "ga only"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1 --drop
   assert_failure; assert_output --partial "does not name gb"
   [ -n "$(item queued ga)" ]
   ask h2 answered a human "ga gb"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2 --drop
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gb.md)" cancel_why)" = "out of focus (ask h2)" ]
+  assert_called "ptask game --agent drop gm-8"
 }
 
 @test "return follows only the items that wait on it, and an item that waits on two returns with either" {
