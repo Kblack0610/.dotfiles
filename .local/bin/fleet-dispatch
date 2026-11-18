@@ -5260,12 +5260,22 @@ idle_why() {
   return 0
 }
 
-# machine_why -> this machine's own holds (load_why, idle_why), "; "-joined, or nothing.
+# assess_why <red 0|1> -> "fleet-assess says HOLD" while fleet-assess puts this machine over its high
+# mark (load, memory, stall, temperature, a local load hold), or nothing; the red floor goes past it.
+# It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes:
+# on 2026-11-18 a 96 C workstation held every start for hours while razer-laptop sat idle.
+assess_why() {
+  [ "$1" = 1 ] || fleet-assess --watch-probe >/dev/null 2>&1 || echo "fleet-assess says HOLD"
+  return 0
+}
+
+# machine_why -> this machine's own holds (assess_why, load_why, idle_why), "; "-joined, or nothing.
 machine_why() {
-  local red=0 l i
+  local red=0 a l i out
   red_floor_open && red=1
-  l=$(load_why "$red"); i=$(idle_why "$red")
-  printf '%s%s%s' "$l" "${l:+${i:+; }}" "$i"
+  a=$(assess_why "$red"); l=$(load_why "$red"); i=$(idle_why "$red")
+  out="$a${a:+${l:+; }}$l"
+  printf '%s%s%s' "$out" "${out:+${i:+; }}" "$i"
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
@@ -5289,16 +5299,16 @@ gate() {
     1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
     *) why+=("account usage unreadable ($ACCT_WHY)") ;;
   esac
-  local red=0; red_floor_open && red=1
-  [ "$red" = 1 ] || fleet-assess --watch-probe >/dev/null 2>&1 || why+=("fleet-assess says HOLD")
-  # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
-  # This machine's own pace holds only a start here: while a fleet worker takes one, the pass goes
-  # on, and pick_item places each item on whichever is open (place_host).
+  local red=0 assess=''; red_floor_open && red=1
+  # This machine's own pace (fleet-assess, load, idle) holds only a start here: while a fleet worker
+  # takes one, the pass goes on, and pick_item places each item on whichever is open (place_host).
   # GATE_NO_MACHINE leaves this machine's pace out altogether, unread: demand_pass asks what else holds.
   load='' idle=''
-  [ "${GATE_NO_MACHINE:-0}" = 1 ] || { load=$(load_why "$red"); idle=$(idle_why "$red"); }
-  [ -z "$load$idle" ] || ! remote_open || load='' idle=''
+  [ "${GATE_NO_MACHINE:-0}" = 1 ] || { assess=$(assess_why "$red"); load=$(load_why "$red"); idle=$(idle_why "$red"); }
+  [ -z "$assess$load$idle" ] || ! remote_open || assess='' load='' idle=''
+  [ -z "$assess" ] || why+=("$assess")
+  # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
+  infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
   [ -z "$load" ] || why+=("$load")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in

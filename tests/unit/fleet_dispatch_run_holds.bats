@@ -428,6 +428,37 @@ load 'fleet_dispatch/common'
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
 }
 
+# 2026-11-18: a 96 C workstation (fleet-assess HOLD) held every start for hours while razer-laptop sat
+# at load 1.3 with 3 free slots. fleet-assess reads only this machine, so it holds only a start here.
+@test "a fleet-assess HOLD here places a light item on an open worker; with no worker open it holds the pass" {
+  game_ready
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  # Negative control: the worker is under its memory floor, so nothing takes the item and the HOLD stands.
+  worker '2.0 16 1 12'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+  worker '2.0 16 1 50'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
+  # Nothing started on this machine while it holds.
+  ! grep '^wt new ' "$NOTES_FIXTURE/calls.log" | grep -qv -- '--host ' || fail "a start ran on this machine under a fleet-assess HOLD"
+}
+
+@test "a cloud worker gets demand for the light item a fleet-assess HOLD here keeps waiting" {
+  game_ready
+  cloud_worker
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
+  assert_not_called 'wt new'
+}
+
 # 2026-11-18: razer-laptop's load per core read 0.27 while 52 freqtrade pods held 10.7 GB of its 32,
 # so load alone would have placed sessions on it until it ran out of memory.
 @test "a worker under the memory floor, or one that reports no free memory, takes nothing; one over it takes the item" {
