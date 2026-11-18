@@ -177,6 +177,21 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
 }
 
+@test "--requirements --json carries the Departments table, and a reworded requirement keeps its dept" {
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -c '.departments' <<<"$output")" '[{"id":"product","title":"Product","question":"Is it the thing?","owns":"the brief"},{"id":"engineering","title":"Engineering","question":"Does it build?","owns":"the README"},{"id":"ops","title":"Ops","question":"Does it stay up?","owns":"the runbook"}]'
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A lab sheet") | .dept' <<<"$output")" product
+  # NEGATIVE CONTROL: rewording the requirement leaves its Dept cell, so the department stays.
+  sed -i 's/| A lab sheet |/| A reworded lab sheet |/' "$STAGES_DOC"
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A reworded lab sheet") | .dept' <<<"$output")" product
+  # The shipped doc carries the nine departments.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_equal "$(jq -r '[.departments[].id] | join(" ")' <<<"$output")" 'product engineering ops design analytics marketing legal support money'
+}
+
 # docs_tree: the game's docs: x.md, a data file that is not a doc, and an ignored doc.
 docs_tree() {
   mkdir -p "$REPO/Assets/Games/Shooter/docs"
@@ -744,6 +759,32 @@ real_depts() {
   printf '# Runbook\n\n## Is it down\n\nThe health watch goes red.\n\n## Who is paged\n\nThe owner, by agent-notify.\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
   run "$CHECK" shooter --stage prod
   assert_line --regexp '^PASS +prod +An incident runbook'
+}
+
+@test "stages.md: privacy and terms are met by files of those names or by a route named exactly privacy or terms" {
+  real_row 'beta | app | Published privacy and terms'
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$HOME/map.json" && mv "$HOME/map.json" "$PROJECT_MAP_FILE"
+  s="$REPO/Assets/Games/Shooter"; mkdir -p "$s/docs/legal"
+  printf '# Privacy\n' > "$s/docs/legal/PRIVACY.md"; printf '# Terms\n' > "$s/docs/legal/TERMS.md"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
+  rm -r "$s/docs/legal"
+  d="$s/web/src"; mkdir -p "$d/app/privacy" "$d/app/terms" "$d/app/account/privacy-settings"
+  printf 'export default function P() {}\n' > "$d/app/privacy/page.tsx"
+  printf 'export default function T() {}\n' > "$d/app/terms/layout.tsx"
+  printf 'export default function S() {}\n' > "$d/app/account/privacy-settings/page.tsx"
+  run "$CHECK" shooter --stage beta
+  # NEGATIVE CONTROL: a terms route with only a layout is not a page.
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # NEGATIVE CONTROL: a settings screen whose route only starts with privacy is not the policy.
+  rm -r "$d/app/privacy"
+  printf 'export default function T() {}\n' > "$d/app/terms/page.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # A pages-router index route counts the same as an app-router page.
+  mkdir -p "$d/pages/privacy"; printf 'export default function P() {}\n' > "$d/pages/privacy/index.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
 }
 
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {

@@ -61,6 +61,7 @@ k.submap("pinbar", function()
     branch("m", "machine mode >", "pinbar-mode")
     branch("u", "utils >", "pinbar-utils")
     branch("s", "settings >", "pinbar-settings")
+    branch("d", "desk parts >", "pinbar-desk")
     exits(nil)
 end)
 
@@ -93,6 +94,20 @@ end)
 k.submap("pinbar-mode", function()
     for _, l in ipairs({ { "r", "reserved" }, { "s", "shared" }, { "o", "open" }, { "f", "full" } }) do
         leaf(l[1], l[2], BIN .. "machine-mode " .. l[2])
+    end
+    exits("pinbar")
+end)
+
+-- Which bar and notifier run (desk, docs/desk.md). desk's own line, or its error (a part
+-- not installed), comes back as a notification, since a keybind has no terminal.
+k.submap("pinbar-desk", function()
+    for _, l in ipairs({
+        { "c", "bar", "waybar-classic" }, { "m", "bar", "waybar-modern" }, { "n", "bar", "noctalia" },
+        { "d", "notify", "dunst" }, { "s", "notify", "swaync" },
+    }) do
+        local use = "desk use " .. l[2] .. " " .. l[3]
+        leaf(l[1], l[2] .. ": " .. l[3],
+            'notify-send -t 3000 desk "$(' .. BIN .. use .. ' 2>&1 || echo "' .. use .. ' failed")"')
     end
     exits("pinbar")
 end)

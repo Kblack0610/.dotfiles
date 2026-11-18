@@ -2,7 +2,7 @@
 //! Ladder; Left/Right switch them, as agent-web's strip), the list one table row per lab project
 //! with its open version's progress, built by `hub_core::projects` (the same rows and words as
 //! agent-web's), in flight first, on the shared `DataTable`. j/k pick a project, Enter opens its
-//! page (`layout::project_page`: a product's departments, then the work, Rows being tasktab.rs),
+//! page (`layout::project_page`: its department tabs, then the work, Rows being tasktab.rs),
 //! `a` opens All rows, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
 //! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
 //! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
@@ -52,8 +52,8 @@ pub struct ProjView {
     pub want: Option<String>,
     /// The opened project's inner tab (`layout::project_page`), Left/Right switch it.
     pub inner: &'static str,
-    /// The opened project is a product (`departments::is_product`), so its page has departments.
-    pub product: bool,
+    /// The opened project's department tabs (`Card::dept_tabs`): nine for a product, two for infra.
+    pub tabs: Vec<&'static str>,
     /// Overview's Needs you lists each group's items (`F`), not only its head.
     pub needs: bool,
     /// Overview's selected system row, which Enter opens Deliverables filtered to.
@@ -82,7 +82,7 @@ impl Default for ProjView {
             open: false,
             want: None,
             inner: OVERVIEW,
-            product: false,
+            tabs: vec![],
             needs: false,
             sys: 0,
             dv: DataTable::default(),
@@ -122,23 +122,20 @@ impl ProjView {
         tv.said = None;
         self.open = true;
         self.inner = OVERVIEW;
-        self.product = c.is_some_and(|c| c.product);
+        self.tabs = c.map(|c| c.dept_tabs.clone()).unwrap_or_default();
         self.needs = false;
         self.sys = 0;
         self.bv = DataTable::default();
     }
 
-    /// The opened project's inner tabs: a product's ten, infra's five.
+    /// The opened project's inner tabs: Overview, its department tabs, then the work.
     pub fn page_tabs(&self) -> Vec<Inner> {
-        layout::project_page(self.product)
+        layout::project_page(&self.tabs)
     }
 
     /// The department the opened page shows, when its inner tab is one.
     pub fn dept(&self) -> Option<&'static str> {
-        departments::DEPARTMENTS
-            .iter()
-            .find(|d| self.product && d.id == self.inner)
-            .map(|d| d.id)
+        self.tabs.iter().copied().find(|id| *id == self.inner)
     }
 
     /// Back to the list, the selection on the row it was on.
@@ -1870,33 +1867,36 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_product_shows_ten_tabs_broken_before_the_work_and_infra_five_at_80_columns() {
+    fn a_game_shows_nine_department_tabs_infra_two_and_an_untyped_project_none_at_80_columns() {
         let p = Palette { no_color: true };
         let mut pr = fixture();
-        pr.cards[0].product = true;
+        pr.cards[0].dept_tabs = layout::dept_tabs(Some("game"));
+        pr.cards[1].dept_tabs = layout::dept_tabs(Some("infra"));
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[0]));
-        assert!(pv.product);
+        assert_eq!(pv.tabs.len(), 9);
         let (l, _) = open_lines(&pr.cards[0], None, None, &pv, p, 80);
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
+        // Nine department tabs do not fit one 80-column line: the strip wraps, and none is clipped.
         assert_eq!(
             t[s],
-            "[Overview] Analytics  Marketing  Legal  Support  Money "
+            "[Overview] Product  Engineering  Ops  Design  Analytics  Marketing  Legal "
         );
+        assert_eq!(t[s + 1], " Support  Money ");
         assert_eq!(
-            t[s + 1],
+            t[s + 2],
             " | Rows  Deliverables  Stage  Activity   <- -> switch"
         );
-        let titles = layout::project_page(true);
-        assert_eq!(titles.len(), 10);
-        let strip = format!("{}{}", t[s], t[s + 1]);
+        let titles = layout::project_page(&pv.tabs);
+        assert_eq!(titles.len(), 14);
+        let strip = t[s..s + 3].join("");
         assert!(titles.iter().all(|i| strip.contains(i.title)), "{strip}");
 
         // Right walks the departments; one shows "reading" until Coverage arrives, then its parts.
         assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
-        assert_eq!((pv.inner, pv.dept()), ("analytics", Some("analytics")));
+        assert_eq!((pv.inner, pv.dept()), ("product", Some("product")));
         pv.go(&mut tv, &pr.cards, "garden/legal");
         assert_eq!(pv.inner, "legal");
         let t = lines(&open_lines(&pr.cards[0], None, None, &pv, p, 80).0);
@@ -1912,15 +1912,20 @@ pub(crate) mod tests {
         );
         assert!(t.iter().any(|s| s.starts_with("CHECKLIST")), "{t:#?}");
 
-        // An infra project: Overview and the work tabs on one line; a department word is Overview.
+        // An infra project: only engineering and ops; a department word it lacks is Overview.
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
         pv.open(&mut tv, Some(&pr.cards[1]));
-        assert!(!pv.product);
+        assert_eq!(pv.tabs, ["engineering", "ops"]);
         let t = lines(&open_lines(&pr.cards[1], None, None, &pv, p, 80).0);
-        assert!(t
-            .iter()
-            .any(|s| s == "[Overview] | Rows  Deliverables  Stage  Activity   <- -> switch"));
-        assert_eq!(pv.page_tabs().len(), 5);
+        let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
+        assert_eq!(
+            t[s..s + 2],
+            [
+                "[Overview] Engineering  Ops ",
+                " | Rows  Deliverables  Stage  Activity   <- -> switch"
+            ]
+        );
+        assert_eq!(pv.page_tabs().len(), 7);
         pv.go(&mut tv, &pr.cards, "demo/legal");
         assert_eq!((pv.inner, pv.dept()), (OVERVIEW, None));
 

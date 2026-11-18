@@ -16,6 +16,8 @@ desk use notify swaync       # the notifier with a control panel
 desk parts                   # every slot's parts and units
 ```
 
+From the keyboard: Super+A, then d, then `c` waybar-classic, `m` waybar-modern, `n` noctalia, `d` dunst or `s` swaync. desk's answer comes back as a notification. `tests/unit/desk.bats` checks that every part has a key and each key runs the part its label names.
+
 The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part.
 
 Scripts and binds never signal a part directly:
@@ -37,7 +39,7 @@ Each chip is the `dotfiles/chips` plugin (`.local/share/noctalia/plugins/dotfile
 
 Notifications stay with the notify slot: `config.toml` sets `[notification] enable_daemon = false`. Noctalia ignores dunst's `x-dunst-stack-tag`, so fleet pages would stack instead of replacing each other; it is not offered as a notifier.
 
-`theme-switch` writes `.config/noctalia/palettes/dotfiles.json`, which `config.toml` selects (`custom_palette = "dotfiles"`), and reloads Noctalia. Settings changed in Noctalia's own settings window go to `~/.local/state/noctalia/settings.toml` and win over `config.toml`. That file is a stow link to the copy tracked in `~/.dotfiles-private` (it can hold a home location or a plugin key, so not this public repo). Noctalia writes through the link, so a change made in the window shows in `git -C ~/.dotfiles-private diff` and lands like any other change. Delete a line there to get the `config.toml` value back. Leave Noctalia's built-in Hyprland template off: it writes `~/.config/hypr/noctalia.lua` and edits `hyprland.lua` to source it, a second writer of the colours `theme-switch` already puts in `hypr/conf/theme.lua`.
+`theme-switch` writes `.config/noctalia/palettes/dotfiles.json`, which `config.toml` selects (`custom_palette = "dotfiles"`), and reloads Noctalia. Settings changed in Noctalia's own settings window go to `~/.local/state/noctalia/settings.toml` and win over `config.toml`. That file is a stow link to the copy tracked in `~/.dotfiles-private` (it can hold a home location or a plugin key, so not this public repo). Noctalia writes through the link, so a change made in the window shows in `git -C ~/.dotfiles-private diff` and lands like any other change. Delete a line there to get the `config.toml` value back. Leave Noctalia's built-in Hyprland template off: it writes `~/.config/hypr/noctalia.lua` and edits `hyprland.lua` to source it, a second writer of the colours `theme-switch` already puts in `hypr/conf/theme.lua`. For the same reason `config.toml` turns its wallpaper off (hyprpaper owns it); its idle actions are off by default, which leaves idle to hypridle.
 
 ## The control panel
 

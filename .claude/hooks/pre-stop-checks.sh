@@ -74,13 +74,23 @@ emit() {
 }
 
 # --- Phase 0: loop guard (before the log is truncated, so the blocking run's log survives) ---
+# A Stop after one that blocked this turn never blocks again. When this session armed /wind-down,
+# though, it is the last Stop of the turn, so it still runs the checks for a fresh verdict and then
+# 95-wind-down alone (ARMED_RETRY): the request otherwise kept the blocked run's FAIL and waited for
+# a Stop that never came (home-config-agent-40 and -44, 2026-11-17).
+ARMED_RETRY=""
 if command -v jq >/dev/null 2>&1 \
    && [ "$(echo "$PAYLOAD" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
-  note "pre-stop-checks: loop guard - already blocked once this turn, exiting clean"
-  exit 0
+  if [ -n "$SID" ] && [ -f "$HOME/.agent/spin-down/$SID.request" ] && [ "${1:-}" != --checks-only ]; then
+    ARMED_RETRY=1
+    note "pre-stop-checks: loop guard - blocked once this turn, wind-down armed: verdict only"
+  else
+    note "pre-stop-checks: loop guard - already blocked once this turn, exiting clean"
+    exit 0
+  fi
 fi
 
-: >"$LOG" 2>/dev/null || true
+[ -n "$ARMED_RETRY" ] || : >"$LOG" 2>/dev/null || true
 note "=== stop-hook $(date -Is) proj=$PROJ cwd=$PWD ==="
 
 write_result() {
@@ -94,16 +104,37 @@ POST_DIR="$HOOK_DIR/stop-post.d"
 [ "${1:-}" != --checks-only ] || POST_DIR=""   # run_post finds no dir and runs nothing
 
 # --- run_post: sequential, stdout/stderr passed through. Returns max exit code. ---
+# A post script that blocks this Stop (exit 2, or a "decision": "block" on stdout and exit 0, as 86
+# and 88 do) holds the teardown on it: the model was just told to act, an ask to file, and firing
+# would close the window under it. The Stop after it is the armed retry, which fires on its own
+# fresh verdict, as 88 blocks only once a turn. Stdout goes through a file, not $(...), so a
+# background child holding the pipe cannot stall the hook.
 run_post() {
-  local dir="$1" worst=0 rc
+  local dir="$1" worst=0 rc out blocked=""
   [ -d "$dir" ] || return 0
+  out=$(mktemp "$CACHE_DIR/post-out.XXXXXX" 2>/dev/null) || out=""
   for s in "$dir"/*.sh; do
     [ -x "$s" ] || continue
+    if [ "${s##*/}" = 95-wind-down.sh ]; then
+      [ -z "$blocked" ] || { note "wind-down held: a post script blocked this Stop"; continue; }
+    else
+      # The armed retry fires the teardown only; the rest ran on the Stop that blocked.
+      [ -z "$ARMED_RETRY" ] || continue
+    fi
     # Forward original stdin (the JSON payload) so post-checks can see stop_hook_active
-    bash "$s" < <(printf '%s' "$PAYLOAD")
-    rc=$?
+    if [ -n "$out" ]; then
+      bash "$s" < <(printf '%s' "$PAYLOAD") >"$out"
+      rc=$?
+      cat "$out"
+      grep -q '"decision": *"block"' "$out" && blocked=1
+    else
+      bash "$s" < <(printf '%s' "$PAYLOAD")
+      rc=$?
+    fi
+    [ "$rc" -lt 2 ] || blocked=1
     [ "$rc" -gt "$worst" ] && worst=$rc
   done
+  [ -z "$out" ] || rm -f "$out"
   return "$worst"
 }
 
@@ -282,6 +313,8 @@ run_post "$POST_DIR"
 POST_RC=$?
 
 # --- Phase 3: aggregated exit ---
+# The armed retry is still the loop guard's Stop: it never blocks.
+[ -z "$ARMED_RETRY" ] || exit 0
 if [ $CONTENT_BLOCKED -eq 1 ]; then exit 2; fi
 [ "$POST_RC" -gt 1 ] && exit "$POST_RC"
 exit 0

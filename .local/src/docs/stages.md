@@ -71,7 +71,7 @@ The `Dept` cell names the department that owns the row, one id from Departments 
 | beta | base | A STATUS line under 14 days old | `d="$(notes projects --stats --json \| jq -r --arg n "$NAME" '.[] \| select(.name == $n) \| .status_date')"; [ -n "$d" ] && [[ ! "$(date -d "$d 14 days" +%F)" < "$(date +%F)" ]]` | product |
 | beta | game | Content rating done: `rating.answers` in `store/<id>/game.json`, by `content-rating` | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; jq -e '.rating.answers \| length > 0' "$REPO/store/$g/game.json" >/dev/null; }` | legal |
 | beta | game | A finished playtest on this version | human | product |
-| beta | app | Published privacy and terms: a file named `privacy*` and one named `terms*` in the project, a doc under `docs/legal/` or the app's own page | `doc_files \| grep -qiE '(^\|/)privacy[^/]*$' && doc_files \| grep -qiE '(^\|/)terms[^/]*$'` | legal |
+| beta | app | Published privacy and terms: a file named `privacy*` and one named `terms*` in the project, such as `docs/legal/PRIVACY.md`, or the app's own page as a route directory named exactly `privacy` or `terms` holding `page.*` or `index.*` | `doc_files \| grep -qiE '(^\|/)privacy([^/]*\|/(page\|index)\.[a-z]+)$' && doc_files \| grep -qiE '(^\|/)terms([^/]*\|/(page\|index)\.[a-z]+)$'` | legal |
 | beta | app | A PRD and TSD, `docs/scope/<slug>/prd.md` and `tsd.md`, by `scope` | `doc_files \| grep -qE '^docs/scope/[^/]+/prd\.md$' && doc_files \| grep -qE '^docs/scope/[^/]+/tsd\.md$'` | product |
 | beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet | legal |
 | beta | app | A UI polish pass under 90 days old: a `docs/plans/<date>_<app>_ui_audit.md` report, by `ui-audit` | `f="$(find "$REPO/docs/plans" -maxdepth 1 \( -iname "*_$(basename "$ROOT")_ui_audit.md" -o -iname "*_${NAME}_ui_audit.md" \) -printf '%f\n' 2>/dev/null \| sort \| tail -1)"; [ -n "$f" ] && [ -n "$REPO" ] && [[ ! "$(date -d "${f:0:10} 90 days" +%F)" < "$(date +%F)" ]]` | design |
@@ -92,7 +92,7 @@ Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their
 
 ## Departments
 
-Every Requirements row belongs to one department. A project's docs and gaps for a department are its rows with that `Dept`, so there is no separate list of docs: a doc is required where a row requires it, and the row's text names the skill that writes it. Each doc has one home: the project's repo for what the code or the product depends on, the lab for the human's own notes (brief, ideas, playtest), and the marketing lab project for go-to-market. Infra projects take only the `base` rows, which fall under product, engineering and ops.
+Every Requirements row belongs to one department. A project's docs and gaps for a department are its rows with that `Dept`, so there is no separate list of docs: a doc is required where a row requires it, and the row's text names the skill that writes it. Each doc has one home: the project's repo for what the code or the product depends on, the lab for the human's own notes (brief, ideas, playtest), and the marketing lab project for go-to-market. Infra projects take only the `base` rows, and show the engineering and ops tabs: a `base` row under product is still checked by `project-stage-check`, it has no tab.
 
 | Id | Title | Question | Owns |
 | --- | --- | --- | --- |

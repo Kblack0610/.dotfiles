@@ -594,9 +594,7 @@ mod tests {
         let depts = include_str!("../static/departments.js");
         for i in hub_core::layout::PROJECT_PAGE {
             for s in i.sections {
-                let dept = hub_core::departments::DEPARTMENTS
-                    .iter()
-                    .any(|d| d.id == i.id);
+                let dept = hub_core::layout::dept_tab_ids().any(|d| d == i.id);
                 let drawn = if dept {
                     s.strip_prefix(&format!("p-{}", i.id))
                         .is_some_and(|suffix| depts.contains(&format!("\"{suffix}\": ")))

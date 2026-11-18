@@ -19,58 +19,27 @@ use crate::prom::Series;
 use crate::reading::{self, State};
 use crate::schedules::CiState;
 use crate::session_actions::Runner;
-use crate::stages::Requirement;
+use crate::stages::{Reqs, Requirement};
 use crate::table::{Row, Val};
 use crate::vocab::Level;
 
-/// One department tab: its id (the inner tab id and the catalog's word), title, the question it
-/// answers, and the stages.md requirements that make it due, by the start of their text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Department {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub question: &'static str,
-    pub requires: &'static [&'static str],
-}
-
-pub const DEPARTMENTS: [Department; 5] = [
-    Department {
-        id: "analytics",
-        title: "Analytics",
-        question: "Who uses it, and which features?",
-        requires: &["An event catalogue"],
-    },
-    Department {
-        id: "marketing",
-        title: "Marketing",
-        question: "What did we plan and send, and how did it do?",
-        requires: &["A go-to-market entry"],
-    },
-    Department {
-        id: "legal",
-        title: "Legal",
-        question: "Can it ship at its stage?",
-        requires: &["Content rating done", "A privacy and compliance check"],
-    },
-    Department {
-        id: "support",
-        title: "Support",
-        question: "What are users telling us?",
-        requires: &["A support intake"],
-    },
-    Department {
-        id: "money",
-        title: "Money",
-        question: "What does it earn and cost?",
-        requires: &["Costs recorded per product", "Revenue recorded per product"],
-    },
-];
+pub use crate::stages::Department;
 
 /// The stage ladder, lowest first, as stages.md orders it.
 const LADDER: [&str; 5] = ["draft", "dev", "alpha", "beta", "prod"];
 
-/// The project-map types that are products, the ones with department tabs; the rest are infra.
+/// The project-map types that are products: all of stages.md's departments apply to them. Any
+/// other typed project (infra) has only [`INFRA_DEPARTMENTS`], the ones its base rows fill.
 const PRODUCT_TYPES: [&str; 2] = ["game", "app"];
+
+/// The departments an infra project has: its Requirements rows are the `base` ones.
+const INFRA_DEPARTMENTS: [&str; 2] = ["engineering", "ops"];
+
+/// Whether a project of project-map type `kind` has department `id`: a product has every one, any
+/// other typed project engineering and ops.
+pub fn applies(kind: &str, id: &str) -> bool {
+    PRODUCT_TYPES.contains(&kind) || INFRA_DEPARTMENTS.contains(&id)
+}
 
 /// The trend dashboard every tab links (home-config `apps/monitoring/dashboards/kb-project.json`).
 const DASHBOARD: &str = "kb-project";
@@ -236,9 +205,9 @@ pub struct Need {
 /// One department of one product.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Dept {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub question: &'static str,
+    pub id: String,
+    pub title: String,
+    pub question: String,
     pub cell: Cell,
     /// The stage that makes it due for this product's type (`beta`), when any does.
     pub due_at: Option<String>,
@@ -259,7 +228,8 @@ pub struct Dept {
     pub outbound_says: String,
 }
 
-/// One product: a Coverage row and its department tabs.
+/// One project with department tabs (a product, or infra with engineering and ops): a Coverage
+/// row and its tabs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Product {
     pub profile: String,
@@ -287,9 +257,13 @@ impl Product {
 
 impl Row for Product {
     const COLUMNS: &'static [&'static str] = &[
-        "product",
+        "project",
         "type",
         "stage",
+        "product",
+        "engineering",
+        "ops",
+        "design",
         "analytics",
         "marketing",
         "legal",
@@ -298,7 +272,7 @@ impl Row for Product {
     ];
     const STATES: &'static [&'static str] = &["all", "red", "amber", "off"];
     const FACETS: &'static [&'static str] = &["type", "stage"];
-    const LEAD: &'static str = "product";
+    const LEAD: &'static str = "project";
     const GLANCE: &'static [&'static str] = &["stage", "legal", "money"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
@@ -330,7 +304,7 @@ impl Row for Product {
             }
         };
         match col {
-            "product" => word(&self.name),
+            "project" => word(&self.name),
             "type" => word(&self.kind),
             "stage" => word(&self.stage),
             d => self
@@ -339,7 +313,7 @@ impl Row for Product {
         }
     }
 
-    /// Under a chip when any of its five cells is in that state.
+    /// Under a chip when any of its cells is in that state.
     fn in_state(&self, s: &str) -> bool {
         self.depts.iter().any(|d| d.cell.word() == s)
     }
@@ -347,7 +321,7 @@ impl Row for Product {
     fn rank(&self, col: &str) -> Val {
         match col {
             "stage" => self.stage_rank.map_or(Val::None, |r| Val::Num(r as f64)),
-            "product" | "type" => self.val(col),
+            "project" | "type" => self.val(col),
             d => self
                 .dept(d)
                 .map_or(Val::None, |d| Val::Num(d.cell as u8 as f64)),
@@ -356,7 +330,7 @@ impl Row for Product {
 
     fn link(&self, col: &str) -> Option<Link> {
         match col {
-            "product" => Some(Link::to(Kind::Project, self.key())),
+            "project" => Some(Link::to(Kind::Project, self.key())),
             d if self.dept(d).is_some() => {
                 Some(Link::to(Kind::Project, format!("{}/{d}", self.key())))
             }
@@ -369,6 +343,8 @@ impl Row for Product {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Coverage {
     pub products: Vec<Product>,
+    /// stages.md's Departments table, in its order: the grid's cell columns and each tab's words.
+    pub departments: Vec<Department>,
     /// Cells in each state over the whole grid: the head's `2 red | 14 off`.
     pub red: usize,
     pub amber: usize,
@@ -408,18 +384,14 @@ impl Coverage {
     }
 }
 
-/// Whether `kind` (a project-map type) has department tabs.
-pub fn is_product(kind: &str) -> bool {
-    PRODUCT_TYPES.contains(&kind)
-}
-
 /// What one read gathered, handed to [`build`] so a test can feed each store.
 pub struct Inputs<'a> {
     pub registry: Option<&'a Registry>,
     /// The lab cards: profile, name and stage.
     pub cards: Result<Vec<(String, String, String)>, String>,
     pub catalog: Result<String, String>,
-    pub requirements: Result<Vec<Requirement>, String>,
+    /// stages.md: its Requirements rows and its Departments table.
+    pub requirements: Result<Reqs, String>,
     pub numbers: Result<Vec<Series>, String>,
     pub ci: Option<CiState>,
     pub grafana: Option<String>,
@@ -438,7 +410,7 @@ pub fn read(runner: &(dyn Runner + Sync), paths: &Paths) -> Coverage {
                     .collect()
             })
         });
-        let reqs = s.spawn(|| crate::stages::requirements(runner));
+        let reqs = s.spawn(|| crate::stages::standard(runner));
         let nums = s.spawn(|| crate::prom::vm(runner, "kb_project_number", None));
         fn join<T>(r: std::thread::Result<Result<T, String>>, what: &str) -> Result<T, String> {
             r.unwrap_or_else(|_| Err(format!("{what} panicked")))
@@ -523,27 +495,28 @@ pub fn build(
             vec![]
         }
     };
-    if let Err(e) = &inputs.requirements {
-        out.says
-            .push(State::NotRead(e.clone()).sentence("requirements"));
+    match &inputs.requirements {
+        Err(e) => out
+            .says
+            .push(State::NotRead(e.clone()).sentence("requirements")),
+        // An older project-stage-check sends no Departments table: say so, never a blank grid.
+        Ok(r) if r.departments.is_empty() => out.says.push(
+            State::NotRead("project-stage-check sent no Departments table".into())
+                .sentence("departments"),
+        ),
+        Ok(_) => {}
     }
     if let Err(e) = &inputs.numbers {
         out.says.push(State::NotRead(e.clone()).sentence("numbers"));
     }
 
-    // The products, in the lab's own order.
+    // The projects with department tabs, in the lab's own order: every typed one.
     let products: Vec<(&str, &str, &str, String, String)> = cards
         .iter()
         .filter_map(|(profile, name, stage)| {
             let key = reg.lookup(name).unwrap_or(name).to_string();
             let kind = reg.kind(&key)?;
-            is_product(&kind).then_some((
-                profile.as_str(),
-                name.as_str(),
-                stage.as_str(),
-                key,
-                kind,
-            ))
+            Some((profile.as_str(), name.as_str(), stage.as_str(), key, kind))
         })
         .collect();
 
@@ -586,19 +559,26 @@ pub fn build(
     });
 
     let numbers = inputs.numbers.as_ref().ok();
+    let (departments, reqs) = inputs
+        .requirements
+        .as_ref()
+        .map_or((&[][..], &[][..]), |r| {
+            (&r.departments[..], &r.requirements[..])
+        });
+    out.departments = departments.to_vec();
     for ((profile, name, stage, key, kind), pending) in products.iter().zip(legal) {
         let rank = LADDER.iter().position(|s| s == stage);
         let repo = tracker_field(reg, key, "repo");
         let mut checks: Vec<Check> = pending.into_iter().map(|p| p.finish(&codes)).collect();
-        let reqs = inputs.requirements.as_deref().unwrap_or_default();
         let grafana = inputs.grafana.as_deref().map(|g| {
             format!(
                 "{g}/d/{DASHBOARD}?var-project={}",
                 crate::kube_proxy::encode(key)
             )
         });
-        let depts = DEPARTMENTS
+        let depts = departments
             .iter()
+            .filter(|d| applies(kind, &d.id))
             .map(|d| {
                 let pipes = rows
                     .iter()
@@ -610,7 +590,7 @@ pub fn build(
                     })
                     .map(|r| pipe(r, &found[&(r.kind.clone(), r.source.clone())]))
                     .collect();
-                let nums = numbers.map(|n| numbers_of(n, key, d.id));
+                let nums = numbers.map(|n| numbers_of(n, key, &d.id));
                 let legal = if d.id == "legal" {
                     std::mem::take(&mut checks)
                 } else {
@@ -664,11 +644,12 @@ fn tracker_field(reg: &Registry, key: &str, k: &str) -> String {
         .to_string()
 }
 
-/// The earliest stage a requirement of `d` names for `kind`, by the ladder.
+/// The earliest stage a requirement of `d` names for `kind`, by the ladder: a row of its `Dept`
+/// that applies to every project (`base`) or to the type.
 fn due_at(d: &Department, kind: &str, reqs: &[Requirement]) -> Option<usize> {
     reqs.iter()
-        .filter(|r| d.requires.iter().any(|p| r.requirement.starts_with(p)))
-        .filter(|r| r.applies.iter().any(|a| a == kind))
+        .filter(|r| r.dept == d.id)
+        .filter(|r| r.applies.iter().any(|a| a == "base" || a == kind))
         .filter_map(|r| LADDER.iter().position(|s| *s == r.stage))
         .min()
 }
@@ -745,9 +726,9 @@ fn dept(
         Some(_) => String::new(),
     };
     Dept {
-        id: d.id,
-        title: d.title,
-        question: d.question,
+        id: d.id.clone(),
+        title: d.title.clone(),
+        question: d.question.clone(),
         cell,
         due_at: due.map(|i| LADDER[i].to_string()),
         required,
@@ -1169,8 +1150,9 @@ mod tests {
         }
     }
 
-    fn req(stage: &str, applies: &[&str], text: &str) -> Requirement {
+    fn req(dept: &str, stage: &str, applies: &[&str], text: &str) -> Requirement {
         Requirement {
+            dept: dept.into(),
             stage: stage.into(),
             applies: applies.iter().map(|a| a.to_string()).collect(),
             requirement: text.into(),
@@ -1178,17 +1160,40 @@ mod tests {
         }
     }
 
-    fn reqs() -> Vec<Requirement> {
-        vec![
-            req("alpha", &["game", "app"], "An event catalogue: each event"),
-            req("beta", &["game"], "Content rating done: answers"),
-            req("beta", &["app"], "A privacy and compliance check when"),
-            req(
-                "beta",
-                &["game", "app"],
-                "Costs recorded per product: hosting",
-            ),
-        ]
+    /// The Departments table of the shipped stages.md, with these Requirements rows.
+    fn reqs() -> Reqs {
+        Reqs {
+            departments: crate::stages::stages_md_departments(),
+            requirements: vec![
+                req(
+                    "analytics",
+                    "alpha",
+                    &["game", "app"],
+                    "An event catalogue: each event",
+                ),
+                req("legal", "beta", &["game"], "Content rating done: answers"),
+                req(
+                    "legal",
+                    "beta",
+                    &["app"],
+                    "A privacy and compliance check when",
+                ),
+                req(
+                    "money",
+                    "beta",
+                    &["game", "app"],
+                    "Costs recorded per product: hosting",
+                ),
+                req(
+                    "engineering",
+                    "dev",
+                    &["base"],
+                    "CI green on the default branch",
+                ),
+                req("ops", "alpha", &["base"], "A deploy workflow green"),
+            ],
+            ..Default::default()
+        }
     }
 
     fn registry(mono: &Path) -> Registry {
@@ -1197,7 +1202,8 @@ mod tests {
                  "trackers": {{
                    "quiet": {{"type": "app"}},
                    "listed": {{"type": "app", "repo": "mono", "path": "apps/listed"}},
-                   "infra-thing": {{}}
+                   "plumbing": {{"type": "infra"}},
+                   "untyped": {{}}
                  }}}}"#,
             mono.display()
         ))
@@ -1223,16 +1229,22 @@ mod tests {
     const SHARED: &str = "marketing\tstore-console\tskill\t*\tthe listing\n";
 
     #[test]
-    fn a_product_with_no_sources_is_off_in_every_cell_and_infra_has_no_row() {
+    fn a_product_with_no_sources_is_off_in_every_cell_and_infra_has_only_engineering_and_ops() {
         let root = tmp("quiet");
         let reg = registry(&root.join("mono"));
         let cov = build(
-            &inputs(&reg, &[("quiet", "draft"), ("infra-thing", "dev")], SHARED),
+            &inputs(
+                &reg,
+                &[("quiet", "draft"), ("plumbing", "dev"), ("untyped", "dev")],
+                SHARED,
+            ),
             &paths(&root),
             &|_| panic!("nothing to probe"),
         );
-        assert_eq!(cov.products.len(), 1, "infra is not a product");
-        let p = &cov.products[0];
+        assert_eq!(cov.products.len(), 2, "a project with no type has no row");
+        assert_eq!(cov.departments.len(), 9);
+        let p = cov.product("quiet").unwrap();
+        assert_eq!(p.depts.len(), 9, "a product has every department");
         for d in &p.depts {
             assert_eq!(d.cell, Cell::Off, "{}", d.id);
             assert!(d.needs.is_empty(), "{}", d.id);
@@ -1242,15 +1254,72 @@ mod tests {
         let m = p.dept("marketing").unwrap();
         assert_eq!(m.pipes.len(), 1);
         assert!(m.pipes[0].shared);
-        assert_eq!((cov.red, cov.amber, cov.off), (0, 0, 5));
-        assert_eq!(cov.head(), "5 off");
         assert_eq!(
             m.grafana.as_deref(),
             Some("https://grafana.test/d/kb-project?var-project=quiet")
         );
+        // Infra has engineering and ops only; its base `dev` row makes Engineering due and red.
+        let i = cov.product("plumbing").unwrap();
+        let ids: Vec<&str> = i.depts.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["engineering", "ops"]);
+        assert_eq!(i.dept("engineering").unwrap().cell, Cell::Red);
+        assert_eq!(i.dept("ops").unwrap().cell, Cell::Off);
+        assert!(i.dept("legal").is_none());
+        assert_eq!((cov.red, cov.amber, cov.off), (1, 0, 10));
+        assert_eq!(cov.head(), "1 red  |  10 off");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn requirements_with_no_departments_table_say_so_and_never_draw_a_blank_grid() {
+        let root = tmp("nodepts");
+        let reg = registry(&root.join("mono"));
+        let mut i = inputs(&reg, &[("quiet", "beta")], "");
+        i.requirements = Ok(Reqs {
+            requirements: reqs().requirements,
+            ..Default::default()
+        });
+        let cov = build(&i, &paths(&root), &|_| Ok(200));
+        assert!(
+            cov.says.iter().any(|s| s.contains("no Departments table")),
+            "{:?}",
+            cov.says
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_reworded_requirement_keeps_its_department_and_a_wrong_dept_does_not_count() {
+        let root = tmp("reworded");
+        let reg = registry(&root.join("mono"));
+        let build_with = |reqs: Reqs| {
+            let mut i = inputs(&reg, &[("quiet", "beta")], "");
+            i.requirements = Ok(reqs);
+            build(&i, &paths(&root), &|_| panic!("nothing to probe"))
+        };
+        let due = |cov: &Coverage, id: &str| cov.products[0].dept(id).unwrap().due_at.clone();
+        // The Legal row's words start with nothing the old prefix list knew: its Dept cell is all.
+        let mut r = reqs();
+        r.requirements
+            .iter_mut()
+            .find(|r| r.requirement.starts_with("A privacy and compliance"))
+            .unwrap()
+            .requirement = "Rewritten from scratch".into();
+        assert_eq!(due(&build_with(r), "legal").as_deref(), Some("beta"));
+        // NEGATIVE CONTROL: the same row under another Dept makes that one due, not Legal.
+        let mut r = reqs();
+        r.requirements
+            .iter_mut()
+            .find(|r| r.requirement.starts_with("A privacy and compliance"))
+            .unwrap()
+            .dept = "support".into();
+        let cov = build_with(r);
+        assert_eq!(due(&cov, "legal"), None);
+        assert_eq!(due(&cov, "support").as_deref(), Some("beta"));
+        // A base row reaches an app (engineering, `dev`), and a row of another type does not.
+        assert_eq!(due(&cov, "engineering").as_deref(), Some("dev"));
+        assert_eq!(due(&cov, "product"), None, "no product row in the fixture");
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn the_ledger_feeds_marketing_and_a_review_waiting_a_week_turns_it_amber() {
         let root = tmp("ledger");
@@ -1406,7 +1475,11 @@ mod tests {
             Cell::Off,
             "no row requires it here"
         );
-        assert_eq!(cov.head(), "3 red  |  2 off");
+        assert_eq!(
+            cov.head(),
+            "5 red  |  4 off",
+            "analytics, money, legal, engineering and ops are due; the other four have no row"
+        );
         let series = |dept: &str, metric: &str, v: f64| Series {
             labels: [("project", "quiet"), ("dept", dept), ("metric", metric)]
                 .iter()
@@ -1487,17 +1560,19 @@ mod tests {
     }
 
     #[test]
-    fn each_department_requirement_names_one_stages_md_row() {
-        let doc = include_str!("../../docs/stages.md");
-        for d in &DEPARTMENTS {
-            for p in d.requires {
-                let n = doc
-                    .lines()
-                    .filter(|l| l.starts_with('|'))
-                    .filter(|l| l.split('|').any(|c| c.trim().starts_with(p)))
-                    .count();
-                assert_eq!(n, 1, "{}: `{p}` names {n} stages.md rows", d.id);
-            }
+    fn the_coverage_columns_are_the_departments_of_stages_md() {
+        let ids: Vec<String> = crate::stages::stages_md_departments()
+            .into_iter()
+            .map(|d| d.id)
+            .collect();
+        let cols: Vec<&str> = Product::COLUMNS[3..].to_vec();
+        assert_eq!(cols, ids, "a Departments row needs a Coverage column");
+        // Every department an infra project has is one of them.
+        for id in INFRA_DEPARTMENTS {
+            assert!(
+                ids.iter().any(|i| i == id),
+                "{id} is no stages.md department"
+            );
         }
     }
 

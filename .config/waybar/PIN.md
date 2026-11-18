@@ -31,7 +31,7 @@ It fires while RustDesk grabs the keyboard, like the Ctrl+Alt+Shift escape keys.
 The agents leaves act in the terminal you typed in last, never a new window: a popup on it (`tmx popup`), or a hop of it (`o` and `h` land through `tmx goto`). With no tmux client attached anywhere, one floating kitty opens instead.
 
 ```
-Super+A                L1 pinbar          space control menu | a agents> | i inputs> | m machine mode> | k keys> | t timebox> | p toggle the pin | u utils> | s settings> | esc/q exit
+Super+A                L1 pinbar          space control menu | a agents> | i inputs> | m machine mode> | k keys> | t timebox> | p toggle the pin | u utils> | s settings> | d desk parts> | esc/q exit
   a agents             L2 pinbar-agents   a agent panel | w all sessions | c scratch claude | n pick a page | o open newest page | h triage newest page | esc back
   k keys               L2 pinbar-keys     a all | h hyprland | t tmux | n nvim | esc back
   t timebox            L2 pinbar-timebox  t queue panel | a add task | d done | l load preset | s start | w switch | m sound | b flash | p pause | r resume | x stop | o status | esc back
@@ -41,6 +41,7 @@ Super+A                L1 pinbar          space control menu | a agents> | i inp
     y sync             L3 pinbar-sync     d restow dotfiles | n pull notes | esc back | q exit
     g git              L3 pinbar-git      p pull dot+notes | s git status | esc back | q exit
   s settings           L2 pinbar-settings a agents | f fleet | t timebox | m machines | l list> | s size | esc back
+  d desk parts         L2 pinbar-desk     c bar classic | m bar modern | n noctalia | d dunst | s swaync | esc back
 ```
 
 Views: **min** = the main bar's status cluster (timebox | agents | dispatch | fleet | ci | day); **big** = +
@@ -127,7 +128,7 @@ whenever a `/dev/video*` node gains or loses its holders.
 
 ## Input chip
 
-`custom/audio-input` (`audio_input.sh`, workstation only) shows the input apps hear: PipeWire's default source. Click for the next input, right-click for the one before, or `Super+A i` and a key. The inputs and their keys are `~/.config/audio/inputs.conf`, which the audio repo (`~/dev/home/audio`) owns and its `install.sh` links in; how to use them in a call is its `docs/working-in-reaper.md`. With no list (the laptop) the chip prints nothing. On the desktop the `pulseaudio` chip drops its mic part, since this chip carries it (volume in the hover, mute as the dim class).
+`custom/audio-input` (`audio_input.sh`) shows the input apps hear: PipeWire's default source. It is not on the waybar, whose right side has no width left at 1920px; Noctalia shows it (click for the next input, right-click for the one before). Switch with `Super+A i` and a key. The inputs and their keys are `~/.config/audio/inputs.conf`, which the audio repo (`~/dev/home/audio`) owns and its `install.sh` links in; how to use them in a call is its `docs/working-in-reaper.md`. With no list (the laptop) the chip prints nothing. On the desktop the `pulseaudio` chip shows the output only.
 
 Only the default moves. An app set to Default follows it mid-call (WirePlumber `linking.follow-default-target`). Streams are never moved by hand: WirePlumber remembers a moved target per app (`node.stream.restore-target`), so the next call would open on a stale input. gungan names its own mic (`GUNGAN_SOURCE` in `~/.config/gungan/config`), so dictation stays on the mic. Amber means a rig input with REAPER closed, which is silent.
 
@@ -141,7 +142,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `config.pin-full`  - bigger bar
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
-- `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them
+- `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them (Noctalia only)
 - `printer.sh`       - `custom/printer`, `<icon> 21% A1`: the icon is the Neptune (heat, err, done; ? wrong address, ! Klipper not ready), A1 dim when off, dim icon when unreachable
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme

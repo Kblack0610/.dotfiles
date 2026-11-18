@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
 # custom/audio-input: the input apps hear and the switch between the rig's inputs. What these
-# pin: the chip is on the desktop bar beside a pulseaudio chip with no mic part, and nowhere on
-# the laptop; set resolves a glob to the live node and changes only the default; next and prev
+# pin: the chip is on no waybar (Noctalia shows it from config.base), the desktop pulseaudio chip has no mic part; set resolves a glob to the live node and changes only the default; next and prev
 # wrap; a rig input with REAPER closed is amber; a failed set pages and leaves the default alone;
 # watch prints on a server or source event and only when the line changed. pactl and pw-link are
 # stubs over files in $FX; `pactl subscribe` reads a fifo, so each event is driven by the test.
@@ -68,9 +67,9 @@ next_line() { read -r -t 10 -u 4 LINE || LINE=TIMEOUT; }
 
 field() { jq -r ".$1" <<<"$LINE"; }
 
-@test "the chip is on the desktop bar after pulseaudio, which drops its mic; not on the laptop" {
-  run grep -A1 '"pulseaudio",$' "$W/config.desktop"
-  assert_line --partial '"custom/audio-input"'
+@test "the chip is on no waybar, its block stays for Noctalia, and pulseaudio drops its mic" {
+  run grep -c '^ *"custom/audio-input",$' "$W/config.desktop"
+  assert_output 0
   run grep -A6 '"pulseaudio": {' "$W/config.desktop"
   refute_output --partial 'format_source'
   run grep -c 'custom/audio-input' "$W/config.laptop"

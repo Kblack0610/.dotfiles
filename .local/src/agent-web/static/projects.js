@@ -4,7 +4,7 @@
 // version's progress by size, its pace and ETA, and its queue, in flight first. A click opens
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, a product's
-// five departments (departments.js), its Rows with every row action board.js has, Deliverables
+// department tabs (departments.js), its Rows with every row action board.js has, Deliverables
 // (scoped to it), Stage and Activity. Its inner tabs (INNER_TABS.projects) are this list, All rows
 // (every project's rows, board.js scoped to all), Deliverables, Coverage (departments.js) and
 // Ladder (ladder.js), each read only while it shows; an opened
@@ -114,12 +114,13 @@ const pCard = (want) => pst.data && pst.data.cards.find((x) => pKey(x) === want 
 // The page's inner ids; a retired one (`build`) lands on its new one (PROJECT_RETIRED).
 const P_INNER = PROJECT_PAGE.map((t) => t[0]);
 const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
-// A product shows all ten; infra (project-map type) skips the departments, the tabs before Rows.
+// The department tabs sit between Overview and Rows; a card's own are its `dept_tabs`
+// (hub_core::layout::dept_tabs: all nine for a game or app, engineering and ops for infra, none untyped).
 const P_DEPTS = PROJECT_PAGE.slice(1, P_INNER.indexOf(PROJECT_WORK)).map((t) => t[0]);
-const pProduct = (c) => !!c && c.product;
-const pPage = (c) => PROJECT_PAGE.filter((t) => pProduct(c) || !P_DEPTS.includes(t[0]));
+const pDepts = (c) => (c && c.dept_tabs) || [];
+const pPage = (c) => PROJECT_PAGE.filter((t) => !P_DEPTS.includes(t[0]) || pDepts(c).includes(t[0]));
 // Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
-// department on infra) on Overview.
+// department its type does not get) on Overview.
 const pInnerFor = (c, w) => { w = pInnerOf(w); return pPage(c).some((t) => t[0] === w) ? w : "overview"; };
 // Projects' URL arg as the project and its inner tab: `<key>/<inner>` when the last word is an
 // inner tab and the whole arg is no project's name, else the arg alone on Overview.
@@ -180,7 +181,7 @@ function pOpened(c) {
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
   const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
-  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pProduct(c) ? PROJECT_WORK : null);
+  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c).length ? PROJECT_WORK : null);
 }
 
 // What needs the human, grouped by kind (hub_core::page::need_groups, the next stage's failing and
@@ -256,7 +257,7 @@ function pPanes(c) {
   // A failed read is the header's to say, once.
   const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
-  const depts = pProduct(c) ? P_DEPTS.map((id) => pin(id, deptPane(pKey(c), id))).join("") : "";
+  const depts = pDepts(c).map((id) => pin(id, deptPane(pKey(c), id))).join("");
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
   pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
@@ -301,7 +302,7 @@ function pOpen(key, inner) {
   pst.inner = pInnerFor(c, inner);
   bst.draft.key = key;
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
-  if (pProduct(c)) deptRead(key);
+  if (pDepts(c).length) deptRead(key);
   bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
   dst.data = null;
   paint($("p-deliv"), "");

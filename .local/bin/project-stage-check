@@ -33,7 +33,8 @@
 # --requirements prints every Requirements row of stages.md, for no project: stage, applies, the
 # check's kind (`predicate` runs, `human` is signed off, `not-yet` has no check), the requirement,
 # and the skills its text names in backticks that exist under ~/.claude/skills (--json: the
-# `Enforced from:` date and an array of {stage, applies, requirement, check, kind, skills, dept}).
+# `Enforced from:` date, an array of {stage, applies, requirement, check, kind, skills, dept}, and
+# `departments`, the Departments table as an array of {id, title, question, owns}).
 # A Requirements row whose Dept is not a Departments id exits 2, in every mode.
 # How a Check cell is written and run: ~/.local/src/docs/stages.md, "Requirements".
 set -uo pipefail
@@ -113,8 +114,10 @@ requirements() {
   done < <(rows "$STAGES_DOC" Requirements | tr '\t' '\037')
   [ -n "$out" ] || { echo "project-stage-check: no Requirements rows in $STAGES_DOC" >&2; exit 2; }
   if [ -n "$JSON" ]; then
-    printf '%s' "$out" | jq -R -s --arg from "$(sed -n '/^Enforced from:/{s/^Enforced from: *\([0-9-]*\).*/\1/p;q;}' "$STAGES_DOC")" '
-      {enforced_from: (if $from == "" then null else $from end),
+    local depts
+    depts="$(rows "$STAGES_DOC" Departments | jq -R -s '[split("\n")[] | select(length > 0) | split("\t") | {id: .[0], title: .[1], question: .[2], owns: .[3]}]')"
+    printf '%s' "$out" | jq -R -s --argjson depts "$depts" --arg from "$(sed -n '/^Enforced from:/{s/^Enforced from: *\([0-9-]*\).*/\1/p;q;}' "$STAGES_DOC")" '
+      {enforced_from: (if $from == "" then null else $from end), departments: $depts,
        requirements: [split("\n")[] | select(length > 0) | split("\t")
          | {stage: .[0], applies: (.[1] | split(", ")), kind: .[2],
             skills: (.[3] | split(" ") | map(select(length > 0))), requirement: .[4], check: .[5], dept: .[6]}]}'
