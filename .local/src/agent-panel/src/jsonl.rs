@@ -313,6 +313,9 @@ pub struct FleetInfo {
     pub said: String,
     /// How many times the context was compacted.
     pub compactions: u64,
+    /// Epoch seconds of the newest prompt the human typed (`human_at`), None when there is none.
+    /// fleet-sessions keeps a window the human typed in within `FLEET_HUMAN_KEEP_MIN`.
+    pub human_at: Option<u64>,
 }
 
 pub fn fleet_info(path: &Path) -> FleetInfo {
@@ -331,8 +334,30 @@ pub fn fleet_info(path: &Path) -> FleetInfo {
         doing,
         said,
         compactions: compactions(&text),
+        human_at: human_at(&text),
     }
 }
+
+/// The newest timestamp of a prompt the human typed: a `typed_prompt` that is not one our own
+/// tooling types into the pane (`TOOLING`).
+fn human_at(text: &str) -> Option<u64> {
+    text.lines()
+        .rev()
+        .filter(|l| l.contains("\"timestamp\":\""))
+        .find(|l| human_typed(l))
+        .and_then(|l| serde_json::from_str::<Value>(l).ok())
+        .and_then(|v| v.get("timestamp").and_then(Value::as_str).and_then(iso_epoch))
+}
+
+/// A typed prompt the human sent, not one our tooling typed with tmux send-keys.
+fn human_typed(line: &str) -> bool {
+    typed_prompt(line).is_some_and(|p| !TOOLING.iter().any(|t| p.starts_with(t)))
+}
+
+/// Prompts our tooling types into a pane as if the human had: the shepherd's close
+/// (`fleet-shepherd` `close_sample`) and fleet-dispatch's restore (`RESTORE_PROMPT`). They never
+/// count as the human being here.
+const TOOLING: &[&str] = &["/wind-down", "fleet-dispatch restore reopened"];
 
 /// A gap between entries shorter than this is the session working; a longer one was a wait,
 /// and what was still running says for what.
@@ -2659,6 +2684,30 @@ mod tests {
         assert_eq!(said_around(&lines.join("\n"), "AbC12"), None);
         assert_eq!(said_around(&lines.join("\n"), "zzz999"), None);
         assert_eq!(said_around(&lines.join("\n"), ""), None);
+    }
+
+    #[test]
+    fn human_at_is_the_newest_prompt_the_human_typed_not_our_tooling() {
+        let base = iso_epoch("2026-10-30T12:00:00Z").unwrap();
+        let typed = at(5, r#""type":"user","message":{"content":"keep going on the runners"}"#);
+        let lines = [
+            at(0, r#""type":"user","message":{"content":"start the plan"}"#),
+            typed.clone(),
+            at(10, r#""type":"assistant","message":{"content":[{"type":"text","text":"done"}]}"#),
+            // Every sender our tooling types with, and the harness, after it: none is the human.
+            at(20, r#""type":"user","message":{"content":"<command-message>wind-down</command-message>\n<command-name>/wind-down</command-name>\n<command-args>auto</command-args>"}"#),
+            at(21, r#""type":"user","message":{"content":"<command-name>/wind-down</command-name>"}"#),
+            at(22, r#""type":"user","message":{"content":"fleet-dispatch restore reopened this session after its tmux server was lost"}"#),
+            at(23, r#""type":"user","message":{"content":"This session was parked by claude-acct"}"#),
+            at(24, r#""type":"user","message":{"content":"<task-notification> done"}"#),
+            at(25, r#""type":"user","isMeta":true,"message":{"content":"a reminder"}"#),
+            at(26, r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"x"}]}"#),
+        ];
+        assert_eq!(human_at(&lines.join("\n")), Some(base + 5 * 60));
+        // Negative control: a typed slash command of the human's own does count.
+        let mine = at(30, r#""type":"user","message":{"content":"<command-name>/review</command-name>"}"#);
+        assert_eq!(human_at(&[lines.join("\n"), mine].join("\n")), Some(base + 30 * 60));
+        assert_eq!(human_at(&lines[2..].join("\n")), None);
     }
 
     #[test]
