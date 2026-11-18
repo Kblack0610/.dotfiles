@@ -33,71 +33,78 @@ Before that date a FAIL is reported and blocks nothing, so a row that turns out 
 
 The `Check` cell is one of three things:
 - a backticked shell predicate, run in a subshell from the project's root with `NAME`, `TYPE`, `REPO`, `ROOT`, `LAB` and `STAGE` (the stage being checked, so a row judges a move up the same as today's stage) set, and `project-name.sh` and `lab-feed.sh` loaded. `ROOT` is the project's folder in its repo (`trackers.<name>.path`, as `apps/<app>` in a monorepo), else the repo; with no project folder it runs from an empty directory, so a project file reads as missing rather than matching a repo-root or lab file. A repo the map names but this machine has not cloned is not judged (exit 2). A missing project folder inside an available repo reports criteria gaps; predicates can still read `REPO` and `LAB`, and `ROOT` keeps its mapped path. Exit 0 is PASS. It reads local files, git and the `release-state` snapshot only, never the network, so a night run is quick and repeatable. Write a literal pipe as `\|`.
+- A doc predicate reads the project's docs through four helpers, so it judges the remote default branch (`origin/HEAD`, as of the clone's last fetch; nothing here fetches) rather than a working tree that can be weeks behind, and a doc on an unmerged branch is not met until it merges: `doc <path>...` (each file exists), `doc_text <path>` (prints it) `doc_files` (lists every tracked file) and `doc_grep <pattern> <path>...` (a case-insensitive match in the `.md` files of those paths), all relative to `ROOT`. A repo with no `origin` remote reads its working tree; one with an `origin` but no `origin/HEAD` says so on stderr (`git remote set-head origin -a` fixes it) and reads its working tree.
 - `human`: only the human can attest it, so the gate lists it and never fails on it.
 - anything else: no predicate yet. The gate lists it as TODO with this text, which names what checks it today, if anything.
 
-| Stage | Applies | Requirement | Check |
-| --- | --- | --- | --- |
-| draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` |
-| draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` |
-| draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` |
-| draft | game | A pitch in the lab (`docs/idea.md`) and a design doc in the repo (`docs/games/<id>.md`, read on `origin/main`, since a local clone can lag); story and look docs (`<id>-story.md`, `<id>-look.md`) only when the game has one. The sheet's `Docs:` list links them | `[ -f "$LAB/docs/idea.md" ] && { [ "$ROOT" = "$REPO" ] \|\| git -C "$REPO" cat-file -e "origin/main:docs/games/$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]').md"; }` |
-| draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet |
-| dev | base | CI green on the default branch | not yet: needs the forge API |
-| dev | base | The `docs` system meets its `systems.md` criteria: a README with build, run and test, `docs/architecture.md`, a standards file or a link to the shared one | `project-stage-check "$NAME" --system docs` |
-| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | `[ "$ROOT" = "$REPO" ] \|\| { g="$(basename "$ROOT")"; [ -f "$REPO/scripts/build/games/$(printf %s "$g" \| tr '[:upper:]' '[:lower:]').json" ] && git -C "$REPO" ls-files \| grep -qi "/$g[a-z0-9]*PlayTests\.cs$"; }` |
-| dev | app | Typecheck, lint and unit tests in the shared CI config | `jq -e '.scripts.typecheck and .scripts.lint and .scripts.test' "$REPO/package.json"` |
-| alpha | base | A deploy workflow green to the private target on every merge | not yet: needs the forge API |
-| alpha | base | Its secrets listed by name and synced to every destination | not yet: P4 `secrets-sync --check` |
-| alpha | base | A perf baseline measured on the real deploy target | not yet |
-| alpha | base | `docs/overview.md` (what it is, its features, status) and `docs/operations/deploy.md` | `[ -f docs/overview.md ] && [ -f docs/operations/deploy.md ]` |
-| alpha | game | Plays start to finish; `perf-round` numbers recorded; a multiplayer smoke if networked | human |
-| alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet |
-| alpha | game | A title screen that starts the game on its own: `standalone` and `titleScreen.modes` in `Resources/Games/<id>.json` | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; jq -e '.standalone == true and (.titleScreen.modes \| length > 0)' "Resources/Games/$g.json" >/dev/null; }` |
-| alpha | game | An app icon and splash: `branding.icon` and every `branding.splash` in its build profile, each file in the repo; `scripts/build/render-branding.sh` renders them | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; b="$REPO/scripts/build/games/$g.json"; i="$(jq -r '.branding.icon // empty' "$b")"; s="$(jq -r '[.branding.splash // empty] \| flatten \| map(strings) \| .[]' "$b")"; cd "$REPO" && [ -n "$i" ] && [ -f "$i" ] && [ -n "$s" ] && xargs -d '\n' ls -- <<<"$s"; }` |
-| alpha | game | A written taste, the look its art and UI are graded against: the `look` system in `systems.md`, a `## Taste` section in its game doc, by `game-eval` (taste) | `project-stage-check "$NAME" --system look` |
-| alpha | app | A mobile app's icon and splash: `expo.icon` and the splash image (`expo.splash.image`, or the `expo-splash-screen` plugin's `image`) in `mobile/app.json`, both files in the repo | `{ [ -n "$REPO" ] && [ ! -d mobile ]; } \|\| { i="$(jq -r '.expo.icon // empty' mobile/app.json)"; s="$(jq -r '.expo.splash.image // ([.expo.plugins[]? \| arrays \| select(.[0] == "expo-splash-screen") \| .[1].image][0]) // empty' mobile/app.json)"; [ -n "$i" ] && [ -f "mobile/$i" ] && [ -n "$s" ] && [ -f "mobile/$s" ]; }` |
-| alpha | app | A brand sheet, `docs/brand.md` with `## Palette` and `## Logo` sections, by `docs-write` | `grep -qx '## Palette' docs/brand.md && grep -qx '## Logo' docs/brand.md` |
-| alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` |
-| alpha | store | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill. In the repo, the `store` system in `systems.md`: `store/<id>/<store>/listing.json` for a game, `mobile/metadata.yaml` for an app | `project-stage-check "$NAME" --system store` |
-| alpha | game, app | A go-to-market entry in the marketing lab project's `docs/channels.yaml`: shape, pitch, channels and posting mode per channel | not yet: needs a `channels.yaml` validator |
-| alpha | game, app | An event catalogue: each event the product sends and its properties, in one file the Analytics tab of its page reads | `event-catalogue check "$NAME"` |
-| beta | base | A CHANGELOG | `[ -f CHANGELOG.md ]` |
-| beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human |
-| beta | base | A Sentinel health watch | not yet |
-| beta | base | A STATUS line under 14 days old | `d="$(notes projects --stats --json \| jq -r --arg n "$NAME" '.[] \| select(.name == $n) \| .status_date')"; [ -n "$d" ] && [[ ! "$(date -d "$d 14 days" +%F)" < "$(date +%F)" ]]` |
-| beta | game | Content rating done: `rating.answers` in `store/<id>/game.json`, by `content-rating` | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; jq -e '.rating.answers \| length > 0' "$REPO/store/$g/game.json" >/dev/null; }` |
-| beta | game | A finished playtest on this version | human |
-| beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet |
-| beta | app | A UI polish pass under 90 days old: a `docs/plans/<date>_<app>_ui_audit.md` report, by `ui-audit` | `f="$(find "$REPO/docs/plans" -maxdepth 1 \( -iname "*_$(basename "$ROOT")_ui_audit.md" -o -iname "*_${NAME}_ui_audit.md" \) -printf '%f\n' 2>/dev/null \| sort \| tail -1)"; [ -n "$f" ] && [ -n "$REPO" ] && [[ ! "$(date -d "${f:0:10} 90 days" +%F)" < "$(date +%F)" ]]` |
-| beta | store | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure: a registry target on the `beta` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("beta")'` |
-| beta | game, app | A version tag: versioned releases start here | `[ -n "$(project_release_version "$NAME")" ]` |
-| beta | game, app | A public page that collects wishlists or signups (a Steam Coming Soon page for a game), live early enough to build an audience before launch and before any Steam festival deadline | not yet: needs a store-page probe |
-| beta | game, app | Each version tag gets a marketing drafts batch, and outreach has started (creators and curators for a game; launch sites, directories and partners for an app). An app with regulated data does this inside the compliance check of the beta app row | not yet: needs the marketing drafter |
-| beta | game, app | A support intake: where store reviews, in-app feedback and crash reports land, and who reads them | not yet: a game's `playtest.md` rows (the `playtest-ops` skill) are the only intake today |
-| beta | game, app | Costs recorded per product: hosting, Edgegap, LLM and marketing spend | not yet: LLM cost per project is in `~/.agent/outcomes/`; the rest has no exporter |
-| prod | base | A prod smoke suite; an incident and rollback runbook; a credentials inventory with an expiry alarm | not yet |
-| prod | base | Approval of the public publish | human |
-| prod | game, app | Live on a public channel (a store, Steam `default`, the prod cluster): a registry target on the `prod` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("prod")'` |
-| prod | game, app | The product's rows in the marketing lab project's `docs/metrics.md` scorecard dated within the last 30 days | not yet: needs the marketing scorecard |
-| prod | game, app | Revenue recorded per product, by provider (each store, Steam, Stripe) | not yet: no revenue exporter exists |
+The `Dept` cell names the department that owns the row, one id from Departments below; the check exits 2 on any other word. `project-stage-check <name> --by-dept` prints a project's rows grouped by it, which is each department's list of what that project has and lacks.
+
+| Stage | Applies | Requirement | Check | Dept |
+| --- | --- | --- | --- | --- |
+| draft | base | A `project-map.json` entry with a `type`, and a lab sheet | `[ -n "$TYPE" ] && [ -f "$LAB/README.md" ]` | product |
+| draft | base | A brief (`one-pager`) that names the type standard it will meet and a target load as a number: CCU, users, rows | `grep -qil 'target load' "$LAB"/docs/briefs/*.md` | product |
+| draft | game | Repo or folder cut from the unity-core template on the `com.blacknbrown.*` packages | `grep -q '"com.blacknbrown\.' "$REPO/Packages/manifest.json"` | engineering |
+| draft | game | A pitch in the lab (`docs/idea.md`) and a design doc in the repo (`docs/games/<id>.md` at the repo root, read through `doc` with no folder); story and look docs (`<id>-story.md`, `<id>-look.md`) only when the game has one. The sheet's `Docs:` list links them | `[ -f "$LAB/docs/idea.md" ] && { [ "$ROOT" = "$REPO" ] \|\| (g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; DOC_SUB=""; cd "$REPO" && doc "docs/games/$g.md"); }` | design |
+| draft | app | Repo cut from the platform generator (`pnpm create:mobile-app`, `create:package`) on `packages/ui` and the shared config | not yet | engineering |
+| dev | base | CI green on the default branch | not yet: needs the forge API | engineering |
+| dev | base | The `docs` system meets its `systems.md` criteria: a README with build, run and test, `docs/architecture.md`, a standards file or a link to the shared one, and a `docs/README.md` index | `project-stage-check "$NAME" --system docs` | engineering |
+| dev | game | A build profile in `scripts/build/games/<id>.json` and a headless test class | `[ "$ROOT" = "$REPO" ] \|\| { g="$(basename "$ROOT")"; [ -f "$REPO/scripts/build/games/$(printf %s "$g" \| tr '[:upper:]' '[:lower:]').json" ] && git -C "$REPO" ls-files \| grep -qi "/$g[a-z0-9]*PlayTests\.cs$"; }` | engineering |
+| dev | app | Typecheck, lint and unit tests in the shared CI config | `jq -e '.scripts.typecheck and .scripts.lint and .scripts.test' "$REPO/package.json"` | engineering |
+| alpha | base | A deploy workflow green to the private target on every merge | not yet: needs the forge API | ops |
+| alpha | base | Its secrets listed by name and synced to every destination | not yet: P4 `secrets-sync --check` | ops |
+| alpha | base | A perf baseline measured on the real deploy target | not yet | engineering |
+| alpha | base | `docs/overview.md` (what it is, its features, status) and `docs/operations/deploy.md` | `doc docs/overview.md docs/operations/deploy.md` | product |
+| alpha | game | Plays start to finish; `perf-round` numbers recorded; a multiplayer smoke if networked | human | product |
+| alpha | app | Critical-path e2e in CI; a preview environment that deploys itself | not yet | engineering |
+| alpha | game | A title screen that starts the game on its own: `standalone` and `titleScreen.modes` in `Resources/Games/<id>.json` | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; jq -e '.standalone == true and (.titleScreen.modes \| length > 0)' "Resources/Games/$g.json" >/dev/null; }` | product |
+| alpha | game | An app icon and splash: `branding.icon` and every `branding.splash` in its build profile, each file in the repo; `scripts/build/render-branding.sh` renders them | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; b="$REPO/scripts/build/games/$g.json"; i="$(jq -r '.branding.icon // empty' "$b")"; s="$(jq -r '[.branding.splash // empty] \| flatten \| map(strings) \| .[]' "$b")"; cd "$REPO" && [ -n "$i" ] && [ -f "$i" ] && [ -n "$s" ] && xargs -d '\n' ls -- <<<"$s"; }` | design |
+| alpha | game | A written taste, the look its art and UI are graded against: the `look` system in `systems.md`, a `## Taste` section in its game doc, by `game-eval` (taste) | `project-stage-check "$NAME" --system look` | design |
+| alpha | app | A mobile app's icon and splash: `expo.icon` and the splash image (`expo.splash.image`, or the `expo-splash-screen` plugin's `image`) in `mobile/app.json`, both files in the repo | `{ [ -n "$REPO" ] && [ ! -d mobile ]; } \|\| { i="$(jq -r '.expo.icon // empty' mobile/app.json)"; s="$(jq -r '.expo.splash.image // ([.expo.plugins[]? \| arrays \| select(.[0] == "expo-splash-screen") \| .[1].image][0]) // empty' mobile/app.json)"; [ -n "$i" ] && [ -f "mobile/$i" ] && [ -n "$s" ] && [ -f "mobile/$s" ]; }` | design |
+| alpha | app | A brand sheet, `docs/brand.md` with `## Palette` and `## Logo` sections, by `docs-write` | `doc_text docs/brand.md \| grep -qx '## Palette' && doc_text docs/brand.md \| grep -qx '## Logo'` | design |
+| alpha | game, app | A private target live: a registry target on an `alpha`, `preview` or `internal` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("alpha")'` | ops |
+| alpha | store | Its store listing set up through the internal channel, by the procedure in `~/.notes/lab/bnb/practices/release/stores.md`; console forms go through the `store-console` skill. In the repo, the `store` system in `systems.md`: `store/<id>/<store>/listing.json` for a game, `mobile/metadata.yaml` for an app | `project-stage-check "$NAME" --system store` | marketing |
+| alpha | game, app | A go-to-market entry in the marketing lab project's `docs/channels.yaml`: shape, pitch, channels and posting mode per channel | not yet: needs a `channels.yaml` validator | marketing |
+| alpha | game, app | An event catalogue: each event the product sends and its properties, in one file the Analytics tab of its page reads | `event-catalogue check "$NAME"` | analytics |
+| beta | base | A CHANGELOG | `doc CHANGELOG.md` | engineering |
+| beta | base | The external-channel pipeline green; one rollback actually done; a load test at the brief's number | human | ops |
+| beta | base | A Sentinel health watch | not yet | ops |
+| beta | base | A STATUS line under 14 days old | `d="$(notes projects --stats --json \| jq -r --arg n "$NAME" '.[] \| select(.name == $n) \| .status_date')"; [ -n "$d" ] && [[ ! "$(date -d "$d 14 days" +%F)" < "$(date +%F)" ]]` | product |
+| beta | game | Content rating done: `rating.answers` in `store/<id>/game.json`, by `content-rating` | `{ [ -n "$REPO" ] && [ "$ROOT" = "$REPO" ]; } \|\| { g="$(basename "$ROOT" \| tr '[:upper:]' '[:lower:]')"; jq -e '.rating.answers \| length > 0' "$REPO/store/$g/game.json" >/dev/null; }` | legal |
+| beta | game | A finished playtest on this version | human | product |
+| beta | app | Published privacy and terms: a file named `privacy*` and one named `terms*` in the project, a doc under `docs/legal/` or the app's own page | `doc_files \| grep -qiE '(^\|/)privacy[^/]*$' && doc_files \| grep -qiE '(^\|/)terms[^/]*$'` | legal |
+| beta | app | A PRD and TSD, `docs/scope/<slug>/prd.md` and `tsd.md`, by `scope` | `doc_files \| grep -qE '^docs/scope/[^/]+/prd\.md$' && doc_files \| grep -qE '^docs/scope/[^/]+/tsd\.md$'` | product |
+| beta | app | A privacy and compliance check when it holds regulated data; the store listing via `mobile-store-metadata` | not yet | legal |
+| beta | app | A UI polish pass under 90 days old: a `docs/plans/<date>_<app>_ui_audit.md` report, by `ui-audit` | `f="$(find "$REPO/docs/plans" -maxdepth 1 \( -iname "*_$(basename "$ROOT")_ui_audit.md" -o -iname "*_${NAME}_ui_audit.md" \) -printf '%f\n' 2>/dev/null \| sort \| tail -1)"; [ -n "$f" ] && [ -n "$REPO" ] && [[ ! "$(date -d "${f:0:10} 90 days" +%F)" < "$(date +%F)" ]]` | design |
+| beta | store | Its external tester channel live (TestFlight external, Play closed, Steam `beta`), by the same `stores.md` procedure: a registry target on the `beta` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("beta")'` | ops |
+| beta | game, app | A version tag: versioned releases start here | `[ -n "$(project_release_version "$NAME")" ]` | engineering |
+| beta | game, app | A public page that collects wishlists or signups (a Steam Coming Soon page for a game), live early enough to build an audience before launch and before any Steam festival deadline | not yet: needs a store-page probe | marketing |
+| beta | game, app | Each version tag gets a marketing drafts batch, and outreach has started (creators and curators for a game; launch sites, directories and partners for an app). An app with regulated data does this inside the compliance check of the beta app row | not yet: needs the marketing drafter | marketing |
+| beta | game, app | A support intake: where store reviews, in-app feedback and crash reports land, and who reads them, written in `docs/support.md` by `docs-write` (a game's `playtest.md` rows, by `playtest-ops`, are one intake it names) | `doc docs/support.md` | support |
+| beta | game, app | Costs recorded per product: hosting, Edgegap, LLM and marketing spend | not yet: LLM cost per project is in `~/.agent/outcomes/`; the rest has no exporter | money |
+| prod | base | A prod smoke suite; a credentials inventory with an expiry alarm | not yet | ops |
+| prod | base | An incident runbook, `docs/operations/runbook.md`: how to tell it is down, who is paged, how to roll back, by `docs-write` | `t="$(doc_text docs/operations/runbook.md)" && grep -qiw down <<<"$t" && grep -qi page <<<"$t" && grep -qi rollback <<<"$t"` | ops |
+| prod | base | Approval of the public publish | human | product |
+| prod | game, app | Live on a public channel (a store, Steam `default`, the prod cluster): a registry target on the `prod` channel | `release-state show --json \| jq -e --arg n "$NAME" '.stages[$n].rungs \| index("prod")'` | ops |
+| prod | game, app | The product's rows in the marketing lab project's `docs/metrics.md` scorecard dated within the last 30 days | not yet: needs the marketing scorecard | marketing |
+| prod | game, app | Revenue recorded per product, by provider (each store, Steam, Stripe) | not yet: no revenue exporter exists | money |
 
 Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their alpha means deployed by stow or Flux from main, and beta and prod mean others depend on it, so a health watch and a runbook.
 
-## Docs per stage
+## Departments
 
-Each doc comes from an existing skill. There are no doc types beyond these.
+Every Requirements row belongs to one department. A project's docs and gaps for a department are its rows with that `Dept`, so there is no separate list of docs: a doc is required where a row requires it, and the row's text names the skill that writes it. Each doc has one home: the project's repo for what the code or the product depends on, the lab for the human's own notes (brief, ideas, playtest), and the marketing lab project for go-to-market. Infra projects take only the `base` rows, which fall under product, engineering and ops.
 
-| Stage | Doc | Written with |
-| --- | --- | --- |
-| draft | brief | `one-pager` |
-| draft | a game's pitch and design doc | `docs-write` |
-| dev | README, `docs/architecture.md` | `docs-write` |
-| alpha | `docs/overview.md`, `docs/operations/deploy.md` | `docs-write` |
-| alpha | a game's taste, an app's brand sheet | `game-eval` (taste), `docs-write` |
-| beta | CHANGELOG; for an app, the PRD and TSD | `changelog-draft`, `scope` |
-| beta | content rating, store listing | `content-rating`, `mobile-store-metadata` |
-| prod | incident and rollback runbook, credentials inventory | `docs-write` |
+| Id | Title | Question | Owns |
+| --- | --- | --- | --- |
+| product | Product | What is it, and is it the thing we meant? | the brief, `docs/overview.md`, the PRD, the status line, playtests |
+| engineering | Engineering | Can someone build, change and test it? | README, `docs/architecture.md`, the docs index, standards, CI, CHANGELOG |
+| ops | Ops | Does it deploy, stay up and come back? | the deploy doc and its rollback, the incident runbook, secrets, targets |
+| design | Design | Does it look and feel like itself? | the brand sheet or taste, icons and splash, the UI pass |
+| analytics | Analytics | Who uses it, and which features? | the event catalogue |
+| marketing | Marketing | What did we plan and send, and how did it do? | the store listing, the go-to-market entry, the scorecard |
+| legal | Legal | Can it ship at its stage? | privacy and terms, the compliance check, the content rating |
+| support | Support | What are users telling us? | `docs/support.md`, the intake |
+| money | Money | What does it earn and cost? | costs and revenue per product |
 
 ## Versions
 
