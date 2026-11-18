@@ -92,7 +92,7 @@ Infra projects (dotfiles, agent-runtime, home-config) skip the store rows: their
 
 ## Departments
 
-Every Requirements row belongs to one department. A project's docs and gaps for a department are its rows with that `Dept`, so there is no separate list of docs: a doc is required where a row requires it, and the row's text names the skill that writes it. Each doc has one home: the project's repo for what the code or the product depends on, the lab for the human's own notes (brief, ideas, playtest), and the marketing lab project for go-to-market. Infra projects take only the `base` rows, which fall under product, engineering and ops.
+Every Requirements row belongs to one department. A project's docs and gaps for a department are its rows with that `Dept`, so there is no separate list of docs: a doc is required where a row requires it, and the row's text names the skill that writes it. Each doc has one home: the project's repo for what the code or the product depends on, the lab for the human's own notes (brief, ideas, playtest), and the marketing lab project for go-to-market. Infra projects take only the `base` rows, and show the engineering and ops tabs: a `base` row under product is still checked by `project-stage-check`, it has no tab.
 
 | Id | Title | Question | Owns |
 | --- | --- | --- | --- |

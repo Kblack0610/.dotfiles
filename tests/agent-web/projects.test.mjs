@@ -647,11 +647,11 @@ const depts = () => ({
 });
 const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 
-test("a product's page has the five department tabs before the work tabs, and Legal says what is missing", async () => {
+test("a project's page has the department tabs its card names before the work tabs, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
   ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
-  draw(list([card({ product: true })]), "bnb/demo");
+  draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
   assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
@@ -673,17 +673,34 @@ test("a product's page has the five department tabs before the work tabs, and Le
   vm.runInContext(`pGo(null);`, ctx);
 });
 
-test("an infra project keeps five tabs with no break, and a department link on it lands on Overview", async () => {
+test("an infra project gets the engineering and ops tabs only, and a department link it lacks lands on Overview", async () => {
   await settle(); await settle();
-  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card({ product: false })]) };
+  const infra = card({ dept_tabs: ["engineering", "ops"] });
+  ctx.answers = {
+    "/api/projects/demo/page": page, "/api/projects": list([infra]),
+    [DEPT_API]: { says: "", product: { profile: "bnb", name: "demo", stage: "beta", type: "infra", stage_rank: 3, depts: [dept("engineering", "Engineering"), dept("ops", "Ops")] } },
+  };
   ctx.sent = [];
-  draw(list([card({ product: false })]), "bnb/demo");
-  await settle();
-  const { head } = read();
-  assert.doesNotMatch(head, /data-ptab="(analytics|marketing|legal|support|money)"|isep/);
-  assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "infra reads no departments");
+  draw(list([infra]), "bnb/demo");
+  await settle(); await settle();
+  const { head, pane } = read();
+  assert.match(head, /data-ptab="engineering"[^>]*>Engineering<\/button><button[^>]*data-ptab="ops"[^>]*>Ops<\/button>/);
+  assert.doesNotMatch(head, /data-ptab="(product|design|analytics|marketing|legal|support|money)"/);
+  assert.match(pinOf(pane, "engineering"), /^<div data-pin="engineering" hidden><div class="muted qstats">Is Engineering in hand\?/);
   vm.runInContext(`pInner("legal")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "overview|bnb/demo");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("a project with no type has no department tabs and reads no departments", async () => {
+  await settle(); await settle();
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card()]) };
+  ctx.sent = [];
+  draw(list([card()]), "bnb/demo");
+  await settle();
+  const { head } = read();
+  assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
+  assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "an untyped project reads no departments");
   vm.runInContext(`pGo(null);`, ctx);
 });
 
@@ -698,22 +715,26 @@ test("the list's project names are links to their pages, and a click on one is l
 
 // hub_core::departments' grid, as /api/coverage sends it.
 const coverage = () => ({
-  rows: [{ key: "bnb/demo", profile: "bnb", name: "demo", type: "game", stage: "beta", cells: { analytics: "off", marketing: "off", legal: "red", support: "amber", money: "ok" } }],
-  head: "1 red  |  1 amber  |  2 off", says: [], red: 1, amber: 1, off: 2, failing: 1,
-  departments: [["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]],
-  table: { ...listTable([]), total: 1, shown: 1, legend: "red: a required department has a gap", links: [{ product: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Flegal" }],
-    columns: ["product", "type", "stage", "analytics", "marketing", "legal", "support", "money"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })) },
+  rows: [
+    { key: "bnb/demo", profile: "bnb", name: "demo", type: "game", stage: "beta", cells: { product: "off", engineering: "off", ops: "off", design: "off", analytics: "off", marketing: "off", legal: "red", support: "amber", money: "ok" } },
+    { key: "personal/home-config", profile: "personal", name: "home-config", type: "infra", stage: "beta", cells: { engineering: "ok", ops: "amber" } },
+  ],
+  head: "1 red  |  2 amber  |  8 off", says: [], red: 1, amber: 2, off: 8, failing: 1,
+  departments: [["product", "Product"], ["engineering", "Engineering"], ["ops", "Ops"], ["design", "Design"], ["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]],
+  table: { ...listTable([]), total: 2, shown: 2, legend: "red: a required department has a gap", links: [{ project: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Flegal" }, { project: "#projects/personal%2Fhome-config" }],
+    columns: ["project", "type", "stage", "product", "engineering", "ops", "design", "analytics", "marketing", "legal", "support", "money"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })) },
 });
 
-test("Coverage is one row per product, a cell its department's word linked to that tab, the head red when one is", async () => {
+test("Coverage is one row per typed project, a cell its department's word linked to that tab, infra with only its own cells, the head red when one is", async () => {
   ctx.answers = { "/api/coverage": coverage(), "/api/projects": list() };
   ctx.sent = [];
   vm.runInContext(`pCount.coverage = null; st.tab = "projects"; st.arg = "coverage"; st.views.projects = ""; pst.open = null; covst.data = null; renderProjects(); pRead();`, ctx);
   await settle(); await settle();
   const cov = box("p-cov").innerHTML;
   assert.ok(ctx.sent.some((s) => s.u === "/api/coverage"), "Coverage reads only while it shows");
-  assert.match(cov, /<h2 class="sec bad" id="sec-coverage">Coverage <span class="n">1 red  \|  1 amber  \|  2 off<\/span><\/h2>/);
-  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td><td class="muted">off<\/td><td class="muted">off<\/td><td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
+  assert.match(cov, /<h2 class="sec bad" id="sec-coverage">Coverage <span class="n">1 red  \|  2 amber  \|  8 off<\/span><\/h2>/);
+  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td>(<td class="muted">off<\/td>){6}<td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
+  assert.match(cov, /data-open="personal\/home-config"><td><a class="tl" href="#projects\/personal%2Fhome-config">home-config<\/a><\/td><td>infra<\/td><td>beta<\/td><td class="muted">off<\/td><td>ok<\/td><td class="warn">amber<\/td>(<td class="muted">off<\/td>){6}<\/tr>/, "infra has engineering and ops cells and the rest off");
   assert.match(cov, /red: a required department has a gap/);
   assert.match(box("p-strip").innerHTML, /data-itab="coverage" class="on"[^>]*>Coverage <span class="muted">1<\/span>/, "the strip counts products with a red cell");
   // NEGATIVE CONTROL: on another inner tab Coverage is not read.
