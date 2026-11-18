@@ -446,9 +446,13 @@ load 'fleet_dispatch/common'
   assert_output --partial 'razer-laptop did not report its free memory (/proc/meminfo)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new --host'
-  # The floor is the knob: the same 12% worker takes the item once the floor is under it.
+  # A garbled reading is refused like a missing one.
+  worker '2.0 16 1 n/a'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop did not report its free memory (/proc/meminfo)'
+  # The floor is the knob, and inclusive: the same 12% worker takes the item at a 12% floor.
   worker '2.0 16 1 12'
-  DISPATCH_HOST_MEM_MIN_PCT=10 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  DISPATCH_HOST_MEM_MIN_PCT=12 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
