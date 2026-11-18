@@ -266,6 +266,17 @@ JSON
   assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 2
 }
 
+@test "a failed fetch waits a TTL before trying again, on the last good roster" {
+  run "$MODULE"
+  touch -d '-20 minutes' "$XDG_CACHE_HOME/fleet-pulse/roster.json"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  assert_success
+  assert_output --partial "pi4-worker4: DOWN"
+  # The first run fetched, the stale cache made the second fetch, and the failure held off the third.
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 2
+}
+
 @test "an unreachable API says so instead of drawing a fleet that is not there" {
   cat > "$SANDBOX/bin/curl" <<'EOF'
 #!/usr/bin/env bash

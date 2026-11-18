@@ -31,7 +31,7 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}" # seconds a heartbeat stays "fresh"
 
-# Who is counted (ROSTER) and how the bar draws it (DISPLAY_TOKENS) both come from
+# Who is counted (ROSTER) and how the bar draws it (FLEET_PULSE_DISPLAY) both come from
 # $GATUS_BASE/roster, rendered from the home-config inventory (fleet-pulse-roster.sh).
 # The tooltip always lists everyone. A healthy fleet is the icon alone; a token that
 # is not up adds its labeled dot. Only the unhappy ones, because four dots cost 180px
@@ -101,7 +101,6 @@ else
     ROSTER="$(cut -f1 <<< "$rows" | tr '\n' ' ')"
     note="\\n  (no roster from ${GATUS_BASE}/roster: reporting hosts only)"
 fi
-DISPLAY_TOKENS="$FLEET_PULSE_DISPLAY"
 
 if [[ -z "${ROSTER// /}" ]]; then
     emit "$C_YEL" "pending" "Fleet: no hosts reporting yet"
@@ -218,7 +217,7 @@ if ((healthy == total)); then cls="healthy"; icon_col="$C_GRN"; else cls="degrad
 ghosts=()
 text="$(printf "<span color='%s'>%s</span>" "$icon_col" "$ICON")"
 transient=()
-for tok in $DISPLAY_TOKENS; do
+for tok in $FLEET_PULSE_DISPLAY; do
     lbl="${tok#*=}"; key="${tok%%=*}"
     if [[ "$key" == "~"* ]]; then
         key="${key#"~"}"; transient+=("$key")

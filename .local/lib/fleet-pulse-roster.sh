@@ -22,14 +22,18 @@ fleet_pulse_roster_load() {
     if [ -z "$(find "$cache" -mmin "-$FLEET_ROSTER_TTL_MIN" 2>/dev/null)" ]; then
         mkdir -p "$dir"
         tmp="$cache.$$"
-        if curl -fsS -m 8 "$1/roster" > "$tmp" 2>/dev/null &&
+        if curl -fsS -m 4 "$1/roster" > "$tmp" 2>/dev/null &&
             jq -e '.roster | type == "array"' "$tmp" > /dev/null 2>&1; then
             mv -f "$tmp" "$cache"
         else
             rm -f "$tmp"
+            # Keep the last good copy, and wait a TTL before trying again rather than every run.
+            [ -f "$cache" ] && touch "$cache"
         fi
     fi
-    FLEET_PULSE_ROSTER="$(jq -r '.roster | join(" ")' "$cache" 2>/dev/null)"
-    FLEET_PULSE_DISPLAY="$(jq -r '.display // [] | join(" ")' "$cache" 2>/dev/null)"
+    FLEET_PULSE_ROSTER="" FLEET_PULSE_DISPLAY=""
+    # shellcheck disable=SC2034 # FLEET_PULSE_DISPLAY is read by the bar that sourced this
+    { IFS= read -r FLEET_PULSE_ROSTER; IFS= read -r FLEET_PULSE_DISPLAY; } \
+        < <(jq -r '(.roster | join(" ")), (.display // [] | join(" "))' "$cache" 2>/dev/null)
     [ -n "$FLEET_PULSE_ROSTER" ]
 }
