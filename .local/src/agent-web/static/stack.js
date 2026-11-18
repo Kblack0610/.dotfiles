@@ -7,10 +7,6 @@
 
 // Nothing here pushes: the stack changes by the PR, and the server folds reads inside two minutes.
 const STACK_REFRESH_MS = 120e3;
-// Rows a table opens with, the rest a click away; the chips, search and filters reach every row.
-// 30 keeps Rules, whose rule text wraps to two lines on a phone, under three screens (render.mjs:
-// 120 rules drew 6,944 px, 2026-11-18).
-const STACK_OPEN_ROWS = 30;
 
 // A column key as its header, the TUI's words (stacktab.rs); [text, class].
 const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["source"], picture: ["picture"], checked: ["checked"], state: ["state"] };
@@ -29,17 +25,18 @@ const stk = tblTab({
 });
 
 // The other four tables of the one read: each draws its bar and rows in its inner tab, under its
-// prefix's block so a search or sort routes to it. `inner` puts it in its inner tab.
-const stackTable = (pre, key, hint, body, inner) => tblTab({
+// prefix's block so a search or sort routes to it. `inner` puts it in its inner tab; `foot` is what
+// the inner tab holds under the table and its pager.
+const stackTable = (pre, key, hint, body, inner, foot) => tblTab({
   tab: "stack", id: "stk-" + pre, el: "stack", pre, hint, refresh: () => stk.refresh(), render: () => stk.render(),
   table: () => stk.data?.[key]?.table, body: () => body(stk.data),
-  wrap: (html) => inner(`<div data-tbl="${pre}">${html}</div>`),
+  wrap: (html) => inner(`<div data-tbl="${pre}">${html}</div>${foot ? foot(stk.data) : ""}`),
 });
 const STACK_TABLES = {
   f: stackTable("f", "flows", "search, or state:unchecked", (d) => flowsBody(d), (h) => innerWrap("stack", "flows", h)),
   g: stackTable("g", "agents", "search, or model:sonnet repo:public", (d) => agentsBody(d), (h) => innerWrap("stack", "agents", h)),
   k: stackTable("k", "hooks", "search, or event:PreToolUse harness:codex", (d) => hooksBody(d), (h) => innerWrap("stack", "hooks", h)),
-  r: stackTable("r", "rules", "search, or kind:invariant state:moved", (d) => rulesBody(d), (h) => innerWrap("stack", "rules", h)),
+  r: stackTable("r", "rules", "search, or kind:invariant state:moved", (d) => rulesBody(d), (h) => innerWrap("stack", "rules", h), (d) => ruleFiles(d)),
 };
 // A search or dropdown in use in one table keeps its focus: only that table repaints, and the
 // others redraw (Alerts' three tables).
@@ -64,13 +61,13 @@ function stackHead(d) {
 
 const stackCell = (v, cls = "") => `<td class="${cls}">${v == null || v === "" ? "-" : esc(String(v))}</td>`;
 
-// One table's rows under its head, the first STACK_OPEN_ROWS open (`tb` is its tblTab), or the
-// words for none: `none` when nothing is there at all, `miss` when the view hides every row.
-function stackList(tb, title, part, cols, row, miss, none) {
-  const t = part.table, shown = part.rows || [];
-  const rows = tb.all ? shown : shown.slice(0, STACK_OPEN_ROWS);
-  return secHead("", title, tblCount(t)) + (shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, cols)}${rows.map(row).join("")}</table>${tblMore(shown.length - rows.length, "more")}</div>`
+// One table's rows under its head, the page the server sent (layout::page_rows; the shared table
+// draws the pager), or the words for none: `none` when nothing is there at all, `miss` when the
+// view hides every row.
+function stackList(title, part, cols, row, miss, none) {
+  const t = part.table, rows = part.rows || [];
+  return secHead("", title, tblCount(t)) + (rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, cols)}${rows.map(row).join("")}</table></div>`
     : `<div class="panel">${t.total ? miss : none}</div>`);
 }
 
@@ -79,7 +76,7 @@ function skillsBody(d) {
   const days = d.use_days ? `calls over the newest ${d.use_days} day snapshots` : `calls ${NOT_READ}`;
   const drift = d.drift_day ? `drift as of ${d.drift_day}` : `drift ${NOT_READ}`;
   return `<div class="muted">${esc(days)}; ${esc(drift)}</div>` +
-    stackList(stk, "Skills", d, SKILL_COLS, skillRow, "No skills match.", "No skills are installed.");
+    stackList("Skills", d, SKILL_COLS, skillRow, "No skills match.", "No skills are installed.");
 }
 
 function skillRow(r) {
@@ -126,25 +123,26 @@ async function flowLoad(name) {
   stk.render();
 }
 const flowsBody = (d) => `<div class="muted">From the Flows table of ARCHITECTURE.md; checked by a test that fails when the code leaves the doc.</div>` +
-  stackList(STACK_TABLES.f, "Flows", d.flows, FLOW_COLS, flowRow, "No flows match.", "ARCHITECTURE.md lists no flows.");
+  stackList("Flows", d.flows, FLOW_COLS, flowRow, "No flows match.", "ARCHITECTURE.md lists no flows.");
 
 const agentRow = (r) => `<tr title="${esc(r.description)}"><td>${esc(r.name)}</td>${stackCell(r.model || "inherit", r.model ? "" : "muted")}` +
   `${stackCell(r.tools, "wrap muted")}${stackCell(r.repo, "muted")}</tr>`;
-const agentsBody = (d) => stackList(STACK_TABLES.g, "Subagents", d.agents, AGENT_COLS, agentRow, "No subagents match.", "No subagents are defined.");
+const agentsBody = (d) => stackList("Subagents", d.agents, AGENT_COLS, agentRow, "No subagents match.", "No subagents are defined.");
 
 const hookRow = (r) => `<tr title="${esc(r.command)}">${stackCell(r.harness, "muted")}${stackCell(r.event)}${stackCell(r.matcher || "*", "wrap muted")}` +
   `<td class="${r.found ? "" : "bad"}">${esc(r.script)}${r.found ? "" : " (missing)"}</td>${stackCell(r.from, "muted")}</tr>`;
-const hooksBody = (d) => stackList(STACK_TABLES.k, "Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
+const hooksBody = (d) => stackList("Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
 
 const RULE_HUE = { ok: "", stale: "warn", moved: "warn", dead: "bad" };
 const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "n")}` +
   `${stackCell(r.confidence, "muted")}${stackCell(r.state, RULE_HUE[r.state] ?? "")}${stackCell(r.source, "wrap muted")}</tr>`;
 
-// The rules table, then the path-scoped rule files and the globs that load each.
-function rulesBody(d) {
-  const files = (d.rule_files || []).map((f) => `<div><b>${esc(f.name)}</b> <span class="muted">${esc((f.paths || []).join(", "))}</span></div>`).join("");
-  const scoped = files ? `<div class="panel"><div class="muted">Path-scoped rules (.claude/rules)</div>${files}</div>` : "";
-  return stackList(STACK_TABLES.r, "Rules", d.rules, RULE_COLS, ruleRow, "No rules match.", "No rules are recorded.") + scoped;
+const rulesBody = (d) => stackList("Rules", d.rules, RULE_COLS, ruleRow, "No rules match.", "No rules are recorded.");
+
+// Under the rules and their pager: the path-scoped rule files and the globs that load each.
+function ruleFiles(d) {
+  const files = (d?.rule_files || []).map((f) => `<div><b>${esc(f.name)}</b> <span class="muted">${esc((f.paths || []).join(", "))}</span></div>`).join("");
+  return files ? `<div class="panel"><div class="muted">Path-scoped rules (.claude/rules)</div>${files}</div>` : "";
 }
 
 $("stack").addEventListener("click", (e) => {

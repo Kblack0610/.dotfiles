@@ -216,7 +216,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "unknown project: notes"
 }
 
-@test "list puts a red item first, then priority, then a cleanup item within its priority" {
+@test "list puts a red item first, then priority, then queued time, with no cleanup key" {
   "$AQ" add --project game --slug a-high "a"
   "$AQ" add --project game --slug b-cleanup --tags "cleanup tier3" "b"
   "$AQ" add --project game --slug c-urgent --priority urgent "c"
@@ -224,8 +224,8 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   "$AQ" add --project game --slug e-reddish --tags "reddish" "e"
   "$AQ" add --project game --slug f-cleanup-low --priority low --tags cleanup "f"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # red beats urgent; cleanup beats an older item of its priority, never a higher priority; tags match whole words.
-  assert_output $'d-red-low\nc-urgent\nb-cleanup\na-high\ne-reddish\nf-cleanup-low'
+  # red beats urgent; a cleanup tag does not reorder (the mix's cleanup share does that); tags match whole words.
+  assert_output $'d-red-low\nc-urgent\na-high\nb-cleanup\ne-reddish\nf-cleanup-low'
   run "$AQ" next --json
   assert_success
   [ "$(jq -r .slug <<<"$output")" = d-red-low ]
@@ -273,19 +273,19 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output --partial "could not read the queue"
 }
 
-@test "a project's #prio ranks its items within a priority, under red and urgent, over cleanup" {
+@test "a project's #prio ranks its items within a priority, under red and urgent" {
   "$AQ" add --project app --slug a-app "a"
   "$AQ" add --project app --slug b-app-cleanup --tags cleanup "b"
   "$AQ" add --project game --slug c-game "c"
   "$AQ" add --project app --slug d-app-urgent --priority urgent "d"
   "$AQ" add --project tools --slug e-tools "e"
-  # With no #prio set the order is as before: cleanup first, then queued time.
+  # With no #prio set the order is urgent, then queued time.
   run bash -c "'$AQ' list --json | jq -r .slug"
-  assert_output $'d-app-urgent\nb-app-cleanup\na-app\nc-game\ne-tools'
+  assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   printf 'game\tfocus\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # urgent still heads; game, focused, beats the older app items and the app cleanup.
-  assert_output $'d-app-urgent\nc-game\nb-app-cleanup\na-app\ne-tools'
+  # urgent still heads; game, focused, beats the older app items.
+  assert_output $'d-app-urgent\nc-game\na-app\nb-app-cleanup\ne-tools'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
@@ -330,24 +330,57 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   mix_classes false
   run bash -c "'$AQ' list --json --state queued | jq -r .slug"
   assert_success
-  # Off: the cleanup-tagged items head their priority (b2, c1), then queued time.
-  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+  # Off: urgent first, then queued time.
+  assert_output $'u1\nr1\nf1\nb1\nh1\nb2\nc1\nz1'
   mix_classes true
   run bash -c "'$AQ' list --json --state queued | jq -r .slug"
   assert_success
   # Urgent u1 (a chore) heads its own bucket and carries cleanup to 1/10 into the next. There bug and
   # research start at 0 (the old bugs and the unstarted research do not count): b1, then z1. Bug's held
-  # h1 ties feature (1/20, its running item) and wins on file order; it adds no count, so b2 goes next
-  # (a fix, so bug though fleet-dispatch tags it cleanup; counted, f1 would). Then f1, and requested
-  # and cleanup tie at 0.1: file order, r1 then c1.
-  assert_output $'u1\nb1\nz1\nh1\nb2\nf1\nr1\nc1'
+  # h1 ties requested (4/60 = 1/15) and wins on file order; it adds no count, so b2 goes next (a fix,
+  # so bug though fleet-dispatch tags it cleanup). Then r1, and cleanup and feature tie at 0.1 (feature's
+  # running item): file order, c1 then f1.
+  assert_output $'u1\nb1\nz1\nh1\nb2\nr1\nc1\nf1'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = u1 ]
   # A window that is not a whole number of days is no mix, never a failed listing.
   jq '.window_days = "7 days"' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
   run bash -c "'$AQ' list --json --state queued | jq -r .slug"
   assert_success
-  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+  assert_output $'u1\nr1\nf1\nb1\nh1\nb2\nc1\nz1'
+}
+
+@test "the class mix is elastic: lag_places bounds how far the window's history holds a class back, and a class with nothing queued gives its turns to the rest" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)"
+  # Requested ran 30 this week (30/60 = 0.5); bug and feature ran none.
+  for i in $(seq 1 30); do mix_done "$today" "dr$i" human "do thing $i" 1; done
+  printf '%s\t%s\tgame\t%s\t1\n' "fix(game): bug 1" fix "bug 1" "fix(game): bug 2" fix "bug 2" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r1 "asked by the human"
+  for i in 1 2 3 4 5 6; do "$AQ" add --project game --from shepherd --slug "f$i" "feature $i"; done
+  for i in 1 2; do "$AQ" add --project game --from shepherd --slug "b$i" "fix(game): bug $i"; done
+  n=0; for s in r1 f1 f2 f3 f4 f5 f6 b1 b2; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  lag() { jq --argjson l "$1" '.on = true | .lag_places = $l' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
+  order() { "$AQ" list --json --state queued | jq -r .slug | paste -sd' '; }
+  # lag 10 over shares summing to 100: requested is cut to 0.1 above the lowest (0), so it waits only
+  # for the one feature and two bugs at or under that, and goes 4th.
+  lag 10
+  run order
+  assert_success
+  assert_output 'b1 f1 b2 r1 f2 f3 f4 f5 f6'
+  # NEGATIVE CONTROL: with no bound, the week's history parks r1 behind five features.
+  lag null
+  run order
+  assert_output 'b1 f1 b2 f2 f3 f4 f5 r1 f6'
+  # A lag_places that is not a number is no mix: plain queued time.
+  lag '"10"'
+  run order
+  assert_output 'r1 f1 f2 f3 f4 f5 f6 b1 b2'
+  # With no requested item queued, its share goes to the rest by theirs: bug 15 to feature 10.
+  rm "$(item queued r1)"
+  lag 10
+  run order
+  assert_output 'b1 f1 b2 f2 f3 f4 f5 f6'
 }
 
 @test "mix: each class's starts in the window against its share, runnable counts, and a class with runnable work and no start in starve_days is starved, mix on or off (plan P4)" {
@@ -378,7 +411,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" mix
   assert_success
   assert_line 'mix (off): items started in 7d against each class share'
-  assert_line 'bug            20%        1    25%         1          0'
+  assert_line 'bug            15%        1    25%         1          0'
   assert_line 'starved: bug, research (runnable, none started in 3d)'
   # NEGATIVE CONTROL: a 7-day starve window counts the 5-day-old bug start, and research stays starved.
   jq '.starve_days = 7 | .on = true' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
@@ -792,6 +825,147 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   # Only the read-only verbs ran: never get, unlock or sync.
   run grep -cvE '^rbw (unlocked|list --fields folder,name)$' "$SANDBOX/rbw.calls"
   assert_output 0
+}
+
+# A fake rbw for the gate tests: unlocked, list prints rbw.list, every call logged. Never the real one.
+gate_rbw() {
+  printf '#!/usr/bin/env bash\necho "rbw $*" >> "%s/rbw.calls"\ncase "$1" in unlocked) ;; list) cat "%s/rbw.list" ;; *) exit 9 ;; esac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  printf 'infra\tx\n' > "$SANDBOX/rbw.list"
+}
+
+# queue-held-to-board (ar-3121): a row waits on its gate on the board, so gate is the queue's own
+# hold_for read through each board form, plus the row lookup for after/.
+@test "gate answers each board form clear, pending or dead in hold_for's words, one rbw list for every rbw tag" {
+  gate_rbw
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: a|b\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_DIR/game/$1.md"; }
+  ask a1 pending
+  ask a2 answered 'a' judge
+  ask a3 answered 'b, sure' human
+  mkdir -p "$HOME/.cache/agent-queue/pr" && echo MERGED > "$HOME/.cache/agent-queue/pr/o_r_7"
+  run "$AQ" gate --json '#rbw/infra/x' rbw/infra/y rbw/other/z at/1100 at/1300 at/2599 at/2026-01-02/0900 \
+    ask/a1/a ask/a2/a ask/a3 ask/a3/a pr/o/r/7 size/s
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)|\(.queue)"' <<<"$output"; }
+  [ "$(st rbw/infra/x)" = "clear||rbw:infra/x" ]
+  [ "$(st rbw/infra/y)" = "pending|rbw infra/y (not in rbw yet)|rbw:infra/y" ]
+  [ "$(st at/1100)" = "clear||at:11:00" ]
+  [ "$(st at/1300)" = "pending|at 13:00|at:13:00" ]
+  [[ "$(st at/2599)" == dead"|"*"a time tag is at:HH:MM"* ]]
+  [ "$(st at/2026-01-02/0900)" = "clear||at:2026-01-02T09:00" ]
+  [[ "$(st ask/a1/a)" == "pending|ask a1=a (pending)|ask:a1=a" ]]
+  # A judge's answer is not the human's: it never releases the gate.
+  [[ "$(st ask/a2/a)" == dead"|"*"answered by judge"* ]]
+  # No option named on an ask that offers some: every option releases it.
+  [ "$(st ask/a3)" = "clear||ask:a3=a+b" ]
+  [[ "$(st ask/a3/a)" == dead"|"*"answered b"* ]]
+  [ "$(st pr/o/r/7)" = "clear||pr:o/r#7" ]
+  [ "$(st size/s)" = "none||" ]
+  # Three rbw tags, one list.
+  [ "$(grep -c '^rbw list' "$SANDBOX/rbw.calls")" = 1 ]
+  run "$AQ" gate rbw/infra/x at/1100 size/s
+  assert_success
+  assert_line "clear    rbw/infra/x"
+}
+
+@test "gate after/<row-id> clears once that row closed done, and --all answers every open row's gates from the open board" {
+  gate_rbw
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2", "size/s"]}, {id: "ar-2", state: "doing", tags: ["rbw/infra/x"]},
+                 {id: "ar-9", state: "open", tags: ["after/ar-4"]}],
+          done: [{id: "ar-3", state: "done", marker: "id:ar-3 done:2026-11-01", tags: ["rbw/infra/gone"]},
+                 {id: "ar-4", state: "done", marker: "id:ar-4 done:2026-11-01 dropped: a duplicate"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2 after/ar-3 after/ar-4 after/ar-404
+  assert_failure 3
+  st() { jq -r --arg t "$1" 'select(.tag == $t) | "\(.state)|\(.why)"' <<<"$output"; }
+  [ "$(st after/ar-2)" = "pending|after ar-2 (open)" ]
+  [ "$(st after/ar-3)" = "clear|" ]
+  [[ "$(st after/ar-4)" == "dead|after ar-4: that row was dropped"* ]]
+  [[ "$(st after/ar-404)" == "dead|after ar-404: no board row"* ]]
+  [ "$(grep -c '^notes board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  # The open rows' gates only, no other tag and no closed row's, from one board read.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(jq -sr 'map(.tag) | sort | join(" ")' <<<"$output")" = "after/ar-2 after/ar-4 rbw/infra/x" ]
+  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  # Every after/ there names a row the open board lists, so no closed row is read.
+  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 0 ]
+  # One it lacks reads the closed rows, once however many tags name such a row.
+  jq '.rows += [{id: "ar-8", state: "open", tags: ["after/ar-404", "after/ar-405"]}]' "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [[ "$(st after/ar-405)" == "dead|after ar-405: no board row"* ]]
+  [ "$(grep -c 'board --json --done-days' "$NOTES_FIXTURE/calls.log")" = 1 ]
+  [ "$(grep -c 'board' "$NOTES_FIXTURE/calls.log")" = 2 ]
+  # Once ar-2 closes done, ar-1's gate clears.
+  jq '.done += [.rows[1] | .state = "done" | .marker = "id:ar-2 done:2026-11-18"] | .rows |= map(select(.id != "ar-2"))' \
+    "$NOTES_FIXTURE/board.json" > "$SANDBOX/b.json" && mv "$SANDBOX/b.json" "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate after/ar-2
+  assert_success
+  # A board that cannot be read fails --all, so no pass reads its rows as ungated, and holds an after/.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/notes"
+  run "$AQ" gate --json --all
+  assert_failure 1
+  run "$AQ" gate after/ar-2
+  assert_failure 3
+  assert_output --partial "notes board --json failed"
+}
+
+@test "return writes what the item still waits on onto its row as gate tags before un-starting it" {
+  gate_rbw
+  export AGENT_ASK_DIR="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_DIR/game"
+  printf 'id: a1\nstatus: pending\noptions: a|b\n' > "$AGENT_ASK_DIR/game/a1.md"
+  "$AQ" add --project game --running --from shepherd --slug up "upstream" >/dev/null
+  "$AQ" set up row=game:gm-9 >/dev/null
+  "$AQ" add --project game --from shepherd --slug gt --after up --tags "rbw:infra/y at:11:00 at:13:00 ask:a1=a" "gated" >/dev/null
+  "$AQ" set gt row=game:gm-7 >/dev/null
+  "$AQ" add --project game --from shepherd --slug gf --after gt "follower" >/dev/null
+  "$AQ" set gf row=game:gm-8 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return gt --why "back to the board"
+  assert_success
+  # The met at:11:00 stays behind; the live after: names its row; the follower waits on the returned row.
+  assert_called "ptask game --agent tag --add after/gm-9 --add rbw/infra/y --add at/1300 --add ask/a1/a gm-7"
+  assert_called "ptask game --agent tag --add after/gm-7 gm-8"
+  # The gates go on while the row is still started.
+  [ "$(grep -n 'tag --add after/gm-9' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" -lt "$(grep -n 'unstart gm-7' "$NOTES_FIXTURE/calls.log" | cut -d: -f1)" ]
+  # An after: on an item with no row has no board form: the return is refused and nothing closes.
+  "$AQ" add --project game --running --from shepherd --slug norow "no row" >/dev/null
+  "$AQ" add --project game --from shepherd --slug behind --after norow "behind" >/dev/null
+  "$AQ" set behind row=game:gm-6 >/dev/null
+  run "$AQ" return behind --why "back"
+  assert_failure
+  assert_output --partial "cannot return behind: it waits on norow, which has no board row"
+  [ -n "$(item queued behind)" ]
+  # Returning norow takes behind with it: norow closes here, so behind's row waits on nothing.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return norow --why "back"
+  assert_success
+  assert_called "ptask game --agent unstart gm-6"
+  [ -z "$(grep "tag .*gm-6" "$NOTES_FIXTURE/calls.log")" ]
+  # --drop closes the rows, so it writes no gate.
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project game --from shepherd --slug dg --tags "rbw:infra/y" "dropped" >/dev/null
+  "$AQ" set dg row=game:gm-5 >/dev/null
+  run "$AQ" return dg --why "not wanted" --drop
+  assert_success
+  refute grep -q ' tag ' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "return leaves a row started, exit 1, when it did not take its gates" {
+  gate_rbw
+  "$AQ" add --project game --from shepherd --slug gx --tags "rbw:infra/y" "x" >/dev/null
+  "$AQ" set gx row=game:gm-4 >/dev/null
+  printf '#!/usr/bin/env bash\necho "notes $*" >> "$NOTES_FIXTURE/calls.log"\ncase "$*" in *" tag "*) exit 1 ;; esac\n' > "$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$AQ" return gx --why "back"
+  assert_failure
+  assert_output --partial "did not take its gates, so it stays started: notes ptask game --agent tag --add rbw/infra/y gm-4"
+  refute grep -q 'unstart gm-4' "$NOTES_FIXTURE/calls.log"
 }
 
 @test "requeue --hold puts a started item back behind the resource, keeps its tags, and is not a model redo (ar-613)" {
@@ -3673,7 +3847,9 @@ a"
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
 
-@test "return only un-starts its board row: the row already holds the brief, so nothing is written to it" {
+# The only write a return makes to a row besides the un-start is the gate tags of an item still held
+# (see "return writes what the item still waits on"); these items wait on nothing.
+@test "return writes no brief to its board row: the row already holds it, and an item with no hold adds no tag" {
   story_notes
   "$AQ" add --project game --slug ha "first line of the brief
 second line of the brief"
@@ -3687,7 +3863,7 @@ already"
   "$AQ" set hd row=game:gm-4
   : > "$NOTES_FIXTURE/calls.log"
   for s in ha hb gm-3 hd; do "$AQ" return "$s" --why "back" >/dev/null; done
-  run grep -c ' ptask game --agent edit ' "$NOTES_FIXTURE/calls.log"
+  run grep -cE ' ptask game --agent (edit|tag) ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   for r in gm-1 gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
 }
@@ -3873,4 +4049,24 @@ already"
   assert_success
   assert_output "returned hg-p3 and the items after it to be re-planned (ask $id3)"
   [ -z "$(item queued hg-late)" ]
+}
+
+@test "lag_places: a class with only held items sets no floor for the bound, as it starts nothing" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)"
+  # This week: requested 30 of 60 (0.5), feature 10 of 10 (1.0); research none (0), but its one item is held.
+  for i in $(seq 1 30); do mix_done "$today" "dr$i" human "do thing $i" 1; done
+  for i in $(seq 1 10); do mix_done "$today" "df$i" shepherd "feature done $i" 1; done
+  printf '%s\t%s\tgame\t%s\t1\n' "research(game): held question" research "held question" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r2 "asked 2"
+  "$AQ" add --project game --slug r3 "asked 3"
+  "$AQ" add --project game --from shepherd --slug f1 "feature 1"
+  "$AQ" add --project game --from shepherd --slug z1 --after r2 "research(game): held question"
+  n=0; for s in r2 r3 f1 z1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  jq '.on = true | .lag_places = 10' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"
+  # The floor is requested's 0.5, so feature is cut to 0.6 and both requested items go before it. Had
+  # held research's 0 set the floor, both would be cut to 0.1 and f1 would go second.
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd' '"
+  assert_success
+  assert_output 'z1 r2 r3 f1'
 }

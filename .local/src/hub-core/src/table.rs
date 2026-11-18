@@ -434,6 +434,34 @@ pub struct Summary {
     /// `Row::LEGEND` as one line ([`legend`]); absent when the table has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legend: Option<String>,
+    /// Which page of the view's rows were sent ([`page`]); absent when every row was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pager: Option<Pager>,
+}
+
+/// A paged table's place: page `page` (from 1) of `pages`, `per` rows a page. The web draws one
+/// pager from it under every paged table (static/table.js `tblPager`); `shown` counts the rows
+/// over every page.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+pub struct Pager {
+    pub page: usize,
+    pub pages: usize,
+    pub per: usize,
+}
+
+/// Keeps page `page` (from 1; past the last reads the last) of `per` rows of a view and lays the
+/// summary's links beside them. A view that fits on one page is left whole and unpaged.
+pub fn page<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, page: usize, per: usize) {
+    let per = per.max(1);
+    let pages = rows.len().div_ceil(per);
+    if pages <= 1 {
+        return;
+    }
+    let page = page.clamp(1, pages);
+    rows.drain(..(page - 1) * per);
+    rows.truncate(per);
+    table.links = links(rows);
+    table.pager = Some(Pager { page, pages, per });
 }
 
 /// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
@@ -729,6 +757,7 @@ impl View {
             facets: self.facets(rows),
             links: links(&shown),
             legend: legend::<R>(),
+            pager: None,
         };
         (shown, s)
     }
@@ -798,6 +827,60 @@ mod tests {
             cap(&mut shown, &mut t, 10),
             0,
             "under the cap nothing is left out"
+        );
+    }
+
+    #[test]
+    fn a_page_keeps_its_rows_clamps_past_the_last_and_leaves_one_page_unpaged() {
+        let all = rows();
+        let names = |s: &[&T]| s.iter().map(|r| r.name).collect::<Vec<_>>();
+        let (mut shown, mut t) = View::default().summary(&all);
+        let order = names(&shown);
+        page(&mut shown, &mut t, 2, 3);
+        assert_eq!(
+            names(&shown),
+            order[3..],
+            "page 2, at 3 a page, starts on the fourth row"
+        );
+        assert_eq!(
+            t.pager,
+            Some(Pager {
+                page: 2,
+                pages: 2,
+                per: 3
+            })
+        );
+        assert_eq!(
+            (t.total, t.shown),
+            (4, 4),
+            "the summary still counts every row"
+        );
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 9, 3);
+        assert_eq!(
+            t.pager.map(|p| p.page),
+            Some(2),
+            "past the last reads the last"
+        );
+        assert_eq!(shown.len(), 1);
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 0, 3);
+        assert_eq!(names(&shown), order[..3], "page 0 reads the first");
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 2, 4);
+        assert_eq!((shown.len(), t.pager), (4, None), "one page is sent whole");
+        assert!(serde_json::to_value(&t).unwrap().get("pager").is_none());
+
+        let none: Vec<T> = vec![];
+        let (mut shown, mut t) = View::default().summary(&none);
+        page(&mut shown, &mut t, 1, 3);
+        assert_eq!(
+            (shown.len(), t.pager),
+            (0, None),
+            "an empty table is not paged"
         );
     }
 
