@@ -796,8 +796,8 @@ pub fn grid(r: &Reads) -> Vec<Card> {
     }
     vec![
         one(r.sessions, "sessions", "Sessions", sessions),
-        one(r.board, "board", "Board", board),
         one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline)),
+        one(r.board, "board", "Board", board),
         one(r.alerts, "alerts", "Alerts", alerts),
         one(r.infra, "infra", "Infra", infra),
         one(r.costs, "costs", "Costs", costs),
@@ -887,8 +887,8 @@ mod tests {
             g.iter().map(|c| c.tab).collect::<Vec<_>>(),
             [
                 "sessions",
-                "board",
                 "queue",
+                "board",
                 "alerts",
                 "infra",
                 "costs",
