@@ -40,8 +40,8 @@ GSC_API=https://searchconsole.googleapis.com/webmasters/v3/sites
 GSC_SCOPE=https://www.googleapis.com/auth/webmasters.readonly
 # The API's largest page. A product with this many rows in its range is not read, never cut short.
 GSC_ROWS=25000
-# An item's numbers are its send day and the days after, WINDOW_DAYS in all; the Search Console
-# range also reaches back this far so Search Console's last complete day (it lags about 2 days) is in the range.
+# An item's window is its send day and the days after, WINDOW_DAYS in all. The Search Console
+# range starts at least this far back, so its last complete day (about 2 days behind) is in it.
 WINDOW_DAYS=7
 # A send older than this is not measured again (the Marketing tab's 30 days, outbound.rs SENT_DAYS).
 SENT_DAYS=30

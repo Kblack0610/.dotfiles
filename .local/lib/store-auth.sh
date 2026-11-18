@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # store-auth.sh - read-only store credentials from rbw, and the signed tokens the store APIs take.
-# Sourced by release-state, store-sales, store-reviews, sentry-issues and mkt-metrics. A credential or token only ever reaches curl on stdin
-# and openssl through a process substitution: never argv, never a file on disk.
+# Sourced by release-state, store-sales, store-reviews, sentry-issues and mkt-metrics. A credential
+# or token only ever reaches curl on stdin and openssl through a process substitution: never argv,
+# never a file on disk.
 #
 #   store_google_token <rbw entry> <scope>  -> STORE_TOKEN, or STORE_WHY (a service-account JSON)
 #   store_asc_jwt <rbw entry>               -> STORE_TOKEN, or STORE_WHY ({key_id, issuer_id, p8})
@@ -37,9 +38,9 @@ STORE_RETRY_MAX=30
 # store_fetch <url> <bearer-token> <out-file> [query-body-file] -> the HTTP status on stdout, the
 # body (an error's too) in out-file. An empty token sends no Authorization header (Steam's key
 # rides in the URL, which reaches curl on stdin too). Only for reads, since a 429 or 5xx is
-# retried: a GET, or with a query body file a POST that is a query (Search Console's searchAnalytics),
-# never a write. Exit 1 when curl could not get an answer at all. With STORE_KEEP_HEADERS=1 the
-# response headers stay in <out-file>.h.
+# retried: a GET, or with a query body file a POST that only queries (Search Console's
+# searchAnalytics), never a write. Exit 1 when curl could not get an answer at all. With
+# STORE_KEEP_HEADERS=1 the response headers stay in <out-file>.h.
 store_fetch() {
   local try=0 code wait
   while :; do
