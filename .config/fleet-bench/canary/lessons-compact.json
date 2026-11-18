@@ -1,0 +1,30 @@
+{
+  "id": "lessons-compact",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#2306",
+  "base": "6dee899f6bade5893644313741a93e5d8a5ab531",
+  "merge": "30cd5e80cdaf8f31f0fb516f44245dc81e6e0b4e",
+  "task": "feat(lessons): compact swaps a short text into an over-cap lesson and archives the old text",
+  "pts": 5,
+  "accept": [
+    "compact swaps in the short text with a pointer, moves the old text verbatim, keeps the key, and a rerun is a no-op",
+    "compact refuses a text that changes the key, drops the date, is not shorter, stays over the cap or names no lesson",
+    "compact refuses a text whose first line drops the lesson's date",
+    "compact refuses a text line that would open a lesson, and writes nothing",
+    "compact refuses a text that drops a marker the old lesson carried"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/lessons.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(compact swaps in the short text with a pointer, moves the old text verbatim, keeps the key, and a rerun is a no-op|compact refuses a text that changes the key, drops the date, is not shorter, stays over the cap or names no lesson|compact refuses a text whose first line drops the lesson's date|compact refuses a text line that would open a lesson, and writes nothing|compact refuses a text that drops a marker the old lesson carried)$",
+      "tests/unit/lessons.bats"
+    ]
+  }
+}

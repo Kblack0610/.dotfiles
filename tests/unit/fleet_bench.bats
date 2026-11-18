@@ -5672,7 +5672,7 @@ canary_fixture() {
   CMERGE=$(git -C "$CREPO" rev-parse HEAD)
   jq -n --arg r "$CREPO" '{paths: {($r): "game"}}' > "$BENCH_PROJECT_MAP"
   jq -n --arg b "$CBASE" --arg m "$CMERGE" '{id: "greet", project: "game", pr: "o/r#7", base: $b, merge: $m,
-    task: "fix(greet): say hello", accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
+    task: "fix(greet): say hello", pts: 2, accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
     > "$BENCH_CANARY_DIR/greet.json"
   # The queue: one JSON file per item, so show, add and set can be read back. No real queue.
   export BENCH_CANARY_QUEUE_CMD=cq-stub CQ="$SANDBOX/cq"; mkdir -p "$CQ"; unset CODEX_THREAD_ID
@@ -5733,7 +5733,7 @@ STUB
   run jq -c '[.run, .id, .session_id, .pass, .rc, .pr, (.config.crepo | length)]' "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'["canary-greet-w1","greet","c1",false,1,"o/r#7",12]\n["canary-greet-w2","greet","c2",true,0,"o/r#7",12]'
   run "$SUBJECT" canary list
-  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass'
+  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass\t2 pts'
   # BENCH_CANARY_WRAP (fleet-dispatch's srt line for a sandboxed lane) runs the oracle command inside it.
   BENCH_CANARY_WRAP="touch $(printf %q "$SANDBOX/wrapped") && exec" AGENT_QUEUE_ITEM=canary-greet-w3 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
@@ -6023,6 +6023,26 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_line --index 2 $'codex/sol\t4 runs\t3 tasks\tpass 0.75\tsame 2: pass 0.75 vs claude 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
   run "$SUBJECT" canary list --by model
   assert_failure 2
+  # By size: each lane splits by its tasks' pts, read from the task files; a score whose task file is
+  # gone (solo, wk) or that names none has pts null. Same-task stays inside the size: codex at 5 pts shares big with claude.
+  jq '.id = "big" | .pts = 5' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/big.json"
+  cp "$FLEET_BENCH_DIR/canary.jsonl" "$SANDBOX/canary.before"
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "i", id: "big", session_id: "c2", pass: false},
+    {epoch: ($t - 86000), run: "j", id: "big", session_id: "x2", harness: "codex", model: "sol", pass: true},
+    {epoch: ($t - 86000), run: "k", session_id: "x3", harness: "codex", model: "sol", pass: false}' >> "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" canary list --by harness,model,pts --json
+  assert_success
+  run jq -sc 'map([.harness, .model, .pts, .runs, .same_tasks, .pass_rate_same, .claude_pass_rate_same])' <<<"$output"
+  assert_output '[["claude",null,null,2,null,null,null],["claude",null,2,1,null,null,null],["claude",null,5,1,null,null,null],["claude","haiku",2,1,1,1,1],["codex","sol",null,3,1,1,0],["codex","sol",2,2,1,0.5,1],["codex","sol",5,1,1,1,0]]'
+  run "$SUBJECT" canary list --by harness,model,pts
+  assert_line --partial $'codex/sol\t5 pts\t1 runs'
+  # A task file without its size is not a task.
+  jq 'del(.pts)' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/nopts.json"
+  run "$SUBJECT" canary list --by harness,model,pts
+  assert_failure 2
+  assert_output --partial 'is not a task (id, project, base, merge, task, pts,'
+  rm "$BENCH_CANARY_DIR/big.json" "$BENCH_CANARY_DIR/nopts.json"
+  mv "$SANDBOX/canary.before" "$FLEET_BENCH_DIR/canary.jsonl"
   # Both codex sessions leave the human KPIs too (an eval is not work), but only the claude baseline scores canary_:
   # the haiku lane pins an effort, so it is a lane beside claude, not a claude run.
   run "$SUBJECT" kpi --json

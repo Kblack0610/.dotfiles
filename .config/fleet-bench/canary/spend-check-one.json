@@ -6,6 +6,7 @@
   "base": "ceb8a5178f4080b26874c89bc440aee41e66dc11",
   "merge": "82fe8900168f29129ba6eb4ca7947e157205c40d",
   "task": "chore(cleanup): one spend check behind both claude-spend watches",
+  "pts": 3,
   "accept": [
     "spend check: under the ceiling exits 0 and names the window and the ceiling",
     "spend check: over the ceiling exits 1",
