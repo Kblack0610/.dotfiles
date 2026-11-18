@@ -33,7 +33,7 @@ pub async fn read(s: &Shared) -> Vec<Card> {
         s.session_table.read(),
         s.alerts.read(&s.infra),
         crate::costs::read(),
-        s.schedules.read(),
+        s.schedules.read(&s.alerts),
         crate::projects::GATHERED.get((), off(projects::gather)),
     );
     let items = queue.items.clone();
