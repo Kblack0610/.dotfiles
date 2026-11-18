@@ -981,20 +981,29 @@ pub fn context_window(model: &str) -> Option<u64> {
 /// A plan the session only named (read, grepped, listed, quoted), one a hook attachment lists
 /// and one a later prompt names (a pasted screen, a shepherd nudge) are not its plan. Why: a
 /// session that grepped another's finished plan took it and was told to wind down (2026-11-03).
+/// A plan-mode path recorded with `planExists: false` names a file plan mode never wrote, so it
+/// is not a plan either. Why: a chat that only toggled out of plan mode read STALLED "its plan
+/// file is missing" and was told to restore it (2026-11-18, ar-3088).
 fn plan_file(text: &str) -> String {
     const KEY: &str = "\"planFilePath\":\"";
     const REATTACHED: &str = "\"type\":\"plan_file_reference\"";
+    const NEVER_WRITTEN: &str = "\"planExists\":false";
     let plans = crate::session::home().join(".claude/plans");
-    if let Some(i) = text.rfind(KEY) {
+    let line_of = |at: usize| {
+        let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
+        &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
+    };
+    let entries: Vec<usize> = text
+        .rmatch_indices(KEY)
+        .map(|(at, _)| at)
+        .filter(|&at| !line_of(at).contains(NEVER_WRITTEN))
+        .collect();
+    if let Some(&i) = entries.first() {
         // A compaction re-attaches the plan-mode file (a plan_file_reference attachment): that
         // is not the session choosing it again, so landings count from the last real entry.
-        let line_of = |at: usize| {
-            let start = text[..at].rfind('\n').map_or(0, |s| s + 1);
-            &text[start..text[at..].find('\n').map_or(text.len(), |e| at + e)]
-        };
-        let chosen = text
-            .rmatch_indices(KEY)
-            .map(|(at, _)| at)
+        let chosen = entries
+            .iter()
+            .copied()
             .find(|&at| !line_of(at).contains(REATTACHED))
             .unwrap_or(i);
         let rest = &text[chosen + KEY.len()..];
@@ -2438,6 +2447,18 @@ mod tests {
         fs::remove_file(&p).ok();
         let none = fleet_info(Path::new("/no/such/file.jsonl"));
         assert_eq!((none.context_tokens, none.plan_file.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn plan_file_ignores_a_plan_mode_exit_that_never_wrote_one() {
+        let exit = r#"{"type":"attachment","attachment":{"type":"plan_mode_exit","planFilePath":"/h/.claude/plans/never.md","planExists":false}}"#;
+        let p = tmpfile("neverplan", &[exit, exit]);
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+        let written = r#"{"type":"attachment","attachment":{"type":"plan_mode_exit","planFilePath":"/h/.claude/plans/real.md","planExists":true}}"#;
+        let p = tmpfile("realplan", &[exit, written]);
+        assert_eq!(fleet_info(&p).plan_file, "/h/.claude/plans/real.md");
+        fs::remove_file(&p).ok();
     }
 
     #[test]
