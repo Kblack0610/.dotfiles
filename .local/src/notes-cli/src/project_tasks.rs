@@ -154,7 +154,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         .map(|(n, l)| OpenRow {
             line: n,
             text: l.trim_end().to_string(),
-            details: md::row_details(&lines, n - 1),
+            details: md::brief_details(&lines, n - 1),
         })
         .collect();
     Some(OpenRows {
@@ -429,7 +429,7 @@ pub(crate) fn add_via(
     }
     let mut row_details = details.to_vec();
     if !more.trim().is_empty() {
-        row_details.insert(0, more.to_string());
+        row_details.insert(0, md::dedent(more));
     }
     let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;

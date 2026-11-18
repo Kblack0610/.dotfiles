@@ -163,7 +163,7 @@ module = "custom/notify"
 enabled = ["dotfiles/chips"]
 
 # dunst or swaync keeps org.freedesktop.Notifications: Noctalia ignores the
-# x-dunst-stack-tag replace hint agent-notify relies on, so its pages would stack.
+# x-dunst-stack-tag replace hint, and nobody has tried the synchronous hint desk sends on it.
 [notification]
 enable_daemon = false
 

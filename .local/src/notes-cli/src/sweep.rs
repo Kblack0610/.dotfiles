@@ -143,7 +143,7 @@ fn blocks(lines: Vec<String>) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     for l in lines {
         match out.last_mut() {
-            Some(b) if l.starts_with(char::is_whitespace) => b.push(l),
+            Some(b) if l.is_empty() || l.starts_with(char::is_whitespace) => b.push(l),
             _ => out.push(vec![l]),
         }
     }
@@ -224,6 +224,20 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
 
     for (n, l) in body.iter().enumerate() {
         let t = l.trim();
+        // A sheet row's brief can hold a paragraph break: a blank with an indented line after
+        // it stays in the row's block (`md::brief_end`), where any other blank goes.
+        if t.is_empty() && layout == Layout::Tasks {
+            let more = body[n + 1..]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.starts_with(char::is_whitespace));
+            match last {
+                Some(Bucket::Open(i)) if more && i < LANES => open[i].push(String::new()),
+                Some(Bucket::Done) if more => done.push(String::new()),
+                _ => {}
+            }
+            continue;
+        }
         let rule = layout == Layout::Focus && is_group_rule(body, n);
         if (t.is_empty() || rule) && layout == Layout::Focus {
             if let Some(i) = last_open.map(|o| cur_lane.unwrap_or(o)) {

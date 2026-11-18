@@ -575,6 +575,9 @@ transcript() {
   # fleet-dispatch is the one path that opens sessions; the stub records the call and opens nothing.
   printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n[ -f "$NOTES_FIXTURE/dispatch.fail" ] && { echo "start: session busy"; exit 1; }\necho "started $6"\n' >"$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/fleet-dispatch"
+  # wt revive puts back a reaped worktree (#2385); the stub records the call and has none to put back.
+  printf '#!/usr/bin/env bash\nprintf "wt %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\necho "wt: nothing reaped at $2" >&2\nexit 1\n' >"$SANDBOX/bin/wt"
+  chmod +x "$SANDBOX/bin/wt"
   gone="$(CLAUDE_CODE_SESSION_ID=sid-gone ask demo dotfiles 'go=run it now|later=run it later' 'gone?')"
   transcript sid-gone "$HOME/.dotfiles"
   run "$Q" key g "$gone"
@@ -598,11 +601,14 @@ transcript() {
   run "$Q" key g "$alive"
   assert_output 'change-footer~session sid-alive still runs outside tmux; nothing to go to~'
   assert_not_called "--resume sid-alive"
-  # A directory that is gone has nowhere to resume from.
+  # A directory that is there and not a linked worktree is never put back.
+  assert_not_called "wt revive"
+  # A directory that is gone goes through wt revive; when nothing can be put back it says so and resumes nothing.
   lost="$(CLAUDE_CODE_SESSION_ID=sid-lost ask demo agent-6 'go=run it now|later=run it later' 'lost?')"
   transcript sid-lost "$BATS_TEST_TMPDIR/deleted"
   run "$Q" key g "$lost"
-  assert_output "change-footer~session ended and its directory $BATS_TEST_TMPDIR/deleted is gone; resume with claude --resume sid-lost~"
+  assert_output "change-footer~could not put back $BATS_TEST_TMPDIR/deleted: wt: nothing reaped at $BATS_TEST_TMPDIR/deleted; resume with claude --resume sid-lost~"
+  assert_called "wt revive $BATS_TEST_TMPDIR/deleted --branch"
   assert_not_called "--resume sid-lost"
   # Plain target only reports; it never starts anything.
   run "$AGENT_ASK" target "$gone"

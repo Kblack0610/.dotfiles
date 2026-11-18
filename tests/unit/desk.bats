@@ -319,3 +319,41 @@ sys.exit(1 if bad else 0)
 ' "$REPO_ROOT/.config/noctalia/config.toml"
   assert_success
 }
+
+@test "notify show sends the replace hint and keeps the server id; drop closes it once" {
+  printf '#!/usr/bin/env bash\necho "notify-send $*" >> "$FX/calls.log"; echo 77\n' > "$SANDBOX/bin/notify-send"
+  # GetNameOwner answers with $FX/owner (the notifier process); any other call is a close.
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { cat "$FX/owner"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  echo "(':1.7',)" > "$FX/owner"
+  # show and drop never look at the slot: the same under swaync.
+  mkdir -p "$(dirname "$STATE")" && echo "notify=swaync" > "$STATE"
+  run "$DESK" notify show hint -t 100 title body
+  assert_success
+  assert_equal "$(cat "$FX/run/desk/notify-hint.id")" "77 (':1.7',)"
+  run "$DESK" notify drop hint
+  assert_success
+  run "$DESK" notify drop hint
+  assert_success
+  run cat "$FX/calls.log"
+  assert_output $'notify-send -p -h string:x-canonical-private-synchronous:hint -t 100 title body\ngdbus 77'
+  [ ! -e "$FX/run/desk/notify-hint.id" ]
+}
+
+@test "notify drop leaves alone an id a restarted notifier may have handed to another popup" {
+  printf '#!/usr/bin/env bash\necho 77\n' > "$SANDBOX/bin/notify-send"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { cat "$FX/owner"; exit; }\necho "gdbus ${*: -1}" >> "$FX/calls.log"\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  echo "(':1.7',)" > "$FX/owner"
+  run "$DESK" notify show hint title
+  assert_success
+  echo "(':1.9',)" > "$FX/owner"
+  run "$DESK" notify drop hint
+  assert_success
+  [ ! -e "$FX/calls.log" ]
+  [ ! -e "$FX/run/desk/notify-hint.id" ]
+  run "$DESK" notify show
+  assert_failure 2
+}

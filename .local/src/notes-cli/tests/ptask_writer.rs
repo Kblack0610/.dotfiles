@@ -798,3 +798,61 @@ fn a_playtest_pass_files_one_counted_row_and_ticked_checks_keep_the_done_window(
     );
     assert_eq!(h.sheet().matches("check(playtest)").count(), 2);
 }
+
+/// A real plan brief: a paragraph break, a nested list, a fenced block with its own indent.
+const BRIEF: &str = "goal: every row keeps its brief\n\nsteps:\n- add writes the full body\n  - not only the title\n    - and not a `full:` line\n\n```sh\nif [ -n \"$X\" ]; then\n    agent-queue return \"$X\"\nfi\n```\ncheck: the board prints it back";
+
+/// The details `notes board --json` reports for the demo agent row `id`.
+fn board_details(h: &Home, id: &str) -> Vec<String> {
+    let out = h.run(&["board", "--json"]);
+    ok(&out);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["rows"].as_array().or(v.as_array()).expect("rows");
+    let row = rows
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap_or_else(|| panic!("no row {id}"));
+    row["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_brief_round_trips_through_add_edit_and_board_json_byte_for_byte() {
+    let h = Home::new("brief-round-trip");
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "feat(board): one record per task #size/s",
+            "--detail",
+            BRIEF,
+        ],
+    ));
+    assert_eq!(board_details(&h, "dm-1").join("\n"), BRIEF, "{}", h.board());
+
+    // A second --detail lands after the first, separated by what it carries.
+    ok(&agent(
+        &h,
+        &[
+            "edit",
+            "dm-1",
+            "--detail",
+            "more:\n  indented\n\nafter a gap",
+        ],
+    ));
+    let want = format!("{BRIEF}\nmore:\n  indented\n\nafter a gap");
+    assert_eq!(board_details(&h, "dm-1").join("\n"), want, "{}", h.board());
+
+    // A sweep (every save runs one) and a second row beside it change nothing in the brief.
+    ok(&agent(
+        &h,
+        &["add", "fix(board): second row #size/s #urgent"],
+    ));
+    ok(&h.run(&["ptask", "demo", "--agent", "sweep"]));
+    assert_eq!(board_details(&h, "dm-1").join("\n"), want, "{}", h.board());
+    assert!(board_details(&h, "dm-2").is_empty());
+}
