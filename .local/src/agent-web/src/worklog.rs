@@ -67,19 +67,24 @@ fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     })
 }
 
-pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
-    let g = s
-        .work
-        .0
-        // No rows means the queue read failed: show that, and read again on the next request.
-        .get_if((), || worklog::read(&System), |g| !g.rows.is_empty())
-        .await
-        .unwrap_or_else(|e| {
-            Arc::new(Gathered {
-                errors: vec![e],
-                ..Gathered::default()
+impl Cache {
+    /// The kept superset read, which the tab narrows and `warm` fills at start.
+    pub async fn gathered(&self) -> Arc<Gathered> {
+        self.0
+            // No rows means the queue read failed: show that, and read again on the next request.
+            .get_if((), || worklog::read(&System), |g| !g.rows.is_empty())
+            .await
+            .unwrap_or_else(|e| {
+                Arc::new(Gathered {
+                    errors: vec![e],
+                    ..Gathered::default()
+                })
             })
-        });
+    }
+}
+
+pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
+    let g = s.work.gathered().await;
     Json(shown(&g, &q, chrono::Local::now().date_naive()))
 }
 
