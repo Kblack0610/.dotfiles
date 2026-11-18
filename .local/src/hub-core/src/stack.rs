@@ -274,12 +274,15 @@ pub struct Hook {
     pub from: String,
     /// The script resolves to a file on disk; false is a hook that cannot run.
     pub found: bool,
+    /// The ledger's mechanism rows whose source is this script: what it enforces, on Rules.
+    pub rules: usize,
 }
 
 pub const MISSING: &str = "missing";
 
 impl Row for Hook {
-    const COLUMNS: &'static [&'static str] = &["harness", "event", "matcher", "script", "from"];
+    const COLUMNS: &'static [&'static str] =
+        &["harness", "event", "matcher", "script", "from", "rules"];
     const STATES: &'static [&'static str] = &[ALL, MISSING];
     const FACETS: &'static [&'static str] = &["harness", "event", "from"];
     const LEAD: &'static str = "script";
@@ -300,6 +303,7 @@ impl Row for Hook {
             }),
             "script" => Val::Text(self.script.clone()),
             "from" => text(&self.from),
+            "rules" => Val::Num(self.rules as f64),
             _ => Val::None,
         }
     }
@@ -328,6 +332,8 @@ pub struct Rule {
     /// `invariant` or `provisional`.
     pub kind: String,
     pub source: String,
+    /// `rule` (text a session reads) or `mechanism` (a hook, script or config that enforces one).
+    pub form: String,
     pub number: String,
     pub confidence: String,
     /// fleet-bench's one verdict: `ok`, `stale` (its anchor is gone from its source), `absent`
@@ -346,16 +352,26 @@ pub const MOVED: &str = "moved";
 pub const RESTATES: &str = "restates";
 pub const ABSENT: &str = "absent";
 pub const DEAD: &str = "dead";
+/// The chip Rules opens on, the rules a session reads; mechanisms are one chip away.
+pub const RULES_FORM: &str = "rules";
+pub const MECHANISMS: &str = "mechanisms";
+pub const MECHANISM: &str = "mechanism";
 
 impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
-    const STATES: &'static [&'static str] = &[ALL, STALE, MOVED, RESTATES, DEAD, ABSENT];
+    const STATES: &'static [&'static str] = &[
+        RULES_FORM, MECHANISMS, ALL, STALE, MOVED, RESTATES, DEAD, ABSENT,
+    ];
     const FACETS: &'static [&'static str] = &["kind", "confidence", "state"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "rule";
     const GLANCE: &'static [&'static str] = &["kind", "state"];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            MECHANISMS,
+            "a hook, script or config that enforces a rule, not text a session reads",
+        ),
         (STALE, "its anchor text is gone from its source file"),
         (
             MOVED,
@@ -385,7 +401,15 @@ impl Row for Rule {
     }
 
     fn in_state(&self, s: &str) -> bool {
-        self.state == s
+        match s {
+            ALL => true,
+            MECHANISMS => self.form == MECHANISM,
+            _ => self.state == s,
+        }
+    }
+
+    fn in_default(&self) -> bool {
+        self.form != MECHANISM
     }
 
     fn text(&self) -> String {
@@ -674,8 +698,14 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     }
     let agents = read_agents(paths, &mut errors);
     let runners = conf_names(&paths.runners).len();
-    let hooks = read_hooks(paths, &mut errors);
+    let mut hooks = read_hooks(paths, &mut errors);
     let rules = read_rules(runner, &mut errors);
+    for h in &mut hooks {
+        h.rules = rules
+            .iter()
+            .filter(|r| r.form == MECHANISM && r.source.rsplit('/').next() == Some(&h.script))
+            .count();
+    }
     let rule_files = read_rule_files(&paths.rule_files);
     let flows = read_flows(paths, &mut errors);
     let strip = BTreeMap::from([
@@ -1034,6 +1064,7 @@ fn config_hooks(v: &serde_json::Value, harness: &str, from: &str, home: &Path) -
                     command,
                     from: from.into(),
                     found,
+                    rules: 0,
                 });
             }
         }
@@ -1075,6 +1106,7 @@ fn read_hooks(paths: &Paths, errors: &mut Vec<String>) -> Vec<Hook> {
                 command: f.display().to_string(),
                 from: d.into(),
                 found: true,
+                rules: 0,
             });
         }
     }
@@ -1103,6 +1135,7 @@ fn read_rules(runner: &dyn Runner, errors: &mut Vec<String>) -> Vec<Rule> {
             rule: s(&r["rule"]),
             kind: s(&r["kind"]),
             source: s(&r["source"]),
+            form: s(&r["form"]),
             // A measured rule shows what its measure read today beside its recorded number.
             number: match (s(&r["number"]), r["value"].is_number()) {
                 (n, false) => n,
@@ -1234,7 +1267,7 @@ mod tests {
 
     const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
-    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","state":"moved"},{"rule":"never force push","kind":"invariant","state":"ok"},{"rule":"old","kind":"provisional","state":"stale"},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","value":2,"state":"ok"},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","value":3,"state":"restates"},{"rule":"elsewhere","kind":"invariant","state":"absent"}]"#;
+    const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","state":"moved"},{"rule":"never force push","kind":"invariant","state":"ok"},{"rule":"old","kind":"provisional","state":"stale"},{"rule":"cap read from config","kind":"provisional","number":"max_live in sources","confidence":"low","value":2,"state":"ok"},{"rule":"copied cap","kind":"provisional","number":"3","confidence":"low","value":3,"state":"restates"},{"rule":"elsewhere","kind":"invariant","state":"absent"},{"rule":"no sleep polls","kind":"invariant","source":"~/.claude/hooks/block-poll.py","form":"mechanism","state":"ok"},{"rule":"no other poll","kind":"invariant","source":"/x/block-poll.py","form":"mechanism","state":"ok"}]"#;
 
     #[test]
     fn each_part_is_read_from_its_own_store() {
@@ -1388,7 +1421,7 @@ mod tests {
         let p = fixture("rules");
         let s = read(&p, &Fixed(Ok(RULES.into())), 0);
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
-        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, ABSENT]);
+        assert_eq!(states, [MOVED, OK, STALE, OK, RESTATES, ABSENT, OK, OK]);
         assert_eq!(
             s.rules[3].number, "max_live in sources (now 2)",
             "a reading shows what it read"
@@ -1401,6 +1434,25 @@ mod tests {
             s.strip["rules"], 3,
             "every row not ok, past one whose source is elsewhere"
         );
+    }
+
+    #[test]
+    fn rules_open_on_rules_and_a_hook_counts_its_mechanisms() {
+        let p = fixture("forms");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 0);
+        let shown = |state: &str| {
+            crate::table::View::new::<Rule>("", state, "", "")
+                .apply(&s.rules)
+                .len()
+        };
+        assert_eq!(shown(""), 6, "the default view is the rules chip: no mechanism");
+        assert_eq!(shown(RULES_FORM), 6);
+        assert_eq!(shown(MECHANISMS), 2);
+        assert_eq!(shown(ALL), 8);
+        let poll = s.hooks.iter().find(|h| h.script == "block-poll.py").unwrap();
+        assert_eq!(poll.rules, 2, "every mechanism row whose source file is the script");
+        let echo = s.hooks.iter().find(|h| h.command == "echo hi").unwrap();
+        assert_eq!(echo.rules, 0);
     }
 
     /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
