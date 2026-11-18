@@ -10,7 +10,7 @@ setup() {
   load '../vendor/bats-assert/load'
   PUB="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SPLICE="$PUB/.config/codex/splice-shared-rules.py"
-  PRIV="${RULES_PRIVATE_REPO:-$HOME/.dotfiles-private}"
+  PRIV="${RULES_PRIVATE_REPO:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private}"
   T="$BATS_TEST_TMPDIR"
   cat >"$T/CLAUDE.md" <<'MD'
 Intro

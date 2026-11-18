@@ -8,6 +8,14 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
+#   claude-acct setup-token [--renew] [name]
+#                        # walk each account (or the one named): say which email to sign in as, run
+#                        # `claude setup-token`, verify the printed token with one tiny call, and store
+#                        # it in rbw as claude-oauth-<name>. Never echoes the token. An account that
+#                        # already has a token is skipped without --renew
+#   claude-acct token [name|dir]     # print that account's token (empty arg = main); exit 1 when it has none
+#   claude-acct token-prefix [dir]   # the launch-line prefix that hands a pane its account's token, or
+#                        # nothing; the token is read when the pane's shell runs it, never typed into it
 #   claude-acct status [--json]   # every source: window used, window gone, run-out, live sessions,
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
@@ -25,6 +33,7 @@
 #   claude-acct room --source <name> [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
+#   claude-acct check tokens # one line, exit 1 when a token is expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct auth [--json]    # each account's sign-in state: logged in (a refresh token in its
 #                                # credentials file), access token end, login end, last write, busy
@@ -71,8 +80,10 @@
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
-# One account per session via CLAUDE_CONFIG_DIR; nothing here writes a credential,
-# Claude refreshes each account's token itself when a session starts in that dir.
+# One account per session via CLAUDE_CONFIG_DIR. An account with a long-lived token in rbw
+# (setup-token) also gets it as CLAUDE_CODE_OAUTH_TOKEN, so a wiped .credentials.json stops no
+# session; otherwise Claude refreshes the account's login itself when a session starts in that dir.
+# Only setup-token writes a credential, and only into rbw. docs/operations/claude-acct-tokens.md.
 # Usage comes from the endpoint behind /usage, which rate-limits per token, so each
 # answer is cached for CLAUDE_ACCT_TTL seconds.
 
@@ -91,6 +102,8 @@ CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
 MAIN_DIR="$HOME/.claude"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+# rbw entry per account: the token is the password, the notes carry email, minted, expires.
+TOKEN_ENTRY="claude-oauth-"
 
 # What every account shares with the main one. Everything else (.credentials.json,
 # .claude.json, stats, other runtime dirs) stays per account. sessions/ is the machine's
@@ -180,11 +193,18 @@ fetch() {
         cat "$cache"
         return 0
     fi
-    local creds="${dir:-$MAIN_DIR}/.credentials.json" token exp
-    [[ -f "$creds" ]] || return 1
-    token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds" 2>/dev/null)
-    exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$creds" 2>/dev/null)
-    [[ -n "$token" ]] && (( ${exp:-0} > $(date +%s) * 1000 )) || return 2
+    local creds="${dir:-$MAIN_DIR}/.credentials.json" token='' exp rc=1
+    if [[ -f "$creds" ]]; then
+        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds" 2>/dev/null)
+        exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$creds" 2>/dev/null)
+        if [[ -n "$token" ]] && (( ${exp:-0} > $(date +%s) * 1000 )); then rc=0; else token=''; rc=2; fi
+    fi
+    # No usable login: the account's setup token, if the endpoint takes one (it may not: a setup
+    # token carries only the inference scope, and a refusal reads as unread, as it always did).
+    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed".
+    local via_setup=0
+    if [[ -z "$token" ]]; then token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1; fi
+    [[ -n "$token" ]] || return "$rc"
 
     local ver tmp
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
@@ -200,6 +220,7 @@ fetch() {
         return 0
     fi
     rm -f "$tmp"
+    (( via_setup )) && return "$rc"
     return 1
 }
 
@@ -464,6 +485,183 @@ cmd_pick() {
         echo "claude-acct: every account is spent; cl --lazer runs Sonnet on the Lazer reserve, where dispatch passes already route Sonnet-lane items" >&2
     fi
     printf '%s\n' "$dir"
+}
+
+# --- long-lived tokens ------------------------------------------------------------------
+# `claude setup-token` mints a token that lasts about a year; rbw holds one per account, and the
+# one reader is acct_token. No lasting copy lands on disk (setup-token holds one in a 0700 temp dir for the length of its run) and none is ever put on a command line: a pane's
+# launch line carries `$(claude-acct token ...)`, which its shell runs at the moment of launch.
+
+# acct_name <name|dir> -> the account's name ('' when it is none); empty arg and "-" are main
+acct_name() {
+    local want="${1:-}" name dir
+    [[ "$want" == "-" ]] && want=""
+    want=$(norm_dir "${want/#\~/$HOME}")
+    while IFS=$'\037' read -r name dir; do
+        [[ "$name" == "${1:-}" ]] && { printf '%s' "$name"; return 0; }
+        [[ "$(norm_dir "$dir")" == "$want" ]] && { printf '%s' "$name"; return 0; }
+    done < <(accounts)
+    return 1
+}
+
+# acct_token <name> -> the token on stdout; exit 1 and nothing when the account has none. Silent
+# for "never set up"; one line on stderr when rbw is locked (it would prompt, which an unattended
+# start cannot answer), and the session then runs on the account's login credentials as before.
+acct_token() {
+    local t
+    command -v rbw >/dev/null 2>&1 || return 1
+    if ! rbw unlocked >/dev/null 2>&1; then
+        echo "claude-acct: rbw is locked, so $1 starts on its login credentials, not its setup token" >&2
+        return 1
+    fi
+    t=$(rbw get "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
+    [[ "$t" == sk-ant-oat* ]] || return 1
+    printf '%s' "$t"
+}
+
+# token [name|dir]
+cmd_token() {
+    local name
+    name=$(acct_name "${1:-}") || { echo "claude-acct token: no account '${1:-}' in $CONF" >&2; return 1; }
+    acct_token "$name"
+}
+
+# token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
+# token now, else nothing: an account without one keeps its login. This reads rbw once to decide;
+# the pane's shell reads it again at launch.
+cmd_token_prefix() {
+    local name
+    name=$(acct_name "${1:-}") || return 0
+    acct_token "$name" >/dev/null 2>&1 || return 0
+    printf 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token %q)" ' "${1:--}"
+}
+
+# token_expiry <name> -> the YYYY-MM-DD in the entry's notes (empty when none); exit 1 when rbw has no
+# entry for the account
+token_expiry() {
+    local raw
+    raw=$(rbw get --raw "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
+    jq -r '(.notes // "") | capture("(?m)^expires: (?<d>[0-9-]+)").d // empty' <<< "$raw" 2>/dev/null
+    return 0
+}
+
+# check_tokens: one line; exit 1 when a token is expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
+# be read. An account with no token is named but trips nothing: it runs on its login. The auth
+# alert watches this line (ar-2767), so a year-old token is renewed before it stops a session.
+check_tokens() {
+    local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
+    local -a none=() soon=()
+    warn=$(pace_get TOKEN_WARN_DAYS)
+    [[ -n "$warn" ]] || return 2
+    if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
+        echo "cannot read tokens: rbw is missing or locked"; return 2
+    fi
+    while IFS=$'\037' read -r name dir; do
+        if ! exp=$(token_expiry "$name"); then none+=("$name"); continue; fi
+        if [[ -z "$exp" ]] || ! end=$(date -d "$exp" +%s 2>/dev/null); then soon+=("$name expiry unknown"); continue; fi
+        days=$(( (end - now) / 86400 ))
+        if (( end < now )); then soon+=("$name expired $exp")
+        elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
+        else ok=$((ok + 1)); fi
+    done < <(accounts)
+    if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
+    if (( ${#none[@]} )); then out+="${out:+; }no token yet: ${none[*]}"; fi
+    echo "${out:-$ok tokens good}"
+    (( ${#soon[@]} == 0 ))
+}
+
+# setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or
+# already held, 1 failed (the reason printed). The token lives in a shell variable and in the 0600
+# files of one mktemp -d, removed on return or by the trap if the run is interrupted; it is never an argument and never printed here.
+setup_one() {
+    local name="$1" dir="$2" renew="$3" email tok='' tmp pty ent ed other code exp note
+    email=$(email_of "$dir")
+    echo "== $name: sign in as ${email:-the account you use for $name (its email is unknown here)} =="
+    if [[ "$renew" != 1 ]] && acct_token "$name" >/dev/null 2>&1; then
+        echo "   $name already has a token (rbw $TOKEN_ENTRY$name); --renew replaces it"; return 0
+    fi
+    tmp=$(mktemp -d) || return 1
+    SETUP_TMP="$tmp"   # removed by cmd_setup_token's trap if the run is interrupted
+    chmod 700 "$tmp"
+    pty="$tmp/pty.log"
+    echo "   claude setup-token opens a browser: sign in as ${email:-that account}, approve, and the token prints."
+    # claude runs on a scratch config dir: minting a token must not touch the account's login state.
+    if command -v script >/dev/null 2>&1; then
+        script -qf -c "stty cols 4000 2>/dev/null; env CLAUDE_CONFIG_DIR=$(printf %q "$tmp/cfg") claude setup-token" "$pty" || true
+        tok=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$pty" 2>/dev/null | tr -d '\r' |
+            grep -oE 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]+' | awk 'length($0) > n { n = length($0); t = $0 } END { print t }')
+    else
+        CLAUDE_CONFIG_DIR="$tmp/cfg" claude setup-token || true
+    fi
+    if [[ -z "$tok" ]]; then
+        printf '   token not read from the screen; paste it (hidden): '
+        read -rs tok || true; echo
+    fi
+    if [[ "$tok" != sk-ant-oat* ]]; then
+        echo "   $name: no token (it starts sk-ant-oat); nothing stored" >&2; rm -rf "$tmp"; return 1
+    fi
+    # Verify: one tiny call that must bill the subscription, so no API key may be in play.
+    if [[ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+        echo "   $name: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set, so the call would not bill the subscription; unset it and re-run" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if ! env -u ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR="$tmp/cfg" CLAUDE_CODE_OAUTH_TOKEN="$tok" \
+            claude -p 'Reply with the word ok' --model haiku --max-turns 1 >"$tmp/probe.out" 2>&1 || ! grep -qiw ok "$tmp/probe.out"; then
+        echo "   $name: the token did not run a call; nothing stored" >&2; rm -rf "$tmp"; return 1
+    fi
+    echo "   verified: one haiku call ran on the token"
+    code=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$USAGE_URL" \
+        -H "Authorization: Bearer $tok" -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || code=000
+    if [[ "$code" == 200 ]]; then note=accepted; else note="rejected (HTTP $code)"; fi
+    echo "   usage endpoint: $note"
+    exp=$(date -d '+365 days' +%F)
+    note=$(printf 'email: %s\nminted: %s\nexpires: %s\nusage_endpoint: %s' "${email:-unknown}" "$(date +%F)" "$exp" "$note")
+    # rbw add/edit open $EDITOR on a temp file; ours copies the entry in, so the token is never an argument.
+    ent="$tmp/entry"; ed="$tmp/editor"
+    printf '%s\n\n%s\n' "$tok" "$note" > "$ent"
+    printf '#!/bin/sh\ncat %q > "$1"\n' "$ent" > "$ed"; chmod 700 "$ed"
+    if rbw get "$TOKEN_ENTRY$name" >/dev/null 2>&1; then
+        EDITOR="$ed" VISUAL="$ed" rbw edit "$TOKEN_ENTRY$name" || { echo "   $name: rbw edit failed" >&2; rm -rf "$tmp"; return 1; }
+    else
+        EDITOR="$ed" VISUAL="$ed" rbw add "$TOKEN_ENTRY$name" || { echo "   $name: rbw add failed" >&2; rm -rf "$tmp"; return 1; }
+    fi
+    if [[ "$(rbw get "$TOKEN_ENTRY$name" 2>/dev/null)" != "$tok" ]]; then
+        echo "   $name: rbw does not hold the token it was given; check the vault entry $TOKEN_ENTRY$name" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    rm -rf "$tmp"
+    echo "   stored: rbw $TOKEN_ENTRY$name, expires $exp"
+}
+
+# setup-token [--renew] [name]
+cmd_setup_token() {
+    local renew=0 want="" name dir n row fail=0
+    while (( $# )); do
+        case "$1" in
+            --renew) renew=1 ;;
+            -*) echo "usage: claude-acct setup-token [--renew] [name]" >&2; return 2 ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    # The pty transcript and the entry file hold the token while a run lasts; an interrupt removes them.
+    trap 'rm -rf "${SETUP_TMP:-}"; exit 130' INT TERM
+    trap 'rm -rf "${SETUP_TMP:-}"' EXIT
+    command -v rbw >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is not installed" >&2; return 1; }
+    rbw unlocked >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is locked; run rbw unlock first" >&2; return 1; }
+    command -v claude >/dev/null 2>&1 || { echo "claude-acct setup-token: claude is not on PATH" >&2; return 1; }
+    if [[ -n "$want" ]]; then
+        name=$(acct_name "$want") || { echo "claude-acct setup-token: no account '$want' in $CONF" >&2; return 1; }
+    fi
+    # Rows are read first: a loop fed from accounts would hand setup_one's paste prompt that file as stdin.
+    local -a rows
+    mapfile -t rows < <(accounts)
+    for row in "${rows[@]}"; do
+        IFS=$'\037' read -r n dir <<< "$row"
+        [[ -z "$want" || "$n" == "$name" ]] || continue
+        setup_one "$n" "$dir" "$renew" || fail=1
+    done
+    return "$fail"
 }
 
 # --- usage -----------------------------------------------------------------------------
@@ -757,6 +955,11 @@ cmd_run() {
         dir=$(cmd_pick)
     fi
     if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    # The account's own token, or none: one inherited from a parent session is another account's.
+    unset CLAUDE_CODE_OAUTH_TOKEN
+    local tok
+    if tok=$(cmd_token "${dir:--}") && [[ -n "$tok" ]]; then export CLAUDE_CODE_OAUTH_TOKEN="$tok"; fi
+    tok=''
     # An account session's harness is claude, which the Stop hook records when none is set: a
     # gateway parent's AGENT_HARNESS (claude-lazer) must not label it.
     unset AGENT_HARNESS
@@ -1132,7 +1335,8 @@ cmd_check() {
             [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
         auth) auth_check ;;
         expiry) expiry_check ;;
-        *) echo "usage: claude-acct check usage|auth|expiry|pace|underuse [source...]" >&2; return 2 ;;
+        tokens) check_tokens ;;
+        *) echo "usage: claude-acct check usage|auth|expiry|pace|underuse|tokens [source...]" >&2; return 2 ;;
     esac
 }
 
@@ -1525,7 +1729,9 @@ launch_env() {
 # typed into the pane's shell (after a cd) when not
 resume_cmd() {
     local c
-    c="$4 $(printf %q "$5")"
+    # The token goes straight before claude, so launch_env's `env -u CLAUDE_CODE_OAUTH_TOKEN` (which
+    # drops an inherited one) comes first and does not drop this one.
+    c="$(cmd_token_prefix "$3")$4 $(printf %q "$5")"
     [[ "$1" == 1 ]] && c="$(launch_env "$2" "${6:-}")$c"
     if [[ -n "$3" ]]; then c="CLAUDE_CONFIG_DIR=$(printf %q "$3") $c"
     else c="env -u CLAUDE_CONFIG_DIR $c"; fi
@@ -1860,6 +2066,9 @@ case "${1:-}" in
     check)  shift; cmd_check "$@" ;;
     auth)   shift; cmd_auth "$@" ;;
     wake)   shift; cmd_wake "$@" ;;
+    setup-token) shift; cmd_setup_token "$@" ;;
+    token)  shift; cmd_token "$@" ;;
+    token-prefix) shift; cmd_token_prefix "$@" ;;
     cost)   cmd_cost ;;
     link)   cmd_link ;;
     move)   shift; cmd_move "$@" ;;

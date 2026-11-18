@@ -282,6 +282,20 @@ account_seen() {
   assert_equal "$(cat "$SANDBOX/acct.txt")" "<main>"
 }
 
+@test "a subscription run carries the chosen account's setup token, never an inherited one" {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${CLAUDE_CODE_OAUTH_TOKEN:-<none>}" > "%s/tok.txt"\n' "$SANDBOX" > "$SANDBOX/bin/claude"
+  chmod +x "$SANDBOX/bin/claude"
+  route oauth 'anthropic-native' '' yes yes yes subscription 'ROUTE_KEY_SOURCE="oauth"'
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent STUB_ACCT_TOKEN=sk-ant-oat01-alt \
+    run "$RUN" --role fixture --route oauth -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/tok.txt")" sk-ant-oat01-alt
+  # an account with no token: the parent's is scrubbed and none is set
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$RUN" --role fixture --route oauth -p hi
+  assert_success
+  assert_equal "$(cat "$SANDBOX/tok.txt")" '<none>'
+}
+
 @test "--explain names the account and who chose it" {
   route oauth 'anthropic-native' '' yes yes yes subscription 'ROUTE_KEY_SOURCE="oauth"'
   STUB_ACCT_PICK="$HOME/.claude-alt" run "$RUN" --role fixture --route oauth --explain

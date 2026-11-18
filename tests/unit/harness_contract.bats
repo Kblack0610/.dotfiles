@@ -14,7 +14,7 @@ setup() {
   load '../vendor/bats-assert/load'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   FIX="$REPO_ROOT/tests/fixtures/harness-contract"
-  MAP="${HARNESS_CONTRACT_MAP:-$HOME/.dotfiles-private/.config/agentctl/harnesses.json}"
+  MAP="${HARNESS_CONTRACT_MAP:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private/.config/agentctl/harnesses.json}"
   SANDBOX="$BATS_TEST_TMPDIR"
   export SO_PROJECT_LIB="$SANDBOX/project-name.sh"
   echo 'resolve_project_name() { basename "$1"; }' > "$SO_PROJECT_LIB"
