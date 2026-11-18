@@ -1092,8 +1092,8 @@ return {
           for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
             vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
-          -- `#p:<name>`, the same glue rule; the name is a project word (letters, digits, `-`, `_`).
-          vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+]])
+          -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
+          vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])
         end,
       })
     end,
