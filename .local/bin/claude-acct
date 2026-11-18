@@ -919,7 +919,7 @@ usage_json() {
             gone=$(awk -v n="$now" -v s="$start" -v w="$win" 'BEGIN { g = (n - s) * 100 / w; print (g < 0 ? 0 : g > 100 ? 100 : g) }')
         fi
         if [[ "$kind" == claude ]]; then
-            read -r live working cost < <(awk -F'\t' -v w="@$dir" -v i="~@$dir" '
+            read -r live working cost < <(LC_ALL=C awk -F'\t' -v w="@$dir" -v i="~@$dir" '
                 $1 == w { n++; c += $2 } $1 == i { l++ } END { printf "%d %d %s\n", n + l, n, c + 0 }' <<< "$lives")
             email=$(email_of "$dir")
         else live=$(jq -r --arg n "$name" '.[$n] // 0' <<< "$srclive"); working=$live cost=$live; email=""; fi
@@ -1178,7 +1178,7 @@ fleet_line() {
     jq -r --argjson now "$now" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
         "fleet: \(.live) live (\(.working) working"
-        + (if .working_cost != .working then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
+        + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
         + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
         + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
         + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)

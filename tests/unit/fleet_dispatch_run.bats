@@ -398,7 +398,7 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 4 live sessions (the human is away'
   # A spare over the away target is held to it; the run floor is the least it drops to, and a burn
-  # past keeps (a spare below 0) holds the target at the live count, never under 0.
+  # past keeps (a spare below 0) puts the target under the live count, never under 0.
   jq '.fleet.spare = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 10 live sessions (the human is away'
