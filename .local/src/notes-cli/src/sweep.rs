@@ -356,6 +356,28 @@ mod tests {
         sweep_section(body, |h| h.eq_ignore_ascii_case("Focus")).unwrap()
     }
 
+    // A sheet row's brief can hold an indented `---` or `### Now`: a note of the row, not the
+    // scaffold that closes a section. Only the same text at column 0 is scaffold.
+    #[test]
+    fn a_sheet_rows_indented_scaffold_stays_in_its_block() {
+        let body = [
+            "- [ ] a #low",
+            "    ---",
+            "    ### Now",
+            "### Now",
+            "- [ ] b #low",
+        ];
+        let t = task_body(&body, true);
+        assert_eq!(
+            t.open,
+            vec![
+                vec!["- [ ] a #low", "    ---", "    ### Now"],
+                vec!["- [ ] b #low"]
+            ]
+        );
+        assert!(t.prose.is_empty(), "{:?}", t.prose);
+    }
+
     // A tag written past the trailing marker is invisible to `task_text`, which truncates at
     // the first `<!--` before stripping tags. It would then leak as raw `#urgent` onto every
     // board row and cockpit line. Every closed row on a project sheet carries a `pr:` marker.

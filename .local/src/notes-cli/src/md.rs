@@ -127,9 +127,10 @@ pub fn section_end(lines: &[&str], from: usize) -> usize {
 /// A section boundary because Focus is the LAST H2 of a daily note (Notes moved above it in
 /// #368), so without this the footer sits inside Focus: the sweep strips its `---` as lane
 /// scaffold and files the link line as a Focus line, and every `notes today` then appends
-/// a fresh footer below it.
+/// a fresh footer below it. The rule sits at column 0 (`daily::footer_idx`, datetag.lua): an
+/// indented `---` is a row's note.
 pub fn is_footer_rule(lines: &[&str], i: usize) -> bool {
-    lines[i].trim() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["))
+    lines[i].trim_end() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["))
 }
 
 /// Capture the raw lines of the authored region under `## heading`. Returns `None` if the

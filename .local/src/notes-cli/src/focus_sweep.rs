@@ -304,8 +304,7 @@ after
         // that tests/integ/notes_save_sweep.bats ("a save keeps an indented ---") runs through
         // the real plugin, so either side drifting fails its own test.
         let note = include_str!("../tests/fixtures/focus-sweep/indented-scaffold.in.md");
-        let expected =
-            include_str!("../tests/fixtures/focus-sweep/indented-scaffold.out.md");
+        let expected = include_str!("../tests/fixtures/focus-sweep/indented-scaffold.out.md");
         assert_eq!(sweep_content(note).unwrap(), expected);
     }
 
