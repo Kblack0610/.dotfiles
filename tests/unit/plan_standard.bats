@@ -157,6 +157,16 @@ phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do p
   assert_output ''
   run gate untyped "$(base; printf '\n```\nrun it all in this session\n```\n'; phases 2)"
   assert_output ''
+  run gate untyped "$(base; printf '\nNever run phases in this session; file them as a chain.\n'; phases 2)"
+  assert_output ''
+}
+
+@test "the chain check counts open phases as the queue does" {
+  [ -r "$ROOT/.local/lib/plan-phases.sh" ] # the parser the hook sources
+  run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n* [ ] p1\n* [ ] p2\n')"
+  assert_output --partial '2 open phases run as a chain'
+  run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n- [ ] p1\n  - [ ] a step inside p1\n')"
+  assert_output ''
 }
 
 @test "each label is required" {
