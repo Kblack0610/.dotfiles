@@ -184,6 +184,29 @@ pub const ROUTES: &[Route] = &[
     ),
     route("POST", SIGNIN_KEY, |_| "signin.started".into(), &[], &[]),
     route("POST", "/logout", |_| "signin.ended".into(), &[], &[]),
+    // The widget key's push routes open with no session, so `layer` never records them; the
+    // entries only name them. The push result has its own file (`push::result_file`).
+    route(
+        "POST",
+        "/widget/push-register",
+        |_| "push.registered".into(),
+        &[],
+        &[],
+    ),
+    route(
+        "DELETE",
+        "/widget/push-register",
+        |_| "push.unregistered".into(),
+        &[],
+        &[],
+    ),
+    route(
+        "POST",
+        "/widget/push-send",
+        |_| "push.poked".into(),
+        &[],
+        &[],
+    ),
 ];
 
 /// The path parameters of `pattern` (`{name}` segments) when `path` matches it.

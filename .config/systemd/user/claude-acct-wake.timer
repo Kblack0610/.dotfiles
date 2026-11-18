@@ -1,0 +1,12 @@
+[Unit]
+Description=Look for Claude sessions to wake every 2 minutes
+
+# No event says an account was signed in again, so this samples. The wake itself paces
+# (WAKE_GAP_MIN, WAKE_BATCH in .config/claude-acct/pace.conf), so a tighter tick sends no more.
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

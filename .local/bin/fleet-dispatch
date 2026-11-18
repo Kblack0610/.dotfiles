@@ -578,6 +578,16 @@ account_env() {
   local dir; if [ "$#" -gt 0 ]; then dir=$1; else dir=$(account_dir); fi
   if [ -n "$dir" ]; then printf 'CLAUDE_CONFIG_DIR=%q ' "$dir"; else printf 'env -u CLAUDE_CONFIG_DIR '; fi
 }
+# token_env [dir]: the launch-line prefix handing that account's long-lived token to a claude
+# session (`claude-acct setup-token`), or nothing when it has none. The line carries a command
+# substitution its pane's shell runs at launch, never the token itself. Only the answer that starts
+# with the assignment counts. A claude-cloud-run pane takes none: a cloud session needs the login.
+token_env() {
+  local dir p; if [ "$#" -gt 0 ]; then dir=$1; else dir=$(account_dir); fi
+  p=$(claude-acct token-prefix "$dir" 2>/dev/null) || return 0
+  case "$p" in CLAUDE_CODE_OAUTH_TOKEN=*) printf '%s' "$p" ;; esac
+  return 0
+}
 
 # telemetry_env <cwd> [item]: the launch-line prefix claude-telemetry.sh's claude_launch_env gives:
 # a parent Claude session's identity dropped, the shared launch env and (on the LAN) the OTel export,
@@ -2200,7 +2210,7 @@ cmd_start() {
       eff=$(claude_effort "$it") || return 2
       [ -n "$model" ] || model=$(jq -r '.model // empty' <<<"${it:-null}")   # a resume keeps the model its start ran
       lane_sandbox "$cwd" || return 1
-      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
+      cmd="${item:+AGENT_QUEUE_ITEM=$(printf '%q' "$item") }$(telemetry_env "$cwd" "$item")$(token_env)$(account_env)${sbx_env}claude${model:+ --model $(printf '%q' "$model")}$eff${item:+$(dropped_tools "$it")}$sbx_flags $flags --resume $(printf '%q' "$resume")${prompt:+ $(printf '%q' "$prompt")}"
     fi
     if [ -n "$joined" ]; then
       target=$(tmux -L "$server" new-window -d -P -F '#{pane_id}' -t "=$session:" -n "$window" -c "$cwd" "$cmd") ||
@@ -2232,7 +2242,7 @@ cmd_start() {
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
       lane_sandbox "$cwd" || return 1
-      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
+      cmd="${state_env}AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(token_env "$acct")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
       cmd="$cmd $flags $(printf '%q' "$(item_brief "$it")")"

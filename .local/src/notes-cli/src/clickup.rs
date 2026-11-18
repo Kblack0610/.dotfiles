@@ -245,19 +245,17 @@ fn apply_pushes(tickets: &mut [Ticket], plans: &[(usize, &'static str)], log: &L
 }
 
 /// Build the Focus line for a new ticket: a stamped, in-progress (`[/]`) task carrying its
-/// priority tag and the `<!-- cu:ID -->` marker last. `stamp_line` resets `[/]`→`[ ]`, so the
-/// checkbox is set to in-progress AFTER stamping; the marker rides at the very end where
+/// priority tag and the `<!-- cu:ID -->` marker last. The marker rides at the very end, where
 /// `task_key` truncates it away (dedup stays title-based) and the priority still parses.
 fn new_focus_line(t: &Ticket, today: chrono::NaiveDate) -> String {
     let tag = priority_tag(&t.priority);
     let base = if tag.is_empty() {
-        format!("- [ ] {}", t.title)
+        format!("- [/] {}", t.title)
     } else {
-        format!("- [ ] {} {}", t.title, tag)
+        format!("- [/] {} {}", t.title, tag)
     };
     let stamped = md::stamp_line(&base, today, today);
-    let in_progress = md::set_checkbox(&stamped, '/');
-    format!("{in_progress} <!-- cu:{} -->", t.id)
+    format!("{stamped} <!-- cu:{} -->", t.id)
 }
 
 /// `notes clickup sync` — pull in-progress ClickUp tickets into today's `## Focus`.

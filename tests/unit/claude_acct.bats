@@ -2226,3 +2226,525 @@ EOS
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
   [ ! -e "$ws" ]
 }
+
+# --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------
+
+# login <dir> [access end ms] [login end ms] -> a signed-in credentials file
+login() {
+  printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":%s,"refreshTokenExpiresAt":%s}}\n' \
+    "${2:-$(((NOW + 3600) * 1000))}" "${3:-$(((NOW + 20 * 86400) * 1000))}" > "$1/.credentials.json"
+}
+
+# session <pane> <account> <status> [stuck] -> one agent-panel row, and with "stuck" a pane on Not logged in
+session() {
+  jq -nc --arg p "$1" --arg a "$2" --arg s "$3" \
+    '{harness: "claude", pane: $p, target: ("hub/s" + $p), account: $a, status: $s, parked: false}' >> "$NOTES_FIXTURE/agent-panel.list.json"
+  if [[ "${4:-}" == stuck ]]; then
+    printf 'did the work\n\nNot logged in · Please run /login\n\n> \n' > "$NOTES_FIXTURE/tmux.capture.${1#*/}"
+  fi
+}
+
+sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
+
+@test "check auth: every account signed in is quiet, and the line says how many" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  run "$ACCT" check auth
+  assert_success
+  assert_output '2 accounts signed in'
+}
+
+@test "check auth: a credentials file emptied to {} trips, naming the account and the login command" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  echo '{}' > "$ALT/.credentials.json"
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'alt signed out (the credentials file holds no login): cl --acct alt, then /login'
+  # a missing file and a file with only an access token are signed out too
+  rm "$ALT/.credentials.json"
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'alt signed out (no credentials file): cl --acct alt, then /login'
+  printf '{"claudeAiOauth":{"accessToken":"a"}}\n' > "$ALT/.credentials.json"
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'alt signed out (no refresh token)'
+  # negative control: signing in again clears it
+  login "$ALT"
+  run "$ACCT" check auth
+  assert_success
+}
+
+@test "check auth: every account signed out is one line naming each, and counts the sessions stopped on it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  echo '{}' > "$HOME/.claude/.credentials.json"; echo '{}' > "$ALT/.credentials.json"
+  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'main signed out'
+  assert_output --partial 'alt signed out (the credentials file holds no login), 2 sessions on Not logged in: cl --acct alt, then /login'
+}
+
+@test "check auth: an access token long past its end with sessions working is a refresh that failed; idle, it is not" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" $(((NOW - 40 * 60) * 1000))
+  run "$ACCT" check auth
+  assert_success
+  session hub/%1 alt busy
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'alt not refreshing: its access token ended 40m ago with 1 sessions working: cl --acct alt, then /login'
+  # inside the grace Claude is still about to refresh
+  login "$ALT" $(((NOW - 10 * 60) * 1000))
+  run "$ACCT" check auth
+  assert_success
+}
+
+@test "check expiry: a login ending within three days trips, naming the account; a month out is quiet" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" $(((NOW + 3600) * 1000)) $(((NOW + 2 * 86400 + 3 * 3600) * 1000))
+  run "$ACCT" check expiry
+  assert_failure 1
+  assert_output 'alt login ends in 2d 3h: cl --acct alt, then /login'
+  login "$ALT"
+  run "$ACCT" check expiry
+  assert_success
+  assert_output 'no login ends within 3 days'
+}
+
+@test "check expiry: a signed-out account is check auth's, not named here" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  echo '{}' > "$ALT/.credentials.json"
+  run "$ACCT" check expiry
+  assert_success
+}
+
+@test "textfile: publishes each account's sign-in, its token ends, its last write and the stopped sessions" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  login "$HOME/.claude" $(((NOW + 3600) * 1000)) $(((NOW + 20 * 86400) * 1000))
+  echo '{}' > "$ALT/.credentials.json"
+  session hub/%1 alt idle stuck; session hub/%2 alt idle stuck; session hub/%3 main busy
+  mkdir -p "$SANDBOX/tf"
+  run "$ACCT" textfile "$SANDBOX/tf"
+  assert_success
+  run cat "$SANDBOX/tf/claude_acct.prom"
+  assert_line 'claude_account_logged_in{account="main",kind="claude"} 1'
+  assert_line 'claude_account_logged_in{account="alt",kind="claude"} 0'
+  assert_line "claude_account_access_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 3600))"
+  assert_line "claude_account_refresh_expires_timestamp_seconds{account=\"main\",kind=\"claude\"} $((NOW + 20 * 86400))"
+  assert_line --regexp '^claude_account_credentials_written_timestamp_seconds\{account="main",kind="claude"\} [0-9]+$'
+  assert_line 'claude_account_not_logged_in_sessions{account="alt",kind="claude"} 2'
+  assert_line 'claude_account_not_logged_in_sessions{account="main",kind="claude"} 0'
+  assert_line 'claude_fleet_not_logged_in_sessions 2'
+  assert_line 'claude_fleet_signed_out_accounts 1'
+  # an emptied file has no token to end: no expiry line for it
+  refute_line --partial 'expires_timestamp_seconds{account="alt"'
+}
+
+@test "auth: the table names each account's state, and --json is the rows" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  echo '{}' > "$ALT/.credentials.json"
+  session hub/%1 main busy
+  run "$ACCT" auth
+  assert_success
+  assert_output --regexp 'main +yes +in 1h 0m +in 20d 0h .* 1 +0'
+  assert_output --partial 'alt'
+  assert_output --partial 'NO:the_credentials_file_holds_no_login'
+  run jq -c '[.[] | {name, logged_in, working}]' <(
+    "$ACCT" auth --json)
+  assert_output '[{"name":"main","logged_in":true,"working":1},{"name":"alt","logged_in":false,"working":0}]'
+}
+
+@test "stuck: only an idle session whose last lines say Not logged in counts; a quote higher up or a busy session does not" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  session hub/%1 main idle stuck
+  session hub/%2 main idle
+  printf 'Not logged in · Please run /login\nthen I carried on\nline\nline\nline\nline\nline\nline\nline\n> \n' > "$NOTES_FIXTURE/tmux.capture.%2"
+  session hub/%3 main busy stuck
+  run jq -c '[.[] | {name, stuck}]' <("$ACCT" auth --json)
+  assert_output '[{"name":"main","stuck":1},{"name":"alt","stuck":0}]'
+}
+
+@test "wake: a session stopped on Not logged in, on an account signed in again, is typed to; a signed-out account's is not" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  echo '{}' > "$ALT/.credentials.json"
+  session hub/%1 main idle stuck
+  session hub/%2 alt idle stuck
+  run "$ACCT" wake
+  assert_success
+  assert_output 'woke hub/shub/%1 (hub/%1, account main), try 1 of 3'
+  assert_equal "$(sent)" 1
+  grep -q -- 'agent-panel send --pane hub/%1 You were signed out and are signed in again' "$NOTES_FIXTURE/calls.log"
+  ! grep -q -- 'send --pane hub/%2' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "wake: at most WAKE_BATCH a run, the rest the next run; a loaded machine wakes one" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_LOADAVG="$SANDBOX/loadavg"
+  echo '0.1 0.1 0.1 1/1 1' > "$SANDBOX/loadavg"
+  login "$HOME/.claude"
+  for i in 1 2 3 4 5; do session "hub/%$i" main idle stuck; done
+  run "$ACCT" wake
+  assert_success
+  assert_equal "$(sent)" 3
+  # the same minute again: the three are inside their gap, so the other two go
+  run "$ACCT" wake
+  assert_equal "$(sent)" 5
+  # negative control: past the load line a run wakes one
+  : > "$NOTES_FIXTURE/calls.log"
+  rm -rf "$XDG_CACHE_HOME/claude-acct/wake"
+  echo '999 999 999 1/1 1' > "$SANDBOX/loadavg"
+  run "$ACCT" wake
+  assert_equal "$(sent)" 1
+}
+
+@test "wake: a pane waits out its gap, is tried WAKE_TRIES times, and then check auth pages it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake; assert_output --partial 'try 1 of 3'
+  run "$ACCT" wake; assert_output ''
+  for t in 2 3; do
+    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
+    run "$ACCT" wake
+    assert_output --partial "try $t of 3"
+  done
+  export CLAUDE_ACCT_NOW=$((NOW + 4 * 600))
+  run "$ACCT" wake
+  assert_output ''
+  assert_equal "$(sent)" 3
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'main 1 sessions stay on Not logged in after the wakes: cl --acct main, then /login'
+}
+
+@test "wake: a pane that came back is forgotten, so a later sign-out starts its tries again" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  printf 'working again\n> \n' > "$NOTES_FIXTURE/tmux.capture.%1"
+  run "$ACCT" wake
+  assert_output ''
+  [ ! -e "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+}
+
+@test "wake --dry-run names what it would wake and types nothing" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake --dry-run
+  assert_output 'would wake hub/shub/%1 (hub/%1, account main)'
+  assert_equal "$(sent)" 0
+}
+
+@test "auth: agent-panel missing or failing is said on stderr, never counted as no stuck sessions in silence" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run --separate-stderr "$ACCT" check auth
+  assert_success
+  [[ "$stderr" == *'agent-panel list failed (1)'* ]]
+}
+
+@test "check auth: a refresh token past its end is signed out even though the file still holds it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" "$(((NOW - 7200) * 1000))" "$(((NOW - 3 * 3600) * 1000))"
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'alt signed out (its login ended 3h ago): cl --acct alt, then /login'
+}
+
+@test "wake: a send the pane did not take still counts as a try, so check auth reaches it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  session hub/%1 main idle stuck
+  touch "$NOTES_FIXTURE/agent-panel.unsent"
+  for t in 0 1 2 3 4; do
+    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
+    run "$ACCT" wake
+  done
+  assert_equal "$(sent)" 3
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'main 1 sessions stay on Not logged in'
+}
+
+@test "wake: a pane at work keeps its tries, and one a human touched a minute ago is left alone" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  rm "$NOTES_FIXTURE/agent-panel.list.json"
+  session hub/%1 main busy
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  rm "$NOTES_FIXTURE/agent-panel.list.json" "$XDG_CACHE_HOME/claude-acct/wake/hub_%1"
+  jq -nc --argjson h "$((NOW - 60))" '{harness: "claude", pane: "hub/%1", target: "hub/s%1", account: "main", status: "idle", parked: false, human_at: $h}' \
+    > "$NOTES_FIXTURE/agent-panel.list.json"
+  run "$ACCT" wake
+  assert_output ''
+  assert_equal "$(sent)" 1
+}
+
+@test "wake: when agent-panel cannot list, nothing is woken and the ledger stays" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$ACCT" wake
+  assert_failure 1
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+}
+
+# --- long-lived tokens (setup-token) ---------------------------------------------------
+# rbw is a stub over $SANDBOX/vault: one file per entry, the password on line 1, the notes after a
+# blank line. `rbw add|edit` runs $EDITOR on a temp file like the real one, and every call's argv
+# lands in vault/argv.log, so a test can prove the token is never an argument.
+
+TOK_MAIN=sk-ant-oat01-mainmainmainmain
+TOK_ALT=sk-ant-oat01-altaltaltalt
+
+rbw_stub() {
+  export SANDBOX
+  mkdir -p "$SANDBOX/vault"
+  cat > "$SANDBOX/bin/rbw" <<'STUB'
+#!/usr/bin/env bash
+V="$SANDBOX/vault"
+echo "$*" >> "$V/argv.log"
+case "$1" in
+  unlocked) [[ ! -e "$V/locked" ]] ;;
+  get)
+    if [[ "$2" == --raw ]]; then
+      [[ -f "$V/$3" ]] || exit 1
+      jq -n --arg n "$(sed '1,2d' "$V/$3")" '{notes: $n}'
+    else
+      [[ -f "$V/$2" ]] || exit 1
+      head -1 "$V/$2"
+    fi ;;
+  add|edit)
+    t=$(mktemp); "${VISUAL:-$EDITOR}" "$t"; cp "$t" "$V/$2"; rm -f "$t" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/rbw"
+}
+
+# vault_put <entry> <token> [notes]
+vault_put() {
+  mkdir -p "$SANDBOX/vault"
+  printf '%s\n\n%s\n' "$2" "${3:-}" > "$SANDBOX/vault/$1"
+}
+
+@test "token: prints the account's token, by name or by dir, and main for an empty arg" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token alt
+  assert_output "$TOK_ALT"
+  run "$ACCT" token "$ALT"
+  assert_output "$TOK_ALT"
+  run "$ACCT" token ''
+  assert_output "$TOK_MAIN"
+}
+
+@test "token: an account with no entry gets nothing and exit 1, silently" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ -z "$stderr" ]]
+}
+
+@test "token: a locked vault says so on stderr and prints no token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ "$stderr" == *'rbw is locked'* ]]
+}
+
+@test "token-prefix: a command substitution for an account that has a token, never the token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token-prefix "$ALT"
+  assert_success
+  assert_output --partial 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token '
+  refute_output --partial "$TOK_ALT"
+  run "$ACCT" token-prefix ''
+  assert_output ''
+}
+
+@test "run: the chosen account's token is exported, and a token inherited from a parent is dropped" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  usage main 90 90
+  usage alt 10 10
+  printf '#!/usr/bin/env bash\necho "tok=${CLAUDE_CODE_OAUTH_TOKEN:-none} dir=${CLAUDE_CONFIG_DIR:-main}"\n' > "$SANDBOX/bin/claude"
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run
+  assert_output --partial "tok=$TOK_ALT dir=$ALT"
+  # main has no token: the parent's must not carry over
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run --acct main
+  assert_output --partial 'tok=none dir=main'
+}
+
+@test "usage read: a missing login falls back to the setup token" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$SANDBOX/curl.args"\necho "{\\"five_hour\\":{\\"utilization\\":5},\\"seven_day\\":{\\"utilization\\":5}}"\n' > "$SANDBOX/bin/curl"
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
+  run "$ACCT" status --json
+  assert_success
+  grep -q "Authorization: Bearer $TOK_MAIN" "$SANDBOX/curl.args"
+}
+
+@test "check tokens: good, inside the warn window, expired, and unread when rbw is locked" {
+  rbw_stub
+  export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
+  vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-11-17'
+  run "$ACCT" check tokens
+  assert_success
+  assert_output '2 tokens good'
+  rm "$SANDBOX/vault/claude-oauth-alt"
+  run "$ACCT" check tokens
+  assert_success
+  assert_output 'no token yet: alt'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expires 2026-12-01, in 14d'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-11-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expired 2026-11-01'
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" check tokens
+  assert_failure 2
+}
+
+# A claude stub for setup-token: `setup-token` prints a token, `-p` answers ok. TOKEN_OUT empty
+# prints none, so the paste path runs.
+setup_stubs() {
+  rbw_stub
+  cat > "$SANDBOX/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  setup-token) [[ -n "${TOKEN_OUT:-}" ]] && printf 'Your token:\n\033[1m%s\033[0m\nStore it safely\n' "$TOKEN_OUT" ;;
+  -p) echo "ok"; echo "$CLAUDE_CODE_OAUTH_TOKEN" > "$SANDBOX/probe.token" ;;
+  *) echo "2.1.0 (Claude Code)" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/claude"
+  printf '#!/usr/bin/env bash\nprintf 403\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
+  printf '{"oauthAccount":{"emailAddress":"alt@example.com"}}\n' > "$ALT/.claude.json"
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+}
+
+@test "setup-token: names the email, verifies the token, stores it with its expiry, argv never carries it" {
+  command -v script >/dev/null || skip "no script(1)"
+  setup_stubs
+  TOKEN_OUT=$TOK_ALT run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'sign in as alt@example.com'
+  assert_output --partial 'verified'
+  assert_output --partial 'usage endpoint: rejected (HTTP 403)'
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+  grep -q '^email: alt@example.com' "$SANDBOX/vault/claude-oauth-alt"
+  grep -q "^expires: $(date -d '+365 days' +%F)" "$SANDBOX/vault/claude-oauth-alt"
+  [[ "$(cat "$SANDBOX/probe.token")" == "$TOK_ALT" ]]
+  ! grep -q "$TOK_ALT" "$SANDBOX/vault/argv.log"
+  # nothing of the token is left in the scratch dir
+  ! grep -rq "$TOK_ALT" "$TMPDIR" 2>/dev/null
+}
+
+@test "setup-token: a screen with no token falls back to a hidden paste" {
+  setup_stubs
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_success
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+}
+
+@test "setup-token: an account that has a token is skipped, --renew replaces it" {
+  setup_stubs
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-01-01'
+  run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'already has a token'
+  run "$ACCT" setup-token --renew alt <<< "sk-ant-oat01-newnewnewnew"
+  assert_success
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnew ]]
+}
+
+@test "setup-token: an API key in the environment stops it before any call" {
+  setup_stubs
+  ANTHROPIC_API_KEY=sk-ant-api03-x run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'would not bill the subscription'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+  [[ ! -e "$SANDBOX/probe.token" ]]
+}
+
+@test "setup-token: a token that runs no call is not stored" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) exit 1 ;; *) exit 0 ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "setup-token: a locked vault stops it up front" {
+  setup_stubs
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" setup-token
+  assert_failure
+  assert_output --partial 'rbw is locked'
+}
+
+@test "resume_cmd: the token prefix follows launch_env, so its env -u does not drop the token" {
+  src
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  launch_env() { printf "env -u CLAUDE_CODE_OAUTH_TOKEN "; }
+  run resume_cmd 1 /w "$ALT" 'claude --resume s1' hi fix-menu
+  # the assignment comes after the launch env's `env -u ... -u CLAUDE_CODE_OAUTH_TOKEN`, never before it
+  [[ "$output" =~ -u\ CLAUDE_CODE_OAUTH_TOKEN.*\ CLAUDE_CODE_OAUTH_TOKEN=\"\$\(claude-acct\ token ]] || fail "order: $output"
+  [[ "$output" != *"$TOK_ALT"* ]]
+}
+
+@test "usage read: an expired login stays 'token expired' when the setup token is refused too" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  creds "$HOME/.claude" 1000
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
+  run "$ACCT" status --json
+  assert_success
+  [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == expired ]]
+}
+
+@test "setup-token: a call that exits 0 without answering is not a verified token" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) echo "login required" ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}

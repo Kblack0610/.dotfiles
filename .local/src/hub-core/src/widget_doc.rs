@@ -121,6 +121,22 @@ pub struct Document {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
     pub sections: Vec<Section>,
+    /// Where the app registers for "fetch now" pushes. agent-web sets it, since the route is its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push: Option<Push>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Push {
+    pub register: String,
+}
+
+impl Document {
+    /// What the widget draws, without the read time: two reads that draw the same give the same
+    /// key, so a push goes out only when it changes.
+    pub fn content_key(&self) -> String {
+        serde_json::to_string(&(&self.state, &self.sections)).unwrap_or_default()
+    }
 }
 
 /// The document for `cards` (already picked and ordered), read at `now` (epoch seconds).
@@ -153,6 +169,7 @@ pub fn document(cards: &[Card], missing: &[&str], now: i64, base: Option<&str>) 
         ttl_s: TTL_S,
         actions: open(&Link::tab("home"), base),
         sections,
+        push: None,
     }
 }
 
@@ -337,6 +354,18 @@ mod tests {
     }
 
     #[test]
+    fn the_content_key_ignores_the_read_time_and_moves_with_what_is_drawn() {
+        let a = document(&[card()], &[], 0, None);
+        assert_eq!(
+            a.content_key(),
+            document(&[card()], &[], 99, None).content_key()
+        );
+        let mut c = card();
+        c.big = "4".into();
+        assert_ne!(a.content_key(), document(&[c], &[], 0, None).content_key());
+    }
+
+    #[test]
     fn only_http_urls_become_actions() {
         assert!(open(&Link::Url("javascript:alert(1)".into()), None).is_empty());
         assert!(open(&Link::Url("intent://x".into()), None).is_empty());
@@ -361,12 +390,15 @@ mod tests {
             Card::failed("costs", "Costs", "", "ccusage: timed out"),
             Card::reading("infra", "Infra"),
         ];
-        let d = document(
+        let mut d = document(
             &cards,
             &["nope"],
             1_763_400_000,
             Some("https://agents.example.com"),
         );
+        d.push = Some(Push {
+            register: "https://agents.example.com/widget/push-register".into(),
+        });
         std::fs::write(out, serde_json::to_string_pretty(&d).unwrap()).unwrap();
     }
 }
