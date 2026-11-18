@@ -124,6 +124,10 @@ own_session() {
 # The Claude session id of the caller, which every reader of a session (outcomes, fleet-bench,
 # day-log, Langfuse) keys on. Claude Code exports it to every command it runs.
 claude_sid() { [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && printf '%s\n' "$CLAUDE_CODE_SESSION_ID"; }
+# The caller's Claude account as fleet-dispatch start records it (the config dir's basename, `main`
+# when unset). fleet-bench sources puts a landed item on a source by its `account:`, and a hand
+# session's outcome row, the other way to one, lands only when the session ends.
+claude_account() { basename "${CLAUDE_CONFIG_DIR:-main}"; }
 # The caller's worktree session (`<repo>-agent-N`) on any world, else nothing, so a hand start on
 # hub or work records itself as it does on lab. An item's session is what cancel and the reap act
 # on, so a checkout session (hub:dotfiles, hub:tools: one session, many conversations) never
@@ -1255,7 +1259,7 @@ cmd_add() {
     [ -n "$running" ] && printf 'started: %s\n' "$now"
     [ -n "$session" ] && printf 'session: %s\n' "$session"
     [ -n "$window" ] && printf 'window: %s\n' "$window"
-    [ -n "$sid" ] && printf 'sessions: %s\n' "$sid"
+    [ -n "$sid" ] && printf 'sessions: %s\naccount: %s\n' "$sid" "$(claude_account)"
     [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
@@ -1509,13 +1513,16 @@ cmd_mine() {
 # claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item, done or not. Run by
 # fleet-dispatch start for the id it launches with, and by agent-land; adding one already there is a no-op.
 cmd_claim() {
-  local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur
+  local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur own=''
   shift
-  case "${1:-}" in --sid) sid="${2:?--sid needs a value}" ;; '') sid="$(claude_sid)" || die "no Claude session: pass --sid" ;; *) die "usage: agent-queue claim <slug> [--sid id]" ;; esac
+  case "${1:-}" in --sid) sid="${2:?--sid needs a value}" ;; '') sid="$(claude_sid)" || die "no Claude session: pass --sid"; own=1 ;; *) die "usage: agent-queue claim <slug> [--sid id]" ;; esac
   case "$sid" in *[!A-Za-z0-9_-]*) die "not a session id: $sid" ;; esac
   lock
   # `any`: a task split across repos lands its second PR on a done item, from another session.
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  # The caller's own session names its account when the item has none; a --sid caller (fleet-dispatch
+  # start) records the account it launched on itself.
+  [ -z "$own" ] || [ -n "$(fm_get "$f" account)" ] || header_set "$f" account "$(claude_account)"
   cur="$(fm_get "$f" sessions)"
   case " $cur " in *" $sid "*) echo "$slug: $sid already claimed"; return 0 ;; esac
   header_set "$f" sessions "${cur:+$cur }$sid"
