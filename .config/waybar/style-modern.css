@@ -1,0 +1,7 @@
+/* waybar-modern's stylesheet: launch.sh passes it to waybar instead of style.css when
+ * `desk get bar` is waybar-modern (docs/desk.md). The theme's style.css first, then the
+ * palette colours theme-switch writes, then the modern layout on top. The pin bar
+ * (pin.sh) loads style.css, so it keeps the classic look. */
+@import url("style.css");
+@import url("palette.css");
+@import url("layout-modern.css");
