@@ -22,8 +22,9 @@ own, with no prompt or tool result after it, and either:
   text after it (a findings list answering its own question). A one-line postscript with no
   question ("the screenshot is at X") does not hide the paragraph before it. Pure manners
   ("anything else?", "any questions?") do not count, or
-- it hands you a step: one of its last two blocks is a fenced `! <command>` line, or the
-  closing paragraph says "when that's done", "once you've", "let me know when" and the like.
+- it hands you a step: one of its last two blocks is a fenced `! <command>` line, or a fence
+  sits beside a paragraph saying "run this", "paste" or "your terminal", or the closing
+  paragraph says "when that's done", "once you've", "let me know when", "tell me when" and the like.
 
 `agent-panel time-use <transcript.jsonl>` prints the session's closed time by what it waited on, as one JSON object, the same numbers as `time_use` in `list --json`; the nightly session-outcomes run reads it. The rule is in `.local/src/docs/fleet-states.md`, and `~/.config/agent-panel/time-use.conf` says which commands are a gate, a test or a build (a `build` counts as `jobs` in the time numbers; only `open_job` reads it apart).
 
