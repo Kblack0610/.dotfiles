@@ -177,7 +177,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
 
 @test "an answer to a session live on a fleet worker is typed in there, through that worker's agent-panel send" {
   local a
-  sandbox_fleet_worker hp
+  sandbox_fleet hp
   printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
   "$AGENT_ASK" answer "$a" 'yes; ship' 2>/dev/null
@@ -193,7 +193,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
 
 @test "a worker that does not answer the send fails the delivery saying so; one down for the read files the board row" {
   local a b
-  sandbox_fleet_worker hp
+  sandbox_fleet hp
   printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
   "$AGENT_ASK" answer "$a" yes 2>/dev/null

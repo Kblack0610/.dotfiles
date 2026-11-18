@@ -53,7 +53,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, parked, session, tmux};
+use agent_panel::{chooser, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
 use axum::body::Bytes;
@@ -75,6 +75,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::CompressionLayer;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -112,6 +114,8 @@ struct AppState {
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
+    /// `/api/watch` as served: the fleet state with its asks, and the shepherd's transitions.
+    watch: cache::EventCache<(Bytes, bool), WATCH_SECS>,
 }
 
 type Shared = Arc<AppState>;
@@ -126,6 +130,10 @@ const AGENTS_SECS: u64 = 15;
 const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
 /// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
 const HOME_SECS: u64 = 30;
+/// The Watch tab's sources: the fleet state and shepherd log (`classify`), and asks.
+const WATCH_KINDS: [&str; 2] = ["watch", "asks"];
+/// A session's status in the fleet state moves without an event too, so not kept past this.
+const WATCH_SECS: u64 = 15;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -153,6 +161,7 @@ async fn main() -> Result<()> {
         queue: queue::Cache::new(&events),
         agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
+        watch: cache::EventCache::named(events.subscribe(), &WATCH_KINDS, "watch"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -255,10 +264,12 @@ async fn main() -> Result<()> {
         // with no cookie; every read of data stays behind sign-in or the widget key.
         .route("/static/{name}", get(static_file))
         .route("/widget", get(widget::page))
+        .route("/widget.json", get(widget::doc))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
+        .layer(compression())
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -683,9 +694,18 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     if write && res.status().is_success() {
         s.agents.clear();
         s.home.clear();
+        s.watch.clear();
         projects::GATHERED.clear();
     }
     res
+}
+
+/// Outermost, so every body leaves compressed: Cloudflare compresses off the LAN, and nothing
+/// did on it. SSE, images, fonts (woff2 is compressed already) and bodies under 32 bytes go as
+/// they are.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/")))
 }
 
 /// The app for a signed-in browser, the sign-in page otherwise.
@@ -907,40 +927,36 @@ async fn collect() -> Vec<chooser::Agent> {
         .unwrap_or_default()
 }
 
-/// A live agent: on a pane here, or on a fleet worker (`remote`).
-enum Live {
-    Here(Box<chooser::Agent>),
-    There(remote::Remote),
-}
-
-/// A failed call to a worker, as the error the page shows.
-fn worker_err(host: &str, e: remote::Failed) -> (StatusCode, String) {
-    match e {
-        remote::Failed::Unreachable(why) => bad(StatusCode::BAD_GATEWAY, why),
-        remote::Failed::Exit(c, why) => bad(
-            StatusCode::BAD_GATEWAY,
-            format!("on {host}, exit {c}: {why}"),
-        ),
+/// A failed call to a pane, as the error the page shows.
+fn pane_err(host: Option<&str>, e: remote::Failed) -> (StatusCode, String) {
+    match (e, host) {
+        (remote::Failed::Unreachable(why), _) => bad(StatusCode::BAD_GATEWAY, why),
+        (remote::Failed::Exit(c, why), Some(h)) => {
+            bad(StatusCode::BAD_GATEWAY, format!("on {h}, exit {c}: {why}"))
+        }
+        (remote::Failed::Exit(_, why), None) => bad(StatusCode::BAD_GATEWAY, why),
     }
 }
 
-/// The live agent behind a target, here or on the fleet worker a `<host>@...` target names (that
-/// worker's own agent-panel says). Only targets that are agents right now are accepted, so the API
-/// cannot be pointed at an arbitrary tmux pane.
-async fn find(target: &str) -> ApiResult<Live> {
+/// The live agent behind a target, here or on the fleet worker a `<host>@...` target names. Only
+/// targets that are agents right now are accepted, so the API cannot be pointed at an arbitrary
+/// tmux pane. A worker's is read from the snapshot the minute record publishes, never over ssh.
+async fn find(target: &str) -> ApiResult<remote::Live> {
     let gone = || bad(StatusCode::NOT_FOUND, format!("no live agent at {target}"));
-    if let Some((host, local)) = remote::split(target) {
-        return remote::find(host, local)
+    if let Some((host, _)) = remote::split(target) {
+        return remote::find(&boards::worker_panel(), target)
             .await
-            .map_err(|e| worker_err(host, e))?
-            .map(Live::There)
+            .map_err(|e| pane_err(Some(host), e))?
             .ok_or_else(gone);
     }
     collect()
         .await
         .into_iter()
         .find(|a| a.target == target)
-        .map(|a| Live::Here(Box::new(a)))
+        .map(|a| remote::Live {
+            host: None,
+            pane: a.pane,
+        })
         .ok_or_else(gone)
 }
 
@@ -1055,19 +1071,10 @@ struct TargetQuery {
 }
 
 async fn screen(Query(q): Query<TargetQuery>) -> ApiResult<String> {
-    match find(&q.t).await? {
-        Live::Here(agent) => capture(agent.pane).await,
-        Live::There(r) => r
-            .capture(SCREEN_LINES)
-            .await
-            .map_err(|e| worker_err(&r.host, e)),
-    }
-}
-
-async fn capture(pane: String) -> ApiResult<String> {
-    tokio::task::spawn_blocking(move || tmux::capture_pane(&pane, false, SCREEN_LINES))
+    let live = find(&q.t).await?;
+    live.capture(SCREEN_LINES)
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| pane_err(live.host.as_deref(), e))
 }
 
 #[derive(Deserialize)]
@@ -1141,42 +1148,18 @@ async fn send(Json(b): Json<SendBody>) -> ApiResult<StatusCode> {
             "the session did not take the Enter; the text is in its input box",
         )
     };
-    let agent = match find(&b.t).await? {
-        Live::Here(agent) => *agent,
-        // A worker's session: that worker's agent-panel types the text, its tmux sends the key.
-        Live::There(r) => {
-            let taken = r
-                .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
-                .await
-                .map_err(|e| worker_err(&r.host, e))?;
-            return if taken {
-                Ok(StatusCode::NO_CONTENT)
-            } else {
-                Err(not_taken())
-            };
-        }
-    };
-    let (server, pane) = tmux::split(&agent.pane);
-    let server =
-        server.ok_or_else(|| bad(StatusCode::INTERNAL_SERVER_ERROR, "pane has no server"))?;
-
-    if !b.text.is_empty() {
-        // agent_panel::send owns typing into a pane: the bracketed paste, waiting for it to be
-        // drawn before Enter, and the check that the Enter was taken.
-        let (target, text, submit) = (agent.pane.clone(), b.text.clone(), b.submit.unwrap_or(true));
-        let sent =
-            tokio::task::spawn_blocking(move || agent_panel::send::message(&target, &text, submit))
-                .await
-                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-                .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        if sent == agent_panel::send::Sent::NotSubmitted {
-            return Err(not_taken());
-        }
+    let live = find(&b.t).await?;
+    // agent-panel send owns typing into a pane: the bracketed paste, waiting for it to be drawn
+    // before Enter, and the check that the Enter was taken. tmux sends the key.
+    let taken = live
+        .send(&b.text, b.submit.unwrap_or(true), b.key.as_deref())
+        .await
+        .map_err(|e| pane_err(live.host.as_deref(), e))?;
+    if taken {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(not_taken())
     }
-    if let Some(k) = b.key.as_deref() {
-        run_tmux(server, &["send-keys", "-t", pane, k], None).await?;
-    }
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Run `prog` with plain arguments (never a shell), `stdin` piped in when given: its stdout on
@@ -1204,37 +1187,6 @@ async fn run_cmd(prog: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<St
         Err(bad(
             StatusCode::BAD_REQUEST,
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
-        ))
-    }
-}
-
-async fn run_tmux(server: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<()> {
-    let mut cmd = tokio::process::Command::new("tmux");
-    cmd.args(["-L", server])
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let err = |e: std::io::Error| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("tmux: {e}"));
-    let mut child = cmd.spawn().map_err(err)?;
-    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(text.as_bytes()).await.map_err(err)?;
-    }
-    let out = child.wait_with_output().await.map_err(err)?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(bad(
-            StatusCode::BAD_GATEWAY,
-            format!(
-                "tmux {}: {}",
-                args[0],
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
         ))
     }
 }
@@ -1441,17 +1393,36 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
 }
 
-async fn watch_board() -> ApiResult<Json<boards::Watch>> {
-    tokio::task::spawn_blocking(|| {
-        boards::watch(
-            &boards::fleet_state(),
-            &boards::shepherd_dir().join("watch.log"),
-            &actions::System,
-        )
-    })
-    .await
-    .map(Json)
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+async fn watch_board(State(s): State<Shared>) -> ApiResult<Response> {
+    let read = s
+        .watch
+        .get_if((), read_watch, |(_, keep)| *keep)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], read.0.clone()).into_response())
+}
+
+/// `/api/watch`'s body, and whether it may be kept: a failed `agent-ask list` is named in the
+/// state's `unreadable` and served, never kept. Blocking: the fleet state read runs it.
+fn read_watch() -> (Bytes, bool) {
+    let watch = boards::watch(
+        &boards::fleet_state(),
+        &boards::shepherd_dir().join("watch.log"),
+        &actions::System,
+    );
+    let asks_read = !watch.state["unreadable"]
+        .as_array()
+        .is_some_and(|u| u.iter().any(|s| s == "agent-ask"));
+    match serde_json::to_vec(&watch) {
+        Ok(b) => (Bytes::from(b), asks_read),
+        Err(e) => {
+            eprintln!("agent-web: watch: {e}");
+            (
+                Bytes::from_static(br#"{"state":null,"transitions":[]}"#),
+                false,
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1593,6 +1564,8 @@ async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
+        s.watch.get_if((), read_watch, |(_, keep)| *keep),
+        s.queue.recent(),
         home_read(&s),
         cards::read(&s),
         briefing,
@@ -1773,7 +1746,7 @@ async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.schedules.get(q).await,
+        s.schedules.get(&s.alerts, q).await,
     )
         .into_response()
 }
@@ -1869,6 +1842,57 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
 
+    /// The response headers `path` gets from `app` when the browser takes br.
+    async fn headers_br(app: Router, path: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: t\r\nAccept-Encoding: br, gzip\r\nConnection: close\r\n\r\n"
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut c, req.as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        text.split("\r\n\r\n")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn json_and_scripts_leave_compressed_and_fonts_and_the_live_stream_do_not() {
+        let body = "x".repeat(4096);
+        let typed = |ctype: &'static str| {
+            let body = body.clone();
+            get(move || async move { ([(header::CONTENT_TYPE, ctype)], body) })
+        };
+        let app = Router::new()
+            .route("/json", typed("application/json"))
+            .route("/js", typed("text/javascript"))
+            .route("/font", typed("font/woff2"))
+            .route(
+                "/live",
+                get(|| async {
+                    let one = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+                        SseEvent::default().data("x".repeat(4096)),
+                    ));
+                    Sse::new(one)
+                }),
+            )
+            .layer(compression());
+        for path in ["/json", "/js"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(h.contains("content-encoding: br"), "{path}: {h}");
+        }
+        for path in ["/font", "/live"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(!h.contains("content-encoding"), "{path}: {h}");
+        }
+    }
     // The clock is paused only while the request is in its handler and no socket has bytes in
     // flight, so the timeout fires only once every task is idle: the server still running then is
     // a server waiting on the request, not one that was slow to be polled. It resumes before the

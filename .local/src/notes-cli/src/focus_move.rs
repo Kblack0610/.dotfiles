@@ -138,6 +138,34 @@ fn take_first(content: &str, query: &str) -> Option<(String, String)> {
     })
 }
 
+/// The line a moved task lands as: retagged, re-stamped from its ORIGINAL origin date so the
+/// age survives the move, and still in progress when it was (human, 2026-11-17).
+fn moved_line(
+    line: &str,
+    tag: Option<&str>,
+    untag: bool,
+    today: chrono::NaiveDate,
+) -> Result<String> {
+    let origin = md::find_since(line, today).unwrap_or(today);
+    let (text, prio) = task_text(line);
+    let new_text = if untag {
+        retag(&text, None)
+    } else if tag.is_some() {
+        retag(&text, tag)
+    } else {
+        text
+    };
+    if new_text.is_empty() {
+        bail!("refusing to move a task with no text left");
+    }
+    let mark = if md::is_in_progress(line) { '/' } else { ' ' };
+    let core = match &prio {
+        Some(pr) => format!("- [{mark}] {new_text} {pr}"),
+        None => format!("- [{mark}] {new_text}"),
+    };
+    Ok(md::stamp_line(&core, today, origin))
+}
+
 /// `notes focus mv <query> [--to <profile>] [--tag <project> | --untag]`
 pub fn mv(
     p: &Profile,
@@ -160,25 +188,7 @@ pub fn mv(
         bail!("no open focus item matches '{query}'");
     };
 
-    // Rebuild the line, carrying the ORIGINAL origin date so the age survives the move.
-    let today = Local::now().date_naive();
-    let origin = md::find_since(&line, today).unwrap_or(today);
-    let (text, prio) = task_text(&line);
-    let new_text = if untag {
-        retag(&text, None)
-    } else if tag.is_some() {
-        retag(&text, tag)
-    } else {
-        text
-    };
-    if new_text.is_empty() {
-        bail!("refusing to move a task with no text left");
-    }
-    let core = match &prio {
-        Some(pr) => format!("- [ ] {new_text} {pr}"),
-        None => format!("- [ ] {new_text}"),
-    };
-    let new_line = md::stamp_line(&core, today, origin);
+    let new_line = moved_line(&line, tag, untag, Local::now().date_naive())?;
 
     let dest_name = to.map(str::trim).filter(|d| !d.is_empty());
     match dest_name {
@@ -327,14 +337,19 @@ after
     fn moved_line_keeps_its_original_age() {
         let (_rest, line) = take_first(NOTE, "ship the thing").unwrap();
         let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 21).unwrap();
-        let origin = md::find_since(&line, today).unwrap();
-        let (text, prio) = task_text(&line);
-        let core = format!("- [ ] {} {}", retag(&text, None), prio.unwrap());
         // re-stamped from the ORIGINAL origin, so the created date survives the move
-        let out = md::stamp_line(&core, today, origin);
+        let out = moved_line(&line, None, true, today).unwrap();
         assert!(out.contains("#c0718"));
         assert!(!out.contains("(3d)"));
         assert!(out.contains("#high"));
         assert!(!out.contains("pmp:")); // untagged
+        assert!(out.starts_with("- [ ] "));
+    }
+
+    #[test]
+    fn moved_line_stays_in_progress() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let out = moved_line("- [/] wire it up #c1117 #high", None, false, today).unwrap();
+        assert_eq!(out, "- [/] wire it up #c1117 #high");
     }
 }

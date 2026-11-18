@@ -78,7 +78,7 @@ impl Cache {
     }
 
     /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
-    async fn recent(&self) -> Read<Vec<Item>> {
+    pub(crate) async fn recent(&self) -> Read<Vec<Item>> {
         let since = hub_queue::days_ago(DONE_DAYS - 1);
         let key = since.clone();
         let read = move || hub_queue::list_since(&System, "all", &since);

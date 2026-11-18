@@ -1,0 +1,13 @@
+# The noctalia bar part (desk; docs/desk.md). Noctalia 5.4.1 ships no unit, so this is
+# ours. No [Install]: desk.service starts whichever bar desk records.
+[Unit]
+Description=Noctalia shell (the noctalia bar part)
+PartOf=graphical-session.target
+After=graphical-session.target
+# One bar at a time: starting either one stops the other.
+Conflicts=waybar.service
+
+[Service]
+ExecStart=/usr/bin/noctalia
+Restart=on-failure
+RestartSec=2

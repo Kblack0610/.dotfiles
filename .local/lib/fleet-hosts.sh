@@ -207,8 +207,8 @@ fleet_host_run() {
 # fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
 # `host` and its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
 # nothing aimed at the row lands on a local session that shares its name. The one reader of a
-# worker's sessions: fleet-sessions and agent-ask's delivery and reopen go through it, and agent-web
-# (not bash) reads the same list through fleet-host-run.
+# worker's sessions: fleet-sessions (which publishes what it read, fleet_panel_publish) and the walk of
+# the peers when no snapshot is fresh (fleet_panel_row) go through it.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
 # other the worker's agent-panel failed and prints no row.
 fleet_host_panel() {
@@ -225,17 +225,70 @@ fleet_host_panel() {
 # is read once.
 fleet_peers() { fleet_hosts | jq -r --arg me "$FLEET_HOST" 'select(.name != $me) | .name'; }
 
-# fleet_panel_row <claude session id> -> the first worker row (fleet_host_panel) of that session,
-# asking each peer in roster order and stopping at the one that has it; nothing when none does or
-# none answers. For a caller that already missed it in this machine's own agent-panel.
+# fleet_panel_file -> where the minute record publishes every worker's rows: worker-panel.json beside
+# state.json (FLEET_STATE_FILE, else $XDG_STATE_HOME/fleet), the path agent-web's
+# hub_core::boards::worker_panel derives the same way.
+fleet_panel_file() {
+  local f="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+  printf '%s/worker-panel.json\n' "${f%/*}"
+}
+
+# fleet_panel_publish <ttl secs> [<silent worker>...] -- stdin: the worker rows (fleet_host_panel's
+# lines) the minute record just read; the workers named did not answer it, so their rows are missing
+# and not gone. Writes {at, ttl, rows, silent} to fleet_panel_file, atomically, so a reader never sees
+# half a file. The writer owns the ttl: how long a reader may trust these rows without asking.
+fleet_panel_publish() {
+  local f ttl="$1"; f=$(fleet_panel_file)
+  shift
+  mkdir -p "${f%/*}" || return 1
+  jq -cs --argjson ttl "$ttl" '{at: (now | floor), ttl: $ttl, rows: ., silent: $ARGS.positional}' --args "$@" > "$f.tmp.$$" &&
+    mv -f "$f.tmp.$$" "$f" || { rm -f "$f.tmp.$$"; return 1; }
+}
+
+# fleet_panel_snapshot -> the published document {at, ttl, rows, silent}; rc 1 and nothing printed when
+# there is none or it is older than its own ttl (the minute record has not run, or has died).
+fleet_panel_snapshot() {
+  jq -ce 'select(now - .at <= .ttl)' "$(fleet_panel_file)" 2>/dev/null
+}
+
+# _fh_panel_walk <claude session id> [<worker>...] -> the first row of that session among these
+# workers (fleet_host_panel), in the order given, asking them all at once so the wait is the slowest
+# one's, not the sum. A worker that does not answer adds no row.
+_fh_panel_walk() {
+  local sid="$1" row name dir pids=()
+  shift
+  [ $# -gt 0 ] || return 0
+  fleet_hosts >/dev/null
+  dir=$(mktemp -d) || return 0
+  for name in "$@"; do
+    fleet_host_panel "$name" >"$dir/$name" 2>/dev/null &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+  for name in "$@"; do
+    row=$(jq -cn --arg s "$sid" 'first(inputs | select(.session_id == $s))' <"$dir/$name" 2>/dev/null)
+    [ -z "$row" ] || { printf '%s\n' "$row"; break; }
+  done
+  rm -rf "$dir"
+}
+
+# fleet_panel_row <claude session id> -> the first worker row of that session in roster order, nothing
+# when no worker has it. For a caller that already missed it in this machine's own agent-panel.
+# It reads the snapshot (fleet_panel_snapshot), so a read costs no ssh; only a worker the snapshot
+# names silent is asked, and with no fresh snapshot every peer is. A live session read as gone is
+# reopened as a second copy, which costs more than the ssh.
 fleet_panel_row() {
   [ -n "${1:-}" ] || return 0
-  local name row
-  fleet_hosts >/dev/null
-  while IFS= read -r name; do
-    row=$(fleet_host_panel "$name" | jq -cn --arg s "$1" 'first(inputs | select(.session_id == $s))' 2>/dev/null)
+  local doc row names=()
+  if doc=$(fleet_panel_snapshot); then
+    row=$(jq -c --arg s "$1" --arg me "$FLEET_HOST" 'first(.rows[] | select(.session_id == $s and .host != $me)) // empty' <<<"$doc" 2>/dev/null)
     [ -z "$row" ] || { printf '%s\n' "$row"; return 0; }
-  done < <(fleet_peers)
+    mapfile -t names < <(jq -r --arg me "$FLEET_HOST" '.silent[]? | select(. != $me)' <<<"$doc" 2>/dev/null)
+  else
+    fleet_hosts >/dev/null
+    mapfile -t names < <(fleet_peers)
+  fi
+  _fh_panel_walk "$1" "${names[@]}"
   return 0
 }
 

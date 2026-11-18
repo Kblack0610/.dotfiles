@@ -1610,20 +1610,10 @@ OUT
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
 }
 
-# roster_workers <hp rc> -- the roster's idle-worker (down), hp at 192.0.2.40 and this machine, state; ssh
-# reaches hp alone, which prints a line and exits <hp rc>.
-roster_workers() {
-  sandbox_fleet_roster
-  printf '        hp:\n          ansible_host: 192.0.2.40\n        state:\n          fleet_place: false\n' >> "$FLEET_INVENTORY"
-  stub ssh "echo \"ssh \$*\" >> \"\$NOTES_FIXTURE/calls.log\"
-case \"\$*\" in *192.0.2.40*) echo 'did its own'; exit $1 ;; esac
-exit 255"
-}
-
 @test "record on the lease holder runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
   record_setup
   world '10 1000' "$PANE1"
-  roster_workers 0
+  sandbox_fleet --self hp 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_output 'hp: did its own'
@@ -1641,7 +1631,7 @@ exit 255"
   FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_not_called 'ssh'
-  roster_workers 4
+  sandbox_fleet --self hp 4
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_failure
   assert_output --partial 'record: hp exited 4'
@@ -1649,7 +1639,7 @@ exit 255"
 
 @test "restore reopens each worker's own sessions there with its flags, and a worker that does not answer is said, not failed" {
   restore_setup
-  roster_workers 0
+  sandbox_fleet --self hp 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
   assert_success
   assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env fleet-dispatch restore --here --server hub --dry-run'
@@ -1660,7 +1650,7 @@ exit 255"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --here
   assert_success
   assert_not_called 'ssh'
-  roster_workers 1
+  sandbox_fleet --self hp 1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_failure
   assert_output --partial 'restore: hp exited 1'
