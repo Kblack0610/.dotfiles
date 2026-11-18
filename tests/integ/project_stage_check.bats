@@ -841,6 +841,70 @@ notes ptask shooter --agent drop sh-8 --dup sh-7"
   assert_not_called 'done'
 }
 
+# wrap_notes <case pattern> <exit>: a notes on PATH that exits <exit> when its arguments match,
+# else runs the stub.
+wrap_notes() {
+  mkdir -p "$HOME/bin"
+  printf '#!/usr/bin/env bash\ncase "$*" in %s) printf "notes %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit %s ;; esac\nexec %q "$@"\n' \
+    "$1" "$2" "$(command -v notes)" > "$HOME/bin/notes"
+  chmod +x "$HOME/bin/notes"
+}
+
+@test "file: a write that fails folds nothing, and a twin from a concurrent run is no failure" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL"; printf -- '- [ ] chore(beta): A license <!-- id:sh-3 -->\n%s' "$(from '[ -f LICENSE ]')")"
+  parses '- [ ] chore(beta): A license <!-- id:sh-3 -->' 'A license'
+  wrap_notes '*"--agent edit sh-7 --brief"*' 1
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 1
+  assert_line --regexp '^error +sh-7 +meet the beta stage standard \(ptask edit --brief failed\)$'
+  assert_output --partial 'the list on sh-7 not written'
+  assert_not_called 'drop'
+  # A retitle that fails leaves the list as it was, for the next run to retry both.
+  board "$(rollup sh-7 alpha low "$CL")"; : > "$NOTES_FIXTURE/calls.log"
+  wrap_notes '*"--agent edit sh-7 --text"*' 1
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 1
+  assert_line --regexp '^error +sh-7 +meet the beta stage standard \(ptask edit --text failed\)$'
+  assert_not_called 'edit sh-7 --brief'
+  # Exit 3 from add is its twin check: another run filed the rollup, so this one holds off.
+  board ''; : > "$NOTES_FIXTURE/calls.log"
+  wrap_notes '*"--agent add chore(stage)"*' 3
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +rollup +meet the beta stage standard, filed by another run$'
+  refute_output --partial 'failed'
+}
+
+@test "file: a rollup in progress is not closed, and a row with no id is held, never dropped" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board "$(rollup sh-7 beta low "$CL" | sed '1s/^- \[ \]/- [\/]/')"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +sh-7 +meet the beta stage standard, no gap left but in progress, left as it is$'
+  assert_not_called 'ptask'
+  # NEGATIVE CONTROL: a row with a from line but no id cannot be dropped by id, so it holds its gap.
+  rm "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board "$(printf -- '- [ ] chore(beta): A changelog\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [ ] chore(beta): A changelog'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +beta +A changelog \(held by a row with no id\)$'
+  assert_not_called 'ptask'
+}
+
+@test "file: a check with a backslash is listed as stages.md spells it" {
+  sed -i 's/^| beta | base | A changelog .*/| beta | base | A changelog | `grep -q "a\\.b" CHANGELOG.md` | engineering |/' "$STAGES_DOC"
+  grep -qF 'grep -q "a\.b" CHANGELOG.md' "$STAGES_DOC"
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_called '--detail #beta: A changelog, check: `grep -q "a\.b" CHANGELOG.md`'
+  assert_not_called 'a\\.b'
+}
+
 @test "file: systems rows go under their system's epic, and a long title is cut with the whole text kept" {
   write_systems_doc
   printf '| docs | base | A contributor guide that says how to build, run and test every part of the project from a fresh clone | `false` | onboarding |\n' >> "$SYSTEMS_DOC"

@@ -24,8 +24,9 @@
 # which `notes ptask add` files when it is missing (standing.rs). A stage's target is --stage,
 # else the highest of the stage after the declared one and the stages open `epic(stage):` rows
 # name; with no open epic for it, `epic(stage): <stage> to standard` is filed on the human sheet
-# first. A row held on either sheet under the same title or from line is never filed again when
-# closed by hand; each open agent row of a row that now PASSes is closed with the check as proof.
+# first. A gap whose row on either sheet, matched by title or from line, was closed or dropped by
+# hand is never filed again. Each open agent row of a row that now PASSes is closed with the check
+# as proof.
 # Exit 0, 1 when a write failed, 2 as above. With --json those lines go to stderr, and stdout gets
 # the check's own --json (`stage` is the target) plus filed_open and filed_closed: the gaps the
 # agent sheet holds open (a rollup line or a row of its own) and the agent rows of its rows closed.
@@ -235,15 +236,16 @@ file_gaps() {
     || { echo "project-stage-check: notes projects --stats --json failed" >&2; exit 2; }
   have="$(sheet_rows)" || exit 2
   ROLLUP_IDS="$(awk -F'\t' '$9 ~ /^the stages\.md rows / { printf "%s ", $4 }' <<<"$have")"
-  # gaps and passes: one `target<TAB>area<TAB>text<TAB>check<TAB>key` line per FAIL or PASS row,
-  # the key what its from line reads after `--file, `.
+  # gaps and passes: one `target area text check key` line per FAIL or PASS row, the key what its
+  # from line reads after `--file, `. The fields are split by the unit separator, not tab: tab is
+  # IFS whitespace, so an empty cell would shift the rest, and @tsv would double a backslash.
   if [ -n "$SYSTEMS" ]; then
     check="$("$0" "$NAME" --systems ${ONLY:+--system "$ONLY"} --json)"; rc=$?
     [ "$rc" -le 1 ] || exit "$rc"
     gaps="$(jq -r '.systems[] | .id as $id | .criteria[] | select(.result == "FAIL")
-      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | @tsv' <<<"$check")"
+      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
     passes="$(jq -r '.systems[] | .id as $id | .criteria[] | select(.result == "PASS")
-      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | @tsv' <<<"$check")"
+      | [$id, $id, .criterion, .check, "systems.md \($id), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
   else
     ladder="$(notes projects --stages 2>/dev/null)"
     LAB_STAGES="${LAB_STAGES:-$ladder}"
@@ -266,17 +268,17 @@ file_gaps() {
     [ "$rc" -le 1 ] || exit "$rc"
     TARGET="$(jq -r .stage <<<"$check")"
     gaps="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "FAIL")
-      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | @tsv' <<<"$check")"
+      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
     passes="$(jq -r --arg t "$TARGET" '.requirements[] | select(.result == "PASS")
-      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | @tsv' <<<"$check")"
+      | [$t, .stage, .requirement, .check, "stages.md #\(.stage), check: \(.check)"] | map(. // "" | tostring) | join("\u001f")' <<<"$check")"
   fi
   # A text that also fails (two rows or systems sharing a text) is a gap, never met.
-  passes="$(awk -F'\t' 'FILENAME == ARGV[1] { f[$3]; next } $3 != "" && !($3 in f)' <(printf '%s\n' "$gaps") <(printf '%s\n' "$passes"))"
+  passes="$(awk -F'\037' 'FILENAME == ARGV[1] { f[$3]; next } $3 != "" && !($3 in f)' <(printf '%s\n' "$gaps") <(printf '%s\n' "$passes"))"
   today="$(date +%F)"
 
   # A row of its own closes once its check passes: an open agent-sheet twin of a PASS row, closed
   # by its id with the check as proof.
-  while IFS=$'\t' read -r _ _ full _ key; do
+  while IFS=$'\037' read -r _ _ full _ key; do
     [ -n "$full" ] || continue
     title="$(title_of "$full")"
     while IFS=$'\t' read -r state _ lane id _; do
@@ -325,7 +327,7 @@ held() {
 # bare for `notes ptask add` to link the standing epic (standing.rs). Uses file_gaps' locals.
 file_systems() {
   local target area full chk key t ao ac epic row text
-  while IFS=$'\t' read -r target area full chk key; do
+  while IFS=$'\037' read -r target area full chk key; do
     [ -n "$target" ] || continue
     n=$((n + 1))
     title="$(title_of "$full")"; t="$(twins "$title" "$key")"
@@ -380,10 +382,10 @@ file_rollup() {
   local rid="" rstage="" rmark="" rprio="" rprio_ others="" by_hand old="" brief args=() out epic ok=1 news=0
   local head="the stages.md rows this project fails for #$TARGET, one a line; a met row leaves the list and the row closes when none is left"
   [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
-  while IFS=$'\t' read -r _ area full chk _; do
+  while IFS=$'\037' read -r _ area full chk _; do
     [ -n "$full" ] && pass_lines+="#$area: $full, check: $chk"$'\n'
   done <<<"$passes"
-  while IFS=$'\t' read -r target area full chk key; do
+  while IFS=$'\037' read -r target area full chk key; do
     [ -n "$target" ] || continue
     n=$((n + 1))
     title="$(title_of "$full")"; t="$(twins "$title" "$key")"
@@ -391,7 +393,7 @@ file_rollup() {
     if [ "$state" = closed ]; then
       closed=$((closed + 1)) fopen=$((fopen + ao)) fclosed=$((fclosed + ac)); printf 'closed  %-10s  %s\n' "$area" "$title"; continue
     fi
-    id="$(awk -F'\t' '$1 == "open" && !($3 == "agent" && $5 == "todo" && $7 == 0 && $9 != "-") { print ($4 == "-" ? "a row with no id" : $4); exit }' <<<"$t")"
+    id="$(awk -F'\t' '$1 == "open" && !($3 == "agent" && $5 == "todo" && $7 == 0 && $9 != "-" && $4 != "-") { print ($4 == "-" ? "a row with no id" : $4); exit }' <<<"$t")"
     if [ -n "$id" ]; then
       had=$((had + 1)) fopen=$((fopen + ao)); printf 'open    %-10s  %s (held by %s)\n' "$area" "$title" "$id"; continue
     fi
@@ -415,19 +417,24 @@ file_rollup() {
   if [ -z "$lines" ]; then
     listed_says="0 listed"
     [ -n "$rid" ] || return 0
-    # Nothing left to list: each open rollup closes, with the check as its proof.
+    # Nothing left to list: each open rollup closes, with the check as its proof; one in progress
+    # is left to the session working it.
     local proof="check:project-stage-check $NAME PASS $today"
     [ "$n" -eq 0 ] || proof="check:project-stage-check $NAME --file, each gap left is held or closed by its own row, $today"
     old="$(brief_of "$rid" | grep '^#')"
-    while IFS=$'\t' read -r id _; do
+    while IFS=$'\t' read -r id mark; do
       [ -n "$id" ] || continue
+      if [ "$mark" = doing ]; then
+        printf 'open    %-10s  meet the %s stage standard, no gap left but in progress, left as it is\n' "$id" "$TARGET"
+        [ "$id" != "$rid" ] || old=""; continue
+      fi
       if notes ptask "$NAME" --agent "done" "$id" --proof "$proof" >/dev/null; then
         printf 'row     %-10s  meet the %s stage standard, closed: no gap left to list\n' "$id" "$TARGET"
         listed_says="0 listed, $id closed"
       else
         failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask done failed)\n' "$id" "$TARGET"
       fi
-    done <<<"$rid"$'\n'"$others"
+    done <<<"$rid"$'\t'"$rmark"$'\n'"$others"
   else
     brief="from project-stage-check $NAME --file: $head"$'\n'"${lines%$'\n'}"
     if [ -z "$rid" ]; then
@@ -442,6 +449,11 @@ file_rollup() {
       target_epic || { listed_says="0 listed"; return 0; }
       while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
       out="$(notes ptask "$NAME" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}")"; rc=$?
+      # Exit 3 is add's twin check: a concurrent run filed the rollup first, and its list stands.
+      if [ "$rc" -eq 3 ]; then
+        printf 'open    %-10s  meet the %s stage standard, filed by another run\n' rollup "$TARGET"
+        listed_says="0 listed, the rollup held by another run"; return 0
+      fi
       rid="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR == 1')"; rid="${rid#id:}"
       if [ "$rc" -ne 0 ] || [ -z "$rid" ]; then
         failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask add exit %s%s)\n' rollup "$TARGET" "$rc" "$([ "$rc" -ne 0 ] || echo ', no id')"
@@ -449,15 +461,19 @@ file_rollup() {
       fi
       printf 'row     %-10s  meet the %s stage standard, filed\n' "$rid" "$TARGET"
     else
+      # A rollup of a lower stage is retitled before its list says the target, so a failed
+      # retitle leaves the row as it was for the next run to retry.
       if [ "$rstage" != "$TARGET" ]; then
-        if target_epic && notes ptask "$NAME" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
+        if ! target_epic; then
+          ok=0
+        elif notes ptask "$NAME" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
           printf 'row     %-10s  meet the %s stage standard, retitled from #%s\n' "$rid" "$TARGET" "$rstage"
         else
-          failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask edit --text failed)\n' "$rid" "$TARGET"
+          ok=0 failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask edit --text failed)\n' "$rid" "$TARGET"
         fi
       fi
       old="$(brief_of "$rid")"
-      if [ "$old" != "$brief" ] && ! notes ptask "$NAME" --agent edit "$rid" --brief "$brief" >/dev/null; then
+      if [ "$ok" = 1 ] && [ "$old" != "$brief" ] && ! notes ptask "$NAME" --agent edit "$rid" --brief "$brief" >/dev/null; then
         failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
       fi
       old="$(grep '^#' <<<"$old")"
@@ -469,18 +485,16 @@ file_rollup() {
             || { failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"; } ;;
       esac
     fi
-    if [ "$ok" = 1 ]; then
-      while IFS= read -r l; do
-        [ -n "$l" ] || continue
-        area="${l#\#}"; area="${area%%: *}"
-        if grep -qxF -- "$l" <<<"$old"; then printf 'open    %-10s  %s\n' "$area" "$(gap_title "$l")"
-        else news=$((news + 1)) filed=$((filed + 1)); printf 'filed   %-10s  %s\n' "$area" "$(gap_title "$l")"; fi
-      done <<<"$lines"
-      fopen=$((fopen + $(grep -c . <<<"$lines")))
-      listed_says="$(grep -c . <<<"$lines") listed on $rid ($news new)"
-    else
-      listed_says="the list on $rid not written"
-    fi
+    # Nothing folds into a list that was not written: its gaps would be on neither.
+    [ "$ok" = 1 ] || { listed_says="the list on $rid not written"; return 0; }
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      area="${l#\#}"; area="${area%%: *}"
+      if grep -qxF -- "$l" <<<"$old"; then printf 'open    %-10s  %s\n' "$area" "$(gap_title "$l")"
+      else news=$((news + 1)) filed=$((filed + 1)); printf 'filed   %-10s  %s\n' "$area" "$(gap_title "$l")"; fi
+    done <<<"$lines"
+    fopen=$((fopen + $(grep -c . <<<"$lines")))
+    listed_says="$(grep -c . <<<"$lines") listed on $rid ($news new)"
     while IFS=$'\t' read -r id title; do
       [ -n "$id" ] || continue
       if notes ptask "$NAME" --agent drop "$id" --dup "$rid" >/dev/null; then
@@ -498,7 +512,6 @@ file_rollup() {
         failed=$((failed + 1)); printf 'error   %-10s  another stage rollup (ptask drop --dup %s failed)\n' "$id" "$rid"
       fi
     done <<<"$others"
-    [ "$ok" = 1 ] || return 0
   fi
   # The lines the list lost: met when that row passes now, else gone (closed or held by its own row).
   while IFS= read -r l; do
