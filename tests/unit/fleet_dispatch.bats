@@ -2685,7 +2685,7 @@ J
 
 @test "hosts lists the roster with what a pass reads from each worker" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
@@ -2694,7 +2694,7 @@ J
 
 @test "a worker gone from the roster cannot answer for its item, so reap settles it by its PR" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   sed -i 's/^\( *\)razer-laptop:$/\1other-laptop:/' "$FLEET_INVENTORY"; unset FLEET_HOSTS_JSON

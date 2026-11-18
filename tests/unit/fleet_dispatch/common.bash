@@ -836,9 +836,9 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready> [place] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem%> [place] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
-# three words and runs any other command here, so the tmux stub stands in for the worker's server.
+# four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
@@ -928,7 +928,7 @@ EOF
           fleet_power: governor
 EOF
   } > "$FLEET_INVENTORY"
-  echo '2.0 16 1' | tr ' ' '\n' > "$NOTES_FIXTURE/ssh.probe"
+  echo '2.0 16 1 50' | tr ' ' '\n' > "$NOTES_FIXTURE/ssh.probe"
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 case "$*" in *.tail.example*) exit 255 ;; esac
 eval "set -- ${*: -1}"
