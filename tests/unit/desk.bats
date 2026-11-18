@@ -296,17 +296,25 @@ JSON
   assert_equal "$leaves" "$parts"
 }
 
-@test "every widget noctalia's config.toml defines sits in a lane or a pod" {
-  # A widget left out of every lane and capsule_group never draws, and nothing else says so.
+@test "noctalia's bar places every widget once, every group token resolves, and every pod matches the bar's style" {
+  # A widget left out of every lane and pod never draws, and a group does not inherit the
+  # bar's capsule_* style, so a pod restyled alone stops matching. Nothing else says so.
   run python3 -c '
 import sys, tomllib
 c = tomllib.load(open(sys.argv[1], "rb"))
 bar = c["bar"]["default"]
-placed = {w for lane in ("start", "center", "end") for w in bar.get(lane, []) if not w.startswith("group:")}
-placed |= {m for g in bar.get("capsule_group", []) for m in g["members"]}
-missing = sorted(set(c["widget"]) - placed)
-print("not on the bar:", *missing) if missing else None
-sys.exit(1 if missing else 0)
+groups = {g["id"]: g for g in bar.get("capsule_group", [])}
+lanes = [w for lane in ("start", "center", "end") for w in bar.get(lane, [])]
+tokens = [w[6:] for w in lanes if w.startswith("group:")]
+placed = [w for w in lanes if not w.startswith("group:")] + [m for g in groups.values() for m in g["members"]]
+bad = ["no group " + t for t in tokens if t not in groups]
+bad += ["group unused: " + g for g in groups if g not in tokens]
+bad += ["not on the bar: " + w for w in sorted(set(c["widget"]) - set(placed))]
+bad += ["placed twice: " + w for w in sorted({w for w in placed if placed.count(w) > 1})]
+style = {"fill": bar["capsule_fill"], "border": bar["capsule_border"], "padding": bar["capsule_padding"]}
+bad += ["pod " + i + " style differs" for i, g in groups.items() if {k: g.get(k) for k in style} != style]
+print(*bad, sep="\n")
+sys.exit(1 if bad else 0)
 ' "$REPO_ROOT/.config/noctalia/config.toml"
   assert_success
 }

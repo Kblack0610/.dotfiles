@@ -6,11 +6,11 @@
 
 # The waybar chips, each a dotfiles-chips widget naming its module in config.base, in
 # config.desktop's left-to-right order; Noctalia's own widgets stand in for waybar's
-# built-ins. Noctalia clips each side to half the bar, so the order is split at ci: with
-# every chip in end, timebox through ci fell off a 1920 px screen.
+# built-ins. Noctalia clips each side to half the bar, so the chips through ci stay in
+# start: with every chip in end, timebox through ci fell off a 1920 px screen.
 # The bar itself is clear and each group of chips sits in its own pod (a capsule group),
-# as on the CachyOS default. A pod whose chips are all empty draws nothing. A group does
-# not inherit the bar's capsule_* style, so each one repeats fill and border.
+# as on the CachyOS default. A group does not inherit the bar's capsule_* style, so each
+# one repeats fill, border and padding; desk.bats checks they all match.
 [bar.default]
 position = "top"
 start = ["workspaces", "group:live", "group:fleet"]
