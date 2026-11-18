@@ -4039,7 +4039,9 @@ preempt_for() {
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
   # Past a full Claude target (OTHER_PASS) claude is refused, so a park would free units no start can use.
-  [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
+  # A park frees units here, so while this machine's own pace holds (the gate let the pass on for an
+  # open worker) it would interrupt a session for a start that cannot run here.
+  [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && [ -z "$(machine_why)" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
   UNITS_FREE=$(( TARGET - $(live_units) ))
   pick_item "$PICK_RESERVED"
@@ -4819,6 +4821,9 @@ cmd_headroom() {
   pace_target
   live=$(live_units)
   floor_live=$(live_runs | grep -c . || true)
+  # The gate's machine pace lifts while a worker is open, so read the workers as a pass does (after
+  # a pass, its own reading stands).
+  [ ${#HOST_PROBE[@]} -gt 0 ] || probe_hosts "$(live_runs)"
   red_live=$(live_reds | grep -c . || true) red_watch=$(watch_reds)
   hand=$(live_hand | grep -c . || true)
   slots=$(( TARGET - live ))
@@ -5262,20 +5267,20 @@ idle_why() {
 
 # assess_why <red 0|1> -> "fleet-assess says HOLD" while fleet-assess puts this machine over its high
 # mark (load, memory, stall, temperature, a local load hold), or nothing; the red floor goes past it.
-# It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes:
-# on 2026-11-18 a 96 C workstation held every start for hours while razer-laptop sat idle.
+# It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes.
 assess_why() {
   [ "$1" = 1 ] || fleet-assess --watch-probe >/dev/null 2>&1 || echo "fleet-assess says HOLD"
   return 0
 }
 
 # machine_why -> this machine's own holds (assess_why, load_why, idle_why), "; "-joined, or nothing.
+# gate reads it whole and drops it while a fleet worker is open; pick_item reads it per start.
 machine_why() {
-  local red=0 a l i out
+  local red=0 p parts=() out
   red_floor_open && red=1
-  a=$(assess_why "$red"); l=$(load_why "$red"); i=$(idle_why "$red")
-  out="$a${a:+${l:+; }}$l"
-  printf '%s%s%s' "$out" "${out:+${i:+; }}" "$i"
+  for p in "$(assess_why "$red")" "$(load_why "$red")" "$(idle_why "$red")"; do [ -z "$p" ] || parts+=("$p"); done
+  [ "${#parts[@]}" -gt 0 ] || return 0
+  out=$(printf '%s; ' "${parts[@]}"); printf '%s' "${out%; }"
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
@@ -5299,23 +5304,20 @@ gate() {
     1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
     *) why+=("account usage unreadable ($ACCT_WHY)") ;;
   esac
-  local red=0 assess=''; red_floor_open && red=1
-  # This machine's own pace (fleet-assess, load, idle) holds only a start here: while a fleet worker
-  # takes one, the pass goes on, and pick_item places each item on whichever is open (place_host).
+  # This machine's own pace (machine_why) holds only a start here: while a fleet worker takes one,
+  # the pass goes on, and pick_item places each item on whichever is open (place_host).
   # GATE_NO_MACHINE leaves this machine's pace out altogether, unread: demand_pass asks what else holds.
-  load='' idle=''
-  [ "${GATE_NO_MACHINE:-0}" = 1 ] || { assess=$(assess_why "$red"); load=$(load_why "$red"); idle=$(idle_why "$red"); }
-  [ -z "$assess$load$idle" ] || ! remote_open || assess='' load='' idle=''
-  [ -z "$assess" ] || why+=("$assess")
+  local mach=''
+  [ "${GATE_NO_MACHINE:-0}" = 1 ] || mach=$(machine_why)
+  [ -z "$mach" ] || ! remote_open || mach=''
+  [ -z "$mach" ] || why+=("$mach")
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
   infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
-  [ -z "$load" ] || why+=("$load")
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
     *LOW*) why+=("$github") ;;
   esac
-  [ -z "$idle" ] || why+=("$idle")
   [ "${#why[@]}" -eq 0 ] && return
   out=$(printf '%s; ' "${why[@]}"); echo "${out%; }"
 }

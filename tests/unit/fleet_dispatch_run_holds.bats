@@ -448,6 +448,17 @@ load 'fleet_dispatch/common'
   ! grep '^wt new ' "$NOTES_FIXTURE/calls.log" | grep -qv -- '--host ' || fail "a start ran on this machine under a fleet-assess HOLD"
 }
 
+@test "negative control: under a fleet-assess HOLD here with a worker open, a heavy item no worker takes starts nowhere" {
+  project game beta "$SANDBOX/repos/game"   # no board row: the heavy item is the only work
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug bake-lights --priority high "Bake the lights" >/dev/null
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/queued/*-bake-lights.md
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD, and no fleet worker takes it'
+  assert_not_called 'wt new'
+}
+
 @test "a cloud worker gets demand for the light item a fleet-assess HOLD here keeps waiting" {
   game_ready
   cloud_worker
