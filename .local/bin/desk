@@ -9,7 +9,7 @@
 #   desk start                    start every slot's part (desk.service, at login)
 #   desk signal <module-id>...    re-run the bar chips on each module's signal number
 #   desk notify close|close-all|history|dnd
-#   desk notify show <tag> <notify-send args>   one popup per tag, replaced in place
+#   desk notify show <tag> <notify-send args>   one popup per tag, replaced in place; prints a --wait click
 #   desk notify drop <tag>        close that tag's popup
 #   desk chip <module-id> [run|stream]   a waybar chip for the Noctalia bar: how to run
 #                                 it, one run's output, or its stream kept running
@@ -136,25 +136,34 @@ signal() {
 # show keeps "<id> <bus owner>": an id is unique only within one notifier process, so drop
 # closes it only while the same process owns the notification name. A restarted or switched
 # notifier counts from 1 again, and the old id could be someone else's page.
-notify_ids() { echo "${XDG_RUNTIME_DIR:?desk notify needs XDG_RUNTIME_DIR}/desk"; }
+# A tag is any text (agent-notify uses the page title), so a / in it is kept out of the path.
+notify_file() {
+    local dir="${XDG_RUNTIME_DIR:?desk notify needs XDG_RUNTIME_DIR}/desk"
+    mkdir -p "$dir" && echo "$dir/notify-${1//\//%}.id"
+}
 notify_owner() {
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
         --method org.freedesktop.DBus.GetNameOwner org.freedesktop.Notifications 2>/dev/null
 }
+# notify-send -p prints the id first. With --wait it prints the clicked action once the popup
+# closes; show passes that on, so a caller that waits for a click reads it from show. The id is
+# kept before the wait, so a drop meanwhile closes the popup and ends the wait.
 notify_show() {
     [[ -n "${1:-}" ]] || die "usage: desk notify show <tag> <notify-send args>" 2
-    local tag="$1" dir id
+    local tag="$1" f id
     shift
-    dir="$(notify_ids)" || exit 1
-    mkdir -p "$dir"
-    rm -f "$dir/notify-$tag.id"
-    id="$(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")" || return
-    printf '%s %s\n' "$id" "$(notify_owner)" > "$dir/notify-$tag.id"
+    f="$(notify_file "$tag")" || exit 1
+    rm -f "$f"
+    {
+        read -r id || return 1
+        printf '%s %s\n' "$id" "$(notify_owner)" > "$f"
+        cat
+    } < <(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")
 }
 notify_drop() {
     [[ -n "${1:-}" ]] || die "usage: desk notify drop <tag>" 2
     local f id owner
-    f="$(notify_ids)/notify-$1.id" || exit 1
+    f="$(notify_file "$1")" || exit 1
     [[ -s "$f" ]] || return 0
     read -r id owner < "$f"
     rm -f "$f"
