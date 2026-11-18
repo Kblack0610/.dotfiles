@@ -118,6 +118,161 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_success
 }
 
+# -- one ask per blocker --
+# 2026-11-16: GitHub billing on .dotfiles-private drew 9 pending asks, one per session.
+
+blocked() { # <sid> <project> <blocker> [more post flags...]
+  local sid="$1" project="$2" key="$3"; shift 3
+  CLAUDE_CODE_SESSION_ID="$sid" "$AGENT_ASK" post --project "$project" --blocker "$key" \
+    --options 'fix=fix billing|wait=wait for the runners' "$@" 'GitHub billing blocks the private checks: fix it?'
+}
+
+@test "post --blocker: a second session on the same blocker is recorded on the first ask, not a new one" {
+  local first id
+  first="$(blocked sid-1 demo Kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  run --separate-stderr blocked sid-2 other 'https://github.com/kblack0610/.dotfiles-private.git:Billing'
+  assert_success
+  assert_output "$first"
+  [[ "$stderr" == *"already ask $first"* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" '1'
+  run "$AGENT_ASK" show "$first"
+  assert_line 'blocker: kblack0610/.dotfiles-private:billing'
+  assert_line 'claude_session: sid-1'
+  assert_line 'claude_session: sid-2'
+  # Once per session, and the asker stays first.
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  assert_equal "$(grep -c '^claude_session: sid-2$' "$(ask_file "$first")")" 1
+  assert_equal "$("$AGENT_ASK" show "$first" | sed -n 's/^claude_session: //p' | head -1)" sid-1
+  # A blocker ask is not the session's own question: it can still ask one.
+  run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project other 'ship it?'
+  assert_success
+  # Negative controls: another cause, a post with its own resume, and a blocker no ask is pending on.
+  id="$(blocked sid-3 demo kblack0610/.dotfiles-private:quota 2>/dev/null)"; [ "$id" != "$first" ]
+  id="$(blocked sid-4 demo kblack0610/.dotfiles-private:billing --resume '/captain resume' 2>/dev/null)"; [ "$id" != "$first" ]
+  "$AGENT_ASK" answer "$first" wait 2>/dev/null
+  id="$(blocked sid-5 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"; [ "$id" != "$first" ]
+  run "$AGENT_ASK" post --project demo --blocker billing 'no repo?'
+  assert_failure 2
+  assert_output --partial '<owner/repo>:<cause>'
+  run "$AGENT_ASK" post --project demo --blocker foo:bar 'no owner?'
+  assert_failure 2
+  # A session already waiting on one blocker is refused a second, different one.
+  run blocked sid-5 demo git@github.com:kblack0610/.dotfiles-private.git:outage
+  assert_failure 2
+  assert_output --partial "already has pending ask $id"
+}
+
+@test "sessions that hit one blocker at once file one ask between them" {
+  local s
+  for s in 1 2 3 4 5 6; do blocked "sid-$s" demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1 & done
+  wait
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" 1
+  assert_equal "$(grep -c '^claude_session: ' "$(find "$HOME/.agent/asks" -name '*.md')")" 6
+}
+
+@test "a session that joins a blocker ask during the judge's call has the judge's live answer delivered" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  unset AGENT_ASK_NO_JUDGE AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-1","pane":"%%1","status":"idle"}\n{"session_id":"sid-2","pane":"%%2","status":"idle"}\n' \
+    > "$NOTES_FIXTURE/agent-panel.list"
+  # The judge's call is where the second session joins: it posts the same blocker mid-call.
+  cat > "$BATS_TEST_TMPDIR/judge" <<SH
+#!/usr/bin/env bash
+CLAUDE_CODE_SESSION_ID=sid-2 AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project other \
+  --blocker kblack0610/.dotfiles-private:billing 'GitHub billing blocks the private checks: fix it?' >/dev/null 2>&1
+printf '%s\n' '$(score ship_deploy)'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing --recommend fix 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answered_by: judge'
+  assert_line 'claude_session: sid-2'
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %2 "
+  # The asker read the answer at post; it is not typed in again.
+  assert_not_called "agent-panel send --pane %1 "
+}
+
+@test "a shared blocker ask's answer is typed into every live session waiting on it" {
+  unset AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-1","pane":"%%1","status":"idle"}\n{"session_id":"sid-2","pane":"%%2","status":"idle"}\n' \
+    > "$NOTES_FIXTURE/agent-panel.list"
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  "$AGENT_ASK" answer "$id" wait 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %1 Answer to ask $id: wait"
+  assert_called "agent-panel send --pane %2 Answer to ask $id: wait"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'delivery_note: typed into the 2 live sessions waiting on its blocker'
+  assert_not_called 'chore(ask)'
+}
+
+@test "settle-session: a reply in an attached session answers the shared ask, or takes only that session off" {
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  blocked sid-3 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  run "$AGENT_ASK" settle-session sid-2 answered "whats going on here?"
+  assert_success
+  assert_output --partial 'no longer waits on blocker ask'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  refute_line 'claude_session: sid-2'
+  # The asker going off hands the ask to the next session on it.
+  "$AGENT_ASK" settle-session sid-1 answered "not now" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_equal "$(sed -n "s/^claude_session: //p" "$(ask_file "$id")" | head -1)" sid-3
+  # The last session on it: a reply naming an option answers it.
+  "$AGENT_ASK" settle-session sid-3 answered "fix" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answer: fix'
+}
+
+@test "settle-session: the last session that asked for a reopen leaving clears the reopen resume" {
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  "$AGENT_ASK" settle-session sid-1 answered "not now" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # sid-2 never asked to be reopened, so nothing is left for the answer to reopen.
+  refute_line --partial 'reopen'
+  # Negative control: sid-2 asking for it sets the resume again.
+  CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  grep -qx 'reopen: sid-2' "$(ask_file "$id")"
+}
+
+@test "reopen-on-answer: every session that closed over a shared blocker ask is reopened with the answer" {
+  local id
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  for s in sid-8 sid-9 sid-10; do
+    printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$HOME/.dotfiles" "$s" >"$HOME/.claude/projects/p/$s.jsonl"
+  done
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(blocked sid-8 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-9 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  blocked sid-10 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  CLAUDE_CODE_SESSION_ID=sid-8 run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  "$AGENT_ASK" answer "$id" wait >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "--window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: wait"
+  assert_called "--window ask-$id-sid-9 --cwd $HOME/.dotfiles --resume sid-9 --prompt Answer to ask $id: wait"
+  # Negative control: a session that never closed over it is left alone (its window still has it).
+  assert_not_called '--resume sid-10'
+}
+
 @test "an attended session files its ask and sees it in its pane, with no page per ask" {
   # 2026-10-28: agent-27 asked only in the conversation and waited unflagged; the ask file is
   # the one record every board and the phone read.

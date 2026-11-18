@@ -144,6 +144,15 @@ buf() { mapfile -t BUF <<<"$output"; }
   assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n\n### Low\n- [ ] a #low\n    ---\n    more\n- [ ] b #low\n\n---\n### Done\n\n## Notes\n')"
 }
 
+# Same input and expected files as focus_sweep.rs golden_indented_scaffold_is_a_rows_note_like_the_nvim_buffer_sweep.
+@test "a save keeps an indented --- and ### heading as a row's note" {
+  cp "$REPO_ROOT/.local/src/notes-cli/tests/fixtures/focus-sweep/indented-scaffold.in.md" "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(cat "$REPO_ROOT/.local/src/notes-cli/tests/fixtures/focus-sweep/indented-scaffold.out.md")"
+}
+
 @test "a note with an empty Focus opens on the bare lanes" {
   printf '## Focus\n- [ ] \n\n## Notes\n' > "$NOTE"
   run save_run 1 0 'vim.cmd "silent write"'
