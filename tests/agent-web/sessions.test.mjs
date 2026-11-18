@@ -127,6 +127,17 @@ test("an opened session starts on its conversation, not its Details page", () =>
   run(`load = __load`);
 });
 
+test("a fleet worker's session opens on its screen, with no conversation to read, and its row names the machine", () => {
+  setup();
+  run(`__load = load; load = () => {}; select({ target: "razer-laptop@lab/x:1", session: "w-id", status: "busy", host: "razer-laptop", actions: [] })`);
+  assert.equal(run("st.view"), "screen");
+  assert.equal(run(`$("v-transcript").disabled`), true, "its transcript is on that machine");
+  assert.equal(run(`$("compose").hidden`), false, "it has a pane to type into");
+  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1")), /dotfiles @razer-laptop/);
+  assert.doesNotMatch(run(`sideRow(__d)`, row("lab/x:1")), /@/, "a local row names no machine");
+  run(`load = __load`);
+});
+
 test("from 900px an open session lists the table's rows beside it, the open one marked; narrower, none", async () => {
   setup();
   mq.matches = true;

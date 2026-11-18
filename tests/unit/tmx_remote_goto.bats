@@ -4,7 +4,7 @@
 #
 # servers.sh is sourced (its guard stops before main). tmux and ssh are the sandbox stubs: every
 # call is recorded, never run, so a set $TMUX cannot reach a live server and nothing dials out.
-# The ssh stub (sandbox_fleet_worker) runs the remote command as the worker would, against the
+# The ssh stub (sandbox_fleet) runs the remote command as the worker would, against the
 # worker's own recording tmux stub, so the test sees what tmux on the worker was asked.
 
 bats_require_minimum_version 1.5.0
@@ -14,7 +14,7 @@ setup() {
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
   sandbox_init basic
-  sandbox_fleet_worker razer
+  sandbox_fleet razer
   export TMUX_SERVERS_DIR="$SANDBOX/manifests"
   mkdir -p "$TMUX_SERVERS_DIR"
   printf 'daily ~ nvim\n' > "$TMUX_SERVERS_DIR/hub.conf"
@@ -92,9 +92,76 @@ in_tmux() {
   assert_not_called "ssh "
 }
 
-@test "land on a worker with no session is refused, not a resume" {
-  run cmd_land razer@lab last
-  assert_failure
-  assert_output --partial "names a session"
+@test "land on a worker's server with no session attaches its most recent one, as tmux attach picks" {
+  run cmd_land razer@lab last </dev/null
+  assert_success
+  run cat "$SANDBOX/razer/calls.log"
+  assert_output "tmux -L lab attach"
+}
+
+# fleet_state <target>... -- a fresh fleet state document listing these sessions, WORKING 5m.
+fleet_state() {
+  local t rows=""
+  for t in "$@"; do rows+="${rows:+,}{\"target\":\"$t\",\"bucket\":\"WORKING\",\"idle_min\":5,\"topic\":\"topic of ${t##*/}\"}"; done
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  printf '{"generated_epoch":%s,"sessions":[%s]}\n' "$(date +%s)" "$rows" > "$FLEET_STATE_FILE"
+}
+
+@test "the picker lists each worker server as a world with its agents under it, from the fleet state, dialing nothing" {
+  fleet_state razer@lab/zed-agent-2:1 hub/daily:0 razer@lab/fix-thing:2 box@lab/other:0
+  _fleet_load
+  _remote_rows
+  run cut -f1-3 <<<"${_ROWS%$'\n'}"
+  assert_output "$(printf '%s\n' $'box@lab\t\t' $'box@lab\tother\t0' $'razer@lab\t\t' $'razer@lab\tfix-thing\t2' $'razer@lab\tzed-agent-2\t1')"
+  assert_line --index 0 --partial 'box@lab'
+  run cut -f4 <<<"$_ROWS"
+  assert_line --index 2 'razer@lab  2 sessions  (fleet worker)'
+  assert_line --index 3 --regexp '^  fix-thing +WORKING +5m  topic of fix-thing:2$'
   assert_not_called "ssh "
+}
+
+@test "with no worker in the fleet state the picker adds no row" {
+  fleet_state hub/daily:0
+  _fleet_load
+  _remote_rows
+  [ -z "$_ROWS" ]
+}
+
+@test "Enter on a worker's world row hops to its most recent session and carries the local place back" {
+  in_tmux
+  _all_rows() { printf '%s\n' $'razer@lab\t\t\trazer@lab  1 session  (fleet worker)' $'razer@lab\tfix-thing\t2\t  fix-thing'; }
+  printf '#!/bin/sh\ncat >/dev/null\nprintf "razer@lab\\t\\t\\t+ razer@lab  1 session  (fleet worker)\\trazer@lab\\n"\n' > "$SANDBOX/bin/fzf"
+  chmod +x "$SANDBOX/bin/fzf"
+  run cmd_pick
+  assert_success
+  assert_called "detach-client -E TMX_BACK=hub/daily:0"
+  assert_called "land razer@lab last"
+  assert_not_called "ssh "
+}
+
+@test "a detach on the worker lands this terminal back on the local place the hop left" {
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  run cat "$SANDBOX/razer/calls.log"
+  assert_output "tmux -L lab attach -t =fix-thing:2"
+  assert_called "-L hub select-window -t daily:0"
+  assert_called "-L hub attach -t =daily"
+}
+
+@test "a failed attach on the worker stays failed, and lands nowhere" {
+  echo attach > "$SANDBOX/razer/down"
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_failure
+  assert_not_called "-L hub attach"
+}
+
+@test "Enter on a local world row resumes that world, not a session named for its display text" {
+  in_tmux
+  _all_rows() { printf '%s\n' $'hub\t\t\thub  1 session'; }
+  cmd_hop() { echo "hop $*"; }
+  printf '#!/bin/sh\ncat >/dev/null\nprintf "hub\\t\\t\\t+ hub  1 session\\thub\\n"\n' > "$SANDBOX/bin/fzf"
+  chmod +x "$SANDBOX/bin/fzf"
+  run cmd_pick
+  assert_success
+  assert_output "hop hub"
 }

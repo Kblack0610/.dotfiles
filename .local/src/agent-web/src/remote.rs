@@ -80,6 +80,29 @@ pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, S
     }))
 }
 
+/// Every worker row in the snapshot's text that names a live pane, for the session list. Empty when
+/// the snapshot is unreadable or past its ttl: the sessions table already says which worker went
+/// unread (hub-core `session_table`), so a stale row is never offered as live here.
+pub fn rows_in(snapshot: &str, now: u64) -> Vec<serde_json::Value> {
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(snapshot) else {
+        return Vec::new();
+    };
+    let (at, ttl) = (
+        doc["at"].as_u64().unwrap_or(0),
+        doc["ttl"].as_u64().unwrap_or(0),
+    );
+    if now.saturating_sub(at) > ttl {
+        return Vec::new();
+    }
+    doc["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["pane"].is_string() && r["target"].as_str().and_then(split).is_some())
+        .cloned()
+        .collect()
+}
+
 /// The live agent at a worker's target, from the snapshot file: no ssh.
 pub async fn find(snapshot: &Path, target: &str) -> Result<Option<Live>, Failed> {
     let path = snapshot.to_path_buf();
@@ -194,6 +217,22 @@ mod tests {
     const SNAP: &str = r#"{"at":1000,"ttl":180,"rows":[
         {"target":"hp@lab/s1:1","pane":"lab/%3","host":"hp"},
         {"target":"hp@lab/s1:2","pane":"lab/%7","host":"hp"}]}"#;
+
+    #[test]
+    fn the_session_list_takes_every_fresh_worker_row_with_a_pane() {
+        let rows = rows_in(SNAP, 1100);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["target"], "hp@lab/s1:2");
+        let no_pane = r#"{"at":1000,"ttl":180,"rows":[{"target":"hp@lab/s1:1","host":"hp"},
+            {"target":"lab/s1:1","pane":"lab/%3"}]}"#;
+        assert!(rows_in(no_pane, 1100).is_empty(), "no pane, or not a worker's target");
+    }
+
+    #[test]
+    fn a_stale_or_unreadable_snapshot_lists_no_worker_session() {
+        assert!(rows_in(SNAP, 1181).is_empty());
+        assert!(rows_in("not json", 1000).is_empty());
+    }
 
     #[test]
     fn only_a_listed_target_gives_a_live_agent_on_its_worker() {

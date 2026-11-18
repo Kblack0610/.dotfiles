@@ -128,6 +128,8 @@ Enter or a click on any row goes there: a world resumes where you were on it (st
        1* master           nvim        2026-11-06.md (~/.notes/journal/daily)
 ```
 
+A **fleet worker** shows as one more world per server, `razer-laptop@lab  3 sessions  (fleet worker)`, with a row per agent on it (state, idle time, topic), read from the same fleet state document, so the picker dials nothing. Enter on a session row runs `tmx goto <host>@<server>/<session>:<window>`; Enter on the world row attaches its most recent session. Either way this client detaches and the ssh attach takes the terminal, so the worker's tmux never nests in a pane and its own prefix and keys work as they do there. Detaching on the worker (`Prefix+d`) lands you back on the local session and window you came from.
+
 A **stranded** row is a session with no agent in the fleet state that no manifest declares, or a live server with no manifest. Nothing will come back for those, so a stranded session shows only under `STRANDED`. Close one by hand once you have looked at it. A session newer than the fleet state is not stranded yet.
 
 A **session** row with one agent window reads as its state, idle time and task; the state comes from the fleet state document, never recomputed here. Any other session row says where it is and what is running in it, both derived, so an ad-hoc session is described as well as a declared one and no manifest has to be kept in sync. A session with one window has no window row. A **window** row carries the branch, then the agent's state or the command, then the pane title, which is where a program puts its context: claude windows read as their task, nvim windows as their file. Rows stop at 80 columns.
