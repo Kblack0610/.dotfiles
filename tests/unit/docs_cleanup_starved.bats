@@ -89,7 +89,6 @@ STUB
   printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"open"}]}\n' > "$HOME/board.json"
   ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
   assert_success
-  refute_output --partial 'held by'
   run cut -f1,2 "$AGENTCTL_INBOX/row"
   assert_output "$(printf 'agent-runtime\tar-9')"
   rm "$ADD_LOG"

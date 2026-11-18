@@ -972,7 +972,7 @@ shared_sample() {
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
       # A queued add prints its slug; a board-only one (agent-queue overflow_row) `held <slug> -> <board>:<id>`,
       # and that row owns the test until dispatch starts it.
-      slug="$(sed -n '/^held [^ ]* -> \([^ ]*\).*/{s//board:\1/p;q;};/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
+      slug="$(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//board:\1/p;q;};/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
         slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"
