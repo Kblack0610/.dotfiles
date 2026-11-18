@@ -120,13 +120,13 @@ fi
 # An automated filer: the add files a board row and exits 5 (QUEUE.md "Admission"); exit 0 is a
 # pulled run (AGENT_QUEUE_PULL), queued under $SLUG. High plus `cleanup` is where the queue orders
 # the fleet's own housekeeping (agent-queue ORDER); the board row keeps the priority, not the tag.
-out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task" 2>&1)"
+out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task")"
 rc=$?
 printf '%s\n' "$out" >&2
 case "$rc" in
     0) report WORKED "queued $SLUG ($summary)" ;;
-    5) read -r rboard rid < <(sed -n '/.*its board row \([^ ]*\) on \([^ :]*\)[ :].*/{s//\2 \1/p;q;}' <<<"$out")
-       [ -n "${rid:-}" ] || fail "the board took pass $SLUG but named no row: ${out##*$'\n'} ($summary)"
+    5) IFS=: read -r rboard rid < <(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//\1/p;q;}' <<<"$out")
+       [ -n "${rid:-}" ] || fail "the board took pass $SLUG but printed no held line ($summary)"
        printf '%s\t%s\t%s\n' "$rboard" "$rid" "$(date +%s)" > "$ROWF"
        report WORKED "filed $SLUG as board row $rid on $rboard ($summary)" ;;
     *) fail "could not file the pass ($summary)" ;;

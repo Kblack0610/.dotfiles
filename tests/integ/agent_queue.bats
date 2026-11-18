@@ -3738,6 +3738,10 @@ a"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-nudge.md 2>/dev/null)" ] || fail "a filer's add wrote an item"
   run jq -r 'select(.slug == "nudge") | .why' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output board-only
+  # The row it filed is on stdout, the one line a filer reads; stderr is prose for the log.
+  rc=0; out=$("$AQ" add --project level --from shepherd --slug nudge2 "fix(menu): a second follow-up" 2>/dev/null) || rc=$?
+  assert_equal "$rc" 5
+  assert_equal "$out" "held nudge2 -> level:lv-9"
   # A board origin without dispatch's pull files no second row: the row it names stays put.
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --project level --from board:level:lv-7 --slug lv-7 "feat(menu): seven"
@@ -3759,7 +3763,7 @@ a"
   assert_output "agent-item,by-hand,from-hand,lv-8,own"
   # admission counts them as sent to the board, not as held by the cap
   run "$AQ" admission --json
-  assert_equal "$(jq -c '[.held_7d, .boarded_7d]' <<<"$output")" '[0,3]'
+  assert_equal "$(jq -c '[.held_7d, .boarded_7d]' <<<"$output")" '[0,4]'
   # A project with no board to file on: nothing was written, so the add fails rather than reads as filed.
   run "$AQ" add --project game --from shepherd --slug lost "fix(x): no board"
   assert_failure 1
