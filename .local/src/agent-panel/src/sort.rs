@@ -194,7 +194,7 @@ fn status_rank(a: &Agent) -> u8 {
 
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/panels/<name>`, beside the layout file
 /// `panel_layout_file` writes.
-fn panels_file(name: &str) -> Option<PathBuf> {
+pub(crate) fn panels_file(name: &str) -> Option<PathBuf> {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;

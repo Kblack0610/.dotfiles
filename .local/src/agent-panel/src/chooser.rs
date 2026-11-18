@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    account, asks, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort, tmux,
+    account, asks, dispatched, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort,
+    tmux,
 };
 
 /// One detected Claude agent, ready to render.
@@ -28,6 +29,8 @@ pub struct Agent {
     /// `list --json`, which fleet-sessions reads, or the copy would feed its own source.
     pub stage: String,
     pub labels: String,
+    /// fleet-dispatch started its session (`tmux::Pane::dispatched`); the A-d view reads it.
+    pub dispatched: bool,
     /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
     pub pane: String,
     pub session_id: String,
@@ -160,6 +163,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             tags: pane.tags.clone(),
             stage: pane.stage.clone(),
             labels: pane.labels.clone(),
+            dispatched: pane.dispatched,
             pane: format!("{}/{}", pane.server, pane.pane_id),
             session_id: sess.session_id.clone(),
             cwd: sess.cwd.clone(),
@@ -220,6 +224,7 @@ fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -
         tags: pane.tags.clone(),
         stage: pane.stage.clone(),
         labels: pane.labels.clone(),
+        dispatched: pane.dispatched,
         pane: format!("{}/{}", pane.server, pane.pane_id),
         session_id: rollout
             .as_deref()
@@ -382,7 +387,13 @@ pub fn run_interactive(query: Option<&str>) -> Result<()> {
             .map(|i| i + 1) // fzf pos() is 1-based
     });
 
-    let selected = fzf::run(&rows_text, &map_file, restore_line, query);
+    let selected = fzf::run(
+        &rows_text,
+        &map_file,
+        restore_line,
+        query,
+        dispatched::saved().label(),
+    );
     let _ = fs::remove_file(&map_file);
     let _ = fs::remove_file(search::notes_path(&map_file));
     let selected = selected?;
@@ -433,17 +444,14 @@ fn refresh_index() {
     }
 }
 
-/// Render the rows in `sort` and write the preview map file they need, and the search notes
-/// beside it (`search::notes`).
-fn write_rows(
-    mut agents: Vec<Agent>,
-    map_file: &Path,
-    sort: sort::Sort,
-) -> Result<Vec<render::Row>> {
+/// Render the rows in `sort`, in the saved A-d view (`dispatched`), and write the preview map file
+/// they need, and the search notes beside it (`search::notes`).
+fn write_rows(agents: Vec<Agent>, map_file: &Path, sort: sort::Sort) -> Result<Vec<render::Row>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+    let mut agents = dispatched::saved().filter(agents);
     with_last_active(&mut agents);
     let agents = &agents[..];
     let (rows, map_lines) = render::build(agents, sort, now);
@@ -486,7 +494,8 @@ fn rows_text(rows: &[render::Row]) -> String {
 
 /// fzf `reload` callback: print fresh rows and rewrite the map file, so a label change made
 /// from a key shows without leaving the chooser. `asking` keeps only the sessions waiting on
-/// the human (ctrl-y). `step` is a C-o or A-o press: it moves the saved sort first.
+/// the human (ctrl-y); `write_rows` applies the A-d view. `step` is a C-o or A-o press: it
+/// moves the saved sort first.
 ///
 /// `query` is the search box: the rows are filtered by it (`search::filter`), so a reload keeps
 /// what was typed.
@@ -596,7 +605,8 @@ pub fn run_move(key: MoveKey, target: &str, map_file: &Path) -> Result<()> {
     }
     let notes = if step == 0 || saved != custom {
         // A grab: read every session once, drop gone ones from the order, and show them all
-        // in your order (this leaves the asking-only view).
+        // in your order (this leaves the asking-only view, but keeps the A-d one: a hidden
+        // row keeps its place in the order).
         let agents = collect();
         order.retain(|t| agents.iter().any(|a| &a.target == t));
         sort::save_order(&order_file, &order)?;
