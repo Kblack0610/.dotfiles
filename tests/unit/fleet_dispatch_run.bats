@@ -1169,6 +1169,35 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output ''
 }
 
+# The class mix as a pass sees it (plan can-we-move-our-mellow-sphinx P4): three features started
+# today, an older feature and the human's newer ask queued. The pass takes agent-queue's order.
+@test "run starts the starved class first while the mix is on: the human's ask over an older feature; off, the older one (plan P4)" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=0 AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)"
+  mkdir -p "$AGENT_QUEUE_DIR/done/$today"
+  for i in 1 2 3; do
+    printf 'slug: df%s\nproject: game\npriority: high\nfrom: shepherd\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\nstatus: ok\nfinished: %sT01:00:00Z\n---\nfeature %s\n' \
+      "$i" "$today" "$today" "$today" "$i" > "$AGENT_QUEUE_DIR/done/$today/x-df$i.md"
+  done
+  agent-queue add --project game --from shepherd --slug old-feat "an older feature"
+  agent-queue add --project game --slug asked "the human's ask"
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued old-feat)"
+  # NEGATIVE CONTROL: the mix off is the queue's age order
+  jq '.on = false' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$AGENT_QUEUE_CLASSES"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial 'would start queue item old-feat'
+  refute_output --partial 'would start queue item asked'
+  jq '.on = true' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$AGENT_QUEUE_CLASSES"
+  run agent-queue mix --json
+  [ "$(jq -c '[.starved, (.classes[] | select(.name == "feature") | .started)]' <<<"$output")" = '[["requested"],3]' ]
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: asked'
+  [ -n "$(qitem running asked)" ] && [ -n "$(qitem queued old-feat)" ] || fail "the pass did not start the starved class's item"
+}
+
 # 2026-11-18: the free keys (go, nim, ocfree) sat at 0% used while every pass ran over the pace
 # target: no trainee row started, so none was reviewed or promoted.
 @test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops at max_open; candidates [] is off" {
