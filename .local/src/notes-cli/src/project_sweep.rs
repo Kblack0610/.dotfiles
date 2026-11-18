@@ -147,9 +147,13 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
     let mut report: Vec<String> = Vec::new();
     let mut body: Vec<String> = Vec::new();
     for l in &lines[span.clone()] {
-        // Blank lines and the generated `- [ ] ` placeholder are scaffold, not content: the
-        // rebuild re-emits the placeholder itself.
-        if l.trim().is_empty() || md::is_empty_unchecked(l) {
+        // The generated `- [ ] ` placeholder is scaffold, not content: the rebuild re-emits it.
+        // A blank goes to `task_body`, which keeps one inside a row's brief and drops the rest.
+        if l.trim().is_empty() {
+            body.push(String::new());
+            continue;
+        }
+        if md::is_empty_unchecked(l) {
             continue;
         }
         if !md::is_open_task(l) || !ctx.rewrite {
@@ -580,6 +584,23 @@ Version: v0.12.1
             "{out}"
         );
         assert!(out.contains("done:2026-11-09 -->\n  note on c\n"), "{out}");
+    }
+
+    // A paragraph break inside a brief is part of the row's block: the sweep keeps it, moves the
+    // block as one, and drops the blank that merely separates rows.
+    #[test]
+    fn a_blank_line_inside_a_rows_brief_survives_the_sweep() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
+- [ ] b #low <!-- id:x-2 -->\n  one\n\n  two\n    - nested\n\n- [ ] a #urgent <!-- id:x-1 -->\n\
+\x20 note\n\n- [x] c <!-- id:x-3 done:2026-11-09 -->\n  done one\n\n  done two\n";
+        let out = sweep(s);
+        assert!(
+            out.contains("<!-- id:x-2 -->\n  one\n\n  two\n    - nested\n"),
+            "{out}"
+        );
+        assert!(out.contains("  done one\n\n  done two\n"), "{out}");
+        assert!(pos(&out, "id:x-1") < pos(&out, "id:x-2"), "{out}");
+        assert!(sweep_sheet(&out, &ctx()).is_none(), "settles:\n{out}");
     }
 
     // A tag on a closed release goes: the row follows the open version.
