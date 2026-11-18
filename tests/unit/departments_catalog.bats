@@ -9,7 +9,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   PUB="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  PRIV="${DEPARTMENTS_PRIVATE_REPO:-$HOME/.dotfiles-private}"
+  PRIV="${DEPARTMENTS_PRIVATE_REPO:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private}"
   CAT="$PRIV/.config/agentctl/departments.tsv"
   MAP="$PRIV/.config/shared-hooks/project-map.json"
   [ -f "$CAT" ] || skip "no department catalog at $CAT"
@@ -127,13 +127,15 @@ missing_rows() {
 }
 
 @test "every named runner, workflow, skill, exporter and file exists" {
+  # The catalog's ~ and repo paths are the account's (ACCOUNT_HOME, helpers/suite_home.bash); read only.
+  local HOME="${ACCOUNT_HOME:-$HOME}"
   run missing_rows "$CAT"
   assert_success
   assert_output ''
 }
 
 @test "the check judges rows: the catalog does not resolve mostly to skipped repos" {
-  local ok=0 skipped=0 total=0 dept src kind proj rec st
+  local ok=0 skipped=0 total=0 dept src kind proj rec st HOME="${ACCOUNT_HOME:-$HOME}"
   while IFS=$'\037' read -r dept src kind proj rec; do
     total=$((total + 1))
     st=$(source_state "$kind" "$src")
