@@ -129,7 +129,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `orphan_request_rows` (now) | open rows whose `#of/` parent is no open row, or that a done item with merge proof names as its subject (agent-queue `named_row`) while it worked another row; the chain table names them |
 | `next_up_blocked` (now) | open agent rows whose latest dispatch verdict (`BENCH_VERDICTS`) is a skip by a `DISPATCH_PLAN_RULES` rule over 24h old: the split dispatch waits on never ran |
 | `stale_urgent_d` (now) | days since the oldest triaged `#urgent` agent row not yet started (open, or Next up) was filed |
-| `urgent_per_board` (now) | the most triaged `#urgent` agent rows live on one board; the lines under the table list each board |
+| `urgent_per_board` (now) | the most triaged `#urgent` agent rows not yet started (as `stale_urgent_d` counts them) on one board; the lines under the table list each board |
 | `playtest_waiting_d` (now) | days since the oldest open playtest check was written, by `git blame` of its sheet (a check carries no date); the chain table gives each game's oldest |
 | `done_inline_old` (now) | closed rows past the Done window that the next sweep rolls into `versions/` (the feed's per-project `done_old`) |
 | `ownerless_running` (now) | running or waiting items with neither `session` nor `sessions`; reap flags each past its start grace in its `note:` and the chain table names them |

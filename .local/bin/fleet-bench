@@ -1859,8 +1859,8 @@ playtest_blame() {
 #     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
 #   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
 #     its item queued), in whole days since it was filed
-#   urgent_boards (urgent_per_board): the triaged #urgent agent rows still live, counted per board,
-#     most first; past the cap, urgent no longer says what comes first (ar-2943)
+#   urgent_boards (urgent_per_board): the triaged #urgent agent rows not yet started (as urgent), counted
+#     per board, most first; past the cap, urgent no longer says what starts first
 #   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
 #   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
 board_links() {
@@ -1900,7 +1900,8 @@ board_links() {
                    and (.state == "open" or .section == "next") and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
                  | {project, id, since, days: (($t - (.since + "T00:00:00Z" | fromdate)) / 86400 | floor)}]
                 | sort_by(-.days) | first),
-       urgent_boards: ([$rows[] | select(.lane == "agent" and .priority == "urgent" and .untriaged != true and live)]
+       urgent_boards: ([$rows[] | select(.lane == "agent" and .priority == "urgent" and .untriaged != true
+                         and (.state == "open" or .section == "next"))]
                        | group_by(.project) | map({project: .[0].project, n: length}) | sort_by(-.n)),
        playtest: (if any($blame[]; .[1] == "?") then null else
          ($blame | map({key: "\(.[0])\t\(.[1])", value: (.[2] | tonumber)}) | from_entries) as $at
