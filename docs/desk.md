@@ -24,6 +24,7 @@ Scripts and binds never signal a part directly:
 
 - `desk signal custom/<chip>` re-runs that chip now, and every chip sharing its signal number. It reads the chip's `"signal"` from `.config/waybar/config.base` (or `config.pin-full`), then sends it to waybar as `SIGRTMIN+N` or to Noctalia over its plugin IPC.
 - `desk notify close|close-all|history|dnd` drives the notifier (Super+N, Shift, Ctrl, Alt). Under swaync, `history` opens the control panel.
+- `desk notify show <tag> <notify-send args>` sends one popup per tag that the next send with that tag replaces, and `desk notify drop <tag>` closes it. It works under dunst and swaync alike: it sends `x-canonical-private-synchronous`, the replace hint both honour (swaync ignores `x-dunst-stack-tag` and a `dunstify -r` id it did not hand out), and keeps the server's id in `$XDG_RUNTIME_DIR/desk/` for the close. The leader hint (`pin-hint.sh`) and the module toggles (`modules.sh`) use it.
 
 desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, so that would dirty the tree. A slot whose parts run as different units gets `Conflicts=` between them (`dunst.service.d/desk.conf`), so starting one stops the other.
 

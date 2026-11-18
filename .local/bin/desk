@@ -9,6 +9,8 @@
 #   desk start                    start every slot's part (desk.service, at login)
 #   desk signal <module-id>...    re-run the bar chips on each module's signal number
 #   desk notify close|close-all|history|dnd
+#   desk notify show <tag> <notify-send args>   one popup per tag, replaced in place
+#   desk notify drop <tag>        close that tag's popup
 #   desk chip <module-id> [run|stream]   a waybar chip for the Noctalia bar: how to run
 #                                 it, one run's output, or its stream kept running
 #
@@ -127,8 +129,31 @@ signal() {
     esac
     [[ "$missing" == 0 ]] || exit 2
 }
+
+# show and drop work the same under every notifier. x-canonical-private-synchronous is the
+# replace hint dunst and swaync both honour; swaync ignores x-dunst-stack-tag and a -r id it
+# did not hand out. The server's id is kept so drop can close the popup over D-Bus.
+NOTIFY_IDS="${XDG_RUNTIME_DIR:-/tmp}/desk"
+notify_show() {
+    local tag="${1:?usage: desk notify show <tag> <notify-send args>}" id
+    shift
+    id="$(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")" || return
+    mkdir -p "$NOTIFY_IDS" && printf '%s\n' "$id" > "$NOTIFY_IDS/notify-$tag.id"
+}
+notify_drop() {
+    local f="$NOTIFY_IDS/notify-${1:?usage: desk notify drop <tag>}.id"
+    [[ -s "$f" ]] || return 0
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.CloseNotification "$(<"$f")" >/dev/null 2>&1 || true
+    rm -f "$f"
+}
+
 notify() {
     local verb="${1:-}"
+    case "$verb" in
+        show) shift; notify_show "$@"; return ;;
+        drop) shift; notify_drop "$@"; return ;;
+    esac
     case "$(get notify):$verb" in
         dunst:close)     dunstctl close ;;
         dunst:close-all) dunstctl close-all ;;
@@ -140,7 +165,7 @@ notify() {
         swaync:close-all) swaync-client --hide-all ;;
         swaync:history)   swaync-client -t -sw ;;
         swaync:dnd)       swaync-client -d -sw ;;
-        *) die "usage: desk notify close|close-all|history|dnd" 2 ;;
+        *) die "usage: desk notify close|close-all|history|dnd|show|drop" 2 ;;
     esac
 }
 
