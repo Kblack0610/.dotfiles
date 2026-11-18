@@ -47,7 +47,8 @@ verdicts() {
   local src prog chat keep out sid
   src="$(source_of "$1")" || { echo "fleet-close-diff: cannot read fleet-sessions at $1" >&2; return 2; }
   prog="$(close_jq <<<"$src")" || { echo "fleet-close-diff: no CLOSE_JQ in $1" >&2; return 2; }
-  chat="$(( $(default "$src" FLEET_CHAT_CLOSE_H) * 60 ))" && keep="$(default "$src" FLEET_HUMAN_KEEP_MIN)" || return 2
+  chat="$(default "$src" FLEET_CHAT_CLOSE_H)" && keep="$(default "$src" FLEET_HUMAN_KEEP_MIN)" || return 2
+  chat=$((chat * 60))
   out='.close = null | '"$prog"' | {id: (.session_id // .target), target, bucket, v: (.close.verdict // "-"), why: (.close.why // "-")}'
   if [ "$self" = 0 ]; then
     jq -c --argjson chat "$chat" --argjson human_keep "$keep" ".sessions[] | $out" "$state"

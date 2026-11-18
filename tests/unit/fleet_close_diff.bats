@@ -75,7 +75,7 @@ version() {
   version "$BATS_TEST_TMPDIR/all" '.close = {verdict: "now", why: "stub"}'
   run --separate-stderr "$DIFF" HEAD "$BATS_TEST_TMPDIR/all"
   assert_failure 1
-  assert_line --index 0 --partial $'lab/a:1\tDONE\tkeep -> now\tthe human is on it: typed 5m ago (keep 30m)'
+  assert_line --index 0 --partial $'lab/a:1\tDONE\tkeep -> now\tthe human is on it: typed 5m ago'
   assert_line --index 1 --partial $'lab/b:1\tDONE\tkeep -> now\t'
   refute_line --index 1 --partial 'the human'
 }

@@ -471,16 +471,22 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -z "$(typed)" ]
 }
 
-@test "check's re-page for a LANDED row with no next phase names no phase" {
+@test "check's re-page for a LANDED row with no next phase names no phase, and no plan when it has none" {
   # Its decision once read "decide phase '-' of -".
-  doc "[$(jq -n --arg at "$(date -Iseconds)" '{session_id: "s-nophase", target: "lab/s-nophase:1", bucket: "LANDED",
-    reason: "PR #12 merged, tree clean", fact: "LANDED PR #12 merged, tree clean", nudged: true, escalated: true,
-    idle_min: 400, labels: [], pr: "12", next_phase: null, plan_file: null}')]"
-  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/s-nophase"
+  local row='{target: ("lab/" + $s + ":1"), session_id: $s, bucket: "LANDED", reason: "PR #12 merged, tree clean",
+    fact: "LANDED PR #12 merged, tree clean", nudged: true, escalated: true, idle_min: 400, labels: [], pr: "12",
+    next_phase: null, plan_file: (if $p == "" then null else $p end)}'
+  doc "[$(jq -n --arg s s-nophase --arg p /plans/p.md "$row"), $(jq -n --arg s s-noplan --arg p '' "$row")]"
+  for s in s-nophase s-noplan; do
+    printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/$s"
+  done
   "$SH" check >/dev/null || true
   run grep 'lab/s-nophase:1: one decision' "$HOME/pages"
-  assert_output --partial 'give its plan a ## Phases checklist, or close its window'
+  assert_output --partial 'give p.md a ## Phases checklist, or close its window'
   refute_output --partial "phase '"
+  run grep 'lab/s-noplan:1: one decision' "$HOME/pages"
+  assert_output --partial 'close its window'
+  refute_output --partial 'Phases'
 }
 
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
