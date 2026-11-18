@@ -4,7 +4,8 @@
 #
 #   ask-sweep run [--dry-run]   file rows for unfinished plans and missed asks
 #
-# Plans: a plan with unticked phases, no live session and no change for a day gets one row naming
+# Plans: a plan fleet-dispatch reap has not filed (reconcile_plans, its plans-filed record), with unticked
+# phases, no live session and no change for a day gets one row naming
 # its slug; an open row that names it already, or an open twin (`ptask add` exit 3), stops a second
 # one. No model. Plans older than the first run are not
 # back-filled. A plan with no checklist and no Results is only counted, since many of those landed.
@@ -64,7 +65,7 @@ file_row() {
 board_of() { project_board "$1"; }
 
 sweep_plans() {
-  local first live f slug canon stub done_n total next project board rows
+  local first live filed f slug canon stub done_n total next project board rows
   first="$ASK_SWEEP_DIR/first-run"
   [ -d "$ASK_SWEEP_PLANS" ] || { FAULT=1; say "no plans dir: $ASK_SWEEP_PLANS"; proof_why "no plans dir"; return 0; }
   # The first real run only starts the clock, and a dry run before it has nothing to report.
@@ -73,6 +74,9 @@ sweep_plans() {
     return 0
   fi
   live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty' 2>/dev/null)"
+  # A plan fleet-dispatch reap filed (reconcile_plans: an approved plan its session left) is homed; this
+  # sweep asks only about the rest, by name, since the record may hold the plan or its pointer stub.
+  filed="$(sed 's#.*/##; s#\.md$##' "${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/plans-filed" 2>/dev/null)"
   while IFS= read -r -d '' f; do
     [ "$f" -ot "$first" ] && continue
     PLANS_READ=$((PLANS_READ + 1))
@@ -88,6 +92,7 @@ sweep_plans() {
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
     grep -qxF -e "$f" -e "$stub" <<<"$live" && continue
+    grep -qxF -e "$slug" -e "$(basename "$stub" .md)" <<<"$filed" && continue
     project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
     # An open plan with no cache copy has no project to file under: counted, never dropped unseen.
     [ -n "$project" ] || { PLANS_NO_COPY=$((PLANS_NO_COPY + 1)); continue; }

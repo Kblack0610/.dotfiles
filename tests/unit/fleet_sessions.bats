@@ -1364,7 +1364,7 @@ SH
   assert_success
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
-  grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  grep -qF "'agent-panel' 'list' '--json'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
   # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
   snap="$XDG_STATE_HOME/fleet/worker-panel.json"
   assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
@@ -2193,6 +2193,24 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
+@test "end to end: a session whose next phase add --plan filed on its board row behind a gate reads DONE; an ungated row is no phase (ar-3121)" {
+  # The queue holds no gated work: add --plan files a phase that waits on another as its board row,
+  # gated #after/<row>, its brief naming the plan. A plan read through the queue alone read LANDED,
+  # next phase, and the shepherd would have asked the session to queue it again.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-7","state":"open","tags":["after/apo-6"],"details":["Phase 2 of the plan %s: rollout."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-7' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
+  sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
 @test "end to end: a session whose plan's phases are queued reads DONE, whatever its plan says about a coordinator" {
   # 2026-11-17: critical work is queued and run by dispatch; no window stays to watch it, so a
   # `Coordinator:` line left in a plan changes nothing.
@@ -2205,9 +2223,12 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'DONE now' ]
-  # Negative control: with no item holding Phase 2, the same session must queue it first.
+  # With no item holding Phase 2 it is LANDED, and still closes on the quiet timer: fleet-dispatch reap
+  # files the phase once the window is gone, so the session has no queue step of its own.
   rm "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
-  # quiet under FLEET_IDLE_CLOSE_MIN: past it the verdict is now (ar-2887)
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'LANDED now' ]
+  # Negative control: quiet under FLEET_IDLE_CLOSE_MIN it waits the timer out.
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'LANDED after' ]
 }
@@ -2230,7 +2251,7 @@ research_item() {
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'next phase: Phase 2: rollout; its item fix-wave-save is running here' ]
-  [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan --priority <p>), then close' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'keep: work left here: its item fix-wave-save is running here' ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {
@@ -4166,21 +4187,17 @@ verdict() {
   # the item or drop the red's owner.
   [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
-  # One named step, while quiet under the timer.
-  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
-  # ar-2887: quiet past it, the step holds no slot: the shepherd sends it to wind-down, whose close --self
-  # still reads after (above) and queues them; a window gone leaves the plan to the reap.
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m with phases left: its /wind-down queues them (close --self reads after)" ]
+  # Open plan phases are no step: fleet-dispatch reap files them once the window is gone, so a LANDED
+  # row waits the timer like any other, and asked by itself it closes.
+  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: quiet 5m of 60m" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(SELF=s1 verdict '{bucket: "LANDED", session_id: "s1", finished: false, idle_min: 0, next_phase: "3", blockers: ["next phase: 3"]}')" = "now: quiet 0m, nothing to land" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
   # The timer: everything else closes once quiet 60 minutes.
   [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{idle_min: 59}')" = "after: quiet 59m of 60m" ]
   [ "$(verdict '{idle_min: 60}')" = "now: quiet 60m, nothing to land" ]
-  # A window dispatched for an item that moved on: its next phase is the queue's.
-  [ "$(verdict '{bucket: "LANDED", finished: false, dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: quiet 90m, its ask reopens it on an answer" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 300m, nothing to land" ]

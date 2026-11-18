@@ -42,7 +42,7 @@ const settle = () => new Promise((r) => setImmediate(r));
 const node = (key, label, o = {}) => ({ key, label, count: "4", sub: "p90 2h", hot: false, stopped: false, to: null, stop: null, facts: [], problems_n: 0, problems: [], gap: null, elsewhere: null, ...o });
 const nodes = (over = {}) => [
   node("inbox", "inbox", { count: "1", sub: "ok" }),
-  node("board", "board", { count: "312" }),
+  node("backlog", "agent backlog", { count: "312" }),
   node("queued", "queued", { count: "272", hot: true, stopped: true, stop: "Dispatch stopped 9h50m", facts: ["272 items, bound 12h (5.7x)"], to: { tab: "queue", state: "ready" } }),
   node("running", "running", { count: "9", problems_n: 11, problems: [{ text: "01:16  ucp-412  failed  died", item: "ucp-412" }, { text: "00:01  a line  refused  no", item: null }], to: { tab: "queue", state: "running" } }),
   node("needs", "needs you", { count: "2", hot: true }),
@@ -80,18 +80,18 @@ test("a picked step opens its problems, and one that names an item links it", ()
   assert.match(drawStrip(rail(), null, "gone"), /class="rnode stopped sel" data-rail="queued"/, "a step no longer there falls back to the worst");
 });
 
-test("negative control: no snapshot draws inbox - and board -, never 0, and says so", () => {
-  const html = drawStrip(rail({ as_of: null, absent: true, nodes: { inbox: { count: null }, board: { count: null } } }));
+test("negative control: no snapshot draws inbox - and agent backlog -, never 0, and says so", () => {
+  const html = drawStrip(rail({ as_of: null, absent: true, nodes: { inbox: { count: null }, backlog: { count: null } } }));
   assert.match(html, /<span class="rcount">-<\/span><span class="rlabel">inbox/);
-  assert.match(html, /<span class="rcount">-<\/span><span class="rlabel">board/);
-  assert.match(html, /inbox, board: no snapshot/);
+  assert.match(html, /<span class="rcount">-<\/span><span class="rlabel">agent backlog/);
+  assert.match(html, /inbox, agent backlog: no snapshot/);
   assert.doesNotMatch(html, /href="https:/);
 });
 
 test("a stale or ageless snapshot is red, a failed read says why, and no data yet says reading", () => {
   assert.match(drawStrip(rail({ stale: true })), /<span class="rstop">as of 10:20 \(stale\)<\/span>/);
   assert.match(drawStrip(rail({ stale: true, as_of: null })), /<span class="rstop">age unknown<\/span>/);
-  assert.match(drawStrip(rail({ error: "snapshot cannot be read", as_of: null })), /inbox, board: snapshot cannot be read/);
+  assert.match(drawStrip(rail({ error: "snapshot cannot be read", as_of: null })), /inbox, agent backlog: snapshot cannot be read/);
   assert.match(drawStrip(null), /class="flow muted">reading</);
 });
 

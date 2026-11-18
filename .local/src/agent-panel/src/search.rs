@@ -12,8 +12,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::chooser::Agent;
 use crate::render::Row;
+use agent_core::agent::Agent;
 
 /// The sessions index, as `.local/bin/sessions` names it.
 pub fn index_path() -> Option<PathBuf> {
@@ -65,7 +65,9 @@ pub fn topics(conf: &str) -> HashMap<String, Vec<String>> {
 
 /// The topics on disk (`TOPICS_CONF` under the home directory).
 pub fn read_topics() -> HashMap<String, Vec<String>> {
-    topics(&std::fs::read_to_string(crate::session::home().join(TOPICS_CONF)).unwrap_or_default())
+    topics(
+        &std::fs::read_to_string(agent_core::session::home().join(TOPICS_CONF)).unwrap_or_default(),
+    )
 }
 
 /// Strip ANSI colour escapes, so a note holds the words a human reads on the row.

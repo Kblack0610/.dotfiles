@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::links::{Kind, Link};
+use crate::outcomes;
 use crate::reading::NOT_READ;
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -43,6 +44,12 @@ pub struct Paths {
     pub runners: PathBuf,
     /// The public repo's `.claude/rules`, the path-scoped rules.
     pub rule_files: PathBuf,
+    /// The fleet map, whose `## Flows` table names each flow's one definition.
+    pub architecture: PathBuf,
+    /// What `~/` means in that table.
+    pub home: PathBuf,
+    /// The checkouts a `Checked by` test path is read under, the first that has it.
+    pub repos: Vec<PathBuf>,
 }
 
 impl Paths {
@@ -59,6 +66,9 @@ impl Paths {
             tokens: crate::boards::token_usage_dir(),
             runners: home.join(".config/agentctl/agents"),
             rule_files: home.join(".dotfiles/.claude/rules"),
+            architecture: home.join(".config/agentctl/ARCHITECTURE.md"),
+            repos: vec![home.join(".dotfiles"), home.join(".dotfiles-private")],
+            home,
         }
     }
 }
@@ -78,6 +88,7 @@ pub struct Stack {
     pub hooks: Vec<Hook>,
     pub rules: Vec<Rule>,
     pub rule_files: Vec<RuleFile>,
+    pub flows: Vec<Flow>,
     /// Each inner tab's count of rows that need a look, by inner id: the strip's pills.
     pub strip: BTreeMap<String, usize>,
     pub errors: Vec<String>,
@@ -99,7 +110,23 @@ pub struct Skill {
     pub runners: Vec<String>,
     /// The drift snapshot's findings for it, lower-case type and its item.
     pub drift: Vec<Finding>,
+    /// The newest sessions that ran it (`RAN_PER_SKILL`, over `USE_DAYS`), each linked to its page.
+    pub ran: Vec<SkillRun>,
 }
+
+/// One session that ran a skill, as its outcome row says.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SkillRun {
+    pub session_id: String,
+    pub project: String,
+    pub title: String,
+    pub updated: String,
+    pub calls: u64,
+    pub link: Link,
+}
+
+/// How many sessions a skill's backlinks list.
+pub const RAN_PER_SKILL: usize = 10;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Finding {
@@ -365,6 +392,252 @@ pub struct RuleFile {
     pub paths: Vec<String>,
 }
 
+/// One flow of the fleet, a row of the `## Flows` table in ARCHITECTURE.md: the one doc section
+/// that defines it, its picture, and the test that fails when the code leaves that section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Flow {
+    pub flow: String,
+    pub question: String,
+    /// As the table writes it, `~/<path>#<anchor>`.
+    pub source: String,
+    /// `~/<path>.svg`, or empty.
+    pub picture: String,
+    /// Test paths under one of the repos, or empty when nothing checks it.
+    pub checked: Vec<String>,
+    /// `ok`, `unchecked` (no test holds the doc to the code) or `broken` (a path, heading or
+    /// test it names is gone).
+    pub state: String,
+    /// What is broken, one line each.
+    pub why: Vec<String>,
+    #[serde(skip)]
+    pub doc: PathBuf,
+    #[serde(skip)]
+    pub anchor: String,
+    #[serde(skip)]
+    pub svg: Option<PathBuf>,
+}
+
+pub const UNCHECKED: &str = "unchecked";
+pub const BROKEN: &str = "broken";
+
+impl Row for Flow {
+    const COLUMNS: &'static [&'static str] =
+        &["flow", "question", "source", "picture", "checked", "state"];
+    const STATES: &'static [&'static str] = &[ALL, UNCHECKED, BROKEN];
+    const FACETS: &'static [&'static str] = &["state"];
+    const LEAD: &'static str = "flow";
+    const GLANCE: &'static [&'static str] = &["checked", "state"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            UNCHECKED,
+            "no test fails when the code leaves the doc, so the doc may drift",
+        ),
+        (BROKEN, "a doc, heading, picture or test it names is gone"),
+    ];
+
+    fn val(&self, col: &str) -> Val {
+        match col {
+            "flow" => Val::Text(self.flow.clone()),
+            "question" => text(&self.question),
+            "source" => text(self.source.strip_prefix("~/").unwrap_or(&self.source)),
+            "picture" => text(self.picture.rsplit('/').next().unwrap_or_default()),
+            "checked" => text(
+                &self
+                    .checked
+                    .iter()
+                    .map(|t| t.rsplit('/').next().unwrap_or(t))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+            "state" => text(&self.state),
+            _ => Val::None,
+        }
+    }
+
+    fn in_state(&self, s: &str) -> bool {
+        self.state == s
+    }
+
+    fn text(&self) -> String {
+        format!(
+            "{}\n{}\n{}\n{}",
+            self.flow,
+            self.question,
+            self.source,
+            self.checked.join(" ")
+        )
+        .to_lowercase()
+    }
+}
+
+/// A heading's GitHub anchor: lowercase, keep letters, digits, `-` and `_`, spaces to `-`.
+pub fn slug(heading: &str) -> String {
+    heading
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The markdown under the heading whose anchor is `anchor`, up to the next heading of the same
+/// or a higher level, `#` lines inside a fence not counted. Image lines are dropped: the picture
+/// is served on its own.
+pub fn section(md: &str, anchor: &str) -> Option<String> {
+    let mut fence = false;
+    let mut level = None;
+    let mut out = Vec::new();
+    for line in md.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+        }
+        let depth = t.chars().take_while(|c| *c == '#').count();
+        let heading = !fence && (1..=6).contains(&depth) && t[depth..].starts_with(' ');
+        match level {
+            None if heading && slug(t[depth..].trim()) == anchor => level = Some(depth),
+            None => continue,
+            Some(l) if heading && depth <= l => break,
+            Some(_) => {}
+        }
+        let image = !fence && t.starts_with("![") && t.trim_end().ends_with(')');
+        // An image line goes with the blank line after it, so no gap is left.
+        if image || (t.is_empty() && out.last().is_some_and(|l: &&str| l.trim().is_empty())) {
+            continue;
+        }
+        out.push(line);
+    }
+    level.map(|_| out.join("\n").trim().to_string())
+}
+
+/// The cells of one markdown table row, backticks dropped.
+fn cells(line: &str) -> Vec<String> {
+    let t = line.trim();
+    t.strip_prefix('|')
+        .and_then(|t| t.strip_suffix('|'))
+        .unwrap_or(t)
+        .split('|')
+        .map(|c| c.trim().replace('`', ""))
+        .collect()
+}
+
+fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
+    let Ok(md) = std::fs::read_to_string(&paths.architecture) else {
+        errors.push(format!("{} not read", paths.architecture.display()));
+        return Vec::new();
+    };
+    let Some(table) = section(&md, "flows") else {
+        errors.push(format!("{}: no ## Flows", paths.architecture.display()));
+        return Vec::new();
+    };
+    // The first table under the heading, and only it: a later table or subsection is prose.
+    let is_row = |l: &&str| l.trim_start().starts_with('|');
+    let mut rows = table.lines().skip_while(|l| !is_row(l)).take_while(is_row);
+    let head: Vec<String> = rows
+        .next()
+        .map(cells)
+        .unwrap_or_default()
+        .iter()
+        .map(|c| c.to_lowercase())
+        .collect();
+    let col = |name: &str| head.iter().position(|h| h == name);
+    let (Some(fi), Some(qi), Some(di), Some(pi), Some(ci)) = (
+        col("flow"),
+        col("question"),
+        col("defined in"),
+        col("picture"),
+        col("checked by"),
+    ) else {
+        errors.push(format!(
+            "{}: the Flows table needs Flow, Question, Defined in, Picture and Checked by",
+            paths.architecture.display()
+        ));
+        return Vec::new();
+    };
+    let home = |p: &str| match p.strip_prefix("~/") {
+        Some(rest) => paths.home.join(rest),
+        None => PathBuf::from(p),
+    };
+    let blank = |c: &str| c.is_empty() || c == "-" || c.eq_ignore_ascii_case("none");
+    // Several flows share one doc, so each is read once per pass.
+    let mut docs: std::collections::HashMap<PathBuf, Option<String>> = Default::default();
+    rows.skip(1)
+        .map(cells)
+        .map(|mut c| {
+            let mut why = Vec::new();
+            // A short row is shown broken, never dropped: losing a flow silently is the drift this
+            // table exists to catch.
+            if c.len() < head.len() {
+                why.push(format!(
+                    "the row has {} cells, the header {}",
+                    c.len(),
+                    head.len()
+                ));
+                c.resize(head.len(), String::new());
+            }
+            let (file, anchor) = c[di].split_once('#').unwrap_or((&c[di], ""));
+            let doc = home(file);
+            let text = docs
+                .entry(doc.clone())
+                .or_insert_with(|| std::fs::read_to_string(&doc).ok());
+            match text {
+                None => why.push(format!("{file} is gone")),
+                Some(_) if anchor.is_empty() => why.push(format!("{file}: no #anchor")),
+                Some(text) if section(text, anchor).is_none() => {
+                    why.push(format!("{file}: no heading #{anchor}"))
+                }
+                Some(_) => {}
+            }
+            let picture = if blank(&c[pi]) {
+                String::new()
+            } else {
+                c[pi].clone()
+            };
+            let svg = (!picture.is_empty()).then(|| home(&picture));
+            if svg.as_ref().is_some_and(|p| !p.is_file()) {
+                why.push(format!("{picture} is gone"));
+            }
+            let checked: Vec<String> = if blank(&c[ci]) {
+                Vec::new()
+            } else {
+                c[ci].split(',').map(|t| t.trim().to_string()).collect()
+            };
+            for t in &checked {
+                if !paths.repos.iter().any(|r| r.join(t).is_file()) {
+                    why.push(format!("{t} is gone"));
+                }
+            }
+            let state = if !why.is_empty() {
+                BROKEN
+            } else if checked.is_empty() {
+                UNCHECKED
+            } else {
+                OK
+            };
+            Flow {
+                flow: c[fi].clone(),
+                question: c[qi].clone(),
+                source: c[di].clone(),
+                picture,
+                checked,
+                state: state.to_string(),
+                why,
+                doc,
+                anchor: anchor.to_string(),
+                svg,
+            }
+        })
+        .collect()
+}
+
+/// A flow's doc section, read now, for the page a row opens.
+pub fn flow_section(flow: &Flow) -> Option<String> {
+    section(&std::fs::read_to_string(&flow.doc).ok()?, &flow.anchor)
+}
+
 fn text(s: &str) -> Val {
     if s.is_empty() {
         Val::None
@@ -379,18 +652,25 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     let (drift_day, drift) = read_drift(&paths.drift, &mut errors);
     let (use_days, calls) = read_calls(&paths.tokens, &mut errors);
     let by_skill = runner_skills(&paths.runners);
+    let mut ran = read_ran(runner, &mut errors);
     let mut skills = read_skills(paths, &mut errors);
     for s in &mut skills {
         s.calls = (use_days > 0).then(|| calls.get(&s.name).copied().unwrap_or(0));
         s.runners = by_skill.get(&s.name).cloned().unwrap_or_default();
         s.drift = drift.get(&s.name).cloned().unwrap_or_default();
+        s.ran = ran.remove(&s.name).unwrap_or_default();
     }
     let agents = read_agents(paths, &mut errors);
     let runners = conf_names(&paths.runners).len();
     let hooks = read_hooks(paths, &mut errors);
     let rules = read_rules(runner, &mut errors);
     let rule_files = read_rule_files(&paths.rule_files);
+    let flows = read_flows(paths, &mut errors);
     let strip = BTreeMap::from([
+        (
+            "flows".to_string(),
+            flows.iter().filter(|f| f.state != OK).count(),
+        ),
         (
             "skills".to_string(),
             skills.iter().filter(|s| s.drifts()).count(),
@@ -414,6 +694,7 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
         hooks,
         rules,
         rule_files,
+        flows,
         strip,
         errors,
     }
@@ -550,6 +831,33 @@ fn read_skills(paths: &Paths, errors: &mut Vec<String>) -> Vec<Skill> {
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+impl From<outcomes::Ran> for SkillRun {
+    fn from(r: outcomes::Ran) -> SkillRun {
+        SkillRun {
+            link: Link::to(Kind::Session, &r.session_id),
+            title: crate::text::headline(r.title.as_deref().unwrap_or("")).0,
+            updated: r.updated.unwrap_or_default(),
+            session_id: r.session_id,
+            project: r.project,
+            calls: r.calls,
+        }
+    }
+}
+
+/// Each skill's newest sessions from the outcome rows (`agentctl-session-outcomes ran`), which
+/// the nightly run writes: a session still live has no row yet, so it is not listed.
+fn read_ran(runner: &dyn Runner, errors: &mut Vec<String>) -> BTreeMap<String, Vec<SkillRun>> {
+    let by = outcomes::ran(runner, USE_DAYS, RAN_PER_SKILL).unwrap_or_else(|e| {
+        errors.push(format!(
+            "skill sessions: {NOT_READ}: agentctl-session-outcomes ran: {e}"
+        ));
+        BTreeMap::new()
+    });
+    by.into_iter()
+        .map(|(skill, rows)| (skill, rows.into_iter().map(SkillRun::from).collect()))
+        .collect()
 }
 
 fn read_agents(paths: &Paths, errors: &mut Vec<String>) -> Vec<Agent> {
@@ -855,6 +1163,9 @@ mod tests {
             tokens: d.join("tokens"),
             runners: d.join("runners"),
             rule_files: d.join("rules"),
+            architecture: d.join("ARCHITECTURE.md"),
+            home: d.clone(),
+            repos: vec![d.join("pub"), d.join("priv")],
         };
         put(
             &p.skills.join("shepherd/SKILL.md"),
@@ -900,8 +1211,16 @@ mod tests {
             &p.rule_files.join("agent-runtime.md"),
             "---\npaths:\n  - \".local/bin/agentctl*\"\n---\n# rules\n",
         );
+        put(&p.architecture, ARCH);
+        put(&d.join("docs/states.md"), STATES_MD);
+        put(&d.join("docs/close.svg"), "<svg/>");
+        put(&d.join("priv/tests/states.bats"), "");
         p
     }
+
+    const ARCH: &str = "# map\n\n## Flows\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Close verdict | may it close? | `~/docs/states.md#close-verdict` | `~/docs/close.svg` | `tests/states.bats` |\n| Chain | what runs after what? | `~/docs/states.md#the-chain-a---b` | - | None |\n| Gone | ? | `~/docs/states.md#nope` | `~/docs/gone.svg` | `tests/gone.bats` |\n| Short | ? |\n\n### Notes\n\n| Flow | Question | Defined in | Picture | Checked by |\n| --- | --- | --- | --- | --- |\n| Bogus | ? | - | - | - |\n\n## Instruments\n\n| a | b |\n";
+
+    const STATES_MD: &str = "# states\n\n## Close verdict\n\n![close](close.svg)\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.\n\n## The chain: `a` -> b\n\nA then B.\n";
 
     const RULES: &str = r#"[{"rule":"cap at 50","kind":"provisional","number":"50","confidence":"high","anchored":true,"moved":true,"dead":false},{"rule":"never force push","kind":"invariant","anchored":true,"moved":false,"dead":false},{"rule":"old","kind":"provisional","anchored":false,"moved":false,"dead":false}]"#;
 
@@ -944,6 +1263,89 @@ mod tests {
     }
 
     #[test]
+    fn flows_are_the_architecture_table_each_checked_against_its_paths() {
+        let p = fixture("flows");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        let states: Vec<(&str, &str)> = s
+            .flows
+            .iter()
+            .map(|f| (f.flow.as_str(), f.state.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            [
+                ("Close verdict", OK),
+                ("Chain", UNCHECKED),
+                ("Gone", BROKEN),
+                ("Short", BROKEN)
+            ],
+            "only the first table counts, a short row is broken not dropped"
+        );
+        assert_eq!(s.flows[3].why[0], "the row has 2 cells, the header 5");
+        assert_eq!(s.strip["flows"], 3, "unchecked and broken both count");
+        assert_eq!(
+            s.flows[2].why,
+            [
+                "~/docs/states.md: no heading #nope",
+                "~/docs/gone.svg is gone",
+                "tests/gone.bats is gone"
+            ]
+        );
+        let close = &s.flows[0];
+        assert_eq!(
+            close.checked,
+            ["tests/states.bats"],
+            "found under the second repo"
+        );
+        assert_eq!(
+            close.svg.as_deref(),
+            Some(p.home.join("docs/close.svg").as_path())
+        );
+        assert_eq!(
+            flow_section(close).unwrap(),
+            "## Close verdict\n\nOne chain.\n\n```sh\n# not a heading\n```\n\n### Changing it\n\nRun the diff.",
+            "a fenced # and a deeper heading stay in, the image line goes, the next ## ends it"
+        );
+        assert_eq!(
+            flow_section(&s.flows[1]).unwrap(),
+            "## The chain: `a` -> b\n\nA then B."
+        );
+        assert_eq!(
+            close.val("source"),
+            Val::Text("docs/states.md#close-verdict".into())
+        );
+        assert_eq!(close.val("picture"), Val::Text("close.svg".into()));
+        assert_eq!(s.flows[1].val("picture"), Val::None);
+    }
+
+    #[test]
+    fn no_flows_table_is_an_error_not_an_empty_list_that_reads_as_fine() {
+        let p = fixture("noflows");
+        put(&p.architecture, "# map\n\n## Instruments\n");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        assert!(s.flows.is_empty());
+        assert!(
+            s.errors.iter().any(|e| e.contains("no ## Flows")),
+            "{:?}",
+            s.errors
+        );
+    }
+
+    #[test]
+    fn slug_is_the_github_anchor() {
+        assert_eq!(
+            slug("The dispatcher: `fleet-dispatch`"),
+            "the-dispatcher-fleet-dispatch"
+        );
+        assert_eq!(
+            slug("The flow: inbox to ledger"),
+            "the-flow-inbox-to-ledger"
+        );
+        assert_eq!(slug("The chain: `a` -> b"), "the-chain-a---b");
+    }
+
+    #[test]
     fn a_hook_whose_script_is_gone_is_missing() {
         let p = fixture("hooks");
         let s = read(&p, &Fixed(Ok("[]".into())), 0);
@@ -976,6 +1378,57 @@ mod tests {
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
         assert_eq!(states, [MOVED, OK, STALE]);
         assert_eq!(s.strip["rules"], 2);
+    }
+
+    /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
+    struct ByArgv(Result<String, String>);
+    impl Runner for ByArgv {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv.iter().any(|a| a == "ran") {
+                self.0.clone()
+            } else {
+                Ok(RULES.into())
+            }
+        }
+    }
+
+    #[test]
+    fn a_skill_carries_the_sessions_that_ran_it_and_a_failed_read_says_so() {
+        let p = fixture("ran");
+        let ran = concat!(
+            r#"{"skill":"shepherd","calls":3,"session_id":"6f296b73-b7a5-4f30-8046-5d583d1f7c61","project":"dotfiles","title":"fix the gate","updated":"2026-11-18"}"#,
+            "\n",
+            r#"{"skill":"hz-build","calls":1,"session_id":"aaaaaaaa-1","project":"q"}"#,
+            "\n",
+        );
+        let s = read(&p, &ByArgv(Ok(ran.into())), 100);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        let sh = s.skills.iter().find(|k| k.name == "shepherd").unwrap();
+        assert_eq!(sh.ran.len(), 1);
+        assert_eq!(sh.ran[0].calls, 3);
+        assert_eq!(sh.ran[0].project, "dotfiles");
+        assert_eq!(
+            sh.ran[0].link,
+            Link::to(Kind::Session, "6f296b73-b7a5-4f30-8046-5d583d1f7c61")
+        );
+        let bare = s.skills.iter().find(|k| k.name == "bare").unwrap();
+        assert!(bare.ran.is_empty(), "a skill nobody ran has no backlinks");
+
+        let s = read(&p, &ByArgv(Err("boom".into())), 100);
+        assert!(s
+            .errors
+            .iter()
+            .any(|e| e.starts_with("skill sessions: not read")));
+        assert!(s.skills.iter().all(|k| k.ran.is_empty()));
+    }
+
+    #[test]
+    fn the_skill_query_matches_one_skill_exactly() {
+        let p = fixture("ranview");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        let rows = crate::table::View::new::<Skill>("skill:=shepherd", "", "", "").apply(&s.skills);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "shepherd");
     }
 
     #[test]

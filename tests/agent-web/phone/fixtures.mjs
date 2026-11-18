@@ -92,7 +92,7 @@ const queue = {
 const candCounts = { total: CAND_TABLE.total, auto: candidates.auto, urgent_blocked: candidates.urgent_blocked, as_of: candidates.as_of };
 const queueStats = { week: 212, sitting: 9, wait_minutes_median: 7, run_minutes_median: 38, to_pr_minutes_median: 52 };
 // /api/flow: hub_core::flow::Rail as `line`, the step `worst` names open (a stopped one here).
-const RAIL = [["inbox", "inbox", null], ["board", "board", { tab: "board", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
+const RAIL = [["inbox", "inbox", null], ["backlog", "agent backlog", { tab: "projects/all", state: "" }], ["queued", "queued", { tab: "queue", state: "ready" }], ["running", "running", { tab: "queue", state: "running" }], ["review", "review", null], ["needs", "needs you", { tab: "queue", state: "needs you" }], ["done", "done", { tab: "queue", state: "done" }]];
 const flow = {
   grafana: home.grafana,
   line: {
@@ -185,7 +185,7 @@ const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
 const shepherd = {
   target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
-  shown: 30, // layout::fold_rows("rundowns"), sent by shepherd.rs
+  shown: 30, // layout::page_rows("rundowns"), sent by shepherd.rs
   rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
 };
 
@@ -229,7 +229,7 @@ const actions = {
 };
 
 // Log's Work table: hub_core::worklog, a live-sized table of which the server sends the first
-// WORK_SHOWN rows (hub_core::layout::fold_rows("work")).
+// WORK_SHOWN rows (hub_core::layout::page_rows("work")).
 const WORK_SHOWN = 40;
 const WORK_TOTAL = 3235;
 const logWork = {
@@ -245,7 +245,7 @@ const fleet = {
   table: table(RUNNERS, ["kind", "who", "state", "cost", "since", "for", "doing", "under"], ["all", "lead", "deliver", "observe", "learn", "maintain", "held", "failed", "working", "stalled"], { kind: ["deliver", "observe"], state: ["working", "held"] }),
   who: rows(RUNNERS, (i) => ({ tier: i ? 2 : 1, kind: pick(["lead", "deliver", "observe", "maintain"], i), who: `${pick(SLUGS, i)}-${i}`, state: pick(["working", "held", "idle", "failed"], i), since: ago(20 + i * 15), cost_24h: i % 2 ? 1.2 * i : null, cost_estimated: false,
     for: pick(TEXT, i + 1), doing: i % 3 ? pick(TEXT, i) : `FAILED ${pick(TEXT, i)} why: ${pick(TEXT, i + 2)} (1 failed 24h)`, under: i % 5 ? "" : "4 sessions" })),
-  hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::fold_rows("verdicts")
+  hidden: 0, legend: [], at: NOW, errors: [], workers: [], verdicts_shown: 20, // layout::page_rows("verdicts")
   // Log's Judges at live counts: hub_core::fleet sends the newest 30 dispatch verdicts
   // (RECENT_VERDICTS) and the answer judge's newest 200, whose question and why run long.
   dispatch: {
@@ -323,10 +323,24 @@ const schedules = {
   summary: "7 scheduled: 2 failing, 2 stale, 0 never ran, 1 off, 0 no purpose, CI read 4m ago", at: NOW, errors: [],
 };
 
-// Stack: hub_core::stack, four tables in one read (agent-web src/stack.rs).
+// Stack: hub_core::stack, five tables in one read (agent-web src/stack.rs), each paged by the server
+// at its hub_core::layout PAGE_ROWS entry (read from layout.rs, so a change there moves the fixture).
 const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
-const stack = {
-  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { skills: 18, hooks: 1, rules: 28 }, errors: [],
+const LAYOUT = readFileSync(new URL("../../../.local/src/hub-core/src/layout.rs", import.meta.url), "utf8");
+export const pageRows = (section) => {
+  const m = LAYOUT.match(new RegExp(`\\("${section}",\\s*(\\d+)\\)`));
+  if (!m) throw new Error(`hub-core layout.rs PAGE_ROWS has no ("${section}", N) entry`);
+  return Number(m[1]);
+};
+// One table as hub_core::table::page leaves it: the rows of `page`, and the pager when there is more than one.
+function paged(part, section, page = 1) {
+  const per = pageRows(section), pages = Math.ceil(part.rows.length / per);
+  if (pages < 2) return part;
+  return { table: { ...part.table, pager: { page, pages, per } }, rows: part.rows.slice((page - 1) * per, page * per) };
+}
+const stackAll = {
+  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { flows: 6, skills: 18, hooks: 1, rules: 28 }, errors: [],
+  flows: { table: table(12, ["flow", "question", "source", "picture", "checked", "state"], ["all", "unchecked", "broken"], { state: ["ok", "unchecked"] }), rows: rows(12, (i) => ({ flow: `${pick(SLUGS, i)} flow`, question: TEXT[i % TEXT.length], source: `~/.config/agentctl/QUEUE.md#${pick(SLUGS, i)}-section`, picture: i ? "" : "~/.local/src/docs/fleet-close-flow.svg", checked: i % 2 ? [] : ["tests/unit/fleet_states_doc.bats"], state: i % 2 ? "unchecked" : "ok", why: [] })) },
   table: table(STACK_SKILLS, ["skill", "category", "repo", "calls", "runners", "drift"], ["all", "drift", "scoped", "runner"], { category: ["ops", "workstreams"], repo: ["public", "private"], drift: ["deadpath", "unused"] }),
   rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
   agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },
@@ -334,6 +348,14 @@ const stack = {
   rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["all", "stale", "moved", "dead"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
   rule_files: [{ name: "agent-runtime.md", paths: [".local/bin/agentctl*", ".local/bin/fleet-*"] }, { name: "skill-corpus.md", paths: [".claude/skills/**"] }],
 };
+// The read with Rules on page `rp`: what /api/stack and /api/stack?rpg=N answer.
+const stackPage = (rp) => {
+  const skills = paged(stackAll, "skills");
+  return { ...stackAll, ...skills, flows: paged(stackAll.flows, "flows"), agents: paged(stackAll.agents, "agents"), hooks: paged(stackAll.hooks, "hooks"), rules: paged(stackAll.rules, "rules", rp) };
+};
+const stack = stackPage(1);
+// The rules the fixture holds, so a check can name the row a page starts on.
+export const STACK_RULE_ROWS = stackAll.rules.rows;
 
 // Costs: hub_core::costs, the shape costs.test.mjs pins.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
@@ -461,7 +483,7 @@ export const FIXTURES = {
   "/api/sessions/table": sessions, "/api/sessions/capacity": capacity, "/api/watch": watch, "/api/shepherd": shepherd, "/api/outcomes": [],
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
-  "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
+  "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/stack?rpg=2": stackPage(2), "/api/costs": costs, "/api/releases": releases, "/api/builds": builds,
   "/api/pipelines": pipelines, "/api/tests": tests,
   ...Object.fromEntries(Object.entries(RUNNER_PAGES).map(([name, r]) => [`/api/fleet/runner?name=${name}`, r])),
 };

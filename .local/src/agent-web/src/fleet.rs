@@ -1,6 +1,7 @@
-//! Sessions' Runners inner tab: hub-core's `fleet`, shared with the TUI. It is all files, read on
-//! every request, so a file event shows at once. A runner's page (`/api/fleet/runner?name=`) is
-//! read only when it is opened. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
+//! Sessions' Runners inner tab: hub-core's `fleet`, shared with the TUI. The files are read on
+//! every request, so a file event shows at once; judge-eval's answer, the one slow part (seconds),
+//! is kept (`Cache`) and handed in. A runner's page (`/api/fleet/runner?name=`) is read only when
+//! it is opened, from the same kept judge-eval. The accounts, tokens and Langfuse are the Costs tab's (costs.rs).
 //! The answer judge's verdicts are a table of their own under the `v` key prefix (`vq`, `vs`,
 //! `vsort`, `vdir`), on Log's Judges section and on the ask-judge runner page alike.
 
@@ -8,7 +9,34 @@ use hub_core::fleet::{self, who::Who, AskVerdict, Fleet, Paths};
 use hub_core::table::View;
 use serde::Deserialize;
 
-use crate::cache::off;
+use tokio::sync::broadcast;
+
+use crate::cache::{off, EventCache};
+use crate::Shared;
+
+/// The files that reach the page as a `fleet` event (main.rs `classify`): the run ledger and
+/// dispatch's verdicts and log.
+const KINDS: [&str; 1] = ["fleet"];
+/// Not every ledger judge-eval scores pushes an event, and a verdict a minute late changes no
+/// decision, so its answer is not kept past this.
+const READ_FOR_SECS: u64 = 60;
+
+/// The one kept `judge-eval --all --json`, which Runners, Log's Judges and a judge's runner page
+/// read. A failed run is not kept, so the next request runs it again.
+pub struct Cache(EventCache<Result<String, String>, READ_FOR_SECS>);
+
+impl Cache {
+    pub fn new(events: broadcast::Receiver<String>) -> Self {
+        Cache(EventCache::new(events, &KINDS, "judge-eval"))
+    }
+
+    pub async fn judge_eval(&self) -> Result<String, String> {
+        self.0
+            .get_if((), || fleet::judge_eval(&Paths::from_env()), Result::is_ok)
+            .await
+            .and_then(|r| r.as_ref().clone())
+    }
+}
 
 /// The table view the page keeps in its URL. Runners shares `#sessions?...` with the Sessions
 /// table, so its keys carry the `r` prefix (`rq`, `rs`, `rsort`, `rdir`; table.js `pre`).
@@ -50,9 +78,10 @@ pub struct RunnerQuery {
     pub verdicts: VerdictQuery,
 }
 
-/// A runners read. The files are read afresh each time, so there is nothing to keep.
-pub async fn get(q: FleetQuery) -> String {
-    let f = off(|| fleet::files(&Paths::from_env()))
+/// A runners read: the files afresh, judge-eval's answer from the kept one.
+pub async fn get(c: &Cache, q: FleetQuery) -> String {
+    let judge_eval = c.judge_eval().await;
+    let f = off(move || fleet::files_with(&Paths::from_env(), judge_eval))
         .await
         .unwrap_or_else(|e| Fleet {
             errors: vec![e],
@@ -66,7 +95,7 @@ pub async fn get(q: FleetQuery) -> String {
 fn render(mut f: Fleet, q: &FleetQuery) -> String {
     let cap = match q.verdicts.vall {
         Some(_) => usize::MAX,
-        None => hub_core::layout::fold_rows("verdicts"),
+        None => hub_core::layout::page_rows("verdicts"),
     };
     f.judge.view(&q.verdicts.view(), cap);
     let view = View::new::<Who>(&q.rq, &q.rs, &q.rsort, &q.rdir);
@@ -76,7 +105,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         v["who"] = serde_json::json!(rows);
         v["table"] = serde_json::json!(table);
         // How many rows each of Log's verdict lists shows before "+N older", so the page holds no copy.
-        v["verdicts_shown"] = hub_core::layout::fold_rows("verdicts").into();
+        v["verdicts_shown"] = hub_core::layout::page_rows("verdicts").into();
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
@@ -97,10 +126,14 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
 pub const RUNNER_ROWS: usize = 3;
 
 /// One runner's page, read only when `#sessions/runners/<name>` opens, with `shown`, its lists'
-/// cap. An unknown name is the caller's 404.
-pub async fn runner(q: RunnerQuery) -> Result<String, String> {
+/// cap. An unknown name is the caller's 404. A judge's page takes judge-eval from the kept one,
+/// asked from the blocking read only when the page is a judge's.
+pub async fn runner(s: Shared, q: RunnerQuery) -> Result<String, String> {
     let name = q.name.clone();
-    let mut r = off(move || fleet::runner::read(&Paths::from_env(), &name)).await??;
+    let rt = tokio::runtime::Handle::current();
+    let judge_eval = move || rt.block_on(s.fleet.judge_eval());
+    let mut r =
+        off(move || fleet::runner::read_with(&Paths::from_env(), &name, &judge_eval)).await??;
     if let fleet::runner::Extras::AskJudge { judge } = &mut r.extras {
         let cap = match q.verdicts.vall {
             Some(_) => usize::MAX,
@@ -167,7 +200,7 @@ mod tests {
         let v = read(&FleetQuery::default());
         assert_eq!(v["who"].as_array().unwrap().len(), 2);
         assert_eq!(v["table"]["shown"], 2);
-        assert_eq!(v["verdicts_shown"], hub_core::layout::fold_rows("verdicts"));
+        assert_eq!(v["verdicts_shown"], hub_core::layout::page_rows("verdicts"));
         assert_eq!(
             v["table"]["links"],
             serde_json::json!([{"who": "#sessions/runners/shepherd"}, {"who": "#sessions/runners/briefing"}])
@@ -185,7 +218,7 @@ mod tests {
             score: "wrong".into(),
             ..Default::default()
         };
-        let cap = hub_core::layout::fold_rows("verdicts");
+        let cap = hub_core::layout::page_rows("verdicts");
         let mut f = fleet();
         f.judge.verdicts = (0..cap + 5).map(|_| wrong("ship it?")).collect();
         f.judge.verdicts.push(wrong("which login?"));

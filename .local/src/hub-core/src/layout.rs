@@ -159,7 +159,7 @@ pub const TABS: [Tab; 12] = [
             },
             Inner {
                 id: "all",
-                title: "All rows",
+                title: "Board",
                 sections: &["board"],
             },
             Inner {
@@ -344,17 +344,23 @@ pub const TABS: [Tab; 12] = [
             },
         ],
     },
-    // What the agent system is made of: skills, subagents, hooks and rules, each read from the
-    // file or CLI that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill
-    // spend on Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh
-    // bar tab, so it has no digit and Tab reaches it (human, 2026-11-18).
+    // What the agent system is made of: its flows (ARCHITECTURE.md's Flows table, each the one doc
+    // section that defines it), skills, subagents, hooks and rules, each read from the file or CLI
+    // that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill spend on
+    // Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh bar tab, so
+    // it has no digit and Tab reaches it (human, 2026-11-18).
     Tab {
         id: "stack",
         group: "System",
         title: "Stack",
         question: "What is the agent system made of, and is each part wired?",
-        sections: &["skills", "agents", "hooks", "rules"],
+        sections: &["flows", "skills", "agents", "hooks", "rules"],
         inner: &[
+            Inner {
+                id: "flows",
+                title: "Flows",
+                sections: &["flows"],
+            },
             Inner {
                 id: "skills",
                 title: "Skills",
@@ -383,19 +389,30 @@ pub const TABS: [Tab; 12] = [
 /// (static/ui.js) is this number; its assets test checks.
 pub const FOLD_ROWS: usize = 50;
 
-/// A web page-height setting, not a TUI one: agent-web's Log lists this many rows of a section
-/// whose rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on
-/// live data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head
-/// stay near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when
-/// Work was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. The server sends each with its
-/// section's data (Work's page, the shepherd's `shown`, the fleet's `verdicts_shown`), so the
-/// page holds no copy. The TUI scrolls one-line rows with no `+N` key, so it keeps `FOLD_ROWS`.
-pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
+/// A web page-height setting, not a TUI one: agent-web lists this many rows of a section whose
+/// rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on live
+/// data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head stay
+/// near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when Work
+/// was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. Stack's rule text wraps to two lines
+/// on a phone: 120 rules drew 6,944 px (2026-11-18), so its tables page at 30. The server pages
+/// or caps each with its section's data (`table::page`, Work's page, the shepherd's `shown`, the
+/// fleet's `verdicts_shown`), so the page holds no copy. The TUI scrolls one-line rows with no
+/// `+N` key, so it keeps `FOLD_ROWS`.
+pub const PAGE_ROWS: &[(&str, usize)] = &[
+    ("work", 40),
+    ("rundowns", 30),
+    ("verdicts", 20),
+    ("flows", 30),
+    ("skills", 30),
+    ("agents", 30),
+    ("hooks", 30),
+    ("rules", 30),
+];
 
-/// How many rows a section of agent-web's Log lists before its `+N` line: its `SECTION_ROWS`
+/// How many rows a section of agent-web lists a page (or before its `+N` line): its `PAGE_ROWS`
 /// entry, else `FOLD_ROWS`.
-pub fn fold_rows(section: &str) -> usize {
-    SECTION_ROWS
+pub fn page_rows(section: &str) -> usize {
+    PAGE_ROWS
         .iter()
         .find(|(s, _)| *s == section)
         .map_or(FOLD_ROWS, |(_, n)| *n)
@@ -432,7 +449,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
-    // agent-web's Board tab: Projects' All rows inner tab, its board section (2026-11-12).
+    // agent-web's Board tab: Projects' Board inner tab, its board section (2026-11-12).
     ("board", "projects"),
 ];
 
@@ -997,7 +1014,11 @@ mod tests {
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
         assert_eq!(section("outbox"), Some("outbox"));
-        assert_eq!(section("board"), Some("board"), "the Board tab is All rows");
+        assert_eq!(
+            section("board"),
+            Some("board"),
+            "the old Board tab is Projects' Board"
+        );
         assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
@@ -1015,13 +1036,15 @@ mod tests {
 
     #[test]
     fn a_tall_section_lists_fewer_rows_and_every_other_folds_at_fold_rows() {
-        let log = resolve("log").unwrap();
-        for (s, n) in SECTION_ROWS {
-            assert!(log.sections.contains(s), "{s} is no Log section");
+        for (s, n) in PAGE_ROWS {
+            assert!(
+                TABS.iter().any(|t| t.sections.contains(s)),
+                "{s} is no tab's section"
+            );
             assert!(*n < FOLD_ROWS, "{s} lists {n}, not fewer than FOLD_ROWS");
-            assert_eq!(fold_rows(s), *n);
+            assert_eq!(page_rows(s), *n);
         }
-        assert_eq!(fold_rows("actions"), FOLD_ROWS);
+        assert_eq!(page_rows("actions"), FOLD_ROWS);
     }
 
     #[test]
@@ -1128,7 +1151,7 @@ mod tests {
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
         assert_eq!(
             titles,
-            ["Projects", "All rows", "Deliverables", "Coverage", "Ladder"]
+            ["Projects", "Board", "Deliverables", "Coverage", "Ladder"]
         );
         assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");

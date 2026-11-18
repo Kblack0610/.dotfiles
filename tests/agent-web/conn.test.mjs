@@ -34,7 +34,7 @@ const ctx = vm.createContext({
   }),
   EventSource: function () { this.closed = false; this.close = () => { this.closed = true; }; streams.push(this); },
   setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, MutationObserver: function () { this.observe = () => {}; },
-  requestAnimationFrame: (f) => f(),
+  requestAnimationFrame: (f) => f(), performance,
   // Reads and drawing other scripts own (waiting.js, home.js, sessions.js); this test loads app.js alone.
   refreshAsks: () => Promise.resolve(), refreshHome: () => Promise.resolve(), renderBadge() {}, sst: { render() {} }, renderHome() {},
 });

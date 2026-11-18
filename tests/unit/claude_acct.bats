@@ -221,6 +221,47 @@ creds() {
   [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
 }
 
+
+@test "link marks first-run done in every account and touches no other key" {
+  # A worker's account dirs start empty; without the flag Claude opens on its theme picker
+  # and a session nobody watches sits there (27 on razer-laptop, 2026-11-18).
+  printf '{"oauthAccount":{"emailAddress":"a@b"},"projects":{"/x":{"hasTrustDialogAccepted":true}},"numStartups":3}\n' > "$HOME/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"c@d"},"hasCompletedOnboarding":false}\n' > "$ALT/.claude.json"
+  local before_main before_alt
+  before_main=$(jq -S . "$HOME/.claude.json")
+  before_alt=$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq '.hasCompletedOnboarding' "$HOME/.claude.json")" == true ]]
+  [[ "$(jq '.hasCompletedOnboarding' "$ALT/.claude.json")" == true ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$HOME/.claude.json")" == "$before_main" ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")" == "$before_alt" ]]
+  # a rerun writes nothing
+  local stamp; stamp=$(stat -c %Y.%i "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_output ''
+  [[ "$(stat -c %Y.%i "$ALT/.claude.json")" == "$stamp" ]]
+}
+
+@test "link gives an account with no config yet one that has first-run done, and leaves a broken one alone" {
+  printf 'not json' > "$HOME/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+  [[ "$(cat "$HOME/.claude.json")" == 'not json' ]]
+  assert_output --partial 'first-run left as is'
+}
+
+@test "link marks first-run done through a symlinked config and in an empty one" {
+  printf '{"numStartups":1}\n' > "$SANDBOX/real.json"
+  ln -s "$SANDBOX/real.json" "$HOME/.claude.json"
+  : > "$ALT/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ -L "$HOME/.claude.json" ]]
+  [[ "$(jq -c . "$SANDBOX/real.json")" == '{"numStartups":1,"hasCompletedOnboarding":true}' ]]
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+}
 # --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
 
 src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
@@ -2231,6 +2272,7 @@ EOS
   local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
   export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
   # no collector on this machine: skipped, nothing written, status 0
   run "$ACCT" textfile
   assert_success
@@ -2241,6 +2283,37 @@ EOS
   run cat "$k3s/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
   [ ! -e "$ws" ]
+}
+
+@test "textfile: with no dir only the fleet-lease holder publishes; another machine removes its copy, one that cannot tell keeps it" {
+  # a fleet worker's copy read every source unread and, merged by account, blanked every Burn row
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  creds "$HOME/.claude" 99999999999999
+  export PROM_TEXTFILE_DIR="$SANDBOX/tf"
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"; }
+  echo 'old 1' > "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  lease 2
+  run "$ACCT" textfile
+  assert_success
+  assert_output --partial 'fleet-lease cannot tell who holds the lease (exit 2)'
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_output 'old 1'
+  lease 1
+  run "$ACCT" textfile
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
+  # an explicit dir is not the collector's, so it publishes on any machine
+  mkdir -p "$SANDBOX/own"
+  run "$ACCT" textfile "$SANDBOX/own"
+  assert_success
+  [ -s "$SANDBOX/own/claude_acct.prom" ]
+  lease 0
+  run "$ACCT" textfile
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
 }
 
 # --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------
@@ -2316,6 +2389,27 @@ sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
   login "$ALT" $(((NOW - 10 * 60) * 1000))
   run "$ACCT" check auth
   assert_success
+}
+
+@test "check auth: an account whose sessions run on a setup token is not 'not refreshing' for its file's access token" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" $(((NOW - 90 * 60) * 1000))
+  session hub/%1 alt busy
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'alt not refreshing'
+  rbw_stub
+  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
+  touch "$SANDBOX/vault/locked"
+  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
+  run "$ACCT" check auth
+  assert_success
+  # the login itself ending still trips
+  login "$ALT" $(((NOW - 90 * 60) * 1000)) $(((NOW - 3600) * 1000))
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'alt signed out (its login ended'
 }
 
 @test "check expiry: a login ending within three days trips, naming the account; a month out is quiet" {

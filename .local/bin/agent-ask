@@ -176,6 +176,11 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
+# shellcheck source=../src/tmux/panel-palette.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
+# shellcheck source=../lib/typed-prefixes.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/typed-prefixes.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -194,17 +199,6 @@ load_queue_asks() {
   [ -z "${QUEUE_ASKS+set}" ] || return 0
   QUEUE_HOLDS="$($AGENT_ASK_QUEUE_CMD ask-holds 2>/dev/null)"
   QUEUE_ASKS=" $(cut -f2 <<<"$QUEUE_HOLDS" | tr '\n' ' ') "
-}
-
-# settle_queue <id>: once the human answered or cancelled this ask, agent-queue settle-ask settles
-# the items it can no longer release: an answer against an item's gate fails it, a cancel leaves it
-# queued and flagged, naming it here so the canceller re-gates it. Its failure must not fail the
-# answer or the cancel.
-settle_queue() {
-  queue_waits "$1" || return 0
-  $AGENT_ASK_QUEUE_CMD settle-ask "$1" >&2 || echo "agent-ask: items held on $1 not settled: agent-queue settle-ask $1" >&2
-  unset QUEUE_ASKS QUEUE_HOLDS
-  return 0
 }
 
 # queue_holders <id>: the active items held behind this ask, `<slug><TAB><releasing options>` each.
@@ -342,13 +336,13 @@ judge_line() {
 }
 
 # render_ask <file>: the card, the ask as the human reads it, in the asking session's pane
-# (post) and the questions panel (card). Colour only on a terminal
-# or with AGENT_ASK_COLOR=1; a session's tool output gets plain text.
+# (post) and the questions panel (card). Colour only on a terminal or with AGENT_ASK_COLOR=1,
+# from the panels' palette; a session's tool output gets plain text.
 render_ask() {
   local f="$1" b="" d="" c="" g="" r="" x=""
   load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
-    b=$'\e[1m' d=$'\e[2m' c=$'\e[36m' g=$'\e[32m' r=$'\e[31m' x=$'\e[0m'
+    b="$C_BOLD" d="$C_DIM" c="$C_INP" g="$C_SEL" r="$C_ERR" x="$C_OFF"
   fi
   local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
@@ -866,7 +860,6 @@ record_answer() {
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
-  [ "$by" != human ] || settle_queue "$(field "$f" id)"
   [ "$by" != judge ] || audit_sample "$f"
 }
 
@@ -1613,7 +1606,7 @@ render_story() {
   local f="$1" d="" x="" sid src tele
   load_ask "$f"
   if [ "${AGENT_ASK_COLOR:-}" = 1 ] || { [ -z "${AGENT_ASK_COLOR:-}" ] && [ -t 1 ]; }; then
-    d=$'\e[2m' x=$'\e[0m'
+    d="$C_DIM" x="$C_OFF"
   fi
   local cols="${COLUMNS:-}"; [ -n "$cols" ] || cols="$(tput cols 2>/dev/null || echo 100)"
   [ "$cols" -gt 110 ] && cols=110; [ "$cols" -lt 40 ] && cols=40
@@ -1797,14 +1790,17 @@ not_an_answer() {
 # cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
 # "I already clicked that" kept a session on every board after the human had answered it
 # (2026-11-06). An ask a queue item waits on (queue_waits) is not cancelled: it stays pending
-# for the human. An answer a board typed in ("Answer to ask <id>: ...") is not the human typing:
-# `answer` already settled that ask and the session's other asks stay pending.
+# for the human. A prompt the fleet typed (fleet_typed: a board's "Answer to ask <id>: ...", the
+# shepherd's /wind-down, a restore, a dispatch brief, a park or wake resume) is not the human
+# typing, so every ask stays as it was: on 2026-11-16 a /wind-down cancelled an ask unseen. With
+# no table to tell, it settles nothing and fails, the side that loses no ask.
 cmd_settle_session() {
   local owner="${1:-}" to="${2:-}"; shift 2 2>/dev/null || shift $#
   [ -n "$owner" ] && [ "$to" = answered ] ||
     { echo "usage: agent-ask settle-session <claude_session> answered [text...]" >&2; return 2; }
+  fleet_typed "$*" && return 0
+  [ $? -eq 1 ] || return 1
   local full text f opts pick; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
-  case "$text" in "Answer to ask "*) return 0 ;; esac
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qxF "claude_session: $owner" "$f" || continue
@@ -1896,7 +1892,6 @@ close_ask() {
   [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
   queue_changed
   echo "$to $id" >&2
-  settle_queue "$id"
 }
 
 cmd_cancel() { close_ask cancelled "$@"; }

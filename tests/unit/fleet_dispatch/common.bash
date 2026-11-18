@@ -160,6 +160,8 @@ started_item() {
 # unchanged: the row whose line is the query under --exact, else the one with that id, else the
 # first whose key contains it. A row going to [/] with no id gets the next gm-N and the id goes
 # out on its own line, unless the fixture says the project has no code (nocode.<project>).
+# `board --json` lists each row with its #tags, an [x] one under `done` as the real board does;
+# `tag (--add|--remove <tag>)... <id>` edits the row's tags.
 stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
 #!/usr/bin/env bash
@@ -177,15 +179,18 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
-    if [ -f "$F/board.rows" ]; then jq -sc '{rows: .}' "$F/board.rows"
+    if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
         p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
         jq -Rn --arg p "$p" --arg l "$lane" '
           inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
-            state: (if (.[1] | startswith("- [/]")) then "doing" else "open" end)}' < "$f"
-      done | jq -sc '{rows: .}'
+            # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
+            tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
+            tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
+            state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
+      done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
@@ -212,10 +217,14 @@ case "${args[0]}" in
         Q="${args[3]}" awk -F'\t' -v OFS='\t' '
           !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
           { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
-      tag)   # tag --add <tag> <id>: the tag goes in ahead of the row's marker
-        Q="${args[5]}" T="${args[4]}" awk -F'\t' -v OFS='\t' '
-          !done && index($2, "id:" ENVIRON["Q"] " ") { done = 1; sub(/ <!--/, " #" ENVIRON["T"] " <!--", $2) } { print }' "$f" > "$f.new" &&
-          mv "$f.new" "$f" ;;
+      tag)   # tag (--add|--remove <tag>)... <id>: an added tag goes in ahead of the row's marker
+        for ((k = 3; k + 1 < ${#args[@]}; k += 2)); do
+          Q="${args[-1]}" OP="${args[k]}" T="${args[k + 1]}" awk -F'\t' -v OFS='\t' '
+            !done && index($2, "id:" ENVIRON["Q"] " ") { done = 1
+              if (ENVIRON["OP"] == "--add") sub(/ <!--/, " #" ENVIRON["T"] " <!--", $2)
+              else if (i = index($2, " #" ENVIRON["T"] " ")) $2 = substr($2, 1, i - 1) substr($2, i + length(ENVIRON["T"]) + 2) }
+            { print }' "$f" > "$f.new" && mv "$f.new" "$f"
+        done ;;
     esac ;;
 esac
 EOF

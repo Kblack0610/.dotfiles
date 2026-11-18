@@ -55,7 +55,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, parked, session};
+use agent_core::{agent, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
 use axum::body::Bytes;
@@ -113,6 +113,10 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
+    /// judge-eval's answer, which Runners, Log Judges and a judge's runner page read (`fleet.rs`).
+    fleet: fleet::Cache,
+    /// `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read (`shepherd.rs`).
+    shepherd: shepherd::Cache,
     /// `/api/agents` as served, the sidebar every page draws first.
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
@@ -164,6 +168,8 @@ async fn main() -> Result<()> {
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
+        fleet: fleet::Cache::new(events.subscribe()),
+        shepherd: shepherd::Cache::new(events.subscribe()),
         agents: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::new(events.subscribe(), &HOME_KINDS, "home"),
         watch: cache::EventCache::new(events.subscribe(), &WATCH_KINDS, "watch"),
@@ -220,6 +226,8 @@ async fn main() -> Result<()> {
         .route("/api/jobs/log", get(job_log))
         .route("/api/schedules", get(schedules_list))
         .route("/api/stack", get(stack_list))
+        .route("/api/stack/flow", get(stack_flow))
+        .route("/api/stack/flow.svg", get(stack_flow_svg))
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/releases/app", get(releases_app))
@@ -934,10 +942,47 @@ struct AgentOut {
     /// what the page's new-output dot compares with when it was last opened (sessions.js).
     #[serde(skip_serializing_if = "Option::is_none")]
     wrote: Option<u64>,
+    /// The fleet worker it runs on, None when it runs here. A worker's session is read and typed
+    /// into through `fleet-host-run` (remote.rs); its transcript and session actions stay there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
 }
 
-async fn collect() -> Vec<chooser::Agent> {
-    tokio::task::spawn_blocking(chooser::collect)
+/// A worker's agent-panel row (the worker-panel snapshot) as a sidebar agent. No session action
+/// reaches a worker yet, so it offers none.
+fn worker_agent(r: &serde_json::Value) -> AgentOut {
+    let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
+    let target = s("target");
+    AgentOut {
+        short: target
+            .split_once('/')
+            .map_or(target.clone(), |(_, t)| t.to_string()),
+        project: s("project"),
+        repo: String::new(),
+        status: s("status"),
+        summary: s("summary"),
+        // The UI keys seen-state on this, so a row with no id is keyed by its target, never "".
+        session: Some(s("session_id"))
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| target.clone()),
+        tags: String::new(),
+        account: s("account"),
+        attached: r["attached"].as_bool().unwrap_or(false),
+        parked: r["parked"].as_bool().unwrap_or(false),
+        plan: s("plan"),
+        phases: None,
+        ask: r["ask"].as_str().map(str::to_string),
+        actions: Vec::new(),
+        items: Vec::new(),
+        question: None,
+        wrote: None,
+        host: Some(s("host")).filter(|h| !h.is_empty()),
+        target,
+    }
+}
+
+async fn collect() -> Vec<agent::Agent> {
+    tokio::task::spawn_blocking(agent::collect)
         .await
         .unwrap_or_default()
 }
@@ -976,9 +1021,9 @@ async fn find(target: &str) -> ApiResult<remote::Live> {
 }
 
 /// A live or parked session behind a target, for reading its transcript.
-async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
+async fn find_any(target: &str) -> ApiResult<agent::Agent> {
     let t = target.to_string();
-    tokio::task::spawn_blocking(move || chooser::collect_all().into_iter().find(|a| a.target == t))
+    tokio::task::spawn_blocking(move || agent::collect_all().into_iter().find(|a| a.target == t))
         .await
         .ok()
         .flatten()
@@ -1039,10 +1084,22 @@ fn read_agents() -> Bytes {
                 summary: a.summary,
                 session: a.session_id,
                 tags: a.tags,
+                host: None,
             })
+            .chain(worker_agents().iter().map(worker_agent))
             .collect()
     };
     serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
+}
+
+/// The live rows of the worker-panel snapshot, as `remote::find` trusts them.
+fn worker_agents() -> Vec<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::read_to_string(boards::worker_panel())
+        .map(|t| remote::rows_in(&t, now))
+        .unwrap_or_default()
 }
 
 #[derive(Deserialize)]
@@ -1128,7 +1185,7 @@ async fn session_options() -> Json<serde_json::Value> {
         .into_iter()
         .map(|a| (a.name().to_string(), a.describe().into()))
         .collect();
-    let accounts: Vec<String> = agent_panel::account::load()
+    let accounts: Vec<String> = agent_core::account::load()
         .into_iter()
         .map(|a| a.name)
         .collect();
@@ -1573,10 +1630,13 @@ impl HomeParts {
     }
 }
 
-/// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
-/// the first visitor after a restart is answered from memory too.
+/// Read once at start what the first page draws (the sidebar, Home, its cards and briefing) and
+/// every kept read a tab blocks on when cold, so the first visitor after a restart is answered
+/// from memory. Which caches it fills, and why each other one may wait for its first open, is the
+/// test `every_cache_is_warmed_or_says_why_it_reads_on_open`.
 async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let built = async { builds::current(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
@@ -1584,6 +1644,14 @@ async fn warm(s: Shared) {
         home_read(&s),
         cards::read(&s),
         briefing,
+        s.fleet.judge_eval(),
+        s.shepherd.stats(),
+        s.work.gathered(),
+        feed::kept(&s, None),
+        epics::chains(),
+        outcomes::kept(),
+        s.stack.read(),
+        built,
     );
 }
 
@@ -1655,16 +1723,19 @@ async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
+async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        fleet::get(q).await,
+        fleet::get(&s.fleet, q).await,
     )
         .into_response()
 }
 
-async fn fleet_runner(Query(q): Query<fleet::RunnerQuery>) -> ApiResult<Response> {
-    let json = fleet::runner(q)
+async fn fleet_runner(
+    State(s): State<Shared>,
+    Query(q): Query<fleet::RunnerQuery>,
+) -> ApiResult<Response> {
+    let json = fleet::runner(s, q)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
@@ -1774,6 +1845,44 @@ async fn stack_list(State(s): State<Shared>, Query(q): Query<stack::Query>) -> R
         .into_response()
 }
 
+#[derive(Deserialize)]
+struct FlowQuery {
+    name: String,
+}
+
+/// A Flows row opened: its doc section as markdown, and whether it has a picture.
+async fn stack_flow(State(s): State<Shared>, Query(q): Query<FlowQuery>) -> ApiResult<Response> {
+    let body = s
+        .stack
+        .flow(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// A flow's picture, served here because the page's CSP is `img-src 'self'`. The page draws it as
+/// an `<img>`; opened on its own, the sandbox CSP keeps any script in it from running here.
+async fn stack_flow_svg(
+    State(s): State<Shared>,
+    Query(q): Query<FlowQuery>,
+) -> ApiResult<Response> {
+    let bytes = s
+        .stack
+        .picture(q.name)
+        .await
+        .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
 async fn sessions_table(
     State(s): State<Shared>,
     Query(q): Query<sessions::TableQuery>,
@@ -1864,6 +1973,139 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
+
+    #[test]
+    fn a_worker_row_is_a_sidebar_agent_on_its_host_with_no_actions() {
+        let r = serde_json::json!({"target": "razer-laptop@lab/dotfiles-agent-1:1",
+            "host": "razer-laptop", "pane": "lab/%4", "status": "busy", "summary": "fix it",
+            "session_id": "abc", "project": "dotfiles", "account": "bnb"});
+        let a = worker_agent(&r);
+        assert_eq!(a.host.as_deref(), Some("razer-laptop"));
+        assert_eq!(a.target, "razer-laptop@lab/dotfiles-agent-1:1");
+        assert_eq!(a.short, "dotfiles-agent-1:1");
+        assert_eq!((a.status.as_str(), a.session.as_str()), ("busy", "abc"));
+        assert!(a.actions.is_empty(), "no session action reaches a worker");
+        let j = serde_json::to_value(&a).unwrap();
+        assert_eq!(j["host"], "razer-laptop");
+        let no_id = serde_json::json!({"target": "razer-laptop@lab/s:2", "host": "razer-laptop"});
+        assert_eq!(
+            worker_agent(&no_id).session,
+            "razer-laptop@lab/s:2",
+            "a row with no session id is keyed by its target, never an empty id"
+        );
+    }
+
+    /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
+    /// costs, schedules, alerts and the session table).
+    const WARMED: [&str; 22] = [
+        "actions",
+        "agents",
+        "alerts",
+        "briefing",
+        "builds",
+        "costs",
+        "epics",
+        "home",
+        "infra",
+        "judge-eval",
+        "projects",
+        "queue",
+        "queue-since",
+        "queue-stats",
+        "ranked",
+        "releases-card",
+        "schedules",
+        "session-table",
+        "shepherd-stats",
+        "stack",
+        "watch",
+        "worklog",
+    ];
+    /// The caches read on their first open, and why that is fine. Times are each tab's first open
+    /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
+    /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
+    const ON_OPEN: [(&str, &str); 9] = [
+        ("departments", "Projects Coverage, 1492 ms cold"),
+        ("stages", "Projects Ladder, 678 ms cold"),
+        ("suites", "Infra Tests, 767 ms cold"),
+        ("jobs", "Infra Jobs, 619 ms cold"),
+        ("pipelines", "Infra Pipelines, 546 ms cold"),
+        (
+            "queue-candidates",
+            "Queue's Candidates fold, read when it opens",
+        ),
+        ("session-capacity", "Sessions' header, read with the table"),
+        ("session-page", "one per session, keyed by the one opened"),
+        (
+            "machine-page",
+            "one per name: nothing to warm before a name is opened",
+        ),
+    ];
+    /// Like `machine-page`: a page per name.
+    const PER_NAME: [&str; 2] = ["pool-page", "app-page"];
+
+    /// The name each `ReadCache::new`, `EventCache::new` and `infra::Pages::new` in `text` is
+    /// given: its last string literal before the `")` that closes it.
+    fn cache_names(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for pat in ["Cache::new(", "Pages::new("] {
+            for (at, _) in text.match_indices(pat) {
+                let rest = &text[at..];
+                let Some(end) = rest.find("\")") else {
+                    continue;
+                };
+                if rest[..end].contains(';') {
+                    continue; // no literal name before the statement ended
+                }
+                let Some(open) = rest[..end].rfind('"') else {
+                    continue;
+                };
+                out.push(rest[open + 1..end].to_string());
+            }
+        }
+        out
+    }
+
+    /// Stack's tab (#2455) shipped with a cache `warm` did not fill: 3.6 to 6.7 s on the first open
+    /// after each restart, and agent-web restarts on every landing. A new cache now lands in one of
+    /// the lists above, so whoever adds it decides.
+    #[test]
+    fn every_cache_is_warmed_or_says_why_it_reads_on_open() {
+        let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut found = std::collections::BTreeSet::new();
+        for e in std::fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            // cache.rs's own tests name throwaway caches.
+            if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("cache.rs") {
+                found.extend(cache_names(&std::fs::read_to_string(&p).unwrap()));
+            }
+        }
+        assert!(found.len() > 25, "the scan found the caches: {found:?}");
+        let listed: std::collections::BTreeSet<String> = WARMED
+            .iter()
+            .chain(ON_OPEN.iter().map(|(n, _)| n))
+            .chain(PER_NAME.iter())
+            .map(|n| n.to_string())
+            .collect();
+        let unlisted: Vec<_> = found.difference(&listed).collect();
+        assert!(
+            unlisted.is_empty(),
+            "fill these in warm() and add them to WARMED, or say in ON_OPEN why the first open may wait: {unlisted:?}"
+        );
+        let gone: Vec<_> = listed.difference(&found).collect();
+        assert!(
+            gone.is_empty(),
+            "listed but no cache has that name: {gone:?}"
+        );
+        // Negative control: a new tab's cache, in each form, is found. `NEW` is spliced in at run
+        // time so this file's own text holds no cache for the scan above to find.
+        let new_tab = r#"static READ: ReadCache<Tab, 60> = ReadCache::NEW("new-tab");
+            Cache(EventCache::NEW(events.subscribe(), &KINDS, "new-feed"))
+            machines: infra::Pages::NEW("new-page"),
+            fleet: fleet::Cache::NEW(events.subscribe()),"#
+            .replace("NEW", "new");
+        assert_eq!(cache_names(&new_tab), ["new-tab", "new-feed", "new-page"]);
+    }
 
     /// The response headers `path` gets from `app` when the browser takes br.
     async fn headers_br(app: Router, path: &str) -> String {

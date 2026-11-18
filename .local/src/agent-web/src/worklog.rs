@@ -45,7 +45,7 @@ impl Cache {
     }
 }
 
-/// The rows the window and the view keep, past Work's `layout::fold_rows` only when asked for them all.
+/// The rows the window and the view keep, past Work's `layout::page_rows` only when asked for them all.
 fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let window = Window::parse(&q.wday, today);
     let inside: Vec<&Work> = g.rows.iter().filter(|r| window.keeps(r)).collect();
@@ -54,7 +54,7 @@ fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     let cap = if q.all.is_some() {
         rows.len()
     } else {
-        hub_core::layout::fold_rows("work")
+        hub_core::layout::page_rows("work")
     };
     json!({
         "rows": rows.iter().take(cap).collect::<Vec<_>>(),
@@ -67,19 +67,24 @@ fn shown(g: &Gathered, q: &Q, today: NaiveDate) -> Value {
     })
 }
 
-pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
-    let g = s
-        .work
-        .0
-        // No rows means the queue read failed: show that, and read again on the next request.
-        .get_if((), || worklog::read(&System), |g| !g.rows.is_empty())
-        .await
-        .unwrap_or_else(|e| {
-            Arc::new(Gathered {
-                errors: vec![e],
-                ..Gathered::default()
+impl Cache {
+    /// The kept superset read, which the tab narrows and `warm` fills at start.
+    pub async fn gathered(&self) -> Arc<Gathered> {
+        self.0
+            // No rows means the queue read failed: show that, and read again on the next request.
+            .get_if((), || worklog::read(&System), |g| !g.rows.is_empty())
+            .await
+            .unwrap_or_else(|e| {
+                Arc::new(Gathered {
+                    errors: vec![e],
+                    ..Gathered::default()
+                })
             })
-        });
+    }
+}
+
+pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
+    let g = s.work.gathered().await;
     Json(shown(&g, &q, chrono::Local::now().date_naive()))
 }
 
@@ -132,7 +137,7 @@ mod tests {
 
     #[test]
     fn past_the_cap_it_says_how_many_more_until_asked_for_them_all() {
-        let cap = hub_core::layout::fold_rows("work");
+        let cap = hub_core::layout::page_rows("work");
         let g = Gathered {
             rows: (0..cap + 5)
                 .map(|_| row("done", "2026-11-09T01:00", "a"))

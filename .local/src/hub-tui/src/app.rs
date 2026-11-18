@@ -220,7 +220,7 @@ fn log_table_key<R: hub_core::table::Row>(t: &mut DataTable, has: &mut bool, k: 
 /// How many job rows Infra's Jobs section shows; Enter opens the whole table.
 const JOBS_SHOWN: usize = 8;
 /// How many rows Log's Work lists once it has the keys and scrolls; unfocused it lists
-/// `layout::FOLD_ROWS`. The TUI's own number: agent-web's page size is `layout::fold_rows("work")`.
+/// `layout::FOLD_ROWS`. The TUI's own number: agent-web's page size is `layout::page_rows("work")`.
 const WORK_FOCUSED_ROWS: usize = 200;
 /// Lines an opened run's log keeps under its detail, however many jobs the detail lists.
 const BUILD_LOG_MIN: usize = 6;
@@ -1530,7 +1530,7 @@ impl App {
         }
     }
 
-    /// The flow strip's inbox and board are fleet-bench's snapshot, a file with no watch on it: read
+    /// The flow strip's inbox and agent backlog are fleet-bench's snapshot, a file with no watch on it: read
     /// on entering Home or Queue, on `r` and on the tick while one is shown.
     pub fn read_pipeline(&mut self) {
         if self.pipeline_read.want() {
@@ -1618,7 +1618,14 @@ impl App {
         std::thread::spawn(move || {
             use hub_core::{boards, session_page};
             let ledger = boards::shepherd_dir();
-            let page = session_page::read(runner.as_ref(), &ledger, &id, &rows, &state);
+            let page = session_page::read(
+                runner.as_ref(),
+                &ledger,
+                &id,
+                &rows,
+                &state,
+                &hub_core::session_table::registry(),
+            );
             let _ = tx.send(Msg::SessionPage(Box::new((id, page))));
         });
     }
@@ -2858,10 +2865,16 @@ impl App {
                     self.seek = Some(sec);
                 }
             }
-            // An inner tab's name (`hooks`, `rules`) shows it.
+            // An inner tab's name (`hooks`, `rules`) shows it; words after it are that table's query
+            // (`skills skill:=one-shot`).
             (Tab::Stack, Some(q)) => {
-                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), q.trim()) {
-                    self.stv.inner = id;
+                let q = q.trim();
+                let (name, rest) = q.split_once(char::is_whitespace).unwrap_or((q, ""));
+                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), name) {
+                    match rest.trim() {
+                        "" => self.stv.inner = id,
+                        words => self.stv.open_query(id, words),
+                    }
                 }
             }
             (Tab::Queue, Some(q)) => self.open_queue(&q),
@@ -3028,7 +3041,7 @@ impl App {
     /// The Projects tab's keys: the list's (projtab.rs), or with the rows open theirs
     /// (tasktab.rs), where Esc clears a filter first and then, like Backspace, goes back.
     fn projects_key(&mut self, k: KeyEvent) -> bool {
-        // The tab's own inner tabs (the list, All rows, Deliverables): Left/Right switch them.
+        // The tab's own inner tabs (the list, Board, Deliverables): Left/Right switch them.
         let typing = self.tv.typing()
             || self.pv.table.typing.is_some()
             || self.pv.dv.typing.is_some()
@@ -4633,7 +4646,7 @@ impl App {
                 "<- -> inner tabs  j/k pick  / search  f chip  c sort  S flip  a add  s start  d done  D unverified  x drop  X dup  m move  e edit  t/T tag  +/- release  o open  Esc clear, back  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Projects => format!(
-                "<- -> inner tabs  j/k pick  Enter open  a all rows  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
+                "<- -> inner tabs  j/k pick  Enter open  a board  d deliverables  / search  f chip  s sort  S flip  x clear  P priority  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Home if self.hv.on_running && !self.home_build().running.is_empty() => format!(
                 "Running: j/k pick  Enter open  / query  f state  s/S sort  x clear  Esc/Tab Needs you  F fix  {tabs} pages  r refresh  q quit"
@@ -4777,7 +4790,7 @@ impl App {
                     (l, at.map(|a| ("", a)).into_iter().collect())
                 }
             },
-            // One project's card stays on top of its rows; All rows has the tab's strip. Only
+            // One project's card stays on top of its rows; Board has the tab's strip. Only
             // Rows reads the board, so the other inner tabs draw while it is read or failed.
             (Tab::Projects, ..) => {
                 let mut l = vec![];
@@ -5678,13 +5691,16 @@ mod tests {
         };
         let t = top(&mut a);
         assert!(t[0].starts_with("PIPELINE  reading"), "{t:?}");
-        assert!(t[1].starts_with("INBOX -> board -> up next"), "{t:?}");
+        assert!(
+            t[1].starts_with("INBOX -> agent backlog -> up next"),
+            "{t:?}"
+        );
         a.handle(Msg::Pipeline(Ok(None)));
         let t = top(&mut a);
         assert!(t[1].contains("no snapshot"), "{t:?}");
         press(&mut a, KeyCode::Char(']'));
         let t = top(&mut a);
-        assert!(t[2].starts_with("inbox -> BOARD"), "{t:?}");
+        assert!(t[2].starts_with("inbox -> AGENT BACKLOG"), "{t:?}");
     }
 
     /// A queue longer than any screen: `n` queued items, item-0 first.
@@ -6788,7 +6804,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("[Projects] All rows 5  Deliverables") < at("PROJECT "),
+            at("[Projects] Board 4  Deliverables") < at("PROJECT "),
             "{s}"
         );
         assert!(
@@ -6796,7 +6812,7 @@ mod tests {
             "by name when none is in flight"
         );
         assert!(s.contains("25%"), "{s}");
-        assert!(s.lines().last().unwrap().contains("a all rows"), "{s}");
+        assert!(s.lines().last().unwrap().contains("a board"), "{s}");
 
         // The card's numbers stay on top of its rows.
         let ran = |f: &Fake| f.0.lock().unwrap().join("\n");
@@ -8002,6 +8018,20 @@ mod tests {
     }
 
     #[test]
+    fn a_skill_link_opens_stack_skills_on_that_skill() {
+        let (t, q) = crate::tabreq::parse("stack skills skill:=shepherd").unwrap();
+        assert_eq!(t, Tab::Stack);
+        let mut a = ci_app();
+        a.tab = Tab::Stack;
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "skills");
+        assert_eq!(a.stv.skills.view.q, "skill:=shepherd");
+        // An inner tab's bare name still just shows it.
+        let (_, q) = crate::tabreq::parse("stack hooks").unwrap();
+        a.open_query(q);
+        assert_eq!(a.stv.on(), "hooks");
+    }
+    #[test]
     fn a_ledger_append_rereads_builds_only_while_the_tab_is_shown() {
         // `busy` is set on the calling thread when the read is started, so it says a read began
         // without waiting on the worker thread's message.
@@ -8837,7 +8867,7 @@ mod tests {
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("all"));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains(" Projects [All rows 5] Deliverables "), "{s}");
+        assert!(s.contains(" Projects [Board 4] Deliverables "), "{s}");
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
         assert!(!a.coverage_read.busy, "Coverage reads only once it shows");
@@ -8877,7 +8907,7 @@ mod tests {
         a.handle(arrow(KeyCode::Left));
         assert_eq!(on(&a), Some("list"));
         a.handle(arrow(KeyCode::Esc));
-        // `hub --tab board` and its search open All rows
+        // `hub --tab board` and its search open Board
         let (t, q) = crate::tabreq::parse("board").unwrap();
         a.handle(Msg::Tab(t, q));
         assert_eq!(on(&a), Some("all"));
@@ -8888,7 +8918,7 @@ mod tests {
             (on(&a), a.tv.table.view.q.as_str()),
             (Some("all"), "id:=ar-1")
         );
-        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is All rows searched to it.
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it.
         a.go(Tab::Home);
         a.follow(&Link::to(Kind::Row, "ar-2"));
         assert_eq!(
