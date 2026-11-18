@@ -129,7 +129,8 @@
       "Edit(//**/.ssh/**/*.old)",
       "Edit(//etc/shadow)",
       "Edit(//etc/sudoers)",
-      "Edit(//etc/sudoers.d/**)"
+      "Edit(//etc/sudoers.d/**)",
+      "Edit(~/.config/gh/**)"
     ],
     "defaultMode": "plan",
     "disableAutoMode": "disable"
@@ -261,6 +262,16 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/hooks/scratch-rm-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/gh-login-guard.py || true",
             "timeout": 5
           }
         ]
