@@ -13,8 +13,11 @@
 # wake more than a fleet-pace GO batch inside the settle window. A hand unpark or start of one session
 # is the human's and never draws on it (the repo CLAUDE.md "Hard limits on budgets").
 
-: "${WAKE_BATCH:=3}"   # wakes per settle window: fleet-pace's GO batch ("at most 3 sessions per pass"); 7 at once took load 28.8 to 69 on 24 cores (2026-10-26)
-: "${WAKE_SETTLE_MIN:=5}"   # minutes a wake counts against the batch: its load is not in the 1-minute average yet (DISPATCH_START_LOAD_MIN, measured 2026-11-07)
+# shellcheck source=pace-conf.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/pace-conf.sh"
+# WAKE_BATCH: wakes per settle window, fleet-pace's GO batch. WAKE_SETTLE_MIN: minutes a wake counts
+# against it, its load not in the 1-minute average yet. Both are in pace.conf, with their why.
+WAKE_BATCH=$(pace_get WAKE_BATCH); WAKE_SETTLE_MIN=$(pace_get WAKE_SETTLE_MIN)
 WAKE_LEDGER="${WAKE_PACE_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/wake-pace/wakes}"
 
 # wake_window -> the ledger's lines inside the settle window
@@ -30,6 +33,8 @@ wake_recent() { wake_window | wc -l; }
 # else what the batch has left in the settle window. No fleet-assess (a Mac runner) leaves the batch.
 wake_room() {
   local n
+  # A number missing from pace.conf (pace_get named it) wakes nobody, never a default batch.
+  [[ -n "$WAKE_BATCH" && -n "$WAKE_SETTLE_MIN" ]] || { echo 0; return 0; }
   if command -v fleet-assess >/dev/null 2>&1 && ! fleet-assess --watch-probe >/dev/null 2>&1; then
     echo 0; return 0
   fi

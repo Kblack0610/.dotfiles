@@ -750,21 +750,9 @@ cmd_setup_token() {
 # The weekly percent is what stops work, so pace is read against it: under the line the account
 # can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
 WEEK=604800
-# The numbers live in .config/claude-acct/pace.conf and nowhere else: no env override, so every
+# The numbers live in .config/claude-acct/pace.conf and nowhere else (pace_get, pace-conf.sh), so every
 # reader of the verdict sees the same line (the machine-mode level scales them, by column name). A dispatch floor lifts the pace reason from the
 # published verdict (room.reasons), never by moving the slack.
-PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/claude-acct/pace.conf}"
-# pace_get KEY -> the value; empty and a line naming the file when it is not set or not a plain
-# number, which stops the script below: a missing number must not quietly become a default
-pace_get() {
-    local v
-    v=$(sed -n "/^$1=/{s///p;q;}" "$PACE_CONF" 2>/dev/null)
-    if [[ ! "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        echo "claude-acct: $1 is not set to a number in $PACE_CONF" >&2
-        return 0
-    fi
-    printf '%s' "$v"
-}
 PACE_SLACK_PCT="$(pace_get PACE_SLACK_PCT)"
 RESERVE_PCT="$(pace_get RESERVE_PCT)"
 # shellcheck source=../lib/machine-mode.sh

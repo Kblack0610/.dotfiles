@@ -24,12 +24,13 @@ AUTH_JQ='def span: (if . < 0 then -. else . end) as $s
       else "\($s / 60 | floor)m" end;'
 
 # auth_conf -> sets AUTH_GRACE_S (an expired access token this old, with sessions working, is a
-# refresh that failed), AUTH_WARN_S (a refresh token this near its end is warned) and WAKE_*;
+# refresh that failed), AUTH_WARN_S (a refresh token this near its end is warned) and WAKE_*
+# (WAKE_BATCH is set where claude-acct sources wake-pace.sh);
 # fails when pace.conf lacks one, so a typo is never a silent default.
 auth_conf() {
     local g w gap
     g=$(pace_get AUTH_REFRESH_GRACE_MIN); w=$(pace_get AUTH_WARN_DAYS); gap=$(pace_get WAKE_GAP_MIN)
-    WAKE_BATCH=$(pace_get WAKE_BATCH); WAKE_LOAD_PCT=$(pace_get WAKE_LOAD_PCT); WAKE_TRIES=$(pace_get WAKE_TRIES)
+    WAKE_LOAD_PCT=$(pace_get WAKE_LOAD_PCT); WAKE_TRIES=$(pace_get WAKE_TRIES)
     [[ -n "$g" && -n "$w" && -n "$gap" && -n "$WAKE_BATCH" && -n "$WAKE_LOAD_PCT" && -n "$WAKE_TRIES" ]] || return 2
     AUTH_GRACE_S=$((g * 60)); AUTH_WARN_S=$((w * 86400)); WAKE_GAP_S=$((gap * 60))
 }

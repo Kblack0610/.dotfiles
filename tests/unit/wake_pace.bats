@@ -42,8 +42,16 @@ setup() {
   run wake_take restore a; assert_success
 }
 
-@test "the batch is data: WAKE_BATCH moves it" {
-  WAKE_BATCH=1
+@test "the batch is data: WAKE_BATCH in pace.conf moves it, and a missing number wakes nobody" {
+  sed 's/^WAKE_BATCH=.*/WAKE_BATCH=1/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh"
   run wake_take restore a; assert_success
   run wake_take restore b; assert_failure
+  sed -i '/^WAKE_SETTLE_MIN=/d' "$BATS_TEST_TMPDIR/pace.conf"
+  : > "$WAKE_PACE_LEDGER"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run source "$REPO_ROOT/.local/lib/wake-pace.sh"
+  assert_output --partial "WAKE_SETTLE_MIN is not set to a number in $BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh" 2>/dev/null
+  run wake_room; assert_output 0
+  run wake_take restore c; assert_failure
 }
