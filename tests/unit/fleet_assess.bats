@@ -108,44 +108,36 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch, mac-desktop or host-RAM hold does not" {
+@test "only a load hold counts as held; a dispatch pause, a desktop claim or a resource hold does not (ar-2605)" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
-  mkdir -p "$AGENT_HOLD_DIR"
-  HOLD_ROOT="$AGENT_HOLD_DIR"
+  local hold="$REPO_ROOT/.local/bin/agent-hold"
   run holds_set
   assert_failure
-  touch "$AGENT_HOLD_DIR/dispatch"
+  "$hold" set dispatch --by t "maintenance" >/dev/null
+  "$hold" claim mac-desktop --by t "store form" >/dev/null
+  # any name: the kind decides, not a list of names
+  "$hold" set unity-ram --by t --kind resource "bad RAM until a memtest" >/dev/null
   run holds_set
   assert_failure
-  touch "$AGENT_HOLD_DIR/mac-desktop"
-  run holds_set
-  assert_failure
-  touch "$AGENT_HOLD_DIR/deskslim-1-ram"
-  run holds_set
-  assert_failure
-  touch "$AGENT_HOLD_DIR/deskslim-1-cpu"
-  run holds_set
-  assert_success
-  rm "$AGENT_HOLD_DIR/deskslim-1-cpu"
-  touch "$AGENT_HOLD_DIR/unity"
+  "$hold" set unity --by t "96 C" >/dev/null
   run holds_set
   assert_success
 }
 
 @test "--watch-probe between the marks: OK with only the dispatch and mac-desktop holds, HOLD with a unity hold" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
-  mkdir -p "$AGENT_HOLD_DIR"
-  touch "$AGENT_HOLD_DIR/dispatch" "$AGENT_HOLD_DIR/mac-desktop"
+  local hold="$REPO_ROOT/.local/bin/agent-hold"
+  "$hold" set dispatch --by t "maintenance" >/dev/null
+  "$hold" claim mac-desktop --by t "store form" >/dev/null
   local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
   assert_output --partial 'OK'
-  touch "$AGENT_HOLD_DIR/unity"
+  "$hold" set unity --by t "96 C" >/dev/null
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1
   assert_output --partial 'HOLD held'
 }
-
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
