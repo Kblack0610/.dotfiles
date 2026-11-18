@@ -459,6 +459,7 @@ load 'fleet_dispatch/common'
 
 # 2026-11-18: canary and night work filled the workstation first while razer-laptop sat idle.
 @test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
+  export AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=02:00   # a night item starts only in the window
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
   worker '2.0 16 1 50' true '[canary, night]'
   agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
@@ -468,6 +469,7 @@ load 'fleet_dispatch/common'
 }
 
 @test "fleet_first: a canary starts here when the worker that lists canary does not take a session" {
+  export AGENT_QUEUE_NIGHT=23:00-06:00 AGENT_QUEUE_NOW=02:00   # a night item starts only in the window
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
   worker '2.0 16 1 12' true '[canary, night]'
   agent-queue add --project game --slug c --from canary --tags 'night canary' "Canary eval c: run fleet-bench canary start c" >/dev/null
