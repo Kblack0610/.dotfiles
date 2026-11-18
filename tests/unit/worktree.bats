@@ -768,6 +768,135 @@ make_squash_candidate() {
   assert_output --partial 'not merged'
 }
 
+@test "a branch that tracks the trunk but was pushed under its own name is reapable" {
+  # `wt new` cuts with `-b <branch> origin/main`, so @{upstream} is the trunk and a later
+  # `git push origin <branch>` never moves it: 21 trees held as "unpushed" on 2026-11-18.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'work\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin agent-1
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+
+  printf 'more\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am more
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'unpushed commits'
+}
+
+# trunk_moves -- one commit on origin/main that touches other.txt, fetched into $MAIN. The
+# squash candidate's origin is a GitHub URL by then, so it is pointed back for the push.
+trunk_moves() {
+  git -C "$MAIN" remote set-url origin "$ORIGIN"
+  printf 'trunk\n' > "$MAIN/other.txt"
+  git -C "$MAIN" add other.txt
+  git -C "$MAIN" commit --quiet -m trunk
+  git -C "$MAIN" push --quiet origin main
+  git -C "$MAIN" remote set-url origin https://github.com/me/repo.git
+}
+
+@test "a squash-merged branch that only merged the trunk since its PR is reapable" {
+  make_squash_candidate
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  trunk_moves
+  git -C "$WT_ROOT/repo-agent-1" merge --quiet --no-edit origin/main
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+}
+
+@test "an edit made inside a merge after the PR pins the worktree" {
+  # The merge's own change is on this disk only; --cc shows it, a clean merge shows nothing.
+  make_squash_candidate
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  trunk_moves
+  git -C "$WT_ROOT/repo-agent-1" merge --quiet --no-edit --no-commit origin/main
+  printf 'resolved by hand\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -am 'merge with an edit'
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+}
+
+@test "a merge that brings in a local-only commit after the PR pins the worktree" {
+  make_squash_candidate
+  printf '[{"headRefName":"feat/x","headRefOid":"%s","state":"MERGED"}]\n' "$HEAD_OID" > "$GH_FIXTURE/prs.me-repo"
+  git -C "$WT_ROOT/repo-agent-1" switch --quiet -c side origin/main
+  printf 'side\n' > "$WT_ROOT/repo-agent-1/side.txt"
+  git -C "$WT_ROOT/repo-agent-1" add side.txt
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -m side
+  git -C "$WT_ROOT/repo-agent-1" switch --quiet feat/x
+  git -C "$WT_ROOT/repo-agent-1" merge --quiet --no-edit side
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+}
+
+# The home-config shape: a Forgejo-canonical checkout (it commits the mirror marker) whose
+# origin is the GitHub mirror and whose `forgejo` remote is the forge. curl answers
+# pulls/main/feat/x with $SANDBOX/forgejo.pr when it exists, else Forgejo's 404.
+make_forgejo_candidate() {
+  make_squash_candidate
+  mkdir -p "$WT_ROOT/repo-agent-1/.forgejo/workflows"
+  : > "$WT_ROOT/repo-agent-1/.forgejo/workflows/mirror-to-github.yaml"
+  git -C "$WT_ROOT/repo-agent-1" add .forgejo
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet -m marker
+  HEAD_OID=$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)
+  git -C "$MAIN" remote add forgejo https://git.example.test/me/repo.git
+  export SO_FORGEJO_HOSTS=git.example.test SO_CURL="$SANDBOX/bin/fj-curl" FJ_FIX="$SANDBOX"
+  printf 'tok\n' > "$RBW_FIXTURE/forgejo_repo_admin"
+  cat > "$SO_CURL" <<'EOF'
+#!/usr/bin/env bash
+cat >> "$FJ_FIX/curl.stdin"
+url=${*: -1}
+printf '%s\n' "$url" >> "$FJ_FIX/curl.log"
+if [ "$url" = https://git.example.test/api/v1/repos/me/repo/pulls/main/feat/x ] && [ -f "$FJ_FIX/forgejo.pr" ]; then
+  cat "$FJ_FIX/forgejo.pr"
+else
+  printf '{"message":"The target couldn'"'"'t be found."}'
+  exit 22
+fi
+EOF
+  chmod +x "$SO_CURL"
+  export HEAD_OID
+}
+
+@test "a Forgejo-canonical branch merged on Forgejo is reapable, and gh is never asked" {
+  make_forgejo_candidate
+  printf '{"number":7,"merged":true,"head":{"ref":"refs/pull/7/head","sha":"%s"}}\n' "$HEAD_OID" > "$SANDBOX/forgejo.pr"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+  run grep -c 'pr list' "$GH_FIXTURE/calls.log"
+  assert_output 0
+  run grep -c 'token tok' "$SANDBOX/curl.stdin"
+  assert_output 1
+}
+
+@test "a Forgejo PR that is closed unmerged, or none at all, pins the worktree" {
+  make_forgejo_candidate
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+  printf '{"number":7,"merged":false,"head":{"ref":"feat/x","sha":"%s"}}\n' "$HEAD_OID" > "$SANDBOX/forgejo.pr"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+}
+
+@test "a Forgejo merge with no token to read it pins the worktree" {
+  make_forgejo_candidate
+  printf '{"number":7,"merged":true,"head":{"ref":"feat/x","sha":"%s"}}\n' "$HEAD_OID" > "$SANDBOX/forgejo.pr"
+  rm "$RBW_FIXTURE/forgejo_repo_admin"
+  run wt_reap_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  assert_output --partial 'not merged'
+  [ ! -e "$SANDBOX/curl.log" ]
+}
+
 @test "a Unity editor with the worktree open pins it" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
