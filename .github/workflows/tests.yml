@@ -377,6 +377,13 @@ jobs:
           npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$node_dir" "playwright-core@$PLAYWRIGHT_CORE"
           node "$node_dir/node_modules/playwright-core/cli.js" install chromium
           node tests/agent-web/phone/render.mjs --out "$RUNNER_TEMP/phone"
+      # /widget.json's document (hub_core::widget_doc) checked against the Tilecast format's schema
+      # at the commit the script pins, with that repo's own checker. Runs when hub-core is picked
+      # (the script picks it, tests/rust-inputs.txt). About 10 s.
+      - name: Tilecast schema
+        run: |
+          grep -qx '.local/src/hub-core' "$RUNNER_TEMP/crates" || { echo "tilecast schema: skipped, hub-core not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          tests/agent-web/tilecast-schema.sh
       - name: Phone screenshots
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4

@@ -236,6 +236,7 @@ async fn main() -> Result<()> {
         // with no cookie; every read of data stays behind sign-in or the widget key.
         .route("/static/{name}", get(static_file))
         .route("/widget", get(widget::page))
+        .route("/widget.json", get(widget::doc))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
