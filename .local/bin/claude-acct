@@ -36,7 +36,7 @@
 #   claude-acct room --source <name> [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
-#   claude-acct check tokens # one line, exit 1 when a token is expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
+#   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
@@ -604,7 +604,8 @@ cmd_token_push() {
 
 # token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
 # token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
-# keeps its login. The pane's shell reads the token again at launch.
+# starts signed out (acct_token says why on stderr; check tokens trips on it). The pane's shell
+# reads the token again at launch.
 cmd_token_prefix() {
     local name
     name=$(acct_name "${1:-}") || return 0
@@ -621,9 +622,9 @@ token_expiry() {
     return 0
 }
 
-# check_tokens: one line; exit 1 when a token is expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
-# be read. An account with no token is named but trips nothing: it runs on its login. The auth
-# alert watches this line (ar-2767), so a year-old token is renewed before it stops a session.
+# check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
+# be read. An account with no token trips it too: the token is its only sign-in, so a session on it
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
@@ -641,9 +642,9 @@ check_tokens() {
         else ok=$((ok + 1)); fi
     done < <(accounts)
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
-    if (( ${#none[@]} )); then out+="${out:+; }no token yet: ${none[*]}"; fi
+    if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
-    (( ${#soon[@]} == 0 ))
+    (( ${#soon[@]} + ${#none[@]} == 0 ))
 }
 
 # setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or

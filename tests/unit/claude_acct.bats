@@ -2399,7 +2399,8 @@ vault_put() {
   run --separate-stderr "$ACCT" token alt
   assert_failure 1
   assert_output ''
-  [[ "$stderr" == *'rbw is locked'* ]]
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so alt starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+  [[ "$stderr" != *login* ]]
 }
 
 @test "token: a machine whose rbw is locked or absent reads the pushed copy" {
@@ -2481,7 +2482,7 @@ STUB
   assert_output --partial 'tok=none dir=main'
 }
 
-@test "check tokens: good, inside the warn window, expired, and unread when rbw is locked" {
+@test "check tokens: good, no token (its only sign-in), inside the warn window, expired, and unread when rbw is locked" {
   rbw_stub
   export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
   vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
@@ -2491,8 +2492,8 @@ STUB
   assert_output '2 tokens good'
   rm "$SANDBOX/vault/claude-oauth-alt"
   run "$ACCT" check tokens
-  assert_success
-  assert_output 'no token yet: alt'
+  assert_failure 1
+  assert_output 'no token: alt (claude-acct setup-token <name>)'
   vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
   run "$ACCT" check tokens
   assert_failure 1

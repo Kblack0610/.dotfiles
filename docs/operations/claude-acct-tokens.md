@@ -24,7 +24,7 @@ Each Claude account in `~/.config/claude-acct/accounts` holds one long-lived tok
 
 ## Expiry
 
-`claude-acct check tokens` prints one line and exits 1 when a token is expired or within `TOKEN_WARN_DAYS` (`.config/claude-acct/pace.conf`, 30), 2 when rbw cannot be read. An account with no token is named and trips nothing. The `claude-acct-tokens` Sentinel watch runs it hourly. Renew with `claude-acct setup-token --renew <account>`.
+`claude-acct check tokens` prints one line and exits 1 when a token is expired or within `TOKEN_WARN_DAYS` (`.config/claude-acct/pace.conf`, 30), 2 when rbw cannot be read. An account with no token trips it too, since the token is its only sign-in. The `claude-acct-tokens` Sentinel watch runs it hourly. Renew with `claude-acct setup-token --renew <account>`.
 
 ## Other machines
 
