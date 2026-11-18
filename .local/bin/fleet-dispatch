@@ -5123,8 +5123,18 @@ promote() {
   [[ " $tags " == *" requested "* ]] || [[ ! "${line%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] ||
     tags="${tags:+$tags }requested"
   # The row's words are the item's title: no checkbox, id comment or #tags.
-  local title
+  local title board brief rest=''
   title=$(sed -E 's/^- \[.\] //; s/<!--[^>]*-->//g; s/(^| )#[A-Za-z0-9_/:.-]+//g; s/ +$//' <<<"$line")
+  # The row is the task's record (QUEUE.md): the item's body is the task's first line, the row's
+  # brief, then the rest of the task (a night item's instructions), a snapshot of what it starts
+  # with. A brief the task already carries (a --brief written from the row) is not repeated.
+  board=$(notes board --json 2>/dev/null) || say "promote $id: notes board --json failed, so the item has no brief from its row"
+  brief=$(jq -r --arg p "$project" --arg k "$id" \
+    'first(.rows[]? | select(.project == $p and .id == $k) | .details // [] | join("\n")) // empty' <<<"$board" 2>/dev/null)
+  if [ -n "$brief" ] && [[ "$task" != *"$brief"* ]]; then
+    [[ "$task" != *$'\n'* ]] || rest=$'\n'"${task#*$'\n'}"
+    task="${task%%$'\n'*}"$'\n'"$brief$rest"
+  fi
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   out=$(AGENT_QUEUE_START=0 agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
