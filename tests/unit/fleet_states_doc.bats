@@ -52,13 +52,19 @@ check_cells() { # <doc>
   return "$bad"
 }
 
-check_pinned() { # <doc>
+# pins_missing: reads "<row> US <test name>" lines and prints one for each name no `@test` has
+pins_missing() {
   local b name bad=0
   while IFS=$'\037' read -r b name; do
     grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "$b: no @test \"$name\""; bad=1; }
-  done < <(rows "$1" | awk -F'\037' '{ n = split($4, p, "`"); for (i = 2; i <= n; i += 2) print $1 "\037" p[i] }')
+  done
   return "$bad"
 }
+
+# pin_lines <col> -> "<first cell> US <code span>" for each code span in cell <col> of \037 rows
+pin_lines() { awk -F'\037' -v c="$1" '{ n = split($c, p, "`"); for (i = 2; i <= n; i += 2) print $1 "\037" p[i] }'; }
+
+check_pinned() { rows "$1" | pin_lines 4 | pins_missing; } # <doc>
 
 check_shepherd() { # <doc> <fleet-shepherd>
   local b bad=0 body
@@ -114,7 +120,7 @@ spans() { awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }' <<<"$1"; }
 
 # fn_body <file> <function> -> the function's lines, from `name() {` to the first unindented `}`
 fn_body() {
-  awk -v f="$2" 'index($0, f "() {") == 1 || index($0, f "()  {") == 1 {on = 1} on {print} on && /^}/ {exit}' "$1"
+  awk -v f="$2" 'index($0, f "() {") == 1 {on = 1} on {print} on && /^}/ {exit}' "$1"
 }
 
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
@@ -155,13 +161,7 @@ check_owner_copies() { # <doc> <file>...
   return "$bad"
 }
 
-check_owner_pins() { # <doc>
-  local name bad=0
-  while IFS= read -r name; do
-    grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" || { echo "no @test \"$name\""; bad=1; }
-  done < <(owner_rows "$1" | cut -d$'\037' -f6 | while IFS= read -r c; do spans "$c"; done)
-  return "$bad"
-}
+check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 
 @test "the bucket table names exactly the buckets fleet-sessions emits" {
   run check_words "$DOC" "$SESSIONS"
@@ -259,11 +259,13 @@ check_owner_pins() { # <doc>
   local t="$BATS_TEST_TMPDIR"
   mapfile -t files < <(owned_files)
   printf ': "${WAKE_BATCH:=3}"\n' > "$t/wake-pace.sh"
+  printf 'c="$HOME/.config/claude-acct/pace.conf"\n' > "$t/reader"
   printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/agent-land"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
+  assert_output --partial "$t/reader:1:"
   assert_output --partial "A plan's phases"
   assert_output --partial "$t/agent-land:1:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"

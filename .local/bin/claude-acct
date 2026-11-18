@@ -753,6 +753,8 @@ WEEK=604800
 # The numbers live in .config/claude-acct/pace.conf and nowhere else (pace_get, pace-conf.sh), so every
 # reader of the verdict sees the same line (the machine-mode level scales them, by column name). A dispatch floor lifts the pace reason from the
 # published verdict (room.reasons), never by moving the slack.
+# shellcheck source=../lib/pace-conf.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/pace-conf.sh"
 PACE_SLACK_PCT="$(pace_get PACE_SLACK_PCT)"
 RESERVE_PCT="$(pace_get RESERVE_PCT)"
 # shellcheck source=../lib/machine-mode.sh

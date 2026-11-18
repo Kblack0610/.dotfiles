@@ -33,8 +33,8 @@ wake_recent() { wake_window | wc -l; }
 # else what the batch has left in the settle window. No fleet-assess (a Mac runner) leaves the batch.
 wake_room() {
   local n
-  # A number missing from pace.conf (pace_get named it) wakes nobody, never a default batch.
-  [[ -n "$WAKE_BATCH" && -n "$WAKE_SETTLE_MIN" ]] || { echo 0; return 0; }
+  # A number missing from pace.conf wakes nobody, never a default batch, and says so at each refusal.
+  [[ -n "$WAKE_BATCH" && -n "$WAKE_SETTLE_MIN" ]] || { echo "wake-pace: no wake: WAKE_BATCH or WAKE_SETTLE_MIN is not a number in $PACE_CONF" >&2; echo 0; return 0; }
   if command -v fleet-assess >/dev/null 2>&1 && ! fleet-assess --watch-probe >/dev/null 2>&1; then
     echo 0; return 0
   fi

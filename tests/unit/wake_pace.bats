@@ -2,6 +2,8 @@
 # wake-pace.sh: the one budget every bulk wake draws from. Pinned with a ledger and a stubbed
 # fleet-assess, never a loaded machine.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -42,16 +44,20 @@ setup() {
   run wake_take restore a; assert_success
 }
 
-@test "the batch is data: WAKE_BATCH in pace.conf moves it, and a missing number wakes nobody" {
+@test "the batch is data: WAKE_BATCH in pace.conf moves it" {
   sed 's/^WAKE_BATCH=.*/WAKE_BATCH=1/' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh"
   run wake_take restore a; assert_success
   run wake_take restore b; assert_failure
-  sed -i '/^WAKE_SETTLE_MIN=/d' "$BATS_TEST_TMPDIR/pace.conf"
-  : > "$WAKE_PACE_LEDGER"
+}
+
+@test "a number missing from pace.conf wakes nobody and names the file, never a default batch" {
+  sed "/^WAKE_SETTLE_MIN=/d" "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run source "$REPO_ROOT/.local/lib/wake-pace.sh"
   assert_output --partial "WAKE_SETTLE_MIN is not set to a number in $BATS_TEST_TMPDIR/pace.conf"
   CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" source "$REPO_ROOT/.local/lib/wake-pace.sh" 2>/dev/null
-  run wake_room; assert_output 0
+  run --separate-stderr wake_room; assert_output 0
+  [[ "$stderr" == *"not a number in $BATS_TEST_TMPDIR/pace.conf"* ]] || fail "$stderr"
   run wake_take restore c; assert_failure
+  [ ! -s "$WAKE_PACE_LEDGER" ]
 }
