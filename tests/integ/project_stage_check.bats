@@ -761,16 +761,28 @@ real_depts() {
   assert_line --regexp '^PASS +prod +An incident runbook'
 }
 
-@test "stages.md: privacy and terms are met by files of those names or by an app-router page route" {
+@test "stages.md: privacy and terms are met by files of those names or by a route named exactly privacy or terms" {
   real_row 'beta | app | Published privacy and terms'
   jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$HOME/map.json" && mv "$HOME/map.json" "$PROJECT_MAP_FILE"
-  d="$REPO/Assets/Games/Shooter/web/src/app"; mkdir -p "$d/privacy" "$d/terms"
-  printf 'export default function P() {}\n' > "$d/privacy/page.tsx"
-  printf 'export default function T() {}\n' > "$d/terms/layout.tsx"
+  s="$REPO/Assets/Games/Shooter"; mkdir -p "$s/docs/legal"
+  printf '# Privacy\n' > "$s/docs/legal/PRIVACY.md"; printf '# Terms\n' > "$s/docs/legal/TERMS.md"
   run "$CHECK" shooter --stage beta
-  # NEGATIVE CONTROL: a terms route with no page, only a layout, is not a published page.
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
+  rm -r "$s/docs/legal"
+  d="$s/web/src"; mkdir -p "$d/app/privacy" "$d/app/terms" "$d/app/account/privacy-settings"
+  printf 'export default function P() {}\n' > "$d/app/privacy/page.tsx"
+  printf 'export default function T() {}\n' > "$d/app/terms/layout.tsx"
+  printf 'export default function S() {}\n' > "$d/app/account/privacy-settings/page.tsx"
+  run "$CHECK" shooter --stage beta
+  # NEGATIVE CONTROL: a terms route with only a layout is not a page.
   assert_line --regexp '^FAIL +beta +Published privacy and terms'
-  printf 'export default function T() {}\n' > "$d/terms/page.tsx"
+  # NEGATIVE CONTROL: a settings screen whose route only starts with privacy is not the policy.
+  rm -r "$d/app/privacy"
+  printf 'export default function T() {}\n' > "$d/app/terms/page.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # A pages-router index route counts the same as an app-router page.
+  mkdir -p "$d/pages/privacy"; printf 'export default function P() {}\n' > "$d/pages/privacy/index.tsx"
   run "$CHECK" shooter --stage beta
   assert_line --regexp '^PASS +beta +Published privacy and terms'
 }
