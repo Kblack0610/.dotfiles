@@ -183,7 +183,9 @@ The second rule needs the first to stay honest: if the ANSI ramp drifts past a l
 | Tool       | How it's updated                                                 | Target   |
 | ---------- | ---------------------------------------------------------------- | -------- |
 | kitty      | ANSI, background, foreground from the palette + the template (cursor, selection, tabs), `SIGUSR1` live reload | generated |
-| waybar     | full template copy + `SIGUSR2` live reload                        | generated |
+| waybar     | full template copy, plus `palette.css` (the colours waybar-modern's islands use) from the palette; waybar reloads on file change | generated |
+| swaync     | `style.css` from the palette: the packaged stylesheet imported, its colour variables overridden, then `swaync-client --reload-css` | generated |
+| noctalia   | `palettes/dotfiles.json` (its 16 colour keys and the terminal set) from the palette, then `noctalia msg config-reload` when it runs; `config.toml` selects it | generated |
 | dunst      | `dunstrc.d/50-theme.conf` colors rebuilt from the palette, then `dunstctl reload`; layout stays in the tracked `dunstrc` | generated |
 | sketchybar | `colors.sh` rebuilt from the palette (no per-theme template)      | generated |
 | nvim       | colorscheme name patched in `init.lua`                            | tracked  |

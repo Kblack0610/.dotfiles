@@ -259,9 +259,9 @@ pub enum Outcome {
 /// Render and write a page, only when the bytes change.
 ///
 /// `source_present` is the cross-machine guard. The vault git-syncs between machines on a 5 min
-/// timer and `git-sync-notes.sh` aborts the rebase and exits on conflict with no retry and no
-/// notification, so two machines disagreeing about one page silently wedges the sync rather
-/// than merely churning. A machine not hosting a feed's source leaves that page alone.
+/// timer and `store-sync --store notes` aborts the merge on a conflict and stops syncing until a
+/// human resolves it, so two machines disagreeing about one page wedges the sync rather than
+/// merely churning. A machine not hosting a feed's source leaves that page alone.
 ///
 /// Two invariants hold structurally, surviving a caller that forgets the guard: nothing here
 /// deletes a page, and an empty render never truncates a page that already has content.

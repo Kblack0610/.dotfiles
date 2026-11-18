@@ -110,6 +110,7 @@ setup() {
 @test "a start skipped by the pause reports idle, not an error" {
   # systemd sets SERVICE_RESULT=exec-condition when ExecCondition skips the start, and
   # still runs ExecStopPost. Reading that as a fault would turn every paused tick red.
+  : > "$AGENTCTL_STATE_DIR/PAUSED"
   SERVICE_RESULT=exec-condition EXIT_STATUS=1 run "$AGENTCTL_BIN" report --name alpha --lifecycle stop
   assert_success
   grep -qx 'state=idle' "$AGENTCTL_STATE_DIR/alpha/status"

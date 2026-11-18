@@ -8,11 +8,14 @@
 // is also kept as a rundown. The lines a pass skipped on purpose, with why, are the shepherd's
 // skips in Log's Actions section.
 
-// open: the rundowns the reader opened (each starts shut, dashboards rule 4); all: "+N older" was asked.
-const shst = { data: null, err: null, open: new Set(), all: false };
+// open: the rundowns the reader opened (each starts shut, dashboards rule 4); read: the Rundowns
+// page (Log's `rd` keys) the data answers.
+const RUNDOWNS_PRE = "rd";
+const shst = { data: null, err: null, open: new Set(), read: null };
 
 const refreshShepherd = coalesce(async () => {
-  try { shst.data = await api("/api/shepherd"); shst.err = null; } catch (e) { shst.err = e.message; }
+  const q = tblParams(st.views.log, RUNDOWNS_PRE).toString();
+  try { shst.data = await api("/api/shepherd" + (q ? "?" + q : "")); shst.err = null; shst.read = q; } catch (e) { shst.err = e.message; }
   renderShepherd();
   if (st.tab === "log") renderLogRundowns();
 });
@@ -77,18 +80,23 @@ function renderShepherd() {
   paint(el, `<div class="ovbar">${chat}</div>${pass}`);
 }
 
-// Log's Rundowns section: the shepherd's kept sum-ups, newest first, the first `shown` (the
-// server's hub_core::layout::fold_rows("rundowns")) until "+N older" is asked for.
+// Log's Rundowns section: the shepherd's kept sum-ups, newest first, the page the server sent
+// (hub_core::layout::page_rows("rundowns") a page) under its pager.
 function renderLogRundowns() {
-  const d = shst.data, list = d ? d.rundowns : [];
-  const shown = shst.all || !d ? list : list.slice(0, d.shown);
+  const d = shst.data;
   const el = $("log-rundowns");
   paint(el, shst.err ? `<div class="card err">${esc(shst.err)}</div>` : !d ? '<div class="empty">Loading.</div>'
-    : list.length ? `<div class="muted">${list.length} newest</div>` + shown.map(rundownCard).join("") + tblMore(list.length - shown.length)
+    : d.rundowns.length ? `<div class="muted">${d.rundowns_table.shown} newest</div><div data-tbl="${RUNDOWNS_PRE}">` +
+      d.rundowns.map(rundownCard).join("") + tblPager(d.rundowns_table) + `</div>`
     : '<div class="empty">No rundowns kept yet. The shepherd writes one with <code>fleet-shepherd log --rundown</code> each time it sums up the fleet or answers you in its session.</div>');
 }
 const logShepFeed = pushed("log", ["shepherd"], refreshShepherd, () => logShows("rundowns"));
-LOG_PARTS.push({ sec: "rundowns", show() { renderLogRundowns(); logShepFeed.show(!shst.data); }, onEvent: logShepFeed.onEvent });
+// A link or Back that moved the page since the last read reads it again.
+LOG_PARTS.push({
+  sec: "rundowns",
+  show() { renderLogRundowns(); logShepFeed.show(!shst.data || shst.read !== tblParams(st.views.log, RUNDOWNS_PRE).toString()); },
+  onEvent: logShepFeed.onEvent,
+});
 
 $("scroll").addEventListener("click", (e) => {
   if (st.sel) return;
@@ -99,7 +107,9 @@ $("scroll").addEventListener("click", (e) => {
   }
 });
 $("log-rundowns").addEventListener("click", (e) => {
-  if (e.target.closest("[data-all]")) { shst.all = true; renderLogRundowns(); }
+  if (tblOf(e) !== RUNDOWNS_PRE) return;
+  const v = tblPatch(e);
+  if (v) { setQuery(tblSet(st.views.log, v, RUNDOWNS_PRE)); refreshShepherd(); }
 });
 // Remember which rundowns are open, so a re-render after a new one keeps the reader's place.
 $("log-rundowns").addEventListener("toggle", (e) => {

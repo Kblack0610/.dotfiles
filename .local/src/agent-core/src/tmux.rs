@@ -1,0 +1,348 @@
+//! Thin wrappers over the `tmux` CLI: list-panes, capture-pane, and the jump.
+//!
+//! Sessions live on several tmux SERVERS, one per socket (`hub`, `lab`, ... see
+//! `.local/src/tmux/servers.sh`). A bare `tmux` only reaches `$TMUX`'s server, or the
+//! `default` socket from outside tmux, which does not exist here. So every call names
+//! its server with `-L`, and a target is `<server>/<session>:<window>`.
+
+use std::os::unix::fs::FileTypeExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// One tmux pane, parsed from a tab-separated `list-panes -F` row.
+#[derive(Default)]
+pub struct Pane {
+    pub server: String,
+    pub session: String,
+    pub window_index: String,
+    pub current_path: String,
+    pub pid: u32,
+    /// tmux's stable pane id (`%12`). A window target hits the ACTIVE pane, which in a
+    /// split window may not be the agent, so anything that types into a pane uses this.
+    pub pane_id: String,
+    /// A client is attached to the pane's session and this is its active window: the window
+    /// the human is looking at. Other windows of an attached session are not "here".
+    pub attached: bool,
+    /// tmux's stable window id (`@3`), which survives a renumber, for closing the window.
+    pub window_id: String,
+    pub title: String,
+    /// Window tags set via Prefix+t (see .local/src/tmux/tags.sh), rendered by
+    /// tmux itself from the `@tag_*` window options. Empty when untagged.
+    pub tags: String,
+    /// The session's fleet stage (`STALLED`, `LANDED`...) and its labels (`manual,x`), copied
+    /// onto the window by each `fleet-sessions` tick. A display copy: the source is fleet-sessions.
+    pub stage: String,
+    pub labels: String,
+    /// fleet-dispatch started its session: `@dispatch` is set (fleet-dispatch tags the session).
+    pub dispatched: bool,
+}
+
+/// `<server>/<session>:<window>`.
+pub fn qualify(server: &str, session: &str, window: &str) -> String {
+    format!("{server}/{session}:{window}")
+}
+
+/// Split a target into its server and the `session:window` tmux understands.
+/// Server names come from socket filenames, so they never contain `/`.
+pub fn split(target: &str) -> (Option<&str>, &str) {
+    match target.split_once('/') {
+        Some((srv, local)) if !srv.is_empty() => (Some(srv), local),
+        _ => (None, target),
+    }
+}
+
+pub(crate) fn tmux(server: Option<&str>) -> Command {
+    let mut c = Command::new("tmux");
+    if let Some(srv) = server {
+        c.args(["-L", srv]);
+    }
+    c
+}
+
+/// The socket path of the server we are inside, from `$TMUX` (`<socket>,<pid>,<n>`).
+fn own_socket() -> Option<PathBuf> {
+    let v = std::env::var("TMUX").ok()?;
+    let sock = v.split(',').next()?;
+    (!sock.is_empty()).then(|| PathBuf::from(sock))
+}
+
+/// Name of the server we are inside, or None outside tmux.
+pub fn current_server() -> Option<String> {
+    own_socket()?
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+/// tmux's socket directory: `$TMUX`'s own when inside, else `${TMUX_TMPDIR:-/tmp}/tmux-<uid>`.
+fn socket_dir() -> Option<PathBuf> {
+    if let Some(dir) = own_socket().as_deref().and_then(Path::parent) {
+        return Some(dir.to_path_buf());
+    }
+    let uid = Command::new("id").arg("-u").output().ok()?;
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_string();
+    let base = std::env::var("TMUX_TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    Some(PathBuf::from(base).join(format!("tmux-{uid}")))
+}
+
+/// Does this server answer `has-session`? Err when tmux could not even be run (a fork that
+/// failed under load), which says nothing about the server.
+fn answers(server: &str) -> Result<bool, String> {
+    tmux(Some(server))
+        .arg("has-session")
+        .output()
+        .map(|o| o.status.success())
+        .map_err(|e| format!("tmux -L {server} has-session: {e}"))
+}
+
+/// Servers with a live process behind their socket, sorted, and one line per thing that
+/// stopped it telling. A socket file can outlive its server, so only ones that answer
+/// `has-session` count (same rule as panel-lib.sh `panel_live_servers`); no socket dir is
+/// no tmux, not a gap.
+pub fn servers() -> (Vec<String>, Vec<String>) {
+    let (mut names, mut gaps) = (Vec::new(), Vec::new());
+    let Some(dir) = socket_dir() else {
+        return (names, vec!["tmux socket dir: `id -u` failed".into()]);
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (names, gaps),
+        Err(e) => return (names, vec![format!("{}: {e}", dir.display())]),
+    };
+    for name in entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_socket()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+    {
+        match answers(&name) {
+            Ok(true) => names.push(name),
+            Ok(false) => {}
+            Err(e) => gaps.push(e),
+        }
+    }
+    names.sort();
+    (names, gaps)
+}
+
+/// All panes across every server, and one line per live server whose `list-panes` failed: its
+/// panes are missing, so a list built on this is not whole (ar-916). Empty, with no gap, when
+/// tmux isn't running.
+pub fn list_panes() -> (Vec<Pane>, Vec<String>) {
+    let (servers, mut gaps) = servers();
+    let mut panes = Vec::new();
+    for srv in servers {
+        match list_server_panes(&srv) {
+            Ok(p) => panes.extend(p),
+            // A server that exited since `servers` asked had no panes to miss.
+            Err(_) if answers(&srv) == Ok(false) => {}
+            Err(e) => gaps.push(e),
+        }
+    }
+    (panes, gaps)
+}
+
+fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let env = |k: &str, d: &str| {
+        std::env::var(k)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| d.to_string())
+    };
+    // fleet-shepherd's own names and defaults for where its passes run.
+    let home = (
+        env("FLEET_SHEPHERD_SESSION", "hub"),
+        env("FLEET_SHEPHERD_WINDOW", "shepherd"),
+    );
+    let fmt = pane_format(now, (&home.0, &home.1));
+    let out = tmux(Some(server))
+        .args(["list-panes", "-a", "-F", &fmt])
+        .output()
+        .map_err(|e| format!("tmux -L {server} list-panes: {e}"))?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "tmux -L {server} list-panes exited {}: {}",
+            out.status,
+            why.trim()
+        ));
+    }
+    Ok(parse_panes(server, &String::from_utf8_lossy(&out.stdout)))
+}
+
+/// The `list-panes -F` row. A pane is tagged `shepherd` when it holds the live shepherd lease or
+/// sits in the shepherd's home window (`shepherd_home` = session, window), where every pass runs:
+/// a pass idle past its lease is still the shepherd. `@shepherd` holds the epoch its lease goes
+/// stale (fleet-shepherd lease), so that half needs the clock, which a list-panes format has no
+/// variable for: `now` is spliced in, the same test as .tmux.conf `@shepherd_live`.
+fn pane_format(now: u64, shepherd_home: (&str, &str)) -> String {
+    "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
+     #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
+     #{?@fav,fav ,}#{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
+     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"
+        .replace("NOW", &now.to_string())
+        .replace("HOME_SESSION", shepherd_home.0)
+        .replace("HOME_WINDOW", shepherd_home.1)
+}
+
+fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
+    let mut panes = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let Ok(pid) = f[3].parse::<u32>() else {
+            continue;
+        };
+        panes.push(Pane {
+            server: server.to_string(),
+            session: f[0].to_string(),
+            window_index: f[1].to_string(),
+            current_path: f[2].to_string(),
+            pid,
+            pane_id: f.get(4).copied().unwrap_or("").to_string(),
+            attached: f.get(5).and_then(|n| n.parse::<u32>().ok()).unwrap_or(0) > 0,
+            window_id: f.get(6).copied().unwrap_or("").to_string(),
+            title: f.get(7).copied().unwrap_or("").to_string(),
+            tags: f.get(8).copied().unwrap_or("").trim().to_string(),
+            stage: f.get(9).copied().unwrap_or("").to_string(),
+            labels: f.get(10).copied().unwrap_or("").to_string(),
+            dispatched: f.get(11) == Some(&"1"),
+        });
+    }
+    panes
+}
+
+/// Capture a pane's visible buffer. `escapes` keeps SGR colour codes (`-e`);
+/// `start` is the scrollback start line (negative looks back).
+pub fn capture_pane(target: &str, escapes: bool, start: i32) -> String {
+    let (server, local) = split(target);
+    let start_arg = start.to_string();
+    let mut args = vec!["capture-pane", "-p", "-J", "-t", local, "-S", &start_arg];
+    if escapes {
+        args.push("-e");
+    }
+    tmux(server)
+        .args(&args)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The caller's current `<server>/<session>:<window>`, or None when run outside tmux.
+pub fn current_target() -> Option<String> {
+    let server = current_server()?;
+    let out = Command::new("tmux")
+        .args(["display-message", "-p", "#{session_name}:#{window_index}"])
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then(|| format!("{server}/{s}"))
+}
+
+/// Jump to a target. Within the server we are already in, that is `switch-client`.
+/// Anything else is a cross-server hop, which tmux has no command for; `tmx goto`
+/// owns it (detach-client -E + attach), so
+/// this delegates rather than growing a second copy of the hop.
+pub fn jump(target: &str) {
+    let (server, local) = split(target);
+    let here = current_server();
+    match server {
+        Some(srv) if here.as_deref() != Some(srv) => {
+            let _ = Command::new(tmx_path()).args(["goto", srv, local]).status();
+        }
+        _ if here.is_some() => {
+            let _ = Command::new("tmux")
+                .args(["switch-client", "-t", local])
+                .status();
+        }
+        _ => {
+            let _ = tmux(server).args(["attach", "-t", local]).status();
+        }
+    }
+}
+
+/// Show a line in the caller's tmux message bar.
+pub fn message(text: &str) {
+    let _ = Command::new("tmux")
+        .args(["display-message", text])
+        .status();
+}
+
+/// `tmx` from PATH, else the dotfiles install location: Hyprland's `exec` PATH does
+/// not carry ~/.local/bin, and the pin launches this binary from there.
+fn tmx_path() -> PathBuf {
+    let on_path = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("tmx"))
+            .find(|c| c.is_file())
+    });
+    on_path.unwrap_or_else(|| {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        PathBuf::from(home).join(".local/bin/tmx")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualifies_and_splits_targets() {
+        let t = qualify("lab", "platform-agent-5", "2");
+        assert_eq!(t, "lab/platform-agent-5:2");
+        assert_eq!(split(&t), (Some("lab"), "platform-agent-5:2"));
+        // an unqualified target stays usable against the enclosing server
+        assert_eq!(split("dotfiles:1"), (None, "dotfiles:1"));
+        assert_eq!(split("/dotfiles:1"), (None, "/dotfiles:1"));
+    }
+
+    #[test]
+    fn parses_panes_with_their_server() {
+        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\t1\n\
+                    hub\t1\t/home/u\t43\t%8\t0\t@4\tt\t\nshort\trow\n";
+        let panes = parse_panes("hub", text);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].server, "hub");
+        assert_eq!(panes[0].pid, 42);
+        assert_eq!(panes[0].pane_id, "%7");
+        assert!(panes[0].attached && !panes[1].attached);
+        assert_eq!(panes[0].window_id, "@3");
+        assert_eq!(panes[0].title, "✳ title");
+        assert_eq!(panes[0].tags, "pinned");
+        assert_eq!(
+            (panes[0].stage.as_str(), panes[0].labels.as_str()),
+            ("STALLED", "manual,x")
+        );
+        assert_eq!(
+            (panes[1].stage.as_str(), panes[1].labels.as_str()),
+            ("", "")
+        );
+        // Its own field, not the tags column, where a tag group could be named dispatch.
+        assert!(panes[0].dispatched && !panes[1].dispatched);
+    }
+
+    #[test]
+    fn a_favourite_session_tags_every_pane_in_it() {
+        // @fav is a session option (tmux-tags fav); a pane format falls back to it.
+        let fmt = pane_format(0, ("hub", "shepherd"));
+        assert!(fmt.contains("\t#{?@fav,fav ,}#{?@tag_important,"), "{fmt}");
+    }
+
+    #[test]
+    fn shepherd_tag_is_the_live_lease_or_the_shepherd_window() {
+        let fmt = pane_format(1_700_000_000, ("hub", "shepherd"));
+        let tag = "#{?#{||:#{e|<:1700000000,#{@shepherd}},\
+                   #{&&:#{==:#{session_name},hub},#{==:#{window_name},shepherd}}},shepherd ,}\t";
+        assert!(fmt.contains(tag), "{fmt}");
+        assert!(!fmt.contains("HOME_"));
+        assert!(
+            fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"),
+            "{fmt}"
+        );
+        assert!(!fmt.contains("NOW"));
+    }
+}

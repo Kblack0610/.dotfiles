@@ -39,6 +39,7 @@ setup() {
 
   # Read at source time; lets a test match a gc line's shape.
   export PANEL_NO_COLOR=1
+  export WT_SYSTEMCTL=true # no pane scopes unless a test lists some; never this machine's
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/src/tmux/worktree.sh"
 }
@@ -968,7 +969,7 @@ orphan_project() {
   wt_editor_open() { [ "$1" = "$P" ]; }
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -977,7 +978,7 @@ orphan_project() {
   rm -r "$P/ProjectSettings"
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -995,7 +996,7 @@ orphan_project() {
   echo Unity > "$WT_PROC_ROOT/700/comm"
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -1007,6 +1008,111 @@ orphan_project() {
   fake_proc 500 "$Q" "$Q/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
   run cmd_orphans -n
   assert_output "would end 500  $Q"
+}
+
+# -- what a closed tmux pane left running --
+
+# pane_scopes -- tmux server 81 (socket hub) has one pane, child 10. Four pane scopes:
+#   live: pane 10 of 81, still open                        -> spared
+#   gone: pane 20 of 81, closed; bats, chrome, rbw-agent, a tmux server it started and a zombie
+#   dead: pane 30 of server 90, which has exited            -> rustc
+#   mute: pane 40 of server 95, alive but its socket is gone -> spared
+# systemctl, tmux, /proc and the cgroup tree are all fakes; kill only edits cgroup.procs.
+pane_scopes() {
+  export WT_PROC_ROOT="$SANDBOX/proc" WT_CGROUP_ROOT="$SANDBOX/cg" TMUX_TMPDIR="$SANDBOX/sock"
+  local pid comm
+  while read -r pid comm; do
+    mkdir -p "$WT_PROC_ROOT/$pid"
+    printf '%s\n' "$comm" > "$WT_PROC_ROOT/$pid/comm"
+  done <<'EOF'
+81 tmux: server
+95 tmux: server
+11 bash
+21 bats
+22 chrome-headless
+23 rbw-agent
+24 tmux: server
+25 bash
+31 rustc
+41 bash
+EOF
+  printf '25 (bash) Z 1\n' > "$WT_PROC_ROOT/25/stat" # a zombie: dead, not yet reaped
+  local unit
+  for unit in live:11 gone:21,22,23,24,25 dead:31 mute:41; do
+    mkdir -p "$WT_CGROUP_ROOT/s/${unit%%:*}"
+    tr , '\n' <<<"${unit#*:}" > "$WT_CGROUP_ROOT/s/${unit%%:*}/cgroup.procs"
+  done
+  cat > "$SANDBOX/scopes" <<'EOF'
+Id=live
+Description=tmux child pane 10 launched by process 81
+ControlGroup=/s/live
+
+Id=gone
+Description=tmux child pane 20 launched by process 81
+ControlGroup=/s/gone
+
+Id=dead
+Description=tmux child pane 30 launched by process 90
+ControlGroup=/s/dead
+
+Id=mute
+Description=tmux child pane 40 launched by process 95
+ControlGroup=/s/mute
+EOF
+  mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
+  : > "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  echo '81 10' > "$SANDBOX/panes.hub"
+  printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
+  # list-panes for the socket after -S, from panes.<socket>; no such file is a server that is silent
+  printf '#!/bin/sh\ncat %q/panes.$(basename "$2")\n' "$SANDBOX" > "$SANDBOX/fakes/tmux"
+  chmod +x "$SANDBOX/fakes/systemctl" "$SANDBOX/fakes/tmux"
+  WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/fakes/tmux"
+  kill() {
+    printf '%s\n' "$*" >> "$SANDBOX/kill.log"
+    [ -e "$SANDBOX/kill.ignored" ] && return 0
+    local f pid
+    for f in "$WT_CGROUP_ROOT"/s/*/cgroup.procs; do
+      for pid in "${@:2}"; do sed -i "/^$pid\$/d" "$f"; done
+    done
+  }
+  waitpid() { :; }
+}
+
+@test "orphans ends what a closed pane left running, of any kind, and spares the tmux server, rbw-agent and a zombie in it" {
+  pane_scopes
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1)'
+  assert_line 'ended 31  dead (rustc x1)'
+  assert_equal "$(cat "$SANDBOX/kill.log")" $'-TERM 21 22\n-TERM 31'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
+}
+
+@test "orphans never touches an open pane, or the scopes of a server that does not answer (negative control)" {
+  pane_scopes
+  rm "$SANDBOX/panes.hub" # server 81 is alive but silent: its open and closed panes alike are unknown
+  run cmd_orphans
+  assert_success
+  assert_output 'ended 31  dead (rustc x1)'
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 31'
+}
+
+@test "orphans -n names a closed pane's leftovers and signals nothing" {
+  pane_scopes
+  run cmd_orphans -n
+  assert_success
+  assert_line 'would end 21,22  gone (bats x1, chrome-headless x1)'
+  assert_line 'would end 31  dead (rustc x1)'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans fails, naming the scope, when a closed pane's leftover outlives SIGTERM" {
+  pane_scopes
+  touch "$SANDBOX/kill.ignored"
+  run cmd_orphans
+  assert_failure
+  assert_line 'failed 21,22  gone: outlived SIGTERM'
+  assert_line 'failed 31  dead: outlived SIGTERM'
 }
 
 # -- done: kill, then reap, on the server --
@@ -1243,6 +1349,82 @@ done_session_setup() {
   assert_equal "${#lines[@]}" 3
   [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ] && [ -L "$WT_ROOT/repo" ] && [ -f "$WT_ROOT/loose.txt" ]
   [ -f "$MAIN/file.txt" ]
+}
+
+@test "gc reaps a tree pushed under its own branch name even when it tracks origin/main" {
+  # `worktree add -b <b> origin/main` sets that upstream and a plain push never moves it, so
+  # "ahead of upstream" read these as unpushed. HEAD on a live remote ref is the real test.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^landed\treaped\trepo-agent-1\t'
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+  # git's -d refuses (not merged into main), so the commit stays reachable from the branch.
+  git -C "$MAIN" rev-parse --verify --quiet refs/heads/feat >/dev/null
+}
+
+@test "gc keeps a tree whose pushed branch was deleted on the server: the prune drops the stale ref" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  git -C "$ORIGIN" branch -D feat >/dev/null
+  git -C "$MAIN" rev-parse --verify --quiet refs/remotes/origin/feat >/dev/null # still stale here
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t'
+  [ -d "$WT_ROOT/repo-agent-1" ]
+  run git -C "$MAIN" rev-parse --verify --quiet refs/remotes/origin/feat
+  assert_failure
+}
+
+@test "gc keeps a pushed-branch tree held when the fetch fails, and says why" {
+  # A ref nobody could refresh may be stale, so it never counts as pushed.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b feat2 origin/main
+  git -C "$WT_ROOT/repo-agent-2" commit --quiet --allow-empty -m work2
+  git -C "$WT_ROOT/repo-agent-2" push --quiet origin feat2
+  git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t'
+  assert_line --regexp $'^held\tkept\trepo-agent-2\t'
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ]
+  # Tried once for the repo, not again for each of its trees.
+  assert_equal "$(grep -c 'fetch --prune failed' <<<"$output")" 1
+}
+
+@test "reap and done judge a pushed-only tree after their own pruned fetch" {
+  # Outside gc nothing fetched first, so the work check fetches when it would otherwise keep it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  run wt_work_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  run wt_work_reason_fetched "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "reap of a merged tree never waits on a fetch" {
+  # Landed by the cheap checks, so the fetch is never paid; an unreachable origin proves it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b merged origin/main
+  git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  refute_output --partial 'fetch --prune failed'
 }
 
 @test "gc never judges a tree through a symlink, even one pointing at a reapable worktree" {
@@ -1600,4 +1782,159 @@ make_unity_tree() {
   assert_output --partial 'its tmux session is live'
   kill -0 "$pid"
   kill "$pid"
+}
+
+# ── revive: a reaped tree put back for a conversation to resume in ───────────
+# agent-ask reopen: claude --resume finds a session only in the directory it ran in.
+
+@test "revive puts a reaped tree back on its branch, from origin when reap took the local one" {
+  make_repo
+  local wt="$WT_ROOT/repo-agent-2"
+  git -C "$MAIN" worktree add --quiet "$wt" -b agent-2-x
+  git -C "$wt" commit --quiet --allow-empty -m work
+  git -C "$wt" push --quiet -u origin agent-2-x
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1-y # discovery finds the repo by it
+  git -C "$MAIN" worktree remove "$wt"
+  git -C "$MAIN" branch --quiet -D agent-2-x
+  run cmd_revive "$wt" --branch agent-2-x
+  assert_success
+  assert_output --partial 'revived repo-agent-2 on agent-2-x'
+  assert_equal "$(git -C "$wt" log -1 --format=%s)" work
+  # Held like any tree new cuts, so a bare git worktree remove refuses it.
+  run git -C "$MAIN" worktree remove "$wt"
+  assert_failure
+}
+
+@test "revive cuts a new branch off the trunk when the session's branch is gone or the trunk" {
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  run cmd_revive "$WT_ROOT/repo-agent-4" --branch agent-4-gone
+  assert_success
+  assert_output --regexp 'revived repo-agent-4 on agent-4-[0-9]{6}-[0-9]{6}$'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-4" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  run cmd_revive "$WT_ROOT/repo-agent-5" --branch main
+  assert_success
+  assert_output --regexp 'on agent-5-'
+  # A cwd in a subdirectory revives the whole tree; a hold left by an rm -rf does not block it.
+  rm -rf "$WT_ROOT/repo-agent-5"
+  run cmd_revive "$WT_ROOT/repo-agent-5/sub/dir"
+  assert_success
+  assert_output --regexp 'revived repo-agent-5 on agent-5-'
+  assert [ -e "$WT_ROOT/repo-agent-5/.git" ]
+}
+
+@test "revive refuses a slot another tree or session holds now, and a path outside WT_ROOT" {
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1-other
+  run cmd_revive "$WT_ROOT/repo-agent-1" --branch agent-1-mine
+  assert_failure
+  assert_output --partial 'repo-agent-1 is taken: another tree is there now'
+  # Negative control: the same tree on the session's own branch is kept as it is.
+  run cmd_revive "$WT_ROOT/repo-agent-1" --branch agent-1-other
+  assert_success
+  assert_output 'kept repo-agent-1'
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-6\n' >> "$NOTES_FIXTURE/tmux.sessions"
+  run cmd_revive "$WT_ROOT/repo-agent-6"
+  assert_failure
+  assert_output --partial 'a live session holds the name'
+  [ ! -e "$WT_ROOT/repo-agent-6" ]
+  run cmd_revive "$SANDBOX/elsewhere/repo-agent-7"
+  assert_failure
+  assert_output --partial 'is not directly under'
+}
+
+@test "archive bundles a held tree's commits and uncommitted work, and revive puts both back" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP" # revive finds the repo by it
+  local wt="$WT_ROOT/repo-agent-1" bundle
+  git -C "$MAIN" worktree add --quiet "$wt" -b feat origin/main
+  git -C "$wt" commit --quiet --allow-empty -m work # on no remote
+  printf 'edited\n' > "$wt/file.txt"
+  printf 'new\n' > "$wt/new.txt"
+  printf 'ignored.log\n' >> "$MAIN/.git/info/exclude"
+  printf 'cache\n' > "$wt/ignored.log"
+  run cmd_archive "$wt"
+  assert_success
+  assert_output --regexp "archived repo-agent-1 to $SANDBOX/archive/repo/repo-agent-1@[0-9T]+Z\.bundle$"
+  [ ! -e "$wt" ]
+  run git -C "$MAIN" rev-parse --verify --quiet refs/heads/feat
+  assert_failure
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  bundle=$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)
+  git -C "$MAIN" bundle verify -q "$bundle"
+
+  run cmd_revive "$bundle"
+  assert_success
+  assert_output "revived repo-agent-1 from $bundle on feat"
+  assert_equal "$(git -C "$wt" log -1 --format=%s)" work
+  assert_equal "$(cat "$wt/file.txt")" edited
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf ' M file.txt\n?? new.txt')"
+  [ ! -e "$wt/ignored.log" ] # ignored files are not saved, by design
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  [ -f "$bundle" ]
+  run git -C "$MAIN" worktree remove "$wt" # held like any tree new cuts
+  assert_failure
+}
+
+@test "archive of a tree whose only work is uncommitted on a pushed HEAD revives it, past a stale ref" {
+  # Its HEAD is on origin, so --not --remotes would drop a ref at HEAD; the archive commit is on no remote.
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  local wt="$WT_ROOT/repo-agent-1" bundle
+  git -C "$MAIN" worktree add --quiet --detach "$wt" origin/main
+  printf 'edited\n' > "$wt/file.txt"
+  run cmd_archive "$wt"
+  assert_success
+  bundle=$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)
+  # A revive that died earlier left a ref behind; this one must not read it.
+  git -C "$MAIN" update-ref refs/wt-archive/wip "$(git -C "$MAIN" rev-parse main)"
+  run cmd_revive "$bundle" --branch other
+  assert_failure
+  assert_output --partial '--branch does not apply to a bundle'
+  run cmd_revive "$SANDBOX/archive/repo/nope@1.bundle"
+  assert_failure
+  assert_output --partial 'no such bundle'
+  run cmd_revive "$bundle"
+  assert_success
+  assert_output "revived repo-agent-1 from $bundle on a detached HEAD"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  assert_equal "$(git -C "$wt" status --porcelain)" ' M file.txt'
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+}
+
+@test "archive refuses a landed tree and one a live session is in, and leaves both" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b merged origin/main
+  run cmd_archive "$WT_ROOT/repo-agent-1"
+  assert_failure 1
+  assert_output --partial 'its work has landed, so wt reap removes it'
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b busy origin/main
+  printf 'dirty\n' > "$WT_ROOT/repo-agent-2/file.txt"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-2\n' >> "$NOTES_FIXTURE/tmux.sessions"
+  run cmd_archive "$WT_ROOT/repo-agent-2"
+  assert_failure 1
+  assert_output --partial 'kept repo-agent-2'
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ]
+  [ ! -e "$SANDBOX/archive/repo" ] || [ -z "$(ls "$SANDBOX/archive/repo")" ]
+}
+
+@test "archive keeps the tree and no bundle when the bundle does not verify" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  printf 'dirty\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git() { if [ "${3-} ${4-}" = 'bundle verify' ]; then echo 'error: corrupt'; return 1; fi; command git "$@"; }
+  run cmd_archive "$WT_ROOT/repo-agent-1"
+  unset -f git
+  assert_failure 2
+  assert_output --partial 'its bundle did not verify: error: corrupt'
+  assert_equal "$(cat "$WT_ROOT/repo-agent-1/file.txt")" dirty
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  assert_equal "$(ls "$SANDBOX/archive/repo")" ''
 }

@@ -195,3 +195,28 @@ outcome() {
   run "$AGENTCTL_BIN" liveness
   assert_success
 }
+
+@test "on a machine that does not hold the fleet lease a singleton's skipped fires are no fault, an every-node lane's still are, and no known holder is one fault" {
+  runner beta 'SCHEDULE=daily' 'SCOPE=every-node'
+  local u
+  for u in alpha beta; do
+    show "agentctl-$u.timer" LastTriggerUSec "$(stamp 200000)"
+    show "agentctl@$u.service" Result exec-condition
+    outcome "$u" WORKED 300000
+  done
+  export FLEET_LEASE_STUB_RC=1
+  run "$AGENTCTL_BIN" liveness
+  assert_failure
+  refute_output --partial 'alpha:'
+  assert_output --partial 'beta: timer fired'
+  # The negative control: on the holder the singleton's missed fire is the fault.
+  export FLEET_LEASE_STUB_RC=0
+  run "$AGENTCTL_BIN" liveness
+  assert_output --partial 'alpha: timer fired'
+  # No holder known: one fault says so, and the singleton's own line still waits on the lease.
+  export FLEET_LEASE_STUB_RC=2 FLEET_LEASE_STUB_OUT='fleet-lease: no machine is known to hold the fleet lease: fleet-lease status'
+  run "$AGENTCTL_BIN" liveness
+  assert_failure
+  assert_line 'fleet: no machine is known to hold the fleet lease: fleet-lease status'
+  refute_output --partial 'alpha:'
+}

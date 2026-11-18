@@ -14,17 +14,18 @@
 # redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
 # Budget: every account spends the user's one REST budget, so the wrapper keeps one shared reading of
 # it (GH_CALLS_DIR/budget, from the free rate_limit call, at most GH_BUDGET_STALE_S old) and, below
-# GH_BUDGET_RESERVE calls left, refuses a read from a background caller in GH_DEFER_CALLERS (exit 75,
-# bucket user:deferred) so gates, agent-land and the night keep what is left. Writes never wait.
+# GH_BUDGET_RESERVE calls left, refuses every read (exit 75, bucket user:deferred) but the human's at
+# a terminal and one with a GH_RESERVE_CALLERS program above it, so gates, agent-land and the night
+# keep what is left. Writes never wait.
 # Docs: docs/operations/github-app.md.
 set -u
 
-: "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a background read waits for the reset
+: "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a read waits for the reset
 : "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
-# Callers (the script that ran gh) that poll for a display or a report, not for a decision: on
-# 2026-11-13 05:35Z-06:35Z they spent 1,264 of 4,651 calls. A gate, agent-land, gh-run-wait or
-# night.sh is never in this list.
-: "${GH_DEFER_CALLERS:=schedules-sync ci-failures.py fleet-sessions fleet-assess}"
+# The programs whose reads spend the reserve: a gate, a merge, the night. A read with one of them
+# anywhere above it (through timeout, bash -c or xargs) goes through; every other read waits. A list
+# of who waits let each new script spend the reserve: ci-cost.py took it to 14 on 2026-11-17.
+: "${GH_RESERVE_CALLERS:=agent-land gh-run-wait gate-and-land.sh ci-gate.sh gate-line.py night.sh agentctl-playground-night}"
 
 [ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
 # A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
@@ -110,24 +111,48 @@ route_owner() {
   if [ -n "$repo" ]; then owner_of "$repo"; else origin_owner; fi
 }
 
-# caller -> the parent's program, or for an interpreter the script it runs. A `zsh -c '<cmd>'`
+# prog_of <pid> -> that process's program, or for an interpreter the script it runs. A `zsh -c '<cmd>'`
 # (an agent's own Bash call) stays zsh: its payload is a command line, not a script.
-caller() {
-  local a name=""
-  if [ -r "/proc/$PPID/cmdline" ]; then
+prog_of() {
+  local a name="" skip=""
+  if [ -r "/proc/$1/cmdline" ]; then
     while IFS= read -r -d '' a; do
-      if [ -z "$name" ]; then
+      if [ -n "$skip" ]; then
+        skip=""
+      elif [ -z "$name" ]; then
         name="${a##*/}"
         [[ "$name" =~ ^(ba|z|da|k)?sh$|^python[0-9.]*$|^perl$|^node$|^env$ ]] || break
       else
-        case "$a" in -*) ;; *' '*) break ;; *) name="${a##*/}"; break ;; esac
+        # bash -o pipefail x.sh, env VAR=1 x: the option's value and an assignment are not the program
+        case "$a" in [-+][oOW]) skip=1 ;; -*|[A-Za-z_]*=*) ;; *' '*) break ;; *) name="${a##*/}"; break ;; esac
       fi
-    done < "/proc/$PPID/cmdline"
+    done < "/proc/$1/cmdline"
   else
-    name=$(ps -o comm= -p "$PPID" 2>/dev/null)
+    name=$(ps -o comm= -p "$1" 2>/dev/null)
     name="${name##*/}"
   fi
   printf '%s' "${name:--}"
+}
+
+caller() { prog_of "$PPID"; }
+
+# reserve_caller: exit 0 when a GH_RESERVE_CALLERS program is above this gh, 1 when none is. Reads
+# /proc, or ps where there is none (macOS, where a script shows as its interpreter, so it waits).
+reserve_caller() {
+  local pid="$PPID" name stat hops=0
+  while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
+    name=$(prog_of "$pid")
+    case " $GH_RESERVE_CALLERS " in *" $name "*) return 0 ;; esac
+    if [ -r "/proc/$pid/stat" ]; then
+      read -r stat <"/proc/$pid/stat" || return 1
+      stat="${stat##*) }" # the program name in (...) may hold spaces; the fields after it do not
+      read -r _ pid _ <<<"$stat"
+    else
+      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    fi
+    hops=$((hops + 1))
+  done
+  return 1
 }
 
 # redact <gh args> -> the command line with bodies, fields and headers blanked, and only the
@@ -206,17 +231,20 @@ budget_left() {
   printf '%s %s' "$rem" "$reset"
 }
 
-# defer_read <gh args>: succeed (and say why on stderr) when this is a background caller's read and
-# the shared budget is under the reserve with its reset still ahead.
+# defer_read <gh args>: succeed (and say why on stderr) when this read must wait: the shared budget is
+# under the reserve with its reset still ahead, no human is at a terminal (stdin and stdout; a
+# dashboard in a pane reads gh through a pipe, so it waits), and no program above it is in
+# GH_RESERVE_CALLERS. The process walk runs only under the reserve.
 defer_read() {
   local who a rem reset now="${EPOCHSECONDS:-$(date +%s)}"
-  who=$(caller)
-  case " $GH_DEFER_CALLERS " in *" $who "*) ;; *) return 1 ;; esac
   is_read "$@" || return 1
   for a in "$@"; do [ "$a" != rate_limit ] || return 1; done # the free probe that shows the reset
+  if [ -t 0 ] && [ -t 1 ]; then return 1; fi # the human never waits, so never pays for the reading either
   read -r rem reset <<<"$(budget_left)"
   [[ "$rem" =~ ^[0-9]+$ && "$reset" =~ ^[0-9]+$ ]] || return 1
   [ "$rem" -lt "$GH_BUDGET_RESERVE" ] && [ "$reset" -gt "$now" ] || return 1
+  ! reserve_caller || return 1
+  who=$(caller)
   echo "gh: $rem REST calls left, under the $GH_BUDGET_RESERVE kept for gates and merges; $who waits for the reset at $(date -d "@$reset" +%H:%M)" >&2
 }
 

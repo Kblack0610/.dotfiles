@@ -776,7 +776,10 @@ fn scaffold_missing(p: &Profile, dir: &Path, name: &str, o: &Overlays) -> Result
             }
             "ideas.md" => ideas_template(name),
             "playtest.md" => crate::playtest::header(name),
-            other => format!("# {name} - {}\n", other.trim_end_matches(".md")),
+            other => {
+                let stem = Path::new(other).file_stem().unwrap_or_default();
+                format!("# {name} - {}\n", stem.to_string_lossy())
+            }
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -902,7 +905,12 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         if content.len() > AGENT_BOARD_BUDGET {
             // Only the closed rows the sweep rolls off count: a row inside the Done window is
             // what the board is meant to show, so the nightly sweep is the fix, never archive.
-            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let ctx = crate::project_tasks::sweep_ctx(
+                dir,
+                crate::agent_sheet::Lane::Agent,
+                &content,
+                false,
+            );
             let old = crate::project_sweep::old_done(&content, &ctx).len();
             let fix = if old > 0 {
                 format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")

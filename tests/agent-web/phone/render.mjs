@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, WIDGET_CARDS } from "./fixtures.mjs";
+import { BIG_PROJECT, FIXTURES, NOW, RUNNER_PAGES, STACK_RULE_ROWS, WIDGET_CARDS, pageRows } from "./fixtures.mjs";
 
 const VIEWPORT = { width: 390, height: 844 };
 const ORIGIN = "https://agent-web.invalid";
@@ -66,6 +66,8 @@ const TABS = [
   { tab: "log", row: `#log-work ${DATA_ROW}` },
   { tab: "schedules", row: `#schedules tr.jr` },
   { tab: "costs", inner: "spend", row: `#costs-body ${DATA_ROW}` },
+  { tab: "stack", inner: "skills", row: `#stack tr.jr` },
+  { tab: "stack", inner: "flows", name: "stack-flows", row: `#stack tr.jf` },
   { tab: "releases", row: `#releases tr.jr` },
 ];
 
@@ -115,12 +117,12 @@ function chromium(pw) {
 
 // The page and CSP exactly as the server fills them, never a dump left over from another checkout:
 // each run dumps into its own directory, so harness runs from two worktrees at once never read each
-// other's page. CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
+// other's page. The target is the crate's own, which CI also uses, so no copy under SCRATCH piles up unreaped.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "dump-"));
   const path = join(dir, "index.html");
-  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(SCRATCH, "target") }, encoding: "utf8" });
+  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(WEB, "target") }, encoding: "utf8" });
   try {
     if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
     return { index: readFileSync(path, "utf8"), widget: readFileSync(`${path}.widget`, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
@@ -414,6 +416,53 @@ async function widgetCheck(browser, page0, css = null) {
   return errors;
 }
 
+// The shared pager (table.js tblPager over hub_core::table::page), on Stack Rules: the server's
+// first page only, every page reachable, next reads page 2 with the page in the URL, and a search
+// opens page 1 again. Under --control the summary loses its pager, which must be reported.
+async function pagerCheck(browser, page0, strip = false) {
+  const errors = [];
+  const { context, page, seen } = await openPage(browser, page0, VIEWPORT, true);
+  if (strip) await page.route("**/api/stack*", async (route) => {
+    const u = new URL(route.request().url()), key = (u.pathname + u.search) in FIXTURES ? u.pathname + u.search : u.pathname;
+    const body = structuredClone(FIXTURES[key] || {});
+    for (const t of [body.table, body.agents?.table, body.hooks?.table, body.rules?.table]) if (t) delete t.pager;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  const per = pageRows("rules"), pages = Math.ceil(STACK_RULE_ROWS.length / per);
+  const block = `#stack [data-tbl="r"]`;
+  const look = () => page.evaluate((block) => {
+    const b = document.querySelector(block), nav = b?.querySelector(".tpager");
+    return { rows: [...(b?.querySelectorAll("table.tbl tr[title]") || [])].map((tr) => tr.cells[2]?.textContent), pager: nav ? nav.textContent : null,
+      nums: nav ? [...nav.querySelectorAll("button")].map((x) => x.textContent).filter((x) => /^\d+$/.test(x)) : [], hash: location.hash,
+      under: !!nav?.previousElementSibling?.querySelector("table.tbl") };
+  }, block);
+  try {
+    await page.goto(`${ORIGIN}/#stack/rules`, { waitUntil: "load" });
+    await page.waitForSelector(`${block} table.tbl tr[title]`, { state: "attached", timeout: WAIT_MS });
+    let v = await look();
+    if (v.pager == null) throw new Error(`no pager under Rules (${v.rows.length} rows drawn)`);
+    if (v.rows.length !== per) errors.push(`page 1 draws ${v.rows.length} rows, not ${per}`);
+    if (!v.under) errors.push("the pager is not directly under its table");
+    if (!v.nums.includes(String(pages))) errors.push(`the pager does not reach page ${pages}: ${v.pager}`);
+    if (!v.pager.includes(`rows 1-${per} of ${STACK_RULE_ROWS.length}`)) errors.push(`page 1 reads "${v.pager}"`);
+    await page.click(`${block} .tpager button:text-is("next")`);
+    await page.waitForFunction(({ block, from }) => document.querySelector(`${block} .tpager`)?.textContent.includes(`rows ${from}-`), { block, from: per + 1 }, { timeout: WAIT_MS });
+    v = await look();
+    if (v.rows[0] !== STACK_RULE_ROWS[per].number) errors.push(`page 2 starts on number ${v.rows[0]}, not ${STACK_RULE_ROWS[per].number}`);
+    if (!v.hash.includes("rpg=2")) errors.push(`page 2 is not in the URL: ${v.hash}`);
+    await page.locator(`${block} .tpager`).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(out, "pager-stack-rules.png") });
+    await page.fill("#stk-r-q", "x");
+    v = await look();
+    if (v.hash.includes("rpg=")) errors.push(`a search keeps the page: ${v.hash}`);
+  } catch (e) {
+    errors.push(e.message.split("\n")[0]);
+  }
+  errors.push(...seen.errors, ...seen.drift);
+  await context.close();
+  return errors;
+}
+
 function print(results) {
   const cols = ["tab", "pageOverflowX", "firstRowTop", "tableOverflowX", "leadVisible", "leadMethod"];
   const cells = [cols, ...results.map((r) => cols.map((c) => String(r[c])))];
@@ -435,6 +484,7 @@ async function main() {
   const navErrors = control || wide ? [] : await navCheck(browser, page);
   const cardErrors = wide || noKit ? [] : await cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null);
   const widgetErrors = wide || noKit ? [] : await widgetCheck(browser, page, control ? WIDGET_CONTROL_CSS : null);
+  const pagerErrors = wide || noKit ? [] : await pagerCheck(browser, page, control);
   if (!noKit) for (const spec of TABS) results.push(await renderTab(browser, spec, page));
   const heights = [];
   if (!noKit) for (const spec of TALL) heights.push(await heightOf(browser, spec, page));
@@ -442,6 +492,8 @@ async function main() {
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);
   for (const e of widgetErrors) console.log(`WIDGET ${e}`);
+  for (const e of pagerErrors) console.log(`PAGER ${e}`);
+  if (control && !pagerErrors.some((e) => e.includes("no pager"))) { console.log("FAIL: --control: the pager check did not report the missing pager"); process.exit(1); }
   if (control && !cardErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the cards check did not report one card per row"); process.exit(1); }
   if (control && !widgetErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the widget check did not report one card per row"); process.exit(1); }
   if (noKit) {
@@ -456,6 +508,8 @@ async function main() {
   else if (!control && !wide) console.log("cards ok: Home's cards show two across, they and the Needs you head inside the first screen");
   if (!control && widgetErrors.length) fail.push(`widget check, ${widgetErrors.length} error(s)`);
   else if (!control && !wide) console.log(`widget ok: ${WIDGET_CARDS.length} cards two across inside the widget at ${WIDGET_SIZES.map((s) => `${s.width}x${s.height}`).join(" and ")}`);
+  if (!control && pagerErrors.length) fail.push(`pager check, ${pagerErrors.length} error(s)`);
+  else if (!control && !wide) console.log(`pager ok: Stack Rules pages ${pageRows("rules")} rows at a time, next reads page 2 into the URL, a search opens page 1`);
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);

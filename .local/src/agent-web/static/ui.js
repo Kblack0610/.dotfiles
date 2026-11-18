@@ -41,9 +41,16 @@ function drawnCheck() {
   if (typeof requestAnimationFrame !== "function") return; // a test's vm context without frames
   // The frame comes after every microtask, so a read chained on the last one (`await api(a);
   // await api(b)`) has started by then and holds the mark off.
-  requestAnimationFrame(() => { if (!drawnWait.size && conn.open && !drawnGone) $("main").dataset.drawn = st.tab; });
+  // drawnAt is the page's own clock (performance.now) at that frame, so agent-web-shot --time reads
+  // when the tab drew, not when its poll next looked.
+  requestAnimationFrame(() => {
+    if (drawnWait.size || !conn.open || drawnGone) return;
+    const m = $("main");
+    if (m.dataset.drawn !== st.tab) m.dataset.drawnAt = Math.round(performance.now());
+    m.dataset.drawn = st.tab;
+  });
 }
-function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; }
+function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; delete $("main").dataset.drawnAt; }
 
 async function api(path, opts) {
   if (!drawnHeard.has(path)) { drawnWait.add(path); delete $("main").dataset.drawn; }
@@ -62,6 +69,31 @@ async function apiRead(path, opts) {
   }
   return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
 }
+// A first-paint read's last answer, kept in this browser so a page opened again paints it at once
+// while the read runs (stale-while-revalidate, as the server's caches do). One key per read
+// (`key`, the path less its query), holding the one path it was read at, so a search typed into
+// a table never adds keys. `at` is when it was read, for the page to say how old it is. Keys carry
+// the build (`?v=` on this script), so a deploy never draws an answer the new code does not know,
+// and the last build's keys go at load. Only an object answer with no `error` under KEPT_MAX is kept.
+const KEPT_BUILD = (() => { try { return new URL(document.currentScript.src).searchParams.get("v") || ""; } catch { return ""; } })();
+const KEPT_ALL = "aw:kept:", KEPT_PRE = `${KEPT_ALL}${KEPT_BUILD}:`, KEPT_MAX = 300e3;
+function keptDrop(keep = "") {
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(KEPT_ALL) && !(keep && k.startsWith(keep))) localStorage.removeItem(k); } catch { /* storage off: nothing kept */ }
+}
+keptDrop(KEPT_PRE);
+function kept(path, key = path.split("?")[0]) {
+  try { const k = JSON.parse(localStorage.getItem(KEPT_PRE + key) || "null"); return k && k.path === path && typeof k.at === "number" && k.v && typeof k.v === "object" ? k : null; } catch { return null; }
+}
+async function apiKept(path, key = path.split("?")[0]) {
+  const v = await api(path);
+  try {
+    const s = JSON.stringify({ at: Date.now(), path, v });
+    if (v && typeof v === "object" && !v.error && s.length <= KEPT_MAX) localStorage.setItem(KEPT_PRE + key, s); else localStorage.removeItem(KEPT_PRE + key);
+  } catch { /* storage off or full: the next open waits for its read */ }
+  return v;
+}
+// "2m ago" for a kept answer's `at`.
+const keptAge = (at) => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 // One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
 // or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.

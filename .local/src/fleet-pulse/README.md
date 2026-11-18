@@ -9,7 +9,7 @@ Each machine PUSHES a liveness heartbeat every 60s to gatus (a token-authed
 external-endpoint per host, all in the `fleet` group). Each machine's status bar
 then POLLS the gatus statuses API and renders ONE glyph, judging freshness itself:
 
-- green  = every ROSTER host reported success AND within 180s
+- green  = every ROSTER host reported success AND within FLEET_STALE_AFTER_DEFAULT seconds (`.local/lib/fleet-pulse-roster.sh`)
 - amber  = >=1 host never-reported/stale/failing (API still reachable)
 - red    = statuses API unreachable
 
@@ -19,9 +19,14 @@ awake - an off machine just goes amber on the others.
 
 ### The roster is load-bearing
 
-`FLEET_ROSTER` (in `~/.config/fleet-pulse/env`) is the list of machines that
-SHOULD be reporting. The bars count against it rather than against the API's own
-rows, and that distinction is the whole ballgame:
+The roster is the list of machines that SHOULD be reporting. It has one home, the
+`fleet_pulse` group in home-config `ansible/inventory.yml`: `scripts/render-fleet-pulse.py`
+renders it, with the bar's display tokens, to `apps/fleet-exporter/roster.json`, which
+fleet-exporter serves at `$GATUS_BASE/roster`. The bars fetch it through
+`~/.local/lib/fleet-pulse-roster.sh` (at most every `FLEET_ROSTER_TTL_MIN`, default 10
+minutes, keeping the last good copy in `~/.cache/fleet-pulse/roster.json`). Adding or
+retiring a machine is that one inventory edit plus a render. The bars count against the
+roster rather than against the API's own rows, and that distinction is the whole ballgame:
 
 **Gatus only materializes an external-endpoint when it receives that host's FIRST
 push.** A machine that is configured server-side but has never enrolled is not
@@ -33,9 +38,9 @@ machines had never been heard from once. The bug hid itself.
 
 So: absent from the API + present in the roster = `NEVER REPORTED` = amber.
 
-If `FLEET_ROSTER` is unset the bars fall back to the API-derived list (the old
-behaviour) and say so in the tooltip - it cannot see an unenrolled host, so treat
-it as a degraded mode, not a default.
+If no roster was ever fetched the bars fall back to the API-derived list and say so in
+the tooltip - it cannot see an unenrolled host, so treat it as a degraded mode, not a
+default.
 
 ```
 [Linux]      --push--\
@@ -45,16 +50,19 @@ it as a degraded mode, not a default.
 [vdi]        --push--/             v
        each machine's bar --poll /api/v1/endpoints/statuses--> one glyph
                                    ^
-                    counted against FLEET_ROSTER, not against this list
+                 counted against $GATUS_BASE/roster, not against this list
 ```
 
 ## Components
 
 | Piece | Path | Repo |
 |-------|------|------|
-| Cluster: fleet external-endpoints | `apps/gatus-fleet/configmap.yaml` (`external-endpoints`) | home-config |
+| Roster, endpoints and display tokens | `ansible/inventory.yml` group `fleet_pulse`, rendered by `scripts/render-fleet-pulse.py` | home-config |
+| Cluster: fleet endpoints (rendered) | `apps/gatus-fleet/config.yaml` | home-config |
+| Cluster: roster at `$GATUS_BASE/roster` (rendered) | `apps/fleet-exporter/roster.json` | home-config |
 | Cluster: shared token secret | `apps/gatus-fleet/fleet-token-secret.sops.yaml` -> deployment env `FLEET_TOKEN` | home-config |
-| Per-machine config (endpoint + roster) | `~/.config/fleet-pulse/env` (`GATUS_BASE`, `FLEET_ROSTER`) | dotfiles-private |
+| Roster fetch for the bars | `~/.local/lib/fleet-pulse-roster.sh` | dotfiles |
+| Per-machine config (endpoint) | `~/.config/fleet-pulse/env` (`GATUS_BASE`) | dotfiles-private |
 | Shared pusher (Linux + Mac) | `~/.local/src/fleet-pulse/push.sh` | dotfiles |
 | Linux timer | `~/.config/systemd/user/fleet-pulse.{service,timer}` | dotfiles |
 | Linux widget | `~/.config/waybar/fleet_pulse.sh` + `custom/fleet` in `config.{base,desktop,laptop}` | dotfiles |
@@ -68,13 +76,24 @@ The shared bearer token is one value: encrypted in the cluster secret, and store
 per-machine in the private overlay (`~/.dotfiles-private/.config/fleet-pulse/token`,
 stowed to `~/.config/fleet-pulse/token`) - never in the public repo.
 
-`GATUS_BASE`, `FLEET_ROSTER` and `FLEET_GROUP` live beside it in
+`GATUS_BASE` and `FLEET_GROUP` live beside it in
 `~/.config/fleet-pulse/env` and are sourced by `push.sh`, the waybar module, and
 the sketchybar plugin - so re-pointing the fleet is ONE edit per machine, not one
 per module. The env file uses `${VAR:=default}` so an explicit override from the
 caller's environment still wins (plain assignment clobbered it and made the
 modules untestable). Windows has no shell env file; it uses `setx GATUS_BASE` /
 `setx FLEET_NAME` / `setx FLEET_GROUP` instead.
+
+### FLEET_NAME: the hostname, unless told otherwise
+
+`push.sh` names a host by its short, lower-cased hostname (`_` becomes `-`), so two Linux
+hosts never push the same key. `FLEET_NAME` (a systemd drop-in, the launchd plist, `setx`)
+wins when set. `FLEET_NAME_MAP` in the env file (`<hostname>=<key> ...`) renames a host whose key predates hostname naming: the workstation's `cachyos-x8664-main` maps to its
+older key `linux-cachyos`. A Linux host with no declared key gets a logged HTTP 404 every
+tick; a host gatus polls (`razer-laptop`, `hp-victus`, `asus-laptop`) is declared under
+`k3s` and needs no push, so that 404 is expected there. It used to push as
+`linux-cachyos`, which kept the workstation's dot green while it was down.
+Test: `tests/integ/fleet_pulse_push.bats`.
 
 ### FLEET_GROUP: gatus keys are `<group>_<name>`
 
@@ -90,7 +109,7 @@ reason - `push failed for linux-cachyos` hid the half of the key that was wrong.
 
 ### 1. Cluster (home-config) - REQUIRED FIRST; nothing pushes 200 until this lands
 
-LANDED. `apps/gatus-fleet/configmap.yaml` carries the `external-endpoints` block and
+LANDED. `apps/gatus-fleet/config.yaml` carries the `external-endpoints` block and
 the SOPS `FLEET_TOKEN` secret is deployed; `homelab_linux-cachyos` reports today.
 (`apps/gatus` is the separate APPS dashboard - machines live on the `gatus-fleet`
 instance at your fleet endpoint. They are two different gatus instances; don't edit

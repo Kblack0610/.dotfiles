@@ -25,6 +25,7 @@
         "battery#bat2",
         "clock#date",
         "clock#time",
+        "custom/notify",
         "tray"
     ],
     "battery": {

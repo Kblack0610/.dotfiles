@@ -16,7 +16,7 @@ An ask file is the only record that something waits on the human, for attended s
 
 - An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
-- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list, except on `/wind-down`, which ends the session and leaves them pending) or from a board (`agent-ask answer` records it, and its delivery types the answer into the live session's pane).
+- The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list, except on a prompt the fleet typed (`/wind-down`, a restore, a dispatch brief, a resume: the table `.config/agent-panel/typed-prefixes.conf`), which leaves them pending) or from a board (`agent-ask answer` records it, and its delivery types the answer into the live session's pane).
 - A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone", where the answer will go, and that g reopens the session when it is a Claude conversation; an owner with no Claude transcript (a Codex thread) is answered on the card.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
 - On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, each row marked `LIVE` (a running session waits, from `agent-ask live-sessions`), `dead` (its asking session ended) or `none` (no session filed it, sorted with the live ones) and its question, live rows first, with the session's registry title under it, the selected one's card beside it (pgup/pgdn scroll it), answered in place; parked asks stay hidden until `P` (see Parked asks below). Enter records the answer and returns: the row stays, tagged `sending`, below the open questions until its delivery goes out (`list --undelivered` adds those rows, `wait-delivered` reloads the panel when it ends), and the cursor moves to the next question. A failed delivery stays a `failed` row with its note until `d` then enter clears it (`delivery-seen`). Nothing locks while one sends, a dialog press included. The `Prefix g` preview shows the card above the pane.
@@ -44,6 +44,10 @@ SECONDARY convenience for an attended agent only; producers never use it.
 
 `post` refuses a second pending ask from the same Claude session (`claude_session`), names the one already open, and exits 2. Several decisions become one question: options such as `take-all=<each recommendation>|one-by-one=go through them here`, with the per-decision detail in `--context`. To replace the open one, `agent-ask cancel <id> superseded` first. So every board reads one row per asking session. A post with no session id (a bare shell) is not checked. Why: by 2026-11-05, 22 sessions had posted bursts of 2 to 6 asks minutes apart, 54 extra rows, one trader session 6 in the same second. Test: `tests/integ/agent_ask.bats`.
 
+## One ask per blocker
+
+An ask that waits on something outside the session that stops other sessions too (an account's billing, a quota, an outage) names it: `--blocker <owner/repo>:<cause>`, the cause one word (`billing`, `quota`, `outage`, `auth`), stored lowercase with any github URL, `git@github.com:` or `.git` taken off the repo. When a pending ask already carries that `blocker:`, from any project, `post` files nothing (one lock spans the lookup and the new file, so sessions that hit it at once file one ask): it adds the session to that ask as another `claude_session:` line (the first stays the asker), prints that ask's id, and shows its card to an attended session. Every reader of `claude_session:` lines (agent-panel, fleet-sessions, `88-ask-filed.sh`) then counts the ask as that session's too, and the boards show one row. The answer goes to every one of them: `deliver` types it into each live session (a live judge answer at post goes out the same way to every session but the asker, which reads it at post), `reopen-on-answer` records the calling session as a `reopen:` line, and `reopen` restarts each such ended session (an attached one in window `ask-<id>-<sid prefix>`). A reply in one session that names an option answers it for all; a reply that would cancel it only takes that session off while others still wait. A blocker ask leaves room for one question of the session's own, but a second, different blocker is a second question; a post with `--resume` stays its own ask. When the last session that asked for a reopen leaves, the reopen resume is cleared. Why: on 2026-11-16 GitHub billing on `.dotfiles-private` drew 9 pending asks, one per session. Test: `tests/integ/agent_ask.bats`.
+
 ## Verbs
 
 ```
@@ -58,6 +62,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --context TEXT  why it is asked and what it blocks (the card's why: line)
   --recommend O   the option you would pick; must be one of --options
   --why TEXT      why you recommend it, one sentence (the card's because: line); needs --recommend
+  --blocker R:C   <owner/repo>:<cause> outside the session; a pending ask on it takes this session instead (One ask per blocker)
   --resume CMD    hint: the command that consumes the answer (e.g. /captain resume)
   --wait          SECONDARY: block until answered, print the answer to stdout
 
@@ -67,7 +72,7 @@ agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released
 agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, delivered or not sent and why, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private session-outcomes.conf)
-agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
+agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why, a session live on a fleet worker included. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
 agent-ask live-sessions                      the Claude session ids running now (what the questions panel and the card read to tell a live session from a dead one)
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)
 agent-ask answer [--by who] <id> <answer...> record answer; status->answered; queue its delivery and return; --by human (default) | judge | shepherd sets answered_by
@@ -81,7 +86,7 @@ agent-ask cancel <id>                        status->cancelled
 agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
 agent-ask unpark <id>                        put a parked ask back on the boards now
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
-agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
+agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, printing one `agent-ask: ask <id> ... was cancelled` line per ask to stdout (ask-settle.sh returns those lines to the session as context, and nothing else), and the session files a new ask if it still needs one. A prompt `typed-prefixes.conf` calls fleet-typed (a board's `Answer to ask <id>:` among them) settles nothing
 ```
 
 ## Ask file schema
@@ -122,6 +127,9 @@ judge_override_at:
 resume: /captain resume
 parked_until:             # set by `park`: UTC, the ask is off the boards until then
 parked_at:
+blocker:                  # set by post --blocker: <owner/repo>:<cause>, shared by every session it stops
+claude_session:           # one line per session waiting on it, the asker first (a shared blocker adds the rest)
+reopen:                   # one line per session reopen-on-answer restarts with the answer
 ```
 
 ## The answer judge
@@ -160,7 +168,7 @@ An ask that waits on something the human must do with their hands (wear a headse
 
 Producers post an ask on a genuine decision-block, record the id, then exit; a headless one sets `--resume <command>` so the answer restarts it.
 
-An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). If the session does not take the Enter, the delivery ends `failed` with a note saying where the text is.
+An answer to an ask from a live attended session is also typed into that session with `agent-panel send` (skipped while the session sits in a dialog). A session on a fleet worker is found in the snapshot of every worker's agent-panel rows that the minute record publishes (`fleet_panel_row`, fleet-hosts.sh; no ssh to read it, with none fresh, or for a worker it names silent, it asks that worker live, all at once) and typed into on that worker, through `fleet_host_run <host> agent-panel send`; `target` and `reopen` read the same row, so a session live on a worker is never reopened here. If the session does not take the Enter, or its worker does not answer, the delivery ends `failed` with a note saying where the text is.
 
 Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (the delivery calls it; `ask-resume --all` drains by hand).
 

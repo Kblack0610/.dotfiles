@@ -510,6 +510,27 @@ setup_power_key() {
     log_info "Installed $dst and reloaded logind"
 }
 
+# Keep the kernel log of a crashed boot: a 2G journal (cachyos-settings caps it at 50M),
+# systemd-pstore so a panic's EFI record is saved at the next boot, and the systemd-journal
+# group so the fleet reads past boots without root (applies at the next login).
+setup_journal() {
+    log_section "Keeping crash logs: journal size, pstore, journal group"
+
+    local src="$HOME/.dotfiles/etc/systemd/journald.conf.d/50-journal-size.conf"
+    local dst="/etc/systemd/journald.conf.d/50-journal-size.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "journald drop-in not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    sudo systemctl restart systemd-journald
+    sudo systemctl enable systemd-pstore
+    sudo usermod -aG systemd-journal "$USER"
+    log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal (log out and back in for the group)"
+}
+
 # Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
@@ -651,7 +672,7 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css, sketchybar's colors.sh and dunst's dunstrc.d/50-theme.conf are NOT tracked -- they are the render of
+# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css and noctalia's palettes/dotfiles.json are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
@@ -665,7 +686,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,hyprland"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland"
         return 0
     fi
 
@@ -676,7 +697,7 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,hyprland
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland
 }
 
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The
@@ -893,6 +914,7 @@ install_all() {
 
     step keyd        setup_keyd
     step powerkey    setup_power_key
+    step journal     setup_journal
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 

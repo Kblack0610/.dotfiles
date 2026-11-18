@@ -5,8 +5,13 @@
 
 use crate::cache::{off, ReadCache};
 
-#[derive(Default)]
 pub struct Cache(ReadCache<String, { hub_core::briefing::NIGHT_REFRESH.as_secs() }>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(ReadCache::new("briefing"))
+    }
+}
 
 impl Cache {
     /// A failed read is not kept: the next reload tries again.

@@ -246,7 +246,7 @@ fi
 # --- block ---
 DAILY_NOTE=$(focus_daily_note)
 FOCUS_BODY=$(focus_body "$DAILY_NOTE")
-OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | head -5 | sed 's/^- /  - /')
+OPEN_LIST=$(printf '%s\n' "$FOCUS_BODY" | focus_items ' ' | awk 'NR<=5' | sed 's/^- /  - /')
 [ -n "$OPEN_LIST" ] || OPEN_LIST="  (nothing open today - run \`notes today\` first)"
 
 if [ "$PR_WORK" -eq 1 ]; then
@@ -268,8 +268,8 @@ The task you are on is an agent-queue item, NOT a board row and NOT the daily no
   agent-queue add --running --project <project> [--row <id>] \"<task>\"   you are on it
   agent-land <N>, or agent-queue move <slug> done            it landed
 
-A cleanup or agent-runtime fix you will not do now goes into the queue at high priority: agent-queue add --priority high --project <project> \"<task>\".
-Any other follow-up goes on the AGENT board: notes ptask <project> --agent add \"<type(area): title> #size/s\".
+Only the board fills the queue: a follow-up you will not do now goes on the AGENT board, and dispatch pulls it under the cap:
+  notes ptask <project> --agent add \"<type(area): title> #size/s #high\"   (#high for a cleanup or agent-runtime fix)
 The sheet without --agent is the human's queue: human asks, human-only actions, and
 prod/PHI/security/money findings only.
 

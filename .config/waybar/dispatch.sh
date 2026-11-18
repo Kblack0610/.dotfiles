@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
 # totals, "Q27 B1522 D280": the items ready to start next (running work is the agents chip beside
-# it), the open agent board rows, and the items done today. Letters are dim and sit on
+# it), every open board row (Board, `notes board --json` totals), and the items done today. Letters are dim and sit on
 # their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
@@ -76,7 +76,7 @@ else
   for k in slots load idle account assess other; do
     [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
     case $k in
-      slots) paused="the fleet is at its pace target (DISPATCH_TARGET_PRESENT; away, what the accounts carry, at most DISPATCH_TARGET_AWAY)" ;;
+      slots) paused="the fleet is at its Claude pace target (what the accounts carry, at most DISPATCH_TARGET_PRESENT here, DISPATCH_TARGET_AWAY away)" ;;
       load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
@@ -136,7 +136,7 @@ else
   ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"
-  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag)"
+  queue="queued: $ready_line"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
   [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
   [ -z "$(get dispatch.present_per_hour)" ] ||
@@ -144,7 +144,7 @@ else
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  queue+=$'\n'"board: $(d board_agent) agent rows, $(d board_human) yours, $(d board_playtest) playtest checks"
+  queue+=$'\n'"board: $(d board_total) open rows: $(d board_agent) agent ($(d board_backlog) more on the backlog), $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -189,7 +189,7 @@ fi
 
 # The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-board="$(get dispatch.board_agent)" qn="${ready:--}"
+board="$(get dispatch.board_total)" qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(d done_today)"
 

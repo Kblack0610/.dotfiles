@@ -84,7 +84,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | fun | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -128,19 +128,14 @@ enum Cmd {
         #[arg(long)]
         backfill: bool,
     },
-    /// Open + tidy a standing backlog file (`fun`, `scheduled`, or `recurring`); prints its path
+    /// Open + tidy a standing list (`backlog`, `scheduled`, or `recurring`); prints its path
     Backlog {
-        /// Backlog name: fun | scheduled | recurring
+        /// List name: backlog (default) | scheduled | recurring
+        #[arg(default_value = "backlog")]
         name: String,
-    },
-    /// One-time migration: lift Fun + Carry Over out of a daily note into backlogs
-    SeedBacklogs {
-        /// Source daily note (defaults to the latest one)
+        /// File the task lines on stdin into the backlog, stamped with today (nvim `<leader>tb`)
         #[arg(long)]
-        from: Option<String>,
-        /// Overwrite a backlog that already has Active items
-        #[arg(long)]
-        force: bool,
+        add: bool,
     },
     /// Today's cockpit: the daily note's `## Focus` active-task list (list / add / done).
     /// No subcommand = list. Same items the session-start hook surfaces.
@@ -616,7 +611,8 @@ enum PtaskCmd {
         all: bool,
     },
     /// Add a task to the open version, or aim it at a later release with --to. Exit 3 and
-    /// write nothing when an open row with the same text is already on the sheet
+    /// write nothing when an open row on the sheet has the same text, nearly the same text,
+    /// or lands the same PR
     Add {
         /// Aim it at this release instead (`vX.Y.Z`)
         #[arg(long, value_name = "VERSION")]
@@ -628,7 +624,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "N")]
         pr: Option<u64>,
         /// A detail line under the row: evidence, file:line, the original words. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
         /// The channel a human's want entered by (outbox, focus, voice, request, ask, meeting,
         /// human): the row gets `#requested` and the ingest event names the channel
@@ -729,7 +725,8 @@ enum PtaskCmd {
         query: Vec<String>,
     },
     /// With --playtest: a build is cut, so file one `check(playtest): play build <build>, N
-    /// checks` row on the human sheet, N the open checks. The same build again is exit 3
+    /// checks` row on the human sheet, N the open checks, each stamped with the row's id so
+    /// closing the row done closes them. The same build again is exit 3
     Pass {
         /// The build to play: a Steam build id, a branch, a tag
         #[arg(long)]
@@ -746,15 +743,19 @@ enum PtaskCmd {
         #[arg(
             long,
             conflicts_with = "append",
-            required_unless_present_any = ["append", "detail"]
+            required_unless_present_any = ["append", "detail", "brief"]
         )]
         text: Option<String>,
         /// Words to add to the end of the task's text
         #[arg(long)]
         append: Option<String>,
         /// A detail line to add under the row, after its existing ones. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
+        /// The row's whole brief, replacing its detail lines (its child rows stay): how
+        /// `agent-queue retask` corrects a task, since the row is the task's record
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true, conflicts_with_all = ["detail", "was", "text", "append"])]
+        brief: Option<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
         /// `was:` detail line (a title over 80 chars is cut at a word, whole on a `full:` line), and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
@@ -801,6 +802,19 @@ enum PtaskCmd {
         #[arg(long)]
         json: bool,
     },
+    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`), by the
+    /// scoring a near-duplicate is refused by. Reads only. The triager's shortlist of the rows
+    /// a line may repeat
+    Similar {
+        /// How many rows at most
+        #[arg(long, default_value_t = 10)]
+        top: usize,
+        /// One JSON array of `{id, percent, text}` instead
+        #[arg(long)]
+        json: bool,
+        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        text: Vec<String>,
+    },
     /// Take the first inbox line matching the query off `## Inbox` and onto the board as
     /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
     /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
@@ -812,6 +826,9 @@ enum PtaskCmd {
         /// It duplicates this open row (its id): its words join that row as a detail line
         #[arg(long, value_name = "ID", conflicts_with_all = ["rows", "to", "detail"])]
         dup: Option<String>,
+        /// It asks for no row: the line leaves the inbox, recorded as `dropped` with `--why`
+        #[arg(long, conflicts_with_all = ["rows", "dup", "to", "detail", "want"])]
+        skip: bool,
         /// File it on this project's board instead (any profile)
         #[arg(long, value_name = "PROJECT")]
         project: Option<String>,
@@ -822,7 +839,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
         /// Another detail line under each row, after the `was:` line. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
         /// The channel the line came in by (as `add --want`): each row gets `#requested`
         #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
@@ -885,8 +902,12 @@ enum OutboxCmd {
         raw: Vec<String>,
     },
     /// Take the line that is RAW byte for byte out of the outbox, filing nothing, because the
-    /// person said it needs no row (the sweep's write path for a "drop" answer)
+    /// person said it needs no row (the sweep's write path for a "drop" answer), or the triager
+    /// skipped a session's follow-up
     Drop {
+        /// Why it was dropped, kept on its `dropped` event
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
     },
@@ -1147,7 +1168,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, fun, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
                 );
                 2
             }
@@ -1168,12 +1189,8 @@ fn main() -> Result<()> {
             archive::run(&prof, &log, month.as_deref(), dry_run, backfill)?;
             0
         }
-        Cmd::Backlog { name } => {
-            backlog::run(&prof, &log, &name)?;
-            0
-        }
-        Cmd::SeedBacklogs { from, force } => {
-            backlog::seed(&prof, &log, from.as_deref(), force)?;
+        Cmd::Backlog { name, add } => {
+            backlog::run(&prof, &log, &name, add)?;
             0
         }
         Cmd::Focus { all, sub } => {
@@ -1257,6 +1274,7 @@ fn main() -> Result<()> {
                 | Some(
                     PtaskCmd::List { .. }
                     | PtaskCmd::Inbox { .. }
+                    | PtaskCmd::Similar { .. }
                     | PtaskCmd::Propose { .. }
                     | PtaskCmd::Redate { dry_run: true, .. },
                 ) => None,
@@ -1347,9 +1365,13 @@ fn main() -> Result<()> {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
                 }
+                Some(PtaskCmd::Similar { top, json, text }) => {
+                    project_tasks::similar_rows(&prof, &name, &text.join(" "), top, json, lane)?
+                }
                 Some(PtaskCmd::File {
                     rows,
                     dup,
+                    skip,
                     project,
                     lane: to_lane,
                     to,
@@ -1369,6 +1391,7 @@ fn main() -> Result<()> {
                         want: want.as_deref().map(projects::want_channel).transpose()?,
                         why,
                         how: match dup {
+                            _ if skip => project_tasks::How::Skip,
                             Some(id) => project_tasks::How::Dup(id),
                             None => project_tasks::How::Rows {
                                 texts: rows,
@@ -1402,21 +1425,27 @@ fn main() -> Result<()> {
                     text,
                     append,
                     detail,
+                    brief,
                     was,
                     link,
                     query,
-                }) => project_tasks::retext(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    text.as_deref(),
-                    append.as_deref(),
-                    &detail,
-                    was,
-                    link.then_some(standing::SYSTEMS_BIN),
-                    lane,
-                )?,
+                }) => match brief {
+                    Some(b) => {
+                        project_tasks::rebrief(&prof, &log, &name, &pick(&query)?, &b, lane)?
+                    }
+                    None => project_tasks::retext(
+                        &prof,
+                        &log,
+                        &name,
+                        &pick(&query)?,
+                        text.as_deref(),
+                        append.as_deref(),
+                        &detail,
+                        was,
+                        link.then_some(standing::SYSTEMS_BIN),
+                        lane,
+                    )?,
+                },
                 Some(PtaskCmd::Promote { query }) => {
                     project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane)?
                 }
@@ -1467,7 +1496,9 @@ fn main() -> Result<()> {
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
                 outbox::answer(&prof, &log, &raw.join(" "), &text)?
             }
-            Some(OutboxCmd::Drop { raw }) => outbox::drop_line(&prof, &log, &raw.join(" "))?,
+            Some(OutboxCmd::Drop { why, raw }) => {
+                outbox::drop_line(&prof, &log, &raw.join(" "), why.as_deref())?
+            }
         },
         Cmd::Log {
             steps: true, json, ..

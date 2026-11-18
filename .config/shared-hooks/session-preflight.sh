@@ -204,13 +204,17 @@ startup_mark board
 # Lessons by relevance: `lessons pick` ranks the project's lessons against the work this
 # session is on and fills the rest with the newest. SessionStart sees only the cwd, so the
 # work is the queue item's title for a dispatched session (about half of them), plus the
-# branch and the cwd's place in the repo; a hand session on main gets the newest. A
-# first-prompt hook would know more, but every prompt would pay for it.
+# branch and the cwd's place in the repo; a hand session on main gets the newest. The
+# first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less these.
 # Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
 WORK_TEXT=""
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
-  WORK_TEXT=$(agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
+  # A 1 s wait on the queue lock (about 2 s worst case: the gate and the lock each get it),
+  # not 10: `show` queues behind writers, and a dispatched start under load spent about
+  # 10 s here (48 of 300 starts, 2026-11-17, ar-2756). A miss
+  # leaves WORK_TEXT to the branch, and the first prompt adds the matched lessons.
+  WORK_TEXT=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
     sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)
 fi
 WORK_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
@@ -274,6 +278,8 @@ add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PICK" ] || printf '%s\n' "$PICK" | lessons log "$PROJECT_NAME" "$LESSONS_FILE" 2>/dev/null || true
+  [ -z "$PICK" ] || [ -z "$HOOK_SID" ] ||
+    printf '%s\n' "$PICK" | bash "$(dirname "$(realpath "$0")")/first-prompt-lessons.sh" shown "$HOOK_SID" 2>/dev/null || true
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"

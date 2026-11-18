@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+# store-sync - keep this machine's clone of a store and the shared remote one in step.
+#
+#   store-sync [--store agent|notes] [--now] [--bg]  commit, merge the remote, push origin, then backup
+#   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
+#
+# Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
+# `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
+# file the merge also changes, and pushes at once; store-sync.timer runs the bulk pass. notes is
+# ~/.notes: `notes-sync` runs it for notes-watch (each saved note), notes-mqtt and notes-ntfy (a
+# push from elsewhere) and git-sync-notes.timer. origin is Forgejo and backup is GitHub; backup
+# takes the write when origin is unreachable or refuses it. Remote commits come in by merge, never
+# rebase, and a conflict stops with every local commit kept and pages once. COMPLETE in sync.log
+# means origin holds HEAD, which store-sync-age reads. An unjoined agent clone never pushes.
+# Design, rollout and troubleshooting: ~/.config/agentctl/QUEUE.md, "The store: every machine a
+# peer"; the notes side: ~/.local/src/git/NOTES_SYNC_SETUP.md.
+set -uo pipefail
+
+# mapfile and declare -A need bash 4. macOS ships 3.2 at /bin/bash, first on launchd's PATH even
+# under `bash -l`, so take brew's when it is there.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for b in /opt/homebrew/bin/bash /usr/local/bin/bash; do [ -x "$b" ] && exec "$b" "$0" "$@"; done
+  echo "store-sync: needs bash 4 or later (brew install bash)" >&2; exit 2
+fi
+
+die() { echo "store-sync: $*" >&2; exit 2; }
+
+STORE_NAME=agent
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --store) [ $# -ge 2 ] || die "--store needs agent or notes"; STORE_NAME="$2"; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+# What differs between the two stores is only here.
+case "$STORE_NAME" in
+  agent)
+    STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+    CONF="${STORE_SYNC_CONF:-$HOME/.config/agentctl/store.env}"
+    SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}"
+    SYNC_DIR="$STORE/.sync"
+    # What a write hook (--now) commits: the coordination state, never the bulk logs.
+    NOW_PATHS=(queue asks presence)
+    # A clone pushes only once `store-sync join` made it a peer of the shared store.
+    NEEDS_JOIN=1 ;;
+  notes)
+    STORE="${NOTES_DIR:-$HOME/.notes}"
+    # No conf: the remotes are the clone's own, set by notes-sync-bootstrap.sh.
+    CONF=""
+    SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_notes_sync}"
+    # Outside the vault, so none of it is committed; `notes doctor` reads sync.log here.
+    SYNC_DIR="$HOME/.local/state/notes-sync"
+    NOW_PATHS=(.)
+    # Every notes clone already syncs with its remotes as the truth.
+    NEEDS_JOIN=0 ;;
+  *) die "unknown store '$STORE_NAME' (agent or notes)" ;;
+esac
+BRANCH=master
+# ssh_cmd, net, load_conf: how a remote is reached, shared with fleet-lease. It keeps the CONF
+# and SSH_KEY set above; its own defaults are the agent store's.
+# shellcheck source=../lib/store-remote.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-remote.sh"
+TRIES=3
+# A sync waits this long for another one on this machine to finish; past it the write stays
+# committed or on disk, and the next sync pushes it.
+LOCK_WAIT_S=300
+# How long backup may go without taking HEAD while origin answers, before the page: an hour of a
+# dead backup rather than one bad Wi-Fi moment. Time, not a run count: write hooks run many syncs.
+BACKUP_ALERT_AFTER_S=3600
+HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
+LOG="$SYNC_DIR/sync.log"
+PEER="$SYNC_DIR/peer"
+# "<HEAD> <remote ref>" of the last merge that conflicted: retrying that pair cannot succeed.
+CONFLICT="$SYNC_DIR/conflict"
+BACKUP_FAILS="$SYNC_DIR/backup-failures"
+
+log() {
+  mkdir -p "$SYNC_DIR"
+  printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$HOST_TAG" "$1" >> "$LOG"
+  rotate_log
+  [ "${QUIET:-0}" = 1 ] || printf '%s\n' "$1"
+}
+
+rotate_log() {
+  local size
+  size=$(stat -c%s "$LOG" 2>/dev/null || stat -f%z "$LOG" 2>/dev/null || echo 0)
+  [ "$size" -le 1048576 ] || { tail -n 1000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; }
+}
+
+# notify <priority> <message>: page the human on a change of state, never on every run. A sync
+# never fails on it; under systemd the login PATH is absent, hence the fallback.
+notify() {
+  local n
+  n=$(command -v agent-notify 2>/dev/null) || n="$HOME/.local/bin/agent-notify"
+  [ -x "$n" ] || return 0
+  "$n" -t "store-sync $STORE_NAME" -p "$1" "$2" >/dev/null 2>&1 || true
+}
+
+# track_backup <ok 0|1>: BACKUP_FAILS holds "<epoch of the first failed sync> [paged]" while
+# origin answers and backup does not take HEAD; page once past BACKUP_ALERT_AFTER_S and once on
+# recovery. A silently stale backup once went a month unseen (notes, from 2026-06-17).
+track_backup() {
+  local first="" paged="" now
+  read -r first paged 2>/dev/null < "$BACKUP_FAILS"
+  if [ "$1" = 0 ]; then
+    [ -z "$paged" ] || notify normal "The $STORE_NAME store's backup took HEAD again on $HOST_TAG."
+    rm -f "$BACKUP_FAILS"
+    return 0
+  fi
+  now=$(date +%s)
+  case "$first" in '' | *[!0-9]*) echo "$now" > "$BACKUP_FAILS"; return 0 ;; esac
+  [ -z "$paged" ] && [ $((now - first)) -ge "$BACKUP_ALERT_AFTER_S" ] || return 0
+  notify high "The $STORE_NAME store's backup has not taken a write on $HOST_TAG for $(( (now - first) / 60 )) minutes, so the off-site copy is going stale. See $LOG"
+  echo "$first paged" > "$BACKUP_FAILS"
+}
+
+usage() { awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0"; }
+
+g() { git -C "$STORE" "$@"; }
+
+# Point origin and backup at the conf's URLs; a URL the conf leaves empty keeps the clone's own.
+apply_remotes() {
+  local name url
+  for name in origin backup; do
+    [ "$name" = origin ] && url="$STORE_PRIMARY_URL" || url="$STORE_BACKUP_URL"
+    [ -n "$url" ] || continue
+    if g remote get-url "$name" >/dev/null 2>&1; then
+      [ "$(g remote get-url "$name")" = "$url" ] || g remote set-url "$name" "$url"
+    else
+      g remote add "$name" "$url"
+    fi
+  done
+}
+
+remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
+
+# commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
+commit_paths() {
+  local msg="$1" p have=()
+  shift
+  for p in "$@"; do [ -e "$STORE/$p" ] || g ls-files --error-unmatch -- "$p" >/dev/null 2>&1 && have+=("$p"); done
+  [ "${#have[@]}" -gt 0 ] || return 0
+  g add -A -- "${have[@]}" || return 1
+  g diff --cached --quiet && return 0
+  g -c core.hooksPath=/dev/null commit -q -m "$msg" >/dev/null
+}
+
+ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
+
+
+# sync_one <remote>: fetch it, merge it into HEAD, push HEAD to it.
+# 0 the remote holds HEAD, 1 unreachable (FETCH_ERR says why), 2 a merge conflict, 3 the push
+# failed (rejected because another machine pushed first, or a transient error).
+sync_one() {
+  local r="$1" ref files=()
+  # One conflict file per remote: a clean origin merge must not clear a backup conflict.
+  local cf="$CONFLICT"; [ "$r" = origin ] || cf="$CONFLICT-$r"
+  # master alone: the lease branch (fleet-lease) is not the store, and its history stays off clones.
+  if ! FETCH_ERR=$(net "$r" -C "$STORE" fetch -q "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" 2>&1); then
+    FETCH_ERR=$(printf '%s' "$FETCH_ERR" | tail -n 1 | cut -c1-200)
+    return 1
+  fi
+  ref=$(ref_of "$r")
+  if [ -n "$ref" ] && ! g merge-base --is-ancestor "$ref" HEAD; then
+    # Every file the remote changed since the merge base that is dirty here goes into a commit
+    # first, so the merge sees both sides instead of refusing to touch the working tree.
+    mapfile -t files < <(comm -12 \
+      <(g diff -z --no-renames --name-only "HEAD...$ref" | tr '\0' '\n' | sort -u) \
+      <(g status -z --porcelain=v1 -uall --no-renames | tr '\0' '\n' | cut -c4- | sort -u))
+    if [ "${#files[@]}" -gt 0 ]; then
+      commit_paths "$HOST_TAG store-sync: local edits before merging $r $(date '+%Y-%m-%d_%H:%M:%S')" "${files[@]}" || return 3
+    fi
+    if g merge-base --is-ancestor HEAD "$ref"; then
+      g merge -q --ff-only "$ref" >/dev/null 2>&1 || return 3
+    elif [ "$(cat "$cf" 2>/dev/null)" = "$(g rev-parse HEAD) $ref" ]; then
+      CONFLICT_FILES=""
+      return 2
+    elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
+      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | awk 'NR<=5' | tr '\n' ' ')
+      g merge --abort >/dev/null 2>&1
+      # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
+      [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
+      printf '%s %s\n' "$(g rev-parse HEAD)" "$ref" > "$cf"
+      return 2
+    fi
+  fi
+  rm -f "$cf"
+  [ "$(ref_of "$r")" = "$(g rev-parse HEAD)" ] && return 0
+  if PUSH_ERR=$(net "$r" -C "$STORE" push -q "$r" "HEAD:refs/heads/$BRANCH" 2>&1); then
+    g update-ref "refs/remotes/$r/$BRANCH" HEAD
+    return 0
+  fi
+  PUSH_ERR=$(printf '%s' "$PUSH_ERR" | tail -n 1 | cut -c1-200)
+  return 3
+}
+
+has_remote() { g remote get-url "$1" >/dev/null 2>&1; }
+at_head() { [ "$(ref_of "$1")" = "$(g rev-parse HEAD)" ]; }
+
+cmd_sync() {
+  local mode=all paths=(.) bg=0 a fwd=()
+  for a in "$@"; do
+    case "$a" in
+      --now) mode=now; paths=("${NOW_PATHS[@]}"); fwd+=("$a") ;;
+      --bg) bg=1 QUIET=1 ;;
+      *) die "unknown flag $a (try --help)" ;;
+    esac
+  done
+  # A write hook on a machine that is not a peer yet does nothing; the timer logs why.
+  if [ ! -d "$STORE/.git" ] || { [ "$NEEDS_JOIN" = 1 ] && [ ! -f "$PEER" ]; }; then
+    [ "$bg" = 1 ] && exit 0
+    if [ ! -d "$STORE/.git" ]; then
+      [ "$NEEDS_JOIN" = 0 ] && { log "ERROR: $STORE is not a git clone (notes-bootstrap sets it up)"; exit 1; }
+      die "$STORE is not a git clone (store-sync join)"
+    fi
+    log "ERROR: $STORE is not a peer clone yet; run store-sync join (nothing pushed)"
+    exit 1
+  fi
+  if [ "$bg" = 1 ]; then
+    # A write that left nothing dirty here costs no fork; commits a past sync could not push go
+    # out with the next write or the timer.
+    [ -n "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] || exit 0
+    # The fork outlives its caller and waits up to LOCK_WAIT_S on the sync lock, so it drops every
+    # descriptor it inherited: agent-queue's queue lock on fd 8 held each queue write behind a long sync
+    # (2026-11-18).
+    [ "${STORE_SYNC_FG:-0}" = 1 ] || {
+      ( for a in /dev/fd/*; do a="${a##*/}"; [ "$a" -gt 2 ] && eval "exec $a>&-"; done
+        exec setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null ) 2>/dev/null
+      exit 0
+    }
+  fi
+
+  # Every push is HEAD:$BRANCH, so a clone left on another branch would push it over $BRANCH.
+  [ "$(g symbolic-ref -q --short HEAD)" = "$BRANCH" ] \
+    || { log "ERROR: $STORE is on $(g symbolic-ref -q --short HEAD || echo a detached HEAD), not $BRANCH; nothing synced"; exit 1; }
+  mkdir -p "$SYNC_DIR"
+  exec 9>"$SYNC_DIR/lock"
+  flock -w "$LOCK_WAIT_S" 9 || { log "SKIP: another sync held the lock past ${LOCK_WAIT_S}s; the next sync pushes this write"; exit 0; }
+  # Writes in a burst each start a sync; the first one through the lock carries them all.
+  [ "$mode" = now ] && [ -z "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] && at_head origin && exit 0
+  load_conf
+  apply_remotes
+  # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
+  # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
+  find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
+  commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
+    || { log "ERROR: could not commit ${paths[*]}"; exit 1; }
+
+  local round=0 again r rc rs=() conflict=""
+  declare -A down=() why=()
+  mapfile -t rs < <(remotes)
+  [ "${#rs[@]}" -gt 0 ] || { log "ERROR: $STORE has no origin or backup remote (${CONF:-notes-sync-bootstrap.sh sets them})"; exit 1; }
+  while [ "$round" -lt "$TRIES" ]; do
+    round=$((round + 1)) again=0
+    for r in "${rs[@]}"; do
+      [ -z "${down[$r]:-}" ] || continue
+      # Backup takes a write after origin has it, while origin is unreachable, or in the last
+      # round once origin has refused it; so it never runs ahead of an origin that takes writes.
+      if [ "$r" = backup ] && has_remote origin && [ -z "${down[origin]:-}" ] && ! at_head origin && [ "$round" -lt "$TRIES" ]; then
+        again=1; continue
+      fi
+      sync_one "$r"; rc=$?
+      case "$rc" in
+        1) down[$r]=1 why[$r]="$FETCH_ERR" ;;
+        2) conflict="merging $r conflicts in ${CONFLICT_FILES:-the same files as last time}"
+           [ "$r" = origin ] && { log "ERROR: $conflict; resolve by hand in $STORE (local commits kept, nothing pushed)"; exit 1; }
+           down[$r]=1 why[$r]="merge conflict" ;;
+        3) again=1 why[$r]="${PUSH_ERR:-could not merge}" ;;
+      esac
+    done
+    # A merge from backup moves HEAD past what origin got this round.
+    for r in "${rs[@]}"; do [ -n "${down[$r]:-}" ] || at_head "$r" || again=1; done
+    [ "$again" = 1 ] || break
+  done
+
+  local head bk="backup none"
+  head=$(g rev-parse --short HEAD)
+  if has_remote backup; then
+    if at_head backup; then
+      bk="backup at $head"; track_backup 0
+    else
+      bk="backup failed: ${why[backup]:-behind}"
+      # With origin down too this machine is offline, which says nothing about backup.
+      [ -n "${down[origin]:-}" ] || track_backup 1
+    fi
+  fi
+  if has_remote origin && at_head origin; then
+    log "COMPLETE: origin at $head, $bk"
+  elif [ -n "${down[origin]:-}" ] && [ "$bk" = "backup at $head" ]; then
+    log "BACKUP: origin unreachable (${why[origin]}); the write is on backup at $head"
+  elif [ -n "${down[origin]:-}" ] && [ -z "$conflict" ] && { ! has_remote backup || [ -n "${down[backup]:-}" ]; }; then
+    log "SKIP: no remote reachable (${why[origin]}); $(g rev-list --count "refs/remotes/origin/$BRANCH..HEAD" 2>/dev/null || echo some) commit(s) kept for the next sync"
+  else
+    log "ERROR: origin did not take $head after $TRIES rounds: ${why[origin]:-unknown}; $bk"
+    exit 1
+  fi
+  [ -z "$conflict" ] || { log "ERROR: $conflict; resolve by hand in $STORE (local commits kept)"; exit 1; }
+}
+
+cmd_join() {
+  local keep=0 a stamp url ahead=1 moved=""
+  for a in "$@"; do
+    case "$a" in --keep-dirty) keep=1 ;; *) die "unknown flag $a (try --help)" ;; esac
+  done
+  [ "$NEEDS_JOIN" = 1 ] || die "the $STORE_NAME store has no join: its clone already syncs as a peer"
+  load_conf
+  url="${STORE_PRIMARY_URL:-$(g remote get-url origin 2>/dev/null)}"
+  [ -n "$url" ] || die "no origin: set STORE_PRIMARY_URL in $CONF"
+  stamp=$(date +%Y%m%d%H%M%S)
+  if [ -d "$STORE/.git" ]; then
+    apply_remotes
+    net origin -C "$STORE" fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || die "origin ($url) is unreachable; join needs it"
+    g merge-base --is-ancestor HEAD "refs/remotes/origin/$BRANCH" 2>/dev/null && ahead=0
+    if [ "$ahead" = 0 ] && { [ "$keep" = 1 ] || [ -z "$(g status --porcelain)" ]; }; then
+      g merge -q --ff-only "refs/remotes/origin/$BRANCH" >/dev/null 2>&1 \
+        || die "a dirty file here is also changed on origin; commit or move it, then join again"
+      mkdir -p "$SYNC_DIR"; printf 'joined %s in place\n' "$(date -Is)" > "$PEER"
+      log "JOIN: $STORE is a peer clone in place at $(g rev-parse --short HEAD)"
+      return 0
+    fi
+  fi
+  # Not a clone, ahead of origin, or dirty: the remote's copy replaces it, and the old one is kept.
+  local new="$STORE.peer-new-$stamp"
+  net origin clone -q --single-branch -b "$BRANCH" "$url" "$new" 2>&1 | tail -n 1 >&2
+  # A fresh clone has no commits of its own, so backup's copy is as safe a start as origin's.
+  if [ ! -d "$new/.git" ] && [ -n "$STORE_BACKUP_URL" ]; then
+    rm -rf "$new"
+    net backup clone -q --single-branch -b "$BRANCH" "$STORE_BACKUP_URL" "$new" 2>&1 | tail -n 1 >&2
+    [ ! -d "$new/.git" ] || echo "store-sync: origin unreachable; cloned backup, and writes go there until origin answers" >&2
+  fi
+  [ -d "$new/.git" ] || die "clone of $url failed"
+  if [ -e "$STORE" ]; then
+    moved="$STORE.pre-peer-$stamp"
+    mv "$STORE" "$moved" || die "could not move $STORE aside"
+  fi
+  mv "$new" "$STORE" || die "could not move the clone into $STORE"
+  apply_remotes
+  mkdir -p "$SYNC_DIR"; printf 'joined %s by a fresh clone\n' "$(date -Is)" > "$PEER"
+  log "JOIN: $STORE is a fresh peer clone at $(g rev-parse --short HEAD)${moved:+; the old store is kept at $moved}"
+}
+
+case "${1:-}" in
+  join) shift; cmd_join "$@" ;;
+  -h | --help) usage ;;
+  *) cmd_sync "$@" ;;
+esac

@@ -43,7 +43,8 @@ function kpis(cc) {
   const one = (n) => (cc[n] || {})[""];
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
-  const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_open_slots"]);
+  // A runner once, the local gates folded in: cc:pool_* counts a runner once per cap it takes.
+  const busy = sumOf(cc["cc:site_busy"]), slots = sumOf(cc["cc:site_slots"]);
   const waiting = sumOf(cc["cc:pool_waiting"]) + sumOf(cc["cc:host_local_queued"]);
   // cc:site_* already fold the local gates into local. No site series at all is "?", while a
   // site with none of its own reads 0 (no cloud host up).
@@ -76,14 +77,28 @@ function coreStrip(cores) {
 // the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
 // no data is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
 // their disks.
+const GIB = 1024 ** 3;
+// A reading as the slots table says it, as hub_core::machine_page::used_of does: 0, 2.8, 140.
+const short = (v) => (v === 0 ? "0" : v < 100 ? v.toFixed(1) : Math.round(v).toString());
+// `2.8/3`, `11.2/14G`; `2.8` with no limit; no data with no reading.
+const usedOf = (used, max, scale, unit) => (used == null ? NO_DATA : max == null ? `${short(used / scale)}${unit}` : `${short(used / scale)}/${Math.round(max / scale)}${unit}`);
+// `39 of 64G`, or no data unless both are read.
+const gbOf = (used, total) => (used == null || total == null ? NO_DATA : `${Math.round(used / GIB)} of ${Math.round(total / GIB)}G`);
+
 function diskCell(m) {
   const free = m.disk;
   if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">${NO_DATA}</td>`;
-  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}">${pct(free)}</td>`;
+  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
 const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
-const cpuTitle = (m) => m.runner_cores.map(([n, v]) => `${n}: ${v.toFixed(1)} cores`).join("\n");
+// Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
+function cpuTitle(m) {
+  const mem = Object.fromEntries(m.runner_mem);
+  const names = [...m.runner_cores.map(([n]) => n), ...m.runner_mem.map(([n]) => n).filter((n) => !m.runner_cores.some(([c]) => c === n))];
+  const cores = Object.fromEntries(m.runner_cores);
+  return names.map((n) => `${n}: ${cores[n] == null ? NO_DATA : cores[n].toFixed(1)} cores, mem ${usedOf(mem[n], null, GIB, "G")}`).join("\n");
+}
 const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
 const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
@@ -121,11 +136,11 @@ const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   where: (m) => td("muted", esc(m.where)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
-  mem: (m) => td("m", `${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}`),
+  mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
   temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
   disk: diskCell,
   pools: (m) => td("muted wrap", esc(m.pools.join("  ")) || "-"),
@@ -189,21 +204,20 @@ const LOCAL_CELLS = {
   failed: (f) => td("n", f.n),
 };
 
-// One table's rows from the read: `cap` rows until its "+N more".
-function infraBody(name, labels, cells, empty, o = {}) {
+// One table's rows from the read.
+function infraBody(name, labels, cells, empty) {
   const d = ist.data.tables[name], t = d.table, rows = d.rows;
   if (!rows.length) return `<div class="panel"><div class="empty">${t.total ? "No row matches." : empty}</div></div>`;
   const keys = t.columns.map((c) => c.key).filter((k) => labels[k] && cells[k]);
-  const cap = o.cap && !INFRA_T[name].all ? o.cap : rows.length, shown = rows.slice(0, cap);
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${shown.map((r, i) =>
-    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table>${tblMore(rows.length - shown.length, "more")}</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, labels)}${rows.map((r, i) =>
+    `<tr>${keys.map((k) => cells[k](r, tblLinks(t, i))).join("")}</tr>`).join("")}</table></div>`;
 }
 
 const infraTable = (name, labels, cells, hint, empty, o) => tblTab({
   tab: "infra", id: "infra-" + INFRA_TABLES[name], el: "infra-main", pre: INFRA_TABLES[name], hint,
   refresh: () => refreshInfra(), render: () => renderInfra(), table: () => ist.data?.tables?.[name]?.table,
   wrap: (h) => `<div data-tbl="${INFRA_TABLES[name]}">${h}</div>`,
-  body: () => infraBody(name, labels, cells, empty, o), tiles: o && o.tiles,
+  body: () => infraBody(name, labels, cells, empty), tiles: o && o.tiles,
 });
 // A table's head count: its rows, or "N of M" while the view hides some.
 const infraN = (name) => { const t = ist.data?.tables?.[name]?.table; return t && tblCount(t); };
@@ -321,9 +335,8 @@ const INFRA_PAGES = [
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
-// The open page, by its hash (`machines/<host>`), and its last read; `all` unfolds a machine's
-// power history and lasts while the page stays open.
-const pgst = { page: "", data: null, err: null, all: false };
+// The open page, by its hash (`machines/<host>`), and its last read.
+const pgst = { page: "", data: null, err: null };
 // The row and name of the page the hash opens, or null on the tab's tables.
 const infraPage = () => {
   if (st.tab !== "infra") return null;
@@ -353,24 +366,26 @@ function infraPageHtml() {
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return h + o.p.body(d);
 }
-// Power changes shown before "+N older".
-const HIST_ROWS = 30;
-
-// Each pool one slot colour on the whole page (share bar and chart), by name.
+// Each pool one slot colour on the history chart, by name.
 function poolColors(d) {
-  const names = new Set(d.share.filter((s) => s.what !== "idle" && s.what !== "other").map((s) => s.what));
+  const names = new Set();
   if (d.history) d.history.hours.forEach((x) => Object.keys(x.pools).forEach((p) => names.add(p)));
   return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// Each pool its colour, other the muted one, idle the empty track.
-function shareBar(d, colors) {
-  if (!d.share.length) return `<div class="muted">No core reading: no runner and no CPU series.</div>`;
-  const color = (s) => (s.what === "idle" ? "transparent" : s.what === "other" ? OTHER : colors[s.what]);
-  const bar = d.share.map((s) => `<i style="flex:${s.cores.toFixed(2)};background:${color(s)}" title="${esc(`${s.what}: ${s.cores.toFixed(1)} cores`)}"></i>`).join("");
-  const words = d.share.map((s) => `${tblLink(s.link, s.what)} ${s.cores.toFixed(1)}`).join(", ");
-  return `<div><span class="stack">${bar}</span> ${words}${d.cores != null ? ` <span class="muted">of ${d.cores} cores</span>` : ""}</div>`;
-}
+// The slots table (hub_core::machine_page::SlotUse): each runner, then the cores no runner uses.
+// A reading a runner has no series for says no data, never 0.
+const SLOTUSE_COLS = { slot: ["slot"], takes: ["takes"], now: ["now"], job: ["job"], cores: ["cores", "n"], mem: ["mem", "n"], disk: ["disk", "n"] };
+const readCell = (t) => td(`n${t === NO_DATA ? " muted" : ""}`, esc(t));
+const SLOTUSE_CELLS = {
+  slot: (r) => td(r.runner ? "" : "muted", esc(r.slot)),
+  takes: (r) => td("wrap", r.takes.map((p) => tblLink("#infra/pools/" + encodeURIComponent(p), p)).join(" ")),
+  now: (r) => td(r.now === "off" ? "warn" : "", esc(r.now)),
+  job: (r) => td("wrap", r.runner ? esc(r.job || "-") : ""),
+  cores: (r) => readCell(r.runner ? usedOf(r.cores, r.cores_max, 1, "") : r.cores == null ? "" : short(r.cores)),
+  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : ""),
+  disk: (r) => (r.runner ? `<td class="n${r.disk == null ? " muted" : ""}"${r.disk_age != null ? ` title="read ${esc(secs(r.disk_age))} ago"` : ""}>${r.disk == null ? NO_DATA : bytes(r.disk)}</td>` : td("n", "")),
+};
 
 // An hourly chart's column label: the weekday at midnight, else none.
 const dayTick = (at) => { const d = new Date(at * 1e3); return d.getHours() === 0 ? d.toLocaleDateString([], { weekday: "short" }) : ""; };
@@ -423,12 +438,12 @@ function pageTable(d, labels, cells, empty) {
   return `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${d.rows.map((r, i) => `<tr>${keys.map((k) => cells[k](r, tblLinks(d.table, i))).join("")}</tr>`).join("")}</table></div>`;
 }
 
+// A machine's power changes over the read's window, newest first, every one: a record page, and
+// the window bounds them.
 function powerHistory(p) {
-  const ch = [...p.changes].reverse(), shown = pgst.all ? ch : ch.slice(0, HIST_ROWS);
   const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
-  const rows = shown.map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
-  const more = ch.length > shown.length ? `<button class="btn sm" data-hist-all="1">+${ch.length - shown.length} older</button>` : "";
-  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}${more}`;
+  const rows = [...p.changes].reverse().map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
+  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}`;
 }
 
 // The governor's buttons for a host it powers: hold it on or off for a while, or hand it back.
@@ -510,7 +525,9 @@ function machineBody(d) {
   let h = `<div class="panel">${d.parts.map(pagePart).join("")}${pageRow("Read", clock(d.at * 1e3))}${d.machine.power ? cloudButtons(d.machine.power) : ""}</div>`;
   const hot = d.tables.devices.rows.some((r) => r.hottest >= HOT_C);
   h += secHead("", "Sensors", d.tables.devices.rows.length, hot ? "warn" : "", "h3") + (!d.live ? `<div class="empty">${NOT_READ}.</div>` : unread(d.live, "sensors") || pageTable(d.tables.devices, DEVICE_COLS, DEVICE_CELLS, "Its node exporter publishes no hwmon reading."));
-  h += secHead("", "Share", null, "", "h3") + shareBar(d, colors);
+  const slots = d.tables.slots;
+  const runners = slots.rows.filter((r) => r.runner);
+  h += secHead("", "Slots", runners.length ? `${runners.filter((r) => r.now === "busy").length} of ${runners.length} busy` : null, "", "h3") + pageTable(slots, SLOTUSE_COLS, SLOTUSE_CELLS, "No runner and no core reading.");
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   if (d.live) h += liveBody(d);
@@ -559,7 +576,6 @@ async function cloudAct(key, hours) {
 $("infra").addEventListener("click", (e) => {
   const go = e.target.closest("[data-go]");
   if (go) { e.preventDefault(); setTab(go.dataset.go); return; }
-  if (e.target.closest("[data-hist-all]")) { pgst.all = true; renderInfra(); return; }
   const b = e.target.closest("[data-cloud]");
   if (!b) return;
   const k = b.dataset.cloud;
@@ -625,7 +641,7 @@ TABS.infra = {
   // (ci.js) read on show and again on each new ledger line (and Pipelines on a state.json write).
   show() {
     const page = infraPage() ? st.page : "";
-    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null, all: false }); if (page) refreshPage(); }
+    if (page !== pgst.page) { Object.assign(pgst, { page, data: null, err: null }); if (page) refreshPage(); }
     showRunPage();
     renderInfra(); pollInfra(); showJobs(); bldFeed.show(!bld.data || bld.moved()); pipFeed.show(!pip.data || pip.moved()); tstFeed.show(!tst.data || tst.moved());
     // A section not read yet says so at once: its read paints it only when it answers (a cold

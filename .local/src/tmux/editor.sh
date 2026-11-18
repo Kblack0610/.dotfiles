@@ -37,6 +37,8 @@
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
+# shellcheck source=../../lib/tmux-pane.sh
+. "${SELF%/*}/../../lib/tmux-pane.sh" || exit 1
 
 # `nvim .` and not a bare `nvim`: the window is already created in the session root, so the
 # dot opens THAT DIRECTORY rather than an empty scratch buffer. neo-tree sets
@@ -229,7 +231,7 @@ cmd_toggle() {
   # editor's own name into the editor that is just starting up - which lands as keystrokes,
   # not a command, and leaves you in a scratch buffer containing the letters "vim". Observed,
   # not theorised.
-  if [ "$existed" = 1 ] && _at_shell "$win"; then
+  if [ "$existed" = 1 ] && _at_shell "$win" && leave_mode "" "$win"; then
     tmux send-keys -t "$win" "$EDITOR_WINDOW_CMD" Enter
   fi
 

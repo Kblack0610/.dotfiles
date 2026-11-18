@@ -533,6 +533,18 @@ fj_run() {
   assert_output '[["o/fj",4]]'
 }
 
+@test "forgejo: a fleet worker's token file answers when rbw does not (a worker has none)" {
+  fj_list o/fj
+  touch "$FJD/locked"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'stdin: header = "Authorization: token worker-tok"' "$FJD/calls"
+  refute_output 0
+}
+
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
   fj_list o/fj
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
@@ -1332,6 +1344,32 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   run timeout 30 flock "$PRS/.lock" "$SUBJECT" sync-prs o/game  # a pass holds the store: agent-land never waits on it
   assert_failure 1
   assert_output 'o/game: a pass holds the PR store'
+}
+
+@test "sync-prs --wait waits out a pass that holds the store, and refreshes it once the pass lets go" {
+  # NEGATIVE CONTROL: with wait=False here, as agent-land's sync-prs runs, this fails at once with
+  # "a pass holds the PR store", and a boot catch-up of fleet-bench review reads a stale store.
+  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  mkdir -p "$XDG_STATE_HOME/ci" "$PRS"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  local f=$BATS_TEST_TMPDIR
+  mkfifo "$f/held" "$f/go" "$f/watch"
+  # the pass: it takes the lock, says so, and lets go on "go"
+  flock "$PRS/.lock" sh -c 'echo > "$1"; read _ < "$2"' _ "$f/held" "$f/go" 3>&- &
+  read -r _ < "$f/held"
+  # a watch on the lock file, armed before sync-prs starts, sees sync-prs open it to take the lock
+  inotifywait -e open "$PRS/.lock" 2> "$f/watch" > /dev/null 3>&- & watcher=$!
+  exec 5< "$f/watch"; read -r _ <&5; read -r _ <&5   # "Setting up watches." "Watches established."
+  "$SUBJECT" sync-prs --wait o/game > "$f/out" 2>&1 3>&- & pid=$!
+  wait "$watcher"
+  echo > "$f/go"
+  local rc=0; wait "$pid" || rc=$?
+  assert_equal "$rc:$(cat "$f/out")" '0:'
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  run "$SUBJECT" sync-prs --wait
+  assert_failure 2
 }
 
 @test "sync-prs: GitHub names are case-blind, so a list that changed a repo's case keeps its store file and name" {

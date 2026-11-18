@@ -326,12 +326,44 @@ so_codex_rows() {
 # dated by its first writing; a lesson's claim is its first bold span, without `#` (a tag on a row).
 so_lesson_sigs() {
   local dir="${1:-${SO_LESSONS_DIR:-$HOME/.agent/lessons}}"
-  { grep -H -- '<!-- sig:' "$dir"/*.md 2>/dev/null || true; } | jq -nR '
+  { grep -H -- '<!-- sig:' "$dir"/*.md 2>/dev/null || true; } | jq -nR "$SO_CLAIM_JQ"'
     [inputs | capture("^(?<file>[^:]+):(?<line>.*)<!-- sig:(?<since>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<sig>.+?) -->")
-     | {sig, since, file: (.file | split("/")[-1]),
-        claim: (.line | sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*\\s*"; "")
-                | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120])}]
+     | {sig, since, file: (.file | split("/")[-1]), claim: (.line | claim)}]
     | group_by(.sig) | map(min_by(.since))'
+}
+
+# SO_CLAIM_JQ - jq `claim`: a lesson's line to its first bold span, after the bullet and a leading
+# date, without `#` (a tag on a row), at most 120 chars.
+SO_CLAIM_JQ='def claim: sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*:?\\s*"; "") | sub("^[0-9]{4}-[0-9]{2}-[0-9]{2}:?\\s*"; "")
+  | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120];'
+
+# so_lesson_seen [DIR] - the lessons the dream sweep found again, as one JSON array of {title, seen,
+# last, claim, file}. Dream marks a corroborated lesson `<!-- seen:N YYYY-MM-DD -->` and never edits
+# its first line, the lesson key. Which lesson a marker is in, and its title, come from the lessons
+# CLI's parser (`lessons fat --max 0` lists every lesson), never a second parse here; the highest N
+# in a lesson wins (the later one on a tie). The title drops inline markers, so a marker edit never
+# changes it; one entry per file and title. Fails when that listing does.
+so_lesson_seen() {
+  local dir="${1:-${SO_LESSONS_DIR:-$HOME/.agent/lessons}}" f starts rows
+  rows=$(for f in "$dir"/*.md; do
+    [ -f "$f" ] && grep -q -- '<!-- seen:' "$f" || continue
+    starts=$("${SO_LESSONS_CMD:-$SO_LIB/../bin/lessons}" fat --max 0 "$f") || return 1
+    [ -n "$starts" ] || continue
+    LC_ALL=C awk -F'\t' -v file="${f##*/}" '
+      function at(s) { sub(/.*:/, "", s); return s + 0 }
+      FILENAME == "-" { st[++ns] = at($1); t = $3; gsub(/ *<!--[^>]*-->/, "", t); title[at($1)] = t; next }
+      match($0, /<!-- seen:[0-9]+ [0-9-]+ -->/) {
+        for (i = ns; i > 0 && st[i] > FNR; i--);
+        if (!i) next
+        split(substr($0, RSTART + 10, RLENGTH - 14), m, " ")
+        s = st[i]
+        if (m[1] + 0 >= n[s] + 0) { n[s] = m[1]; d[s] = m[2] }
+      }
+      END { for (s in n) printf "%s\t%s\t%s\t%s\n", file, n[s], d[s], title[s] }' - "$f" <<<"$starts"
+  done) || return 1
+  jq -nR "$SO_CLAIM_JQ"'[inputs | select(. != "") | split("\t")
+    | {title: .[3], seen: (.[1] | tonumber), last: .[2], claim: (.[3] | claim), file: .[0]}]
+    | group_by([.file, .title]) | map(max_by([.seen, .last]))' <<<"$rows"
 }
 
 # SO_FORGEJO_ERR says why a Forgejo read failed: rc 1 = no token or the read failed (worth a retry),
@@ -434,7 +466,7 @@ so_forgejo_repo() {
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
-# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
+# SO_FORGEJO_TOKEN (once per process, from forgejo-token) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
 so_forgejo_auth() {
   local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
   case " $(so_forgejo_hosts) " in
@@ -442,8 +474,15 @@ so_forgejo_auth() {
     *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
   esac
   if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+    local bin="$SO_LIB/../bin/forgejo-token" why
+    [ -x "$bin" ] || { SO_FORGEJO_ERR="no token: $bin is missing, $repo unread"; return 1; }
+    # One call: on success forgejo-token prints only the token; on a failure only its reason, which
+    # names the sources, so they are listed in one place.
+    if why="$(FORGEJO_TOKEN_RBW="${SO_RBW:-rbw}" FORGEJO_TOKEN_ENTRY="$entry" "$bin" 2>&1)" && [ -n "$why" ]; then
+      SO_FORGEJO_TOKEN="$why"
+    else
+      SO_FORGEJO_ERR="${why#forgejo-token: }, $repo unread"; return 1
+    fi
   fi
 }
 

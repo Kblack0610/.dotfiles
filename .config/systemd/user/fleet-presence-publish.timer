@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish this machine's last human input to the store every 2 minutes
+
+# A tmux keypress has no event to await, so this samples. 2 minutes is small against
+# fleet-presence's 30-minute away threshold and dispatch's pass cadence.
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

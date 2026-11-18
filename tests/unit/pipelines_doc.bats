@@ -9,7 +9,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   PUB="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  PRIV="${PIPELINES_PRIVATE_REPO:-$HOME/.dotfiles-private}"
+  PRIV="${PIPELINES_PRIVATE_REPO:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private}"
   DOC="$PRIV/.config/agentctl/PIPELINES.md"
   [ -f "$DOC" ] || skip "no private overlay at $PRIV"
 }

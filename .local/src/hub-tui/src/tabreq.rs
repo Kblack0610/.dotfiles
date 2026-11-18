@@ -4,7 +4,7 @@
 //! file that the next hub to start takes, which is how a Prefix key that creates hub:board
 //! lands on its page. A request is the tab's name, then for the Projects tab an optional word:
 //! a project (`projects bnb/demo`, what the projects popup sends to land on one project's rows),
-//! an inner tab (`projects all`), All rows searched (`projects all id:=ar-1`, a row's link), or
+//! an inner tab (`projects all`), Board searched (`projects all id:=ar-1`, a row's link), or
 //! for Infra the section to open (`infra ci`, what `hub tab ci` sends).
 
 use std::io::{BufRead, BufReader, Write};
@@ -30,12 +30,12 @@ pub fn dir() -> PathBuf {
 }
 
 /// A page to show, and the word it opens with: on Projects a project, an inner tab or a search
-/// of All rows, elsewhere a section.
+/// of Board, elsewhere a section.
 pub type Req = (Tab, Option<String>);
 
 /// `projects bnb/demo` -> (Projects, Some("bnb/demo")), `ci` -> (Infra, Some("ci")), and the
-/// retired `board` -> (Projects, Some("board")), the section that is All rows (`board <search>`
-/// is All rows searched); any other bare name has no query.
+/// retired `board` -> (Projects, Some("board")), the section that is Board (`board <search>`
+/// is Board searched); any other bare name has no query.
 pub fn parse(s: &str) -> Option<Req> {
     let (t, q) = s
         .trim()
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(
             parse("board  "),
             Some((Tab::Projects, Some("board".into()))),
-            "the Board tab is Projects' All rows"
+            "the old Board tab is Projects' Board inner tab"
         );
         assert_eq!(parse("nonsense bnb/demo"), None);
     }

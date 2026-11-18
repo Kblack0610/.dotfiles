@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use agent_panel::account::GATEWAY;
+use agent_core::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,7 +21,7 @@ pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 /// The harness of an item, or a session, that names none.
 pub const HARNESS_DEFAULT: &str = "claude";
 
-/// The harness of a session on the Lazer gateway (`agent_panel::account::GATEWAY`) whose item
+/// The harness of a session on the Lazer gateway (`agent_core::account::GATEWAY`) whose item
 /// names no other: claude-lazer's launcher sets `ANTHROPIC_BASE_URL`.
 pub const HARNESS_GATEWAY: &str = "claude-lazer";
 
@@ -70,9 +70,9 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
-/// One item: its header keys as agent-queue prints them, plus `state`, `task` and, for a
-/// queued item that cannot start yet, `hold`. A key this does not name is kept in `extra`, so
-/// a caller that hands the item on as JSON loses nothing agent-queue said.
+/// One item: its header keys as agent-queue prints them, plus `state` and `task`. A key this
+/// does not name is kept in `extra` (an old item's `hold` line too), so a caller that hands the
+/// item on as JSON loses nothing agent-queue said.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Item {
     pub slug: String,
@@ -120,9 +120,6 @@ pub struct Item {
     /// `yes` while an item that landed one PR still has its final landing to make.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partial: Option<String>,
-    /// Why a queued item cannot start yet: `after <slug>`, `night (...)`, `at:HH:MM`, `pr:<owner>/<repo>#<N> not merged`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hold: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -323,43 +320,6 @@ impl Item {
             .or_else(|| self.from.as_deref()?.strip_prefix("board:"))?;
         row.split_once(':')
             .filter(|(p, id)| !p.is_empty() && !id.is_empty())
-    }
-
-    /// Whether a queued item is held: it has a hold line with words in it.
-    pub fn is_held(&self) -> bool {
-        said(&self.hold).is_some()
-    }
-
-    /// What a held item waits on, its kind and object (`after <slug> <slug>`, `ask <id>`, `pr
-    /// <owner>/<repo>#N`, `at 11-13 02:30`, `nightly <job>`, `hold <resource>`, `night`),
-    /// from agent-queue's `hold` line (`hold_for`); None when it is not held.
-    pub fn held_on(&self) -> Option<String> {
-        let h = said(&self.hold)?;
-        let (word, rest) = h
-            .split_once([':', ' '])
-            .map_or((h, ""), |(w, r)| (w, r.trim()));
-        let first = rest
-            .split_whitespace()
-            .next()
-            .filter(|f| !f.starts_with('('));
-        Some(match (word, first) {
-            // `after a b`: every slug still live; `after a closed failed, dead: ...` names the one.
-            ("after", Some(_)) => {
-                let live: Vec<&str> = rest
-                    .split_whitespace()
-                    .take_while(|w| *w != "closed")
-                    .collect();
-                format!("after {}", live.join(" "))
-            }
-            ("ask", Some(f)) => format!("ask {}", f.split('=').next().unwrap_or(f)),
-            // `at:2026-11-13T02:30`: the year goes, the day stays, since a hold can run past today.
-            ("at", Some(f)) => {
-                let t = f.replacen('T', " ", 1);
-                format!("at {}", t.get(5..).filter(|_| t.len() > 10).unwrap_or(&t))
-            }
-            (_, None) => word.to_string(),
-            (w, Some(f)) => format!("{w} {f}"),
-        })
     }
 
     /// Who queued it, the first word of `from`: `human`, `board`, `shepherd`, `auto`, `canary`, `item`.
@@ -599,13 +559,9 @@ impl Item {
         })
     }
 
-    /// The HOLD cell: what the item waits on. A queued item's hold (`held_on`); a waiting or
-    /// review item's `Wait`, an ask with its id (`ask PGpGsi`), never a `hold` line left over
-    /// from before it started.
+    /// The HOLD cell: what a waiting or review item waits on, its `Wait`, an ask with its id
+    /// (`ask PGpGsi`). A queued item waits on nothing: work with a gate is a board row.
     pub fn waits_for(&self) -> Option<String> {
-        if self.state == State::Queued {
-            return self.held_on();
-        }
         let w = self.waits_on()?;
         let id = self
             .extra_str("ask")
@@ -698,15 +654,12 @@ pub struct Waiter {
     pub minutes: i64,
 }
 
-/// `stats.sitting`: what is queued right now, runnable or held, and how long it has sat.
+/// `stats.sitting`: what is queued right now and how long it has sat.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sitting {
     pub queued: u64,
     pub runnable: u64,
-    pub held: u64,
-    /// Held items by the first word of their hold: after, pr, night, at.
-    pub held_by: BTreeMap<String, u64>,
     pub runnable_age_minutes_median: Option<i64>,
     /// The three runnable items that have sat longest, oldest first.
     pub oldest_runnable: Vec<Waiter>,
@@ -787,14 +740,14 @@ impl Stats {
         )
     }
 
-    /// What sits in the queue now, in plain words: how many could start and the oldest of them,
-    /// then what holds the rest. The item slug comes after the point.
+    /// What sits in the queue now, in plain words: how many could start and the oldest of them.
+    /// The item slug comes after the point.
     pub fn sitting_line(&self) -> Option<String> {
         let s = self.sitting.as_ref()?;
         if s.queued == 0 {
             return Some("Queue: nothing waiting.".into());
         }
-        let mut out = match (s.runnable, s.oldest_runnable.first()) {
+        let out = match (s.runnable, s.oldest_runnable.first()) {
             (0, _) => "Queue: nothing can start now.".to_string(),
             (n, Some(o)) => format!(
                 "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
@@ -804,30 +757,7 @@ impl Stats {
             ),
             (n, None) => format!("Queue: {n} can start now."),
         };
-        if s.held > 0 {
-            let by: Vec<String> = s
-                .held_by
-                .iter()
-                .map(|(k, v)| format!("{v} {}", hold_reason(k)))
-                .collect();
-            out += &format!(" {} held", s.held);
-            if !by.is_empty() {
-                out += &format!(": {}", by.join(", "));
-            }
-            out += ".";
-        }
         Some(out)
-    }
-}
-
-/// Why a queued item is held, from the first word of its `hold` (agent-queue `hold_for`).
-fn hold_reason(kind: &str) -> String {
-    match kind {
-        "after" => "after another item".into(),
-        "night" => "until night".into(),
-        "at" => "until a set time".into(),
-        "pr" => "until a PR merges".into(),
-        k => format!("held by {k}"),
     }
 }
 
@@ -1141,20 +1071,14 @@ impl Queue {
         self.in_state(s).count()
     }
 
-    /// The items not started, as `(ready, held)`: ready is queued with no hold.
-    pub fn up_next(&self) -> (usize, usize) {
-        let held = self.in_state(State::Queued).filter(|i| i.is_held()).count();
-        (self.count(State::Queued) - held, held)
-    }
-
-    /// `1 running, 1 ready, 1 held`: the phone widget's queue line.
+    /// `1 running, 2 on deck`: the phone widget's queue line. Every queued item can start; work
+    /// that waits on a gate is a board row.
     pub fn counts_line(&self) -> String {
-        let (ready, held) = self.up_next();
-        let mut s = format!("{} running, {ready} ready", self.count(State::Running));
-        if held > 0 {
-            s += &format!(", {held} held");
-        }
-        s
+        format!(
+            "{} running, {} on deck",
+            self.count(State::Running),
+            self.count(State::Queued)
+        )
     }
 }
 
@@ -1165,8 +1089,8 @@ impl Queue {
 pub struct QueueRow<'a> {
     pub item: &'a Item,
     pub timing: Timing,
-    /// Its place among the ready items in agent-queue's start order (1 starts next); None for
-    /// every other row, a held one included.
+    /// Its place among the queued items in agent-queue's start order (1 starts next); None for
+    /// every other row.
     pub start: Option<usize>,
     /// Its own session in the fleet state: `Seen::NotRead` when that state was not read fresh.
     pub session: Seen<'a>,
@@ -1208,9 +1132,20 @@ pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck
             }
             _ => None,
         },
-        State::Review if item.extra_str("fix_human").is_some() => {
-            match item.extra_str("pr_owner") {
-                Some("land") => Some(Stuck::PrGreen),
+        // `fix_human: <head> <owner>...` names the owners whose tries went to the human; one that
+        // names others (fix-ci's row, then a green head's lander) is still dispatch's to work.
+        State::Review => {
+            let mut stamp = item
+                .extra_str("fix_human")?
+                .split_whitespace()
+                .skip(1)
+                .peekable();
+            let owner = item.extra_str("pr_owner").unwrap_or("fix");
+            if stamp.peek().is_some() && !stamp.any(|o| o == owner) {
+                return None;
+            }
+            match owner {
+                "land" => Some(Stuck::PrGreen),
                 _ => Some(Stuck::PrRed),
             }
         }
@@ -1228,8 +1163,8 @@ pub enum Seen<'a> {
 
 impl Queue {
     /// Every item as a table row, timed at `now`, in the table's own order: what needs the human,
-    /// then running by the longest run, then the queued that could start (agent-queue's order),
-    /// then the held, then done, the newest finish first.
+    /// then running by the longest run, then the queued (agent-queue's order), then done, the
+    /// newest finish first.
     pub fn rows(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<QueueRow<'_>> {
         let mut rows: Vec<QueueRow<'_>> = self
             .items
@@ -1272,7 +1207,6 @@ impl QueueRow<'_> {
             State::Waiting => "needs",
             State::Running => "running",
             State::Review => "on a PR",
-            State::Queued if self.item.is_held() => "held",
             State::Queued => "ready",
             State::Done => "done",
         }
@@ -1301,13 +1235,12 @@ impl QueueRow<'_> {
 
     /// Where the row sits in the table's own order.
     fn rank(&self) -> u8 {
-        match (self.item.state, self.item.is_held()) {
-            (State::Waiting, _) => 0,
-            (State::Running, _) => 1,
-            (State::Review, _) => 2,
-            (State::Queued, false) => 3,
-            (State::Queued, true) => 4,
-            (State::Done, _) => 5,
+        match self.item.state {
+            State::Waiting => 0,
+            State::Running => 1,
+            State::Review => 2,
+            State::Queued => 3,
+            State::Done => 4,
         }
     }
 
@@ -1353,7 +1286,6 @@ impl crate::table::Row for QueueRow<'_> {
         "running",
         "on a PR",
         "ready",
-        "held",
         "done",
         "cancelled",
         "all",
@@ -1393,8 +1325,8 @@ impl crate::table::Row for QueueRow<'_> {
         }
     }
 
-    /// A hold filters by its kind (`hold:after`), so the dropdown lists the few kinds, not each
-    /// blocking item; the cell and a bare word still have the whole of it.
+    /// A hold filters by its kind (`hold:ask`), so the dropdown lists the few kinds, not each
+    /// blocking item; the cell still has the whole of it.
     fn vals(&self, col: &str) -> Vec<crate::table::Val> {
         match col {
             "hold" => vec![self
@@ -1444,8 +1376,7 @@ impl crate::table::Row for QueueRow<'_> {
             "needs you" => i.state == State::Waiting,
             "running" => i.state == State::Running,
             "on a PR" => i.state == State::Review,
-            "ready" => i.state == State::Queued && !i.is_held(),
-            "held" => i.state == State::Queued && i.is_held(),
+            "ready" => i.state == State::Queued,
             "done" => i.state == State::Done,
             "cancelled" => i.cancelled(),
             "all" => true,
@@ -1453,19 +1384,12 @@ impl crate::table::Row for QueueRow<'_> {
         }
     }
 
-    /// A bare word also finds the slug, the tags, the hold and the task the title was cut from.
+    /// A bare word also finds the slug, the tags and the task the title was cut from.
     fn text(&self) -> String {
         let i = self.item;
-        [
-            i.title.as_str(),
-            &i.slug,
-            &i.project,
-            &i.tags,
-            i.hold.as_deref().unwrap_or(""),
-            &i.task,
-        ]
-        .join("\n")
-        .to_lowercase()
+        [i.title.as_str(), &i.slug, &i.project, &i.tags, &i.task]
+            .join("\n")
+            .to_lowercase()
     }
 }
 
@@ -1946,7 +1870,10 @@ mod tests {
         assert_eq!(w.session.as_deref(), Some("lab:game-agent-2"));
         assert_eq!(w.title(), "Pick a side");
         assert_eq!(q.tag_list().collect::<Vec<_>>(), ["night", "at:02:30"]);
-        assert_eq!(q.hold.as_deref(), Some("after w"));
+        assert_eq!(
+            q.extra["hold"], "after w",
+            "an old hold line is kept, unread"
+        );
         assert_eq!(d.status.as_deref(), Some("cancelled"));
         assert_eq!(d.pr.as_deref(), Some("812"));
     }
@@ -2163,23 +2090,21 @@ mod tests {
         );
         assert_eq!(
             s.sitting_line().as_deref(),
-            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h. 2 held: 1 after another item, 1 until a PR merges.")
+            Some("Queue: 1 can start now, the oldest waiting 3h (q1), median 3h.")
         );
         assert_eq!(
             Stats::default().sitting_line(),
             None,
             "an older agent-queue without `sitting` says nothing, never that the queue is empty"
         );
-        let held: Stats = serde_json::from_str(
+        let old: Stats = serde_json::from_str(
             r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
         )
         .unwrap();
         assert_eq!(
-            held.sitting_line().as_deref(),
-            Some(
-                "Queue: nothing can start now. 13 held: 12 after another item, 1 held by vacation."
-            ),
-            "nothing runnable says so plainly, and a hold kind it does not know still reads"
+            old.sitting_line().as_deref(),
+            Some("Queue: nothing can start now."),
+            "nothing runnable says so plainly, and an older agent-queue's held counts say nothing"
         );
 
         let q = Queue::read(&Fake::default());
@@ -2802,6 +2727,16 @@ mod tests {
                 r#","fix_human":"abc","fix_tries":"2 abc","note":"PR #7 red after 2 fix-ci tries""#,
             ),
             item("green", "review", r#","fix_human":"abc","pr_owner":"land""#),
+            item(
+                "landing",
+                "review",
+                r#","fix_human":"abc fix","pr_owner":"land""#,
+            ),
+            item(
+                "handed",
+                "review",
+                r#","fix_human":"abc fix land","pr_owner":"land""#,
+            ),
             item("plain", "review", ""),
         ]
         .join("\n");
@@ -2834,6 +2769,9 @@ mod tests {
         assert_eq!(word("gone"), "no session");
         assert_eq!(word("red"), "PR red, yours");
         assert_eq!(word("green"), "PR green, yours");
+        assert_eq!(word("handed"), "PR green, yours");
+        // a green head after fix-ci went to the human: its lander is dispatch's, not the human's
+        assert_eq!(word("landing"), "on a PR");
         // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
         assert_eq!(word("ok"), "running");
         assert_eq!(word("fresh"), "running", "started 5m ago, inside the grace");
@@ -2841,7 +2779,7 @@ mod tests {
         let order: Vec<&str> = rows.iter().map(|r| r.item.slug.as_str()).collect();
         assert_eq!(
             order,
-            ["stuck", "gone", "ok", "fresh", "red", "green", "plain"],
+            ["stuck", "gone", "ok", "fresh", "red", "green", "handed", "landing", "plain"],
             "stuck rows first within running and within review"
         );
         let stuck = rows.iter().find(|r| r.item.slug == "stuck").unwrap();
@@ -2955,16 +2893,16 @@ mod tests {
             cell(&item(State::Review, &|i| i.partial = Some("yes".into()))).as_deref(),
             Some("landing")
         );
-        // NEGATIVE CONTROL: a hold line left from before it started does not hide its wait.
+        // NEGATIVE CONTROLS: a hold line left from an older agent-queue neither hides a review
+        // item's wait nor gives a queued item one: work with a gate is a board row.
+        let old_hold = |i: &mut Item| {
+            i.extra.insert("hold".into(), "after a b".into());
+        };
         assert_eq!(
-            cell(&item(State::Review, &|i| i.hold = Some("ask:X".into()))).as_deref(),
+            cell(&item(State::Review, &old_hold)).as_deref(),
             Some("merge")
         );
-        // A queued item's hold still says its hold.
-        assert_eq!(
-            cell(&item(State::Queued, &|i| i.hold = Some("after a b".into()))).as_deref(),
-            Some("after a b")
-        );
+        assert_eq!(cell(&item(State::Queued, &old_hold)), None);
         // NEGATIVE CONTROLS: a ready, a running and a done item wait on nothing.
         for st in [State::Queued, State::Running, State::Done] {
             assert_eq!(cell(&item(st, &|_| {})), None, "{st:?}");
@@ -3020,7 +2958,6 @@ mod tests {
                 ("running", 1),
                 ("on a PR", 0),
                 ("ready", 0),
-                ("held", 0),
                 ("done", 1),
                 ("cancelled", 0),
                 ("all", 3)
@@ -3044,8 +2981,6 @@ mod tests {
         use crate::table::View;
         let q = Queue {
             items: parse(concat!(
-                r#"{"slug":"held","state":"queued","hold":"after x","queued":"2026-11-06T01:00:00Z","task":"t"}"#,
-                "\n",
                 r#"{"slug":"old","state":"done","finished":"2026-11-05T10:00:00Z","task":"t"}"#,
                 "\n",
                 r#"{"slug":"q1","state":"queued","queued":"2026-11-06T08:00:00Z","task":"t"}"#,
@@ -3070,39 +3005,24 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            ["need", "long", "short", "q1", "q2", "held", "new", "old"],
-            "needs you, longest run, ready queued as agent-queue ordered them, held, newest done"
+            ["need", "long", "short", "q1", "q2", "new", "old"],
+            "needs you, longest run, queued as agent-queue ordered them, newest done"
         );
     }
 
     #[test]
-    fn hash_is_the_start_order_of_the_ready_items_and_every_field_filters() {
+    fn hash_is_the_start_order_of_the_queued_items_and_every_field_filters() {
         use crate::table::{Row, Val, View};
         let q = Queue {
             items: parse(concat!(
-                // agent-queue's order: a held item at the head is skipped, as `next` skips it.
-                r#"{"slug":"wait","state":"queued","priority":"urgent","hold":"ask:pHqQtl=repro+location (pending)","from":"human","task":"t"}"#,
+                // An older agent-queue's hold line rides along unread: the item has a place.
+                r#"{"slug":"old","state":"queued","priority":"urgent","hold":"ask:pHqQtl=repro+location (pending)","from":"human","task":"t"}"#,
                 "\n",
                 r#"{"slug":"first","state":"queued","priority":"urgent","from":"board:apociseum:apo-120","row":"apociseum:apo-120","task":"apo-120: base UI screens"}"#,
                 "\n",
-                r#"{"slug":"second","state":"queued","priority":"high","from":"human","task":"Diversity p5"}"#,
+                r#"{"slug":"second","state":"queued","priority":"low","from":"human","task":"Diversity p5"}"#,
                 "\n",
-                r#"{"slug":"later","state":"queued","priority":"low","hold":"at:2026-11-13T02:30","from":"auto","task":"t"}"#,
-                "\n",
-                r#"{"slug":"next-phase","state":"queued","priority":"high","hold":"after first-p1 closed cancelled, dead: cancel it","from":"item:x","task":"t"}"#,
-                "\n",
-                r#"{"slug":"pr","state":"queued","priority":"high","hold":"pr:o/r#7 not merged","task":"t"}"#,
-                "\n",
-                r#"{"slug":"night","state":"queued","priority":"low","hold":"night (01:00-06:00)","task":"t"}"#,
-                "\n",
-                r#"{"slug":"two","state":"queued","priority":"low","hold":"after a-p1 b-p2","task":"t"}"#,
-                "\n",
-                r#"{"slug":"nightly","state":"queued","priority":"low","hold":"nightly:tests (not run yet)","task":"t"}"#,
-                "\n",
-                r#"{"slug":"res","state":"queued","priority":"low","hold":"hold:mac-desktop (claimed by agent-3)","task":"t"}"#,
-                "\n",
-                // A blank hold line holds nothing: it is ready and has a place.
-                r#"{"slug":"blank","state":"queued","priority":"low","hold":"  ","task":"t"}"#,
+                r#"{"slug":"ask","state":"waiting","priority":"high","ask":"pHqQtl=a","from":"item:x","task":"t"}"#,
                 "\n",
                 r#"{"slug":"run","state":"running","priority":"urgent","from":"human","task":"t"}"#,
             )),
@@ -3124,14 +3044,9 @@ mod tests {
             .collect();
         assert_eq!(
             starts,
-            [("first", Some(1)), ("second", Some(2)), ("blank", Some(3))]
+            [("old", Some(1)), ("first", Some(2)), ("second", Some(3))]
         );
-        assert_eq!(get("blank", "state"), "ready");
-        assert_eq!(
-            get("wait", "#"),
-            "-",
-            "a held item at the head gets no place"
-        );
+        assert_eq!(get("old", "state"), "ready");
         assert_eq!(get("run", "#"), "-");
         let by_hash: Vec<&str> = View::new::<QueueRow>("", "", "#", "")
             .apply(&rows)
@@ -3141,39 +3056,20 @@ mod tests {
             .collect();
         assert_eq!(
             by_hash,
-            ["first", "second"],
+            ["old", "first"],
             "the first click on # reads what starts next"
         );
-        let holds: Vec<String> = [
-            "wait",
-            "later",
-            "next-phase",
-            "pr",
-            "night",
-            "two",
-            "nightly",
-            "res",
-            "first",
-        ]
-        .iter()
-        .map(|s| get(s, "hold"))
-        .collect();
+        let holds: Vec<String> = ["ask", "old", "first"]
+            .iter()
+            .map(|s| get(s, "hold"))
+            .collect();
         assert_eq!(
             holds,
-            [
-                "ask pHqQtl",
-                "at 11-13 02:30",
-                "after first-p1",
-                "pr o/r#7",
-                "night",
-                "after a-p1 b-p2",
-                "nightly tests",
-                "hold mac-desktop",
-                "-"
-            ]
+            ["ask pHqQtl", "-", "-"],
+            "a queued item waits on nothing"
         );
         assert_eq!(get("first", "from"), "board");
-        assert_eq!(get("next-phase", "from"), "item");
+        assert_eq!(get("ask", "from"), "item");
         assert_eq!(get("first", "row"), "apo-120");
         assert_eq!(get("first", "title"), "base UI screens");
         let first = rows.iter().find(|r| r.item.slug == "first").unwrap();
@@ -3192,15 +3088,16 @@ mod tests {
                 .map(|r| r.item.slug.clone())
                 .collect()
         };
-        assert_eq!(slugs("hold:after", ""), ["next-phase", "two"]);
+        assert_eq!(slugs("hold:ask", ""), ["ask"]);
         assert_eq!(slugs("from:board priority:urgent", ""), ["first"]);
-        assert_eq!(slugs("", "held").len(), 8);
+        assert_eq!(slugs("", "ready"), ["old", "first", "second"]);
+        // NEGATIVE CONTROL: `held` is no chip; a saved `?s=held` opens the default, every active item.
+        assert_eq!(slugs("", "held"), slugs("", ""));
         assert_eq!(
-            slugs("b-p2", ""),
-            ["two"],
-            "every slug an item waits on is in its hold"
+            slugs("pHqQtl", ""),
+            Vec::<String>::new(),
+            "a bare word does not read an old hold line"
         );
-        assert_eq!(slugs("pHqQtl", ""), ["wait"], "a bare word reads the hold");
         let facets = View::default().facets(&rows);
         let keys: Vec<&str> = facets.iter().map(|f| f.key).collect();
         assert_eq!(
@@ -3208,11 +3105,7 @@ mod tests {
             ["project", "priority", "state", "hold", "from", "kind", "acct", "plan"]
         );
         let hold: Vec<&str> = facets[3].values.iter().map(|v| v.value.as_str()).collect();
-        assert_eq!(
-            hold,
-            ["after", "ask", "at", "hold", "night", "nightly", "pr"],
-            "the kinds, not each object"
-        );
+        assert_eq!(hold, ["ask"], "the kinds, not each object");
     }
 
     #[test]

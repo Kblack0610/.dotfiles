@@ -5,6 +5,7 @@
   "base": "d93b877ea9de6688a27d4f7a7817ca6a4bcb0807",
   "merge": "130e15354e289226c2b53cb39630b08390ec23a4",
   "task": "fix(fleet-sessions): a plan-less session whose own PRs all merged reads DONE, not UNCLEAR",
+  "pts": 2,
   "accept": [
     "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR"
   ],

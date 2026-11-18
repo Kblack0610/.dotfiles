@@ -1,0 +1,13 @@
+{
+  "on": true,
+  "window_days": 7,
+  "starve_days": 3,
+  "lag_places": 20,
+  "classes": [
+    {"name": "bug", "share": 15, "tags": ["red"], "kinds": ["fix", "perf"]},
+    {"name": "requested", "share": 60, "tags": ["requested"], "from": ["human"]},
+    {"name": "cleanup", "share": 10, "tags": ["canary"], "kinds": ["chore", "refactor", "check"]},
+    {"name": "research", "share": 5, "kinds": ["research", "design", "legal", "market", "decide"]},
+    {"name": "feature", "share": 10, "default": true}
+  ]
+}

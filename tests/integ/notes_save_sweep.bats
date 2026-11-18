@@ -118,6 +118,41 @@ buf() { mapfile -t BUF <<<"$output"; }
   assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n')"
 }
 
+# Same input and expected text as sweep.rs golden_rules_group_rows_inside_a_lane.
+@test "a save keeps the rules that group a lane" {
+  printf '%s' $'## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n')"
+}
+
+# Same input and expected text as sweep.rs golden_in_progress_rows_sort_to_the_bottom_of_their_group.
+@test "a save sorts in-progress rows to the bottom of their group" {
+  printf '%s' $'## Focus\n### Urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [ ] a #urgent\n- [/] p2 #urgent\n- [ ] b #urgent\n---\n- [/] p3 #urgent\n- [ ] c #urgent\n\n- [/] p4 #urgent\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n- [ ] a #urgent\n- [ ] b #urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [/] p2 #urgent\n---\n- [ ] c #urgent\n- [/] p3 #urgent\n\n- [/] p4 #urgent\n\n### High\n\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n')"
+}
+
+@test "an indented --- is a row's note, no rule" {
+  printf '%s' $'## Focus\n### Low\n- [ ] a #low\n    ---\n    more\n- [ ] b #low\n### Done\n\n## Notes\n' > "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(printf '%s' $'## Focus\n### Urgent\n\n### High\n\n### Low\n- [ ] a #low\n    ---\n    more\n- [ ] b #low\n\n---\n### Done\n\n## Notes\n')"
+}
+
+# Same input and expected files as focus_sweep.rs golden_indented_scaffold_is_a_rows_note_like_the_nvim_buffer_sweep.
+@test "a save keeps an indented --- and ### heading as a row's note" {
+  cp "$REPO_ROOT/.local/src/notes-cli/tests/fixtures/focus-sweep/indented-scaffold.in.md" "$NOTE"
+  run save_run 1 0 'vim.cmd "silent write"'
+  assert_success
+  run sed 's/ #c1104//' "$NOTE"
+  assert_output "$(cat "$REPO_ROOT/.local/src/notes-cli/tests/fixtures/focus-sweep/indented-scaffold.out.md")"
+}
+
 @test "a note with an empty Focus opens on the bare lanes" {
   printf '## Focus\n- [ ] \n\n## Notes\n' > "$NOTE"
   run save_run 1 0 'vim.cmd "silent write"'

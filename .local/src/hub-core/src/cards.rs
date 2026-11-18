@@ -213,24 +213,23 @@ pub fn queue(
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
 ) -> Card {
     use crate::queue::State;
-    let (ready, held) = q.up_next();
-    let (waiting, running, review) = (
+    let (waiting, running, review, queued) = (
         q.count(State::Waiting),
         q.count(State::Running),
         q.count(State::Review),
+        q.count(State::Queued),
     );
     let mut c = Card::new(
         "queue",
         "Queue",
         "agent-queue items by state (agent-queue list)",
     )
-    .bar(running + review + ready, held, waiting)
+    .bar(running + review + queued, 0, waiting)
     .part("Running", running, Level::Ok)
-    .part("On a PR", review, Level::Ok)
-    .part("Ready", ready, Level::Ok)
-    .part("Held", held, lvl(held, Level::Warn));
-    c.big = q.count(State::Queued).to_string();
-    c.unit = format!("queued, {running} running");
+    .part("On a PR", review, Level::Ok);
+    // The queue is the waiting: every queued item can start, and gated work is a board row.
+    c.big = queued.to_string();
+    c.unit = format!("on deck, {running} running");
     c.first_head = "Bottleneck";
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
@@ -575,6 +574,102 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     }))
 }
 
+/// Board: every open row on the boards (an agent row past its project's budget is Backlog's
+/// part, never listed), the feed's `totals` (`tasks::Totals`, the count Projects'
+/// Board strip and waybar's `B` show too), the rows Projects' Board lists. Late rows (past
+/// their `#due`) and rows the human asked for that nothing has started come first.
+pub fn board(f: &crate::tasks::Feed) -> Card {
+    use crate::tasks::Row;
+    let today = f.today.as_str();
+    let open = f.open_rows(None);
+    let doing = |r: &Row| r.state == "doing";
+    // Where a row ranks among the places to look: late (started or not, it is still late), then
+    // asked for and not started, then Now and Next not started; None is not a place to look.
+    let look_at = |r: &Row| {
+        if r.due.as_deref().is_some_and(|d| d < today) {
+            Some(Level::Red)
+        } else if doing(r) || r.backlog {
+            None
+        } else if r.requested {
+            Some(Level::Warn)
+        } else if matches!(r.section.as_deref(), Some("now" | "next")) {
+            Some(Level::Ok)
+        } else {
+            None
+        }
+    };
+    let looked: Vec<_> = open.iter().map(|r| (*r, look_at(r))).collect();
+    let at = |l: Level| looked.iter().filter(|(_, x)| *x == Some(l)).count();
+    let Some(t) = f.totals else {
+        return Card::failed(
+            "board",
+            "Board",
+            "",
+            "notes board --json has no totals: rebuild notes",
+        );
+    };
+    let (n_open, n_doing, n_backlog) = (t.open, t.doing, t.backlog);
+    let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
+    let done = f
+        .done
+        .iter()
+        .filter(|r| r.closed.as_deref() == Some(today))
+        .count();
+    let mut c = Card::new(
+        "board",
+        "Board",
+        "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
+         for and not started, late is past its due day; backlog is the agent rows past their \
+         project's board budget (tier:backlog), counted in none of the others",
+    )
+    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
+    .part("Doing", n_doing, Level::Ok)
+    .part("Requested", n_asked, lvl(n_asked, Level::Warn))
+    .part("Late", n_late, lvl(n_late, Level::Red))
+    .part("Done today", done, Level::Ok)
+    .part("Backlog", n_backlog, Level::Ok);
+    c.big = n_open.to_string();
+    c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
+    // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
+    // feed carries and the web's does not, and no count on this card uses them.
+    // Up next fills the list only when nothing is late or asked for, under its own head.
+    let urgent = n_late + n_asked > 0;
+    if !urgent {
+        c.first_head = "Up next";
+    }
+    let mut look: Vec<_> = looked
+        .into_iter()
+        .filter_map(|(r, l)| l.map(|l| (r, l)))
+        .filter(|(_, l)| !urgent || *l != Level::Ok)
+        .collect();
+    // Stable, so each level keeps the sheet's order.
+    look.sort_by_key(|(_, l)| match l {
+        Level::Red => 0,
+        Level::Warn => 1,
+        _ => 2,
+    });
+    c.first(look.into_iter().map(|(r, level)| {
+        let place = r.project.as_deref().unwrap_or(&r.profile);
+        let section = crate::tasks::section_title(r.section.as_deref()).to_lowercase();
+        let due = r
+            .due
+            .as_deref()
+            .map(|d| format!(", due {}", crate::text::short_day(d)))
+            .unwrap_or_default();
+        let link = match (&r.id, &r.project) {
+            (Some(id), _) => Some(Link::to(crate::links::Kind::Row, id.clone())),
+            (None, Some(p)) => Some(Link::to(crate::links::Kind::Project, p.clone())),
+            _ => None,
+        };
+        row(
+            r.title.clone(),
+            format!("{place} - {section}{due}"),
+            level,
+            link,
+        )
+    }))
+}
+
 /// One tab's read as the grid gets it: None while it has not answered, else its answer.
 pub type Got<'a, T> = Option<Result<&'a T, &'a str>>;
 
@@ -582,6 +677,7 @@ pub type Got<'a, T> = Option<Result<&'a T, &'a str>>;
 #[derive(Default)]
 pub struct Reads<'a> {
     pub sessions: Got<'a, [crate::session_table::SessionRow]>,
+    pub board: Got<'a, crate::tasks::Feed>,
     pub queue: Got<'a, crate::queue::Queue>,
     pub pipeline: Option<&'a Result<Option<crate::pipeline::Pipeline>, String>>,
     pub alerts: Got<'a, crate::alerts::Alerts>,
@@ -704,6 +800,7 @@ pub fn grid(r: &Reads) -> Vec<Card> {
     vec![
         one(r.sessions, "sessions", "Sessions", sessions),
         one(r.queue, "queue", "Queue", |q| queue(q, r.pipeline)),
+        one(r.board, "board", "Board", board),
         one(r.alerts, "alerts", "Alerts", alerts),
         one(r.infra, "infra", "Infra", infra),
         one(r.costs, "costs", "Costs", costs),
@@ -794,6 +891,7 @@ mod tests {
             [
                 "sessions",
                 "queue",
+                "board",
                 "alerts",
                 "infra",
                 "costs",
@@ -805,19 +903,133 @@ mod tests {
         assert_eq!((g[0].big.as_str(), g[0].unit.as_str()), ("-", "reading"));
         assert_eq!(g[0].level, Level::Nodata);
         assert_eq!(
-            (g[4].big.as_str(), g[4].error.as_deref()),
+            (g[5].big.as_str(), g[5].error.as_deref()),
             ("NO DATA", Some("prometheus: timeout"))
         );
         assert!(g.iter().all(|c| c.link.href() == format!("#{}", c.tab)));
     }
 
     #[test]
+    fn board_counts_open_rows_and_puts_late_then_requested_then_up_next_first() {
+        use crate::tasks::{Feed, Row};
+        let r = |id: &str, section: &str, rank: u64| Row {
+            profile: "personal".into(),
+            project: Some("db".into()),
+            lane: "agent".into(),
+            state: "open".into(),
+            id: Some(id.into()),
+            title: format!("row {id}"),
+            section: Some(section.into()),
+            rank,
+            ..Default::default()
+        };
+        // The big number and doing are the feed's `totals` (notes' one count), never a recount
+        // of the rows the card ranks.
+        let mut f = Feed {
+            today: "2026-11-18".into(),
+            totals: Some(crate::tasks::Totals {
+                open: 5,
+                doing: 1,
+                agent: 5,
+                backlog: 2,
+                ..Default::default()
+            }),
+            rows: vec![
+                r("db-1", "now", 1),
+                r("db-2", "next", 2),
+                r("db-3", "backlog", 3),
+                r("db-4", "backlog", 4),
+                r("db-5", "next", 5),
+            ],
+            done: vec![Row {
+                state: "done".into(),
+                closed: Some("2026-11-18".into()),
+                ..r("db-9", "done", 9)
+            }],
+            ..Default::default()
+        };
+        f.rows[0].state = "doing".into();
+        f.rows[2].requested = true;
+        f.rows[3].due = Some("2026-11-17".into());
+        let c = board(&f);
+        assert_eq!(
+            (c.big.as_str(), c.unit.as_str()),
+            ("5", "open rows, 1 doing, 2 on the backlog")
+        );
+        // Negative control: a feed with no totals (an older notes) is a failed card, never a 0.
+        let none = board(&Feed {
+            totals: None,
+            ..f.clone()
+        });
+        assert_eq!(none.big, NO_DATA.to_uppercase());
+        assert!(none
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("no totals")));
+        assert_eq!(c.level, Level::Red);
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("Doing", "1"),
+                ("Requested", "1"),
+                ("Late", "1"),
+                ("Done today", "1"),
+                ("Backlog", "2")
+            ]
+        );
+        // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
+        let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
+        assert_eq!(first, [("row db-4", Level::Red), ("row db-3", Level::Warn)]);
+        assert_eq!(c.first_head, "Where to look first");
+        // A late row already started is still late.
+        f.rows[3].state = "doing".into();
+        assert_eq!(board(&f).first[0].text, "row db-4");
+        f.rows[3].state = "open".into();
+        assert_eq!(c.first[0].sub, "db - backlog, due 11-17");
+        assert_eq!(
+            c.first[0].link.as_ref().unwrap().href(),
+            "#projects/all?q=id:=db-4"
+        );
+        // Nothing late or asked for: the card says what is up next.
+        f.rows[2].requested = false;
+        f.rows[3].due = None;
+        let c = board(&f);
+        assert_eq!((c.first_head, c.level), ("Up next", Level::Ok));
+        assert_eq!(c.first[0].text, "row db-2");
+        // A row on the backlog tier is not a place to look: Up next is the next board row.
+        f.rows[1].backlog = true;
+        assert_eq!(board(&f).first[0].text, "row db-5");
+    }
+
+    #[test]
     fn queue_names_the_bottleneck_step_and_else_what_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
+        // The big number is the queue itself: both queued items, the one with an old hold line too.
         assert_eq!(
             (c.big.as_str(), c.unit.as_str()),
-            ("2", "queued, 1 running")
+            ("2", "on deck, 1 running")
+        );
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(
+            parts,
+            [("Running", "1"), ("On a PR", "1")],
+            "no Ready or Held: the queue is what waits"
+        );
+        let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
+        assert_eq!(
+            bar,
+            [(Level::Ok, 4), (Level::Red, 1)],
+            "no amber held segment"
         );
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(

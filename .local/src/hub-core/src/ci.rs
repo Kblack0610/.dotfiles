@@ -100,7 +100,7 @@ impl Queued {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Ci {
     pub hosts: u32,
-    /// Slots as `cc:pool_slots` counts them: a running runner, or an idle one not withheld; a
+    /// Slots once per runner, as `cc:site_slots` counts them: a running runner, or an idle one not withheld; a
     /// local gate counts as a slot and as busy.
     pub slots: u32,
     pub busy: u32,
@@ -200,6 +200,56 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
         .collect()
 }
 
+/// A runner's state now, as every CI table says it: `busy`, `lent`, `withheld`, `idle`,
+/// `standby` (its host powered off by the governor) or `off`.
+fn now_of(r: &Runner, off: &HashMap<&str, &str>) -> &'static str {
+    match r.s.label("state") {
+        "running" => "busy",
+        "idle" if r.held && r.lent.is_some() => "lent",
+        "idle" if r.held => "withheld",
+        "idle" => "idle",
+        _ if off.contains_key(r.s.label("host")) => "standby",
+        _ => "off",
+    }
+}
+
+/// One runner on its machine now, once per name: what a machine page's slots list.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct RunnerNow {
+    pub name: String,
+    /// Its machine's one name (`Infra::aliases`).
+    pub host: String,
+    /// As `now_of` says it.
+    pub state: String,
+    /// The job it runs (`repo / job`), `-> tests` for one lent to its pair, else empty.
+    pub job: String,
+}
+
+/// Every runner now, by name.
+pub fn runners_now(infra: &Infra) -> Vec<RunnerNow> {
+    let off = infra.powered_off();
+    runners(infra)
+        .iter()
+        .map(|r| {
+            let state = now_of(r, &off);
+            let job = match (state, r.lent) {
+                ("busy", _) => match r.s.label("repo") {
+                    "" => job_name(r.s),
+                    repo => format!("{repo} / {}", job_name(r.s)),
+                },
+                ("lent", Some(to)) => format!("-> {to}"),
+                _ => String::new(),
+            };
+            RunnerNow {
+                name: r.s.label("name").into(),
+                host: r.host.clone(),
+                state: state.into(),
+                job,
+            }
+        })
+        .collect()
+}
+
 /// A runner's slot number: the digits after its last `-` or `/`, else its name less the host.
 fn slot_of(name: &str, host: &str) -> String {
     let tail = name.rsplit(['-', '/']).next().unwrap_or(name);
@@ -294,8 +344,9 @@ pub fn build(infra: &Infra) -> Ci {
         hosts.insert(host.clone());
         let slot = slot_of(s.label("name"), s.label("host"));
         let pool = s.label("pool");
-        match s.label("state") {
-            "running" => {
+        let state = now_of(r, &off);
+        match state {
+            "busy" => {
                 ci.slots += 1;
                 ci.busy += 1;
                 let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
@@ -324,24 +375,15 @@ pub fn build(infra: &Infra) -> Ci {
                     note: String::new(),
                 });
             }
-            "idle" if r.held => {
-                let state = match r.lent {
-                    Some(to) => {
-                        lent_to.insert((host.clone(), pool), to);
-                        "lent"
-                    }
-                    None => "withheld",
-                };
+            _ => {
+                if state == "idle" {
+                    ci.slots += 1;
+                }
+                if let Some(to) = r.lent.filter(|_| state == "lent") {
+                    lent_to.insert((host.clone(), pool), to);
+                }
                 quiet.entry((host, pool, state)).or_default().push(slot)
             }
-            "idle" => {
-                ci.slots += 1;
-                quiet.entry((host, pool, "idle")).or_default().push(slot);
-            }
-            _ if off.contains_key(s.label("host")) => {
-                quiet.entry((host, pool, "standby")).or_default().push(slot)
-            }
-            _ => quiet.entry((host, pool, "off")).or_default().push(slot),
         }
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
@@ -509,13 +551,9 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
             .unwrap_or(9)
     };
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
-        let state = match r.s.label("state") {
-            "running" => "busy",
-            "idle" if r.held && r.lent.is_some() => "lent",
-            "idle" if r.held => "withheld",
-            "idle" => "idle",
-            _ if off.contains_key(r.s.label("host")) => "standby",
-            _ => continue,
+        let state = match now_of(r, off) {
+            "off" => continue,
+            s => s,
         };
         let e = by.entry(r.host.as_str()).or_insert(state);
         if rank(state) < rank(e) {
@@ -537,7 +575,7 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct PoolMatch {
     pub pool: String,
-    /// Runners running or idle and not withheld, as `cc:pool_slots` counts them.
+    /// Runners running or idle and not withheld, each once.
     pub slots: u32,
     pub busy: u32,
     /// Runners in any state: no slot because they are down reads differently from no runner

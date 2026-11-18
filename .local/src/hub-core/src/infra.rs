@@ -32,8 +32,12 @@ pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|regi
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
-        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
+        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
+        // The same runners once per cap they take, pool=<cap>: what cc:pool_slots counts, so
+        // every per-pool count (a machine's pool cells, a pool's machines) reads this and agrees
+        // with the Pools table. A Unity slot on a heavy host is in unity, light and heavy.
+        ("runner_caps", format!("{W} (github_runner_pool_slot)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
@@ -49,8 +53,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("gates", "cc:host_local_gate".into()),
         // Each core's busy share, keyed by host and cpu, so it stays out of `cc` (keyed by host).
         ("cores", "cc:host_core_busy_ratio".into()),
-        // Cores each CI runner's job uses, and a pinned slot's CPUs, keyed by host and runner.
-        ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
+        // What each CI runner uses: its cores busy and allowed, its memory and its limit, its
+        // disk and that reading's age, keyed by host and runner.
+        ("runner_use", r#"{__name__=~"cc:runner_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
@@ -96,7 +101,7 @@ pub const OPTIONAL: &[&str] = &[
     "exporter_up",
     "rate_left",
     "cores",
-    "runner_cores",
+    "runner_use",
     "withheld",
     "lent",
     "power",
@@ -268,6 +273,16 @@ impl Infra {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// One per-runner rule (`cc:runner_mem_bytes`), by the runner's name; a runner with no
+    /// series is absent, which a page says as no data.
+    pub fn runner_use(&self, rule: &str) -> HashMap<&str, f64> {
+        self.get("runner_use")
+            .iter()
+            .filter(|s| s.label("__name__") == rule)
+            .filter_map(|s| Some((s.label("runner"), s.value?)))
+            .collect()
+    }
+
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
     /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
     /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
@@ -343,7 +358,7 @@ impl Infra {
     }
 
     /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line and
-    /// Infra's health section; k3s and ci show even with no status, as no data.
+    /// Infra's health section; the ALWAYS domains show even with no status, as no data.
     pub fn health(&self) -> Vec<Chip> {
         let v = self.cc_values();
         DOMAINS
@@ -375,20 +390,23 @@ mod tests {
     }
 
     #[test]
-    fn health_keeps_strip_order_and_always_shows_k3s_and_ci() {
+    fn health_keeps_strip_order_and_always_shows_k3s_ci_and_projects() {
         let mut i = Infra::default();
         i.instant.insert(
             "cc",
             vec![
+                cc("cc:domain_status", ("domain", "prod"), 1.0),
                 cc("cc:domain_status", ("domain", "ci"), 2.0),
                 cc("cc:pool_status", ("pool", "unity"), 1.0),
             ],
         );
         let h = i.health();
         let names: Vec<_> = h.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["k3s", "ci"]);
+        assert_eq!(names, ["k3s", "ci", "projects", "prod"]);
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
+        assert_eq!(h[2].level, Level::Nodata);
+        assert_eq!(h[3].level, Level::Warn);
         assert_eq!(i.cc_values().get("cc:pool_status/unity"), Some(&1.0));
     }
 
@@ -488,7 +506,7 @@ mod tests {
                 "exporter_up",
                 "rate_left",
                 "cores",
-                "runner_cores",
+                "runner_use",
                 "withheld",
                 "lent",
                 "power",

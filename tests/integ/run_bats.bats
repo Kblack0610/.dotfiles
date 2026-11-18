@@ -29,7 +29,8 @@ teardown() {
 # inner <bats args...>: run-bats.sh in a clean environment, since the outer run's exported BATS_*
 # variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
 # restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
-inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" "$RUN" "${JOBS[@]}" "$@"; }
+# Its bats slot is this test's own, so it never waits on a real suite.
+inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" "$RUN" "${JOBS[@]}" "$@"; }
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
 # straggler running in the background, then runs that line.
@@ -94,6 +95,23 @@ no_leftovers() {
   no_leftovers
 }
 
+# The case that ran for hours (ar-3253): a KILL skips every trap of the wrapper, so its reap never
+# runs and only the session leader's parent-death TERM ends the run. The leader exits last, after
+# its reap, so the wait is on its pid alone (the session id, in SIDF): a pidwait over the whole
+# session failed at once on ubuntu-24.04 (procps 4.0.4) while the leader was still reaping. The
+# timeout only bounds a leader that never exits.
+@test "a wrapper killed with KILL still leaves no run dir and no process behind" {
+  mkfifo "$BATS_TEST_TMPDIR/up"
+  fixture slow "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); sleep 600"
+  inner "$BATS_TEST_TMPDIR/slow.bats" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+  wrapper=$!
+  timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
+  kill -KILL "$wrapper"
+  wait "$wrapper" || true
+  timeout 60 pidwait -F "$SIDF" || true
+  no_leftovers
+}
+
 @test "a finished run keeps bats' status and leaves no run dir and no process behind" {
   fixture failing "false"
   run inner "$BATS_TEST_TMPDIR/failing.bats"
@@ -102,3 +120,24 @@ no_leftovers() {
   no_leftovers
 }
 
+@test "a second run waits for the machine's bats slot, then runs once it frees" {
+  fixture second "true"
+  exec 8>>"$BATS_TEST_TMPDIR/run-bats.slot"
+  flock -n 8
+  # Held open read-write, the fifo never SIGPIPEs the wrapper after the one line read here.
+  mkfifo "$BATS_TEST_TMPDIR/err"
+  exec 7<>"$BATS_TEST_TMPDIR/err"
+  inner "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
+  wrapper=$!
+  # The wrapper is waiting once it says so; the timeout only bounds a run that never does.
+  read -r -t 60 line <&7
+  [[ "$line" == *waiting* ]]
+  # Still blocked: alive, and its test has not started.
+  kill -0 "$wrapper"
+  [ ! -s "$SIDF" ]
+  flock -u 8
+  wait "$wrapper"
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "ok 1 second"
+  no_leftovers
+}

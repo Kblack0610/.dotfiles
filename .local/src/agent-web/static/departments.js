@@ -1,10 +1,10 @@
 "use strict";
-// Projects > Coverage (/api/coverage: every product's five department cells, worst first) and an
+// Projects > Coverage (/api/coverage: every typed project's department cells, worst first) and an
 // opened product's department tabs (/api/projects/{name}/departments), both from
 // hub_core::departments, the cells and words the hub TUI draws. Coverage keeps c-prefixed view
 // keys because the list keeps the plain ones; a row opens its product, a cell that department.
 
-const C_COLS = { product: ["product"], type: ["type"], stage: ["stage"], analytics: ["analytics"], marketing: ["marketing"], legal: ["legal"], support: ["support"], money: ["money"] };
+const C_COLS = { project: ["project"], type: ["type"], stage: ["stage"], product: ["product"], engineering: ["engineering"], ops: ["ops"], design: ["design"], analytics: ["analytics"], marketing: ["marketing"], legal: ["legal"], support: ["support"], money: ["money"] };
 const C_TONE = { red: "bad", amber: "warn", off: "muted" };
 const cTone = (w) => (C_TONE[w] ? ` class="${C_TONE[w]}"` : "");
 const cShown = () => st.tab === "projects" && !pst.open && pTab() === "coverage";
@@ -20,16 +20,16 @@ const covst = tblTab({
 
 function cRow(r, i, t, depts) {
   const l = tblLinks(t, i);
-  return `<tr class="jr" tabindex="0" data-open="${esc(r.key)}"><td>${tblLink(l.product, r.name)}</td>` +
+  return `<tr class="jr" tabindex="0" data-open="${esc(r.key)}"><td>${tblLink(l.project, r.name)}</td>` +
     `<td>${pDash(r.type)}</td><td>${pDash(r.stage)}</td>` +
-    depts.map(([d]) => `<td${cTone(r.cells[d])}>${tblLink(l[d], r.cells[d] || "off")}</td>`).join("") + `</tr>`;
+    depts.map(([d]) => { const w = r.cells[d] || "off"; return `<td${cTone(w)}>${tblLink(l[d], w)}</td>`; }).join("") + `</tr>`;
 }
 
 function cBody(d) {
   const t = d.table;
   const legend = t.legend ? `<div class="muted qstats">${esc(t.legend)}</div>` : "";
   if (d.rows.length) return `<div class="panel scroll"><table class="tbl">${tblHead(t, C_COLS)}${d.rows.map((r, i) => cRow(r, i, t, d.departments)).join("")}</table></div>` + legend;
-  return `<div class="card muted">${esc(t.total ? "No product matches." : "No product: project-map.json types none as game or app.")}</div>`;
+  return `<div class="card muted">${esc(t.total ? "No product matches." : "No typed project: project-map.json gives none a type.")}</div>`;
 }
 
 function cRead() { if (cShown()) covst.refresh(); }
@@ -50,11 +50,11 @@ const D_PART = {
     ? `<div class="card">${d.needs.map((n) => `<div class="${n.level === "ok" ? "" : esc(n.level)}">${esc(n.says)}</div>`).join("")}</div>`
     : `<div class="card muted">${d.due_at ? `Nothing; ${esc(d.title)} is due at ${esc(d.due_at)}.` : "Nothing."}</div>`),
   "-outbound": (d, sec) => secHead(sec, "Outbound", d.outbound.length ? `${d.outbound.filter((i) => i.state === "sent").length} sent in 30d` : null) + (d.outbound.length
-    ? `<div class="panel scroll"><table class="tbl"><tr><th>when</th><th>channel</th><th>kind</th><th data-role="lead">item</th><th>review</th><th data-role="glance">state</th></tr>` +
+    ? `<div class="panel scroll"><table class="tbl"><tr><th>when</th><th>channel</th><th>kind</th><th data-role="lead">item</th><th>review</th><th data-role="glance">state</th><th>result</th></tr>` +
       d.outbound.map((i) => `<tr><td>${when(i.sent || i.created)}</td><td>${esc(i.channel)}</td><td>${esc(i.kind)}</td>` +
         `<td class="wrap">${tblLink(i.url, i.title)} <span class="muted">${esc(i.id)}</span></td>` +
         `<td>${pDash([i.verdict, i.reviewed_by].filter(Boolean).join(" by "))}</td>` +
-        `<td class="${i.state === "sent" ? "" : i.state === "review" ? "warn" : "muted"}">${esc(i.state)}</td></tr>`).join("") + `</table></div>`
+        `<td class="${i.state === "sent" ? "" : i.state === "review" ? "warn" : "muted"}">${esc(i.state)}</td><td>${pDash(i.results)}</td></tr>`).join("") + `</table></div>`
     : `<div class="card muted">${esc(d.outbound_says || "Nothing in the outbound ledger: mkt draft opens an item, mkt log records a hand post.")}</div>`),
   "-checks": (d, sec) => secHead(sec, "Checklist", d.checks.length ? `${d.checks.filter((c) => c.state === "ok").length} of ${d.checks.length}` : null) + (d.checks.length
     ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">item</th><th data-role="glance">state</th><th>says</th><th>evidence</th></tr>` +

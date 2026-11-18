@@ -90,6 +90,10 @@ pub struct SheetShape {
     /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
+    /// The unpinned open rows each project's agent board keeps; the rest are its Backlog tier
+    /// (`project_sweep::tier`). A provisional number: why 75 and when to revisit it are in
+    /// `.config/notes/config.toml.example` `[sheet]` and rules.jsonl.
+    pub agent_board_max: usize,
 }
 
 impl Default for SheetShape {
@@ -97,6 +101,7 @@ impl Default for SheetShape {
         SheetShape {
             done_days: 7,
             done_max: 30,
+            agent_board_max: 75,
         }
     }
 }
@@ -274,8 +279,10 @@ struct RawProfile {
     daily: String,
     #[serde(default = "default_refs")]
     refs: String,
-    #[serde(default = "default_fun")]
-    fun: String,
+    /// The backlog: tasks with no time trigger. Optional; resolve() puts it beside the
+    /// schedule, a `backlog.md` sibling of the daily dir.
+    #[serde(default)]
+    backlog: Option<String>,
     #[serde(default = "default_carryover")]
     carryover: String,
     /// Scheduled/deferred-task backlog (the holding pen for future-dated tasks).
@@ -290,12 +297,12 @@ struct RawProfile {
     /// The SCHEDULE: every task carrying a time trigger, `[date]` (once) or `(every:…)`
     /// (repeating). Supersedes `scheduled` + `recurring`, which were two files for one
     /// idea. Optional — resolve() falls back to a `schedule.md` sibling of the daily dir,
-    /// deliberately outside `backlogs/`: a backlog has no time trigger, a schedule does.
+    /// a file of its own: a backlog has no time trigger, a schedule does.
     #[serde(default)]
     schedule: Option<String>,
     /// Which files the daily-note footer links, in order. Each entry is a known name
-    /// (`backlog`/`fun` | `schedule` | `scheduled` | `recurring`) or a vault-relative
-    /// path. Optional — defaults to `["fun", "schedule"]`: one backlog, one schedule.
+    /// (`backlog` | `schedule` | `scheduled` | `recurring`) or a vault-relative
+    /// path. Optional, defaults to `["backlog", "schedule"]`: one backlog, one schedule.
     /// `footer_backlogs` is the legacy key name, kept as a serde alias.
     #[serde(default, alias = "footer_backlogs")]
     footer_links: Option<Vec<String>>,
@@ -342,8 +349,7 @@ struct RawProfile {
     /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
-    /// Dirs `notes find` searches. Optional: when empty, resolve() uses knowledge, permanent,
-    /// refs, and the vault's employment/ and lab/ trees.
+    /// Dirs `notes find` searches. Optional: when empty, resolve() searches the whole vault.
     #[serde(default)]
     search_dirs: Vec<String>,
     /// Other orgs this profile rolls up (`rollup = ["acmecorp"]`). Empty = own only. Read here
@@ -405,10 +411,6 @@ fn default_refs() -> String {
     "refs".to_string()
 }
 
-fn default_fun() -> String {
-    "backlogs/fun.md".to_string()
-}
-
 fn default_carryover() -> String {
     "backlogs/carryover.md".to_string()
 }
@@ -446,7 +448,7 @@ pub struct Profile {
     pub refs: PathBuf,
     /// vault-relative refs path (e.g. "journal/refs") used to build `[[wikilinks]]`
     pub refs_rel: String,
-    pub fun: PathBuf,
+    pub backlog: PathBuf,
     pub carryover: PathBuf,
     pub scheduled: PathBuf,
     /// Standing recurring-task backlog — `(every:…)` cadence lines emitted into the
@@ -589,7 +591,7 @@ fn builtin_default() -> RawConfig {
             automation: true,
             daily: "journal/daily".into(),
             refs: "journal/refs".into(),
-            fun: "journal/backlogs/fun.md".into(),
+            backlog: None,
             carryover: "journal/backlogs/carryover.md".into(),
             scheduled: None,
             recurring: None,
@@ -700,14 +702,18 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         .as_ref()
         .map(|s| join(s))
         .unwrap_or_else(|| scheduled.with_file_name("recurring.md"));
-    let fun = join(&rp.fun);
+    let backlog = rp
+        .backlog
+        .as_ref()
+        .map(|s| join(s))
+        .unwrap_or_else(|| join(&rp.daily).with_file_name("backlog.md"));
 
     // The SCHEDULE: one file for every task with a time trigger, `[date]` (fires once,
     // consumed) or `(every:…)` (fires each cycle, kept). `scheduled` and `recurring` were
     // two files for one idea — the difference is a TOKEN, not a location, and both already
     // surfaced into the same section by the same helpers.
     //
-    // It lives OUTSIDE `backlogs/` on purpose. A backlog is what has no time trigger; a
+    // It is its own file on purpose. A backlog is what has no time trigger; a
     // schedule is what does. Calling all three "backlogs" is what made the daily note's
     // footer list three links for two concepts.
     let schedule = rp
@@ -718,7 +724,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
 
     // Which backlogs the daily-note footer links, in order. Known names map to their
     // resolved paths; anything else is treated as a vault-relative path. Defaults to
-    // fun + scheduled so existing behavior is unchanged.
+    // backlog + schedule.
     // `scheduled` and `recurring` still RESOLVE to their old names so a pre-migration
     // vault keeps working and the migration has something to read; they simply are not
     // linked any more. The default is now one backlog + one schedule.
@@ -726,7 +732,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     // label falls back to the file stem so a custom link is still self-describing.
     let label_path = |n: &str| -> (String, PathBuf) {
         match n {
-            "backlog" | "fun" => ("Backlog".into(), fun.clone()),
+            "backlog" => ("Backlog".into(), backlog.clone()),
             "schedule" => ("Schedule".into(), schedule.clone()),
             "scheduled" | "carryover" | "carry" => ("Schedule".into(), scheduled.clone()),
             "recurring" => ("Schedule".into(), recurring.clone()),
@@ -760,9 +766,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
     let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
         let mut v = vec![join(&rp.daily), join(&rp.inbox), join(&rp.zettel)];
-        if let Some(parent) = join(&rp.fun).parent() {
-            v.push(parent.to_path_buf()); // backlogs dir (parent of fun.md)
-        }
+        v.push(backlog.clone()); // the FILE: its parent is the journal or org root
         v.push(join(&rp.knowledge));
         v
     } else {
@@ -772,17 +776,11 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
     tag_scan.dedup();
     tag_scan.retain(|d| d.exists());
 
-    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the prose
-    // that holds knowledge: compiled articles, zettels, refs, and the vault-wide employment/
-    // (interview prep, job notes) and lab/ trees. Daily notes stay out: they are noise.
+    // Dirs searched by `notes find`. Explicit `search_dirs` wins; the default is the whole
+    // vault, so a note is found wherever it was filed. find.rs SKIP_DIRS drops the
+    // machine-written logs and boards, and its ranking keeps knowledge/ on top.
     let mut search_dirs: Vec<PathBuf> = if rp.search_dirs.is_empty() {
-        vec![
-            join(&rp.knowledge),
-            join(&rp.zettel),
-            join(&rp.refs),
-            vault.join("employment"),
-            vault.join("lab"),
-        ]
+        vec![vault.clone()]
     } else {
         rp.search_dirs.iter().map(|s| join(s)).collect()
     };
@@ -797,7 +795,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         daily: join(&rp.daily),
         refs: join(&rp.refs),
         refs_rel: rp.refs.trim_end_matches('/').to_string(),
-        fun,
+        backlog,
         carryover: join(&rp.carryover),
         scheduled,
         recurring,
@@ -1035,13 +1033,13 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         daily: r.join("journal/daily"),
         refs: r.join("journal/refs"),
         refs_rel: "journal/refs".into(),
-        fun: r.join("journal/backlogs/fun.md"),
+        backlog: r.join("journal/backlog.md"),
         carryover: r.join("journal/backlogs/carryover.md"),
         scheduled: r.join("journal/backlogs/scheduled.md"),
         recurring: r.join("journal/backlogs/recurring.md"),
         schedule: r.join("journal/schedule.md"),
         footer_links: vec![
-            ("Backlog".into(), r.join("journal/backlogs/fun.md")),
+            ("Backlog".into(), r.join("journal/backlog.md")),
             ("Schedule".into(), r.join("journal/schedule.md")),
         ],
         watches: None,
@@ -1090,7 +1088,7 @@ pub fn print(p: &Profile) {
     println!("ideas       {}", p.ideas.display());
     println!("daily       {}", p.daily.display());
     println!("refs        {}", p.refs.display());
-    println!("fun         {}", p.fun.display());
+    println!("backlog     {}", p.backlog.display());
     println!("carryover   {}", p.carryover.display());
     println!("schedule    {}", p.schedule.display());
     println!(
@@ -1269,8 +1267,8 @@ mod tests {
     #[test]
     fn wikilink_strips_root_and_ext() {
         let root = Path::new("/home/test/.notes");
-        let file = Path::new("/home/test/.notes/journal/backlogs/fun.md");
-        assert_eq!(wikilink(root, file), "journal/backlogs/fun");
+        let file = Path::new("/home/test/.notes/journal/backlog.md");
+        assert_eq!(wikilink(root, file), "journal/backlog");
     }
 
     /// An org declares its root and nothing else. This is the whole point of the defaults:
@@ -1282,7 +1280,7 @@ mod tests {
         let raw: RawProfile = toml::from_str(r#"root = "~/notes/orgs/newco""#).unwrap();
         assert_eq!(raw.daily, "daily");
         assert_eq!(raw.refs, "refs");
-        assert_eq!(raw.fun, "backlogs/fun.md");
+        assert_eq!(raw.backlog, None);
         assert_eq!(raw.carryover, "backlogs/carryover.md");
         assert_eq!(raw.summaries, "summaries");
         assert_eq!(raw.archive, "daily_archive");
@@ -1331,11 +1329,11 @@ mod tests {
         assert!(new.project_type["infra"].files.is_empty());
     }
 
-    /// The shipped defaults parse, and a game carries playtest.md.
+    /// The shipped defaults parse, and a game carries playtest.md and its pitch.
     #[test]
     fn the_default_project_types_parse() {
         let types = default_project_types();
-        assert_eq!(types["game"].files, vec!["playtest.md"]);
+        assert_eq!(types["game"].files, vec!["playtest.md", "docs/idea.md"]);
         assert_eq!(types["app"].requires, vec!["repo"]);
         assert!(types["infra"].files.is_empty());
     }

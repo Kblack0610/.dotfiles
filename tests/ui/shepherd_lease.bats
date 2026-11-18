@@ -41,7 +41,7 @@ t() { local srv="$1"; shift; "$REAL_TMUX" -L "$srv" -f /dev/null "$@"; }
 # tag expression (read from tmux.rs, not a copy), the clock and the home window filled in.
 panel_rows() {
   local expr
-  expr="$(grep -o '#{?#{||:#{e|<:NOW,#{@shepherd}}.*,shepherd ,}' "$REPO_ROOT/.local/src/agent-panel/src/tmux.rs")"
+  expr="$(grep -o '#{?#{||:#{e|<:NOW,#{@shepherd}}.*,shepherd ,}' "$REPO_ROOT/.local/src/agent-core/src/tmux.rs")"
   [ -n "$expr" ] || fail "tmux.rs no longer has the shepherd expression"
   expr="${expr//NOW/$(date +%s)}"; expr="${expr//HOME_SESSION/$2}"; expr="${expr//HOME_WINDOW/$3}"
   t "$1" list-panes -a -F "#{pane_id} $expr"

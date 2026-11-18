@@ -4,12 +4,12 @@
 // version's progress by size, its pace and ETA, and its queue, in flight first. A click opens
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, a product's
-// five departments (departments.js), its Rows with every row action board.js has, Deliverables
-// (scoped to it), Stage and Activity. Its inner tabs (INNER_TABS.projects) are this list, All rows
+// department tabs (departments.js), its Rows with every row action board.js has, Deliverables
+// (scoped to it), Stage and Activity. Its inner tabs (INNER_TABS.projects) are this list, Board
 // (every project's rows, board.js scoped to all), Deliverables, Coverage (departments.js) and
 // Ladder (ladder.js), each read only while it shows; an opened
 // project's page sits under the list's. The numbers are counted, never judged: every line is hub_core's, word for
-// word. The list and the rows (All rows, or an opened project's) share st.views.projects, one at
+// word. The list and the rows (Board, or an opened project's) share st.views.projects, one at
 // a time, so a move between them leaves the view behind.
 
 // page: the opened card's page by project name, {data} or {err}; folds: which of its folds are open;
@@ -67,6 +67,7 @@ const refreshProjects = coalesce(async () => {
   try {
     const got = await api("/api/projects" + (q ? "?" + q : ""));
     if (same()) { pst.data = got; pst.err = null; pst.viewed = q; }
+    pCountSet("all", got?.board_open);
   } catch (e) { if (same()) pst.err = e.message; }
   if (st.tab === "projects") { pDeep(); renderProjects(); }
 });
@@ -76,7 +77,8 @@ const refreshProjects = coalesce(async () => {
 const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
 const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
-// Each inner tab's total, its table's once read: a count, not a flag, so it is never amber.
+// Each inner tab's total, its table's once read (Board's is `totals.open`, from any read that carries
+// it): a count, not a flag, so it is never amber.
 const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
   const tabs = INNER_TABS.projects.tabs.map(([id, title, secs]) =>
@@ -102,8 +104,8 @@ function pCountSet(id, n) {
   pCount[id] = n;
   pStripPaint();
 }
-// Each inner tab's own view (its URL query), kept while another shows, so a filter set on All
-// rows is still there after a look at Deliverables. pOn is the inner tab last drawn; pOpenQ the
+// Each inner tab's own view (its URL query), kept while another shows, so a filter set on Board
+// is still there after a look at Deliverables. pOn is the inner tab last drawn; pOpenQ the
 // opened project's view as last drawn, which closing it drops (pClose).
 const pViews = {};
 let pOn = "list", pOpenQ = null;
@@ -114,12 +116,13 @@ const pCard = (want) => pst.data && pst.data.cards.find((x) => pKey(x) === want 
 // The page's inner ids; a retired one (`build`) lands on its new one (PROJECT_RETIRED).
 const P_INNER = PROJECT_PAGE.map((t) => t[0]);
 const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
-// A product shows all ten; infra (project-map type) skips the departments, the tabs before Rows.
+// The department tabs sit between Overview and Rows; a card's own are its `dept_tabs`
+// (hub_core::layout::dept_tabs: all nine for a game or app, engineering and ops for infra, none untyped).
 const P_DEPTS = PROJECT_PAGE.slice(1, P_INNER.indexOf(PROJECT_WORK)).map((t) => t[0]);
-const pProduct = (c) => !!c && c.product;
-const pPage = (c) => PROJECT_PAGE.filter((t) => pProduct(c) || !P_DEPTS.includes(t[0]));
+const pDepts = (c) => (c && c.dept_tabs) || [];
+const pPage = (c) => PROJECT_PAGE.filter((t) => !P_DEPTS.includes(t[0]) || pDepts(c).includes(t[0]));
 // Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
-// department on infra) on Overview.
+// department its type does not get) on Overview.
 const pInnerFor = (c, w) => { w = pInnerOf(w); return pPage(c).some((t) => t[0] === w) ? w : "overview"; };
 // Projects' URL arg as the project and its inner tab: `<key>/<inner>` when the last word is an
 // inner tab and the whole arg is no project's name, else the arg alone on Overview.
@@ -143,7 +146,7 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], held: ["held", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
@@ -153,7 +156,7 @@ const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c)
   `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
   `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
   `<td class="n">${c.eta_days == null ? "-" : c.eta_days + "d"}</td><td class="n">${c.running.length}</td>` +
-  `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td><td class="n">${c.held}</td>` +
+  `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td>` +
   `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
 const pLines = (lines, cls) => lines.map((l) => `<div${cls ? ` class="${cls}"` : ""}>${esc(l)}</div>`).join("");
@@ -180,7 +183,7 @@ function pOpened(c) {
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
   const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
-  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pProduct(c) ? PROJECT_WORK : null);
+  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c).length ? PROJECT_WORK : null);
 }
 
 // What needs the human, grouped by kind (hub_core::page::need_groups, the next stage's failing and
@@ -256,7 +259,7 @@ function pPanes(c) {
   // A failed read is the header's to say, once.
   const wait = got && got.err ? "" : `<div class="muted">Reading the page...</div>`;
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
-  const depts = pProduct(c) ? P_DEPTS.map((id) => pin(id, deptPane(pKey(c), id))).join("") : "";
+  const depts = pDepts(c).map((id) => pin(id, deptPane(pKey(c), id))).join("");
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + depts +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
   pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
@@ -301,8 +304,8 @@ function pOpen(key, inner) {
   pst.inner = pInnerFor(c, inner);
   bst.draft.key = key;
   if (c) { delete pst.page[c.name]; pReadPage(c.name); }
-  if (pProduct(c)) deptRead(key);
-  bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.all = false; bst.controlsKey = "";
+  if (pDepts(c).length) deptRead(key);
+  bst.feed = null; bst.sel = null; bst.form = null; bst.msg = ""; bst.controlsKey = "";
   dst.data = null;
   paint($("p-deliv"), "");
   $("projects").scrollTop = 0;
@@ -438,7 +441,7 @@ $("projects").addEventListener("toggle", (e) => {
 }, true);
 
 TABS.projects = {
-  // Back on the tab, what was open stays open and the URL names it again; a link to All rows or
+  // Back on the tab, what was open stays open and the URL names it again; a link to Board or
   // Deliverables (`#board`) leaves it.
   show() {
     if (pst.open && P_TABS.includes(st.arg)) pClose();

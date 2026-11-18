@@ -15,8 +15,13 @@ use hub_core::table::View;
 use hub_core::{page, projects};
 use serde_json::{json, Value};
 
+use crate::cache::{off, ReadCache};
 use crate::sessions::TableQuery;
 use crate::{bad, ApiResult};
+
+/// The one kept `projects::gather`, which the tab and Home's Projects card both read: a minute,
+/// Home's cadence, answered stale and refreshed behind like every kept read.
+pub static GATHERED: ReadCache<Projects, 60> = ReadCache::new("projects");
 
 /// The cards the view keeps, in its order, with the controls that drew them. What no card
 /// claims and what failed are the whole tab's, so no view narrows them.
@@ -28,16 +33,19 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         cards: cards.into_iter().cloned().collect(),
         unlinked: p.unlinked.clone(),
         errors: p.errors.clone(),
+        board_open: p.board_open,
+        board_backlog: p.board_backlog,
     });
     out["table"] = json!(table);
     out
 }
 
 pub async fn get(Query(q): Query<TableQuery>) -> ApiResult<Json<Value>> {
-    tokio::task::spawn_blocking(move || shown(&projects::gather(), &q))
+    GATHERED
+        .get((), off(projects::gather))
         .await
-        .map(Json)
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(|p| Json(shown(&p, &q)))
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 /// The page's chain comes from the one kept `fleet-bench epics` read (`crate::epics`), started
@@ -79,6 +87,8 @@ mod tests {
             cards: vec![card("garden", "alpha", 1), card("demo", "beta", 0)],
             unlinked: vec!["dotfiles: tidy".into()],
             errors: vec!["notes projects failed".into()],
+            board_open: Some(7),
+            board_backlog: Some(4),
         }
     }
 
@@ -96,6 +106,10 @@ mod tests {
         assert_eq!(got["table"]["shown"], 1);
         assert_eq!(got["unlinked"][0], "dotfiles: tidy");
         assert_eq!(got["errors"][0], "notes projects failed");
+        assert_eq!(
+            (got["board_open"].as_u64(), got["board_backlog"].as_u64()),
+            (Some(7), Some(4))
+        );
     }
 
     #[test]

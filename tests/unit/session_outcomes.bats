@@ -544,12 +544,50 @@ EOF
 EOF
   cat > "$L/b.md" <<'EOF'
 - killall again, written later in another project <!-- sig:2026-10-09 (^|[;&|]\s*)killall\s -->
+- 2026-10-04: **Bare date form.** x <!-- sig:2026-10-04 bare -->
 EOF
   run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$L' | jq -c '.[]'"
   assert_success
-  assert_output '{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02","file":"a.md","claim":"Never killall node; name the pid."}'
+  assert_output - <<'EOF'
+{"sig":"(^|[;&|]\\s*)killall\\s","since":"2026-10-02","file":"a.md","claim":"Never killall node; name the pid."}
+{"sig":"bare","since":"2026-10-04","file":"b.md","claim":"Bare date form."}
+EOF
   run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_sigs '$BATS_TEST_TMPDIR/none' | jq -c ."
   assert_output '[]'
+}
+
+@test "so_lesson_seen: the highest seen marker in each lesson (the later on a tie), keyed by the lesson the lessons parser puts it in, title without markers; a file with no lesson, or none, is []; a failed parse fails" {
+  L="$BATS_TEST_TMPDIR/lessons"; mkdir -p "$L"
+  cat > "$L/a.md" <<'EOF'
+# Lessons
+
+## 2026-10-02
+
+- **Never killall node.** It took the dev server down.
+  <!-- seen:2 2026-11-01 -->
+  <!-- seen:3 2026-11-05 -->
+  <!-- seen:3 2026-11-07 -->
+- **A lesson not seen.** why
+- **Marker on the title line.** why <!-- seen:2 2026-11-03 -->
+
+## A titled lesson
+
+Text.
+<!-- seen:1 2026-11-02 -->
+EOF
+  printf -- '- 2026-10-01: **No marker.** x\n' > "$L/b.md"
+  printf -- '# Lessons\n\n<!-- seen:5 2026-11-05 -->\n' > "$L/c.md"
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_seen '$L' | jq -c 'sort_by(.seen) | .[]'"
+  assert_success
+  assert_output - <<'EOF'
+{"title":"A titled lesson","seen":1,"last":"2026-11-02","claim":"A titled lesson","file":"a.md"}
+{"title":"**Marker on the title line.** why","seen":2,"last":"2026-11-03","claim":"Marker on the title line.","file":"a.md"}
+{"title":"**Never killall node.** It took the dev server down.","seen":3,"last":"2026-11-07","claim":"Never killall node.","file":"a.md"}
+EOF
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; so_lesson_seen '$BATS_TEST_TMPDIR/none'"
+  assert_output '[]'
+  run bash -c ". '$SO_LIB_DIR/session-outcomes.sh'; SO_LESSONS_CMD=false so_lesson_seen '$L'"
+  assert_failure
 }
 
 @test "activity: a commit ends the edit count, for edits made through Bash" {
@@ -644,6 +682,27 @@ by_rows() {
   assert_line --index 0 '| skill | calls | sessions | projects | sessions with friction | mean session cost |'
   assert_line --index 2 --partial '`wind-down` | 1 | 1 | 1 | 0 | $2'
   refute_output --partial 'final-pass'
+}
+
+@test "ran: each skill's newest sessions inside the window, a runner call and an old row left out, -n caps each skill" {
+  by_rows
+  jq -cn --argjson u "$((SO_NOW - 3600))" '{session_id:"x6",project:"p1",title:"newest",updated:"t6",updated_epoch:$u,uses:{skills:{"wind-down":3}}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  jq -cn --argjson u "$((SO_NOW - 60))" '{session_id:"x7",project:"_runner",runner:true,updated_epoch:$u,uses:{skills:{"wind-down":1}}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  run "$SUBJECT" ran --days 7
+  assert_success
+  assert_line --index 0 '{"skill":"final-pass","calls":2,"session_id":"x1","project":"p1","title":null,"updated":null}'
+  assert_line --index 1 '{"skill":"wind-down","calls":3,"session_id":"x6","project":"p1","title":"newest","updated":"t6"}'
+  assert_equal "$(grep -c '"wind-down"' <<<"$output")" 3
+  refute_output --partial '"x3"'
+  refute_output --partial '"x7"'
+  run "$SUBJECT" ran --days 7 -n 1
+  assert_equal "$(grep -c '"wind-down"' <<<"$output")" 1
+  run "$SUBJECT" ran --nope
+  assert_failure 2
+  for bad in "--days" "--days x" "-n" "-n 3x"; do
+    run "$SUBJECT" ran $bad
+    assert_failure 2
+  done
 }
 
 @test "worst --by: mean cost is over the sessions that have a cost, null when none does" {
@@ -1892,4 +1951,18 @@ link_fixture() {
   [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made without knowing the local links"
   assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"   # the due session's own links still join
   assert_output --partial "no transcript root, cloud sessions unread"
+}
+
+@test "forgejo auth: a fleet worker's token file answers when rbw has no entry; with neither, rc 1 names the sources" {
+  unset FORGEJO_TOKEN
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/rbw-none"; chmod +x "$SANDBOX/bin/rbw-none"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r && printf "%s\n" "$SO_FORGEJO_TOKEN"' _ "$SANDBOX/bin/rbw-none"
+  assert_success; assert_output worker-tok
+  rm "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r; echo "rc=$? $SO_FORGEJO_ERR"' _ "$SANDBOX/bin/rbw-none"
+  assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
+  assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
 }

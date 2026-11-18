@@ -55,6 +55,17 @@ covered_log() {
   assert_line --index 2 --partial "Tmux sessions survive"
 }
 
+@test "pick --matched gives only the matched lessons, and nothing when none match" {
+  run "$BIN" pick -n 3 --matched "$F" "waybar chip width"
+  assert_success
+  assert_line --index 0 --regexp '^## Lessons for this work \([0-9]+ matched on: [a-z, ]+\)$'
+  assert_line --index 1 --partial "Waybar chips cost width"
+  refute_output --partial "Lessons reach a session"
+  run "$BIN" pick --matched "$F" "kubernetes ingress"
+  assert_success
+  assert_output ""
+}
+
 @test "pick needs two shared words from a multi-word query" {
   run "$BIN" pick -n 1 "$F" "nightly kubernetes"
   assert_line --index 0 --partial "nothing matched"
@@ -364,4 +375,123 @@ $G:11	160	**$RECENT** **IFS tab read merges empty fields**, use a non-whitespace
   assert_output "[100,6,2,261]"
   run "$BIN" fat "$G"
   assert_output ""
+}
+
+# group_file with a Forgejo lesson long enough that a short text plus its pointer is smaller.
+long_group() {
+  group_file
+  sed -i "/Seen on the 04-21 drain./a\\  The drain on $OLD left the sidecar wedged for an hour; the runner kept accepting jobs and failed each one at checkout, and nobody saw it until the nightly went red." "$G"
+  LESSON_MAX_BYTES=100 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  KF=$(basename "$(grep -l Forgejo "$DIR"/c/*.orig)" .orig)
+  KI=$(basename "$(grep -l IFS "$DIR"/c/*.orig)" .orig)
+}
+
+@test "compact swaps in the short text with a pointer, moves the old text verbatim, keeps the key, and a rerun is a no-op" {
+  long_group
+  printf -- '- **Forgejo runners need the dind sidecar restarted after a node drain.**\n  Restart it.\n' > "$DIR/c/$KF.md"
+  cp "$G" "$DIR/before"
+  run "$BIN" compact --dry-run "$G" "$DIR/c"
+  assert_success
+  assert_output "lessons compact: group: would compact 1"
+  cmp "$G" "$DIR/before"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_success
+  assert_output "lessons compact: group: compacted 1, old text in _archive/group-evidence.md"
+  run diff "$DIR/before" "$G"
+  assert_output "6,7c6,7
+<   Seen on the 04-21 drain.
+<   The drain on $OLD left the sidecar wedged for an hour; the runner kept accepting jobs and failed each one at checkout, and nobody saw it until the nightly went red.
+---
+>   Restart it.
+>   Evidence: \`_archive/group-evidence.md\` $KF."
+  run cat "$DIR/_archive/group-evidence.md"
+  assert_output "
+<!-- $KF compacted $(date +%F) -->
+$(sed -n 5,7p "$DIR/before")"
+  LESSON_MAX_BYTES=0 "$BIN" compact --dump "$G" "$DIR/after" >/dev/null
+  [ -f "$DIR/after/$KF.orig" ] || fail "the key moved: $(ls "$DIR/after")"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_success
+  assert_output "lessons compact: group: compacted 0"
+  [ "$(grep -c compacted "$DIR/_archive/group-evidence.md")" = 1 ]
+  cp "$DIR/after/$KF.orig" "$DIR/c/$KF.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_output "lessons compact: group: compacted 0"
+}
+
+@test "compact refuses a text that changes the key, drops the date, is not shorter, stays over the cap or names no lesson" {
+  long_group
+  printf -- '- **Forgejo runners: restart the dind sidecar after a drain.**\n' > "$DIR/c/$KF.md"
+  printf -- '- **%s** **IFS tab read merges empty fields**, use a non-whitespace separator.\n  Use a non-whitespace separator, always, in every read loop.\n' "$RECENT" > "$DIR/c/$KI.md"
+  printf -- '- nothing\n' > "$DIR/c/00000000.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line "refused 00000000: no lesson with that key"
+  assert_line --regexp "^refused $KI: not shorter than the lesson \([0-9]+ >= [0-9]+ bytes\)$"
+  assert_line "refused $KF: the first 160 chars of the first line changed (the key)"
+  assert_line "lessons compact: group: compacted 0"
+  printf -- '- **Forgejo runners need the dind sidecar restarted after a node drain.**\n  Restart it, see %s.\n' "$(printf 'x%.0s' {1..60})" > "$DIR/c/$KF.md"
+  rm "$DIR/c/$KI.md" "$DIR/c/00000000.md"
+  LESSON_MAX_BYTES=150 run "$BIN" compact "$G" "$DIR/c"
+  assert_output --regexp "^refused $KF: [0-9]+ bytes with the pointer, over 150"
+}
+
+@test "compact refuses a text whose first line drops the lesson's date" {
+  group_file
+  sed -i "s/separator\.\$/separator. $(printf 'Long tail. %.0s' {1..20})/" "$G"
+  LESSON_MAX_BYTES=100 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  k=$(basename "$(grep -l IFS "$DIR"/c/*.orig)" .orig)
+  head -c 300 "$DIR/c/$k.orig" | sed "s/\*\*$RECENT\*\* //" > "$DIR/c/$k.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line --partial "refused $k: the first"
+}
+
+@test "compact refuses a text line that would open a lesson, and writes nothing" {
+  long_group
+  printf -- '- **Forgejo runners need the dind sidecar restarted after a node drain.**\n# a heading\n' > "$DIR/c/$KF.md"
+  cp "$G" "$DIR/before"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line "refused $KF: line 2 would open a lesson or section; indent it"
+  cmp "$G" "$DIR/before"
+  [ ! -e "$DIR/_archive/group-evidence.md" ]
+}
+
+@test "compact refuses a text that drops a marker the old lesson carried" {
+  group_file
+  LESSON_MAX_BYTES=0 "$BIN" compact --dump "$G" "$DIR/c" >/dev/null
+  k=$(basename "$(grep -l Flux "$DIR"/c/*.orig)" .orig)
+  printf -- '- **Flux pauses hide a drifted HelmRelease until resume.**\n' > "$DIR/c/$k.md"
+  run "$BIN" compact "$G" "$DIR/c"
+  assert_failure 1
+  assert_line "refused $k: it drops the marker <!-- sig:$OLD flux.*paused -->"
+}
+
+@test "under a titled heading, a bracketed-date bullet and a bullet whose bold title ends in a dated parenthetical open lessons" {
+  F="$DIR/dated.md"
+  cat > "$F" <<EOF2
+# dated bullets
+
+## Shell gotchas
+
+- **[$RECENT dream, Lane A] Bracketed dream bullets are lessons.** Body.
+- **Parenthetical dream bullets are lessons ($RECENT, dream sweep).** Body.
+- **Corrected $RECENT:** a sub-point that stays body.
+- **Supporting facts, all measured $RECENT, stay body.**
+- **Fix (see $RECENT)**: a parenthetical before a colon stays body.
+- **Observed ($RECENT)**: a dated title with no period stays body.
+- [$RECENT 14:00] a bracketed timestamp with no bold stays body.
+EOF2
+  run "$BIN" pick -n 20 "$F"
+  assert_line "- Shell gotchas"
+  assert_line --partial "[$RECENT dream, Lane A] Bracketed dream bullets"
+  assert_line --partial "Parenthetical dream bullets are lessons ($RECENT"
+  refute_line --partial "Corrected $RECENT"
+  refute_line --partial "Supporting facts"
+  refute_line --partial "a parenthetical before a colon"
+  refute_line --partial "a dated title with no period"
+  refute_line --partial "a bracketed timestamp"
+  run bash -c "\"\$0\" fat --json --max 0 \"\$1\" | jq .lessons" "$BIN" "$F"
+  assert_output "3"
 }

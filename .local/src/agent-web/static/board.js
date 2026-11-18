@@ -1,5 +1,5 @@
 "use strict";
-// Projects' All rows inner tab (every project's rows) and the rows under an opened project: the
+// Projects' Board inner tab (every project's rows) and the rows under an opened project: the
 // shared table (table.js) over the rows from `notes board --json` (/api/board, which filters and
 // sorts by the view in the showing tab's URL query): the human sheet, the agent board, playtest,
 // open ones under their sheet sections (each row's `label`) then the closed ones, each row's
@@ -13,9 +13,6 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// All rows holds thousands of rows, so the table stops here until asked (a search reads every row
-// on the server; this caps only what is drawn): 30 rows drew 1,824 px at 1400x900 on 2026-11-12.
-const B_OPEN = 30;
 // One view serves both places, both on Projects, so what it reads follows the one showing.
 const bOnBoard = () => st.tab === "projects" && !pst.open && pTab() === "all";
 const bScope = () => (bOnBoard() ? "all" : pst.open);
@@ -29,7 +26,7 @@ const bst = tblTab({
     draft: { key: "", lane: "human", priority: "high", to: "", game: "", text: "" },
     // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
     // is open: { k, kind }.
-    form: null, all: false, controlsKey: "",
+    form: null, controlsKey: "",
   },
   body: () => bBody(),
 });
@@ -39,11 +36,11 @@ function bMount(parent) {
   if ($("b-root").parentNode !== $(parent)) $(parent).appendChild($("b-root"));
   if (bst.scope === bScope()) return;
   bst.scope = bScope();
-  bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.all = false; bst.controlsKey = "";
+  bst.feed = null; bst.err = null; bst.msg = ""; bst.sel = null; bst.form = null; bst.controlsKey = "";
 }
 
-// `feed.rows` is what the view keeps; a row's action index is into that list, which the drawn
-// table always comes from. An answer for a scope no longer showing is dropped, and whatever
+// `feed.rows` is the page of the view the server sent (hub_core::table::page, Board's size in
+// hub_core::layout); a row's action index is into that list, which the drawn table always is. An answer for a scope no longer showing is dropped, and whatever
 // opened the new one reads it. The Projects list has no rows to read.
 const refreshBoard = coalesce(async () => {
   const scope = bScope();
@@ -55,7 +52,7 @@ const refreshBoard = coalesce(async () => {
     const got = await api("/api/board" + (q ? "?" + q : ""));
     if (scope === bScope()) {
       bst.feed = got; bst.scope = scope; bst.err = null;
-      if (scope === "all") pCountSet("all", got?.table?.total);
+      pCountSet("all", got?.totals?.open);
     }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
@@ -178,21 +175,19 @@ function bLine(r, i) {
 }
 
 function bBody() {
-  const t = bst.feed.table, shown = bst.feed.rows, one = bScope() !== "all";
-  const rows = bst.all ? shown : shown.slice(0, B_OPEN);
-  const more = shown.length - rows.length;
+  const t = bst.feed.table, rows = bst.feed.rows, one = bScope() !== "all";
   // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
   const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === bScope()).reduce((s, p) => s + (p.inbox || 0), 0);
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  return `<div class="muted qstats">${t.shown} of ${t.total} rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
+  const tiers = bst.feed.tiers ? `; agent ${esc(bst.feed.tiers)}` : "";
+  return `<div class="muted qstats">${t.shown} of ${t.total} rows${tiers}${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
-    (shown.length
-      ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table>` +
-        tblMore(more, "more") + `</div>`
+    (rows.length
+      ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table></div>`
       : `<div class="card muted">${t.total ? "No row matches." : "No rows."}</div>`);
 }
 

@@ -22,6 +22,7 @@
 #   tmux.sessions.<server>      sessions on `-L <server>`, for has-session and list-sessions
 #   tmux.panes.<server>         lines for `-L <server> list-panes -a -F ...`
 #   tmux.fleet_windows.<srv>    `session:index` windows that carry @fleet_stage (fleet-sessions)
+#   tmux.agent_glyphs           `session:index<TAB>glyph` per window, for claude-status.sh
 #   tmux.jobs                   written: one `cwd<TAB>command` per `run-shell` call
 set -uo pipefail
 
@@ -144,6 +145,10 @@ case "$verb" in
       '#{session_name}:#{window_index}')
         [ -f "$FIX/tmux.fleet_windows.${server:-}" ] && cat "$FIX/tmux.fleet_windows.${server:-}"
         exit 0 ;;
+      # claude-status.sh `project_glyphs`: every window and the glyph it carries now.
+      $'#{session_name}:#{window_index}\t#{@agent_glyph}')
+        [ -f "$FIX/tmux.agent_glyphs" ] && cat "$FIX/tmux.agent_glyphs"
+        exit 0 ;;
     esac
     ;;
   capture-pane)
@@ -174,6 +179,9 @@ case "$verb" in
       echo "${STUB_WINDOW_ID:-@7}"
     elif printf '%s ' "$@" | grep -q 'pane_id'; then
       echo "${STUB_PANE_ID:-%12}"
+    elif printf '%s ' "$@" | grep -q 'pane_in_mode'; then
+      # tmux-pane.sh leave_mode reads it after `copy-mode -q`: 1 is a pane stuck in a mode.
+      echo "${STUB_PANE_IN_MODE:-0}"
     elif printf '%s ' "$@" | grep -q 'pane_current_command'; then
       # servers.sh `_refresh_landing` branches on this: a shell means re-run the
       # manifest's startup command, nvim means `:e` the world's page. Default is a shell,

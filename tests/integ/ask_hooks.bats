@@ -73,6 +73,29 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_not_called 'ptask'
 }
 
+@test "a reply that cancels an ask tells the session; an answer and a pending ask say nothing" {
+  local a b
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=do it|b=skip it' "bar chip?")"
+  # 2026-11-17 qAlEej: cancelled in silence, the session kept saying "still ask qAlEej".
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"i already clicked that"}'
+  assert_success
+  assert_output --partial "ask $a"
+  assert_output --partial "was cancelled"
+  assert_output --partial "do not say it is still pending"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: cancelled'
+  # Negative control: an answer naming an option cancels nothing, so the hook prints nothing.
+  b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=do it|b=skip it' "bar chip?")"
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"b"}'
+  assert_success
+  assert_output ''
+  run "$AGENT_ASK" show "$b"
+  assert_line 'status: answered'
+  # No ask, no output.
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"thanks"}'
+  assert_output ''
+}
+
 @test "a task notification or a peer message is not the human answering" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "ship it?")"
@@ -98,6 +121,24 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/wind-downs"}'
   run "$AGENT_ASK" show "$a"
   assert_line 'status: cancelled'
+}
+
+@test "a restore, a dispatch brief or a resume the fleet typed leaves the session's asks pending" {
+  local a
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=merge it|b=close it' "merge #12?")"
+  # Taken as the human, each names none of the options and would cancel the ask.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item x: merge it once CI is green."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"/one-shot close it\n\nThis is agent-queue item x, and that item is its only record."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"This session was parked to save Claude usage, and it is now resumed on the alt account."}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"You were signed out and are signed in again. Carry on with what you were doing."}'
+  # With no table to tell, nothing settles: losing an ask is the worse side.
+  TYPED_PREFIXES="$SANDBOX/none.conf" bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"b"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # Negative control: the human naming an option answers it.
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"a"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'
 }
 
 @test "a prompt a /loop or cron fired before is not the human answering, in either form" {
@@ -173,6 +214,55 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'delivery: failed'
   assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box"
+}
+
+@test "an answer whose pane another send holds (agent-panel send exit 75) records that nothing was typed" {
+  local a
+  printf '{"session_id":"sid-1","pane":"lab/%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  : > "$NOTES_FIXTURE/agent-panel.busy"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  assert_success
+  refute_output --partial 'input box'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: failed'
+  assert_line "delivery_note: another send held dotfiles's pane, so the answer was not typed into it"
+}
+
+@test "an answer to a session live on a fleet worker is typed in there, through that worker's agent-panel send" {
+  local a
+  sandbox_fleet hp
+  printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" 'yes; ship' 2>/dev/null
+  # As the lease holder's delivery unit runs it.
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  assert_success
+  grep -qF "agent-panel send --pane lab/%1 Answer to ask $a: yes; ship" "$SANDBOX/hp/calls.log" || fail "not typed on hp: $(cat "$SANDBOX/hp/calls.log")"
+  ! grep -q '^agent-panel send' "$NOTES_FIXTURE/calls.log" || fail 'typed into a pane here'
+  assert_not_called 'ptask demo'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'delivery: done'; assert_line 'delivery_note: typed into dotfiles on hp'
+}
+
+@test "a worker that does not answer the send fails the delivery saying so; one down for the read files the board row" {
+  local a b
+  sandbox_fleet hp
+  printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
+  "$AGENT_ASK" answer "$a" yes 2>/dev/null
+  echo send > "$SANDBOX/hp/down"
+  AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: answered'; assert_line 'delivery: failed'
+  assert_line 'delivery_note: hp did not answer, so the answer was not typed into dotfiles'
+  # Down for the read too: no session is seen live, so the answer becomes the typed board row.
+  : > "$SANDBOX/hp/down"
+  b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'two?')"
+  "$AGENT_ASK" answer "$b" now 2>/dev/null
+  AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver "$b" 2>/dev/null
+  assert_called "ptask demo --agent add chore(ask): two? -> answered: now (ask $b)"
 }
 
 # -- delivery: the answer is recorded at once and delivered in the background --

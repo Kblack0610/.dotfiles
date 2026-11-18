@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# mastodon-post: post one public status to the studio's Mastodon account and print its public URL.
+#
+#   mastodon-post [--dry-run] [--key <idempotency-key>] "<text>"     (no text: read stdin)
+#
+# --dry-run prints the status it would post and touches neither rbw nor the network.
+# The account is rbw entry `mastodon` in folder `marketing`: password = an access token with the
+# write:statuses scope (Preferences -> Development -> New application), its URL = the instance
+# (https://gamedev.place). Setup and troubleshooting: docs/operations/mkt.md, "Adapters".
+set -euo pipefail
+
+FOLDER=marketing
+ENTRY=mastodon
+# Mastodon's limits (docs.joinmastodon.org/api/rate-limits, read 2026-11-17): 300 calls per 5
+# minutes per account and per IP. A post is one call, one at a time per machine (the flock).
+# POST /api/v1/statuses honours Idempotency-Key for an hour (methods/statuses, read 2026-11-17), so
+# a send with --key is idempotent and a 5xx or a timeout is retried; without a key it never is.
+MAX_CHARS="${MASTODON_MAX_CHARS:-500}"   # the default instance cap; an instance may allow more
+TIMEOUT=15        # seconds per request
+MAX_ATTEMPTS=3    # a 429, or a 5xx under --key
+MAX_WAIT=60       # a longer wait fails instead of blocking the caller
+
+die() { echo "mastodon-post: $*" >&2; exit "${2:-1}"; }
+usage() { sed -n '3,3p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+dry=0 key=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=1; shift ;;
+    --key) key=${2-}; shift 2 || usage ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    -*) die "unknown flag $1" 2 ;;
+    *) break ;;
+  esac
+done
+if [ $# -gt 0 ]; then text="$*"; else text="$(cat)"; fi
+[ -n "${text//[[:space:]]/}" ] || die "empty text" 2
+n="$(printf '%s' "$text" | wc -m)"
+[ "$n" -le "$MAX_CHARS" ] || die "text is $n characters; the instance allows $MAX_CHARS" 2
+
+payload="$(jq -cn --arg s "$text" '{status: $s, visibility: "public", language: "en"}')"
+if [ "$dry" = 1 ]; then jq --arg k "$key" '. + (if $k == "" then {} else {"Idempotency-Key": $k} end)' <<<"$payload"; exit 0; fi
+
+token="$(rbw get --folder "$FOLDER" "$ENTRY" 2>/dev/null)" && [ -n "$token" ] ||
+  die "no Mastodon account (rbw $FOLDER/$ENTRY with the access token as its password)"
+instance="$(rbw get --folder "$FOLDER" --field uris "$ENTRY" 2>/dev/null | awk 'NR==1')"
+instance="${instance%/}"
+[[ "$instance" =~ ^https://[^/]+$ ]] || die "rbw $FOLDER/$ENTRY has no instance URL (https://<host>)"
+
+work="$(umask 077; mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+printf '%s' "$payload" >"$work/payload"
+# The token goes to curl in a config file, never in argv where ps shows it.
+{ printf 'url = "%s/api/v1/statuses"\n' "$instance"
+  printf 'header = "Authorization: Bearer %s"\n' "$token"
+  [ -z "$key" ] || printf 'header = "Idempotency-Key: %s"\n' "$key"
+} >"$work/curlrc"
+
+lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+if command -v flock >/dev/null; then
+  exec 9>"$lockdir/mastodon-post.lock"
+  flock 9
+fi
+
+header() { tr -d '\r' <"$work/headers" | awk -v h="$(tr 'A-Z' 'a-z' <<<"$1"):" 'tolower($1) == h { print $2 }' | tail -n1; }
+too_long() { awk -v s="$1" -v m="$MAX_WAIT" 'BEGIN { exit !(s + 0 > m + 0) }'; }
+retry() { # <why> <wait>: wait and go again, or fail once the attempts or the cap run out
+  too_long "$2" && die "$1; the wait of ${2}s is over the ${MAX_WAIT}s cap"
+  [ "$attempt" -lt "$MAX_ATTEMPTS" ] || die "$1, $MAX_ATTEMPTS attempts"
+  sleep "$2"; attempt=$((attempt + 1))
+}
+
+attempt=1
+while :; do
+  : >"$work/headers"
+  code="$(curl -sS --max-time "$TIMEOUT" -K "$work/curlrc" -X POST -H 'Content-Type: application/json' \
+    --data-binary @"$work/payload" -D "$work/headers" -o "$work/body" -w '%{http_code}')" || code=000
+  case "$code" in
+    2??)
+      url="$(jq -r '.url // empty' "$work/body")"
+      [[ "$url" =~ ^https:// ]] || die "the instance returned no status URL; check the profile"
+      printf '%s\n' "$url"; exit 0 ;;
+    429)
+      wait="$(header Retry-After)"
+      [[ "$wait" =~ ^[0-9]+$ ]] || wait=$(( $(date -d "$(header X-RateLimit-Reset)" +%s 2>/dev/null || date +%s) - $(date +%s) ))
+      [ "$wait" -ge 1 ] || wait=1
+      retry "rate limited" "$wait" ;;
+    000|5??)
+      [ -n "$key" ] || die "the instance answered ${code/#000/no response}; not retried without --key, the status may have posted, check the profile"
+      retry "the instance answered ${code/#000/no response}" $((attempt * 2)) ;;
+    401|403) die "the instance answered $code; check the token's write:statuses scope in rbw $FOLDER/$ENTRY" ;;
+    *) die "the instance answered $code: $(jq -r '.error // empty' "$work/body" 2>/dev/null || head -c 300 "$work/body")" ;;
+  esac
+done

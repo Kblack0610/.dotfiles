@@ -21,6 +21,23 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 - A system's progress is the leaves-only weighted done share of its open epics plus the epics closed in the open version. `epics.rs` rolls up each epic and carries its system, and `hub_core::page` (`systems`) sums each system's percent for the project card. A project's progress is its list of systems, never one number.
 - A release containing a feature epic closed on proof is a minor version (`stages.md`, "Versions").
 
+## Writing an epic's stories
+
+- A story is one PR in one area: `#size/s` or `#size/m`, filed on the agent board as `type(area): title #of/<epic>`, clear enough for dispatch to pick (the `fleet-dispatch` skill names what it skips). A leaf that would be `#size/l` needs a plan; that plan carries the epic's `epic:` line, and each of its phases is filed as one more story of the epic.
+- Its title is a checkable outcome, smaller than the epic's, and one detail line says what done looks like: the test, the run or the surface to look at.
+- Stories on the board are independent of each other: the board ranks rows by priority but has no dependency order. When one needs another first, the order goes in a plan's `## Phases` markers (`(after N)`, fleet-queue skill), never in prose on a row.
+- A feature epic usually has 3 to 15 stories; far past 15 it is usually two outcomes, so split it. A standing epic has no such bound. No "verify" story where automation is on for the profile: `reconcile_epics` queues that (below, "Merged is not done").
+
+## Taking an epic on
+
+The first path that fits wins:
+
+1. The human first: the outcome is not stated, or an open `decide(` row or ask blocks it. It waits on that answer; a `design(` row is filed only after the human says yes (notes-system skill, "Project board").
+2. A plan chain, `agent-queue add --plan` with a fresh session per phase: the stories must land in order, share a design decision that has to stay consistent, edit the same files and would conflict in parallel, or one leaf is `#size/l`. It needs a plan with an `epic:` line that the human approved or an answered ask settled, and each phase is one PR. Only the human's `--plan` writes the phase items; from a dispatched session or a script it files one board row, "plan <name>: run its open phases", whose session runs them in order (agentctl `QUEUE.md`, "Admission").
+3. The board, the default: the stories are independent and each is s or m. Dispatch takes them leaf by leaf in priority order; a story it cannot take (human-only, two areas) is rewritten or split, never left to wait.
+
+Never one long-lived session holding the whole epic: its context grows until it loses the thread, so a chain starts a fresh session for each phase. What holds it: `go` and `one-shot` file a plan with more than one open phase with `add --plan` and stop, building none of it themselves, and `plan-standard.sh` denies a plan with more than one open phase that says it runs in this session or one session (`planning.md`, Chain:).
+
 ## One key up
 
 Every artifact points at its epic: a plan's lowercase `epic: <id>` line, a brief's `Epic: <id>` head line, a row's `#of/<id>`, a queue item through its row. The reverse links are derived, never written down. `fleet-bench epics --json` is the one reader that derives them, with each epic's step, its ETA and how that ETA ran. `hub_core::epics` types it, and `hub_core::page` joins it with the stage check and the shipped versions into the opened card, read for one project only when its card is opened: `hub projects --page NAME`, agent-web `/api/projects/{name}/page`.

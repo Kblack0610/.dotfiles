@@ -75,8 +75,8 @@ pub struct Machine {
     /// `up` with readings, `NO_DATA` without, or the governor's power state when it is not
     /// running.
     pub state: String,
-    /// CI slots as `cc:pool_slots` counts them: a running runner, or an idle one not withheld;
-    /// local gate slots fold in. `off`: runners offline or missing.
+    /// CI slots once per runner, as `cc:site_slots` counts them: a running runner, or an idle
+    /// one not withheld; local gate slots fold in. `off`: runners offline or missing.
     pub busy: u32,
     pub slots: u32,
     pub off: u32,
@@ -85,15 +85,24 @@ pub struct Machine {
     pub load: Option<f64>,
     pub cores: Option<f64>,
     pub mem: Option<f64>,
+    /// Memory used and its total, bytes (`cc:host_mem_{used,total}_bytes`).
+    pub mem_used: Option<f64>,
+    pub mem_total: Option<f64>,
     pub temp: Option<f64>,
     /// Free share of its fullest disk.
     pub disk: Option<f64>,
+    /// That disk's free bytes and size (`cc:host_disk_{avail,size}_bytes`).
+    pub disk_avail: Option<f64>,
+    pub disk_size: Option<f64>,
     /// Each core's busy share, in core order.
     pub core_busy: Vec<f64>,
     /// The cores each CI runner's job is using, the busiest first.
     pub runner_cores: Vec<(String, f64)>,
-    /// Busy of slots per pool there: `unity 1/2`, `unity withheld 0/1`, `unity-build lent 0/3`,
-    /// `unity-local 1/1+1`.
+    /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
+    pub runner_mem: Vec<(String, f64)>,
+    /// Busy of slots per pool there, a runner once per cap it takes (`github_runner_pool_slot`,
+    /// what `cc:pool_slots` counts): `unity 1/2`, `heavy 1/3`, `unity withheld 0/1`,
+    /// `unity-build lent 0/3`, `unity-local 1/1+1`.
     pub pools: Vec<String>,
     /// The pools alone, what the pool facet offers.
     pub pool_names: Vec<String>,
@@ -137,7 +146,7 @@ pub struct Pool {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
-    /// The machines with a runner in it.
+    /// The machines with a runner that takes its cap.
     pub machines: Vec<String>,
 }
 
@@ -438,14 +447,8 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     let lent = infra.lent();
     let mut per: BTreeMap<(String, usize, String), (u32, u32)> = BTreeMap::new();
     let mut names: BTreeMap<String, BTreeSet<(usize, String)>> = BTreeMap::new();
-    let mut busy_cores: HashMap<&str, f64> = HashMap::new();
-    for s in infra.get("runner_cores") {
-        if s.label("__name__") == "cc:runner_cores_busy" {
-            if let Some(v) = s.value {
-                busy_cores.insert(s.label("runner"), v);
-            }
-        }
-    }
+    let busy_cores = infra.runner_use("cc:runner_cores_busy");
+    let mem = infra.runner_use("cc:runner_mem_bytes");
     for s in infra.get("runners") {
         let h = host(s);
         let mm = at(&mut by, h.clone());
@@ -455,19 +458,29 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         if let Some(v) = busy_cores.get(s.label("name")) {
             mm.runner_cores.push((s.label("name").into(), *v));
         }
+        if let Some(v) = mem.get(s.label("name")) {
+            mm.runner_mem.push((s.label("name").into(), *v));
+        }
         let state = s.label("state");
         if !matches!(state, "running" | "idle") {
             mm.off += 1;
             continue;
         }
-        let is_held = held.contains(s.label("name"));
         let run = state == "running";
-        if run || !is_held {
+        if run || !held.contains(s.label("name")) {
             mm.slots += 1;
         }
         if run {
             mm.busy += 1;
         }
+    }
+    // Per pool, a runner counts once per cap it takes, as cc:pool_slots counts it.
+    for s in infra.get("runner_caps") {
+        let state = s.label("state");
+        if !matches!(state, "running" | "idle") {
+            continue;
+        }
+        let (h, run, is_held) = (host(s), state == "running", held.contains(s.label("name")));
         let pool = s.label("pool").to_string();
         let r = rank(&pool);
         names
@@ -570,6 +583,10 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
             mm.load = get("cc:host_load1", &h);
             mm.cores = get("cc:host_cores", &h);
             mm.mem = get("cc:host_mem_used_ratio", &h);
+            mm.mem_used = get("cc:host_mem_used_bytes", &h);
+            mm.mem_total = get("cc:host_mem_total_bytes", &h);
+            mm.disk_avail = get("cc:host_disk_avail_bytes", &h);
+            mm.disk_size = get("cc:host_disk_size_bytes", &h);
             mm.temp = get("cc:host_temp_c", &h);
             mm.disk = disk.get(&h).copied();
             mm.boot = boot.get(&h).copied();
@@ -578,6 +595,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 mm.core_busy = c.into_iter().map(|(_, v)| v).collect();
             }
             mm.runner_cores.sort_by(|a, b| b.1.total_cmp(&a.1));
+            mm.runner_mem.sort_by(|a, b| b.1.total_cmp(&a.1));
             mm.state = match mm.power.as_ref().map(|p| p.state.as_str()) {
                 Some(s) if !s.is_empty() && s != "running" => s.to_string(),
                 _ if [mm.cpu, mm.load, mm.cores, mm.mem]
@@ -612,7 +630,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         );
     }
     let mut hosts: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for s in infra.get("runners") {
+    for s in infra.get("runner_caps") {
         hosts
             .entry(s.label("pool"))
             .or_default()
@@ -708,6 +726,24 @@ pub(crate) mod tests {
         crate::prom::flatten(&json!({"status": "success", "data": {"result": res}})).unwrap()
     }
 
+    /// Runners as the exporter writes them, `(host, name, state, caps, site)` with caps
+    /// comma-separated: one `github_runner_state` row each, its pool the first cap, and one
+    /// `github_runner_pool_slot` row per cap. Replaces both series.
+    fn runners(i: &mut Infra, rows: &[(&str, &str, &str, &str, &str)]) {
+        let (mut state, mut slot) = (vec![], vec![]);
+        for (host, name, st, caps, site) in rows {
+            let row = |metric: &str, pool: &str| {
+                json!({"__name__": metric, "host": host, "name": name, "state": st,
+                    "pool": pool, "site": site, "v": "1"})
+            };
+            let caps: Vec<&str> = caps.split(',').collect();
+            state.push(row("github_runner_state", caps[0]));
+            slot.extend(caps.iter().map(|c| row("github_runner_pool_slot", c)));
+        }
+        i.instant.insert("runners", series(state));
+        i.instant.insert("runner_caps", series(slot));
+    }
+
     /// The workstation as Prometheus names it, its runner and governor by its hostname, a cloud
     /// burst host the governor stopped, a Pi with readings and no CI, and a laptop with a runner
     /// and no exporter.
@@ -745,24 +781,20 @@ pub(crate) mod tests {
                 json!({"host": "raspberrypi", "nodename": "raspberrypi"}),
             ]),
         );
-        let runner = |host: &str, name: &str, state: &str, pool: &str, site: &str| {
-            json!({"__name__": "github_runner_state", "host": host, "name": name, "state": state,
-                "pool": pool, "site": site, "v": "1"})
-        };
-        i.instant.insert(
-            "runners",
-            series(vec![
-                runner(
+        runners(
+            &mut i,
+            &[
+                (
                     "cachyos-x8664-main",
                     "ws-unity-1",
                     "running",
                     "unity",
                     "home",
                 ),
-                runner("cachyos-x8664-main", "ws-unity-2", "idle", "unity", "home"),
-                runner("aws-burst-1", "burst-1", "offline", "unity", "cloud"),
-                runner("mac-mini", "mini-1", "idle", "macos", "home"),
-            ]),
+                ("cachyos-x8664-main", "ws-unity-2", "idle", "unity", "home"),
+                ("aws-burst-1", "burst-1", "offline", "unity", "cloud"),
+                ("mac-mini", "mini-1", "idle", "macos", "home"),
+            ],
         );
         i.instant.insert(
             "withheld",
@@ -827,6 +859,53 @@ pub(crate) mod tests {
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
+    }
+
+    /// ar-2900: a heavy host's Unity slots take heavy jobs too (home-config #1178), so the heavy
+    /// pool counts them. Its machine cells and machines read the same per-cap rows, and the
+    /// machine's own busy and slots still count each runner once.
+    #[test]
+    fn a_runner_with_two_caps_is_in_both_pools_cells_and_once_in_its_machine() {
+        let mut i = fleet();
+        runners(
+            &mut i,
+            &[
+                ("ms-a2", "ms-a2-heavy-1", "idle", "heavy,light", "local"),
+                (
+                    "ms-a2",
+                    "ms-a2-unity-pool-1",
+                    "running",
+                    "unity,light,heavy",
+                    "local",
+                ),
+                ("ms-a2", "ms-a2-light-1", "idle", "light", "local"),
+            ],
+        );
+        let cc = |pool: &str, slots: &str, busy: &str| {
+            [
+                json!({"__name__": "cc:pool_slots", "pool": pool, "v": slots}),
+                json!({"__name__": "cc:pool_busy", "pool": pool, "v": busy}),
+            ]
+        };
+        i.instant.insert(
+            "cc",
+            series(
+                [
+                    cc("heavy", "2", "1"),
+                    cc("light", "3", "1"),
+                    cc("unity", "1", "1"),
+                ]
+                .concat(),
+            ),
+        );
+        let (ms, pools) = build(&i);
+        let m = machine(&ms, "ms-a2");
+        assert_eq!((m.busy, m.slots), (1, 3));
+        assert_eq!(m.pools, ["heavy 1/2", "light 1/3", "unity 1/1"]);
+        assert_eq!(m.pool_names, ["heavy", "light", "unity"]);
+        let heavy = pools.iter().find(|p| p.pool == "heavy").unwrap();
+        assert_eq!((heavy.slots, heavy.busy), (Some(2.0), Some(1.0)));
+        assert_eq!(heavy.machines, ["ms-a2"]);
     }
 
     #[test]

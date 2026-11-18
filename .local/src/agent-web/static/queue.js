@@ -27,7 +27,7 @@ const qst = tblTab({
   tab: "queue", id: "qt", el: "q-list", on: "queue", scroller: "queue", refresh: () => refreshQueue(), table: (t) => t.table,
   hint: "search, or project:dotfiles kind:fix -acct:k1",
   state: {
-    items: null, table: null, aliases: {}, needs: 0, openRows: 0, sel: "", dispatch: null,
+    items: null, table: null, aliases: {}, needs: 0, sel: "", dispatch: null,
     stats: null, projects: [], busy: false, msg: "", draft: null,
     // candCounts: the Candidates heading's counts, read whether the fold is open or shut.
     candCounts: null, candErr: null,
@@ -49,8 +49,8 @@ const qst = tblTab({
 // The candidates are fleet-dispatch's snapshot. The counts (`?counts=1`) are read when the tab shows
 // (after its table), on the snapshot's own event and after a promote (which takes its row out of the
 // file); the rows the same, but only while the fold is open, and dropped when it shuts. The rows are
-// the shared table under their own view keys (cq, cs, csort, cdir): the server searches every row
-// and sends the first page; "+N more" asks for the rest (call).
+// the shared table under their own view keys (cq, cs, csort, cdir, cpg): the server searches every
+// row and sends one page, with the pager under it.
 const CAND_K = "sec:candidates";
 const qCandOpen = () => qst.open[CAND_K] === true;
 const refreshCandCounts = coalesce(async () => {
@@ -59,8 +59,7 @@ const refreshCandCounts = coalesce(async () => {
 });
 const CAND_COLS = { rank: ["#", "n"], project: ["project"], key: ["key"], task: ["task"], start: ["start"], why: ["why"], blocked: ["blocked"] };
 const qcd = tblTab({
-  tab: "queue", id: "qc", el: "qc-fold", on: "queue", pre: "c", api: "/api/queue/candidates", pages: true,
-  params: (p, t) => { if (t.all) p.set("call", "1"); },
+  tab: "queue", id: "qc", el: "qc-fold", on: "queue", pre: "c", api: "/api/queue/candidates",
   hint: "search, or project:dotfiles", state: { msg: "", promoting: null }, open: () => qst.open,
   // Shut while the read ran: a shut fold holds no rows, so a reopen reads afresh.
   got: (t) => { if (!qCandOpen()) t.data = null; },
@@ -98,9 +97,12 @@ const refreshQueue = coalesce(async () => {
   // not two; the list still shows when agent-queue stats fails.
   const stats = api("/api/queue/stats").catch((e) => ({ week: `stats: ${e.message}` }));
   try {
-    const q = tblParams(st.views.queue).toString();
+    const p = tblParams(st.views.queue);
+    // A link to an item (`#queue/<slug>`) asks for the page that holds it (`sel`).
+    if (st.tab === "queue" && st.arg) p.set("sel", st.arg);
+    const q = p.toString();
     const d = await api("/api/queue" + (q ? "?" + q : ""));
-    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, openRows: d.open_rows, dispatch: d.dispatch || null, err: null });
+    Object.assign(qst, { items: d.items, table: d.table, aliases: d.section_aliases || {}, needs: d.needs_you, dispatch: d.dispatch || null, err: null });
   } catch (e) { qst.err = e.message; }
   // An old section id (`#queue/running`) opens the table on its chip; a new one scrolls there.
   if (st.tab === "queue" && st.arg) {
@@ -112,8 +114,10 @@ const refreshQueue = coalesce(async () => {
       // A link to Candidates opens the fold, and so reads it.
       if (arg === "candidates" && !qCandOpen()) { qst.open[CAND_K] = true; readCands(); }
     } else if ((qst.items || []).some((i) => i.slug === arg)) {
-      // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens.
-      st.arg = ""; qSelect(arg); setQuery(st.views.queue);
+      // Any other arg is an item (`#queue/<slug>`, a Home row or a session page's link): it opens,
+      // and the URL names the page it is on, so the next read keeps it on screen.
+      const pg = qst.table?.pager?.page;
+      st.arg = ""; qSelect(arg); setQuery(tblSet(st.views.queue, { pg: pg > 1 ? String(pg) : "" }));
     } else if (tblParams(st.views.queue).get("q") !== arg) {
       // Not in this view: search for it once on every row (a done item too), and the read that answers opens it.
       setQuery(tblSet(st.views.queue, { q: arg, s: "all" })); refreshQueue();
@@ -197,8 +201,8 @@ function qState(i) {
     if (s === "cancelled") return `<td class="muted"${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>cancelled</td>`;
     return s === "ok" ? `<td>done</td>` : `<td class="${s === "failed" ? "bad" : "muted"}">${esc(s)}</td>`;
   }
-  // Not started is ready or held (hub_core::vocab::QUEUE, the table's legend); a held cell names its hold.
-  if (i.state === "queued") return i.hold ? `<td class="warn" title="held: ${esc(i.hold)}">held</td>` : `<td>ready</td>`;
+  // Not started is ready (hub_core::vocab::QUEUE, the table's legend): work with a gate is a board row.
+  if (i.state === "queued") return `<td>ready</td>`;
   return `<td>${esc(i.state)}</td>`;
 }
 
@@ -210,14 +214,10 @@ function qPrCell(i) {
   return `<td>${link}${flag}</td>`;
 }
 
-// What an item waits on (hub-core `Item::waits_for`): a hold, an ask, a merge; a hold whole on hover, an item it
-// waits after opens that item's row.
+// What a waiting or review item waits on (hub-core `Item::waits_for`): an ask, a merge, a report.
 function qHoldCell(i) {
   if (!i.waits_for) return `<td class="muted">-</td>`;
-  // `after a b`: each slug it waits on opens that item.
-  const m = /^after (.+)$/.exec(i.waits_for);
-  const text = m ? `after ${m[1].split(" ").map((s) => tblLink(`#queue/${encodeURIComponent(s)}`, s)).join(" ")}` : esc(i.waits_for);
-  return `<td title="${esc(i.hold || i.waits_for)}">${text}</td>`;
+  return `<td title="${esc(i.waits_for)}">${esc(i.waits_for)}</td>`;
 }
 
 // A row, and when it is the opened one its detail under it across every column. The title leads,
@@ -243,16 +243,12 @@ function qRow(i, n) {
     (open ? `<tr class="wdet"><td colspan="${Object.keys(Q_COLS).length}">${qDetail(i)}</td></tr>` : "");
 }
 
-// The table in its own scroll box, capped at the server's open_rows (agent-web TABLE_OPEN_ROWS, or
-// down to the opened row) with the rest a click away; the chips, search and filters reach every row.
+// The table in its own scroll box: the page the server sent (Queue's `table` size in
+// hub_core::layout), with tblTab's pager under it; the chips, search and filters reach every row.
 function qBody() {
-  const t = qst.table, shown = qst.items || [];
-  if (!shown.length) return `<div class="panel">${t.total ? "No item matches." : "Nothing in the queue."}</div>`;
-  const last = shown.findIndex((i) => i.slug === qst.sel) + 1;
-  const rows = qst.all ? shown : shown.slice(0, Math.max(qst.openRows, last));
-  const more = shown.length - rows.length;
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, Q_COLS)}${rows.map(qRow).join("")}</table>` +
-    tblMore(more, "more") + `</div>`;
+  const t = qst.table, rows = qst.items || [];
+  if (!rows.length) return `<div class="panel">${t.total ? "No item matches." : "Nothing in the queue."}</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, Q_COLS)}${rows.map(qRow).join("")}</table></div>`;
 }
 
 // The stats window's prose, a fold under the flow line that starts open; the chips above the table are the counts.
@@ -287,7 +283,7 @@ function qDetail(i) {
   return `<div class="card qitem ${esc(i.state)}">${cardHead(i.title || i.slug, [prio])}` +
     cardLine([esc(i.project), i.harness && `<span title="harness">${esc(i.harness)}</span>`, p ? `phase ${p.done}/${p.total}` : "", active ? etaText(p) : "", qPr(i), qCost(i), qProof(i)]) + qLinks(i) +
     (line ? `<div class="cline">${line}</div>` : "") +
-    (i.hold ? `<div class="qhold">Waiting on: ${esc(i.hold)}</div>` : "") + (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
+    (i.note ? `<div class="qhold">${esc(i.note)}</div>` : "") +
     (active ? qNeeds(i) : "") + (active && p && p.next ? `<div class="qnext">Next: ${esc(p.next)}</div>` : "") +
     cfold(`task:${i.slug}`, "Full task and details", facts([
       ["state", i.state === "done" ? `done, ${i.status || "ok"}` : i.state], ["in state", qMin(t.in_state)], ["wait", qMin(t.wait)], ["run", qMin(t.run)],
@@ -330,11 +326,11 @@ function qCompose() {
     `<select id="q-project"><option value="">project...</option>${opt(qst.projects, d.project)}</select>` +
     `<select id="q-mode">${["oneshot", "plan"].map((m) => `<option value="${m}"${m === d.mode ? " selected" : ""}>${Q_MODE[m]}</option>`).join("")}</select>` +
     `<select id="q-priority">${opt(Q_PRIORITIES, d.priority)}</select>` +
-    `<input id="q-tags" placeholder="tags: night, at:02:30" value="${esc(d.tags)}">` +
+    `<input id="q-tags" placeholder="tags: ui, at:02:30" value="${esc(d.tags)}">` +
     `<button class="btn primary" id="q-add"${qst.busy ? " disabled" : ""}>${qst.busy ? "Adding..." : "Add to queue"}</button>` +
     `</div><div class="err" id="q-msg">${esc(qst.msg)}</div>` +
     `<div class="muted qhint">Run to PR starts when a slot frees, by priority, and ends at a PR; Plan first opens a planning session now. ` +
-    `night waits for the night window and stops at the PR; at:HH:MM waits for that time.</div></div>`;
+    `at:HH:MM waits for that time.</div></div>`;
 }
 
 function renderQueue() {
@@ -374,8 +370,7 @@ function qCandRow(c, L) {
 function qCandBody(t) {
   const d = t.data, v = d.table, rows = d.rows || [];
   if (!rows.length) return `<div class="card muted">${v.total ? "No row matches." : "No open board row to start."}</div>`;
-  return `<div class="panel scroll"><table class="tbl">${tblHead(v, CAND_COLS)}${rows.map((c, i) => qCandRow(c, tblLinks(v, i))).join("")}</table>` +
-    tblMore(d.more, "more") + `</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(v, CAND_COLS)}${rows.map((c, i) => qCandRow(c, tblLinks(v, i))).join("")}</table></div>`;
 }
 
 // Over the bar: a failed read, urgent rows blocked, a promote's answer, the projects worked on today

@@ -26,7 +26,8 @@ flash = true
 icon = ""
 
 # What the Waybar module shows when no stopwatch is active (kept visible + clickable).
-idle_text = "timebox"
+# One glyph, not a word: the bar's right side has no width to spare at 1920px.
+idle_text = "󰔛"
 
 # Queue presets: `timebox queue load <name>` fills the task queue with these tasks (the panel's
 # `l`, or Super+A t l, loads one and starts it). Each task is "<op> <len>".

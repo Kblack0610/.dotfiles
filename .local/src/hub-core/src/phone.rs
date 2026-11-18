@@ -282,8 +282,8 @@ fn done(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// "Queue: 14 running, 16 ready, 83 held", then one detail line: the oldest ready item's wait and
-/// what a PR costs, "oldest ready waited 37h, $4.24 per PR (28d $5.90)". What the queue delivered
+/// "Queue: 14 running, 16 on deck", then one detail line: the oldest queued item's wait and
+/// what a PR costs, "oldest waited 37h, $4.24 per PR (28d $5.90)". What the queue delivered
 /// today is the Done section's. The cost stands without the queue.
 fn queue(i: &Inputs) -> Vec<Row> {
     let mut out = vec![];
@@ -296,7 +296,7 @@ fn queue(i: &Inputs) -> Vec<Row> {
         ));
         let sitting = q.stats.as_ref().and_then(|s| s.sitting.as_ref());
         if let Some(o) = sitting.and_then(|s| s.oldest_runnable.first()) {
-            said.push(format!("oldest ready waited {}", age(o.minutes * 60)));
+            said.push(format!("oldest waited {}", age(o.minutes * 60)));
         }
     }
     if let Some(inf) = i.infra.filter(|x| x.ok) {
@@ -365,7 +365,8 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
+/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the sites summed, naming only what is down.
+/// Slots and busy are `cc:site_*`, a runner once: `cc:pool_*` counts it once per cap it takes.
 fn ci(infra: &Infra) -> Option<Row> {
     let v = infra.cc_values();
     let sum = |name: &str| -> f64 {
@@ -374,11 +375,11 @@ fn ci(infra: &Infra) -> Option<Row> {
             .map(|(_, x)| *x)
             .sum()
     };
-    let slots = sum("cc:pool_slots");
+    let slots = sum("cc:site_slots");
     if slots == 0.0 {
         return None;
     }
-    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
+    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:site_busy"))];
     let queued = sum("cc:pool_waiting");
     if queued > 0.0 {
         said.push(format!("{queued:.0} queued"));
@@ -499,6 +500,12 @@ mod tests {
                 metric("cc:pool_slots", json!({"pool": "unity"}), "10"),
                 metric("cc:pool_slots", json!({"pool": "light"}), "19"),
                 metric("cc:pool_busy", json!({"pool": "unity"}), "6"),
+                metric("cc:pool_busy", json!({"pool": "light"}), "6"),
+                // The same runners once each: the line's slots and busy.
+                metric("cc:site_slots", json!({"site": "local"}), "18"),
+                metric("cc:site_slots", json!({"site": "cloud"}), "2"),
+                metric("cc:site_busy", json!({"site": "local"}), "6"),
+                metric("cc:site_busy", json!({"site": "cloud"}), "0"),
                 metric("cc:pool_done_24h", json!({"pool": "unity"}), "100"),
                 metric("cc:pool_pass_ratio_24h", json!({"pool": "unity"}), "0.5"),
                 metric("cc:pool_done_24h", json!({"pool": "light"}), "300"),
@@ -703,13 +710,12 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_says_ready_held_and_how_long_the_oldest_waited() {
+    fn the_queue_says_on_deck_and_how_long_the_oldest_waited() {
         let mut q = queue_of(vec![
             (State::Running, "r1"),
             (State::Queued, "q1"),
             (State::Queued, "q2"),
         ]);
-        q.items[2].hold = Some("after q1".into());
         q.stats = Some(crate::queue::Stats {
             sitting: Some(crate::queue::Sitting {
                 oldest_runnable: vec![crate::queue::Waiter {
@@ -724,8 +730,8 @@ mod tests {
         assert_eq!(
             texts(&p, "queue"),
             [
-                "Queue: 1 running, 1 ready, 1 held",
-                "oldest ready waited 37h, $6.54 per PR (28d $7.00)",
+                "Queue: 1 running, 2 on deck",
+                "oldest waited 37h, $6.54 per PR (28d $7.00)",
             ]
         );
     }
@@ -823,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_sums_the_pools_and_names_only_what_is_down() {
+    fn ci_sums_the_sites_and_names_only_what_is_down() {
         let runners = vec![
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
@@ -833,7 +839,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6/20 busy, 80% passed, aws-burst-1 offline"]
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -843,7 +849,7 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6/29 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6/20 busy, 80% passed"]);
     }
 
     #[test]
@@ -861,8 +867,8 @@ mod tests {
                 "unity-core-playground 57 PRs",
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
-                "Queue: 1 running, 0 ready",
-                "CI: 6/29 busy, 80% passed",
+                "Queue: 1 running, 0 on deck",
+                "CI: 6/20 busy, 80% passed",
             ]
         );
     }

@@ -44,17 +44,25 @@ load 'fleet_dispatch/common'
   assert_not_called 'claude-acct unpark'
 }
 
-@test "reap queues the open phases of an approved plan whose session is gone, as low night items, and starts nothing" {
+@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+  # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
+  unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
+  # game has no board here: agent-queue files nothing and fails, so the plan is not marked filed
   run reconcile_plans
   assert_success
-  run agent-queue list --json --state queued
-  assert_equal "$(jq -r .slug <<<"$output" | paste -sd,)" 'orphan-p2,orphan-p3'
-  assert_equal "$(jq -r .tags <<<"$output" | sort -u)" 'night'
-  assert_equal "$(jq -r .from <<<"$output" | sort -u)" 'auto:plans'
-  assert_equal "$(jq -r .priority <<<"$output" | sort -u)" 'low'
-  grep -q 'orphan.md for the night' "$FLEET_DISPATCH_DIR/log.md"
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
+  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"
+  run reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
+  grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
@@ -96,7 +104,7 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
 
 @test "reap queues a plan once: a phase that failed or was cancelled does not come back" {
   stub agent-ask 'echo other-session'
-  approved_plan orphan gone-session
+  approved_plan orphan gone-session '- [x] one\n- [ ] two (independent)\n- [ ] three (independent)'
   reconcile_plans
   agent-queue cancel orphan-p3 >/dev/null
   agent-queue cancel orphan-p2 >/dev/null
@@ -125,7 +133,8 @@ epics_fixture() {
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
   # its story row is filed under the epic it checks (the real notes: "end to end: the verify row ...")
-  grep -q -- '--agent add -- .*#of/gm-5' "$NOTES_FIXTURE/calls.log" || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
+  # the brief is several lines, so the add is matched across them
+  tr '\n' ' ' <"$NOTES_FIXTURE/calls.log" | grep -q -- '--agent add --detail=Verify epic gm-5 .* -- .*#of/gm-5 ' || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
   it=$(agent-queue show verify-gm-5-3 --json)
   assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
   run jq -r .task <<<"$it"
@@ -296,7 +305,7 @@ real_epic_board() {
   stub agent-ask 'exit 0'
   codex_run codex   # its Codex run is live (codex_gone has its own test)
   export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gone.md 2>/dev/null)" ] || fail "an item whose claude exited stayed active"
@@ -311,7 +320,7 @@ real_epic_board() {
   stub agent-panel 'echo "{\"target\":\"lab/game-agent-7:1\",\"status\":\"busy\",\"session_id\":\"c7\"}"'
   stub agent-ask 'exit 0'
   codex_run cxlive claudeitem   # a process that is not the launcher's would not be listed; the slug decides
-  cmd_reap >/dev/null
+  run cmd_reap
   [ -n "$(qitem running cxgone)" ] || fail "one reap is one witness, and it settled"
   grep -q "queue item cxgone's Codex run is not live" "$FLEET_DISPATCH_DIR/log.md" || fail "no miss logged: $(cat "$FLEET_DISPATCH_DIR/log.md")"
   echo $(( $(date +%s) - DISPATCH_REAP_CONFIRM - 1 )) > "$FLEET_DISPATCH_DIR/reap-miss/cxgone"
@@ -345,7 +354,7 @@ real_epic_board() {
   stub agent-panel 'echo "{\"target\":\"hub/dotfiles:2\",\"status\":\"idle\",\"session_id\":\"h3\"}"'
   stub agent-ask 'exit 0'
   export DISPATCH_REAP_CONFIRM=0   # the second witness has its own test
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   assert_success
   [ -n "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hubgone.md 2>/dev/null)" ] || fail "a hub item with no live session stayed active"
@@ -354,7 +363,7 @@ real_epic_board() {
   stub agent-panel 'exit 0'
   started_item hubblind ''
   sed -i '/^session: *$/d; s/^agent: claude/agent: claude\nsessions: h9/' "$AGENT_QUEUE_DIR"/running/*-hubblind.md
-  cmd_reap >/dev/null
+  run cmd_reap
   run cmd_reap
   [ -n "$(qitem running hubblind)" ] || fail "reaped on an empty panel"
 }
@@ -597,20 +606,19 @@ real_epic_board() {
   [ -z "$(qitem running hub-work)" ] || fail "kept a gone hub conversation after restore finished"
 }
 
-@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and night rows are not" {
-  night_ready
-  export AGENT_QUEUE_NIGHT=01:00-06:00 AGENT_QUEUE_NOW=12:00
+@test "cleanup lane: a tier-3 cleanup row S or M is a merging item at noon behind the red-fix gate; feat, a deps bump, L and tier-3 PR rows are not" {
+  pr_lane_ready
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3 #low'
   row agent-runtime agent 'prune the hooks' '- [ ] refactor(hooks): prune the dead hooks #tier/3'
   row agent-runtime agent 'add a panel' '- [ ] feat(panel): add a timer panel #tier/3'
   # A chore that bumps a dependency is shared infrastructure (DISPATCH_CLEANUP_NOT), not cleanup.
   row agent-runtime agent 'bump jq' '- [ ] chore(deps): bump jq to 1.8 #tier/3'
-  night_verdict 'drop the dead timer' timer; night_verdict 'prune the hooks' hooks true L; night_verdict 'add a panel' panel; night_verdict 'bump jq' jq
+  pr_lane_verdict 'drop the dead timer' timer; pr_lane_verdict 'prune the hooks' hooks true L; pr_lane_verdict 'add a panel' panel; pr_lane_verdict 'bump jq' jq
 
   fill --dry-run --json
-  assert_equal "$(jq -r 'select(.state == "ready") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
-  assert_equal "$(jq -r 'select(.state == "night") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
-  fill
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-cleanup") | "\(.key) \(.worker)"' <<<"$output")" 'drop the dead timer tier3-cleanup'
+  assert_equal "$(jq -r 'select(.state == "ready" and .worker == "tier3-pr") | .key' <<<"$output" | sort | paste -sd, -)" 'add a panel,bump jq'
+  DISPATCH_PER_PASS=5 fill
   assert_success
   f=$(agent-queue list --json --state queued | jq -r 'select(.title | test("drop the dead timer")) | .slug')
   [ -n "$f" ] || fail "the cleanup row was not queued"
@@ -620,17 +628,17 @@ real_epic_board() {
   refute_output --partial -- '--pr-only'
   assert_output --partial 'agent-land refuses a tier-3 PR without that line'
   assert_output --partial 'Merge with agent-land'
-  # The L cleanup row is neither merging nor night: plan_skips sends it to inbox-plan.
+  # The L cleanup row is neither merging nor a PR row: plan_skips sends it to inbox-plan.
   [ "$(state_of 'prune the hooks')" = '- [ ]' ] || fail "an L cleanup row was started"
-  assert_equal "$(night_keys)" 'add a panel,bump jq'
+  assert_equal "$(pr_lane_keys)" 'add a panel,bump jq'
 }
 
 @test "cleanup lane: a tier-3 cleanup pick ranks with its project's #prio, as a day pick does" {
-  night_ready
+  pr_lane_ready
   sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/agent-runtime/README.md"
   row agent-runtime agent 'drop the dead timer' '- [ ] chore(timer): drop the dead timer #tier/3'
-  night_verdict 'drop the dead timer' timer
-  run t3_cleanup_picks "$(night_rows '')"
+  pr_lane_verdict 'drop the dead timer' timer
+  run t3_picks "$(t3_rows '')"
   assert_success
   assert_equal "$(jq -r '"\(.pprio) \(.why)"' <<<"$output")" '0 cleanup, focus project, tier3-cleanup, #high, alpha'
 }
@@ -812,7 +820,7 @@ OUT
   fix_ended "$h2" FAIL
   run cmd_reap
   assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries, on the game sheet)'
-  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human] | join("|")')" "review|$h2 fix"
   assert_called "notes --profile bnb ptask game add fix(ci): PR o/game#12 is red at ${h2:0:12} after 2 fix-ci tries"
   run cmd_reap
   refute_output --partial 'fix-crash'
@@ -823,6 +831,43 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+# ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
+@test "reap: a head whose fix-ci tries went to the human sheet and then reads green gets a lander, once its land tries are its own" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  for _ in 1 2 3; do fix_ended "$h1" FAIL; run cmd_reap; done
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 red after 2 fix-ci tries'
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr_owner, .fix_human] | join("|")')" "queued|land|$h1 fix"
+  run item_brief "$(agent-queue show fix-crash --json)"
+  refute_output --partial '/fix-ci'
+  # its lands spent at that head too: one more row, then quiet on either color
+  fix_ended "$h1" PASS; run cmd_reap
+  fix_ended "$h1" PASS; run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix land"
+  for ci in PASS FAIL; do
+    fix_ended "$h1" "$ci"; run cmd_reap
+    refute_output --partial 'fix-crash'
+  done
+  # a stamp from before it named owners (the head alone, as #2182's was) still quiets only the spent owner
+  local h2=2222222222222222222222222222222222222222
+  agent-queue set fix-crash "fix_human=$h2" "fix_tries=2 $h2" land_tries= >/dev/null
+  fix_ended "$h2" FAIL; run cmd_reap
+  refute_output --partial 'fix-crash'
+  fix_ended "$h2" PASS; run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 green at ${h2:0:12}, try 1 of 2)"
+  # its lander carries the stamp written out, so the hub reads it as dispatch's, not the human's
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix"
+  fix_ended "$h2" PASS; run cmd_reap
+  fix_ended "$h2" PASS; run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 green after 2 land tries'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h2 fix land"
 }
 
 # 2026-11-12: 26 items sat in review, 11 of them on green PRs nobody was asked to merge.
@@ -876,7 +921,8 @@ OUT
   run cmd_reap
   agent-queue set fix-crash agent=codex tags=tier3 >/dev/null
   fix_ended 1111111111111111111111111111111111111111 PASS
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  agent-queue add --project game --slug filler "filler" >/dev/null
+  AGENT_QUEUE_CAP=1 run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries // ""] | join("|")')" "review|"
   grep -q 'fix-crash: PR o/game#12 green at 111111111111; land held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "hold not logged"
   run cmd_reap
@@ -888,10 +934,11 @@ OUT
   pr_item OPEN
   run cmd_reap
   fix_ended 1111111111111111111111111111111111111111 FAIL
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  agent-queue add --project game --slug filler "filler" >/dev/null
+  AGENT_QUEUE_CAP=1 run cmd_reap
   assert_success
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries // ""] | join("|")')" "review|"
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  AGENT_QUEUE_CAP=1 run cmd_reap
   assert_equal "$(grep -c 'fix-crash: PR o/game#12 red at 111111111111; fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md)" 1
   # no session recorded (a cloud run): settle_sessionless keeps it parked, never requeued
   sed -i '/^session: /d; /^sessions: /d' "$(qitem review fix-crash)"
@@ -957,32 +1004,42 @@ OUT
 
 # 2026-11-10 audit: 4 of 24 Codex runs that asked stopped without `requeue --ask`; their items failed
 # or sat in review, and the answer became a board row instead of restarting the work.
-@test "reap: a gone session's item with a pending ask for it is held on that ask, with its open PR, and the next brief continues the PR" {
+@test "reap: a gone session's item with a pending ask for it goes back to its board row behind that ask, with its open PR, and the next brief continues the PR" {
   pr_item OPEN
   agent-queue move fix-crash waiting >/dev/null
   agent-queue set fix-crash "note=pushed the fix, need a call on the API" >/dev/null
   id=$(agent-ask post --project game --task fix-crash --options 'a=keep it|b=drop it' 'keep the old API?')
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
-  assert_output --partial "held queue item fix-crash (ask $id pending, game-agent-1 ended)"
+  assert_output --partial "returned queue item fix-crash to its board row behind ask $id (game-agent-1 ended)"
+  # Its row waits on the ask (#ask/<id>/<options>); agent-ask start_held promotes it on the answer.
+  assert_called "tag --add ask/$id/a/b fix crash"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-fix-crash.md 2>/dev/null)" ]
   it=$(agent-queue show fix-crash --json)
-  assert_equal "$(jq -r '[.state, .tags, .pr] | join(" ")' <<<"$it")" "queued ask:$id=a+b o/game#12"
-  assert_equal "$(jq -r .note <<<"$it")" "session game-agent-1 ended on ask $id; held until the human answers it; was: pushed the fix, need a call on the API"
+  assert_equal "$(jq -r '[.state, .end_reason, .tags, .pr] | join(" ")' <<<"$it")" "done returned ask:$id=a+b o/game#12"
+  assert_equal "$(jq -r .note <<<"$it")" "session game-agent-1 ended on ask $id; its row waits until the human answers it; was: pushed the fix, need a call on the API"
   run item_brief "$it"
   assert_output --partial 'already opened o/game#12: check out its head branch (gh pr checkout 12 -R o/game)'
 }
 
-@test "reap: a gone session's item held only by the ask its ask: field names, with no PR, is held on it" {
+@test "reap: a gone session's item held only by the ask its ask: field names, with no PR, goes back to its row behind it; one with no row fails" {
   project game beta "$SANDBOX/repos/game"
   started_item p lab:game-agent-1 '' '' human waiting
   id=$(agent-ask post --project game --options 'yes=ship it|no=hold it' 'ship it?')
-  agent-queue set p ask="$id" >/dev/null
+  agent-queue set p ask="$id" row=game:gm-4 >/dev/null
   run cmd_reap
   assert_success
-  assert_equal "$(agent-queue show p --json | jq -r '[.state, .tags] | join(" ")')" "queued ask:$id=yes+no"
+  assert_equal "$(agent-queue show p --json | jq -r '[.state, .end_reason, .tags] | join(" ")')" "done returned ask:$id=yes+no"
   # no PR, so the brief names none: it once said "already opened null" (ar-1583)
   run item_brief "$(agent-queue show p --json)"
   refute_output --partial 'already opened'
+  # Negative control: an item with no row has nowhere to wait, so the unclosed run fails.
+  started_item q lab:game-agent-2
+  agent-queue set q ask="$id" >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show q --json | jq -r '[.state, .status] | join(" ")')" "done failed"
 }
 
 @test "reap: an answered ask holds nothing, so the unclosed run still fails (negative control)" {
@@ -996,20 +1053,24 @@ OUT
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
 }
 
-@test "reap: a gone session's item whose after: item is not done goes back to queued behind it, not failed" {
+@test "reap: a gone session's item whose after: item is not done goes back to its board row behind it, not failed" {
   project game beta "$SANDBOX/repos/game"
   # after: is a list (ar-39): zero is done ok, so first alone still holds.
   agent-queue add --project game --slug zero "the zeroth part" >/dev/null
   agent-queue move zero done --status ok >/dev/null
   agent-queue add --project game --slug first "the first part" >/dev/null
+  agent-queue set first row=game:gm-1 >/dev/null
   started_item second lab:game-agent-1
-  agent-queue set second after=zero,first >/dev/null
+  agent-queue set second after=zero,first row=game:gm-2 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
-  assert_output --partial 'requeued queue item second (game-agent-1 ended: it waits after first)'
-  assert_equal "$(agent-queue show second --json | jq -r '[.state, .hold] | join(":")')" 'queued:after first'
+  assert_output --partial 'returned queue item second (game-agent-1 ended; it waits after first)'
+  assert_called 'tag --add after/gm-1 gm-2'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-second.md)" end_reason)" returned
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-second.md 2>/dev/null)" ]
   # Negative control: once its after: item is done, the unclosed run is the run's own failure.
-  rm "$AGENT_QUEUE_DIR"/queued/*-second.md
+  rm "$AGENT_QUEUE_DIR"/done/*/*-second.md
   started_item second lab:game-agent-1
   agent-queue set second after=zero,first >/dev/null
   agent-queue move first done --status ok >/dev/null
@@ -1168,7 +1229,7 @@ OUT
 }
 
 @test "reap: an agent row started with no queue item is un-started only once it stays orphaned DISPATCH_ORPHAN_HOURS" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 '- [/] fix x <!-- id:gm-1 -->'
   run cmd_reap
@@ -1184,7 +1245,7 @@ OUT
 }
 
 @test "reap: orphan sweep reads every board profile and routes unstart to the row's profile" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-4 '- [/] outside dispatch <!-- id:gm-4 -->'
   jq -cn '{rows: [{profile: "extra", project: "game", lane: "agent", id: "gm-4", state: "doing"}]}' > "$SANDBOX/board.json"
@@ -1324,7 +1385,7 @@ OUT
 }
 
 @test "reap: a row an active item names, and a human-lane row, are never orphans" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-2 '- [/] linked <!-- id:gm-2 -->'
   row game human 'mine' '- [/] the human is on it'
@@ -1341,7 +1402,7 @@ OUT
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
   # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
   # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   # The real `ptask list` key is the row's text with its tags, not its id: rows() must read the id off the marker.
   row game agent 'fix(core): slots #tier/3 #size/m' '- [/] fix(core): slots #tier/3 #size/m #c1028 #low <!-- id:gm-4 run:1112 -->'
@@ -1360,7 +1421,7 @@ OUT
 }
 
 @test "reap: a queue it cannot read un-starts no orphan" {
-  export DISPATCH_NIGHT_PROFILE=bnb
+  export DISPATCH_T3_PROFILE=bnb
   project game beta "$SANDBOX/repos/game"
   row game agent gm-3 '- [/] fix y <!-- id:gm-3 -->'
   orphan_seen game gm-3 96
@@ -1517,6 +1578,36 @@ OUT
   assert_output --partial 'no lost server on record'
 }
 
+@test "restore reopens a conversation that several queue items list, with the running one updated last (ar-2676)" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane working "$G" conv-two
+  CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug hub-old "hub old" >/dev/null
+  agent-queue add --project game --running --slug hub-new "hub new" >/dev/null
+  agent-queue claim hub-new --sid conv-two >/dev/null
+  touch -d '2 hours ago' "$(qitem running hub-old)"
+  # A review item written last (a PR poller) still loses to a running one.
+  agent-queue add --project game --running --slug hub-pr "hub pr" >/dev/null
+  agent-queue claim hub-pr --sid conv-two >/dev/null
+  agent-queue move hub-pr review >/dev/null
+  touch "$(qitem review hub-pr)"
+  # The ambiguity mine reports to every other caller stays.
+  run agent-queue mine --sid conv-two
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "hub:dotfiles:working: would reopen conv-two in $G (bypassPermissions) for queue item hub-new, prompted to carry on"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-new'
+  assert_called 'AGENT_QUEUE_ITEM=hub-new'
+  # A hand resume with no --item takes the same one instead of refusing.
+  touch -d '3 hours ago' "$(qitem running hub-new)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server hub --session dotfiles --window hand --cwd "$G" --resume conv-two
+  assert_success
+  assert_called 'AGENT_QUEUE_ITEM=hub-old'
+}
+
 @test "restore reopens a conversation with the queue item that lists it, and a joined window takes no session" {
   restore_setup
   G="$SANDBOX/repos/game"
@@ -1524,11 +1615,31 @@ OUT
   CLAUDE_CODE_SESSION_ID=conv-item agent-queue add --project game --running --slug hub-work "hub work" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
-  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work'
-  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item"
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-work, prompted to carry on'
+  # A running item's conversation gets the restore prompt as its first message, naming the item.
+  assert_called "-n working -c $G AGENT_QUEUE_ITEM=hub-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-item fleet-dispatch\\ restore\\ reopened\\ this\\ session"
+  assert_called 'Carry\ on\ with\ queue\ item\ hub-work\ from'
   f=$(qitem running hub-work)
   assert_equal "$(qfield "$f" origin)" resume
   assert_equal "$(qfield "$f" session)" ''
+}
+
+@test "restore prompts no conversation whose item waits, nor one with no item" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane waiting "$G" conv-wait
+  lost_pane mine "$G" conv-human
+  CLAUDE_CODE_SESSION_ID=conv-wait agent-queue add --project game --running --slug hub-wait "hub wait" >/dev/null
+  agent-queue move hub-wait waiting >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "hub:dotfiles:waiting: would reopen conv-wait in $G (bypassPermissions) for queue item hub-wait"
+  refute_output --partial 'prompted'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called '--resume conv-wait'
+  assert_called '--resume conv-human'
+  assert_not_called 'restore\ reopened'
 }
 
 @test "restore keeps the record when a reopen fails, so a rerun finishes it" {
@@ -1551,6 +1662,52 @@ OUT
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+@test "record on the lease holder runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
+  record_setup
+  world '10 1000' "$PANE1"
+  sandbox_fleet --self hp 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_output 'hp: did its own'
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''record'\'' '\''--here'\'''
+  assert_called 'idle-worker PATH='
+  assert_not_called ' state PATH='
+  [ -f "$RECORD" ] || fail "this machine's own record was not kept"
+  # --here, the call a worker gets, asks no one.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record --here
+  assert_success
+  assert_not_called 'ssh'
+  # A machine that does not hold the fleet lease keeps its own record and asks no one: the holder fans out.
+  : > "$NOTES_FIXTURE/calls.log"
+  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_not_called 'ssh'
+  sandbox_fleet --self hp 4
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_failure
+  assert_output --partial 'record: hp exited 4'
+}
+
+@test "restore reopens each worker's own sessions there with its flags, and a worker that does not answer is said, not failed" {
+  restore_setup
+  sandbox_fleet --self hp 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
+  assert_success
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''restore'\'' '\''--here'\'' '\''--server'\'' '\''hub'\'' '\''--dry-run'\'''
+  assert_not_called ' state PATH='
+  assert_line 'hp: did its own'
+  assert_output --partial 'restore: idle-worker did not answer; its own record stays there'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --here
+  assert_success
+  assert_not_called 'ssh'
+  sandbox_fleet --self hp 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_output --partial 'restore: hp exited 1'
 }
 
 @test "a server that dies again keeps the lost record a restore only part finished, and adds the new conversations once" {
@@ -1602,7 +1759,7 @@ OUT
 
 @test "reap leaves an item alone while its worker does not answer, and settles it once the worker says the session is gone" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run cmd_reap
@@ -1627,7 +1784,7 @@ OUT
 @test "reap: a partial merge whose session is gone goes back to the queue for its final landing, keeping its row and after items open" {
   pr_item MERGED
   agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
-  agent-queue add --project game --slug next --after fix-crash 'next phase' >/dev/null
+  legacy next "after: fix-crash" --project game 'next phase'
   run cmd_reap
   assert_success
   assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial)'
@@ -1647,4 +1804,181 @@ OUT
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
   grep -q 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the parked partial'
+}
+
+# lost_host_item -- fix-crash runs on razer-laptop, which does not answer: its Claude session sid-a
+# last pushed feat/fix at abc123 and left a status note. DISPATCH_HOST_DEAD is 600s.
+lost_host_item() {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  remote_item fix-crash
+  sed -i 's/^session: .*/&\nsessions: sid-a/' "$(qitem running fix-crash)"
+  agent-queue set fix-crash branch=feat/fix@abc123 'note=patched the parser, tests next' >/dev/null
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  export DISPATCH_HOST_DEAD=600
+  stub store-sync-age 'exit 0'   # this machine reached the store: its own link is up
+  MISS="$FLEET_DISPATCH_DIR/host-miss/razer-laptop"
+}
+
+@test "reap re-queues the items of a host unanswered for DISPATCH_HOST_DEAD from their pushed branch, and the new brief says where the run was" {
+  lost_host_item
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "one miss re-queued the item"
+  [ -s "$MISS" ] || fail "no mark for the host that did not answer"
+  # The first miss was 700s ago and the last one a pass ago: unanswered on every reap since.
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  touch -d '-100 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .salvage, .lost] | join("|")' <<<"$it")" 'queued|feat/fix@abc123|razer-laptop sid-a'
+  [[ "$(jq -r .note <<<"$it")" == "session game-agent-1 lost with its host razer-laptop, unanswered for 600s; requeued from feat/fix@abc123; was: patched the parser, tests next" ]] || fail "note: $(jq -r .note <<<"$it")"
+  grep -q 'host razer-laptop lost, queue item fix-crash requeued from feat/fix@abc123' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the lost host'
+  run item_brief "$it"
+  assert_output --partial 'left its unfinished work on branch feat/fix at abc123 on origin'
+  assert_output --partial 'An earlier run of this item on razer-laptop was lost when that machine stopped answering: anything it had not pushed is gone with it. Its last note: patched the parser, tests next'
+}
+
+@test "reap: a host that answers between misses clears its mark, and a gap longer than DISPATCH_HOST_DEAD starts the count again" {
+  lost_host_item
+  run cmd_reap
+  [ -s "$MISS" ] || fail "no mark for the host that did not answer"
+  # It answers, its session alive: the mark goes.
+  rm "$NOTES_FIXTURE/ssh.rc"
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  [ ! -e "$MISS" ] || fail "a host that answered kept its mark"
+  [ -n "$(qitem running fix-crash)" ] || fail "re-queued an item whose host answered"
+  # Unanswered again, but the last miss before this one is older than the window: no reap saw it
+  # down in between, so the count starts over instead of re-queueing.
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  echo $(( $(date +%s) - 2000 )) > "$MISS"
+  touch -d '-1000 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "a gap in the misses re-queued the item"
+  [ "$(cat "$MISS")" -gt $(( $(date +%s) - 60 )) ] || fail "the count did not start over"
+}
+
+@test "reap: an item on a lost host with an open PR is requeued without salvage, its brief continuing the PR" {
+  lost_host_item
+  agent-queue set fix-crash pr=o/game#12 >/dev/null
+  printf "OPEN -\n" > "$NOTES_FIXTURE/pr.state"
+  stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; cat "$NOTES_FIXTURE/pr.state"'
+  run cmd_reap
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  run cmd_reap
+  assert_output --partial 'requeued queue item fix-crash (its host razer-laptop is lost)'
+  it=$(agent-queue show fix-crash --json)
+  assert_equal "$(jq -r '[.state, .salvage // "-", .lost] | join("|")' <<<"$it")" 'queued|-|razer-laptop sid-a'
+  run item_brief "$it"
+  assert_output --partial 'already opened o/game#12'
+  refute_output --partial 'left its unfinished work on branch'
+}
+
+@test "reap: a review item on a lost host stays parked in review" {
+  lost_host_item
+  agent-queue move fix-crash review >/dev/null
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem review fix-crash)"
+  run cmd_reap
+  echo $(( $(date +%s) - 700 )) > "$MISS"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  [ -n "$(qitem review fix-crash)" ] || fail "a parked review item was requeued for its lost host"
+}
+
+@test "reap counts no miss for a worker while this machine itself has not reached the store: the fault may be here" {
+  lost_host_item
+  stub store-sync-age 'exit 1'
+  mkdir -p "${MISS%/*}"; echo $(( $(date +%s) - 700 )) > "$MISS"; touch -d '-100 seconds' "$MISS"
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  [ -n "$(qitem running fix-crash)" ] || fail "a dispatcher cut off re-queued a worker's item"
+  grep -q 'this machine has not synced the store in 30 minutes either' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the missing witness'
+}
+
+# paced_restore <n> -- n lost conversations, each listed by a running queue item, so each reopen is
+# a wake (the restore prompt); agent-hold is the real one in the sandbox.
+paced_restore() {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  export AGENT_HOLD_DIR="$SANDBOX/holds" AGENT_HOLD_ASSESS="$SANDBOX/none"
+  LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; mkdir -p "${LOST%/*}"
+  stub agent-hold "exec '$REPO_ROOT/.local/bin/agent-hold' \"\$@\""
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  # A server restore starts must not hold the restore lock: it would block every later walk.
+  stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"; ! ls -l /proc/$$/fd | grep -q restore.lock || echo "tmx holds the restore lock" >> "$NOTES_FIXTURE/calls.log"'
+  local i
+  for ((i = 1; i <= $1; i++)); do
+    lost_pane "w$i" "$G" "conv-$i"
+    CLAUDE_CODE_SESSION_ID="conv-$i" agent-queue add --project game --running --slug "item-$i" "item $i" >/dev/null
+  done
+}
+
+@test "restore wakes a batch of 3, holds the rest under the restore hold, and the next walk on room wakes them (2026-11-17)" {
+  paced_restore 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 3
+  assert_output --partial 'hub:dotfiles:w4: waits for a wake batch (queue item item-4)'
+  assert_output --partial 'hub: 2 wait for a wake batch'
+  assert_output --partial 'restore: 2 wait for a wake batch of at most 3'
+  assert_not_called 'holds the restore lock'
+  run agent-hold show restore
+  assert_output --partial 'kind: load'
+  assert_output --partial 'roster: conv-4,conv-5'
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/panes/.restore-owed")" 2
+  [ -f "$LOST" ] || fail "a restore with wakes owed consumed its record"
+  # The budget is spent: a walk inside the settle window wakes nothing more.
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 1 > "$HOME/.claude/sessions/1.json"
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 2 > "$HOME/.claude/sessions/2.json"
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 3 > "$HOME/.claude/sessions/3.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'restore: 2 wait for a wake batch'
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 3
+  # One wake ages out: the next walk wakes one, and the hold's roster follows what still waits.
+  sed -i '1s/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'restore: 1 wait for a wake batch'
+  run agent-hold show restore
+  assert_output --partial 'roster: conv-5'
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 4 > "$HOME/.claude/sessions/4.json"
+  # The settle window passes: the next walk wakes the last one, lifts its hold and consumes the record.
+  sed -i 's/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'released the restore hold'
+  assert_called '--resume conv-5'
+  assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 5
+  run agent-hold show restore
+  assert_failure
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "the owed marker outlived the restore"
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.restored.json" ] && [ ! -f "$LOST" ] || fail "a finished restore left its record"
+}
+
+@test "restore leaves a restore hold it did not set where it is" {
+  paced_restore 1
+  agent-hold set restore --by someone "their own pause" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  run agent-hold show restore
+  assert_output --partial 'by: someone'
+}
+
+@test "the minute record starts the next batch only while wakes are owed and the budget has room" {
+  paced_restore 0
+  stub fleet-assess '[ -e "$NOTES_FIXTURE/hot" ] && exit 1; exit 0'
+  run restore_tick
+  assert_not_called 'fleet-restore'
+  echo 2 > "$FLEET_DISPATCH_DIR/panes/.restore-owed"
+  touch "$NOTES_FIXTURE/hot"
+  run restore_tick
+  assert_not_called 'fleet-restore'
+  rm "$NOTES_FIXTURE/hot"
+  run restore_tick
+  assert_called 'systemctl --user start --no-block fleet-restore.service'
 }

@@ -165,6 +165,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/pr-overlap.sh",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -174,6 +184,16 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hosted-runner-guard.py || true",
+            "timeout": 8
           }
         ]
       },
@@ -314,6 +334,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-standard.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/first-prompt-lessons.sh"
           }
         ]
       }

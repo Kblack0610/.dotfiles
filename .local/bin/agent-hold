@@ -2,20 +2,31 @@
 # agent-hold - a fleet-wide pause on a shared resource, held as state instead of sent as
 # a message.
 #
-#   agent-hold set <resource> [--roster a,b,c] [--by name] "<reason>"
+#   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource] "<reason>"
+#                                   --kind: load (the default) is the fleet pacing itself, which
+#                                   the shepherd lifts once the machine reads CLEAR; resource is
+#                                   anything else (bad RAM, a maintenance pause), released by hand
+#                                   (the default for dispatch). A re-set writes the kind afresh
 #   agent-hold claim <resource> [--by name] [--class c] "<what>"   one session's exclusive
 #                                   use: fails while another session holds it, and the
 #                                   holder's own `check` passes (the agent machine's desktop:
 #                                   mac-desktop); --class says why it needs it (`classes`)
 #   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
 #                                   claimed resource next (agent-queue desk:<class>)
-#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays
+#   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays: name a
+#                                   session by its Claude session id (stable), or its fleet-sessions
+#                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber; a
+#                                   bare tmux session name matches only a one-window session
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
-#   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
-#                                   when the caller's session has been granted
-#   agent-hold list                 resource<TAB>since<TAB>by<TAB>reason, one per hold
+#   agent-hold check <resource> [--no-caller]   exit 1 (and print the hold) while held, 0
+#                                   when free or when the caller is granted or holds the claim;
+#                                   --no-caller asks as no session, so neither counts; unity and
+#                                   cpu are held, file or not, while the machine is over the high mark
+#   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
+#                                   load|resource|claim keeps that kind (a hold with no kind line
+#                                   reads as the kind set would give it)
 #   agent-hold show <resource>      print the hold file
 #
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
@@ -39,6 +50,10 @@ set -uo pipefail
 
 HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 PROC_ROOT="${AGENT_HOLD_PROC:-/proc}"
+# Resources a local gate waits on for this machine's CPU (the playground's slots.sh checks unity):
+# `check` holds them while the machine is over the high mark, hold file or not (load_check).
+LOAD_GATED=unity,cpu
+ASSESS="${AGENT_HOLD_ASSESS:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/fleet-assess}"
 # 1 of the default 100: a held scope gets about 1% of a contended CPU, near nice 19's share.
 LOW_CPU_WEIGHT=1
 # Desk classes, best first: why a session needs a claimed resource, and so who takes it next
@@ -66,6 +81,14 @@ oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +
 # field <file> <key> -> first value (text after "key: ")
 field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
+# default_kind <resource> -> the kind a set with no --kind gets: resource for dispatch, which
+# pauses a workflow and never load, so a hand `set dispatch` does not drop fleet-assess's trip
+# line (fleet-thermal paged high 36 times in 8 hours on one), load for the rest.
+default_kind() { if [ "$1" = dispatch ]; then printf resource; else printf load; fi; }
+
+# hold_kind <file> -> load, resource or claim; a hold set before kinds existed gets its default.
+hold_kind() { local k; k="$(field "$1" kind)"; printf '%s' "${k:-$(default_kind "${1##*/}")}"; }
+
 # A resource is one path segment. Anything else could escape HOLD_ROOT.
 valid_resource() {
   case "$1" in
@@ -78,13 +101,47 @@ need_resource() {
   valid_resource "${1:-}" || { echo "agent-hold: bad resource name '${1:-}' (letters, digits, . _ -)" >&2; exit 2; }
 }
 
-# Who is holding: the tmux session when there is one (that is the name ListAgents and the
-# panel show), else the working directory's basename.
-default_by() {
-  local s=""
-  [ -n "${TMUX:-}" ] && s="$(tmux display-message -p '#S' 2>/dev/null)"
-  printf '%s' "${s:-${PWD##*/}}"
+# tmux_names -> the caller's tmux window as fleet-sessions names it, one name per line: the
+# target <server>/<session>:<window>, then <session>:<window>, then the bare session only when
+# it has one window. A world session (hub:dotfiles) has many, so its bare name is none of them:
+# a grant to `dotfiles` let every window through (ar-2836). Asked of $TMUX_PANE: with no -t,
+# tmux answers for the window the client is looking at, not the caller's. Nothing outside a pane.
+tmux_names() {
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  local s w n
+  IFS=$'\t' read -r s w n < <(tmux display-message -p -t "$TMUX_PANE" \
+    $'#{session_name}\t#{window_index}\t#{session_windows}' 2>/dev/null)
+  [ -n "${s:-}" ] && [ -n "${w:-}" ] || return 0
+  printf '%s/%s:%s\n%s:%s\n' "$(basename "${TMUX%%,*}")" "$s" "$w" "$s" "$w"
+  [ "${n:-}" != 1 ] || printf '%s\n' "$s"
 }
+
+# callers -> every name the caller answers to, one per line, for `check` and a claim's owner:
+# its Claude session id (what fleet-sessions rows and NIGHTLY owners carry), its tmux names,
+# else the working directory's basename.
+callers() {
+  local t
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || printf '%s\n' "$CLAUDE_CODE_SESSION_ID"
+  t="$(tmux_names)"
+  if [ -n "$t" ]; then printf '%s\n' "$t"; elif [ -n "${PWD##*/}" ]; then printf '%s\n' "${PWD##*/}"; fi
+}
+
+# Who is holding, as set and claim record it and every reader shows it: the fleet-sessions
+# target in a tmux pane, else the working directory's basename. A claim keeps the Claude
+# session id beside it (sid:), so the name stays readable and the owner stays exact.
+default_by() {
+  local t
+  t="$(tmux_names)"; t="${t%%$'\n'*}"
+  printf '%s' "${t:-${PWD##*/}}"
+}
+
+# in_names <name> <names, one a line>: true when the name is one of them. A here-string, not a
+# pipe: under pipefail, grep -q exiting at its match can SIGPIPE the writer and fail the match.
+in_names() { [ -n "$1" ] && grep -qxF -- "$1" <<<"$2"; }
+
+# owns_claim <file> <caller names>: the caller holds this claim, by any of its names or by the
+# Claude session id the claim recorded.
+owns_claim() { in_names "$(field "$1" by)" "$2" || in_names "$(field "$1" sid)" "$2"; }
 
 notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
 
@@ -100,16 +157,20 @@ set_field() {
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local roster="" by="" reason=""
+  local roster="" by="" reason="" kind=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --roster) roster="${2:-}"; shift 2 ;;
-      --by)     by="${2:-}"; shift 2 ;;
+      --roster|--by|--kind) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
+        case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; esac; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
       *)  reason="$*"; break ;;
     esac
   done
+  case "${kind:=$(default_kind "$resource")}" in
+    load|resource) ;;
+    *) echo "agent-hold set: --kind is load or resource, not '$kind'" >&2; exit 2 ;;
+  esac
   [ -n "$reason" ] || { echo "agent-hold set: say why (the reason is what every reader sees)" >&2; exit 2; }
   [ -n "$by" ] || by="$(default_by)"
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
@@ -120,6 +181,7 @@ cmd_set() {
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
     printf 'resource: %s\n' "$resource"
+    printf 'kind: %s\n'     "$kind"
     printf 'since: %s\n'    "$(now_iso)"
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
@@ -157,16 +219,25 @@ cmd_claim() {
   done
   [ -n "$reason" ] || { echo "agent-hold claim: say what you are doing with it" >&2; exit 2; }
   [ -z "$class" ] || [ -n "$(class_rank "$class")" ] || { echo "agent-hold claim: unknown class '$class' (agent-hold classes)" >&2; exit 2; }
-  [ -n "$by" ] || by="$(default_by)"
-  by="$(oneline "$by")"
+  # A claim taken as this session also records its Claude session id: renumber-windows moves a
+  # window's index, and so its target, while the claim is held, and the id keeps it the owner.
+  # One made for a name given by --by is that name's alone.
+  local f="$HOLD_ROOT/$resource" body own="" sidline=""
+  if [ -n "$by" ]; then
+    by="$(oneline "$by")"
+    [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ] && own=1
+  else
+    by="$(oneline "$(default_by)")"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || sidline="sid: $(oneline "$CLAUDE_CODE_SESSION_ID")"$'\n'
+    [ -f "$f" ] && owns_claim "$f" "$(callers)" && own=1
+  fi
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
-  local f="$HOLD_ROOT/$resource" body
   # A refresh with no --class keeps the class the claim had.
-  if [ -z "$class" ] && [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then class="$(field "$f" class)"; fi
+  if [ -z "$class" ] && [ -n "$own" ]; then class="$(field "$f" class)"; fi
   class="${class:-other}"
-  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\nroster: \ngranted: \nreason: %s\n' \
-    "$resource" "$class" "$(now_iso)" "$by" "$(oneline "$reason")")"
-  if [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ]; then
+  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\n%sroster: \ngranted: \nreason: %s\n' \
+    "$resource" "$class" "$(now_iso)" "$by" "$sidline" "$(oneline "$reason")")"
+  if [ -n "$own" ]; then
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
@@ -182,10 +253,6 @@ cmd_claim() {
   echo "busy: $resource since $(field "$f" since) by $(field "$f" by)${held:+ ($held)}: $(field "$f" reason)$outrank" >&2
   return 1
 }
-
-# Who is asking, for `check`: the same name `set` records as `by`, which is also the name
-# the shepherd and fleet-sessions use for a session.
-caller() { default_by; }
 
 # in_list <name> <a,b,c>
 in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
@@ -304,30 +371,59 @@ cmd_release() {
   return 0
 }
 
+# load_check <resource> -- with no hold file, a load resource is still held while the machine itself
+# reads over fleet-assess's high mark: a gate honors the load, not only a hold somebody remembered to
+# set (2026-11-17: 22 sessions woken at once reran their Unity gates into load 127 on 32 cores, no
+# hold set). A hold file is the pacer's own answer, grants included, so this reads only without one.
+# No fleet-assess (a Mac runner) holds nothing.
+load_check() {
+  local out
+  in_list "$1" "$LOAD_GATED" || return 0
+  [ -x "$ASSESS" ] || return 0
+  out="$("$ASSESS" --load-probe 2>/dev/null)" && return 0
+  echo "held: $1 by the machine's load: $out"
+  return 1
+}
+
 cmd_check() {
   local resource="${1:-}"
   need_resource "$resource"
+  case "${2:-}" in
+    ''|--no-caller) ;;
+    *) echo "agent-hold check: unknown argument $2" >&2; exit 2 ;;
+  esac
   local f="$HOLD_ROOT/$resource"
-  [ -f "$f" ] || return 0
-  local me
-  me="$(caller)"
-  if [ -n "$me" ] && [ "$(field "$f" kind)" = claim ] && [ "$(field "$f" by)" = "$me" ]; then
-    echo "claimed: $resource by $me" >&2
+  [ -f "$f" ] || { load_check "$resource"; return; }
+  # --no-caller asks for a session that does not exist yet (agent-queue's hold:<resource>), so
+  # no grant or claim of the asker's counts.
+  local me=""
+  [ "${2:-}" = --no-caller ] || me="$(callers)"
+  if [ "$(field "$f" kind)" = claim ] && owns_claim "$f" "$me"; then
+    echo "claimed: $resource by $(field "$f" by)" >&2
     return 0
   fi
-  if [ -n "$me" ] && in_list "$me" "$(field "$f" granted)"; then
-    echo "granted: $resource for $me" >&2
-    return 0
-  fi
+  local name names
+  IFS=, read -ra names <<<"$(field "$f" granted)"
+  for name in "${names[@]}"; do
+    in_names "$name" "$me" && { echo "granted: $resource for $name" >&2; return 0; }
+  done
   echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
   return 1
 }
 
 cmd_list() {
+  local want=""
+  case "${1:-}" in
+    '') ;;
+    --kind) [ $# -eq 2 ] || { echo "agent-hold list: --kind takes one value" >&2; exit 2; }; want="$2"
+      case "$want" in load|resource|claim) ;; *) echo "agent-hold list: --kind is load, resource or claim, not '$want'" >&2; exit 2 ;; esac ;;
+    *) echo "agent-hold list: unknown argument $1" >&2; exit 2 ;;
+  esac
   [ -d "$HOLD_ROOT" ] || return 0
   local f g c
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
+    [ -z "$want" ] || [ "$(hold_kind "$f")" = "$want" ] || continue
     g="$(field "$f" granted)" c="$(field "$f" class)"
     printf '%s\t%s\t%s\t%s%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "${c:+[$c] }" "$(field "$f" reason)" "${g:+ (granted: $g)}"
   done
@@ -341,7 +437,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -351,7 +447,7 @@ case "$verb" in
   lower)   cmd_lower "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
-  list)    cmd_list ;;
+  list)    cmd_list "$@" ;;
   classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
   -h|--help|help) usage ;;

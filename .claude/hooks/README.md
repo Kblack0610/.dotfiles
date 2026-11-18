@@ -15,7 +15,7 @@ phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skip
 phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
-Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to the `stop-post.d/` children via stdin so they can self-loop-guard. The `stop-checks.d/` children run with no stdin; they get the payload's session id as `STOP_SESSION_ID`.
+Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. The exception is a session with `/wind-down` armed: its loop-guarded Stop re-runs the checks for a fresh verdict and then `95-wind-down.sh` alone, which needs no guard because it never blocks. A post script that blocks a Stop holds the teardown on that Stop only. Coordinator passes the JSON payload to the `stop-post.d/` children via stdin so they can self-loop-guard. The `stop-checks.d/` children run with no stdin; they get the payload's session id as `STOP_SESSION_ID`.
 
 Anything that must fire on every Stop, including a pure Q&A turn with a clean tree, goes in `stop-post.d/`: it runs after the checks or after the clean-tree early exit.
 
@@ -36,7 +36,7 @@ A timed-out check with no reported failures is logged and recorded as SKIPPED, d
 
 Project-type detection lives **inside each check** (e.g. `[ -f package.json ] || exit 0`), so the coordinator stays project-agnostic. To add a check, drop `<NN>-<name>.sh` into `stop-checks.d/` and `chmod +x`. Checks run in parallel — order is informational only.
 
-Current checks: `10-git-workflow.sh` (unpushed commits, which only warn while a background run of this session is live, read as a process holding its `tasks/<id>.output` open; open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier, on the tests the change picks). Nothing runs tests on `git push` or `gh pr create`: the CI fast job on hosted runners is the gate, the way Unity's gate runs only on the pool (`unity-core-playground` `docs/operations/ci.md` rule 2). The Stop check covers the dirty tree only, so a red in work committed and pushed in one turn is caught and fixed in CI.
+Current checks: `10-git-workflow.sh` (unpushed commits, which only warn while a background run of this session is live, read as a process holding its `tasks/<id>.output` open; a queue item's session pushes them instead and records `branch:` on its item, and is blocked when the item names it in `lost:`; open PRs), `20-node-checks.sh` (turbo/pnpm typecheck/lint/format/knip), `30-cargo.sh`, `40-python.sh` (ruff/mypy), `50-go.sh` (vet/golangci-lint), `60-shell-tests.sh` (the bats fast tier, on the tests the change picks). Nothing runs tests on `git push` or `gh pr create`: the CI fast job on hosted runners is the gate, the way Unity's gate runs only on the pool (`unity-core-playground` `docs/operations/ci.md` rule 2). The Stop check covers the dirty tree only, so a red in work committed and pushed in one turn is caught and fixed in CI.
 
 The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_HOME/claude-stop-hook/ci-result-<session_id>.txt` (`ci-result-<proj>-<date>.txt` only when the payload has no session id) and exports the path as `CI_RESULT_FILE` to the post scripts. `95-wind-down.sh` reads it from there and never builds the name itself. Files older than a week are pruned.
 
@@ -77,7 +77,8 @@ There is no Stop-time judge. The session eval is `agentctl-session-outcomes` (ni
 | Grep, Glob | `~/.claude/hooks/block-root-search.sh` | Deny a Grep or Glob whose root holds a network mount (`/`, `/mnt`); a search inside the share passes. The Bash forms (`find`, `rg`, `grep -r` from `/`) are a `metadata.replaces` row of `fleet-pace`. `tests/integ/block_root_search.bats` |
 | Read, Bash | `~/.claude/hooks/large-read-guard.py` | Deny a Read with no `limit`, or a `cat` whose output reaches the context, of a text file over 2,000 lines, naming `rg -n -C 8` and offset/limit; a Read with a limit passes. It replaced an additionalContext hint that fired 362 times in 7 days and changed nothing. Fail-open; `tests/unit/large_read_guard.bats` |
 | Edit\|Write\|MultiEdit\|NotebookEdit\|EnterPlanMode | `~/.claude/hooks/manual-mode-investigate.sh` | In manual (default) permission mode, deny: that mode is investigate-only. Also on UserPromptSubmit, where it injects the investigate posture |
-| ExitPlanMode | `~/.claude/hooks/plan-standard.sh` | Deny a plan that misses the sections `~/.local/src/docs/planning.md` requires for this project's type, naming each gap. The same hook on UserPromptSubmit injects those sections in plan mode. Fails open when the doc is missing |
+| Edit\|Write\|MultiEdit | `~/.claude/hooks/hosted-runner-guard.py` | Deny writing a GitHub-hosted runner label (`ubuntu-latest`, `ubuntu-24.04`, `macos-*`, `windows-*`) into a `.github/workflows/` file of a repo whose origin owner is in project-map.json `github_runners.self_hosted_only`, naming `vars.LINUX_RUNNER_LIGHT`; `github_runners.allow` lists the exceptions. Work orgs are not listed, and a public repo passes (hosted is free there; a self-hosted runner would run fork PR code on the LAN). What the repos hold now, whoever wrote it: `gh-hosted-runner-audit` (MOVE for a private repo's hosted job, UNSAFE for a public repo's self-hosted one). `tests/unit/hosted_runner_guard.bats`, `tests/unit/gh_hosted_runner_audit.bats` |
+| ExitPlanMode | `~/.claude/hooks/plan-standard.sh` | Deny a plan that misses the sections `~/.local/src/docs/planning.md` requires for this project's type, naming each gap, and a plan with more than one open phase that says it runs in one session (planning.md, `Chain:`). The same hook on UserPromptSubmit injects those sections in plan mode. Fails open when the doc is missing |
 | Agent\|Task\|Workflow | `~/.claude/hooks/spawn-watch.sh` | Ping the human when one session passes 40/80/160 spawns. Alert only: always exits 0, never denies |
 
 A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-outcomes counts each denial under that name in the outcome row's `guards`, which is how a guard's effect is counted; a reason with no name lead is invisible to it (`tests/unit/session_outcomes.bats` "guards").
@@ -87,6 +88,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 | Matcher | File | Job |
 |---------|------|-----|
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
+| Bash | `~/.claude/hooks/pr-overlap.sh` | After `gh pr create` opens a GitHub PR, warn with each other open PR of the repo that changes one of the same files (up to 5, three files each) |
 | ExitPlanMode | `~/.claude/hooks/plan-approved.sh` | Record the approved plan in `~/.agent/plans/approved.jsonl`, so `fleet-dispatch reap` can queue its open phases once its session is gone |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when an always-loaded file passes its budget: `MEMORY.md` 8 KB (or a line over 200 chars), global `CLAUDE.md` 20 KB, repo root `CLAUDE.md`/`AGENTS.md` 12 KB |
 
@@ -98,7 +100,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |--------|-------|
 | Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, tool and command head; `long_runs` | `claude-recall tool-output` |
 | Tool latency (slowest tools by total time), tool errors by class, gateway calls, errors by class, cost and tokens per upstream model: `langfuse`, null when Langfuse could not answer | `agent-usage langfuse` |
-| Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
+| Cost (billed sessions; `fleet_cost` in the snapshot is every session, billed or priced at fitted rates), sessions, merged PRs and cost per merged PR (fleet cost), start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
 
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
 - `by_tool[].allocated_cost_usd` is an allocation, never a metered figure: each registry session's cost of the day is split over its tools by their share of its carried output (`claude-recall tool-output --by session,tool`, a subagent's output counted for its parent). A session that carried no tool output allocates nothing, and its cost is `by_tool_unallocated_usd`, so the two sum to `totals.cost_usd`.

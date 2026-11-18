@@ -26,20 +26,28 @@ setup() {
 
 Enforced from: 2026-11-19
 
-| Stage | Applies | Requirement | Check |
-|---|---|---|---|
-| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` |
-| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` |
-| dev | base | A README where the project lives | `[ -f README.md ]` |
-| dev | app | An app-only row | `false` |
-| alpha | base | Plays start to finish | human |
-| alpha | base | A deploy workflow | not yet: needs the forge API |
-| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` |
-| beta | base | A changelog | `[ -f CHANGELOG.md ]` |
+| Stage | Applies | Requirement | Check | Dept |
+|---|---|---|---|---|
+| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` | product |
+| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` | engineering |
+| dev | base | A README where the project lives | `[ -f README.md ]` | engineering |
+| dev | app | An app-only row | `false` | product |
+| alpha | base | Plays start to finish | human | product |
+| alpha | base | A deploy workflow | not yet: needs the forge API | ops |
+| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` | engineering |
+| beta | base | A changelog | `[ -f CHANGELOG.md ]` | engineering |
 
 ## Elsewhere
 
-| draft | base | A table outside Requirements | `false` |
+| draft | base | A table outside Requirements | `false` | product |
+
+## Departments
+
+| Id | Title | Question | Owns |
+| --- | --- | --- | --- |
+| product | Product | Is it the thing? | the brief |
+| engineering | Engineering | Does it build? | the README |
+| ops | Ops | Does it stay up? | the runbook |
 EOF
 
   # A game inside a monorepo: the packages live at the repo root, its README in its folder.
@@ -121,6 +129,154 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --stage beta --json
   assert_failure 1
   assert_equal "$(jq -c '[.fail, .blocks, .requirements[-1].result]' <<<"$output")" '[1,true,"FAIL"]'
+}
+
+@test "--by-dept groups each row under its department's title with a met count, in the Departments order" {
+  run "$CHECK" shooter --stage alpha --by-dept
+  assert_success
+  assert_line --index 0 'Product: 1/2 met'
+  assert_line --index 1 --regexp '^  PASS +draft +A lab sheet$'
+  assert_line --index 2 --regexp '^  HUMAN alpha +Plays start to finish$'
+  assert_line --index 3 'Engineering: 3/3 met'
+  assert_line --index 7 'Ops: 0/1 met'
+  assert_line --index 8 --regexp '^  TODO +alpha +A deploy workflow'
+  refute_output --partial 'app-only'
+  for flag in --json --systems '--system docs'; do
+    # shellcheck disable=SC2086 # one flag and its argument
+    run "$CHECK" shooter --by-dept $flag
+    assert_failure 2
+    assert_output --partial '--by-dept is a stage-mode view and takes only --stage'
+  done
+}
+
+@test "a Dept cell outside Departments, an empty one or a missing column exits 2 and names the row" {
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)product |$/\1sales |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'the Requirements row "A lab sheet" names Dept "sales"'
+  run "$CHECK" --requirements
+  assert_failure 2
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)sales |$/\1 |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+  sed -i 's/^\(| draft | base | A lab sheet | [^|]* |\).*$/\1/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+}
+
+@test "--json carries each row's dept, and every row of the shipped stages.md names a known one" {
+  run "$CHECK" shooter --stage alpha --json
+  assert_equal "$(jq -r '[.requirements[].dept] | join(" ")' <<<"$output")" 'product engineering engineering product ops engineering'
+  run bash -c '"$0" --requirements --json | jq -r "[.requirements[].dept] | unique | join(\" \")"' "$CHECK"
+  assert_output 'engineering ops product'
+  # NEGATIVE CONTROL: the real doc exits 2 when any row names a dept its Departments table lacks.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
+}
+
+@test "--requirements --json carries the Departments table, and a reworded requirement keeps its dept" {
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -c '.departments' <<<"$output")" '[{"id":"product","title":"Product","question":"Is it the thing?","owns":"the brief"},{"id":"engineering","title":"Engineering","question":"Does it build?","owns":"the README"},{"id":"ops","title":"Ops","question":"Does it stay up?","owns":"the runbook"}]'
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A lab sheet") | .dept' <<<"$output")" product
+  # NEGATIVE CONTROL: rewording the requirement leaves its Dept cell, so the department stays.
+  sed -i 's/| A lab sheet |/| A reworded lab sheet |/' "$STAGES_DOC"
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A reworded lab sheet") | .dept' <<<"$output")" product
+  # The shipped doc carries the nine departments.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_equal "$(jq -r '[.departments[].id] | join(" ")' <<<"$output")" 'product engineering ops design analytics marketing legal support money'
+}
+
+# docs_tree: the game's docs: x.md, a data file that is not a doc, and an ignored doc.
+docs_tree() {
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  printf '{"zebra": 1}\n' > "$REPO/Assets/Games/Shooter/docs/data.json"
+  printf '# ignored\n' > "$REPO/Assets/Games/Shooter/docs/ignored.md"
+}
+
+# origin_repo: $REPO as a git repo whose origin/HEAD holds the game's docs, removed from the
+# working tree, the shape of a clone that is behind its remote.
+origin_repo() {
+  docs_tree
+  printf 'docs/ignored.md\n' > "$REPO/Assets/Games/Shooter/.gitignore"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm -r "$REPO/Assets/Games/Shooter/docs"
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| dev | base | A doc on origin | `doc docs/x.md` | engineering |
+| dev | base | Its text on origin | `doc_text docs/x.md \| grep -qx '## Rollback'` | ops |
+| dev | base | Its path on origin | `doc_files \| grep -qx docs/x.md` | engineering |
+| dev | base | A grep on origin | `doc_grep rollback docs` | ops |
+| dev | base | A doc nowhere | `doc docs/missing.md` | engineering |
+| dev | base | A word only outside the docs | `doc_grep zebra docs` | ops |
+| dev | base | An ignored file | `doc_files \| grep -qx docs/ignored.md` | ops |
+EOF2
+}
+
+@test "doc helpers read the project's folder on origin/HEAD, so a clone behind its remote still passes" {
+  origin_repo
+  run "$CHECK" shooter
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  # NEGATIVE CONTROL: a path on neither origin nor disk fails, a word only in a .json is no doc,
+  # and an ignored file is not on origin.
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
+  refute_output --partial 'no origin/HEAD'
+}
+
+@test "doc helpers read the working tree with no origin, and warn when origin has no origin/HEAD" {
+  origin_repo
+  git -C "$REPO" remote set-head origin -d
+  run "$CHECK" shooter
+  assert_output --partial 'has an origin but no origin/HEAD'
+  assert_line --regexp '^FAIL +dev +A doc on origin$'
+  git -C "$REPO" remote remove origin
+  docs_tree
+  run "$CHECK" shooter
+  refute_output --partial 'no origin/HEAD'
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  # NEGATIVE CONTROL: the working tree reads lose neither rule; `find .` saw the ignored file.
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
+}
+
+@test "systems.md: the docs index passes only when it names each doc and each subdirectory of the docs tree" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$SYSTEMS_DOC"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    grep -F '| docs | base | A docs index' "$REPO_ROOT/.local/src/docs/systems.md"; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  d="$REPO/Assets/Games/Shooter/docs"
+  mkdir -p "$d/operations"
+  printf '# arch\n' > "$d/architecture.md"; printf '# deploy\n' > "$d/operations/deploy.md"; printf '{}\n' > "$d/data.json"
+  printf '# Docs\n\n- [Architecture](architecture.md)\n' > "$d/README.md"
+  run "$CHECK" shooter --system docs
+  # NEGATIVE CONTROL: the operations/ tree is in no link.
+  assert_line --regexp '^FAIL +docs +A docs index'
+  printf -- '- [Deploy](operations/deploy.md)\n' >> "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^PASS +docs +A docs index'
+  rm "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^FAIL +docs +A docs index'
 }
 
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
@@ -350,7 +506,7 @@ DOC
 
 ## Requirements
 
-| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` |
+| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` | engineering |
 EOF2
   mkdir -p "$HOME/bin"; ln -s "$CHECK" "$HOME/bin/project-stage-check"
   PATH="$HOME/bin:$PATH" run "$CHECK" shooter
@@ -492,8 +648,19 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'done'
 }
 
+@test "file: --json reads a board past the kernel's 128 KB argument limit, not a quiet error" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  awk 'BEGIN { pad = sprintf("%600s", ""); gsub(/ /, "x", pad); for (i = 0; i < 300; i++) print "- [ ] feat(ui): filler " i " " pad " <!-- id:sh-" (i + 10) " -->" }' >> "$LAB/agent/README.md"
+  [ "$(wc -c < "$LAB/agent/README.md")" -gt 140000 ]
+  run --separate-stderr "$CHECK" shooter --file --json
+  assert_success
+  run jq -c '[.fail, .filed_open, .filed_closed]' <<<"$output"
+  assert_output '[1,1,0]'
+}
+
 @test "file: a title that passes on one row and fails on another stays open" {
-  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` | engineering |/' "$STAGES_DOC"
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
   printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
   board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
@@ -564,7 +731,71 @@ real_row() {
   local row
   row="$(grep -F "| $1" "$REPO_ROOT/.local/src/docs/stages.md" | head -1)"
   [ -n "$row" ] || { echo "no row: $1" >&2; return 1; }
-  printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n%s\n' "$row" > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n%s\n\n' "$row"; real_depts; } > "$STAGES_DOC"
+}
+
+# real_depts: the Departments section of the shipped stages.md, which every Dept cell must name.
+real_depts() {
+  awk '/^## /{p = ($0 == "## Departments")} p' "$REPO_ROOT/.local/src/docs/stages.md"
+}
+
+@test "stages.md: a game's design doc is read at the repo root on origin/HEAD, whatever the default branch is called" {
+  real_row 'draft | game | A pitch in the lab'
+  mkdir -p "$LAB/docs" "$REPO/docs/games"; printf '# idea\n' > "$LAB/docs/idea.md"
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  git -C "$REPO" init -q -b develop
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm "$REPO/docs/games/shooter.md"
+  # NEGATIVE CONTROL: the row read origin/main, which a develop repo has not got.
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+  git -C "$REPO" remote remove origin
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^FAIL +draft +A pitch in the lab'
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+}
+
+@test "stages.md: the incident runbook needs how to tell it is down, who is paged and the rollback" {
+  real_row 'prod | base | An incident runbook'
+  d="$REPO/Assets/Games/Shooter/docs/operations"; mkdir -p "$d"
+  printf '# Runbook\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  # NEGATIVE CONTROL: a runbook that is only a rollback is not met.
+  assert_line --regexp '^FAIL +prod +An incident runbook'
+  printf '# Runbook\n\n## Is it down\n\nThe health watch goes red.\n\n## Who is paged\n\nThe owner, by agent-notify.\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +prod +An incident runbook'
+}
+
+@test "stages.md: privacy and terms are met by files of those names or by a route named exactly privacy or terms" {
+  real_row 'beta | app | Published privacy and terms'
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$HOME/map.json" && mv "$HOME/map.json" "$PROJECT_MAP_FILE"
+  s="$REPO/Assets/Games/Shooter"; mkdir -p "$s/docs/legal"
+  printf '# Privacy\n' > "$s/docs/legal/PRIVACY.md"; printf '# Terms\n' > "$s/docs/legal/TERMS.md"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
+  rm -r "$s/docs/legal"
+  d="$s/web/src"; mkdir -p "$d/app/privacy" "$d/app/terms" "$d/app/account/privacy-settings"
+  printf 'export default function P() {}\n' > "$d/app/privacy/page.tsx"
+  printf 'export default function T() {}\n' > "$d/app/terms/layout.tsx"
+  printf 'export default function S() {}\n' > "$d/app/account/privacy-settings/page.tsx"
+  run "$CHECK" shooter --stage beta
+  # NEGATIVE CONTROL: a terms route with only a layout is not a page.
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # NEGATIVE CONTROL: a settings screen whose route only starts with privacy is not the policy.
+  rm -r "$d/app/privacy"
+  printf 'export default function T() {}\n' > "$d/app/terms/page.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # A pages-router index route counts the same as an app-router page.
+  mkdir -p "$d/pages/privacy"; printf 'export default function P() {}\n' > "$d/pages/privacy/index.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
 }
 
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
@@ -612,8 +843,8 @@ rs_stub() {
 @test "stages.md: no draft or dev row reads where a project deploys (a deploy is not the app being live)" {
   # Every real draft and dev row, run for a project with a prod deploy: none may ask release-state,
   # the only source of deploy facts, so none can cap where a project deploys.
-  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n'
-    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; } > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n'
+    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; echo; real_depts; } > "$STAGES_DOC"
   rs_stub '{"shooter": {"stage": "draft", "rungs": ["prod"]}}'
   printf '#!/usr/bin/env bash\ntouch "%s"\ncat "%s"\n' "$SANDBOX/rs.asked" "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
   for stage in draft dev; do run "$CHECK" shooter --stage "$stage"; done
@@ -773,7 +1004,7 @@ rs_stub() {
 
 ## Requirements
 
-| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` |
+| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` | engineering |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .skills]"' "$CHECK"
   assert_success
@@ -787,7 +1018,7 @@ EOF2
 
 ## Requirements
 
-| beta |  | A row whose Applies cell is empty | `true` |
+| beta |  | A row whose Applies cell is empty | `true` | ops |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .requirement, .check]"' "$CHECK"
   assert_success

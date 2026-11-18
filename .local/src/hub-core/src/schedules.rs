@@ -1293,6 +1293,24 @@ fn read_timers(
 /// Every schedule the four sources know of. They read at once, as `jobs::collect` does: only the
 /// triage routes wait, on the rows they are asked about.
 pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
+    read_with(paths, runner, None)
+}
+
+/// The open reds as given, or read when not.
+fn open_reds(
+    given: Option<Result<Vec<Red>, String>>,
+    runner: &dyn Runner,
+) -> Result<Vec<Red>, String> {
+    given.unwrap_or_else(|| reds::read(runner).map(|r| r.open))
+}
+
+/// As `read`, with the open reds already read when `reds` is given: agent-web's Alerts tab keeps
+/// them, so the slowest source (`fleet-bench reds`) runs once for both tabs.
+pub fn read_with(
+    paths: &fleet::Paths,
+    runner: &(dyn Runner + Sync),
+    reds: Option<Result<Vec<Red>, String>>,
+) -> Schedules {
     let at = jobs::now();
     let off = Local::now().offset().local_minus_utc();
     let home = std::env::var("HOME").unwrap_or_default();
@@ -1302,7 +1320,7 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     let (timers, k8s, reds, queued, live) = std::thread::scope(|s| {
         let timers = s.spawn(|| read_timers(runner, at, &home));
         let k8s = s.spawn(|| read_k8s(at, off));
-        let reds = s.spawn(|| reds::read(runner).map(|r| r.open));
+        let reds = s.spawn(|| open_reds(reds, runner));
         let queued = s.spawn(|| queue::list(runner, "queued"));
         let live = s.spawn(|| {
             runner
@@ -1404,6 +1422,25 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
 mod tests {
     use super::*;
     use crate::table::View;
+
+    /// Records every argv it is asked to run, and answers none.
+    #[derive(Default)]
+    struct Record(std::cell::RefCell<Vec<String>>);
+    impl Runner for Record {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.borrow_mut().push(argv.join(" "));
+            Err("not run".into())
+        }
+    }
+
+    #[test]
+    fn reds_given_by_the_caller_are_not_read_again() {
+        let runner = Record::default();
+        assert_eq!(open_reds(Some(Ok(vec![])), &runner), Ok(vec![]));
+        assert!(runner.0.borrow().is_empty(), "{:?}", runner.0.borrow());
+        assert!(open_reds(None, &runner).is_err());
+        assert!(runner.0.borrow()[0].starts_with("fleet-bench reds"));
+    }
 
     const PST: i32 = -8 * 3600;
     /// 2026-11-06 22:00 UTC, a Friday.

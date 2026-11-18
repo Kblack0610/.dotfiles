@@ -253,16 +253,19 @@ return {
       vim.api.nvim_set_hl(0, "TaskPriorityUrgent", { link = "DiagnosticError", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityHigh", { link = "DiagnosticWarn", default = true })
       vim.api.nvim_set_hl(0, "TaskPriorityLow", { link = "Comment", default = true })
+      -- The project tag `#p:<name>` (tag_source.lua): green, a colour no priority uses.
+      vim.api.nvim_set_hl(0, "TaskProjectTag", { link = "DiagnosticOk", default = true })
 
       -- Task status = the checkbox state. `<leader>ts` cycles it:
       --   [ ] todo -> [/] in progress -> [x] done -> [ ] todo
-      -- `[/]` is a SAME-DAY signal: the `notes` CLI resets it to `[ ]` on the next
-      -- daily carry (stamp_line/reset_status), so only the open todo + its priority
-      -- tag survive overnight. Finishing a Focus task also files it under a
+      -- `<leader>tS` sets it straight back to `[ ]` todo from any state.
+      -- `[/]` carries across days until you flip it, and sorts below the `[ ]` rows of
+      -- its lane (in_progress_last below). Finishing a Focus task also files it under a
       -- `--- / ### Done` block at the foot of the section (see sweep_focus below).
       -- Replaces the old obsidian.nvim :ObsidianToggleCheckbox.
       local STATUS_NEXT = { ["[ ]"] = "[/]", ["[/]"] = "[x]", ["[x]"] = "[ ]", ["[X]"] = "[ ]" }
       local STATUS_PAT = "%[[ /xX]%]"
+      local STATUS_TODO = "[ ]"
 
       -- Priority lanes, most-urgent first. Mirrors the `notes` CLI (md::PRIORITIES, the
       -- shared source of truth) so the on-save sweep here and `notes focus sweep` produce
@@ -276,7 +279,7 @@ return {
       -- Any `### `-heading / `---` rule this sweep owns (stripped, re-emitted only where a
       -- lane is non-empty). An unrelated authored heading is preserved as content.
       local function is_scaffold(l)
-        if l:match "^%-%-%-%s*$" or l:match "^###%s+Done%s*$" or l:match "^###%s+In progress%s*$" then
+        if l:match "^%-%-%-%s*$" or l:match "^###%s+Done%s*$" then
           return true
         end
         for _, lane in ipairs(LANES) do
@@ -331,7 +334,7 @@ return {
       end
 
       -- Which LANES index this scaffold line opens, or nil if it's a non-lane scaffold
-      -- (`---`, `### Done`, `### In progress`) that closes the priority region.
+      -- (`---`, `### Done`) that closes the priority region.
       local function scaffold_lane(l)
         for i, lane in ipairs(LANES) do
           if l:lower():match("^###%s+" .. lane[1] .. "%s*$") then
@@ -341,9 +344,38 @@ return {
         return nil
       end
 
+      -- One lane with its in-progress `[/]` rows moved below its open `[ ]` rows, each kind in
+      -- its own order, inside every group a break (a blank or a `---`) marks off. A row's
+      -- indented lines move with it. Mirrors sweep::in_progress_last.
+      local function in_progress_last(lane)
+        local out, open, started, cur = {}, {}, {}, nil
+        local function flush()
+          for _, blocks in ipairs { open, started } do
+            for _, b in ipairs(blocks) do
+              vim.list_extend(out, b)
+            end
+          end
+          open, started, cur = {}, {}, nil
+        end
+        for _, l in ipairs(lane) do
+          if l == "" or l == "---" then
+            flush()
+            out[#out + 1] = l
+          elseif l:match "^%s" and cur then
+            cur[#cur + 1] = l
+          else
+            cur = { l }
+            local into = l:match "^%s*%- %[/%]" and started or open
+            into[#into + 1] = cur
+          end
+        end
+        flush()
+        return out
+      end
+
       -- Pure rebuild of the `## Focus` body, grouped by priority + status:
       -- `### Urgent`/`### High`/`### Low` (open tasks), finished (`[x]`) under `--- / ### Done`;
-      -- an in-progress `[/]` keeps its mark inside its lane. ALL lane headers + Done are emitted
+      -- an in-progress `[/]` keeps its mark and sorts below the open rows of its lane. ALL lane headers + Done are emitted
       -- even when empty, so the columns stay put as stable drop targets, and the empty `- [ ]`
       -- slot goes. A task's #tag is the source of truth, but an untagged task sitting under a
       -- lane header inherits that lane's tag (drop-to-tag) when `inherit` is set. Inherit is ON
@@ -368,20 +400,41 @@ return {
         local last = nil
         -- Group breaks (daily only), mirroring sweep::bucket: a blank after a row marks a break
         -- in the lane it sits in (its heading, else the lane of the open row above it), kept
-        -- before the next row that lands in that lane when one is already there.
+        -- before the next row that lands in that lane when one is already there. The human's own
+        -- `---` between rows is the same break, kept as a rule (sweep::is_group_rule): it is
+        -- theirs when, past any more rules, the next non-blank line is no scaffold and no `## `
+        -- heading. It sits at column 0: an indented `---` is a row's note.
         local pending, last_open = {}, nil
+        local function is_rule(l)
+          return l:match "^%-%-%-%s*$" ~= nil
+        end
+        local function is_group_rule(n)
+          if not is_rule(body[n]) then
+            return false
+          end
+          for k = n + 1, #body do
+            if body[k]:match "%S" and not is_rule(body[k]) then
+              return not body[k]:match "^## " and not is_scaffold(body[k])
+            end
+          end
+          return false
+        end
         local function land(i, row)
           if pending[i] and #open[i] > 0 then
-            table.insert(open[i], "")
+            table.insert(open[i], pending[i])
           end
           pending[i] = nil
           table.insert(open[i], row)
           last_open = i
         end
-        for _, l in ipairs(body) do
-          if daily and not l:match "%S" then
+        for n, l in ipairs(body) do
+          local rule = daily and is_group_rule(n)
+          if daily and (rule or not l:match "%S") then
             if last_open then
-              pending[cur_lane or last_open] = true
+              local i = cur_lane or last_open
+              if pending[i] ~= "---" then -- a rule outranks the blanks padding it
+                pending[i] = rule and "---" or ""
+              end
             end
           elseif is_scaffold(l) then
             had_scaffold = true
@@ -445,9 +498,7 @@ return {
             out[#out + 1] = ""
           end
           out[#out + 1] = lane[2]
-          for _, l in ipairs(open[i]) do
-            out[#out + 1] = l
-          end
+          vim.list_extend(out, in_progress_last(open[i]))
         end
         out[#out + 1] = "" -- Done placeholder is always present too
         out[#out + 1] = "---"
@@ -785,12 +836,14 @@ return {
       -- line and applied to every line, so a visual selection converges to one state.
       -- The edit is applied in place; the Focus sweep (regroup into lanes / Done)
       -- runs on save, so tasks don't jump around under the cursor as you cycle.
-      local function cycle_status(line1, line2)
+      -- `to` sets that state on every task in the range instead (`<leader>tS`), so the
+      -- first line need not be a task.
+      local function cycle_status(line1, line2, to)
         local first = vim.fn.getline(line1):match(STATUS_PAT)
-        if not first then
+        local nxt = to or STATUS_NEXT[first]
+        if not nxt then
           return
         end
-        local nxt = STATUS_NEXT[first]
         for lnum = line1, line2 do
           local line = vim.fn.getline(lnum)
           if line:match(STATUS_PAT) then
@@ -818,15 +871,6 @@ return {
         end
         vim.api.nvim_win_set_cursor(0, { lnum, 0 })
         vim.cmd "startinsert!"
-      end
-
-      -- `o` on a task line opens the next task at the same indent, the way a list
-      -- continues; elsewhere plain `o`. Keys, not buffer edits, so a count, `.`, folds
-      -- and macros behave as they do for `o`; noremap keeps autopairs off the `[`.
-      -- An unused `- [ ] ` slot in `## Focus` is dropped by the save sweep.
-      local function open_task_below()
-        local indent = vim.fn.getline("."):match "^(%s*)%- %[.%]"
-        return indent and ("o<C-u>" .. indent .. "- [ ] ") or "o"
       end
       -- Only allow keybindings in markdown files
       vim.api.nvim_create_autocmd("Filetype", {
@@ -882,25 +926,32 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
+          --   tS  status reset    back to [ ] todo, from any state
           --   tt  convert line to task, or add an indented subtask if already one;
           --       the cursor lands in insert where the text goes. Visual: convert the lines.
-          --   o   on a task line, open the next task below (plain `o` elsewhere)
           --   tP  raise priority  low -> high -> urgent, stops at urgent
           --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
+          --   tb  move to the backlog (task + its indented lines, or the selection)
           -- `tt`, not `tc`: notes.nvim binds `<leader>tc` globally to the task cockpit,
           -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
           -- from every markdown buffer -- the one place you most want it.
           -- Current line (normal) / selection (visual).
-          vim.keymap.set("n", "<leader>ts", function()
-            local lnum = vim.api.nvim_win_get_cursor(0)[1]
-            cycle_status(lnum, lnum)
-          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
-          vim.keymap.set("x", "<leader>ts", function()
-            -- Leave visual mode so '< and '> marks are set, then cycle the range.
-            vim.cmd "normal! \27"
-            cycle_status(vim.fn.line "'<", vim.fn.line "'>")
-          end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
+          for _, m in ipairs {
+            { "s", nil, "Cycle task status ([ ]/[/]/[x])" },
+            { "S", STATUS_TODO, "Reset task status to todo ([ ])" },
+          } do
+            local key, to, desc = m[1], m[2], m[3]
+            vim.keymap.set("n", "<leader>t" .. key, function()
+              local lnum = vim.api.nvim_win_get_cursor(0)[1]
+              cycle_status(lnum, lnum, to)
+            end, { buffer = buf, desc = desc, silent = true })
+            vim.keymap.set("x", "<leader>t" .. key, function()
+              -- Leave visual mode so '< and '> marks are set, then apply to the range.
+              vim.cmd "normal! \27"
+              cycle_status(vim.fn.line "'<", vim.fn.line "'>", to)
+            end, { buffer = buf, desc = desc, silent = true })
+          end
 
           -- Convert current line to a task, or add an indented subtask if it's
           -- already one.
@@ -922,12 +973,6 @@ return {
               end
             end
           end, { buffer = buf, desc = "Convert lines to tasks", silent = true })
-          vim.keymap.set(
-            "n",
-            "o",
-            open_task_below,
-            { buffer = buf, expr = true, desc = "Open line (next task on a task line)" }
-          )
 
           -- Task priority: tP raises toward urgent, tp lowers, along low -> high -> urgent,
           -- stopping at either end. Each press re-sweeps and follows the task
@@ -959,6 +1004,47 @@ return {
               cycle_version(vim.fn.line "'<", vim.fn.line "'>", dir)
             end, { buffer = buf, desc = desc, silent = true })
           end
+
+          -- Backlog: tb moves the task under the cursor (with the lines indented under it), or
+          -- the selection, into the backlog. `notes backlog --add` files and stamps it; the lines
+          -- leave this buffer only once it succeeds, and it refuses a range holding prose whole.
+          -- After 90 days there, `notes today` hands the task back to Focus at #low.
+          local function to_backlog(line1, line2)
+            if vim.fn.executable "notes" == 0 then
+              return vim.notify("notes: CLI not on PATH", vim.log.levels.ERROR)
+            end
+            -- In the backlog itself the CLI finds the task already there, and deleting it here
+            -- would then write the task out of the file on the next save.
+            local target = vim.trim(vim.system({ "notes", "path", "backlog" }, { text = true }):wait().stdout or "")
+            if vim.fn.resolve(vim.api.nvim_buf_get_name(0)) == vim.fn.resolve(target) then
+              return vim.notify("Already in the backlog", vim.log.levels.WARN)
+            end
+            local block = vim.api.nvim_buf_get_lines(0, line1 - 1, line2, false)
+            local res = vim
+              .system({ "notes", "backlog", "--add" }, { stdin = table.concat(block, "\n") .. "\n", text = true })
+              :wait()
+            if res.code ~= 0 then
+              return vim.notify("notes backlog --add: " .. vim.trim(res.stderr or ""), vim.log.levels.ERROR)
+            end
+            vim.api.nvim_buf_set_lines(0, line1 - 1, line2, false, {})
+            vim.notify(("Moved %d line(s) to the backlog"):format(#block))
+          end
+          vim.keymap.set("n", "<leader>tb", function()
+            local lnum = vim.api.nvim_win_get_cursor(0)[1]
+            local lines = vim.api.nvim_buf_get_lines(0, lnum - 1, -1, false)
+            local own, last = #lines[1]:match "^%s*", lnum
+            for i = 2, #lines do
+              if not (lines[i]:match "%S" and #lines[i]:match "^%s*" > own) then
+                break
+              end
+              last = lnum + i - 1
+            end
+            to_backlog(lnum, last)
+          end, { buffer = buf, desc = "Move task to backlog", silent = true })
+          vim.keymap.set("x", "<leader>tb", function()
+            vim.cmd "normal! \27"
+            to_backlog(vim.fn.line "'<", vim.fn.line "'>")
+          end, { buffer = buf, desc = "Move tasks to backlog", silent = true })
 
           -- Sweep `## Focus` on save too, so the note lands organized however a task
           -- was edited (typing a #tag by hand, pasting, etc.), not only via the cycles.
@@ -1068,7 +1154,7 @@ return {
       vim.api.nvim_create_autocmd("FileType", { pattern = "markdown", callback = read_board })
       vim.api.nvim_create_autocmd("BufWritePost", { pattern = "README.md", callback = read_board })
 
-      -- Color the priority tags. matchadd is window-local, so (re)apply it once
+      -- Color the priority and project tags. matchadd is window-local, so (re)apply it once
       -- per window showing a markdown buffer; a window flag prevents duplicates.
       -- BufWinEnter fires whenever the buffer is displayed in a window (open,
       -- split), which is exactly when a fresh window needs its matches.
@@ -1085,6 +1171,8 @@ return {
           for _, m in ipairs { { "TaskPriorityUrgent", "urgent" }, { "TaskPriorityHigh", "high" }, { "TaskPriorityLow", "low" } } do
             vim.fn.matchadd(m[1], [[\c\%([[:alnum:]_/.[#]\)\@<!#]] .. m[2] .. [[\%([-/.]*[[:alnum:]_]\)\@!]])
           end
+          -- `#p:<name>`, the same glue and run-on rules; the name is a project word (letters, digits, `-`, `_`).
+          vim.fn.matchadd("TaskProjectTag", [[\c\%([[:alnum:]_/.[#]\)\@<!#p:[[:alnum:]_-]\+\%([-/.]*[[:alnum:]_]\)\@!]])
         end,
       })
     end,

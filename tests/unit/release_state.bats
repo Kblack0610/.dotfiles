@@ -420,6 +420,35 @@ MD
   [ "$(cl web web-v1.2.0 | jq -r .text)" = "" ]
 }
 
+@test "changelog: --json carries when the tag was made" {
+  ship "first (#1)" web-v1.0.0
+  [ "$(cl web | jq -r .at)" = "$(git -C "$CLONE" log -1 --format=%ct web-v1.0.0)" ]
+}
+
+# merged: the PRs on the remote branch in the last N days
+# land <git commit args> - a commit that changes a file, so a path-limited log sees it.
+land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CLONE" commit -q "$@"; }
+
+@test "merged: the PRs merged in the window on the fetched branch, newest first, and no merge commits" {
+  old="$(date -d "30 days ago" +%s) +0000"; GIT_COMMITTER_DATE="$old" land -m "old work (#7)" --date="$old"
+  land -m "fresh one (#8)"
+  land -m "Merge branch x (#9)"
+  land -m "fresh two (#10)"
+  git -C "$CLONE" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote set-head origin main
+  run "$RS" merged web
+  assert_success
+  [ "$output" = "$(printf "#10 fresh two\n#8 fresh one")" ]
+  run "$RS" merged --days 60 web
+  [ "$(wc -l <<<"$output")" = 3 ]
+  # a commit that is not on the remote branch is not a merge
+  land -m "local only (#11)"
+  run "$RS" merged web
+  refute_output --partial 'local only'
+  run "$RS" merged --days soon web
+  assert_failure
+}
+
 @test "changelog: the first tag has no previous, and the default is the newest release" {
   ship "first (#1)" web-v1.0.0
   ship "next (#2)" web-v1.1.0

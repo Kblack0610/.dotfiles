@@ -1,6 +1,6 @@
 //! Projects > Coverage and a product's department tabs, from `hub_core::departments` (the grid
 //! and words the hub TUI draws). `/api/coverage` is the grid (`cq`, `cs`, `csort`, `cdir`);
-//! `/api/projects/{name}/departments` is one product's five tabs. Both narrow one kept read.
+//! `/api/projects/{name}/departments` is one product's department tabs (the ones its type gets). Both narrow one kept read.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::cache::{off, ReadCache};
 /// One read probes every product's privacy, support and terms URLs; five minutes keeps a page
 /// of clicks from re-probing them, and the TUI reads on its own.
 const CACHE_SECS: u64 = 300;
-static READ: ReadCache<Coverage, CACHE_SECS> = ReadCache::new();
+static READ: ReadCache<Coverage, CACHE_SECS> = ReadCache::new("departments");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -36,7 +36,7 @@ struct GridRow<'a> {
     #[serde(rename = "type")]
     kind: &'a str,
     stage: &'a str,
-    cells: BTreeMap<&'static str, &'static str>,
+    cells: BTreeMap<&'a str, &'static str>,
 }
 
 #[derive(Serialize)]
@@ -49,7 +49,7 @@ struct Grid<'a> {
     off: usize,
     /// Products with a red cell: the strip's count.
     failing: usize,
-    departments: Vec<[&'static str; 2]>,
+    departments: Vec<[&'a str; 2]>,
     table: Summary,
 }
 
@@ -66,7 +66,11 @@ fn grid(c: &Coverage, q: &CoverageQuery) -> serde_json::Value {
                 name: &p.name,
                 kind: &p.kind,
                 stage: &p.stage,
-                cells: p.depts.iter().map(|d| (d.id, d.cell.word())).collect(),
+                cells: p
+                    .depts
+                    .iter()
+                    .map(|d| (d.id.as_str(), d.cell.word()))
+                    .collect(),
             })
             .collect(),
         head: c.head(),
@@ -75,7 +79,11 @@ fn grid(c: &Coverage, q: &CoverageQuery) -> serde_json::Value {
         amber: c.amber,
         off: c.off,
         failing: c.failing(),
-        departments: departments::DEPARTMENTS.map(|d| [d.id, d.title]).to_vec(),
+        departments: c
+            .departments
+            .iter()
+            .map(|d| [d.id.as_str(), d.title.as_str()])
+            .collect(),
         table,
     })
     .unwrap_or_default()
@@ -87,13 +95,13 @@ struct Tabs<'a> {
     says: String,
 }
 
-/// One product's tabs; `says` tells why there are none (not a product, or a store not read).
+/// One product's tabs; `says` tells why there are none (no type, or a store not read).
 fn tabs<'a>(c: &'a Coverage, key: &str) -> Tabs<'a> {
     let product = c.product(key);
     let says = match (product, c.says.is_empty()) {
         (Some(_), _) => String::new(),
         (None, false) => c.says.join(" "),
-        (None, true) => format!("{key} is not a product: no game or app type in project-map.json"),
+        (None, true) => format!("{key} has no department tabs: no type in project-map.json"),
     };
     Tabs { product, says }
 }
@@ -132,20 +140,32 @@ pub async fn get_project(Path(name): Path<String>) -> Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hub_core::departments::{Cell, Dept, DEPARTMENTS};
+    use hub_core::departments::{Cell, Department, Dept};
 
     fn coverage() -> Coverage {
+        let departments: Vec<Department> = [
+            ("analytics", "Analytics"),
+            ("marketing", "Marketing"),
+            ("legal", "Legal"),
+        ]
+        .into_iter()
+        .map(|(id, title)| Department {
+            id: id.into(),
+            title: title.into(),
+            ..Default::default()
+        })
+        .collect();
         let p = |name: &str, legal: Cell| Product {
             profile: "bnb".into(),
             name: name.into(),
             stage: "beta".into(),
             kind: "app".into(),
             stage_rank: Some(3),
-            depts: DEPARTMENTS
+            depts: departments
                 .iter()
                 .map(|d| Dept {
-                    id: d.id,
-                    title: d.title,
+                    id: d.id.clone(),
+                    title: d.title.clone(),
                     cell: if d.id == "legal" { legal } else { Cell::Off },
                     ..Default::default()
                 })
@@ -153,6 +173,7 @@ mod tests {
         };
         Coverage {
             products: vec![p("listed", Cell::Red), p("quiet", Cell::Off)],
+            departments: departments.clone(),
             red: 1,
             off: 9,
             ..Default::default()
@@ -193,6 +214,6 @@ mod tests {
         );
         let none = tabs(&c, "agent-runtime");
         assert!(none.product.is_none());
-        assert!(none.says.contains("not a product"), "{}", none.says);
+        assert!(none.says.contains("no department tabs"), "{}", none.says);
     }
 }

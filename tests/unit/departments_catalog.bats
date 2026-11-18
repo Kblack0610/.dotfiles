@@ -9,7 +9,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   PUB="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  PRIV="${DEPARTMENTS_PRIVATE_REPO:-$HOME/.dotfiles-private}"
+  PRIV="${DEPARTMENTS_PRIVATE_REPO:-${ACCOUNT_HOME:-/nonexistent}/.dotfiles-private}"
   CAT="$PRIV/.config/agentctl/departments.tsv"
   MAP="$PRIV/.config/shared-hooks/project-map.json"
   [ -f "$CAT" ] || skip "no department catalog at $CAT"
@@ -19,8 +19,9 @@ setup() {
 # Data rows of a catalog file: tab-separated, comments and blank lines dropped.
 rows() { awk '!/^#/ && NF' "$1"; }
 
-# The one department list, from the catalog's own "# departments:" line.
-departments() { sed -n 's/^# departments: //p' "$CAT"; }
+# The one department list: the ids of stages.md's Departments table, as project-stage-check reads it
+# (the catalog keeps no list of its own).
+departments() { STAGES_DOC="$PUB/.local/src/docs/stages.md" "$PUB/.local/bin/project-stage-check" --requirements --json | jq -r ".departments[].id"; }
 
 # The checkout of a repo-key (a value of paths in project-map.json): the first mapped path that
 # is a directory here; empty when unmapped or not cloned.
@@ -92,20 +93,26 @@ missing_rows() {
   return 0
 }
 
-@test "the catalog has a departments line and every row has five fields, none empty" {
-  [ -n "$(departments)" ]
+@test "stages.md lists the nine departments and every catalog row has five fields, none empty" {
+  [ "$(departments | wc -l)" -eq 9 ]
   run awk -F'\t' '!/^#/ && NF && (NF != 5 || $1 == "" || $2 == "" || $3 == "" || $4 == "" || $5 == "") {print NR": "$0}' "$CAT"
   assert_success
   assert_output ''
 }
 
-@test "every row names a listed department, and every listed department has a row" {
-  local d have
-  have=$(rows "$CAT" | cut -f1 | sort -u)
-  for d in $(departments); do grep -qx "$d" <<<"$have" || { echo "no row for $d"; return 1; }; done
-  run comm -13 <(tr ' ' '\n' <<<"$(departments)" | sort -u) <(sort -u <<<"$have")
+# A department with no row is fine: its tab says no pipeline feeds it. A row for an id stages.md
+# does not list would feed a tab that is never drawn.
+@test "every row names a department stages.md lists" {
+  run comm -13 <(departments | sort -u) <(rows "$CAT" | cut -f1 | sort -u)
   assert_success
   assert_output ''
+}
+
+@test "negative control: a row naming a department stages.md lacks is flagged" {
+  local t="$BATS_TEST_TMPDIR/dept.tsv"
+  printf 'analytics\tx\trunner\t*\tx\nnot-a-department\tx\trunner\t*\tx\n' >"$t"
+  run comm -13 <(departments | sort -u) <(rows "$t" | cut -f1 | sort -u)
+  assert_output 'not-a-department'
 }
 
 @test "every row has a known kind" {
@@ -127,13 +134,15 @@ missing_rows() {
 }
 
 @test "every named runner, workflow, skill, exporter and file exists" {
+  # The catalog's ~ and repo paths are the account's (ACCOUNT_HOME, helpers/suite_home.bash); read only.
+  local HOME="${ACCOUNT_HOME:-$HOME}"
   run missing_rows "$CAT"
   assert_success
   assert_output ''
 }
 
 @test "the check judges rows: the catalog does not resolve mostly to skipped repos" {
-  local ok=0 skipped=0 total=0 dept src kind proj rec st
+  local ok=0 skipped=0 total=0 dept src kind proj rec st HOME="${ACCOUNT_HOME:-$HOME}"
   while IFS=$'\037' read -r dept src kind proj rec; do
     total=$((total + 1))
     st=$(source_state "$kind" "$src")
@@ -168,7 +177,7 @@ missing_rows() {
   rm -rf "$HOME/.notes"
   assert_equal "$(source_state file '~/.notes/doc.md#real-tag')" notcloned
   # missing_rows names the bad rows of a catalog, and only those.
-  printf '# departments: analytics\nanalytics\treal-runner\trunner\t*\tx\nanalytics\tno-such-runner\trunner\t*\tx\n' >"$t"
+  printf 'analytics\treal-runner\trunner\t*\tx\nanalytics\tno-such-runner\trunner\t*\tx\n' >"$t"
   run missing_rows "$t"
   assert_success
   assert_output 'analytics/no-such-runner (runner)'

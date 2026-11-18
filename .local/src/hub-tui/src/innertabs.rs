@@ -64,7 +64,8 @@ pub fn strip_totals(
 }
 
 /// [`strip_of`] with a break (` |`) before the inner tab `at`, between two groups. Too wide for
-/// `w` on one line, the second group takes a line of its own, so no tab is ever clipped away.
+/// `w` on one line, the second group takes a line of its own, and a group wider than `w` wraps,
+/// so no tab is ever clipped away.
 pub fn strip_split(
     inner: &[Inner],
     on: &str,
@@ -88,10 +89,28 @@ pub fn strip_split(
         one.extend(second);
         return vec![Line::from(one)];
     }
-    vec![
-        clip_line(Line::from(first), w),
-        clip_line(Line::from(second), w),
-    ]
+    let mut out = flow(first, w);
+    out.extend(flow(second, w));
+    out
+}
+
+/// `spans` as lines no wider than `w`: a tab that does not fit starts the next line, so a group
+/// of nine department tabs wraps at 80 columns and none is clipped away.
+fn flow(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let mut at = 0;
+    for s in spans {
+        if at > 0 && at + s.width() > w {
+            lines.push(vec![]);
+            at = 0;
+        }
+        at += s.width();
+        lines.last_mut().expect("one line").push(s);
+    }
+    lines
+        .into_iter()
+        .map(|l| clip_line(Line::from(l), w))
+        .collect()
 }
 
 const HINT: &str = "  <- -> switch";
@@ -194,7 +213,7 @@ mod tests {
             words[..5],
             [
                 "[Projects]",
-                "All rows 12",
+                "Board 12",
                 "Deliverables",
                 "Coverage",
                 "Ladder"
@@ -217,7 +236,7 @@ mod tests {
         let hot = l
             .spans
             .iter()
-            .find(|s| s.content.trim() == "All rows 12")
+            .find(|s| s.content.trim() == "Board 12")
             .unwrap();
         assert_eq!(hot.style.fg, Palette::default().warn().fg);
     }
