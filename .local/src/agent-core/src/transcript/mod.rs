@@ -76,7 +76,6 @@ pub struct FleetInfo {
     /// How many times the context was compacted.
     pub compactions: u64,
     /// Epoch seconds of the newest prompt the human typed (`human_at`), None when there is none.
-    /// claude-acct-auth does not wake a pane the human typed in recently.
     pub human_at: Option<u64>,
 }
 
