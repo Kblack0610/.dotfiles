@@ -68,6 +68,10 @@ details() { notes board --json | jq -r --arg id "$1" '.rows[] | select(.id == $i
   assert_output --partial 'would fill 2 rows with a brief, strip brief: from 1,'
   assert_output --partial '1 linked only to items that repeat the row; 1 never worked by an item'
   [ "$(cat "$dir/agent/README.md")" = "$before" ] || fail "the dry-run wrote the board"
+  # --check is the nightly doctor's line: one FAIL while a row lacks its item's brief, no row listed.
+  run "$AQ" backfill-briefs --check
+  assert_failure
+  assert_output 'FAIL  briefs: 2 rows lack the brief their item has, 1 carry brief: lines, 0 open items have no row (agent-queue backfill-briefs writes them)'
 
   run "$AQ" backfill-briefs
   assert_success
@@ -87,6 +91,9 @@ details() { notes board --json | jq -r --arg id "$1" '.rows[] | select(.id == $i
 
   run "$AQ" backfill-briefs
   assert_output --partial 'filled 0 rows with a brief, stripped brief: from 0,'
+  run "$AQ" backfill-briefs --check
+  assert_success
+  assert_output 'PASS  briefs: every agent row holds the brief its item has'
 }
 
 @test "backfill-briefs: an open item with no row gets a story row with its brief; a canary item does not" {

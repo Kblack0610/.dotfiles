@@ -38,7 +38,7 @@
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
-#   backfill-briefs [--dry-run]    each open agent row with no brief gets the brief of the item that worked it, and an open
+#   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
 #       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
@@ -2614,7 +2614,8 @@ cmd_stats() {
 # (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
 # row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
 # Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
-# since the read is not written. --dry-run lists each row and its source.
+# since the read is not written. --dry-run lists each row and its source; --check prints one doctor
+# line and fails when any row would be written, which after P2 is a writer losing a brief again.
 BRIEF_JQ='def norm: gsub("<!--[^>]*-->"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
     | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
   def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
@@ -2641,9 +2642,14 @@ BRIEF_JQ='def norm: gsub("<!--[^>]*-->"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_
   | out'
 
 cmd_backfill_briefs() {
-  local dry="" tmp kind key prof proj text slug stamp brief prio f title lab code srow
+  local dry="" check="" list=/dev/stdout tmp kind key prof proj text slug stamp brief prio f title lab code srow
   local n=0 filed=0 failed=0 bare=0 none=0 nob=0 unpre=0
-  case "${1:-}" in --dry-run) dry=1 ;; '') ;; *) die "usage: agent-queue backfill-briefs [--dry-run]" ;; esac
+  case "${1:-}" in
+    --dry-run) dry=1 ;;
+    --check) dry=1 check=1 list=/dev/null ;;
+    '') ;;
+    *) die "usage: agent-queue backfill-briefs [--dry-run | --check]" ;;
+  esac
   command -v notes >/dev/null || die "backfill-briefs: no notes on PATH"
   # Files, not arguments: the whole store is past the kernel's argument limit.
   tmp="$(mktemp -d)" || die "backfill-briefs: no temp dir"
@@ -2682,8 +2688,14 @@ cmd_backfill_briefs() {
       [ -n "$srow" ] || { echo "agent-queue: $slug: no story row filed" >&2; continue; }
       "$0" set "$slug" row="$proj:$srow" lane=agent profile="$prof" </dev/null >/dev/null && filed=$((filed + 1)) ;;
     esac
-  done 3<"$tmp/matches"
+  done 3<"$tmp/matches" >"$list"
   rm -rf "$tmp"
+  if [ -n "$check" ]; then
+    # The nightly doctor's line (agentctl-project-index): fleet-bench's doctor_fail counts a FAIL.
+    [ $((n + unpre + filed)) -eq 0 ] && { echo "PASS  briefs: every agent row holds the brief its item has"; return 0; }
+    echo "FAIL  briefs: $n rows lack the brief their item has, $unpre carry brief: lines, $filed open items have no row (agent-queue backfill-briefs writes them)"
+    return 1
+  fi
   if [ -n "$dry" ]; then
     printf 'would fill %s rows with a brief, strip brief: from %s, and file %s rows for items with none;' "$n" "$unpre" "$filed"
   else
