@@ -746,7 +746,7 @@ enum PtaskCmd {
         #[arg(
             long,
             conflicts_with = "append",
-            required_unless_present_any = ["append", "detail"]
+            required_unless_present_any = ["append", "detail", "brief"]
         )]
         text: Option<String>,
         /// Words to add to the end of the task's text
@@ -755,6 +755,10 @@ enum PtaskCmd {
         /// A detail line to add under the row, after its existing ones. Repeatable
         #[arg(long, value_name = "LINE")]
         detail: Vec<String>,
+        /// The row's whole brief, replacing its detail lines (its child rows stay): how
+        /// `agent-queue retask` corrects a task, since the row is the task's record
+        #[arg(long, value_name = "TEXT", conflicts_with_all = ["detail", "was"])]
+        brief: Option<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
         /// `was:` detail line (a title over 80 chars is cut at a word, whole on a `full:` line), and the old row's own tags (#requested, #tier/N, #size/x) carry over
         #[arg(long, requires = "text")]
@@ -1402,21 +1406,30 @@ fn main() -> Result<()> {
                     text,
                     append,
                     detail,
+                    brief,
                     was,
                     link,
                     query,
-                }) => project_tasks::retext(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    text.as_deref(),
-                    append.as_deref(),
-                    &detail,
-                    was,
-                    link.then_some(standing::SYSTEMS_BIN),
-                    lane,
-                )?,
+                }) => match brief {
+                    Some(b) if text.is_none() && append.is_none() => {
+                        project_tasks::rebrief(&prof, &log, &name, &pick(&query)?, &b, lane)?
+                    }
+                    Some(_) => bail!(
+                        "--brief replaces the row's brief alone: edit its words in a second call"
+                    ),
+                    None => project_tasks::retext(
+                        &prof,
+                        &log,
+                        &name,
+                        &pick(&query)?,
+                        text.as_deref(),
+                        append.as_deref(),
+                        &detail,
+                        was,
+                        link.then_some(standing::SYSTEMS_BIN),
+                        lane,
+                    )?,
+                },
                 Some(PtaskCmd::Promote { query }) => {
                     project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane)?
                 }

@@ -856,3 +856,49 @@ fn a_brief_round_trips_through_add_edit_and_board_json_byte_for_byte() {
     assert_eq!(board_details(&h, "dm-1").join("\n"), want, "{}", h.board());
     assert!(board_details(&h, "dm-2").is_empty());
 }
+
+#[test]
+fn edit_brief_replaces_the_brief_and_a_checklist_in_it_files_no_row() {
+    let h = Home::new("brief-replace");
+    let checklist = "goal: x\n\n## Phases\n- [ ] P1 one\n- [x] P2 two";
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "feat(board): a planned task #size/s",
+            "--detail",
+            checklist,
+        ],
+    ));
+    assert_eq!(
+        board_details(&h, "dm-1").join("\n"),
+        checklist,
+        "{}",
+        h.board()
+    );
+    // NEGATIVE CONTROL for the escape: the checklist is no row of its own on the board.
+    let out = h.run(&["board", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["rows"].as_array().unwrap();
+    assert!(
+        !rows
+            .iter()
+            .any(|r| r["text"].as_str().is_some_and(|t| t.contains("P1 one"))),
+        "{}",
+        h.board()
+    );
+
+    ok(&agent(&h, &["edit", "dm-1", "--brief", BRIEF]));
+    assert_eq!(board_details(&h, "dm-1").join("\n"), BRIEF, "{}", h.board());
+    assert!(
+        h.board().contains("feat(board): a planned task"),
+        "{}",
+        h.board()
+    );
+
+    let out = agent(
+        &h,
+        &["edit", "dm-1", "--brief", "x", "--text", "feat(board): y"],
+    );
+    assert!(!out.status.success(), "--brief with --text is refused");
+}
