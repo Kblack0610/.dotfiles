@@ -70,7 +70,7 @@ set -uo pipefail
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
 # The close verdict (close_verdict): a CHAT session closes once quiet this long (the human set 24h,
-# 2026-11-05). It is the only rule that reads quiet; DONE's own FLEET_IDLE_MIN is the idle gate.
+# 2026-11-05), measured by quiet (the smaller of idle and age); DONE's own FLEET_IDLE_MIN is the idle gate.
 : "${FLEET_CHAT_CLOSE_H:=24}"
 # The close verdict keeps a window the human typed in this recently, or the one on their screen
 # (provisional, 2026-11-17: 8 hand sessions closed 0 to 59 minutes after the human last typed;
@@ -528,7 +528,7 @@ work_blockers() {
     # case, ucp-agent-82 2026-11-11: apo-120 stayed open after its partial landing while its
     # phases ran as items elsewhere). Its close verdict is then after, not keep.
     local own="${20#own:}" held=0
-    case "$phases" in -|none|missing) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; } && held=1 ;; esac
+    case "$phases" in -|none|missing) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* || "$next" == coord:* ]]; } && held=1 ;; esac
     for id in ${own//,/ }; do
       if [ "$held" = 1 ]; then b+=("its item $id is still open with every phase done or queued")
       else b+=("its item $id is running here"); fi
