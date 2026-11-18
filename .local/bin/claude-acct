@@ -562,7 +562,7 @@ cmd_token_push() {
             sum=$(printf '%s' "$t" | cksum)
             # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
             # host's claude-acct is new enough to read a copy
-            if printf '%s' "$t" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
                 "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else
