@@ -60,6 +60,8 @@ Reads: every slow source (agent-queue, fleet-bench, Prometheus, `notes board`, t
 
 Only a target that is a live agent right now accepts input, so the API cannot be aimed at an arbitrary pane.
 
+A **fleet worker's sessions** (razer-laptop and any other host in home-config's `fleet_workers` group) are in the agent list too, each tagged `@<host>` and addressed `<host>@<server>/<session>:<window>`. They come from the worker panel snapshot `fleet-sessions` publishes every minute (`~/.local/state/fleet/worker-panel.json`, `remote::rows_in`), so listing them dials nothing, and a snapshot older than its `ttl` lists none. Selecting one opens its live screen: capture and typing go over ssh through `fleet-host-run` (`remote::find`, the same check a local target gets). The transcript, park, move and the other session actions stay local-only, since the jsonl and the account ledgers live on the worker.
+
 ## Auth
 
 The page can type into live sessions, so a network allowlist is not enough. A signed-out visit shows the button Sign in with Forgejo, plus a key form when `login.key` exists (below). The button starts the OAuth2 authorization-code flow against your Forgejo; if the browser already has a Forgejo session there is nothing to type, otherwise Forgejo shows its own login form (which Bitwarden already fills).
