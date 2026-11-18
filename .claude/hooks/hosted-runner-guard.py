@@ -13,7 +13,9 @@ in project-map.json `github_runners.self_hosted_only`, when the text it writes n
 image label (`ubuntu-*`, `windows-*`, `macos-*` with latest, slim or a version) outside a comment.
 Passed: owners not listed (work orgs), a workflow listed in `github_runners.allow` as
 `<owner>/<repo>:<path>` (each with why), an origin that is not github.com (a Forgejo
-`ubuntu-latest` is that forge's own runner label, not a bill), and every other file. An edit that
+`ubuntu-latest` is that forge's own runner label, not a bill), a public repo (`gh repo view`: hosted
+minutes are free there, and a self-hosted runner would run a fork PR's code on the LAN), and every
+other file. A failed visibility lookup counts as private, so the deny stands. An edit that
 keeps a label already in the file is denied too: touching a hosted job means moving it. Not covered:
 Bash writes (sed, cat >) and other agents; the org's Actions budget at $0 with prevent-further-usage
 is the backstop GitHub enforces. Fail-open, like the sibling guards: any error allows the edit.
@@ -59,7 +61,7 @@ def is_github(url):
 def origin(path):
     """(owner, repo, origin url, path relative to the checkout root) for the checkout holding path.
 
-    1 s per git call plus ssh -G's 2 s stays under the hook's 5 s timeout."""
+    1 s per git call, ssh -G 2 s and public() 2 s stay under the hook's 8 s timeout."""
     d = os.path.dirname(path)
     while d and not os.path.isdir(d):
         d = os.path.dirname(d)
@@ -69,6 +71,16 @@ def origin(path):
     if top.returncode or not m:
         return None
     return m.group(1), m.group(2), url.stdout.strip(), os.path.relpath(path, top.stdout.strip())
+
+
+def public(slug):
+    """True only when gh says the repo is public; any failure (offline, no auth, timeout) is False."""
+    try:
+        out = subprocess.run(["gh", "repo", "view", slug, "--json", "visibility", "-q", ".visibility"],
+                             capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "PUBLIC"
 
 
 def written(tool, ti):
@@ -97,6 +109,8 @@ def main():
     if owner.lower() not in {o.lower() for o in cfg.get("self_hosted_only", [])} or not is_github(url):
         return
     if f"{owner}/{repo}:{rel}".lower() in {k.lower() for k in cfg.get("allow", {})}:
+        return
+    if public(f"{owner}/{repo}"):
         return
     reason = MSG.format(repo=f"{owner}/{repo}", path=rel, label=hit.group(0))
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",

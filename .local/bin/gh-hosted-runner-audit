@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""gh-hosted-runner-audit: every GitHub Actions job of our owners on the wrong kind of runner.
+
+hosted-runner-guard.py stops an agent writing a GitHub-hosted label; this reads what the repos
+hold now, whoever wrote it. Owners and exceptions are the guard's: project-map.json
+`github_runners.self_hosted_only` and `github_runners.allow` (`<owner>/<repo>:<path>`, with why).
+Each active workflow on each repo's default branch, per job with a runs-on:
+
+  MOVE    a private repo's job on a GitHub-hosted label, a `|| 'ubuntu-latest'` fallback
+          included: it bills minutes. Org repos take vars.LINUX_RUNNER_LIGHT or HEAVY, a
+          personal repo a repo-scoped runner (home-config ci_repo_runners).
+  UNSAFE  a public repo's job on a self-hosted runner: it runs a fork PR's code on the LAN.
+          Public repos stay hosted, where minutes are free.
+  IDLE    a MOVE in a repo with no run for --idle-days: it bills nothing, and a runner per
+          dormant repo would be a standing process for no minutes. It reads MOVE once it runs.
+  EXPR    an expression whose value the workflow does not hold (`${{ inputs.runner }}`): not judged.
+          A `matrix.*` is judged by the job matrix, `vars.LINUX_RUNNER_*` with no fallback is self-hosted.
+  PARSE   a workflow that is not valid YAML.
+
+  gh-hosted-runner-audit                  exit 1 on any MOVE or UNSAFE
+  gh-hosted-runner-audit --all            also print the jobs that are fine
+  gh-hosted-runner-audit --idle-days N    dormant after N days without a run (default 30)
+
+Reads through `gh` (repo scope). Disabled workflows, and ones GitHub never registered (a fork's, until its Actions tab is enabled), run nothing and are skipped.
+"""
+import argparse
+import base64
+import datetime as dt
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+
+import yaml
+
+HOOK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../../.claude/hooks/hosted-runner-guard.py")
+_spec = importlib.util.spec_from_file_location("hosted_runner_guard", HOOK)
+guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard)
+
+
+class NotFound(Exception):
+    pass
+
+
+def gh(*args):
+    """gh's JSON. A 404 raises NotFound; any other failure stops the audit, so it never reads clean."""
+    p = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if p.returncode:
+        if "HTTP 404" in p.stderr:
+            raise NotFound(args[-1])
+        sys.exit(f"gh {' '.join(args)}: {p.stderr.strip() or 'exit %d' % p.returncode}")
+    return json.loads(p.stdout) if p.stdout.strip() else None
+
+
+def labels(value):
+    """runs-on as one line: a string, a list as [a, b], a {group, labels} mapping as its values."""
+    if isinstance(value, list):
+        return "[" + ", ".join(map(str, value)) + "]"
+    if isinstance(value, dict):
+        return labels([v for vs in value.values() for v in (vs if isinstance(vs, list) else [vs])])
+    return str(value)
+
+
+def jobs_in(text):
+    """(job, runs-on, kind) per job with a runs-on; kind is hosted, self-hosted or expr.
+
+    Parsed, not grepped: comments drop out and merge keys (`<<: *defaults`) resolve. An expression
+    is judged where its value is known: `matrix.*` by the job's matrix (hosted when the matrix names
+    a hosted label), `vars.LINUX_RUNNER_*` with no hosted fallback as self-hosted."""
+    doc = yaml.safe_load(text)
+    jobs = doc.get("jobs") if isinstance(doc, dict) else None
+    found = []
+    for name, job in (jobs or {}).items() if isinstance(jobs, dict) else []:
+        if not isinstance(job, dict) or "runs-on" not in job:
+            continue
+        src = labels(job["runs-on"])
+        matrix = json.dumps((job.get("strategy") or {}).get("matrix") or {}) if "matrix." in src else ""
+        if guard.HOSTED.search(src) or guard.HOSTED.search(matrix):
+            kind = "hosted"
+        elif "${{" not in src or ("vars.LINUX_RUNNER_" in src and "||" not in src):
+            kind = "self-hosted"
+        else:
+            kind = "expr"
+        found.append((str(name), src, kind))
+    return found
+
+
+def verdict(private, kind, allowed, idle=False):
+    if private and kind == "hosted" and not allowed:
+        return "IDLE" if idle else "MOVE"
+    if not private and kind == "self-hosted":
+        return "UNSAFE"
+    return "EXPR" if kind == "expr" else "ok"
+
+
+def workflows(repo):
+    """(path, text) of each active workflow file on the default branch."""
+    try:
+        listing = gh("api", f"repos/{repo}/contents/.github/workflows")
+    except NotFound:
+        return
+    states = {}
+    for page in gh("api", "--paginate", "--slurp", f"repos/{repo}/actions/workflows?per_page=100") or []:
+        states.update({w["path"]: w["state"] for w in page["workflows"]})
+    for entry in listing or []:
+        if entry["type"] != "file" or not entry["name"].endswith((".yml", ".yaml")):
+            continue
+        if states.get(entry["path"]) != "active":  # disabled, or never registered (a fork whose Actions tab was never enabled)
+            continue
+        blob = gh("api", f"repos/{repo}/contents/{entry['path']}")
+        yield entry["path"], base64.b64decode(blob["content"]).decode("utf-8", "replace")
+
+
+def idle(repo, days):
+    """True when the repo's newest workflow run is older than `days`, or it has none."""
+    try:
+        runs = gh("api", f"repos/{repo}/actions/runs?per_page=1")["workflow_runs"]
+    except NotFound:  # Actions disabled on the repo: nothing runs, nothing bills
+        return True
+    if not runs:
+        return True
+    last = dt.datetime.fromisoformat(runs[0]["created_at"].replace("Z", "+00:00"))
+    return dt.datetime.now(dt.timezone.utc) - last > dt.timedelta(days=days)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0].split(": ", 1)[1])
+    ap.add_argument("--all", action="store_true", help="also print the jobs that are fine")
+    ap.add_argument("--idle-days", type=int, default=30, help="dormant after this many days without a run")
+    args = ap.parse_args()
+    cfg = guard.config()
+    allow = {k.lower() for k in cfg.get("allow", {})}
+    bad = 0
+    for owner in cfg.get("self_hosted_only", []):
+        for r in gh("repo", "list", owner, "--limit", "1000", "--no-archived", "--json", "nameWithOwner,visibility"):
+            name, private, dormant = r["nameWithOwner"], r["visibility"] != "PUBLIC", None
+            for path, text in workflows(name):
+                try:
+                    found = jobs_in(text)
+                except yaml.YAMLError as e:
+                    print(f"PARSE\t{name}\t{path}\t{str(e).splitlines()[0]}")
+                    continue
+                allowed = f"{name}:{path}".lower() in allow
+                for job, src, kind in found:
+                    v = verdict(private, kind, allowed)
+                    if v == "MOVE":
+                        dormant = idle(name, args.idle_days) if dormant is None else dormant
+                        v = verdict(private, kind, allowed, dormant)
+                    bad += v in ("MOVE", "UNSAFE")
+                    if v != "ok" or args.all:
+                        print(f"{v}\t{name} ({'private' if private else 'public'})\t{path}\t{job}\t{src}")
+    print(f"{bad} job(s) to fix", file=sys.stderr)
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
