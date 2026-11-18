@@ -226,7 +226,7 @@ tag_pane() {
 }
 
 # The shepherd skill's nudge rules (steps 3 and 4), over the document, by each bucket's actor in
-# the fleet-states.md bucket table and the row's close verdict (`close`, the close table there): a
+# the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
 # manual row is never moved; a row holding an open ask it filed is nudged to close (CLOSE) once its
 # verdict is now, since the answer reopens it, and otherwise left alone, its window being where the
 # question waits; DONE and CHAT are nudged once their verdict is now, LANDED and STALLED once; a
